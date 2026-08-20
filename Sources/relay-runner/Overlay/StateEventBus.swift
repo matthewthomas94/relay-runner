@@ -19,6 +19,12 @@ actor StateEventBus {
         _ text: String?,
         _ tutorial: Bool
     ) -> Void
+    private let onRecoveryAction: @MainActor (
+        _ capability: String,
+        _ component: String,
+        _ provider: String,
+        _ expectedPostcondition: String
+    ) -> Bool
 
     init(
         stateMachine: StateMachine,
@@ -31,11 +37,18 @@ actor StateEventBus {
             _ state: String,
             _ text: String?,
             _ tutorial: Bool
-        ) -> Void = { _, _, _, _ in }
+        ) -> Void = { _, _, _, _ in },
+        onRecoveryAction: @escaping @MainActor (
+            _ capability: String,
+            _ component: String,
+            _ provider: String,
+            _ expectedPostcondition: String
+        ) -> Bool = { _, _, _, _ in false }
     ) {
         self.stateMachine = stateMachine
         self.shouldHandleServiceEvent = shouldHandleServiceEvent
         self.onServiceEvent = onServiceEvent
+        self.onRecoveryAction = onRecoveryAction
     }
 
     func start() {
@@ -104,6 +117,36 @@ actor StateEventBus {
                 let tutorial = json["tutorial"] as? Bool ?? false
                 let autoDismiss = json["auto_dismiss_seconds"] as? Double
                 let presentation = SpeechPresentation(json)
+
+                if source == "continuity_recovery", state == "request",
+                   let capability = json["capability"] as? String,
+                   let component = json["component"] as? String,
+                   let provider = json["provider"] as? String,
+                   let postcondition = json["expected_postcondition"] as? String {
+                    let onRecoveryAction = await self.onRecoveryAction
+                    let applied = await MainActor.run {
+                        onRecoveryAction(capability, component, provider, postcondition)
+                    }
+                    if let replyPath = json["reply_path"] as? String,
+                       replyPath.range(
+                           of: #"^/tmp/relay_recovery_recovery_[0-9a-f]{24}\.json$"#,
+                           options: .regularExpression
+                       ) != nil {
+                        let reply: [String: String] = [
+                            "status": applied ? "applied" : "failed",
+                            "outcome_code": applied
+                                ? "component_action_requested"
+                                : "component_action_unavailable"
+                        ]
+                        if let replyData = try? JSONSerialization.data(withJSONObject: reply) {
+                            try? replyData.write(
+                                to: URL(fileURLWithPath: replyPath),
+                                options: .atomic
+                            )
+                        }
+                    }
+                    continue
+                }
 
                 NSLog("[StateEventBus] \(source):\(state)\(text.map { " text=\($0.prefix(40))" } ?? "")")
 

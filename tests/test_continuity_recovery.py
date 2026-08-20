@@ -15,6 +15,7 @@ from continuity_recovery import (  # noqa: E402
     DISALLOWED_RECOVERY_OPERATIONS,
     RESTORE_PROCESSING_OBJECTIVE,
     ComponentOwnedRecoveryBroker,
+    ProductionRecoveryCapability,
     RecoveryActionResult,
     RecoveryActionValidation,
     production_recovery_owners,
@@ -141,6 +142,47 @@ def perform(broker, capability, payload, *, generation=3, attempt=1):
         deadline=200.0,
         cancel_event=threading.Event(),
     )
+
+
+def production_capabilities(*, owned=True, generation_matches=True):
+    def inspect(request):
+        policy = CAPABILITY_POLICIES[request.capability]
+        liveness = (
+            "confirmed_dead"
+            if policy.required_liveness == {"confirmed_dead"}
+            else "unhealthy"
+        )
+        command_phase = (
+            "captured"
+            if request.capability == "reinitialize_transcription_delivery"
+            else "none"
+        )
+        return RecoveryActionValidation(
+            validation_token="live_component_probe",
+            exact_target_owned=owned,
+            liveness=liveness,
+            incident_active=True,
+            generation_matches=generation_matches,
+            command_phase=command_phase,
+            command_phase_matches=True,
+            idempotency_state="new",
+            compensation_available=False,
+            cooldown_remaining=0,
+            expected_postcondition=request.expected_postcondition,
+        )
+
+    def execute(request, _cancel_event):
+        return RecoveryActionResult(
+            "applied",
+            "component_action_applied",
+            RecoveryHealthEvidence(True, 60, OBJECTIVE_EVIDENCE[request.component]),
+        )
+
+    return {
+        capability: ProductionRecoveryCapability(inspect, execute)
+        for capability in CAPABILITY_POLICIES
+        if capability != "check_processing_health"
+    }
 
 
 class ComponentOwnedRecoveryBrokerTests(unittest.TestCase):
@@ -346,41 +388,53 @@ class ComponentOwnedRecoveryBrokerTests(unittest.TestCase):
                 self.assertFalse(outcome.health.objective_restored)
                 self.assertEqual(outcome.health.evidence_codes, ("bridge_process_alive",))
 
-    def test_production_registry_wires_validated_app_bridge_and_daemon_health_adapters(self):
+    def test_production_registry_exposes_fixed_actions_for_every_component(self):
         observed = []
 
         def probe(request):
             observed.append((request.component, request.recovery_generation))
             return RecoveryHealthEvidence()
 
-        owners = production_recovery_owners(probe)
+        owners = production_recovery_owners(
+            probe,
+            capabilities=production_capabilities(),
+        )
         broker = ComponentOwnedRecoveryBroker(owners, monotonic=lambda: 100.0)
 
         self.assertEqual(set(owners), {"app", "bridge", "daemon"})
+        exposed = set()
         for component in COMPONENT_PHASE:
             with self.subTest(component=component):
-                self.assertEqual(
-                    broker.capabilities(incident(component)),
-                    ("check_processing_health",),
-                )
+                exposed.update(broker.capabilities(incident(component)))
                 outcome = perform(broker, "check_processing_health", incident(component))
                 self.assertEqual(
                     (outcome.status, outcome.outcome_code),
                     ("noop", "processing_health_checked"),
                 )
+        self.assertTrue(set(CAPABILITY_POLICIES).issubset(exposed))
         self.assertEqual(len(observed), len(COMPONENT_PHASE) * 2)
 
-    def test_production_bridge_adapter_executes_only_fixed_session_restore(self):
-        restored = []
+    def test_production_registry_cannot_silently_fall_back_to_health_only(self):
+        with self.assertRaisesRegex(ValueError, "every fixed capability"):
+            production_recovery_owners(
+                lambda _request: RecoveryHealthEvidence(),
+                capabilities={},
+            )
 
-        def restore(request, _cancel_event):
-            restored.append(request.session_id)
-            return RecoveryActionResult("applied", "session_registration_restored")
-
+    def test_production_adapter_rejects_stale_owner_before_fixed_action(self):
+        executed = []
+        capabilities = production_capabilities(owned=False)
+        original = capabilities["restore_session_registration"]
+        capabilities["restore_session_registration"] = ProductionRecoveryCapability(
+            original.inspect,
+            lambda request, cancel_event: (
+                executed.append((request, cancel_event))
+                or original.execute(request, cancel_event)
+            ),
+        )
         owners = production_recovery_owners(
             lambda _request: RecoveryHealthEvidence(),
-            inspect_session=lambda _request: (True, "unhealthy"),
-            restore_session=restore,
+            capabilities=capabilities,
         )
         broker = ComponentOwnedRecoveryBroker(owners, monotonic=lambda: 100.0)
 
@@ -396,9 +450,58 @@ class ComponentOwnedRecoveryBrokerTests(unittest.TestCase):
 
         self.assertEqual(
             (outcome.status, outcome.outcome_code),
-            ("applied", "session_registration_restored"),
+            ("authorization_required", "target_ownership_not_proven"),
         )
-        self.assertEqual(restored, [incident("session")["session_id"]])
+        self.assertEqual(executed, [])
+
+    def test_production_adapter_rejects_stale_generation_before_fixed_action(self):
+        owners = production_recovery_owners(
+            lambda _request: RecoveryHealthEvidence(),
+            capabilities=production_capabilities(generation_matches=False),
+        )
+        broker = ComponentOwnedRecoveryBroker(owners, monotonic=lambda: 100.0)
+
+        outcome = perform(broker, "restart_bridge", incident("bridge"))
+
+        self.assertEqual(
+            (outcome.status, outcome.outcome_code),
+            ("rejected", "stale_recovery_generation"),
+        )
+
+    def test_production_fixed_actions_execute_through_the_component_owner(self):
+        owners = production_recovery_owners(
+            lambda _request: RecoveryHealthEvidence(),
+            capabilities=production_capabilities(),
+        )
+        cases = {
+            "reinitialize_speech_capture": "speech_capture",
+            "reinitialize_transcription_delivery": "transcription",
+            "restart_bridge": "bridge",
+            "restart_messenger": "messenger",
+            "restart_daemon": "daemon",
+            "reconnect_ipc": "orchestrator",
+            "restore_session_registration": "session",
+            "release_dead_ownership": "command",
+            "launch_foreground_provider": "foreground_provider",
+        }
+
+        for capability, component in cases.items():
+            with self.subTest(capability=capability):
+                broker = ComponentOwnedRecoveryBroker(owners, monotonic=lambda: 100.0)
+                outcome = perform(
+                    broker,
+                    capability,
+                    incident(
+                        component,
+                        provider=(
+                            "codex" if component == "foreground_provider" else "none"
+                        ),
+                    ),
+                )
+                self.assertEqual(
+                    (outcome.status, outcome.outcome_code),
+                    ("applied", "component_action_applied"),
+                )
 
     def test_codex_and_claude_receive_identical_provider_recovery_capabilities(self):
         broker, _owners = broker_and_owners()

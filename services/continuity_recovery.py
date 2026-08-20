@@ -230,12 +230,22 @@ class ComponentRecoveryOwner(Protocol):
     ) -> bool: ...
 
 
+@dataclass(frozen=True)
+class ProductionRecoveryCapability:
+    """Fixed component callback for one production recovery capability."""
+
+    inspect: Callable[[RecoveryActionRequest], RecoveryActionValidation]
+    execute: Callable[
+        [RecoveryActionRequest, threading.Event], RecoveryActionResult
+    ]
+    cleanup: Callable[[RecoveryActionRequest], bool] | None = None
+
+
 class ObjectiveEvidenceRecoveryOwner:
     """Production adapter for objective health owned by one Relay component.
 
-    Mutation capabilities remain unavailable until their owning process supplies
-    a fixed handler.  The adapter intentionally exposes no command, path, URL,
-    or payload forwarding surface.
+    Mutation capabilities are fixed at construction. The adapter intentionally
+    exposes no command, path, URL, or payload forwarding surface.
     """
 
     supported_capabilities = frozenset({"check_processing_health"})
@@ -244,16 +254,32 @@ class ObjectiveEvidenceRecoveryOwner:
         self,
         owner: str,
         health_probe: Callable[[RecoveryActionRequest], RecoveryHealthEvidence],
+        capabilities: Mapping[str, ProductionRecoveryCapability] | None = None,
     ) -> None:
         if owner not in {"app", "bridge", "daemon"}:
             raise ValueError("invalid recovery owner adapter")
         self.owner = owner
         self._health_probe = health_probe
+        self._capabilities = dict(capabilities or {})
+        for capability in self._capabilities:
+            policy = CAPABILITY_POLICIES.get(capability)
+            if (
+                capability == "check_processing_health"
+                or policy is None
+                or policy.owner not in {owner, "dynamic"}
+            ):
+                raise ValueError("production recovery capability owner mismatch")
 
     def supports(self, capability: str) -> bool:
-        return capability in self.supported_capabilities
+        return (
+            capability in self.supported_capabilities
+            or capability in self._capabilities
+        )
 
     def inspect(self, request: RecoveryActionRequest) -> RecoveryActionValidation:
+        capability = self._capabilities.get(request.capability)
+        if capability is not None:
+            return capability.inspect(request)
         exact_owner = _COMPONENT_OWNERS.get(request.component) == self.owner
         health = self._health_probe(request)
         return RecoveryActionValidation(
@@ -278,6 +304,9 @@ class ObjectiveEvidenceRecoveryOwner:
         cancel_event: threading.Event,
     ) -> RecoveryActionResult:
         del validation
+        capability = self._capabilities.get(request.capability)
+        if capability is not None:
+            return capability.execute(request, cancel_event)
         if cancel_event.is_set() or request.capability != "check_processing_health":
             return RecoveryActionResult("failed", "owner_capability_unavailable")
         return RecoveryActionResult(
@@ -291,104 +320,66 @@ class ObjectiveEvidenceRecoveryOwner:
         request: RecoveryActionRequest,
         validation: RecoveryActionValidation,
     ) -> bool:
-        del request, validation
-        return False
+        del validation
+        capability = self._capabilities.get(request.capability)
+        if capability is None or capability.cleanup is None:
+            return False
+        return capability.cleanup(request)
 
 
 class AppRecoveryOwner(ObjectiveEvidenceRecoveryOwner):
     def __init__(
         self,
         health_probe: Callable[[RecoveryActionRequest], RecoveryHealthEvidence],
+        capabilities: Mapping[str, ProductionRecoveryCapability] | None = None,
     ) -> None:
-        super().__init__("app", health_probe)
+        super().__init__("app", health_probe, capabilities)
 
 
 class BridgeRecoveryOwner(ObjectiveEvidenceRecoveryOwner):
     def __init__(
         self,
         health_probe: Callable[[RecoveryActionRequest], RecoveryHealthEvidence],
-        *,
-        restore_session: Callable[
-            [RecoveryActionRequest, threading.Event], RecoveryActionResult
-        ] | None = None,
-        inspect_session: Callable[
-            [RecoveryActionRequest], tuple[bool, str]
-        ] | None = None,
+        capabilities: Mapping[str, ProductionRecoveryCapability] | None = None,
     ) -> None:
-        super().__init__("bridge", health_probe)
-        self._restore_session = restore_session
-        self._inspect_session = inspect_session
-
-    def supports(self, capability: str) -> bool:
-        return super().supports(capability) or (
-            capability == "restore_session_registration"
-            and self._restore_session is not None
-            and self._inspect_session is not None
-        )
-
-    def inspect(self, request: RecoveryActionRequest) -> RecoveryActionValidation:
-        validation = super().inspect(request)
-        if request.capability != "restore_session_registration":
-            return validation
-        if self._inspect_session is None:
-            return validation
-        owned, liveness = self._inspect_session(request)
-        return RecoveryActionValidation(
-            validation_token="session_registration_probe",
-            exact_target_owned=owned,
-            liveness=liveness,
-            incident_active=validation.incident_active,
-            generation_matches=validation.generation_matches,
-            command_phase=validation.command_phase,
-            command_phase_matches=validation.command_phase_matches,
-            idempotency_state=validation.idempotency_state,
-            compensation_available=False,
-            cooldown_remaining=validation.cooldown_remaining,
-            expected_postcondition=validation.expected_postcondition,
-            health=validation.health,
-        )
-
-    def execute(
-        self,
-        request: RecoveryActionRequest,
-        validation: RecoveryActionValidation,
-        cancel_event: threading.Event,
-    ) -> RecoveryActionResult:
-        if (
-            request.capability == "restore_session_registration"
-            and self._restore_session is not None
-        ):
-            return self._restore_session(request, cancel_event)
-        return super().execute(request, validation, cancel_event)
+        super().__init__("bridge", health_probe, capabilities)
 
 
 class DaemonRecoveryOwner(ObjectiveEvidenceRecoveryOwner):
     def __init__(
         self,
         health_probe: Callable[[RecoveryActionRequest], RecoveryHealthEvidence],
+        capabilities: Mapping[str, ProductionRecoveryCapability] | None = None,
     ) -> None:
-        super().__init__("daemon", health_probe)
+        super().__init__("daemon", health_probe, capabilities)
 
 
 def production_recovery_owners(
     health_probe: Callable[[RecoveryActionRequest], RecoveryHealthEvidence],
     *,
-    restore_session: Callable[
-        [RecoveryActionRequest, threading.Event], RecoveryActionResult
-    ] | None = None,
-    inspect_session: Callable[
-        [RecoveryActionRequest], tuple[bool, str]
-    ] | None = None,
+    capabilities: Mapping[str, ProductionRecoveryCapability],
 ) -> dict[str, ComponentRecoveryOwner]:
     """Build the fixed production owner registry used by the daemon."""
+    required = set(CAPABILITY_POLICIES) - {"check_processing_health"}
+    if set(capabilities) != required:
+        raise ValueError("production recovery registry requires every fixed capability")
+    by_owner: dict[str, dict[str, ProductionRecoveryCapability]] = {
+        "app": {}, "bridge": {}, "daemon": {},
+    }
+    for capability, adapter in capabilities.items():
+        policy = CAPABILITY_POLICIES.get(capability)
+        if policy is None or capability == "check_processing_health":
+            raise ValueError("unsupported production recovery capability")
+        if policy.owner == "dynamic":
+            for component in policy.components:
+                owner = _COMPONENT_OWNERS[component]
+                by_owner[owner][capability] = adapter
+        else:
+            by_owner[policy.owner][capability] = adapter
     return {
-        "app": AppRecoveryOwner(health_probe),
-        "bridge": BridgeRecoveryOwner(
-            health_probe,
-            restore_session=restore_session,
-            inspect_session=inspect_session,
-        ),
-        "daemon": DaemonRecoveryOwner(health_probe),
+        "app": AppRecoveryOwner(health_probe, by_owner["app"]),
+        "bridge": BridgeRecoveryOwner(health_probe, by_owner["bridge"]),
+        "daemon": DaemonRecoveryOwner(health_probe, by_owner["daemon"]),
     }
 
 

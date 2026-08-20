@@ -1982,6 +1982,14 @@ final class AppState {
                     text: text,
                     tutorial: tutorial
                 )
+            },
+            onRecoveryAction: { [weak self] capability, component, provider, postcondition in
+                self?.performContinuityRecoveryAction(
+                    capability,
+                    component: component,
+                    provider: provider,
+                    expectedPostcondition: postcondition
+                ) ?? false
             }
         )
         eventBus = bus
@@ -2241,6 +2249,69 @@ final class AppState {
             }
             self.wasRecording = nowRecording
             self.syncNotchActivitySurface()
+        }
+    }
+
+    private func performContinuityRecoveryAction(
+        _ capability: String,
+        component: String,
+        provider: String,
+        expectedPostcondition: String
+    ) -> Bool {
+        let contract: (Set<String>, String)? = switch capability {
+        case "reinitialize_speech_capture": (["speech_capture"], "capture_progress_observed")
+        case "reinitialize_transcription_delivery": (["transcription"], "transcription_completed")
+        case "restart_bridge": (["bridge"], "bridge_process_alive")
+        case "restart_messenger": (["messenger"], "messenger_process_alive")
+        case "restart_daemon": (["daemon"], "daemon_process_alive")
+        case "reconnect_ipc": (
+            ["bridge", "messenger", "orchestrator", "daemon", "session"],
+            "ipc_connection_restored"
+        )
+        case "restore_session_registration": (
+            ["orchestrator", "session"],
+            "session_heartbeat_fresh"
+        )
+        case "release_dead_ownership": (
+            ["foreground_provider", "orchestrator", "session", "command"],
+            "dead_ownership_released"
+        )
+        case "launch_foreground_provider": (
+            ["foreground_provider", "session"],
+            "provider_process_alive"
+        )
+        default: nil
+        }
+        guard let contract,
+              contract.0.contains(component),
+              contract.1 == expectedPostcondition,
+              provider == "none" || provider == config.general.provider.rawValue
+        else { return false }
+        switch capability {
+        case "reinitialize_speech_capture", "reinitialize_transcription_delivery":
+            guard isRunning else { return false }
+            restartSTT(reason: "continuity-recovery")
+            return true
+        case "restart_bridge", "restart_messenger", "reconnect_ipc",
+             "restore_session_registration":
+            return startBridgeRecovery(reason: "continuity-\(capability)")
+        case "restart_daemon":
+            Task { [refreshBundledOrchestratorDaemon] in
+                _ = await refreshBundledOrchestratorDaemon()
+            }
+            return true
+        case "release_dead_ownership":
+            guard activeSessionLaunchConfig != nil else { return false }
+            processManager.killBridge()
+            return true
+        case "launch_foreground_provider":
+            guard let launch = activeSessionLaunchConfig else { return false }
+            return newSession(
+                workingDirectory: launch.general.working_directory,
+                suppressesStartupGreeting: true
+            )
+        default:
+            return false
         }
     }
 
