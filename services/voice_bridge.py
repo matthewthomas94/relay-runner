@@ -2594,7 +2594,7 @@ def _bridge_continuity_resume_response(
                 incident,
                 records,
                 final_result=str(payload.get("final_result") or ""),
-                provider_turn_state=(provider_state or {}).get("state"),
+                provider_turn_state=provider_state,
             )
 
     if decision.action == "ask_repeat":

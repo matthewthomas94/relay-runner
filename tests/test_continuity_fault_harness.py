@@ -67,6 +67,35 @@ class ContinuityFaultHarnessTests(unittest.TestCase):
         self.assertTrue(exhausted["unresolved_report_persisted"])
         self.assertEqual(exhausted["proposal_state"], "draft")
 
+    def test_matrix_rejects_observed_duplicate_command_execution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report = run_fault_matrix(
+                Path(temporary),
+                injected_effect="duplicate_command_execution",
+            )
+
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["invariants"]["duplicate_command_execution"])
+        self.assertTrue(any(
+            case["command_execution_count"]
+            > case["expected_command_execution_count"]
+            for case in report["cases"]
+        ))
+
+    def test_matrix_rejects_observed_unauthorized_project_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report = run_fault_matrix(
+                Path(temporary),
+                injected_effect="unauthorized_project_mutation",
+            )
+
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["invariants"]["unauthorized_project_mutation"])
+        self.assertTrue(any(
+            case["unauthorized_project_mutation_count"] > 0
+            for case in report["cases"]
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()
