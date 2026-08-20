@@ -41,13 +41,17 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Mapping
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 # Reuse the existing config loader (sibling file).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
 try:
     from services.artifact_lifecycle import ArtifactLifecycleCoordinator
+    from services.artifact_retention import (
+        ArtifactRetentionManager,
+        confirm_github_remote,
+    )
     from services.artifact_rollout import (
         ArtifactRolloutBlocked,
         ArtifactRolloutError,
@@ -60,12 +64,16 @@ try:
         ArtifactValidationError,
         AttachmentWrite,
         ConfigWrite,
-        TicketDelete,
         TicketWrite,
         _ticket_front_matter_value,
     )
+    from services.artifact_sync import ArtifactSyncEngine, ArtifactSyncMode
 except ModuleNotFoundError:  # Installed direct-script layout.
     from artifact_lifecycle import ArtifactLifecycleCoordinator  # type: ignore[no-redef]
+    from artifact_retention import (  # type: ignore[no-redef]
+        ArtifactRetentionManager,
+        confirm_github_remote,
+    )
     from artifact_rollout import (  # type: ignore[no-redef]
         ArtifactRolloutBlocked,
         ArtifactRolloutError,
@@ -78,10 +86,10 @@ except ModuleNotFoundError:  # Installed direct-script layout.
         ArtifactValidationError,
         AttachmentWrite,
         ConfigWrite,
-        TicketDelete,
         TicketWrite,
         _ticket_front_matter_value,
     )
+    from artifact_sync import ArtifactSyncEngine, ArtifactSyncMode  # type: ignore[no-redef]
 from command_actions import refined_command_summary, refined_ticket_title, resolve_command_action
 from continuity_incidents import (
     ContinuityIncidentDetector,
@@ -140,7 +148,6 @@ from tickets import (
     read as read_ticket,
     scan_repo,
     write as write_ticket,
-    all_deps_done,
 )
 
 PORT_FILE = Path("/tmp/relay_orchestrator.port")
@@ -5199,6 +5206,34 @@ class Daemon:
                     lifecycle.recover_leases(
                         run_state
                     )
+                    snapshot = lifecycle.store.snapshot()
+                    artifact_config = tomllib.loads(
+                        snapshot.files[".orchestrator/config.toml"].decode("utf-8")
+                    )
+                    mode = ArtifactSyncMode(
+                        str(artifact_config.get("remote_sync") or "local_only")
+                    )
+                    remote_name = str(
+                        artifact_config.get("remote_name") or ""
+                    ).strip() or None
+                    synchronizer = (
+                        ArtifactSyncEngine(
+                            lifecycle.store,
+                            mode=mode,
+                            remote_name=remote_name,
+                        )
+                        if mode != ArtifactSyncMode.LOCAL_ONLY
+                        else None
+                    )
+                    retention = ArtifactRetentionManager(
+                        lifecycle.store,
+                        lease_store=lifecycle.leases,
+                        remote_mode=mode.value,
+                        synchronizer=synchronizer,
+                        enabled=True,
+                    )
+                    if retention.transaction_status().get("retry_available"):
+                        retention.recover_archive(synchronizer=synchronizer)
             except Exception as error:  # noqa: BLE001 - startup remains available.
                 print(
                     f"[orchestrator] artifact lifecycle recovery failed for {repo_path}: {error}",
@@ -5324,27 +5359,28 @@ class Daemon:
         ticket_id: str,
         request_id: str | None = None,
     ) -> dict[str, Any]:
-        lifecycle = self._artifact_board_lifecycle(repo_path, project_scope_token)
-        snapshot = lifecycle.store.snapshot()
+        manager, _synchronizer, _confirmation = self._artifact_retention_components(
+            repo_path, project_scope_token
+        )
+        snapshot = manager.store.snapshot()
         path = f".orchestrator/{ticket_id}.md"
         if path not in snapshot.files:
             return {
                 "ticket_id": ticket_id,
                 "artifact_commit": snapshot.commit_id,
                 "idempotent": True,
+                "warnings": [],
             }
-        write = lifecycle.store.mutate(ArtifactMutation(
+        result = manager.delete(
+            ticket_id,
             event_id=_artifact_board_event_id("delete", request_id),
-            actor_type="user",
             device_id=self._artifact_device_id,
-            expected_base=snapshot.commit_id,
-            operations=(TicketDelete(ticket_id),),
-            summary=f"Delete Relay ticket {ticket_id}",
-        ))
+        )
         return {
             "ticket_id": ticket_id,
-            "artifact_commit": write.commit_id,
-            "idempotent": write.idempotent,
+            "artifact_commit": result.write.commit_id if result.write else snapshot.commit_id,
+            "idempotent": result.write.idempotent if result.write else True,
+            "warnings": list(result.warnings),
         }
 
     def artifact_board_write_attachment(
@@ -5379,6 +5415,464 @@ class Daemon:
             "filename": filename,
             "artifact_commit": write.commit_id,
             "idempotent": write.idempotent,
+        }
+
+    def _artifact_retention_components(
+        self,
+        repo_path: str,
+        project_scope_token: str | None,
+        *,
+        confirm_github_exposure: bool = False,
+    ) -> tuple[ArtifactRetentionManager, ArtifactSyncEngine | None, object | None]:
+        lifecycle = self._artifact_board_lifecycle(repo_path, project_scope_token)
+        snapshot = lifecycle.store.snapshot()
+        try:
+            config = tomllib.loads(
+                snapshot.files[".orchestrator/config.toml"].decode("utf-8")
+            )
+            mode = ArtifactSyncMode(str(config.get("remote_sync") or "local_only"))
+        except (KeyError, UnicodeDecodeError, ValueError, tomllib.TOMLDecodeError) as error:
+            raise ValueError(f"artifact retention config is invalid: {error}") from error
+        remote_name = str(config.get("remote_name") or "").strip() or None
+        if mode == ArtifactSyncMode.ENABLED and remote_name is None:
+            raise ValueError("remote-enabled retention has no explicitly selected remote_name")
+        synchronizer = ArtifactSyncEngine(
+            lifecycle.store,
+            mode=mode,
+            remote_name=remote_name,
+        ) if mode != ArtifactSyncMode.LOCAL_ONLY else None
+        confirmation = None
+        if confirm_github_exposure:
+            if mode != ArtifactSyncMode.ENABLED or remote_name is None:
+                raise ValueError("GitHub exposure confirmation requires enabled remote sync")
+            confirmation = confirm_github_remote(
+                lifecycle.store,
+                remote_name,
+                exposure_confirmed=True,
+            )
+        manager = ArtifactRetentionManager(
+            lifecycle.store,
+            lease_store=lifecycle.leases,
+            remote_mode=mode.value,
+            remote_confirmation=confirmation,
+            synchronizer=synchronizer,
+            enabled=True,
+        )
+        return manager, synchronizer, confirmation
+
+    @staticmethod
+    def _retention_ticket_payload(ticket: object) -> dict[str, Any]:
+        return {
+            "ticket_id": ticket.ticket_id,
+            "artifact_id": ticket.artifact_id,
+            "title": ticket.title,
+            "status": ticket.status,
+            "activity_at": ticket.activity_at.isoformat().replace("+00:00", "Z"),
+            "dependencies": list(ticket.dependencies),
+            "attachment_paths": list(ticket.attachment_paths),
+            "exemptions": list(ticket.exemptions),
+            "materialized": ticket.materialized,
+        }
+
+    def _retention_plan_payload(self, manager: ArtifactRetentionManager) -> dict[str, Any]:
+        plan = manager.preview()
+        return {
+            "schema_version": plan.schema_version,
+            "policy": plan.policy,
+            "limit": plan.limit,
+            "project_id": plan.project_id,
+            "artifact_head": plan.artifact_head,
+            "evaluated_at": plan.evaluated_at.isoformat().replace("+00:00", "Z"),
+            "retained_terminal_ids": list(plan.retained_terminal_ids),
+            "nonterminal_ids": list(plan.nonterminal_ids),
+            "eviction_candidate_ids": list(plan.candidate_ids),
+            "materialize_ids": list(plan.materialize_ids),
+            "temporary_overage": {
+                ticket_id: list(reasons)
+                for ticket_id, reasons in plan.temporary_overage.items()
+            },
+            "retained_terminal": [
+                self._retention_ticket_payload(ticket) for ticket in plan.retained_terminal
+            ],
+            "eviction_candidates": [
+                self._retention_ticket_payload(ticket) for ticket in plan.candidates
+            ],
+        }
+
+    def artifact_retention_preview(
+        self, *, repo_path: str, project_scope_token: str | None
+    ) -> dict[str, Any]:
+        manager, _sync, _confirmation = self._artifact_retention_components(
+            repo_path, project_scope_token
+        )
+        return self._retention_plan_payload(manager)
+
+    def artifact_retention_status(
+        self, *, repo_path: str, project_scope_token: str | None
+    ) -> dict[str, Any]:
+        manager, synchronizer, _confirmation = self._artifact_retention_components(
+            repo_path, project_scope_token
+        )
+        plan = self._retention_plan_payload(manager)
+        transaction = dict(manager.transaction_status())
+        blocked_reasons = []
+        remote_status = None
+        if plan["eviction_candidate_ids"] and synchronizer is None:
+            blocked_reasons.append(
+                "Terminal cleanup is preview-only until a GitHub remote is selected and confirmed."
+            )
+        elif plan["eviction_candidate_ids"] and synchronizer is not None:
+            observed = synchronizer.status()
+            remote_status = {
+                "state": observed.state.value,
+                "local_head": observed.local_head,
+                "remote_head": observed.remote_head,
+                "recovery": observed.recovery,
+            }
+            if observed.state.value != "clean":
+                blocked_reasons.append(
+                    observed.recovery
+                    or f"Artifact synchronization is {observed.state.value}."
+                )
+        if transaction.get("last_error"):
+            blocked_reasons.append(str(transaction["last_error"]))
+        elif transaction.get("retry_available"):
+            blocked_reasons.append(
+                "A retention publication transaction is incomplete and must be retried."
+            )
+        return {
+            "state": "blocked" if blocked_reasons else "ready",
+            "plan": plan,
+            "transaction": transaction,
+            "remote": remote_status,
+            "blocked_reasons": blocked_reasons,
+            "retry_actions": (
+                ["POST /v1/artifacts/retention/retry"]
+                if transaction.get("retry_available")
+                else (
+                    ["POST /v1/artifacts/retention/apply"]
+                    if blocked_reasons and plan["eviction_candidate_ids"]
+                    else []
+                )
+            ),
+        }
+
+    def artifact_retention_apply(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        request_id: str,
+        provider: str | None = None,
+        confirm_github_exposure: bool = False,
+    ) -> dict[str, Any]:
+        if not str(request_id or "").strip():
+            raise ValueError("retention apply requires a stable request_id")
+        manager, synchronizer, _confirmation = self._artifact_retention_components(
+            repo_path,
+            project_scope_token,
+            confirm_github_exposure=confirm_github_exposure,
+        )
+        result = manager.archive(
+            manager.preview(),
+            event_id=f"retention:apply:{request_id}",
+            device_id=self._artifact_device_id,
+            provider=provider,
+            synchronizer=synchronizer,
+        )
+        return {
+            "state": result.state.value,
+            "ticket_ids": list(result.ticket_ids),
+            "artifact_commit": result.write.commit_id if result.write else None,
+            "idempotent": result.write.idempotent if result.write else not result.ticket_ids,
+            "warnings": list(result.warnings),
+            "recovery": result.recovery,
+            "status": self.artifact_retention_status(
+                repo_path=repo_path,
+                project_scope_token=project_scope_token,
+            ),
+        }
+
+    def artifact_retention_retry(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        confirm_github_exposure: bool = False,
+    ) -> dict[str, Any]:
+        manager, synchronizer, _confirmation = self._artifact_retention_components(
+            repo_path,
+            project_scope_token,
+            confirm_github_exposure=confirm_github_exposure,
+        )
+        result = manager.recover_archive(synchronizer=synchronizer)
+        if result is None:
+            return {"state": "idle", "ticket_ids": [], "recovery": None}
+        return {
+            "state": result.state.value,
+            "ticket_ids": list(result.ticket_ids),
+            "artifact_commit": result.write.commit_id if result.write else None,
+            "warnings": list(result.warnings),
+            "recovery": result.recovery,
+        }
+
+    def artifact_history_search(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        query: str = "",
+    ) -> dict[str, Any]:
+        manager, _sync, _confirmation = self._artifact_retention_components(
+            repo_path, project_scope_token
+        )
+        return {"history": [
+            {
+                "artifact_id": card.artifact_id,
+                "ticket_id": card.ticket_id,
+                "title": card.title,
+                "status": card.status,
+                "activity_at": card.activity_at.isoformat().replace("+00:00", "Z"),
+                "state": card.state.value,
+                "attachment_count": card.attachment_count,
+                "attachment_bytes": card.attachment_bytes,
+            }
+            for card in manager.historical_search(query)
+        ]}
+
+    def _artifact_history_detail_components(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        artifact_id: str,
+        online: bool,
+        confirm_github_exposure: bool,
+    ) -> tuple[ArtifactRetentionManager, object, Callable[[str], None] | None]:
+        manager, synchronizer, confirmation = self._artifact_retention_components(
+            repo_path,
+            project_scope_token,
+            confirm_github_exposure=confirm_github_exposure,
+        )
+        deepen = None
+        if online:
+            if synchronizer is None or confirmation is None:
+                raise ValueError(
+                    "online history retrieval requires confirmed GitHub artifact access"
+                )
+            deepen = lambda commit_id: synchronizer.fetch_historical_object(
+                commit_id,
+                expected_remote_url_sha256=confirmation.remote_url_sha256,
+            )
+        return manager, artifact_id, deepen
+
+    def artifact_history_detail(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        artifact_id: str,
+        online: bool = False,
+        confirm_github_exposure: bool = False,
+    ) -> dict[str, Any]:
+        manager, artifact_id, deepen = self._artifact_history_detail_components(
+            repo_path=repo_path,
+            project_scope_token=project_scope_token,
+            artifact_id=artifact_id,
+            online=online,
+            confirm_github_exposure=confirm_github_exposure,
+        )
+        detail = manager.historical_detail(artifact_id, online=online, deepen=deepen)
+        return {
+            "availability": detail.availability.value,
+            "card": (
+                None if detail.card is None else {
+                    "artifact_id": detail.card.artifact_id,
+                    "ticket_id": detail.card.ticket_id,
+                    "title": detail.card.title,
+                    "status": detail.card.status,
+                    "state": detail.card.state.value,
+                    "activity_at": detail.card.activity_at.isoformat().replace("+00:00", "Z"),
+                }
+            ),
+            "markdown_base64": (
+                base64.b64encode(detail.ticket_bytes).decode("ascii")
+                if detail.ticket_bytes is not None else None
+            ),
+            "attachments": list(detail.attachments),
+            "recovery": detail.recovery,
+            "materialized": False,
+        }
+
+    def artifact_history_attachment(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        artifact_id: str,
+        filename: str,
+        online: bool = False,
+        confirm_github_exposure: bool = False,
+    ) -> dict[str, Any]:
+        manager, artifact_id, deepen = self._artifact_history_detail_components(
+            repo_path=repo_path,
+            project_scope_token=project_scope_token,
+            artifact_id=artifact_id,
+            online=online,
+            confirm_github_exposure=confirm_github_exposure,
+        )
+        attachment = manager.historical_attachment(
+            artifact_id, filename, online=online, deepen=deepen
+        )
+        return {
+            "artifact_id": attachment.artifact_id,
+            "ticket_id": attachment.ticket_id,
+            "filename": attachment.filename,
+            "mime_type": attachment.mime_type,
+            "blob_id": attachment.blob_id,
+            "size": len(attachment.content),
+            "content_base64": base64.b64encode(attachment.content).decode("ascii"),
+            "materialized": False,
+        }
+
+    def artifact_history_restore(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        artifact_id: str,
+        request_id: str,
+        reopen: bool = False,
+        provider: str | None = None,
+        online: bool = False,
+        confirm_github_exposure: bool = False,
+    ) -> dict[str, Any]:
+        if not str(request_id or "").strip():
+            raise ValueError("history restore/reopen requires a stable request_id")
+        manager, artifact_id, deepen = self._artifact_history_detail_components(
+            repo_path=repo_path,
+            project_scope_token=project_scope_token,
+            artifact_id=artifact_id,
+            online=online,
+            confirm_github_exposure=confirm_github_exposure,
+        )
+        operation = manager.reopen if reopen else manager.restore
+        result = operation(
+            artifact_id,
+            event_id=f"history:{'reopen' if reopen else 'restore'}:{request_id}",
+            device_id=self._artifact_device_id,
+            provider=provider,
+            online=online,
+            deepen=deepen,
+        )
+        return {
+            "state": result.state.value,
+            "ticket_ids": list(result.ticket_ids),
+            "artifact_commit": result.write.commit_id if result.write else None,
+            "idempotent": result.write.idempotent if result.write else False,
+            "recovery": result.recovery,
+            "retention": self._retention_plan_payload(manager),
+        }
+
+    def artifact_dependency_summary(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        ticket_id: str,
+    ) -> dict[str, Any]:
+        manager, _sync, _confirmation = self._artifact_retention_components(
+            repo_path, project_scope_token
+        )
+        snapshot = manager.store.snapshot()
+        path = f".orchestrator/{ticket_id}.md"
+        dependencies: list[str] | None = None
+        if path in snapshot.files:
+            dependencies = list(parse_ticket(snapshot.files[path].decode("utf-8"))["depends_on"])
+        else:
+            for entry in manager._catalog(snapshot.commit_id).values():
+                if entry.get("ticket_id") == ticket_id:
+                    dependencies = list(entry.get("dependencies") or [])
+                    break
+        if dependencies is None:
+            raise ValueError(f"ticket {ticket_id!r} was not found")
+        summaries = []
+        for dependency_id in dependencies:
+            try:
+                satisfied = manager.dependency_satisfied(dependency_id)
+                summaries.append({
+                    "ticket_id": dependency_id,
+                    "satisfied": satisfied,
+                    "availability": "available" if satisfied else "unsatisfied",
+                    "recovery": None,
+                })
+            except ArtifactValidationError as error:
+                summaries.append({
+                    "ticket_id": dependency_id,
+                    "satisfied": False,
+                    "availability": "unavailable",
+                    "recovery": str(error),
+                })
+        return {
+            "ticket_id": ticket_id,
+            "satisfied": all(item["satisfied"] for item in summaries),
+            "dependencies": summaries,
+        }
+
+    def artifact_storage_metrics(
+        self, *, repo_path: str, project_scope_token: str | None
+    ) -> dict[str, Any]:
+        manager, _sync, _confirmation = self._artifact_retention_components(
+            repo_path, project_scope_token
+        )
+        databases = [
+            store.path for store in (
+                self.runs,
+                self.queue_drains,
+                self.orchestrator_sessions,
+                self.orchestrator_commands,
+                self.messenger_outcomes,
+                self.followup_proposals,
+            )
+        ]
+        log_paths = [
+            Path(run["log_path"])
+            for run in self.runs.list(limit=10000)
+            if run.get("log_path")
+        ]
+        indexes = [self.graphify_path]
+        if self.runs.index_path is not None:
+            indexes.append(self.runs.index_path)
+        metrics = manager.storage_metrics(
+            database_paths=databases,
+            run_log_paths=log_paths,
+            index_paths=indexes,
+        )
+        return {
+            "materialized": {
+                "bytes": metrics.materialized_worktree_bytes,
+                "files": metrics.materialized_file_count,
+                "tickets": {
+                    "bytes": metrics.materialized_ticket_bytes,
+                    "files": metrics.materialized_ticket_count,
+                },
+                "attachments": {
+                    "bytes": metrics.materialized_attachment_bytes,
+                    "files": metrics.materialized_attachment_count,
+                },
+            },
+            "retention": {
+                "retained_terminal_count": metrics.retained_terminal_count,
+                "nonterminal_count": metrics.nonterminal_count,
+                "temporary_overage_count": metrics.temporary_overage_count,
+                "remotely_backed_history_count": metrics.remotely_backed_history_count,
+            },
+            "reachable_git_objects_bytes": metrics.reachable_git_object_bytes,
+            "databases_bytes": metrics.database_bytes,
+            "run_logs_bytes": metrics.run_log_bytes,
+            "indexes_bytes": metrics.index_bytes,
+            "caches_bytes": metrics.cache_bytes,
+            "reclaimable_estimate_bytes": metrics.reclaimable_estimate_bytes,
         }
 
     def _artifact_board_lifecycle(
@@ -7366,6 +7860,37 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         with self._authoring_mutex():
             self._progress_dependents_locked(repo_path=repo_path, finished_ticket_id=finished_ticket_id)
 
+    def _all_dependencies_done(
+        self,
+        *,
+        repo: Path,
+        ticket: dict[str, Any],
+        all_tickets: list[dict[str, Any]],
+        artifact_lifecycle: ArtifactLifecycleCoordinator | None = None,
+    ) -> bool:
+        by_id = {item["id"]: item for item in all_tickets}
+        missing = []
+        for dependency_id in ticket.get("depends_on", []):
+            dependency = by_id.get(dependency_id)
+            if dependency is not None:
+                if dependency.get("status") != "done":
+                    return False
+                continue
+            missing.append(dependency_id)
+        if not missing:
+            return True
+        lifecycle = artifact_lifecycle
+        if lifecycle is None:
+            lifecycle = self._artifact_lifecycle(str(repo))
+        if lifecycle is None:
+            return False
+        manager = ArtifactRetentionManager(
+            lifecycle.store,
+            lease_store=lifecycle.leases,
+            enabled=True,
+        )
+        return all(manager.dependency_satisfied(dependency_id) for dependency_id in missing)
+
     def _progress_dependents_locked(self, *, repo_path: str, finished_ticket_id: str) -> None:
         repo = Path(repo_path)
         all_tickets = scan_repo(repo)
@@ -7377,7 +7902,9 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         for dep in dependents:
             if dep["status"] not in ("backlog", "ready"):
                 continue
-            if not all_deps_done(dep, all_tickets):
+            if not self._all_dependencies_done(
+                repo=repo, ticket=dep, all_tickets=all_tickets
+            ):
                 continue
             if dep["status"] == "backlog" and finished.get("execution_mode") == SPIKE_EXECUTION_MODE:
                 # A research result informs refinement; it never authorizes a
@@ -7406,7 +7933,9 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         for ticket in all_tickets:
             if ticket["status"] != "backlog" or not ticket["depends_on"]:
                 continue
-            if not all_deps_done(ticket, all_tickets):
+            if not self._all_dependencies_done(
+                repo=repo, ticket=ticket, all_tickets=all_tickets
+            ):
                 continue
             if any(
                 by_id.get(dep_id, {}).get("execution_mode") == SPIKE_EXECUTION_MODE
@@ -7489,7 +8018,21 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             if ticket["run_id"] is not None:
                 skip(ticket, "run_id_present", run_id=ticket["run_id"])
                 continue
-            if not all_deps_done(ticket, all_tickets):
+            try:
+                dependencies_done = self._all_dependencies_done(
+                    repo=repo,
+                    ticket=ticket,
+                    all_tickets=all_tickets,
+                    artifact_lifecycle=artifact_lifecycle,
+                )
+            except ArtifactValidationError as error:
+                skip(
+                    ticket,
+                    "dependency_history_unavailable",
+                    message=str(error),
+                )
+                continue
+            if not dependencies_done:
                 skip(ticket, "dependencies_not_done")
                 continue
 
@@ -9520,7 +10063,9 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     write_ticket(ticket_path, ticket)
                     tickets_written.append({"ticket_id": ticket_id, "action": "mark_ready"})
                     all_tickets = scan_repo(repo)
-                if not all_deps_done(ticket, all_tickets):
+                if not self._all_dependencies_done(
+                    repo=repo, ticket=ticket, all_tickets=all_tickets
+                ):
                     skipped.append({"ticket_id": ticket_id, "reason": "dependencies_not_done"})
                     continue
 
@@ -9928,6 +10473,70 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and segments == ["v1", "artifacts", "rollout"]:
                 return 200, self.daemon.artifact_rollout_status()
 
+            if method == "GET" and segments in (
+                ["v1", "artifacts", "retention", "preview"],
+                ["v1", "artifacts", "retention", "status"],
+                ["v1", "artifacts", "storage"],
+            ):
+                arguments = {
+                    "repo_path": (query.get("repo_path") or [""])[0],
+                    "project_scope_token": (query.get("project_scope_token") or [None])[0],
+                }
+                if segments[-1] == "preview":
+                    return 200, self.daemon.artifact_retention_preview(**arguments)
+                if segments[-1] == "status":
+                    return 200, self.daemon.artifact_retention_status(**arguments)
+                return 200, self.daemon.artifact_storage_metrics(**arguments)
+
+            if method == "GET" and segments == ["v1", "artifacts", "history", "search"]:
+                return 200, self.daemon.artifact_history_search(
+                    repo_path=(query.get("repo_path") or [""])[0],
+                    project_scope_token=(query.get("project_scope_token") or [None])[0],
+                    query=(query.get("query") or [""])[0],
+                )
+
+            if (method == "GET" and len(segments) == 4
+                    and segments[:3] == ["v1", "artifacts", "history"]):
+                online = str((query.get("online") or ["false"])[0]).lower() in {
+                    "1", "true", "yes",
+                }
+                confirmed = str(
+                    (query.get("confirm_github_exposure") or ["false"])[0]
+                ).lower() in {"1", "true", "yes"}
+                return 200, self.daemon.artifact_history_detail(
+                    repo_path=(query.get("repo_path") or [""])[0],
+                    project_scope_token=(query.get("project_scope_token") or [None])[0],
+                    artifact_id=unquote(segments[3]),
+                    online=online,
+                    confirm_github_exposure=confirmed,
+                )
+
+            if (method == "GET" and len(segments) == 6
+                    and segments[:3] == ["v1", "artifacts", "history"]
+                    and segments[4] == "attachments"):
+                online = str((query.get("online") or ["false"])[0]).lower() in {
+                    "1", "true", "yes",
+                }
+                confirmed = str(
+                    (query.get("confirm_github_exposure") or ["false"])[0]
+                ).lower() in {"1", "true", "yes"}
+                return 200, self.daemon.artifact_history_attachment(
+                    repo_path=(query.get("repo_path") or [""])[0],
+                    project_scope_token=(query.get("project_scope_token") or [None])[0],
+                    artifact_id=unquote(segments[3]),
+                    filename=unquote(segments[5]),
+                    online=online,
+                    confirm_github_exposure=confirmed,
+                )
+
+            if (method == "GET" and len(segments) == 4
+                    and segments[:3] == ["v1", "artifacts", "dependencies"]):
+                return 200, self.daemon.artifact_dependency_summary(
+                    repo_path=(query.get("repo_path") or [""])[0],
+                    project_scope_token=(query.get("project_scope_token") or [None])[0],
+                    ticket_id=unquote(segments[3]),
+                )
+
             if method == "GET" and segments == ["v1", "runs"]:
                 state = (query.get("state") or [None])[0]
                 limit = int((query.get("limit") or ["100"])[0])
@@ -10082,6 +10691,39 @@ class Handler(BaseHTTPRequestHandler):
                     project_scope_token=body.get("project_scope_token"),
                 )
                 return 201, result
+
+            if method == "POST" and segments == ["v1", "artifacts", "retention", "apply"]:
+                body = _read_body(self)
+                return 200, self.daemon.artifact_retention_apply(
+                    repo_path=body.get("repo_path", ""),
+                    project_scope_token=body.get("project_scope_token"),
+                    request_id=body.get("request_id", ""),
+                    provider=body.get("provider"),
+                    confirm_github_exposure=body.get("confirm_github_exposure") is True,
+                )
+
+            if method == "POST" and segments == ["v1", "artifacts", "retention", "retry"]:
+                body = _read_body(self)
+                return 200, self.daemon.artifact_retention_retry(
+                    repo_path=body.get("repo_path", ""),
+                    project_scope_token=body.get("project_scope_token"),
+                    confirm_github_exposure=body.get("confirm_github_exposure") is True,
+                )
+
+            if (method == "POST" and len(segments) == 5
+                    and segments[:3] == ["v1", "artifacts", "history"]
+                    and segments[4] in {"restore", "reopen"}):
+                body = _read_body(self)
+                return 200, self.daemon.artifact_history_restore(
+                    repo_path=body.get("repo_path", ""),
+                    project_scope_token=body.get("project_scope_token"),
+                    artifact_id=unquote(segments[3]),
+                    request_id=body.get("request_id", ""),
+                    reopen=segments[4] == "reopen",
+                    provider=body.get("provider"),
+                    online=body.get("online") is True,
+                    confirm_github_exposure=body.get("confirm_github_exposure") is True,
+                )
 
             if method == "POST" and segments == ["v1", "artifacts", "tickets", "claim-next-id"]:
                 body = _read_body(self)
@@ -10308,6 +10950,10 @@ class Handler(BaseHTTPRequestHandler):
                 "error_code": e.code,
                 "recovery": e.recovery,
             }
+        except ArtifactConcurrentUpdate as e:
+            return 409, {"error": str(e), "retryable": True}
+        except ArtifactValidationError as e:
+            return 422, {"error": str(e)}
         except ValueError as e:
             return 400, {"error": str(e)}
         except RuntimeError as e:

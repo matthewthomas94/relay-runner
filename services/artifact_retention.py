@@ -206,10 +206,32 @@ class HistoricalDetail:
 
 
 @dataclasses.dataclass(frozen=True)
+class HistoricalAttachment:
+    artifact_id: str
+    ticket_id: str
+    filename: str
+    mime_type: str
+    content: bytes
+    blob_id: str
+
+
+@dataclasses.dataclass(frozen=True)
 class StorageMetrics:
     materialized_worktree_bytes: int
     materialized_file_count: int
+    materialized_ticket_bytes: int
+    materialized_ticket_count: int
+    materialized_attachment_bytes: int
+    materialized_attachment_count: int
+    retained_terminal_count: int
+    nonterminal_count: int
+    temporary_overage_count: int
+    remotely_backed_history_count: int
     reachable_git_object_bytes: int
+    database_bytes: int
+    run_log_bytes: int
+    index_bytes: int
+    cache_bytes: int
     run_database_log_bytes: int
     derived_index_cache_bytes: int
     reclaimable_estimate_bytes: int
@@ -829,6 +851,48 @@ class ArtifactRetentionManager:
             attachments=tuple(dict(item) for item in entry.get("attachments", [])),
         )
 
+    def historical_attachment(
+        self,
+        artifact_id: str,
+        filename: str,
+        *,
+        online: bool = False,
+        deepen: Callable[[str], None] | None = None,
+    ) -> HistoricalAttachment:
+        """Return one verified archive attachment without materializing its ticket."""
+        _validate_safe_id(artifact_id, "artifact ID")
+        if PurePosixPath(filename).name != filename:
+            raise ArtifactValidationError(f"invalid attachment filename: {filename!r}")
+        # Reuse the store's ownership/type policy instead of accepting an
+        # archive-catalog MIME declaration on trust.
+        mime_type = _attachment_mime_for_filename(filename)
+        detail = self.historical_detail(artifact_id, online=online, deepen=deepen)
+        if detail.availability != HistoryAvailability.AVAILABLE or detail.card is None:
+            raise ArtifactValidationError(detail.recovery or "historical ticket is unavailable")
+        expected_path = f".orchestrator/attachments/{detail.card.ticket_id}/{filename}"
+        matches = [item for item in detail.attachments if item.get("path") == expected_path]
+        if len(matches) != 1:
+            raise ArtifactValidationError(f"historical attachment {filename!r} was not found")
+        item = matches[0]
+        if item.get("mime_type") != mime_type:
+            raise ArtifactValidationError("historical attachment MIME metadata is inconsistent")
+        content = self._verified_historical_blob(
+            str(self._catalog(self._head_required())[artifact_id]["source_commit"]),
+            expected_path,
+            str(item.get("blob", "")),
+        )
+        self.store._validate_content_for_path(expected_path, content)
+        if int(item.get("size", -1)) != len(content):
+            raise ArtifactValidationError("historical attachment size metadata is inconsistent")
+        return HistoricalAttachment(
+            artifact_id=artifact_id,
+            ticket_id=detail.card.ticket_id,
+            filename=filename,
+            mime_type=mime_type,
+            content=content,
+            blob_id=str(item["blob"]),
+        )
+
     def restore(
         self,
         artifact_id: str,
@@ -844,12 +908,13 @@ class ArtifactRetentionManager:
         self._require_enabled()
         prior = self.store._find_event(event_id)
         if prior:
+            ticket_id = self._materialized_ticket_id(artifact_id)
             return ArchiveResult(
                 RetentionState.RESTORE_PENDING_SYNC
                 if self.remote_mode == "enabled"
                 else RetentionState.MATERIALIZED_RECENT,
                 _prior_result(self.store, event_id, prior[0]),
-                (),
+                (ticket_id,) if ticket_id else (),
             )
         head = self._head_required()
         catalog = self._catalog(head)
@@ -902,6 +967,89 @@ class ArtifactRetentionManager:
             RetentionState.RESTORE_PENDING_SYNC
             if self.remote_mode == "enabled"
             else RetentionState.MATERIALIZED_RECENT,
+            write,
+            (ticket_id,),
+        )
+
+    def reopen(
+        self,
+        artifact_id: str,
+        *,
+        event_id: str,
+        device_id: str,
+        actor_type: str = "user",
+        provider: str | None = None,
+        reopened_at: datetime | None = None,
+        online: bool = False,
+        deepen: Callable[[str], None] | None = None,
+    ) -> ArchiveResult:
+        """Make archived terminal work nonterminal and therefore uncapped."""
+        self._require_enabled()
+        prior = self.store._find_event(event_id)
+        if prior:
+            ticket_id = self._materialized_ticket_id(artifact_id)
+            return ArchiveResult(
+                RetentionState.RESTORE_PENDING_SYNC
+                if self.remote_mode == "enabled"
+                else RetentionState.MATERIALIZED_EXEMPT,
+                _prior_result(self.store, event_id, prior[0]),
+                (ticket_id,) if ticket_id else (),
+            )
+        head = self._head_required()
+        catalog = self._catalog(head)
+        entry = catalog.get(artifact_id)
+        if not entry or entry.get("state") not in {
+            RetentionState.ARCHIVED.value,
+            RetentionState.DELETED_TOMBSTONE.value,
+        }:
+            raise ArtifactValidationError(f"artifact {artifact_id!r} is not archived")
+        detail = self.historical_detail(artifact_id, online=online, deepen=deepen)
+        if detail.availability != HistoryAvailability.AVAILABLE or detail.ticket_bytes is None:
+            raise ArtifactValidationError(detail.recovery or "historical ticket is unavailable")
+        instant = _utc(reopened_at or self.now())
+        ticket_id = str(entry["ticket_id"])
+        markdown = detail.ticket_bytes
+        for key, value in (
+            ("status", "backlog"),
+            ("canceled", "false"),
+            ("run_id", "null"),
+            ("run_state", "none"),
+            ("reopened_at", _format_instant(instant)),
+            ("activity_at", _format_instant(instant)),
+        ):
+            markdown = _set_front_matter_value(markdown, key, value)
+        operations: list[object] = [TicketWrite(ticket_id, artifact_id, markdown)]
+        source_commit = str(entry["source_commit"])
+        for attachment in entry.get("attachments", []):
+            path = str(attachment["path"])
+            operations.append(AttachmentWrite(
+                ticket_id,
+                PurePosixPath(path).name,
+                str(attachment["mime_type"]),
+                self._verified_historical_blob(source_commit, path, str(attachment["blob"])),
+            ))
+        updated_entry = dict(entry)
+        updated_entry.update({
+            "state": RetentionState.MATERIALIZED_EXEMPT.value,
+            "status": "backlog",
+            "activity_at": _format_instant(instant),
+            "restored_at": _format_instant(instant),
+        })
+        catalog[artifact_id] = updated_entry
+        operations.append(ArchiveIndexWrite(_encode_catalog(catalog)))
+        write = self.store.mutate(ArtifactMutation(
+            event_id=event_id,
+            actor_type=actor_type,
+            device_id=device_id,
+            provider=provider,
+            expected_base=head,
+            operations=tuple(operations),
+            summary=f"Reopen Relay ticket {ticket_id}",
+        ))
+        return ArchiveResult(
+            RetentionState.RESTORE_PENDING_SYNC
+            if self.remote_mode == "enabled"
+            else RetentionState.MATERIALIZED_EXEMPT,
             write,
             (ticket_id,),
         )
@@ -969,14 +1117,46 @@ class ArtifactRetentionManager:
             return _canonical_status(_front_matter(snapshot.files[path])) == "done"
         for entry in self._catalog(snapshot.commit_id).values():
             if entry.get("ticket_id") == dependency_id:
-                return entry.get("status") == "done"
+                if entry.get("status") != "done":
+                    return False
+                detail = self.historical_detail(str(entry.get("artifact_id", "")))
+                if detail.availability != HistoryAvailability.AVAILABLE:
+                    raise ArtifactValidationError(
+                        detail.recovery
+                        or f"archived dependency {dependency_id} is unavailable"
+                    )
+                return True
         return False
+
+    def transaction_status(self) -> Mapping[str, object]:
+        transaction = self._read_transaction()
+        if not transaction:
+            return {"state": "idle", "retry_available": False}
+        return {
+            "state": str(transaction.get("phase") or "pending"),
+            "event_id": transaction.get("event_id"),
+            "ticket_ids": list(transaction.get("ticket_ids") or []),
+            "last_error": transaction.get("last_error"),
+            "retry_available": True,
+        }
+
+    def _materialized_ticket_id(self, artifact_id: str) -> str | None:
+        for path, content in self.store.snapshot().files.items():
+            if not _is_ticket_path(path):
+                continue
+            if _front_matter(content).get("artifact_id") == artifact_id:
+                return PurePosixPath(path).stem
+        return None
 
     def storage_metrics(
         self,
         *,
         run_paths: Sequence[Path] = (),
         index_cache_paths: Sequence[Path] = (),
+        database_paths: Sequence[Path] = (),
+        run_log_paths: Sequence[Path] = (),
+        index_paths: Sequence[Path] = (),
+        cache_paths: Sequence[Path] = (),
     ) -> StorageMetrics:
         materialized_files = [
             path
@@ -984,6 +1164,20 @@ class ArtifactRetentionManager:
             if path.is_file() and not path.is_symlink()
         ] if self.store.materialized_path.exists() else []
         materialized_bytes = sum(path.stat().st_size for path in materialized_files)
+        ticket_files = []
+        for path in materialized_files:
+            if path.parent != self.store.materialized_path or path.suffix != ".md":
+                continue
+            try:
+                if _front_matter(path.read_bytes()).get("artifact_id"):
+                    ticket_files.append(path)
+            except (OSError, ArtifactValidationError):
+                continue
+        attachment_root = self.store.materialized_path / "attachments"
+        attachment_files = [
+            path for path in materialized_files
+            if attachment_root in path.parents
+        ]
         reachable = 0
         seen: set[str] = set()
         head = self._head_required()
@@ -992,9 +1186,16 @@ class ArtifactRetentionManager:
             if oid and oid not in seen:
                 seen.add(oid)
                 reachable += self.store._blob_size(oid)
-        run_bytes = sum(_disk_usage(path) for path in run_paths)
-        derived_bytes = sum(_disk_usage(path) for path in index_cache_paths)
+        database_bytes = sum(_disk_usage(path) for path in database_paths)
+        run_log_bytes = sum(_disk_usage(path) for path in run_log_paths)
+        index_bytes = sum(_disk_usage(path) for path in index_paths)
+        cache_bytes = sum(_disk_usage(path) for path in cache_paths)
+        run_bytes = sum(_disk_usage(path) for path in run_paths) + database_bytes + run_log_bytes
+        derived_bytes = (
+            sum(_disk_usage(path) for path in index_cache_paths) + index_bytes + cache_bytes
+        )
         catalog = self._catalog(head)
+        plan = self.preview()
         # Reachable artifact history is not reclaimable without a separately
         # reviewed history rewrite. Derived indexes/caches are the only safely
         # reclaimable bytes represented by this view.
@@ -1002,7 +1203,22 @@ class ArtifactRetentionManager:
         return StorageMetrics(
             materialized_worktree_bytes=materialized_bytes,
             materialized_file_count=len(materialized_files),
+            materialized_ticket_bytes=sum(path.stat().st_size for path in ticket_files),
+            materialized_ticket_count=len(ticket_files),
+            materialized_attachment_bytes=sum(path.stat().st_size for path in attachment_files),
+            materialized_attachment_count=len(attachment_files),
+            retained_terminal_count=len(plan.retained_terminal),
+            nonterminal_count=len(plan.nonterminal),
+            temporary_overage_count=len(plan.exempt),
+            remotely_backed_history_count=sum(
+                1 for entry in catalog.values()
+                if entry.get("state") == RetentionState.ARCHIVED.value
+            ),
             reachable_git_object_bytes=reachable,
+            database_bytes=database_bytes,
+            run_log_bytes=run_log_bytes,
+            index_bytes=index_bytes,
+            cache_bytes=cache_bytes,
             run_database_log_bytes=run_bytes,
             derived_index_cache_bytes=derived_bytes,
             reclaimable_estimate_bytes=reclaimable,
@@ -1845,6 +2061,7 @@ __all__ = [
     "ArchiveResult",
     "ArtifactRetentionManager",
     "HistoricalCard",
+    "HistoricalAttachment",
     "HistoricalDetail",
     "HistoryAvailability",
     "RetentionPlan",

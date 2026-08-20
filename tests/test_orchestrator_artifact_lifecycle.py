@@ -10,6 +10,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVICES = ROOT / "services"
@@ -351,6 +352,82 @@ Saved through the daemon-owned typed writer.
         snapshot = self.store.snapshot()
         self.assertNotIn(".orchestrator/REP-1.md", snapshot.files)
         self.assertNotIn(".orchestrator/attachments/REP-1/proof.png", snapshot.files)
+        history = self.daemon.artifact_history_search(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            query="Board artifact",
+        )
+        artifact_id = history["history"][0]["artifact_id"]
+        detail = self.daemon.artifact_history_detail(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            artifact_id=artifact_id,
+        )
+        self.assertEqual(detail["availability"], "available")
+        self.assertFalse(detail["materialized"])
+        restored = self.daemon.artifact_history_restore(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            artifact_id=artifact_id,
+            request_id="board-restore-test",
+            provider="codex",
+        )
+        retried = self.daemon.artifact_history_restore(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            artifact_id=artifact_id,
+            request_id="board-restore-test",
+            provider="claude",
+        )
+        self.assertEqual(restored["ticket_ids"], ["REP-1"])
+        self.assertTrue(retried["idempotent"])
+        self.assertIn(".orchestrator/REP-1.md", self.store.snapshot().files)
+
+    def test_retention_history_and_storage_client_contracts_are_scoped_and_provider_neutral(self):
+        token = self.scope_token()
+        preview = self.daemon.artifact_retention_preview(
+            repo_path=str(self.repo),
+            project_scope_token=token,
+        )
+        status = self.daemon.artifact_retention_status(
+            repo_path=str(self.repo),
+            project_scope_token=token,
+        )
+        history = self.daemon.artifact_history_search(
+            repo_path=str(self.repo),
+            project_scope_token=token,
+            query="",
+        )
+        storage = self.daemon.artifact_storage_metrics(
+            repo_path=str(self.repo),
+            project_scope_token=token,
+        )
+
+        self.assertEqual(preview["nonterminal_ids"], ["RR-1"])
+        self.assertEqual(preview["retained_terminal_ids"], [])
+        self.assertEqual(preview["eviction_candidate_ids"], [])
+        self.assertEqual(status["transaction"]["state"], "idle")
+        self.assertEqual(history, {"history": []})
+        self.assertEqual(storage["retention"]["nonterminal_count"], 1)
+        self.assertIn("tickets", storage["materialized"])
+        self.assertIn("attachments", storage["materialized"])
+
+        handler = object.__new__(orchestrator.Handler)
+        handler.daemon = self.daemon
+        query = urlencode({
+            "repo_path": str(self.repo),
+            "project_scope_token": token,
+        })
+        code, payload = handler._route(
+            "GET", f"/v1/artifacts/retention/preview?{query}"
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["nonterminal_ids"], ["RR-1"])
+        unscoped_code, unscoped = handler._route(
+            "GET", f"/v1/artifacts/retention/preview?repo_path={self.repo}"
+        )
+        self.assertEqual(unscoped_code, 422)
+        self.assertIn("scope token", unscoped["error"])
 
     def scope_token(self) -> str:
         payload = {

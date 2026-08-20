@@ -406,6 +406,49 @@ class ArtifactRetentionTests(unittest.TestCase):
         self.assertEqual(files[".orchestrator/attachments/RR-1/proof.png"], PNG)
         self.assertIn("RR-1", self.manager.preview().retained_terminal_ids)
 
+    def test_verified_attachment_read_and_reopen_do_not_leave_terminal_work_capped(self):
+        self.seed_retained_terminal()
+        old = self.now - timedelta(days=31)
+        self.write_ticket("RR-reopen-api", "Reopen API", activity_at=old, extra={"status": "done"})
+        self.write_attachment("RR-reopen-api", "proof.png", PNG)
+        self.manager.archive(
+            self.manager.preview(),
+            event_id="archive-reopen-api",
+            device_id="device-a",
+        )
+        head_before_read = self.store._head()
+
+        attachment = self.manager.historical_attachment(
+            "artifact-RR-reopen-api", "proof.png"
+        )
+
+        self.assertEqual(attachment.content, PNG)
+        self.assertEqual(attachment.mime_type, "image/png")
+        self.assertEqual(self.store._head(), head_before_read)
+        self.assertNotIn(".orchestrator/RR-reopen-api.md", self.store.snapshot().files)
+
+        reopened = self.manager.reopen(
+            "artifact-RR-reopen-api",
+            event_id="reopen-api",
+            device_id="device-a",
+            provider="codex",
+            reopened_at=self.now,
+        )
+        retried = self.manager.reopen(
+            "artifact-RR-reopen-api",
+            event_id="reopen-api",
+            device_id="device-a",
+            provider="claude",
+            reopened_at=self.now,
+        )
+
+        markdown = self.store.snapshot().files[".orchestrator/RR-reopen-api.md"]
+        self.assertEqual(reopened.state, RetentionState.RESTORE_PENDING_SYNC)
+        self.assertTrue(retried.write.idempotent)
+        self.assertIn(b"status: backlog", markdown)
+        self.assertIn(b"canceled: false", markdown)
+        self.assertIn("RR-reopen-api", self.manager.preview().nonterminal_ids)
+
     def test_archive_failures_preserve_or_recover_projection_from_canonical_ref(self):
         self.seed_retained_terminal()
         old = self.now - timedelta(days=31)

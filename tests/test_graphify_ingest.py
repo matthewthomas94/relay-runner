@@ -452,7 +452,6 @@ class GraphifyIngestTests(unittest.TestCase):
             [ticket["body"]["ticket_id"] for ticket in store.nodes(kind=NODE_TICKET)],
             ["PB-2"],
         )
-
         backlog = build_program_status(store, query="backlog_lane", limit=0, now=2000.0)
         in_progress = build_program_status(store, query="in_progress_lane", limit=0, now=2000.0)
 
@@ -460,6 +459,98 @@ class GraphifyIngestTests(unittest.TestCase):
         self.assertEqual(in_progress["items"], [])
         self.assertNotIn("PB-1", backlog["message"])
         self.assertNotIn("PB-1", in_progress["message"])
+
+    def test_archived_catalog_keeps_hundreds_of_metadata_only_ticket_nodes(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "archive-history")
+        _write_ticket(
+            repo,
+            "AH-live",
+            "Live dependent",
+            "backlog",
+            depends_on=["AH-000"],
+        )
+        entries = []
+        for index in range(200):
+            ticket_id = f"AH-{index:03d}"
+            entries.append(json.dumps({
+                "schema_version": 1,
+                "artifact_id": f"artifact-{ticket_id}",
+                "ticket_id": ticket_id,
+                "title": f"Archived {index}",
+                "status": "done",
+                "activity_at": f"2026-01-01T00:{index % 60:02d}:00Z",
+                "dependencies": [],
+                "state": "archived",
+                "ticket_path": f".orchestrator/{ticket_id}.md",
+                "ticket_blob": "a" * 40,
+                "source_commit": "b" * 40,
+                "attachments": [],
+            }, sort_keys=True))
+        (repo / ".orchestrator" / "archive-index.jsonl").write_text(
+            "\n".join(entries) + "\n",
+            encoding="utf-8",
+        )
+        registry_path = root / "projects.json"
+        registry_path.write_text(json.dumps({
+            "activeProjectID": str(repo.resolve()),
+            "projects": [{
+                "id": str(repo.resolve()),
+                "repoPath": str(repo.resolve()),
+                "displayName": "Archive history",
+            }],
+        }))
+
+        store = self.make_store()
+        counts = ingest_registered_projects(store, registry_path=registry_path)
+        archived = store.find_node(
+            kind=NODE_TICKET,
+            stable_key=f"repo:{repo.resolve()}:AH-000",
+        )
+        live = store.find_node(
+            kind=NODE_TICKET,
+            stable_key=f"repo:{repo.resolve()}:AH-live",
+        )
+
+        self.assertEqual(counts["tickets"], 201)
+        self.assertEqual(counts["archived_tickets"], 200)
+        self.assertFalse(archived["body"]["materialized"])
+        self.assertEqual(archived["body"]["history_state"], "archived")
+        self.assertIsNotNone(
+            store.get_edge(src_id=live["id"], dst_id=archived["id"], kind=EDGE_DEPENDS_ON)
+        )
+        second = ingest_registered_projects(store, registry_path=registry_path)
+        self.assertEqual(second["tickets_deleted"], 0)
+        self.assertIsNotNone(store.find_node(kind=NODE_TICKET, stable_key=archived["stable_key"]))
+
+    def test_malformed_archive_identity_fails_instead_of_pruning_history(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "malformed-archive")
+        (repo / ".orchestrator" / "archive-index.jsonl").write_text(json.dumps({
+            "schema_version": 1,
+            "artifact_id": "artifact-bad",
+            "ticket_id": "BAD-1",
+            "title": "Malformed",
+            "status": "done",
+            "activity_at": "2026-01-01T00:00:00Z",
+            "state": "archived",
+            "ticket_path": ".orchestrator/OTHER.md",
+            "ticket_blob": "not-an-object",
+            "source_commit": "also-not-an-object",
+        }) + "\n")
+        registry_path = root / "projects.json"
+        registry_path.write_text(json.dumps({
+            "activeProjectID": str(repo.resolve()),
+            "projects": [{
+                "id": str(repo.resolve()),
+                "repoPath": str(repo.resolve()),
+            }],
+        }))
+
+        with self.assertRaisesRegex(ValueError, "invalid historical identity"):
+            ingest_registered_projects(self.make_store(), registry_path=registry_path)
 
     def test_prunes_stale_run_nodes_missing_from_run_history(self):
         root = Path(tempfile.mkdtemp())

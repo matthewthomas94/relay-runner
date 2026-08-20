@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
@@ -59,6 +60,7 @@ def ingest_registered_projects(
     counts = {
         "projects": 0,
         "tickets": 0,
+        "archived_tickets": 0,
         "tickets_deleted": 0,
         "dependencies": 0,
         "runs": 0,
@@ -119,6 +121,14 @@ def ingest_registered_projects(
 
         repo_ticket_nodes: dict[str, dict[str, Any]] = {}
         tickets = scan_repo(Path(repo_path))
+        materialized_ids = {ticket["id"] for ticket in tickets}
+        archived_tickets = [
+            ticket
+            for ticket in _archive_catalog_tickets(Path(repo_path))
+            if ticket["id"] not in materialized_ids
+        ]
+        tickets.extend(archived_tickets)
+        counts["archived_tickets"] += len(archived_tickets)
         for ticket in tickets:
             ticket_node = store.upsert_node(
                 kind=NODE_TICKET,
@@ -142,6 +152,9 @@ def ingest_registered_projects(
                     "verification_resume": ticket.get("verification_resume"),
                     "source_path": str(ticket.get("_path", "")),
                     "markdown": ticket["body"],
+                    "materialized": not bool(ticket.get("_archived_catalog")),
+                    "artifact_id": ticket.get("artifact_id"),
+                    "history_state": ticket.get("history_state"),
                 },
             )
             repo_ticket_nodes[ticket["id"]] = ticket_node
@@ -588,6 +601,76 @@ def _delete_missing_ticket_nodes(
         if store.delete_node(node["id"]):
             deleted += 1
     return deleted
+
+
+def _archive_catalog_tickets(repo_path: Path) -> list[dict[str, Any]]:
+    """Read metadata-only terminal cards without restoring their Markdown."""
+    path = repo_path / ".orchestrator" / "archive-index.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    except (OSError, UnicodeDecodeError) as error:
+        raise ValueError(f"archive catalog is unavailable: {error}") from error
+    tickets: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for line_number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"archive catalog line {line_number} is invalid JSON") from error
+        if not isinstance(entry, dict):
+            raise ValueError(f"archive catalog line {line_number} is not an object")
+        required = ("artifact_id", "ticket_id", "title", "status", "activity_at", "state")
+        missing = [key for key in required if not str(entry.get(key) or "").strip()]
+        if missing:
+            raise ValueError(
+                f"archive catalog line {line_number} is missing: {', '.join(missing)}"
+            )
+        if entry["state"] not in {"archived", "deleted_tombstone"}:
+            continue
+        ticket_id = str(entry["ticket_id"])
+        oid = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+        if (
+            entry.get("ticket_path") != f".orchestrator/{ticket_id}.md"
+            or not oid.fullmatch(str(entry.get("ticket_blob") or ""))
+            or not oid.fullmatch(str(entry.get("source_commit") or ""))
+        ):
+            raise ValueError(
+                f"archive catalog line {line_number} has invalid historical identity"
+            )
+        if str(entry["status"]).lower() not in {"done", "canceled", "cancelled"}:
+            raise ValueError(
+                f"archive catalog line {line_number} has nonterminal history"
+            )
+        if ticket_id in seen_ids:
+            raise ValueError(f"archive catalog repeats ticket ID {ticket_id}")
+        dependencies = entry.get("dependencies", [])
+        if not isinstance(dependencies, list) or any(
+            not isinstance(value, str) or not value.strip() for value in dependencies
+        ):
+            raise ValueError(
+                f"archive catalog line {line_number} has invalid dependencies"
+            )
+        seen_ids.add(ticket_id)
+        tickets.append({
+            "id": ticket_id,
+            "title": str(entry["title"]),
+            "status": str(entry["status"]),
+            "priority": "unknown",
+            "execution_mode": "implementation",
+            "depends_on": list(dependencies),
+            "run_id": None,
+            "canceled": str(entry["status"]).lower() in {"canceled", "cancelled"},
+            "body": "",
+            "artifact_id": str(entry["artifact_id"]),
+            "history_state": str(entry["state"]),
+            "_archived_catalog": True,
+            "_raw_fields": {},
+        })
+    return tickets
 
 
 def _delete_missing_run_nodes(
