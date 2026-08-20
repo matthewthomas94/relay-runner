@@ -102,7 +102,9 @@ from continuity_recovery import (
     ProductionRecoveryCapability,
     RecoveryActionResult,
     RecoveryActionValidation,
+    RecoveryExecutionContext,
     production_recovery_owners,
+    recovery_owner_for,
 )
 from codex_model_catalog import (
     CODEX_FAMILIES,
@@ -143,6 +145,7 @@ PORT_FILE = Path("/tmp/relay_orchestrator.port")
 RELAY_COMMAND_STATE_FILE = Path("/tmp/voice_command_state.json")
 RELAY_COMMAND_AUTHORIZATION_FILE = Path("/tmp/voice_command_authorizations.json")
 VOICE_STATE_SOCK = Path("/tmp/voice_state.sock")
+BRIDGE_CONTROL_SOCK = Path(os.environ.get("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock"))
 DEFAULT_PORT = 7634
 ORCHESTRATOR_SESSION_STATES = frozenset({
     "idle",
@@ -3129,6 +3132,17 @@ class OrchestratorCommandStore:
             ).fetchone()
             return self._public_row(row) if row else None
 
+    def find_by_opaque_command_id(self, opaque_command_id: str) -> dict[str, Any] | None:
+        """Resolve one broker identifier without exposing native command text."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM orchestrator_commands ORDER BY id DESC LIMIT 1000"
+            ).fetchall()
+            for row in rows:
+                if opaque_identifier("command", str(row["relay_command_id"])) == opaque_command_id:
+                    return dict(row)
+        return None
+
     def pending(self, *, repo_path: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
         params: list[Any] = ["received"]
         repo_clause = ""
@@ -4747,78 +4761,210 @@ class Daemon:
         validation: RecoveryActionValidation,
         cancel_event: threading.Event,
     ) -> RecoveryActionResult:
-        """Dispatch only a fixed, validated action to the owning Relay process."""
+        """Dispatch a typed context only to the component's declared owner."""
         if cancel_event.is_set():
             return RecoveryActionResult("failed", "recovery_canceled")
+        owner = recovery_owner_for(request.capability, request.component)
+        if owner == "daemon":
+            return self._execute_daemon_continuity_recovery_action(
+                request,
+                validation,
+                cancel_event,
+            )
+        if owner not in {"app", "bridge"}:
+            return RecoveryActionResult("failed", "component_owner_unavailable")
+
+        context = RecoveryExecutionContext(request, validation)
         reply_path = Path(f"/tmp/relay_recovery_{request.idempotency_key}.json")
         try:
             reply_path.unlink(missing_ok=True)
         except OSError:
             return RecoveryActionResult("failed", "component_owner_unavailable")
-        if request.capability in {
-            "reinitialize_speech_capture",
-            "reinitialize_transcription_delivery",
-            "restart_bridge",
-            "restart_messenger",
-            "restart_daemon",
-            "reconnect_ipc",
-            "restore_session_registration",
-            "release_dead_ownership",
-            "launch_foreground_provider",
-        } and _notify_state(
-            "request",
-            source="continuity_recovery",
-            capability=request.capability,
-            incident_id=request.incident_id,
-            session_id=request.session_id,
-            command_id=request.command_id,
-            component=request.component,
-            provider=request.provider,
-            recovery_generation=request.recovery_generation,
-            incident_phase=request.incident_phase,
-            process_identity=request.process_identity,
-            attempt=request.attempt,
-            idempotency_key=request.idempotency_key,
-            expected_postcondition=request.expected_postcondition,
-            incident_observed_at=request.incident_observed_at,
-            deadline=request.deadline,
-            validation_token=validation.validation_token,
-            exact_target_owned=validation.exact_target_owned,
-            liveness=validation.liveness,
-            incident_active=validation.incident_active,
-            generation_matches=validation.generation_matches,
-            command_phase=validation.command_phase,
-            command_phase_matches=validation.command_phase_matches,
-            idempotency_state=validation.idempotency_state,
-            compensation_available=validation.compensation_available,
-            cooldown_remaining=validation.cooldown_remaining,
-            reply_path=str(reply_path),
-        ):
-            reply_deadline = min(request.deadline, time.monotonic() + 2.0)
-            while not cancel_event.is_set() and time.monotonic() < reply_deadline:
-                try:
-                    reply_text = reply_path.read_text()
-                except FileNotFoundError:
-                    time.sleep(0.02)
-                    continue
-                except OSError:
-                    break
-                try:
-                    payload = json.loads(reply_text)
-                except json.JSONDecodeError:
-                    reply_path.unlink(missing_ok=True)
-                    break
+        payload = {**context.as_dict(), "reply_path": str(reply_path)}
+        dispatched = False
+        if owner == "app":
+            dispatched = _notify_state(
+                "request",
+                source="continuity_recovery",
+                **payload,
+            )
+        else:
+            payload["type"] = "continuity_recovery"
+            sock = None
+            try:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                sock.sendto(
+                    json.dumps(payload, separators=(",", ":")).encode(),
+                    str(BRIDGE_CONTROL_SOCK),
+                )
+                dispatched = True
+            except OSError:
+                dispatched = False
+            finally:
+                if sock is not None:
+                    sock.close()
+        if dispatched:
+            return self._await_continuity_recovery_reply(
+                request,
+                reply_path,
+                cancel_event,
+            )
+        return RecoveryActionResult("failed", "component_owner_unavailable")
+
+    def _await_continuity_recovery_reply(
+        self,
+        request: Any,
+        reply_path: Path,
+        cancel_event: threading.Event,
+    ) -> RecoveryActionResult:
+        reply_deadline = min(request.deadline, time.monotonic() + 2.0)
+        while not cancel_event.is_set() and time.monotonic() < reply_deadline:
+            try:
+                reply_text = reply_path.read_text()
+            except FileNotFoundError:
+                time.sleep(0.02)
+                continue
+            except OSError:
+                break
+            try:
+                payload = json.loads(reply_text)
+            except json.JSONDecodeError:
                 reply_path.unlink(missing_ok=True)
-                status = str(payload.get("status") or "failed")
-                code = str(payload.get("outcome_code") or "component_owner_unavailable")
-                if status not in {"applied", "noop", "failed"}:
-                    break
+                break
+            reply_path.unlink(missing_ok=True)
+            status = str(payload.get("status") or "failed")
+            code = str(payload.get("outcome_code") or "component_owner_unavailable")
+            if status not in {"applied", "noop", "failed"}:
+                break
+            try:
                 return RecoveryActionResult(
                     status,
                     code,
                     self.continuity.recovery_health(request),
                 )
+            except ValueError:
+                break
         return RecoveryActionResult("failed", "component_owner_unavailable")
+
+    def _current_continuity_validation(
+        self,
+        request: Any,
+        supplied: RecoveryActionValidation,
+    ) -> RecoveryActionValidation | None:
+        current = self.continuity.recovery_validation(request)
+        fields = (
+            "validation_token",
+            "exact_target_owned",
+            "liveness",
+            "incident_active",
+            "generation_matches",
+            "command_phase",
+            "command_phase_matches",
+            "idempotency_state",
+            "compensation_available",
+            "cooldown_remaining",
+            "expected_postcondition",
+        )
+        return current if all(
+            getattr(current, field) == getattr(supplied, field) for field in fields
+        ) else None
+
+    @staticmethod
+    def _continuity_pid_alive(pid: Any) -> bool:
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    def _continuity_session_row(self, request: Any) -> dict[str, Any] | None:
+        for row in self.orchestrator_sessions.list(limit=1000):
+            if opaque_identifier("session", str(row["session_key"])) == request.session_id:
+                return row
+        return None
+
+    def _execute_daemon_continuity_recovery_action(
+        self,
+        request: Any,
+        validation: RecoveryActionValidation,
+        cancel_event: threading.Event,
+    ) -> RecoveryActionResult:
+        if cancel_event.is_set():
+            return RecoveryActionResult("failed", "recovery_canceled")
+        current = self._current_continuity_validation(request, validation)
+        if current is None:
+            return RecoveryActionResult("failed", "stale_recovery_context")
+        policy = CAPABILITY_POLICIES[request.capability]
+        now_epoch = time.time()
+        if (
+            not current.exact_target_owned
+            or not current.incident_active
+            or not current.generation_matches
+            or not current.command_phase_matches
+            or current.liveness not in policy.required_liveness
+            or current.command_phase not in policy.command_phases
+            or current.idempotency_state != "new"
+            or current.cooldown_remaining != 0
+            or request.attempt > policy.max_attempts
+            or time.monotonic() >= request.deadline
+            or request.incident_observed_at > now_epoch + 5
+            or now_epoch - request.incident_observed_at > 300
+        ):
+            return RecoveryActionResult("failed", "stale_recovery_context")
+        if request.component == "orchestrator":
+            row = self._continuity_session_row(request)
+            if row is None or row["state"] not in {"stale", "failed"}:
+                return RecoveryActionResult("failed", "live_work_active")
+            pid_alive = self._continuity_pid_alive(row.get("pid"))
+            if request.capability == "reconnect_ipc" and pid_alive:
+                restored = self.orchestrator_sessions.heartbeat(
+                    session_id=int(row["id"]),
+                    provider_key=str(row["provider_key"]),
+                    state="idle",
+                )
+                return RecoveryActionResult(
+                    "applied" if restored is not None else "failed",
+                    "ipc_connection_restored" if restored is not None else "component_action_failed",
+                    self.continuity.recovery_health(request),
+                )
+            if request.capability == "release_dead_ownership" and not pid_alive:
+                released = self.orchestrator_sessions.stop(
+                    session_id=int(row["id"]),
+                    reason="continuity confirmed dead owner",
+                )
+                return RecoveryActionResult(
+                    "applied" if released is not None else "failed",
+                    "dead_ownership_released" if released is not None else "component_action_failed",
+                    self.continuity.recovery_health(request),
+                )
+        elif request.component == "command" and request.capability == "release_dead_ownership":
+            command = self.orchestrator_commands.find_by_opaque_command_id(
+                request.command_id or ""
+            )
+            session = self._continuity_session_row(request)
+            if (
+                command is None
+                or session is None
+                or session["state"] not in {"stale", "failed"}
+                or self._continuity_pid_alive(session.get("pid"))
+                or command["status"] not in {"claimed", "mutation_authorized", "planning"}
+            ):
+                return RecoveryActionResult("failed", "live_work_active")
+            released = self.orchestrator_commands.update_status(
+                str(command["relay_command_id"]),
+                intent_id=str(command["intent_id"]),
+                status="delivery_failed",
+                outcome="continuity-dead-owner-released",
+                status_message="Dead command ownership released; automatic replay was not attempted.",
+            )
+            return RecoveryActionResult(
+                "applied" if released is not None else "failed",
+                "dead_ownership_released" if released is not None else "component_action_failed",
+                self.continuity.recovery_health(request),
+            )
+        return RecoveryActionResult("failed", "component_action_unavailable")
 
     def _emit_continuity_incident(self, envelope: dict[str, object]) -> None:
         """Persist only the detector's fixed, privacy-safe recovery envelope."""

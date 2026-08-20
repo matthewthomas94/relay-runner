@@ -14,7 +14,7 @@ import math
 import re
 import threading
 import time
-from typing import Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from continuity_agent import RecoveryBrokerOutcome, RecoveryHealthEvidence
 
@@ -148,6 +148,13 @@ CAPABILITY_POLICIES = {
 }
 
 
+def recovery_owner_for(capability: str, component: str) -> str:
+    policy = CAPABILITY_POLICIES.get(capability)
+    if policy is None:
+        return ""
+    return _COMPONENT_OWNERS.get(component, "") if policy.owner == "dynamic" else policy.owner
+
+
 @dataclass(frozen=True)
 class RecoveryActionRequest:
     capability: str
@@ -194,6 +201,132 @@ class RecoveryActionValidation:
             raise ValueError("component validation returned invalid cooldown")
         if not _CODE_RE.fullmatch(self.expected_postcondition):
             raise ValueError("component validation returned invalid postcondition")
+
+
+@dataclass(frozen=True)
+class RecoveryExecutionContext:
+    """Typed request plus validation carried to the executing component."""
+
+    request: RecoveryActionRequest
+    validation: RecoveryActionValidation
+
+    def as_dict(self) -> dict[str, object]:
+        request = self.request
+        validation = self.validation
+        return {
+            "capability": request.capability,
+            "incident_id": request.incident_id,
+            "session_id": request.session_id,
+            "command_id": request.command_id,
+            "component": request.component,
+            "provider": request.provider,
+            "recovery_generation": request.recovery_generation,
+            "incident_phase": request.incident_phase,
+            "process_identity": request.process_identity,
+            "attempt": request.attempt,
+            "idempotency_key": request.idempotency_key,
+            "expected_postcondition": request.expected_postcondition,
+            "incident_observed_at": request.incident_observed_at,
+            "deadline": request.deadline,
+            "validation_token": validation.validation_token,
+            "exact_target_owned": validation.exact_target_owned,
+            "liveness": validation.liveness,
+            "incident_active": validation.incident_active,
+            "generation_matches": validation.generation_matches,
+            "command_phase": validation.command_phase,
+            "command_phase_matches": validation.command_phase_matches,
+            "idempotency_state": validation.idempotency_state,
+            "compensation_available": validation.compensation_available,
+            "cooldown_remaining": validation.cooldown_remaining,
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "RecoveryExecutionContext":
+        """Parse an IPC payload without accepting coercions or extra authority."""
+
+        def string(name: str, pattern: re.Pattern[str] = _CODE_RE) -> str:
+            value = payload.get(name)
+            if not isinstance(value, str) or not pattern.fullmatch(value):
+                raise ValueError("invalid_recovery_context")
+            return value
+
+        def integer(name: str, minimum: int = 0) -> int:
+            value = payload.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ValueError("invalid_recovery_context")
+            return value
+
+        def number(name: str) -> float:
+            value = payload.get(name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError("invalid_recovery_context")
+            result = float(value)
+            if not math.isfinite(result):
+                raise ValueError("invalid_recovery_context")
+            return result
+
+        def boolean(name: str) -> bool:
+            value = payload.get(name)
+            if not isinstance(value, bool):
+                raise ValueError("invalid_recovery_context")
+            return value
+
+        request = RecoveryActionRequest(
+            capability=string("capability"),
+            incident_id=string("incident_id", re.compile(r"^inc-[0-9a-f]{12}$")),
+            session_id=string("session_id", re.compile(r"^session-[0-9a-f]{24}$")),
+            command_id=(
+                None
+                if payload.get("command_id") is None
+                else string("command_id", re.compile(r"^command-[0-9a-f]{24}$"))
+            ),
+            component=string("component"),
+            provider=string("provider"),
+            recovery_generation=integer("recovery_generation"),
+            incident_phase=string("incident_phase"),
+            process_identity=string("process_identity", _PROCESS_ID_RE),
+            attempt=integer("attempt", 1),
+            idempotency_key=string(
+                "idempotency_key", re.compile(r"^recovery_[0-9a-f]{24}$")
+            ),
+            expected_postcondition=string("expected_postcondition"),
+            incident_observed_at=number("incident_observed_at"),
+            deadline=number("deadline"),
+        )
+        validation = RecoveryActionValidation(
+            validation_token=string("validation_token"),
+            exact_target_owned=boolean("exact_target_owned"),
+            liveness=string("liveness"),
+            incident_active=boolean("incident_active"),
+            generation_matches=boolean("generation_matches"),
+            command_phase=string("command_phase"),
+            command_phase_matches=boolean("command_phase_matches"),
+            idempotency_state=string("idempotency_state"),
+            compensation_available=boolean("compensation_available"),
+            cooldown_remaining=number("cooldown_remaining"),
+            expected_postcondition=request.expected_postcondition,
+        )
+        identity = "|".join((
+            request.incident_id,
+            str(request.recovery_generation),
+            request.capability,
+            request.component,
+            request.session_id,
+            request.command_id or "none",
+        ))
+        expected_key = "recovery_" + hashlib.sha256(identity.encode()).hexdigest()[:24]
+        if request.idempotency_key != expected_key:
+            raise ValueError("invalid_recovery_context")
+        policy = CAPABILITY_POLICIES.get(request.capability)
+        if (
+            policy is None
+            or request.component not in policy.components
+            or request.incident_phase not in policy.phases
+            or request.expected_postcondition != policy.postcondition
+            or request.provider not in {"none", "codex", "claude"}
+        ):
+            raise ValueError("invalid_recovery_context")
+        return cls(request, validation)
 
 
 @dataclass(frozen=True)

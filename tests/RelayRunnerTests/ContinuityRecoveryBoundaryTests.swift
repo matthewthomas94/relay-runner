@@ -5,6 +5,62 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
     private let sessionID = "session-1234567890abcdef12345678"
     private let commandID = "command-1234567890abcdef12345678"
 
+    func testEveryAppOwnedComponentHasExecutableProductionAction() throws {
+        let cases: [(
+            capability: String,
+            component: String,
+            provider: String,
+            phase: String,
+            commandPhase: String,
+            liveness: String,
+            postcondition: String,
+            action: AppState.ContinuityRecoveryComponentAction
+        )] = [
+            (
+                "reinitialize_speech_capture", "speech_capture", "none", "capture",
+                "before_command", "unhealthy", "capture_progress_observed", .restartSpeechCapture
+            ),
+            (
+                "reinitialize_transcription_delivery", "transcription", "none", "transcription",
+                "captured", "unhealthy", "transcription_completed", .restartTranscriptionDelivery
+            ),
+            (
+                "restart_bridge", "bridge", "none", "delivery", "undelivered",
+                "unhealthy", "bridge_process_alive", .recoverBridge
+            ),
+            (
+                "restart_daemon", "daemon", "none", "component_liveness", "none",
+                "confirmed_dead", "daemon_process_alive", .restartDaemon
+            ),
+            (
+                "launch_foreground_provider", "foreground_provider", "codex", "provider_turn",
+                "in_flight", "confirmed_dead", "provider_process_alive", .launchForegroundProvider
+            ),
+        ]
+
+        for item in cases {
+            let request = try makeRequest(
+                capability: item.capability,
+                component: item.component,
+                provider: item.provider,
+                incidentPhase: item.phase,
+                commandPhase: item.commandPhase,
+                liveness: item.liveness,
+                postcondition: item.postcondition
+            )
+            XCTAssertEqual(
+                AppState.continuityRecoveryDecision(
+                    for: request,
+                    boundary: boundary(),
+                    nowMonotonic: 150,
+                    nowEpoch: 1_050
+                ),
+                .apply(item.action),
+                "Missing app production action for \(item.capability):\(item.component)"
+            )
+        }
+    }
+
     func testExactAppOwnedBridgeRecoveryIsAllowed() throws {
         let request = try makeRequest()
 

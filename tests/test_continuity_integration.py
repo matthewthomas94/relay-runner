@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sys
 import tempfile
@@ -28,6 +29,7 @@ from continuity_incidents import opaque_identifier  # noqa: E402
 from continuity_recovery import (  # noqa: E402
     RecoveryActionRequest,
     RecoveryActionValidation,
+    RecoveryExecutionContext,
 )
 from voice_bridge import _post_continuity_event  # noqa: E402
 
@@ -60,7 +62,68 @@ class _FailingMessengerBackend:
         return None
 
 
+class _RestartableMessengerBackend:
+    config = SimpleNamespace(provider="codex")
+
+    def __init__(self):
+        self.starts = 0
+        self.shutdowns = 0
+
+    def start(self):
+        self.starts += 1
+
+    def ask(self, _prompt, timeout=60.0):
+        return ""
+
+    def interrupt(self):
+        return None
+
+    def shutdown(self):
+        self.shutdowns += 1
+
+
 class ContinuityIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def _recovery_request(capability, component, session, command, **overrides):
+        generation = overrides.pop("recovery_generation", 4)
+        incident_id = "inc-123456789abc"
+        identity = "|".join((
+            incident_id,
+            str(generation),
+            capability,
+            component,
+            session,
+            command or "none",
+        ))
+        values = {
+            "capability": capability,
+            "incident_id": incident_id,
+            "session_id": session,
+            "command_id": command,
+            "component": component,
+            "provider": "none",
+            "recovery_generation": generation,
+            "incident_phase": {
+                "messenger": "component_liveness",
+                "orchestrator": "component_liveness",
+                "session": "session_liveness",
+                "command": "command_processing",
+            }.get(component, "delivery"),
+            "process_identity": "continuity-1234567890abcdef1234567890abcdef",
+            "attempt": 1,
+            "idempotency_key": "recovery_" + hashlib.sha256(identity.encode()).hexdigest()[:24],
+            "expected_postcondition": {
+                "restart_messenger": "messenger_process_alive",
+                "reconnect_ipc": "ipc_connection_restored",
+                "restore_session_registration": "session_heartbeat_fresh",
+                "release_dead_ownership": "dead_ownership_released",
+            }.get(capability, "bridge_process_alive"),
+            "incident_observed_at": time.time(),
+            "deadline": time.monotonic() + 10,
+        }
+        values.update(overrides)
+        return RecoveryActionRequest(**values)
+
     @staticmethod
     def _live_validation(request):
         return RecoveryActionValidation(
@@ -264,6 +327,311 @@ class ContinuityIntegrationTests(unittest.TestCase):
         self.assertFalse(missing_owner.exact_target_owned)
         self.assertFalse(missing_owner.incident_active)
         self.assertEqual(missing_owner.liveness, "unknown")
+
+    def test_bridge_owner_executes_every_supported_non_app_component(self):
+        class Messenger:
+            def __init__(self):
+                self.restarts = 0
+
+            def recover_backend(self):
+                self.restarts += 1
+                return True
+
+        class DeadThread:
+            def is_alive(self):
+                return False
+
+        session_key = "project:0123456789abcdef"
+        native_command = "native-command"
+        session_id = opaque_identifier("session", session_key)
+        command_id = opaque_identifier("command", native_command)
+        messenger = Messenger()
+        session = {
+            "session_id": 7,
+            "session_key": session_key,
+            "repo_path": "/tmp/project",
+            "provider": "codex",
+            "thread": DeadThread(),
+        }
+        calls = []
+
+        def request_json(path, payload):
+            calls.append((path, payload))
+            return {"orchestrator_session": {"id": 7}}
+
+        cases = (
+            ("restart_messenger", "messenger", "unhealthy"),
+            ("reconnect_ipc", "messenger", "unhealthy"),
+            ("reconnect_ipc", "session", "unhealthy"),
+            ("restore_session_registration", "session", "unhealthy"),
+            ("restore_session_registration", "orchestrator", "unhealthy"),
+            ("release_dead_ownership", "session", "confirmed_dead"),
+        )
+        with tempfile.TemporaryDirectory() as root:
+            state_path = Path(root) / "state.json"
+            state_path.write_text(json.dumps({
+                "relay_command_id": native_command,
+                "recovery_generation": 4,
+            }))
+            for capability, component, liveness in cases:
+                with self.subTest(capability=capability, component=component):
+                    request = self._recovery_request(
+                        capability,
+                        component,
+                        session_id,
+                        command_id,
+                    )
+                    validation = RecoveryActionValidation(
+                        validation_token="live_continuity_watch",
+                        exact_target_owned=True,
+                        liveness=liveness,
+                        incident_active=True,
+                        generation_matches=True,
+                        command_phase="none",
+                        command_phase_matches=True,
+                        idempotency_state="new",
+                        compensation_available=False,
+                        cooldown_remaining=0,
+                        expected_postcondition=request.expected_postcondition,
+                    )
+                    response = voice_bridge._bridge_continuity_recovery_response(
+                        RecoveryExecutionContext(request, validation).as_dict(),
+                        messenger=messenger,
+                        orchestrator_session=session,
+                        applied_keys=set(),
+                        cooldowns={},
+                        recovery_lock=threading.Lock(),
+                        state_path=str(state_path),
+                        turns_path=str(Path(root) / "turns.json"),
+                        request_json=request_json,
+                        monotonic=lambda: request.deadline - 1,
+                        epoch=lambda: request.incident_observed_at,
+                    )
+                    self.assertEqual(response["status"], "applied")
+        self.assertEqual(messenger.restarts, 2)
+        self.assertEqual(len(calls), 4)
+
+    def test_production_messenger_restart_is_provider_neutral_and_refuses_live_work(self):
+        backend = _RestartableMessengerBackend()
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda *_args, **_kwargs: None,
+            is_current=lambda *_args: True,
+        )
+        runtime.start()
+        deadline = time.time() + 1
+        while backend.starts < 1 and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(runtime.recover_backend())
+        deadline = time.time() + 1
+        while backend.starts < 2 and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual((backend.starts, backend.shutdowns), (2, 1))
+
+        with runtime._lock:
+            runtime._active_event = object()
+        self.assertFalse(runtime.recover_backend())
+        with runtime._lock:
+            runtime._active_event = None
+        runtime.shutdown()
+
+    def test_bridge_owner_rejects_stale_unrelated_and_live_work_context(self):
+        session_key = "project:0123456789abcdef"
+        request = self._recovery_request(
+            "restart_messenger",
+            "messenger",
+            opaque_identifier("session", session_key),
+            opaque_identifier("command", "native-command"),
+        )
+        validation = RecoveryActionValidation(
+            validation_token="live_continuity_watch",
+            exact_target_owned=True,
+            liveness="unhealthy",
+            incident_active=True,
+            generation_matches=True,
+            command_phase="none",
+            command_phase_matches=True,
+            idempotency_state="new",
+            compensation_available=False,
+            cooldown_remaining=0,
+            expected_postcondition=request.expected_postcondition,
+        )
+        payload = RecoveryExecutionContext(request, validation).as_dict()
+        with tempfile.TemporaryDirectory() as root:
+            state_path = Path(root) / "state.json"
+            state_path.write_text(json.dumps({
+                "relay_command_id": "other-command",
+                "recovery_generation": 4,
+            }))
+            common = {
+                "messenger": SimpleNamespace(recover_backend=lambda: True),
+                "orchestrator_session": {
+                    "session_key": session_key,
+                    "provider": "codex",
+                },
+                "applied_keys": set(),
+                "cooldowns": {},
+                "recovery_lock": threading.Lock(),
+                "state_path": str(state_path),
+                "turns_path": str(Path(root) / "turns.json"),
+                "monotonic": lambda: request.deadline - 1,
+                "epoch": lambda: request.incident_observed_at,
+            }
+            response = voice_bridge._bridge_continuity_recovery_response(
+                payload,
+                **common,
+            )
+            self.assertEqual(response["outcome_code"], "unrelated_command_target")
+
+            state_path.write_text(json.dumps({
+                "relay_command_id": "native-command",
+                "recovery_generation": 5,
+            }))
+            response = voice_bridge._bridge_continuity_recovery_response(
+                payload,
+                **common,
+            )
+            self.assertEqual(response["outcome_code"], "stale_recovery_generation")
+
+            state_path.write_text(json.dumps({
+                "relay_command_id": "native-command",
+                "recovery_generation": 4,
+            }))
+            Path(common["turns_path"]).write_text(json.dumps({
+                "records": [{
+                    "state": "active",
+                    "relay_command_seq": 1,
+                    "relay_command_id": "native-command",
+                }],
+            }))
+            response = voice_bridge._bridge_continuity_recovery_response(
+                payload,
+                **common,
+            )
+            self.assertEqual(response["outcome_code"], "live_work_active")
+
+    def test_daemon_owner_executes_orchestrator_and_command_recovery(self):
+        with tempfile.TemporaryDirectory() as root:
+            daemon = Daemon.__new__(Daemon)
+            daemon.orchestrator_sessions = orchestrator.OrchestratorSessionStore(
+                Path(root) / "sessions.db"
+            )
+            daemon.orchestrator_commands = orchestrator.OrchestratorCommandStore(
+                Path(root) / "commands.db"
+            )
+            session = daemon.orchestrator_sessions.ensure(
+                repo_path=str(Path(root) / "repo"),
+                provider_key="codex",
+                pid=999_999_999,
+                state="failed",
+            )
+            native_command = "native-command"
+            daemon.orchestrator_commands.record(
+                repo_path=session["repo_path"],
+                source_text="private",
+                relay_command_seq=1,
+                relay_command_id=native_command,
+                session_id=int(session["id"]),
+                provider_key="codex",
+                status="claimed",
+            )
+            session_id = opaque_identifier("session", session["session_key"])
+            command_id = opaque_identifier("command", native_command)
+
+            def validation_for(request):
+                return RecoveryActionValidation(
+                    validation_token="live_continuity_watch",
+                    exact_target_owned=True,
+                    liveness="confirmed_dead",
+                    incident_active=True,
+                    generation_matches=True,
+                    command_phase="in_flight" if request.component == "command" else "none",
+                    command_phase_matches=True,
+                    idempotency_state="new",
+                    compensation_available=False,
+                    cooldown_remaining=0,
+                    expected_postcondition=request.expected_postcondition,
+                )
+
+            daemon.continuity = SimpleNamespace(
+                recovery_validation=validation_for,
+                recovery_health=lambda _request: orchestrator.RecoveryHealthEvidence(),
+            )
+            command_request = self._recovery_request(
+                "release_dead_ownership",
+                "command",
+                session_id,
+                command_id,
+            )
+            command_result = daemon._execute_continuity_recovery_action(
+                command_request,
+                validation_for(command_request),
+                threading.Event(),
+            )
+            self.assertEqual(
+                (command_result.status, command_result.outcome_code),
+                ("applied", "dead_ownership_released"),
+            )
+            self.assertEqual(
+                daemon.orchestrator_commands.get_public(native_command)["status"],
+                "delivery_failed",
+            )
+
+            daemon.orchestrator_sessions.heartbeat(
+                session_id=int(session["id"]), state="failed"
+            )
+            owner_request = self._recovery_request(
+                "release_dead_ownership",
+                "orchestrator",
+                session_id,
+                command_id,
+            )
+            owner_result = daemon._execute_continuity_recovery_action(
+                owner_request,
+                validation_for(owner_request),
+                threading.Event(),
+            )
+            self.assertEqual(
+                (owner_result.status, owner_result.outcome_code),
+                ("applied", "dead_ownership_released"),
+            )
+            self.assertEqual(
+                daemon.orchestrator_sessions.get(int(session["id"]))["state"],
+                "stopped",
+            )
+
+            live_session = daemon.orchestrator_sessions.ensure(
+                repo_path=str(Path(root) / "live-repo"),
+                provider_key="codex",
+                pid=os.getpid(),
+                state="failed",
+            )
+            reconnect_request = self._recovery_request(
+                "reconnect_ipc",
+                "orchestrator",
+                opaque_identifier("session", live_session["session_key"]),
+                command_id,
+            )
+            reconnect_validation = RecoveryActionValidation(
+                **{
+                    **validation_for(reconnect_request).__dict__,
+                    "liveness": "unhealthy",
+                }
+            )
+            daemon.continuity.recovery_validation = lambda _request: reconnect_validation
+            reconnect_result = daemon._execute_continuity_recovery_action(
+                reconnect_request,
+                reconnect_validation,
+                threading.Event(),
+            )
+            self.assertEqual(
+                (reconnect_result.status, reconnect_result.outcome_code),
+                ("applied", "ipc_connection_restored"),
+            )
+            self.assertEqual(
+                daemon.orchestrator_sessions.get(int(live_session["id"]))["state"],
+                "idle",
+            )
 
     def _bridge_payload(self, provider: str, signal: str, observed_at: float) -> dict:
         posted = []

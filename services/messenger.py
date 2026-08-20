@@ -891,6 +891,7 @@ class MessengerRuntime:
         self._started = False
         self._shutdown = threading.Event()
         self._worker_thread: threading.Thread | None = None
+        self._recovery_lock = threading.Lock()
 
     @property
     def context_size(self) -> int:
@@ -1095,6 +1096,24 @@ class MessengerRuntime:
             self._has_trace_for_current_command = False
             self._discard_pending_events_locked()
         self.backend.interrupt()
+
+    def recover_backend(self) -> bool:
+        """Recreate a dead provider backend without interrupting queued or live work."""
+        with self._recovery_lock:
+            with self._lock:
+                if (
+                    self._shutdown.is_set()
+                    or self._active_event is not None
+                    or not self._events.empty()
+                ):
+                    return False
+                self.backend.shutdown()
+            threading.Thread(
+                target=self._warm_backend,
+                name="relay-messenger-recovery",
+                daemon=True,
+            ).start()
+            return True
 
     def shutdown(self) -> None:
         if self._shutdown.is_set():

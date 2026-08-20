@@ -55,6 +55,12 @@ from pm_frontstage import (
     build_pm_update_snapshot,
 )
 from config import load_config
+from continuity_incidents import opaque_identifier
+from continuity_recovery import (
+    CAPABILITY_POLICIES,
+    RecoveryExecutionContext,
+    recovery_owner_for,
+)
 from messenger import MessengerRuntime, create_messenger_runtime
 from sidecar_lane import (
     SidecarLane,
@@ -2367,7 +2373,121 @@ def _parse_args() -> dict:
     return result
 
 
-def _start_control_socket(tts_worker: TTSWorker, shutdown_event: threading.Event):
+def _bridge_continuity_recovery_response(
+    payload: dict,
+    *,
+    messenger: MessengerRuntime | None,
+    orchestrator_session: dict | None,
+    applied_keys: set[str],
+    cooldowns: dict[str, float],
+    recovery_lock: threading.Lock,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+    turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+    request_json=_post_orchestrator_json,
+    monotonic=time.monotonic,
+    epoch=time.time,
+) -> dict[str, str]:
+    """Revalidate and execute only bridge-owned recovery capabilities."""
+    try:
+        context = RecoveryExecutionContext.from_mapping(payload)
+    except (TypeError, ValueError):
+        return {"status": "failed", "outcome_code": "invalid_recovery_context"}
+    request = context.request
+    validation = context.validation
+    policy = CAPABILITY_POLICIES[request.capability]
+    if recovery_owner_for(request.capability, request.component) != "bridge":
+        return {"status": "failed", "outcome_code": "unsupported_component_action"}
+    if (
+        validation.validation_token != "live_continuity_watch"
+        or not validation.exact_target_owned
+        or not validation.incident_active
+        or not validation.generation_matches
+        or not validation.command_phase_matches
+        or validation.liveness not in policy.required_liveness
+        or validation.command_phase not in policy.command_phases
+        or validation.idempotency_state != "new"
+        or validation.cooldown_remaining != 0
+        or request.attempt > policy.max_attempts
+        or monotonic() >= request.deadline
+        or request.incident_observed_at > epoch() + 5
+        or epoch() - request.incident_observed_at > 300
+    ):
+        return {"status": "failed", "outcome_code": "stale_recovery_context"}
+    session_key = str((orchestrator_session or {}).get("session_key") or "")
+    if not session_key or opaque_identifier("session", session_key) != request.session_id:
+        return {"status": "failed", "outcome_code": "unrelated_session_target"}
+    provider = str((orchestrator_session or {}).get("provider") or "none")
+    if request.provider not in {"none", provider}:
+        return {"status": "failed", "outcome_code": "provider_target_mismatch"}
+    command_state = _read_json_file(state_path)
+    current_generation = int((command_state or {}).get("recovery_generation") or 0)
+    if request.recovery_generation != current_generation:
+        return {"status": "failed", "outcome_code": "stale_recovery_generation"}
+    if request.command_id is not None:
+        native_command_id = str((command_state or {}).get("relay_command_id") or "")
+        if not native_command_id or opaque_identifier("command", native_command_id) != request.command_id:
+            return {"status": "failed", "outcome_code": "unrelated_command_target"}
+    if _active_work(turns_path=turns_path):
+        return {"status": "failed", "outcome_code": "live_work_active"}
+
+    with recovery_lock:
+        if request.idempotency_key in applied_keys:
+            return {"status": "noop", "outcome_code": "action_already_applied"}
+        cooldown_key = f"{request.capability}:{request.component}:{request.session_id}"
+        if monotonic() < cooldowns.get(cooldown_key, 0):
+            return {"status": "failed", "outcome_code": "component_cooldown_active"}
+
+        applied = False
+        outcome_code = "component_action_failed"
+        if request.capability in {"restart_messenger", "reconnect_ipc"} and request.component == "messenger":
+            applied = messenger is not None and messenger.recover_backend()
+            outcome_code = "messenger_process_restart_requested"
+        elif request.capability in {"restore_session_registration", "reconnect_ipc"}:
+            session_id = (orchestrator_session or {}).get("session_id")
+            if session_id is not None:
+                try:
+                    response = request_json(
+                        "/v1/orchestrator-session/heartbeat",
+                        {
+                            "session_id": int(session_id),
+                            "repo_path": (orchestrator_session or {}).get("repo_path"),
+                            "provider": provider,
+                            "state": "idle",
+                        },
+                    )
+                    applied = isinstance(response.get("orchestrator_session"), dict)
+                except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError, ValueError):
+                    applied = False
+            outcome_code = "session_registration_restored"
+        elif request.capability == "release_dead_ownership" and request.component == "session":
+            thread = (orchestrator_session or {}).get("thread")
+            if thread is None or not getattr(thread, "is_alive", lambda: True)():
+                try:
+                    response = request_json(
+                        "/v1/orchestrator-session/stop",
+                        {
+                            "session_id": int((orchestrator_session or {})["session_id"]),
+                            "reason": "continuity confirmed dead owner",
+                        },
+                    )
+                    applied = isinstance(response.get("orchestrator_session"), dict)
+                except (KeyError, OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError, ValueError):
+                    applied = False
+            else:
+                return {"status": "failed", "outcome_code": "live_work_active"}
+            outcome_code = "dead_ownership_released"
+        if not applied:
+            return {"status": "failed", "outcome_code": "component_action_failed"}
+        applied_keys.add(request.idempotency_key)
+        cooldowns[cooldown_key] = monotonic() + policy.cooldown_seconds
+        return {"status": "applied", "outcome_code": outcome_code}
+
+
+def _start_control_socket(
+    tts_worker: TTSWorker,
+    shutdown_event: threading.Event,
+    recovery_context: dict | None = None,
+):
     """Listen on Unix socket for reload/shutdown commands from Tauri or relay-bridge."""
     try:
         os.unlink(BRIDGE_CONTROL_SOCK)
@@ -2381,10 +2501,42 @@ def _start_control_socket(tts_worker: TTSWorker, shutdown_event: threading.Event
     try:
         while not shutdown_event.is_set():
             try:
-                data, _ = sock.recvfrom(256)
+                data, _ = sock.recvfrom(4096)
                 cmd = data.decode("utf-8", errors="replace").strip()
                 cmd_lower = cmd.lower()
-                if cmd_lower == "reload":
+                recovery_payload = None
+                if cmd.startswith("{"):
+                    try:
+                        candidate = json.loads(cmd)
+                    except json.JSONDecodeError:
+                        candidate = None
+                    if isinstance(candidate, dict) and candidate.get("type") == "continuity_recovery":
+                        recovery_payload = candidate
+                if recovery_payload is not None:
+                    context = recovery_context or {}
+                    response = _bridge_continuity_recovery_response(
+                        recovery_payload,
+                        messenger=context.get("messenger"),
+                        orchestrator_session=context.get("orchestrator_session"),
+                        applied_keys=context.setdefault("applied_keys", set()),
+                        cooldowns=context.setdefault("cooldowns", {}),
+                        recovery_lock=context.setdefault("lock", threading.Lock()),
+                    )
+                    reply_path = recovery_payload.get("reply_path")
+                    if (
+                        isinstance(reply_path, str)
+                        and re.fullmatch(
+                            r"/tmp/relay_recovery_recovery_[0-9a-f]{24}\.json",
+                            reply_path,
+                        )
+                    ):
+                        temporary_reply = Path(f"{reply_path}.{os.getpid()}.tmp")
+                        try:
+                            temporary_reply.write_text(json.dumps(response))
+                            os.replace(temporary_reply, reply_path)
+                        except OSError:
+                            temporary_reply.unlink(missing_ok=True)
+                elif cmd_lower == "reload":
                     print("[voice_bridge] Reloading config...", file=sys.stderr)
                     tts_worker.reload_config()
                 elif cmd_lower == "shutdown":
@@ -3794,10 +3946,13 @@ def main():
             provider_turn_broker.project()
 
     shutdown_event = threading.Event()
+    recovery_context: dict[str, object] = {}
 
     # Control socket for reload/shutdown from Tauri app
     control_thread = threading.Thread(
-        target=_start_control_socket, args=(tts_worker, shutdown_event), daemon=True
+        target=_start_control_socket,
+        args=(tts_worker, shutdown_event, recovery_context),
+        daemon=True,
     )
     control_thread.start()
 
@@ -3843,6 +3998,10 @@ def main():
         )
         if messenger is not None:
             messenger.start()
+        recovery_context.update({
+            "messenger": messenger,
+            "orchestrator_session": orchestrator_session,
+        })
         _surface_recoverable_command_status(
             orchestrator_session,
             messenger=messenger,
