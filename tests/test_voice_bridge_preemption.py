@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import os
 import io
 import queue
@@ -4404,7 +4405,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertFalse(emitted)
             self.assertEqual(notifications, [])
 
-    def test_build_bundle_includes_pm_frontstage_service(self):
+    def test_build_bundle_includes_runtime_service_dependencies(self):
         script_path = os.path.join(ROOT, "scripts", "build-dmg.sh")
         with open(script_path) as f:
             script = f.read()
@@ -4420,6 +4421,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertIn("artifact_lifecycle.py", script)
         self.assertIn("artifact_migration.py", script)
         self.assertIn("artifact_migration_cli.py", script)
+        self.assertIn("artifact_catalog.py", script)
         self.assertIn("artifact_retention.py", script)
         self.assertIn("artifact_rollout.py", script)
         self.assertIn("artifact_rollout_cli.py", script)
@@ -4436,6 +4438,40 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertIn("relay-artifact-rollout", script)
         self.assertIn("relay-runner-fresh-install", script)
         self.assertNotIn('if [ -f "$PROJECT_ROOT/services/$f" ]', script)
+
+        manifest = (
+            script.split("# Python services", 1)[1]
+            .split("; do", 1)[0]
+            .split("for f in ", 1)[1]
+            .replace("\\\n", " ")
+            .split()
+        )
+        bundled_modules = {
+            Path(filename).stem for filename in manifest if filename.endswith(".py")
+        }
+        services_dir = Path(SERVICES)
+        local_modules = {path.stem for path in services_dir.glob("*.py")}
+        missing_dependencies: list[str] = []
+
+        for importer in sorted(bundled_modules):
+            tree = ast.parse((services_dir / f"{importer}.py").read_text())
+            imported_names: list[str] = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported_names.extend(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    if node.module == "services":
+                        imported_names.extend(alias.name for alias in node.names)
+                    else:
+                        imported_names.append(node.module)
+
+            for imported_name in imported_names:
+                parts = imported_name.split(".")
+                dependency = parts[1] if parts[0] == "services" else parts[0]
+                if dependency in local_modules and dependency not in bundled_modules:
+                    missing_dependencies.append(f"{importer}.py -> {dependency}.py")
+
+        self.assertEqual(missing_dependencies, [])
 
     def test_build_bundle_includes_swiftterm_metal_resources(self):
         script_path = os.path.join(ROOT, "scripts", "build-dmg.sh")
