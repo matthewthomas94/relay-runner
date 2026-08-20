@@ -1289,6 +1289,11 @@ class ArtifactRetentionManager:
 
         current = self.store._head()
         if phase == "published":
+            if current not in {base_head, candidate_head}:
+                raise ArtifactConcurrentUpdate(
+                    "artifact authority differs from the verified archive transaction"
+                )
+            self.store._ensure_materialization_consistent(base_head)
             if current == base_head:
                 update = self.store._git(
                     "update-ref",
@@ -1301,10 +1306,6 @@ class ArtifactRetentionManager:
                     raise ArtifactConcurrentUpdate(
                         "artifact authority changed during verified archive adoption"
                     )
-            elif current != candidate_head:
-                raise ArtifactConcurrentUpdate(
-                    "artifact authority differs from the verified archive transaction"
-                )
             self._inject("after_local_ref_update")
             transaction["phase"] = "local_ref_advanced"
             self._write_transaction(transaction)

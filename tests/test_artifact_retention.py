@@ -19,6 +19,7 @@ from services.artifact_store import (
     ArchiveIndexWrite,
     ArtifactConcurrentUpdate,
     ArtifactInjectedFailure,
+    ArtifactMaterializationConflict,
     ArtifactMutation,
     ArtifactStore,
     AttachmentWrite,
@@ -532,6 +533,56 @@ class ArtifactRetentionTests(unittest.TestCase):
         recovered = restarted.recover_archive()
         self.assertEqual(recovered.state, RetentionState.ARCHIVED)
         self.assertNotIn(".orchestrator/RR-1.md", self.store.snapshot().files)
+
+    def test_recovery_from_published_phase_preserves_late_manual_edit(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-late-edit",
+            "Edited after verification",
+            activity_at=self.now - timedelta(days=365),
+            extra={"status": "done"},
+        )
+        base = self.store._head()
+        manager = ArtifactRetentionManager(
+            self.store,
+            enabled=True,
+            remote_mode="enabled",
+            remote_confirmation=self.confirmation,
+            synchronizer=self.synchronizer,
+            now=lambda: self.now,
+            failure_injector=lambda stage: (
+                (_ for _ in ()).throw(ArtifactInjectedFailure(stage))
+                if stage == "after_remote_verification" else None
+            ),
+        )
+
+        with self.assertRaises(ArtifactInjectedFailure):
+            manager.archive(
+                manager.preview(), event_id="archive-late-edit", device_id="device-a"
+            )
+
+        transaction = json.loads(manager.transaction_path.read_text(encoding="utf-8"))
+        self.assertEqual(transaction["phase"], "published")
+        ticket_path = self.store.materialized_path / "RR-late-edit.md"
+        manual_content = ticket_path.read_bytes() + b"\nManual edit after verification.\n"
+        ticket_path.write_bytes(manual_content)
+        restarted = ArtifactRetentionManager(
+            self.store,
+            enabled=True,
+            remote_mode="enabled",
+            synchronizer=self.synchronizer,
+            now=lambda: self.now,
+        )
+
+        with self.assertRaisesRegex(ArtifactMaterializationConflict, "edited manually"):
+            restarted.recover_archive()
+
+        self.assertEqual(self.store._head(), base)
+        self.assertEqual(ticket_path.read_bytes(), manual_content)
+        self.assertEqual(
+            json.loads(manager.transaction_path.read_text(encoding="utf-8"))["phase"],
+            "published",
+        )
 
     def test_crash_after_push_is_resolved_by_refetch_without_local_loss(self):
         self.seed_retained_terminal()
