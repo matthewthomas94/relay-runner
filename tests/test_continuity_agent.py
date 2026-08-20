@@ -430,6 +430,42 @@ class ContinuityAgentTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "configured_provider_unavailable"):
             session.decide("{}", 1)
 
+    def test_configured_provider_falls_back_only_with_complete_explicit_policy(self):
+        app_config = {
+            "general": {
+                "provider": "codex",
+                "command": "missing-codex",
+                "model": "gpt-test",
+                "orchestrator_effort": "high",
+            },
+            "continuity": {
+                "fallback_provider": "claude",
+                "fallback_command": "/opt/claude",
+                "fallback_model": "sonnet",
+                "fallback_effort": "high",
+            },
+        }
+
+        def resolve(provider, _command):
+            return None if provider == "codex" else ["/opt/claude"]
+
+        with (
+            patch("continuity_agent.resolve_messenger_command", side_effect=resolve),
+            patch("continuity_agent.resolve_messenger_catalog_selection", side_effect=lambda item: item),
+        ):
+            factory = create_provider_session_factory(app_config, cwd="/tmp")
+            session = factory("process", "incident", 1)
+
+        self.assertEqual(session.provider, "claude")
+
+        incomplete = {**app_config, "continuity": {"fallback_provider": "claude"}}
+        with patch("continuity_agent.resolve_messenger_command", return_value=None):
+            factory = create_provider_session_factory(incomplete, cwd="/tmp")
+        unavailable = factory("process", "incident", 1)
+        self.assertEqual(unavailable.provider, "codex")
+        with self.assertRaisesRegex(RuntimeError, "configured_provider_unavailable"):
+            unavailable.decide("{}", 1)
+
     def test_daemon_persists_incident_then_submits_to_lane(self):
         with tempfile.TemporaryDirectory() as tmp:
             submitted = []

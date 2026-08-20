@@ -524,6 +524,90 @@ struct ReviewSpikeFollowupTool: MCPTool {
     }
 }
 
+// MARK: - continuity incident reports
+
+struct GetContinuityReportTool: MCPTool {
+    let name = "get_continuity_report"
+    let description = """
+        Read one privacy-safe unresolved continuity report and its editable permanent-fix proposals. Reports \
+        contain only opaque incident identity and allowlisted recovery evidence; they never expose transcript, \
+        credential, repository, screenshot, provider-output, or raw-log content.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": ["report_id": ["type": "string"]],
+            "required": ["report_id"],
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        let reportID = try requireString(arguments, "report_id")
+        return try await proxy(
+            method: "GET",
+            path: "/v1/continuity-reports/\(urlEscape(reportID))"
+        )
+    }
+}
+
+struct ReviewContinuityProposalTool: MCPTool {
+    let name = "review_continuity_proposal"
+    let description = """
+        Edit, accept, or reject one permanent-fix proposal from an unresolved continuity report. Acceptance \
+        requires a current PM action or authorized Relay user command plus one registered target project. It \
+        commits exactly one Backlog ticket and never promotes or dispatches it.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "report_id": ["type": "string"],
+                "proposal_id": ["type": "string"],
+                "decision": ["type": "string", "enum": ["edit", "accept", "reject"]],
+                "updates": ["type": "object"],
+                "target_repo_path": [
+                    "type": "string",
+                    "description": "Registered canonical project required only for acceptance.",
+                ],
+                "relay_command_seq": ["type": "integer"],
+                "relay_command_id": ["type": "string"],
+                "relay_intent_id": ["type": "string"],
+            ],
+            "required": ["report_id", "proposal_id", "decision"],
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        let reportID = try requireString(arguments, "report_id")
+        let proposalID = try requireString(arguments, "proposal_id")
+        var body: [String: Any] = ["decision": try requireString(arguments, "decision")]
+        if let updates = arguments["updates"] as? [String: Any] { body["updates"] = updates }
+        if let target = arguments["target_repo_path"] as? String, !target.isEmpty {
+            body["target_repo_path"] = target
+        }
+        if let seq = optionalInt(arguments["relay_command_seq"]),
+           let id = arguments["relay_command_id"] as? String,
+           !id.isEmpty {
+            body["relay_command_seq"] = seq
+            body["relay_command_id"] = id
+            if let intentID = arguments["relay_intent_id"] as? String, !intentID.isEmpty {
+                body["relay_intent_id"] = intentID
+            }
+        } else if let claimed = claimedRelayCommand() {
+            body["relay_command_seq"] = claimed.seq
+            body["relay_command_id"] = claimed.id
+            if let intentID = claimed.intentID { body["relay_intent_id"] = intentID }
+        }
+        return try await proxy(
+            method: "POST",
+            path: "/v1/continuity-reports/\(urlEscape(reportID))/proposals/\(urlEscape(proposalID))/review",
+            body: body
+        )
+    }
+}
+
 // MARK: - program_status
 
 struct ProgramStatusTool: MCPTool {

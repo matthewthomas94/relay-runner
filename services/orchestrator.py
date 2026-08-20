@@ -107,6 +107,7 @@ from continuity_recovery import (
     production_recovery_owners,
     recovery_owner_for,
 )
+from continuity_reports import ContinuityReportStore
 from codex_model_catalog import (
     CODEX_FAMILIES,
     CODEX_WORKER_TIER_FAMILIES,
@@ -4644,6 +4645,7 @@ class Daemon:
         self.orchestrator_commands = OrchestratorCommandStore(data / "orchestrator_commands.db")
         self.messenger_outcomes = MessengerOutcomeStore(data / "messenger_outcomes.db")
         self.followup_proposals = FollowupProposalStore(data / "followup_proposals.db")
+        self.continuity_reports = ContinuityReportStore(data / "continuity_reports.db")
         self.continuity_incident_path = data / "continuity_incidents.jsonl"
         self.continuity_agent_audit_path = data / "continuity_agent_events.jsonl"
         self.continuity = ContinuityLifecycleAdapter(emit=self._emit_continuity_incident)
@@ -4839,6 +4841,16 @@ class Daemon:
         final_result: str,
     ) -> None:
         """Return authority to the canonical bridge only after stable recovery."""
+        if final_result != "restored":
+            reports = getattr(self, "continuity_reports", None)
+            if reports is not None:
+                try:
+                    reports.record_unresolved(incident, final_result)
+                except Exception as error:  # noqa: BLE001 - reporting cannot block handoff.
+                    print(
+                        f"[orchestrator] could not record continuity report: {error}",
+                        file=sys.stderr,
+                    )
         objective = incident.get("recovery_objective")
         payload = {
             "type": "continuity_resume",
@@ -8910,6 +8922,128 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             raise ValueError(f"target project {target} has no canonical board config")
         return target
 
+    def get_continuity_report(self, report_id: str) -> dict[str, Any]:
+        report = self.continuity_reports.get(str(report_id or "").strip())
+        if report is None:
+            raise ValueError(f"continuity report {report_id} not found")
+        return report
+
+    def review_continuity_proposal(
+        self,
+        *,
+        report_id: str,
+        proposal_id: str,
+        decision: str,
+        updates: dict[str, Any] | None = None,
+        target_repo_path: str | None = None,
+        relay_command_seq: int | str | None = None,
+        relay_command_id: str | None = None,
+        relay_intent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Review one incident proposal; only acceptance authors one backlog ticket."""
+        normalized = str(decision or "").strip().lower()
+        if normalized not in {"edit", "accept", "reject"}:
+            raise ValueError("decision must be 'edit', 'accept', or 'reject'")
+        if updates is not None:
+            if not isinstance(updates, dict):
+                raise ValueError("updates must be an object")
+            proposal_updates = dict(updates)
+            proposal_updates.pop("target_repo_path", None)
+            report = self.continuity_reports.update_draft(
+                report_id, proposal_id, proposal_updates
+            )
+        else:
+            report = self.get_continuity_report(report_id)
+        if normalized == "edit":
+            if updates is None:
+                raise ValueError("edit requires updates")
+            return {"report": report, "edited": proposal_id}
+        if normalized == "reject":
+            return {
+                "report": self.continuity_reports.reject(report_id, proposal_id),
+                "rejected": proposal_id,
+            }
+
+        has_relay_authorization = relay_command_seq is not None or bool(relay_command_id)
+        if has_relay_authorization and (relay_command_seq is None or not relay_command_id):
+            raise ValueError(
+                "continuity proposal acceptance requires complete Relay authorization metadata"
+            )
+        if not str(target_repo_path or "").strip():
+            raise ValueError("target_repo_path is required for acceptance")
+        target = Path(str(target_repo_path)).expanduser().resolve()
+        registered = {
+            Path(path).resolve()
+            for path in _registered_project_repo_paths(self._registered_projects_path())
+        }
+        if target not in registered:
+            raise ValueError(
+                "continuity proposal acceptance requires one registered target project"
+            )
+        if not (target / ".orchestrator" / "config.toml").is_file():
+            raise ValueError(f"target project {target} has no canonical board config")
+
+        draft = self.continuity_reports.claim_acceptance(report_id, proposal_id)
+        if draft is None:
+            return {"report": self.get_continuity_report(report_id), "duplicate": True}
+        key = hashlib.sha256(f"{report_id}\0{proposal_id}".encode()).hexdigest()
+        marker = f"relay-continuity-followup-key: {key}"
+        try:
+            for ticket in scan_repo(target):
+                if marker in str(ticket.get("body") or ""):
+                    ticket_id = str(ticket["id"])
+                    accepted = self.continuity_reports.finish_acceptance(
+                        report_id, proposal_id, ticket_id=ticket_id
+                    )
+                    return {
+                        "report": accepted,
+                        "committed": [{"proposal_id": proposal_id, "ticket_id": ticket_id}],
+                        "duplicate": True,
+                    }
+            action = {
+                "kind": "create_ticket",
+                **draft,
+                "description": (
+                    f"{draft['description']}\n\n"
+                    "## Provenance\n\n"
+                    f"- Continuity report: `{report_id}`\n"
+                    f"- Incident: `{report['incident']['incident_id']}`\n\n"
+                    f"<!-- {marker} -->"
+                ),
+            }
+            result = self.apply_orchestrator_actions(
+                repo_path=str(target),
+                actions=[action],
+                request_id=f"continuity-proposal:{key}",
+                relay_command_seq=relay_command_seq,
+                relay_command_id=relay_command_id,
+                relay_intent_id=relay_intent_id,
+            )
+            ticket_id = str(result["tickets_written"][0]["ticket_id"])
+            ticket = read_ticket(target / ".orchestrator" / f"{ticket_id}.md")
+            if ticket["status"] != "backlog" or result["dispatches"]:
+                raise RuntimeError("continuity proposal did not remain backlog-only")
+        except Exception as error:
+            failed = self.continuity_reports.finish_acceptance(
+                report_id, proposal_id, error=str(error)
+            )
+            return {
+                "report": failed,
+                "partial": True,
+                "committed": [],
+                "not_committed": [{"proposal_id": proposal_id, "error": str(error)}],
+            }
+        accepted = self.continuity_reports.finish_acceptance(
+            report_id, proposal_id, ticket_id=ticket_id
+        )
+        return {
+            "report": accepted,
+            "committed": [{"proposal_id": proposal_id, "ticket_id": ticket_id}],
+            "authorization_source": (
+                "authorized_user_command" if has_relay_authorization else "foreground_pm"
+            ),
+        }
+
     def propose_spike_followups(
         self,
         *,
@@ -9999,6 +10133,24 @@ class Handler(BaseHTTPRequestHandler):
                     relay_intent_id=body.get("relay_intent_id"),
                 )
                 return 202, result
+
+            if method == "GET" and len(segments) == 3 and segments[:2] == ["v1", "continuity-reports"]:
+                return 200, self.daemon.get_continuity_report(segments[2])
+
+            if (method == "POST" and len(segments) == 6
+                    and segments[:2] == ["v1", "continuity-reports"]
+                    and segments[3] == "proposals" and segments[5] == "review"):
+                body = _read_body(self)
+                return 200, self.daemon.review_continuity_proposal(
+                    report_id=segments[2],
+                    proposal_id=segments[4],
+                    decision=body.get("decision", ""),
+                    updates=body.get("updates"),
+                    target_repo_path=body.get("target_repo_path"),
+                    relay_command_seq=body.get("relay_command_seq"),
+                    relay_command_id=body.get("relay_command_id"),
+                    relay_intent_id=body.get("relay_intent_id"),
+                )
 
             if method == "POST" and segments == ["v1", "spikes", "follow-ups", "propose"]:
                 body = _read_body(self)
