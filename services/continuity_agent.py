@@ -20,6 +20,7 @@ import time
 from typing import Callable, Mapping, Protocol
 import uuid
 
+from continuity_incidents import normalize_recovery_generation
 from messenger import (
     ClaudeMessengerBackend,
     CodexMessengerBackend,
@@ -132,7 +133,7 @@ Never claim recovery yourself. Only broker health evidence can prove recovery.
 def continuity_agent_environment(
     process_identity: str,
     incident_id: str,
-    recovery_generation: int,
+    recovery_generation: str,
     *,
     parent: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
@@ -147,7 +148,7 @@ def continuity_agent_environment(
         "RELAY_ACTOR_ROLE": ACTOR_ROLE,
         "RELAY_CONTINUITY_PROCESS_ID": process_identity,
         "RELAY_CONTINUITY_INCIDENT_ID": incident_id,
-        "RELAY_RECOVERY_GENERATION": str(recovery_generation),
+        "RELAY_RECOVERY_GENERATION": normalize_recovery_generation(recovery_generation),
     })
     return environment
 
@@ -197,11 +198,9 @@ def sanitize_incident_bundle(envelope: Mapping[str, object]) -> dict[str, object
     ):
         raise ValueError("invalid continuity command identity")
     try:
-        generation = int(bundle["recovery_generation"])
-    except (TypeError, ValueError) as error:
+        generation = normalize_recovery_generation(bundle["recovery_generation"])
+    except ValueError as error:
         raise ValueError("invalid continuity recovery generation") from error
-    if generation < 0:
-        raise ValueError("invalid continuity recovery generation")
     bundle["recovery_generation"] = generation
     timing_bundle = bundle["timing"]
     for key in (
@@ -283,7 +282,7 @@ class RecoveryBroker(Protocol):
         *,
         incident: Mapping[str, object],
         process_identity: str,
-        recovery_generation: int,
+        recovery_generation: str,
         attempt: int,
         deadline: float,
         cancel_event: threading.Event,
@@ -291,7 +290,7 @@ class RecoveryBroker(Protocol):
 
 
 class UnavailableRecoveryBroker:
-    """Safe placeholder until component-owned actions are supplied by RR-334."""
+    """Compatibility fallback for callers that have not installed the broker."""
 
     def capabilities(self, incident: Mapping[str, object]) -> tuple[str, ...]:
         del incident
@@ -303,7 +302,7 @@ class UnavailableRecoveryBroker:
         *,
         incident: Mapping[str, object],
         process_identity: str,
-        recovery_generation: int,
+        recovery_generation: str,
         attempt: int,
         deadline: float,
         cancel_event: threading.Event,
@@ -316,6 +315,8 @@ class UnavailableRecoveryBroker:
 
 @dataclass(frozen=True)
 class ContinuityAgentConfig:
+    # Attempt allowance for each distinct broker capability. A recovery may
+    # need several different steps, all still bounded by the wall clock.
     max_attempts: int = 4
     wall_clock_seconds: float = 120.0
     stable_health_seconds: float = 60.0
@@ -350,7 +351,7 @@ class CodexContinuityBackend(CodexMessengerBackend):
         *,
         process_identity: str,
         incident_id: str,
-        recovery_generation: int,
+        recovery_generation: str,
         **kwargs,
     ):
         super().__init__(config, **kwargs)
@@ -386,7 +387,7 @@ class ClaudeContinuityBackend(ClaudeMessengerBackend):
         *,
         process_identity: str,
         incident_id: str,
-        recovery_generation: int,
+        recovery_generation: str,
         **kwargs,
     ):
         super().__init__(config, **kwargs)
@@ -458,7 +459,7 @@ def create_provider_session_factory(
     app_config: Mapping[str, object],
     *,
     cwd: str | os.PathLike[str],
-) -> Callable[[str, str, int], ContinuityProviderSession]:
+) -> Callable[[str, str, str], ContinuityProviderSession]:
     """Resolve only the configured provider; cross-provider fallback is never implicit."""
     raw_config = dict(app_config)
     general = dict(raw_config.get("general") or {})
@@ -473,7 +474,7 @@ def create_provider_session_factory(
     if resolved_command is None:
         reason_code = "configured_provider_unavailable"
 
-        def unavailable(_process_identity: str, _incident_id: str, _generation: int):
+        def unavailable(_process_identity: str, _incident_id: str, _generation: str):
             return UnavailableContinuitySession(config.provider, reason_code)
 
         return unavailable
@@ -481,12 +482,12 @@ def create_provider_session_factory(
     try:
         config = resolve_messenger_catalog_selection(config)
     except Exception:  # noqa: BLE001 - only a sanitized code leaves the resolver.
-        def unresolved(_process_identity: str, _incident_id: str, _generation: int):
+        def unresolved(_process_identity: str, _incident_id: str, _generation: str):
             return UnavailableContinuitySession(config.provider, "configured_model_unavailable")
 
         return unresolved
 
-    def create(process_identity: str, incident_id: str, generation: int):
+    def create(process_identity: str, incident_id: str, generation: str):
         kwargs = {
             "process_identity": process_identity,
             "incident_id": incident_id,
@@ -507,7 +508,7 @@ class ContinuityAgentLane:
 
     def __init__(
         self,
-        session_factory: Callable[[str, str, int], ContinuityProviderSession],
+        session_factory: Callable[[str, str, str], ContinuityProviderSession],
         broker: RecoveryBroker,
         *,
         on_audit: Callable[[dict[str, object]], object],
@@ -570,7 +571,7 @@ class ContinuityAgentLane:
     def _run(self, incident: dict[str, object]) -> None:
         incident_id = str(incident["incident_id"])
         fingerprint = str(incident["fingerprint"])
-        generation = int(incident["recovery_generation"])
+        generation = normalize_recovery_generation(incident["recovery_generation"])
         process_identity = "continuity-" + uuid.uuid4().hex
         started = self._monotonic()
         deadline = started + self.config.wall_clock_seconds
@@ -605,16 +606,24 @@ class ContinuityAgentLane:
         )
         final_result = "circuit_open"
         history: list[dict[str, object]] = []
+        capability_attempts: dict[str, int] = {}
         try:
             capabilities = self._validated_capabilities(self._broker.capabilities(incident))
-            for attempt in range(1, self.config.max_attempts + 1):
+            max_sequence_steps = self.config.max_attempts * len(capabilities)
+            for sequence in range(1, max_sequence_steps + 1):
                 if self._shutdown.is_set():
                     final_result = "canceled"
                     break
                 remaining = deadline - self._monotonic()
                 if remaining <= 0:
                     break
-                prompt = self._prompt(incident, capabilities, history, attempt)
+                prompt = self._prompt(
+                    incident,
+                    capabilities,
+                    history,
+                    sequence,
+                    capability_attempts,
+                )
                 try:
                     decision = self._parse_decision(session.decide(prompt, remaining))
                 except Exception as error:  # noqa: BLE001 - raw provider failure stays private.
@@ -627,6 +636,8 @@ class ContinuityAgentLane:
                 if decision["kind"] == "finish":
                     break
                 capability = str(decision["capability"])
+                capability_attempt = capability_attempts.get(capability, 0) + 1
+                capability_attempts[capability] = capability_attempt
                 if capability not in capabilities:
                     outcome = RecoveryBrokerOutcome(
                         capability,
@@ -640,7 +651,7 @@ class ContinuityAgentLane:
                             incident=incident,
                             process_identity=process_identity,
                             recovery_generation=generation,
-                            attempt=attempt,
+                            attempt=capability_attempt,
                             deadline=deadline,
                         )
                     except Exception as error:  # noqa: BLE001 - broker internals stay private.
@@ -659,7 +670,7 @@ class ContinuityAgentLane:
                     process_identity,
                     session.provider,
                     phase="broker_outcome",
-                    attempt=attempt,
+                    attempt=sequence,
                     outcome=outcome,
                 )
                 if (
@@ -671,7 +682,13 @@ class ContinuityAgentLane:
                 if outcome.status == "authorization_required":
                     final_result = "authorization_required"
                     break
-                if outcome.status == "circuit_open":
+                if outcome.status == "circuit_open" and outcome.outcome_code in {
+                    "recovery_budget_exhausted",
+                    "broker_call_timed_out",
+                    "recovery_health_worsened",
+                    "ephemeral_cleanup_unavailable",
+                    "ephemeral_cleanup_failed",
+                }:
                     break
         except Exception as error:  # noqa: BLE001 - parent lane failure becomes sanitized state.
             print(
@@ -703,7 +720,7 @@ class ContinuityAgentLane:
         *,
         incident: Mapping[str, object],
         process_identity: str,
-        recovery_generation: int,
+        recovery_generation: str,
         attempt: int,
         deadline: float,
     ) -> RecoveryBrokerOutcome:
@@ -794,13 +811,19 @@ class ContinuityAgentLane:
         incident: Mapping[str, object],
         capabilities: tuple[str, ...],
         history: list[dict[str, object]],
-        attempt: int,
+        sequence: int,
+        capability_attempts: Mapping[str, int],
     ) -> str:
         payload = {
             "incident": incident,
+            "broker_objective": {
+                "name": "restore_processing",
+                **dict(incident["recovery_objective"]),
+            },
             "broker_capabilities": list(capabilities),
             "sanitized_outcomes": history,
-            "attempt": attempt,
+            "sequence": sequence,
+            "capability_attempts": dict(capability_attempts),
         }
         return CONTINUITY_SYSTEM_PROMPT + "\n\nRecovery state:\n" + json.dumps(
             payload,

@@ -405,7 +405,34 @@ class OrchestratorLifecycleTests(unittest.TestCase):
             self.assertIn("ticket_id", private)
             self.assertIsNone(private["ticket_id"])
             with sqlite3.connect(db_path) as conn:
-                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 4)
+                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 5)
+
+    def test_orchestrator_command_store_migrates_v4_generation_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "commands.db"
+            legacy_schema = OrchestratorCommandStore.SCHEMA.replace(
+                "        recovery_generation TEXT NOT NULL DEFAULT '0',\n",
+                "",
+            )
+            with sqlite3.connect(db_path) as conn:
+                conn.executescript(legacy_schema)
+                conn.execute("PRAGMA user_version = 4")
+
+            store = OrchestratorCommandStore(db_path)
+            public = store.record(
+                repo_path=tmp,
+                source_text="preserve generation",
+                relay_command_seq=1,
+                relay_command_id="cmd-generation",
+                recovery_generation="12345678-1234-4abc-8def-1234567890ab",
+            )
+
+            self.assertEqual(
+                public["recovery_generation"],
+                "12345678-1234-4abc-8def-1234567890ab",
+            )
+            with sqlite3.connect(db_path) as conn:
+                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 5)
 
     def test_orchestrator_command_store_preserves_two_items_from_one_turn(self):
         for provider in ("codex", "claude"):

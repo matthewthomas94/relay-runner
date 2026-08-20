@@ -77,7 +77,7 @@ class RelayBridgeLogRotationTests(unittest.TestCase):
                 bridge.write_text(
                     "#!/bin/bash\n"
                     "[ \"${1:-}\" = --rotate-log ] && exit 0\n"
-                    "printf '%s\\n' \"$RELAY_RUNNER_PROVIDER\" \"$RELAY_APP_SESSION_ID\" \"$RELAY_INCIDENT_ID\" \"$RELAY_RETRY_ATTEMPT\" \"$RELAY_CORRELATION_ID\" > \"$HANDOFF_FILE\"\n"
+                    "printf '%s\\n' \"$RELAY_RUNNER_PROVIDER\" \"$RELAY_APP_SESSION_ID\" \"$RELAY_INCIDENT_ID\" \"$RELAY_RETRY_ATTEMPT\" \"$RELAY_CORRELATION_ID\" \"$RELAY_RECOVERY_GENERATION\" > \"$HANDOFF_FILE\"\n"
                     "python3 - \"$BRIDGE_TEST_SOCK\" <<'PY'\n"
                     "import socket, sys\n"
                     "sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)\n"
@@ -116,6 +116,7 @@ start_voice_bridge_daemon
                         "RELAY_INCIDENT_ID": "inc-aaaaaaaaaaaa",
                         "RELAY_RETRY_ATTEMPT": "3",
                         "RELAY_CORRELATION_ID": "22222222-2222-4222-8222-222222222222",
+                        "RELAY_RECOVERY_GENERATION": "33333333-3333-4333-8333-333333333333",
                     },
                     text=True,
                     capture_output=True,
@@ -129,8 +130,70 @@ start_voice_bridge_daemon
                     "inc-aaaaaaaaaaaa",
                     "3",
                     "22222222-2222-4222-8222-222222222222",
+                    "33333333-3333-4333-8333-333333333333",
                 ])
                 self.assertIn("submission only; bridge/provider outcome pending", log.read_text())
+
+    def test_direct_fallback_preserves_recovery_generation(self):
+        source = (ROOT / "scripts" / "relay-bridge").read_text()
+        functions = "\n".join(
+            shell_function(source, name)
+            for name in ("voice_bridge_log_path", "start_voice_bridge_daemon")
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bridge = root / "relay-bridge"
+            socket_path = root / "voice.sock"
+            handoff = root / "handoff.txt"
+            log = root / "voice.log"
+            bridge.write_text(
+                "#!/bin/bash\n"
+                "[ \"${1:-}\" = --rotate-log ] && exit 0\n"
+                "printf '%s\\n' \"$RELAY_RECOVERY_GENERATION\" > \"$HANDOFF_FILE\"\n"
+                "python3 - \"$BRIDGE_TEST_SOCK\" <<'PY'\n"
+                "import socket, sys\n"
+                "sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)\n"
+                "sock.bind(sys.argv[1])\n"
+                "sock.close()\n"
+                "PY\n"
+            )
+            bridge.chmod(0o700)
+            harness = functions + """
+record_embedded_session_event() { :; }
+sleep() { /bin/sleep 0.01; }
+launchctl() {
+    case "$1" in
+        remove) return 0 ;;
+        submit) return 23 ;;
+        print) return 1 ;;
+    esac
+}
+SUPPRESS_STARTUP_GREETING=false
+start_voice_bridge_daemon
+"""
+            result = subprocess.run(
+                ["/bin/bash", "-c", harness],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "SCRIPT_DIR": str(root),
+                    "BRIDGE_SOCK": str(socket_path),
+                    "BRIDGE_TEST_SOCK": str(socket_path),
+                    "HANDOFF_FILE": str(handoff),
+                    "VOICE_BRIDGE_LOG_PATH": str(log),
+                    "RELAY_RUNNER_PROVIDER": "codex",
+                    "RELAY_RECOVERY_GENERATION": "33333333-3333-4333-8333-333333333333",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                handoff.read_text().strip(),
+                "33333333-3333-4333-8333-333333333333",
+            )
 
     def test_launchctl_and_direct_failures_are_reported_as_failure(self):
         source = (ROOT / "scripts" / "relay-bridge").read_text()

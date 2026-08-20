@@ -86,15 +86,26 @@ from command_actions import refined_command_summary, refined_ticket_title, resol
 from continuity_incidents import (
     ContinuityIncidentDetector,
     Observation,
+    normalize_recovery_generation,
     opaque_identifier,
     provider_observation,
 )
 from continuity_agent import (
     ContinuityAgentConfig,
     ContinuityAgentLane,
-    UnavailableRecoveryBroker,
+    RecoveryHealthEvidence,
     append_audit_record,
     create_provider_session_factory,
+)
+from continuity_recovery import (
+    CAPABILITY_POLICIES,
+    ComponentOwnedRecoveryBroker,
+    ProductionRecoveryCapability,
+    RecoveryActionResult,
+    RecoveryActionValidation,
+    RecoveryExecutionContext,
+    production_recovery_owners,
+    recovery_owner_for,
 )
 from codex_model_catalog import (
     CODEX_FAMILIES,
@@ -135,6 +146,7 @@ PORT_FILE = Path("/tmp/relay_orchestrator.port")
 RELAY_COMMAND_STATE_FILE = Path("/tmp/voice_command_state.json")
 RELAY_COMMAND_AUTHORIZATION_FILE = Path("/tmp/voice_command_authorizations.json")
 VOICE_STATE_SOCK = Path("/tmp/voice_state.sock")
+BRIDGE_CONTROL_SOCK = Path(os.environ.get("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock"))
 DEFAULT_PORT = 7634
 ORCHESTRATOR_SESSION_STATES = frozenset({
     "idle",
@@ -203,6 +215,7 @@ _CONTINUITY_LIFECYCLE_EVENTS = {
     ("command", "completed"): ("command", "command_processing", "completed", False),
     ("command", "failed"): ("command", "command_processing", "recovery_failed", True),
     ("session", "started"): ("session", "session_liveness", "healthy", False),
+    ("session", "process_exit"): ("session", "session_liveness", "unavailable", False),
     ("session", "explicit_stop"): ("session", "session_liveness", "unavailable", False),
     ("session", "update"): ("session", "session_liveness", "unavailable", False),
     ("session", "reset"): ("session", "session_liveness", "unavailable", False),
@@ -218,6 +231,53 @@ _CONTINUITY_PROGRESS_RESOLVES = {
     ("bridge", "command_received"): frozenset({"speech_capture", "transcription"}),
 }
 
+_CONTINUITY_OBJECTIVE_EVIDENCE = {
+    ("stt", "capture_started"): ("capture_progress_observed",),
+    ("stt", "transcription_started"): (
+        "capture_progress_observed",
+        "transcription_started",
+    ),
+    ("bridge", "command_received"): (
+        "transcription_completed",
+        "command_created",
+        "bridge_process_alive",
+    ),
+    ("bridge", "command_delivered"): (
+        "bridge_process_alive",
+        "bridge_heartbeat_fresh",
+        "command_delivered",
+    ),
+    ("messenger", "progress"): (
+        "messenger_process_alive",
+        "messenger_progress_observed",
+    ),
+    ("daemon", "heartbeat"): (
+        "daemon_process_alive",
+        "daemon_heartbeat_fresh",
+        "orchestrator_heartbeat_fresh",
+    ),
+    ("command", "accepted"): ("command_progress_observed",),
+    ("command", "planning"): ("command_progress_observed",),
+    ("command", "completed"): (
+        "command_progress_observed",
+        "command_completed",
+    ),
+    ("session", "started"): (
+        "session_owner_alive",
+        "session_heartbeat_fresh",
+    ),
+    ("provider", "turn_started"): ("provider_process_alive",),
+    ("provider", "stream_started"): ("provider_process_alive",),
+    ("provider", "turn_progress"): (
+        "provider_process_alive",
+        "provider_progress_observed",
+    ),
+    ("provider", "stream_progress"): (
+        "provider_process_alive",
+        "provider_progress_observed",
+    ),
+}
+
 
 class ContinuityLifecycleAdapter:
     """Translate allowlisted live Relay events into the incident detector."""
@@ -231,14 +291,23 @@ class ContinuityLifecycleAdapter:
         self.detector = detector or ContinuityIncidentDetector(emit=emit)
         self._lock = threading.RLock()
         self._watches: dict[
-            tuple[str, str | None, str, str, int, str], Observation
+            tuple[str, str | None, str, str, str, str], Observation
+        ] = {}
+        self._active_incidents: dict[
+            tuple[str, str | None, str, str, str, str], Observation
         ] = {}
         self._suppressed_sessions: dict[str, str] = {}
+        self._objective_evidence: dict[
+            tuple[str, str | None, str], dict[str, float]
+        ] = {}
+        self._confirmed_dead: set[
+            tuple[str, str | None, str, str, str, str]
+        ] = set()
 
     @staticmethod
     def _watch_key(
         observation: Observation,
-    ) -> tuple[str, str | None, str, str, int, str]:
+    ) -> tuple[str, str | None, str, str, str, str]:
         return (
             observation.session_id,
             observation.command_id,
@@ -263,18 +332,19 @@ class ContinuityLifecycleAdapter:
         )
 
     def _clear_recovered_watches(self, observation: Observation) -> None:
-        for key, watched in tuple(self._watches.items()):
-            if (
-                watched.session_id == observation.session_id
-                and watched.component == observation.component
-                and watched.provider == observation.provider
-                and watched.recovery_generation == observation.recovery_generation
-                and (
-                    watched.command_id == observation.command_id
-                    or watched.command_id is None
-                )
-            ):
-                self._watches.pop(key, None)
+        for store in (self._watches, self._active_incidents):
+            for key, watched in tuple(store.items()):
+                if (
+                    watched.session_id == observation.session_id
+                    and watched.component == observation.component
+                    and watched.provider == observation.provider
+                    and watched.recovery_generation == observation.recovery_generation
+                    and (
+                        watched.command_id == observation.command_id
+                        or watched.command_id is None
+                    )
+                ):
+                    store.pop(key, None)
         self.detector.resolve_related(observation)
 
     def _clear_component_watches(
@@ -282,15 +352,19 @@ class ContinuityLifecycleAdapter:
         observation: Observation,
         components: frozenset[str],
     ) -> None:
-        for key, watched in tuple(self._watches.items()):
-            if (
-                watched.session_id == observation.session_id
-                and watched.component in components
-                and watched.recovery_generation == observation.recovery_generation
-                and (watched.command_id is None or watched.command_id == observation.command_id)
-            ):
-                self._watches.pop(key, None)
-                self.detector.resolve_related(watched)
+        for store in (self._watches, self._active_incidents):
+            for key, watched in tuple(store.items()):
+                if (
+                    watched.session_id == observation.session_id
+                    and watched.component in components
+                    and watched.recovery_generation == observation.recovery_generation
+                    and (
+                        watched.command_id is None
+                        or watched.command_id == observation.command_id
+                    )
+                ):
+                    store.pop(key, None)
+                    self.detector.resolve_related(watched)
 
     def _watch_transient(self, observation: Observation) -> None:
         result = self.detector.observe(observation)
@@ -299,6 +373,8 @@ class ContinuityLifecycleAdapter:
             self._watches[key] = observation
         else:
             self._watches.pop(key, None)
+            if result.envelope is not None:
+                self._active_incidents[key] = observation
 
     def observe(self, event: dict[str, Any]):
         source = str(event.get("source") or "").strip().lower()
@@ -312,7 +388,9 @@ class ContinuityLifecycleAdapter:
             event.get("relay_command_id") or event.get("command_id") or ""
         ).strip()
         try:
-            generation = max(0, int(event.get("recovery_generation") or 0))
+            generation = normalize_recovery_generation(
+                event.get("recovery_generation", "0")
+            )
             observed_at = float(event.get("observed_at") or time.time())
         except (TypeError, ValueError) as error:
             raise ValueError("invalid continuity timing or generation") from error
@@ -346,7 +424,11 @@ class ContinuityLifecycleAdapter:
                 session_id=session_id,
                 command_id=command_id,
                 component=component,
-                provider=provider if component in {"messenger", "command"} else "none",
+                provider=(
+                    provider
+                    if component in {"messenger", "session", "command"}
+                    else "none"
+                ),
                 recovery_generation=generation,
                 phase=phase,
                 health=health,
@@ -360,12 +442,28 @@ class ContinuityLifecycleAdapter:
             else None
         )
         with self._lock:
+            if source in {"provider", "session"} and name == "process_exit":
+                self._confirmed_dead.add(self._watch_key(observation))
+            evidence_codes = _CONTINUITY_OBJECTIVE_EVIDENCE.get((source, name), ())
+            if evidence_codes:
+                evidence_key = (session_id, command_id, generation)
+                evidence = self._objective_evidence.setdefault(evidence_key, {})
+                evidence.update({code: observed_at for code in evidence_codes})
+                if len(self._objective_evidence) > 512:
+                    oldest = min(
+                        self._objective_evidence,
+                        key=lambda key: max(self._objective_evidence[key].values()),
+                    )
+                    self._objective_evidence.pop(oldest, None)
             if suppression is not None:
                 self._suppressed_sessions[session_id] = suppression
                 self.detector.suppress_session(session_id)
                 for key, watched in tuple(self._watches.items()):
                     if watched.session_id == session_id:
                         self._watches.pop(key, None)
+                for key, active in tuple(self._active_incidents.items()):
+                    if active.session_id == session_id:
+                        self._active_incidents.pop(key, None)
                 return self.detector.observe(observation, suppression=suppression)
 
             suppressed = self._suppressed_sessions.get(session_id)
@@ -375,6 +473,7 @@ class ContinuityLifecycleAdapter:
                 self._suppressed_sessions.pop(session_id, None)
 
             if observation.health in {"healthy", "completed"}:
+                self._confirmed_dead.discard(self._watch_key(observation))
                 self._clear_recovered_watches(observation)
             resolved_components = _CONTINUITY_PROGRESS_RESOLVES.get((source, name))
             if resolved_components:
@@ -387,6 +486,8 @@ class ContinuityLifecycleAdapter:
                     self._watches[key] = observation
                 else:
                     self._watches.pop(key, None)
+                    if result.envelope is not None:
+                        self._active_incidents[key] = observation
             else:
                 deadline_component = _CONTINUITY_DEADLINE_STARTS.get((source, name))
                 if source == "provider" and name in {
@@ -423,6 +524,84 @@ class ContinuityLifecycleAdapter:
                     self._watch_transient(inactivity)
             return result
 
+    def recovery_health(self, request: Any) -> RecoveryHealthEvidence:
+        """Return only fresh, objective lifecycle evidence for one request."""
+        evidence: dict[str, float] = {}
+        with self._lock:
+            for (session_id, command_id, generation), observed in self._objective_evidence.items():
+                if (
+                    session_id == request.session_id
+                    and generation == request.recovery_generation
+                    and (command_id is None or command_id == request.command_id)
+                ):
+                    for code, observed_at in observed.items():
+                        if observed_at >= request.incident_observed_at:
+                            evidence[code] = max(evidence.get(code, 0), observed_at)
+        if not evidence:
+            return RecoveryHealthEvidence()
+        return RecoveryHealthEvidence(
+            objective_restored=True,
+            stable_for_seconds=max(0.0, time.time() - max(evidence.values())),
+            evidence_codes=tuple(sorted(evidence)),
+        )
+
+    def recovery_validation(self, request: Any) -> RecoveryActionValidation:
+        """Inspect the exact active detector watch; never infer a live owner."""
+        watched = None
+        confirmed_dead = False
+        with self._lock:
+            observations = tuple(self._watches.values()) + tuple(
+                self._active_incidents.values()
+            )
+            for observation in observations:
+                if (
+                    observation.session_id == request.session_id
+                    and observation.command_id == request.command_id
+                    and observation.component == request.component
+                    and observation.provider == request.provider
+                    and observation.phase == request.incident_phase
+                ):
+                    watched = observation
+                    confirmed_dead = (
+                        self._watch_key(observation) in self._confirmed_dead
+                        or observation.native_recovery_failed
+                    )
+                    break
+        command_phase = {
+            "capture": "before_command",
+            "transcription": "captured",
+            "delivery": "undelivered",
+            "component_liveness": "none",
+            "provider_turn": "in_flight",
+            "command_processing": "in_flight",
+            "session_liveness": "none",
+        }.get(request.incident_phase, "ambiguous")
+        generation_matches = (
+            watched is not None
+            and watched.recovery_generation == request.recovery_generation
+        )
+        liveness = "unknown"
+        if watched is not None:
+            liveness = (
+                "confirmed_dead"
+                if confirmed_dead
+                else "unhealthy"
+            )
+        return RecoveryActionValidation(
+            validation_token="live_continuity_watch",
+            exact_target_owned=watched is not None,
+            liveness=liveness,
+            incident_active=watched is not None,
+            generation_matches=generation_matches,
+            command_phase=command_phase,
+            command_phase_matches=command_phase != "ambiguous",
+            idempotency_state="new",
+            compensation_available=False,
+            cooldown_remaining=0,
+            expected_postcondition=request.expected_postcondition,
+            health=self.recovery_health(request),
+        )
+
     def sample(self, *, observed_at: float | None = None) -> list[Any]:
         """Re-observe unresolved failures so one-shot native events can qualify."""
         now = time.time() if observed_at is None else float(observed_at)
@@ -437,6 +616,8 @@ class ContinuityLifecycleAdapter:
                 results.append(result)
                 if result.state not in {"transient"}:
                     self._watches.pop(key, None)
+                    if result.envelope is not None:
+                        self._active_incidents[key] = watched
         return results
 
 WORKER_SIZING_FIELDS = (
@@ -528,14 +709,15 @@ TICKET_CONFIG_PREFIX_RE = re.compile(
 TICKET_CONFIG_NEXT_ID_RE = re.compile(r"^(\s*next_id\s*=\s*)(\d+)(\s*)$", re.MULTILINE)
 
 
-def _notify_state(state: str, **kwargs: Any) -> None:
+def _notify_state(state: str, **kwargs: Any) -> bool:
     msg = {"source": "orchestrator", "state": state, **kwargs}
     s = None
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         s.sendto(json.dumps(msg).encode(), str(VOICE_STATE_SOCK))
+        return True
     except (OSError, ConnectionRefusedError):
-        pass
+        return False
     finally:
         if s is not None:
             s.close()
@@ -2660,7 +2842,7 @@ class OrchestratorSessionStore:
 class OrchestratorCommandStore:
     """Private raw-command inbox for the persistent orchestrator."""
 
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
 
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS orchestrator_commands (
@@ -2672,6 +2854,7 @@ class OrchestratorCommandStore:
         session_id INTEGER,
         repo_path TEXT NOT NULL,
         provider_key TEXT,
+        recovery_generation TEXT NOT NULL DEFAULT '0',
         source_text TEXT NOT NULL,
         context TEXT,
         action TEXT,
@@ -2751,6 +2934,14 @@ class OrchestratorCommandStore:
                 c.executescript(self.SCHEMA)
                 c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
                 return
+            if current == 4:
+                c.execute(
+                    "ALTER TABLE orchestrator_commands "
+                    "ADD COLUMN recovery_generation TEXT NOT NULL DEFAULT '0'"
+                )
+                c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+                c.executescript(self.SCHEMA)
+                return
             if current == self.SCHEMA_VERSION:
                 c.executescript(self.SCHEMA)
                 return
@@ -2777,6 +2968,7 @@ class OrchestratorCommandStore:
         within_turn_order: int | str | None = None,
         session_id: int | None = None,
         provider_key: str | None = None,
+        recovery_generation: str | int = "0",
         context: str | None = None,
         action: str | None = None,
         outcome: str | None = None,
@@ -2808,6 +3000,7 @@ class OrchestratorCommandStore:
         repo = str(Path(repo_path).expanduser().resolve())
         now = time.time()
         provider = OrchestratorSessionStore._normalize_provider(provider_key) if provider_key else None
+        generation = normalize_recovery_generation(recovery_generation)
         refined_context = _clean_optional_multiline_text(context)
         try:
             item_order = max(1, int(within_turn_order or 1))
@@ -2824,16 +3017,17 @@ class OrchestratorCommandStore:
             c.execute(
                 "INSERT INTO orchestrator_commands("
                 "intent_id, relay_command_id, relay_command_seq, within_turn_order, session_id, "
-                "repo_path, provider_key, source_text, context, action, outcome, ticket_id, "
+                "repo_path, provider_key, recovery_generation, source_text, context, action, outcome, ticket_id, "
                 "target, disposition, cancellation_scope, lifecycle_state, status, status_message, "
                 "error, received_at, processed_at, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(intent_id) DO UPDATE SET "
                 "relay_command_seq = excluded.relay_command_seq, "
                 "within_turn_order = excluded.within_turn_order, "
                 "session_id = excluded.session_id, "
                 "repo_path = excluded.repo_path, "
                 "provider_key = excluded.provider_key, "
+                "recovery_generation = excluded.recovery_generation, "
                 "source_text = excluded.source_text, "
                 "context = excluded.context, "
                 "action = excluded.action, "
@@ -2857,6 +3051,7 @@ class OrchestratorCommandStore:
                     session_id,
                     repo,
                     provider,
+                    generation,
                     source_text,
                     refined_context,
                     action,
@@ -2957,6 +3152,17 @@ class OrchestratorCommandStore:
                 (identity_value,),
             ).fetchone()
             return self._public_row(row) if row else None
+
+    def find_by_opaque_command_id(self, opaque_command_id: str) -> dict[str, Any] | None:
+        """Resolve one broker identifier without exposing native command text."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM orchestrator_commands ORDER BY id DESC LIMIT 1000"
+            ).fetchall()
+            for row in rows:
+                if opaque_identifier("command", str(row["relay_command_id"])) == opaque_command_id:
+                    return dict(row)
+        return None
 
     def pending(self, *, repo_path: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
         params: list[Any] = ["received"]
@@ -4412,7 +4618,7 @@ class ReviewWorker:
 # ---------------------------------------------------------------------------
 
 class Daemon:
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, *, continuity_recovery_owners=None):
         self.cfg = cfg
         orch_cfg = cfg.get("orchestrator", {})
         self.workspace_root = _resolve_workspace_root(orch_cfg.get("workspace_root", ""))
@@ -4512,7 +4718,7 @@ class Daemon:
             def create_continuity_session(
                 process_identity: str,
                 incident_id: str,
-                recovery_generation: int,
+                recovery_generation: str,
             ):
                 nonlocal provider_factory
                 with provider_factory_lock:
@@ -4542,9 +4748,23 @@ class Daemon:
                     float(continuity_cfg.get("cooldown_seconds", 900)),
                 ),
             )
+            recovery_owners = continuity_recovery_owners
+            if recovery_owners is None:
+                action_capabilities = {
+                    capability: ProductionRecoveryCapability(
+                        self.continuity.recovery_validation,
+                        self._execute_continuity_recovery_action,
+                    )
+                    for capability in CAPABILITY_POLICIES
+                    if capability != "check_processing_health"
+                }
+                recovery_owners = production_recovery_owners(
+                    self.continuity.recovery_health,
+                    capabilities=action_capabilities,
+                )
             self.continuity_agents = ContinuityAgentLane(
                 create_continuity_session,
-                UnavailableRecoveryBroker(),
+                ComponentOwnedRecoveryBroker(recovery_owners),
                 on_audit=lambda record: append_audit_record(
                     self.continuity_agent_audit_path,
                     record,
@@ -4555,6 +4775,217 @@ class Daemon:
             self.reconcile_queue_drains(trigger="daemon-startup")
         except Exception as e:  # noqa: BLE001 - daemon startup must still finish.
             print(f"[orchestrator] queue-drain startup reconcile failed: {e}", file=sys.stderr)
+
+    def _execute_continuity_recovery_action(
+        self,
+        request: Any,
+        validation: RecoveryActionValidation,
+        cancel_event: threading.Event,
+    ) -> RecoveryActionResult:
+        """Dispatch a typed context only to the component's declared owner."""
+        if cancel_event.is_set():
+            return RecoveryActionResult("failed", "recovery_canceled")
+        owner = recovery_owner_for(request.capability, request.component)
+        if owner == "daemon":
+            return self._execute_daemon_continuity_recovery_action(
+                request,
+                validation,
+                cancel_event,
+            )
+        if owner not in {"app", "bridge"}:
+            return RecoveryActionResult("failed", "component_owner_unavailable")
+
+        context = RecoveryExecutionContext(request, validation)
+        reply_path = Path(f"/tmp/relay_recovery_{request.idempotency_key}.json")
+        try:
+            reply_path.unlink(missing_ok=True)
+        except OSError:
+            return RecoveryActionResult("failed", "component_owner_unavailable")
+        payload = {**context.as_dict(), "reply_path": str(reply_path)}
+        dispatched = False
+        if owner == "app":
+            dispatched = _notify_state(
+                "request",
+                source="continuity_recovery",
+                **payload,
+            )
+        else:
+            payload["type"] = "continuity_recovery"
+            sock = None
+            try:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                sock.sendto(
+                    json.dumps(payload, separators=(",", ":")).encode(),
+                    str(BRIDGE_CONTROL_SOCK),
+                )
+                dispatched = True
+            except OSError:
+                dispatched = False
+            finally:
+                if sock is not None:
+                    sock.close()
+        if dispatched:
+            return self._await_continuity_recovery_reply(
+                request,
+                reply_path,
+                cancel_event,
+            )
+        return RecoveryActionResult("failed", "component_owner_unavailable")
+
+    def _await_continuity_recovery_reply(
+        self,
+        request: Any,
+        reply_path: Path,
+        cancel_event: threading.Event,
+    ) -> RecoveryActionResult:
+        reply_deadline = min(request.deadline, time.monotonic() + 2.0)
+        while not cancel_event.is_set() and time.monotonic() < reply_deadline:
+            try:
+                reply_text = reply_path.read_text()
+            except FileNotFoundError:
+                time.sleep(0.02)
+                continue
+            except OSError:
+                break
+            try:
+                payload = json.loads(reply_text)
+            except json.JSONDecodeError:
+                reply_path.unlink(missing_ok=True)
+                break
+            reply_path.unlink(missing_ok=True)
+            status = str(payload.get("status") or "failed")
+            code = str(payload.get("outcome_code") or "component_owner_unavailable")
+            if status not in {"applied", "noop", "failed"}:
+                break
+            try:
+                return RecoveryActionResult(
+                    status,
+                    code,
+                    self.continuity.recovery_health(request),
+                )
+            except ValueError:
+                break
+        return RecoveryActionResult("failed", "component_owner_unavailable")
+
+    def _current_continuity_validation(
+        self,
+        request: Any,
+        supplied: RecoveryActionValidation,
+    ) -> RecoveryActionValidation | None:
+        current = self.continuity.recovery_validation(request)
+        fields = (
+            "validation_token",
+            "exact_target_owned",
+            "liveness",
+            "incident_active",
+            "generation_matches",
+            "command_phase",
+            "command_phase_matches",
+            "idempotency_state",
+            "compensation_available",
+            "cooldown_remaining",
+            "expected_postcondition",
+        )
+        return current if all(
+            getattr(current, field) == getattr(supplied, field) for field in fields
+        ) else None
+
+    @staticmethod
+    def _continuity_pid_alive(pid: Any) -> bool:
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    def _continuity_session_row(self, request: Any) -> dict[str, Any] | None:
+        for row in self.orchestrator_sessions.list(limit=1000):
+            if opaque_identifier("session", str(row["session_key"])) == request.session_id:
+                return row
+        return None
+
+    def _execute_daemon_continuity_recovery_action(
+        self,
+        request: Any,
+        validation: RecoveryActionValidation,
+        cancel_event: threading.Event,
+    ) -> RecoveryActionResult:
+        if cancel_event.is_set():
+            return RecoveryActionResult("failed", "recovery_canceled")
+        current = self._current_continuity_validation(request, validation)
+        if current is None:
+            return RecoveryActionResult("failed", "stale_recovery_context")
+        policy = CAPABILITY_POLICIES[request.capability]
+        now_epoch = time.time()
+        if (
+            not current.exact_target_owned
+            or not current.incident_active
+            or not current.generation_matches
+            or not current.command_phase_matches
+            or current.liveness not in policy.required_liveness
+            or current.command_phase not in policy.command_phases
+            or current.idempotency_state != "new"
+            or current.cooldown_remaining != 0
+            or request.attempt > policy.max_attempts
+            or time.monotonic() >= request.deadline
+            or request.incident_observed_at > now_epoch + 5
+            or now_epoch - request.incident_observed_at > 300
+        ):
+            return RecoveryActionResult("failed", "stale_recovery_context")
+        if request.component == "orchestrator":
+            row = self._continuity_session_row(request)
+            if row is None or row["state"] not in {"stale", "failed"}:
+                return RecoveryActionResult("failed", "live_work_active")
+            pid_alive = self._continuity_pid_alive(row.get("pid"))
+            if request.capability == "reconnect_ipc" and pid_alive:
+                restored = self.orchestrator_sessions.heartbeat(
+                    session_id=int(row["id"]),
+                    provider_key=str(row["provider_key"]),
+                    state="idle",
+                )
+                return RecoveryActionResult(
+                    "applied" if restored is not None else "failed",
+                    "ipc_connection_restored" if restored is not None else "component_action_failed",
+                    self.continuity.recovery_health(request),
+                )
+            if request.capability == "release_dead_ownership" and not pid_alive:
+                released = self.orchestrator_sessions.stop(
+                    session_id=int(row["id"]),
+                    reason="continuity confirmed dead owner",
+                )
+                return RecoveryActionResult(
+                    "applied" if released is not None else "failed",
+                    "dead_ownership_released" if released is not None else "component_action_failed",
+                    self.continuity.recovery_health(request),
+                )
+        elif request.component == "command" and request.capability == "release_dead_ownership":
+            command = self.orchestrator_commands.find_by_opaque_command_id(
+                request.command_id or ""
+            )
+            session = self._continuity_session_row(request)
+            if (
+                command is None
+                or session is None
+                or session["state"] not in {"stale", "failed"}
+                or self._continuity_pid_alive(session.get("pid"))
+                or command["status"] not in {"claimed", "mutation_authorized", "planning"}
+            ):
+                return RecoveryActionResult("failed", "live_work_active")
+            released = self.orchestrator_commands.update_status(
+                str(command["relay_command_id"]),
+                intent_id=str(command["intent_id"]),
+                status="delivery_failed",
+                outcome="continuity-dead-owner-released",
+                status_message="Dead command ownership released; automatic replay was not attempted.",
+            )
+            return RecoveryActionResult(
+                "applied" if released is not None else "failed",
+                "dead_ownership_released" if released is not None else "component_action_failed",
+                self.continuity.recovery_health(request),
+            )
+        return RecoveryActionResult("failed", "component_action_unavailable")
 
     def _emit_continuity_incident(self, envelope: dict[str, object]) -> None:
         """Persist only the detector's fixed, privacy-safe recovery envelope."""
@@ -4622,6 +5053,7 @@ class Daemon:
                 "session_id": session_id,
                 "relay_command_id": command.get("relay_command_id"),
                 "provider": command.get("provider_key") or self.agent_kind,
+                "recovery_generation": command.get("recovery_generation") or "0",
                 "observed_at": time.time(),
             })
         except ValueError as error:
@@ -7995,6 +8427,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         within_turn_order: int | str | None = None,
         session_id: int | None = None,
         provider: str | None = None,
+        recovery_generation: str | int = "0",
         context: str | None = None,
         action: str | None = None,
         outcome: str | None = None,
@@ -8054,6 +8487,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             within_turn_order=within_turn_order,
             session_id=session_id,
             provider_key=provider,
+            recovery_generation=recovery_generation,
             context=context,
             action=action,
             outcome=outcome,
@@ -9445,6 +9879,7 @@ class Handler(BaseHTTPRequestHandler):
                     within_turn_order=body.get("within_turn_order"),
                     session_id=body.get("session_id"),
                     provider=body.get("provider"),
+                    recovery_generation=body.get("recovery_generation") or "0",
                     context=body.get("context"),
                     action=body.get("action"),
                     outcome=body.get("outcome"),

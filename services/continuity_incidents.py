@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import math
+import re
 from typing import Any, Callable, Mapping, Optional
 
 
@@ -39,6 +40,7 @@ PHASES = frozenset({
 HEALTH_VALUES = frozenset({"healthy", "degraded", "unavailable", "recovery_failed", "completed"})
 PROVIDERS = frozenset({"codex", "claude", "none"})
 SUPPRESSION_REASONS = frozenset({"explicit_stop", "update", "reset"})
+_RECOVERY_GENERATION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 _CODEX_SIGNALS = {
     "turn_started": "healthy",
@@ -108,6 +110,19 @@ def opaque_identifier(kind: str, native_value: Any) -> str:
     return f"{kind}-{digest[:24]}"
 
 
+def normalize_recovery_generation(value: Any) -> str:
+    """Return the lossless wire identity used by every continuity component."""
+    if isinstance(value, bool):
+        raise ValueError("invalid recovery generation")
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError("invalid recovery generation")
+        value = str(value)
+    if not isinstance(value, str) or not _RECOVERY_GENERATION_RE.fullmatch(value):
+        raise ValueError("invalid recovery generation")
+    return value
+
+
 def _validate_opaque(value: Optional[str], kind: str) -> None:
     if value is None and kind == "command":
         return
@@ -125,7 +140,7 @@ class Observation:
     command_id: Optional[str]
     component: str
     provider: str
-    recovery_generation: int
+    recovery_generation: str
     phase: str
     health: str
     observed_at: float
@@ -142,8 +157,11 @@ class Observation:
             raise ValueError(f"unsupported phase: {self.phase}")
         if self.health not in HEALTH_VALUES:
             raise ValueError(f"unsupported health: {self.health}")
-        if self.recovery_generation < 0:
-            raise ValueError("recovery_generation must not be negative")
+        object.__setattr__(
+            self,
+            "recovery_generation",
+            normalize_recovery_generation(self.recovery_generation),
+        )
         if not math.isfinite(self.observed_at):
             raise ValueError("observed_at must be finite")
 
@@ -154,7 +172,7 @@ def provider_observation(
     *,
     session_id: str,
     command_id: Optional[str],
-    recovery_generation: int,
+    recovery_generation: str,
     observed_at: float,
 ) -> Observation:
     """Translate only allowlisted provider signals into the shared contract."""
@@ -225,7 +243,7 @@ class IncidentEnvelope:
     command_id: Optional[str]
     component: str
     provider: str
-    recovery_generation: int
+    recovery_generation: str
     phase: str
     health: str
     first_observed_at: float
@@ -297,7 +315,7 @@ class ContinuityIncidentDetector:
     ) -> None:
         self.config = config or DetectorConfig()
         self._emit = emit
-        self._episodes: dict[tuple[str, str, Optional[str], int], _Episode] = {}
+        self._episodes: dict[tuple[str, str, Optional[str], str], _Episode] = {}
         self._history: dict[str, list[_Occurrence]] = {}
         self._cooldown_until: dict[str, float] = {}
         self._completed_commands: set[str] = set()

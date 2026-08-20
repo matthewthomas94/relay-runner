@@ -5,6 +5,32 @@ import SwiftUI
 
 @Observable
 final class AppState {
+    enum ContinuityRecoveryComponentAction: Equatable {
+        case restartSpeechCapture
+        case restartTranscriptionDelivery
+        case recoverBridge
+        case restartDaemon
+        case releaseForegroundProviderOwnership
+        case launchForegroundProvider
+    }
+
+    enum ContinuityRecoveryDecision: Equatable {
+        case apply(ContinuityRecoveryComponentAction)
+        case reject(String)
+    }
+
+    struct ContinuityRecoveryBoundary: Equatable {
+        let currentSessionID: String
+        let currentRecoveryGeneration: String
+        let currentCommandID: String?
+        let provider: String
+        let liveWorkActive: Bool
+        let providerProcessRunning: Bool
+        let bridgeAlive: Bool
+        let idempotencyAlreadyApplied: Bool
+        let cooldownActive: Bool
+    }
+
     enum SessionLaunchDestination: Equatable {
         case embedded
         case externalTerminal
@@ -189,6 +215,9 @@ final class AppState {
         didSet { syncNotchStatusSurface() }
     }
     @ObservationIgnored private var activeSessionLaunchConfig: AppConfig?
+    @ObservationIgnored private var continuityRecoveryGenerationBySession: [String: String] = [:]
+    @ObservationIgnored private var appliedContinuityRecoveryKeys: Set<String> = []
+    @ObservationIgnored private var continuityRecoveryCooldowns: [String: CFTimeInterval] = [:]
     @ObservationIgnored private let projectRegistryV2 = ProjectRegistryV2Service.makeIfEnabled()
     @ObservationIgnored private let projectScopeCoordinator = ProjectScopeCoordinator()
     @ObservationIgnored private var activeSessionProjectScopeToken: ConfirmedProjectScopeToken?
@@ -968,9 +997,17 @@ final class AppState {
         destination: SessionLaunchDestination = .embedded,
         allowDuringFirstRun: Bool = false,
         showsWorkspaceOnLaunch: Bool = true,
-        suppressesStartupGreeting: Bool = false
+        suppressesStartupGreeting: Bool = false,
+        recoveryGeneration: String? = nil,
+        preservesVoiceBridge: Bool = false
     ) -> Bool {
         guard allowsAppShellAccess || allowDuringFirstRun else { return false }
+        if preservesVoiceBridge {
+            guard destination == .embedded,
+                  recoveryGeneration != nil,
+                  !processManager.bridgeStopRequested()
+            else { return false }
+        }
         guard permissions.microphone == .granted else {
             onboarding.showAlways()
             return false
@@ -1010,9 +1047,12 @@ final class AppState {
         // initiated a session, and the kill-bridge step below cleans
         // up so they can retry without onboarding nagging them again.
         onboarding.markSessionRun()
-        // Kill any existing voice bridge so only one session is active
-        processManager.clearBridgeStopRequested()
-        processManager.killBridge()
+        // A confirmed-dead provider can be replaced without interrupting the
+        // detached bridge that still owns the active voice session.
+        if !preservesVoiceBridge {
+            processManager.clearBridgeStopRequested()
+            processManager.killBridge()
+        }
         if embeddedTerminal.phase.isActive || embeddedTerminal.isEmbeddedProcessRunning {
             embeddedTerminal.end()
         }
@@ -1048,8 +1088,16 @@ final class AppState {
                 voiceDelivery: voiceDelivery,
                 suppressStartupGreeting: suppressesStartupGreeting,
                 sessionEventPath: embeddedTerminal.diagnosticEventPath,
-                projectScopeToken: projectScopeToken
+                projectScopeToken: projectScopeToken,
+                recoveryGeneration: recoveryGeneration,
+                startsVoiceBridge: !preservesVoiceBridge
             )
+            if let generation = prepared.recoveryGeneration {
+                let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
+                    repositoryPath: prepared.workingDirectory
+                )
+                continuityRecoveryGenerationBySession[sessionID] = generation
+            }
             switch request.destination {
             case .embedded:
                 try embeddedTerminal.start(prepared)
@@ -1063,18 +1111,31 @@ final class AppState {
                 )
             }
         } catch {
+            if !preservesVoiceBridge {
+                continuityRecoveryGenerationBySession.removeValue(
+                    forKey: ContinuityRecoveryRequest.projectSessionIdentifier(
+                        repositoryPath: launchConfig.general.working_directory
+                    )
+                )
+            }
             embeddedTerminal.markFailed(error)
-            processManager.killBridge(stopRequested: true)
-            menuSessionActive = false
-            activeSessionLaunchConfig = nil
-            activeSessionProjectScopeToken = nil
-            projectScopeCoordinator.cancel()
-            bridgeAliveCache = false
-            sessionBridgeSeen = false
-            sessionReadyShownForCurrentBridgeSession = false
-            activeSessionSuppressesStartupGreeting = false
-            sessionStartTime = .distantPast
-            statusText = "Ready"
+            if preservesVoiceBridge {
+                bridgeAliveCache = processManager.bridgeAlive()
+                menuSessionActive = bridgeAliveCache
+                statusText = bridgeAliveCache ? "Session reconnecting" : "Ready"
+            } else {
+                processManager.killBridge(stopRequested: true)
+                menuSessionActive = false
+                activeSessionLaunchConfig = nil
+                activeSessionProjectScopeToken = nil
+                projectScopeCoordinator.cancel()
+                bridgeAliveCache = false
+                sessionBridgeSeen = false
+                sessionReadyShownForCurrentBridgeSession = false
+                activeSessionSuppressesStartupGreeting = false
+                sessionStartTime = .distantPast
+                statusText = "Ready"
+            }
             NSLog("[AppState] Failed to start session: \(error)")
             return false
         }
@@ -1787,9 +1848,17 @@ final class AppState {
         if bridgeRecoverySuppressedForUpdate { return false }
         if processManager.bridgeStopRequested() { return false }
         if bridgeRecoveryInFlight { return true }
-        guard let context = processManager.bridgeRecoveryContext(fallbackConfig: bridgeRecoveryFallbackConfig) else {
+        guard let baseContext = processManager.bridgeRecoveryContext(fallbackConfig: bridgeRecoveryFallbackConfig) else {
             return false
         }
+        let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
+            repositoryPath: baseContext.workingDirectory
+        )
+        let context = ProcessManager.BridgeRecoveryContext(
+            workingDirectory: baseContext.workingDirectory,
+            provider: baseContext.provider,
+            recoveryGeneration: continuityRecoveryGenerationBySession[sessionID]
+        )
         let now = Date()
         if now.timeIntervalSince(lastBridgeRecoveryAt) < Self.bridgeRecoveryCooldown {
             return true
@@ -1982,6 +2051,10 @@ final class AppState {
                     text: text,
                     tutorial: tutorial
                 )
+            },
+            onRecoveryAction: { [weak self] request in
+                self?.performContinuityRecoveryAction(request)
+                    ?? .failed("component_action_unavailable")
             }
         )
         eventBus = bus
@@ -2241,6 +2314,235 @@ final class AppState {
             }
             self.wasRecording = nowRecording
             self.syncNotchActivitySurface()
+        }
+    }
+
+    static func continuityRecoveryDecision(
+        for request: ContinuityRecoveryRequest,
+        boundary: ContinuityRecoveryBoundary,
+        nowMonotonic: Double,
+        nowEpoch: Double
+    ) -> ContinuityRecoveryDecision {
+        typealias Contract = (
+            action: ContinuityRecoveryComponentAction,
+            incidentPhases: Set<String>,
+            commandPhases: Set<String>,
+            liveness: Set<String>,
+            postcondition: String,
+            maxAttempts: Int,
+            disruptive: Bool
+        )
+        let contract: Contract? = switch (request.capability, request.component) {
+        case ("reinitialize_speech_capture", "speech_capture"):
+            (
+                .restartSpeechCapture, ["capture"], ["before_command"],
+                ["unhealthy", "confirmed_dead"], "capture_progress_observed", 2, false
+            )
+        case ("reinitialize_transcription_delivery", "transcription"):
+            (
+                .restartTranscriptionDelivery, ["transcription", "delivery"],
+                ["before_command", "captured", "undelivered"],
+                ["unhealthy", "confirmed_dead"], "transcription_completed", 2, false
+            )
+        case ("restart_bridge", "bridge"):
+            (
+                .recoverBridge, ["delivery", "component_liveness"], ["none", "undelivered"],
+                ["unhealthy", "confirmed_dead"], "bridge_process_alive", 2, true
+            )
+        case ("reconnect_ipc", "bridge"):
+            (
+                .recoverBridge, ["delivery", "component_liveness"], ["none", "undelivered"],
+                ["unhealthy", "confirmed_dead"], "ipc_connection_restored", 2, true
+            )
+        case ("restart_daemon", "daemon"):
+            (
+                .restartDaemon, ["component_liveness"], ["none"],
+                ["confirmed_dead"], "daemon_process_alive", 1, true
+            )
+        case ("reconnect_ipc", "daemon"):
+            (
+                .restartDaemon, ["component_liveness"], ["none"],
+                ["unhealthy", "confirmed_dead"], "ipc_connection_restored", 2, true
+            )
+        case ("release_dead_ownership", "foreground_provider"):
+            (
+                .releaseForegroundProviderOwnership, ["provider_turn"], ["in_flight"],
+                ["confirmed_dead"], "dead_ownership_released", 1, true
+            )
+        case ("launch_foreground_provider", "foreground_provider"):
+            (
+                .launchForegroundProvider, ["provider_turn"], ["in_flight"],
+                ["confirmed_dead"], "provider_process_alive", 1, true
+            )
+        case ("launch_foreground_provider", "session"):
+            (
+                .launchForegroundProvider, ["session_liveness"], ["none"],
+                ["confirmed_dead"], "provider_process_alive", 1, true
+            )
+        default:
+            nil
+        }
+
+        guard let contract else { return .reject("unsupported_component_action") }
+        guard request.validationToken == "live_continuity_watch",
+              request.exactTargetOwned,
+              request.incidentActive,
+              request.generationMatches,
+              request.commandPhaseMatches
+        else { return .reject("stale_recovery_context") }
+        guard request.sessionID == boundary.currentSessionID,
+              request.recoveryGeneration == boundary.currentRecoveryGeneration
+        else { return .reject("stale_recovery_generation") }
+        guard contract.incidentPhases.contains(request.incidentPhase),
+              contract.commandPhases.contains(request.commandPhase),
+              contract.liveness.contains(request.liveness),
+              request.expectedPostcondition == contract.postcondition,
+              request.attempt <= contract.maxAttempts
+        else { return .reject("recovery_contract_mismatch") }
+        guard request.idempotencyState == "new",
+              !boundary.idempotencyAlreadyApplied
+        else { return .reject("idempotency_already_applied") }
+        guard request.idempotencyKey == ContinuityRecoveryRequest.idempotencyKey(
+                  incidentID: request.incidentID,
+                  recoveryGeneration: request.recoveryGeneration,
+                  capability: request.capability,
+                  component: request.component,
+                  sessionID: request.sessionID,
+                  commandID: request.commandID
+              ) else { return .reject("idempotency_context_mismatch") }
+        guard request.cooldownRemaining == 0, !boundary.cooldownActive else {
+            return .reject("component_cooldown_active")
+        }
+        guard request.provider == "none" || request.provider == boundary.provider else {
+            return .reject("provider_target_mismatch")
+        }
+        guard nowMonotonic < request.deadline,
+              request.incidentObservedAt <= nowEpoch + 5,
+              nowEpoch - request.incidentObservedAt <= 300
+        else { return .reject("stale_recovery_deadline") }
+        if let commandID = request.commandID {
+            guard boundary.currentCommandID == commandID else {
+                return .reject("unrelated_command_target")
+            }
+        }
+        if contract.disruptive && boundary.liveWorkActive {
+            return .reject("live_work_active")
+        }
+        if contract.action == .releaseForegroundProviderOwnership,
+           boundary.providerProcessRunning {
+            return .reject("live_provider_must_not_be_killed")
+        }
+        if contract.action == .launchForegroundProvider,
+           boundary.providerProcessRunning {
+            return .reject("live_session_must_not_be_replaced")
+        }
+        return .apply(contract.action)
+    }
+
+    private func performContinuityRecoveryAction(
+        _ request: ContinuityRecoveryRequest
+    ) -> ContinuityRecoveryResponse {
+        let now = CACurrentMediaTime()
+        let repositoryPath = activeSessionLaunchConfig?.general.working_directory
+            ?? config.general.working_directory
+        let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
+            repositoryPath: repositoryPath
+        )
+        guard let currentGeneration = continuityRecoveryGenerationBySession[sessionID]
+        else { return .failed("recovery_generation_unavailable") }
+        let currentCommandID = ProcessManager.currentRelayCommandID().map {
+            ContinuityRecoveryRequest.opaqueIdentifier(kind: "command", nativeValue: $0)
+        }
+        let pendingDelivery = processManager.pendingVoiceCommandDeliveryState()
+        let providerTurnActive = ProcessManager.foregroundProviderTurnActive()
+        let liveWorkActive = providerTurnActive
+            || pendingDelivery == .waiting
+            || pendingDelivery == .claimed
+        let cooldownKey = continuityRecoveryCooldownKey(request)
+        let boundary = ContinuityRecoveryBoundary(
+            currentSessionID: sessionID,
+            currentRecoveryGeneration: currentGeneration,
+            currentCommandID: currentCommandID,
+            provider: activeSessionLaunchConfig?.general.provider.rawValue
+                ?? config.general.provider.rawValue,
+            liveWorkActive: liveWorkActive,
+            providerProcessRunning: embeddedTerminal.phase.isActive
+                || embeddedTerminal.isEmbeddedProcessRunning,
+            bridgeAlive: processManager.bridgeAlive(),
+            idempotencyAlreadyApplied: appliedContinuityRecoveryKeys.contains(
+                request.idempotencyKey
+            ),
+            cooldownActive: now < (continuityRecoveryCooldowns[cooldownKey] ?? 0)
+        )
+        let decision = Self.continuityRecoveryDecision(
+            for: request,
+            boundary: boundary,
+            nowMonotonic: now,
+            nowEpoch: Date().timeIntervalSince1970
+        )
+        guard case let .apply(action) = decision else {
+            if case let .reject(code) = decision { return .failed(code) }
+            return .failed("component_action_unavailable")
+        }
+
+        continuityRecoveryGenerationBySession[sessionID] = request.recoveryGeneration
+        let applied: Bool
+        switch action {
+        case .restartSpeechCapture, .restartTranscriptionDelivery:
+            guard isRunning, sttEngine?.isRecording != true else {
+                return .failed("live_capture_must_not_be_interrupted")
+            }
+            restartSTT(reason: "continuity-\(request.capability)")
+            applied = true
+        case .recoverBridge:
+            guard !ProcessManager.foregroundProviderTurnActive() else {
+                return .failed("live_work_active")
+            }
+            applied = startBridgeRecovery(reason: "continuity-\(request.capability)")
+        case .restartDaemon:
+            Task { [refreshBundledOrchestratorDaemon] in
+                _ = await refreshBundledOrchestratorDaemon()
+            }
+            applied = true
+        case .releaseForegroundProviderOwnership:
+            guard activeSessionLaunchConfig != nil,
+                  !embeddedTerminal.phase.isActive,
+                  !ProcessManager.foregroundProviderTurnActive()
+            else { return .failed("live_provider_must_not_be_killed") }
+            embeddedTerminal.end()
+            applied = true
+        case .launchForegroundProvider:
+            let delivery = processManager.pendingVoiceCommandDeliveryState()
+            guard let launch = activeSessionLaunchConfig,
+                  !embeddedTerminal.phase.isActive,
+                  !embeddedTerminal.isEmbeddedProcessRunning,
+                  !ProcessManager.foregroundProviderTurnActive()
+            else { return .failed("live_session_must_not_be_replaced") }
+            guard delivery != .waiting, delivery != .claimed else {
+                return .failed("live_work_active")
+            }
+            let preservesVoiceBridge = processManager.bridgeAlive()
+            applied = newSession(
+                workingDirectory: launch.general.working_directory,
+                suppressesStartupGreeting: true,
+                recoveryGeneration: request.recoveryGeneration,
+                preservesVoiceBridge: preservesVoiceBridge
+            )
+        }
+        guard applied else { return .failed("component_action_unavailable") }
+        appliedContinuityRecoveryKeys.insert(request.idempotencyKey)
+        continuityRecoveryCooldowns[cooldownKey] = now + continuityRecoveryCooldown(request)
+        return .applied()
+    }
+
+    private func continuityRecoveryCooldownKey(_ request: ContinuityRecoveryRequest) -> String {
+        "\(request.sessionID)|\(request.component)|\(request.capability)"
+    }
+
+    private func continuityRecoveryCooldown(_ request: ContinuityRecoveryRequest) -> Double {
+        switch request.capability {
+        case "restart_daemon", "launch_foreground_provider": 15
+        default: 5
         }
     }
 

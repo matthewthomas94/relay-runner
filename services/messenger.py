@@ -25,6 +25,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol
 
+from continuity_incidents import normalize_recovery_generation
+
 from codex_model_catalog import (
     CODEX_FAMILIES,
     CODEX_MESSENGER_DEFAULT_FAMILY,
@@ -868,6 +870,7 @@ class MessengerRuntime:
         coverage_provider: Callable[[int, str], object] | None = None,
         realization_observer: Callable[..., object] | None = None,
         continuity_observer: Callable[[dict], object] | None = None,
+        recovery_generation: str = "0",
     ):
         self.backend = backend
         self._speak = speak
@@ -880,6 +883,7 @@ class MessengerRuntime:
         self._coverage_provider = coverage_provider
         self._realization_observer = realization_observer
         self._continuity_observer = continuity_observer
+        self._recovery_generation = normalize_recovery_generation(recovery_generation)
         self._coverage_error_events: set[tuple[int, int, str]] = set()
         self._lock = threading.Lock()
         self._generation = 0
@@ -891,6 +895,7 @@ class MessengerRuntime:
         self._started = False
         self._shutdown = threading.Event()
         self._worker_thread: threading.Thread | None = None
+        self._recovery_lock = threading.Lock()
 
     @property
     def context_size(self) -> int:
@@ -1096,6 +1101,24 @@ class MessengerRuntime:
             self._discard_pending_events_locked()
         self.backend.interrupt()
 
+    def recover_backend(self) -> bool:
+        """Recreate a dead provider backend without interrupting queued or live work."""
+        with self._recovery_lock:
+            with self._lock:
+                if (
+                    self._shutdown.is_set()
+                    or self._active_event is not None
+                    or not self._events.empty()
+                ):
+                    return False
+                self.backend.shutdown()
+            threading.Thread(
+                target=self._warm_backend,
+                name="relay-messenger-recovery",
+                daemon=True,
+            ).start()
+            return True
+
     def shutdown(self) -> None:
         if self._shutdown.is_set():
             return
@@ -1218,7 +1241,7 @@ class MessengerRuntime:
                 "event": lifecycle_event,
                 "relay_command_id": event.command_id if event is not None else None,
                 "provider": getattr(config, "provider", "codex"),
-                "recovery_generation": event.generation if event is not None else 0,
+                "recovery_generation": self._recovery_generation,
             })
         except Exception:
             pass
@@ -1716,6 +1739,7 @@ def create_messenger_runtime(
     coverage_provider: Callable[[int, str], object] | None = None,
     realization_observer: Callable[..., object] | None = None,
     continuity_observer: Callable[[dict], object] | None = None,
+    recovery_generation: str | None = None,
 ) -> MessengerRuntime | None:
     config = MessengerConfig.from_app_config(app_config, cwd=cwd)
     if not config.enabled:
@@ -1744,4 +1768,9 @@ def create_messenger_runtime(
         coverage_provider=coverage_provider,
         realization_observer=realization_observer,
         continuity_observer=continuity_observer,
+        recovery_generation=(
+            recovery_generation
+            or os.environ.get("RELAY_RECOVERY_GENERATION")
+            or "0"
+        ),
     )

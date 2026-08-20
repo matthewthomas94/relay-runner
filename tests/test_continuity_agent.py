@@ -5,8 +5,10 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -26,7 +28,8 @@ from continuity_agent import (  # noqa: E402
     sanitize_incident_bundle,
 )
 from messenger import MessengerConfig  # noqa: E402
-from orchestrator import Daemon  # noqa: E402
+from continuity_incidents import opaque_identifier  # noqa: E402
+from orchestrator import ContinuityLifecycleAdapter, Daemon  # noqa: E402
 
 
 def incident(
@@ -245,7 +248,7 @@ class ContinuityAgentTests(unittest.TestCase):
             broker,
             on_audit=audit.append,
             config=ContinuityAgentConfig(
-                max_attempts=3,
+                max_attempts=1,
                 wall_clock_seconds=10,
                 stable_health_seconds=60,
                 cooldown_seconds=0,
@@ -256,7 +259,8 @@ class ContinuityAgentTests(unittest.TestCase):
         self.assertTrue(lane.wait_until_idle(2))
 
         self.assertEqual([call[0] for call in broker.calls], ["restart_bridge", "check_health"])
-        self.assertEqual(identities[0][1:], ("inc-123456789abc", 3))
+        self.assertEqual([call[1]["attempt"] for call in broker.calls], [1, 1])
+        self.assertEqual(identities[0][1:], ("inc-123456789abc", "3"))
         self.assertTrue(identities[0][0].startswith("continuity-"))
         self.assertEqual([record["phase"] for record in audit], [
             "launched", "broker_outcome", "broker_outcome", "completed",
@@ -352,7 +356,10 @@ class ContinuityAgentTests(unittest.TestCase):
 
         sessions = [
             FakeSession(['{"kind":"broker_call","capability":"restart_bridge"}']),
-            FakeSession(['{"kind":"broker_call","capability":"restart_bridge"}']),
+            FakeSession([
+                '{"kind":"broker_call","capability":"restart_bridge"}',
+                '{"kind":"finish","result":"escalate"}',
+            ]),
         ]
         audit = []
         broker = BlockingBroker()
@@ -434,6 +441,38 @@ class ContinuityAgentTests(unittest.TestCase):
             persisted = json.loads(daemon.continuity_incident_path.read_text())
             self.assertEqual(persisted["incident_id"], "inc-123456789abc")
             self.assertEqual(submitted[0]["incident_id"], "inc-123456789abc")
+
+    def test_production_health_probe_uses_only_fresh_objective_lifecycle_evidence(self):
+        adapter = ContinuityLifecycleAdapter(emit=lambda _envelope: None)
+        observed_at = time.time() - 61
+        adapter.observe({
+            "source": "bridge",
+            "event": "command_delivered",
+            "session_id": "native-session",
+            "command_id": "native-command",
+            "provider": "codex",
+            "recovery_generation": 3,
+            "observed_at": observed_at,
+        })
+        request = SimpleNamespace(
+            session_id=opaque_identifier("session", "native-session"),
+            command_id=opaque_identifier("command", "native-command"),
+            recovery_generation="3",
+            incident_observed_at=observed_at - 1,
+        )
+
+        health = adapter.recovery_health(request)
+
+        self.assertTrue(health.objective_restored)
+        self.assertGreaterEqual(health.stable_for_seconds, 60)
+        self.assertEqual(set(health.evidence_codes), {
+            "bridge_process_alive",
+            "bridge_heartbeat_fresh",
+            "command_delivered",
+        })
+
+        request.incident_observed_at = observed_at + 1
+        self.assertFalse(adapter.recovery_health(request).objective_restored)
 
 
 if __name__ == "__main__":
