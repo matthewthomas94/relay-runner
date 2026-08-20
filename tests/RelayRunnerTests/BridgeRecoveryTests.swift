@@ -538,6 +538,9 @@ final class BridgeRecoveryTests: XCTestCase {
             "[ \"$RELAY_CONTINUITY_RECOVERY_PENDING\" = \"1\" ] && return 0"
         ))
         XCTAssertTrue(script.contains("export RELAY_CONTINUITY_RECOVERY_PENDING=1"))
+        XCTAssertTrue(script.contains(
+            "[ \"$RELAY_CONTINUITY_RECOVERY_PENDING\" = \"1\" ] || rm -f /tmp/voice_command_state.json"
+        ))
     }
 
     func testRecoveryScriptPreservesTutorialGreetingSuppression() {

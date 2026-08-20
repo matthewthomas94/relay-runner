@@ -3744,17 +3744,23 @@ def _run_relay(
     """Relay mode: write voice commands for the active agent and read TTS from FIFO."""
     suppress_next_messenger_user_reply = suppress_startup_greeting
 
-    # Create TTS input FIFO
-    for path in [
+    # The continuity handoff still needs the authoritative recovery generation.
+    # Keep its full command state so a newer command remains able to reject the
+    # recovering turn instead of reconstructing or overwriting command identity.
+    cleanup_paths = [
         TTS_IN_FIFO,
         VOICE_CMD_FILE,
         VOICE_CMD_META_FILE,
-        VOICE_COMMAND_STATE_FILE,
         VOICE_COMMAND_CLAIM_FILE,
         VOICE_MANUAL_CLAIM_ACK_FILE,
         VOICE_COMMAND_AUTHORIZATION_FILE,
         VOICE_PROVIDER_TURNS_FILE,
-    ]:
+    ]
+    if os.environ.get("RELAY_CONTINUITY_RECOVERY_PENDING") != "1":
+        cleanup_paths.append(VOICE_COMMAND_STATE_FILE)
+
+    # Create TTS input FIFO
+    for path in cleanup_paths:
         try:
             os.unlink(path)
         except OSError:

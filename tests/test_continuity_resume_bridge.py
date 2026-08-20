@@ -198,6 +198,80 @@ class ContinuityResumeBridgeTests(unittest.TestCase):
         self.assertEqual(resumed["intent_id"], original["intent_id"])
         self.assertEqual(resumed["intent_delivery_id"], original["intent_delivery_id"])
 
+    def test_production_bridge_restart_preserves_authoritative_resume_state(self):
+        database = self.root / "restart-inbox.sqlite3"
+        metadata = {
+            "relay_command_seq": 1,
+            "relay_command_id": "command-one",
+            "intent_id": "intent-1",
+            "within_turn_order": 1,
+            "recovery_generation": "generation-7",
+        }
+        initial_inbox = IntentInbox(database)
+        initial_inbox.enqueue("private prompt", metadata, "continue_current")
+        initial_inbox.close()
+        self.inbox.close()
+        self.inbox = IntentInbox(database, hold_recovered_delivery=True)
+        self.addCleanup(self.inbox.close)
+        self.state_path.write_text(json.dumps(metadata))
+        payload = {
+            **self.payload,
+            "command_id": opaque_identifier("command", "command-one"),
+            "component": "command",
+            "phase": "command_processing",
+        }
+
+        def restart_bridge():
+            paths = {
+                "TTS_IN_FIFO": str(self.root / "tts-in"),
+                "VOICE_CMD_FILE": str(self.root / "ready"),
+                "VOICE_CMD_META_FILE": str(self.root / "ready.meta"),
+                "VOICE_COMMAND_STATE_FILE": str(self.state_path),
+                "VOICE_COMMAND_CLAIM_FILE": str(self.root / "claimed.json"),
+                "VOICE_MANUAL_CLAIM_ACK_FILE": str(self.root / "manual-ack.json"),
+                "VOICE_COMMAND_AUTHORIZATION_FILE": str(self.root / "authorizations.json"),
+                "VOICE_PROVIDER_TURNS_FILE": str(self.root / "turns.json"),
+            }
+            with (
+                patch.multiple(voice_bridge, **paths),
+                patch.dict(os.environ, {
+                    "RELAY_CONTINUITY_RECOVERY_PENDING": "1",
+                    "RELAY_RECOVERY_GENERATION": "generation-7",
+                }),
+                patch.object(voice_bridge, "ensure_fifo", return_value=True),
+                patch.object(voice_bridge, "open_fifo", return_value=None),
+                patch.object(voice_bridge.threading, "Thread"),
+            ):
+                self.assertFalse(voice_bridge._run_relay(
+                    SimpleNamespace(input_queue=object()),
+                    SimpleNamespace(is_set=lambda: False),
+                    suppress_startup_greeting=True,
+                    inbox=self.inbox,
+                ))
+
+        restart_bridge()
+        self.assertEqual(json.loads(self.state_path.read_text()), metadata)
+        self.assertEqual(
+            self.call({**payload, "recovery_generation": "generation-6"})["reason"],
+            "stale_recovery_generation",
+        )
+        with patch("voice_bridge._notify_state"):
+            released = self.call(payload)
+            duplicate = self.call(payload)
+        self.assertEqual(released["action"], "resume_exact")
+        self.assertEqual(duplicate, {"action": "noop", "reason": "handoff_already_applied"})
+
+        newer = {
+            "relay_command_seq": 2,
+            "relay_command_id": "command-two",
+            "intent_id": "intent-2",
+            "recovery_generation": "generation-8",
+        }
+        self.state_path.write_text(json.dumps(newer))
+        restart_bridge()
+        self.assertEqual(json.loads(self.state_path.read_text()), newer)
+        self.assertEqual(self.call(payload)["reason"], "stale_recovery_generation")
+
     def test_recovered_siblings_release_in_order_after_each_acknowledgement(self):
         self.inbox.close()
         database = self.root / "siblings.sqlite3"
