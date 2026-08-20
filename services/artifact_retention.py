@@ -12,6 +12,7 @@ import contextlib
 import dataclasses
 import enum
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -35,6 +36,7 @@ try:
         TicketWrite,
         _attachment_mime_for_filename,
     )
+    from services.artifact_sync import ArtifactRemoteProof
 except ModuleNotFoundError:  # Direct services/*.py execution.
     from artifact_store import (  # type: ignore[no-redef]
         ArchiveIndexWrite,
@@ -49,6 +51,7 @@ except ModuleNotFoundError:  # Direct services/*.py execution.
         TicketWrite,
         _attachment_mime_for_filename,
     )
+    from artifact_sync import ArtifactRemoteProof  # type: ignore[no-redef]
 
 
 UTC = timezone.utc
@@ -57,6 +60,7 @@ RETENTION_PLAN_SCHEMA_VERSION = 1
 TERMINAL_RETENTION_LIMIT = 25
 CATALOG_SCHEMA_VERSION = 1
 LEASE_SCHEMA_VERSION = 1
+RETENTION_TRANSACTION_SCHEMA_VERSION = 1
 
 ACTIVITY_FIELDS = (
     "activity_at",
@@ -209,6 +213,64 @@ class StorageMetrics:
     run_database_log_bytes: int
     derived_index_cache_bytes: int
     reclaimable_estimate_bytes: int
+
+
+@dataclasses.dataclass(frozen=True)
+class ArchiveRemoteConfirmation:
+    """User-approved exposure of one exact, existing GitHub remote."""
+
+    service: str
+    remote_name: str
+    remote_url_sha256: str
+    push_url_sha256: str
+    exposure_confirmed: bool
+
+
+def _configured_remote_urls(store: ArtifactStore, remote_name: str) -> tuple[str, str]:
+    fetch = store._git(
+        "remote", "get-url", remote_name, allowed_statuses={0, 2, 128}
+    )
+    push = store._git(
+        "remote", "get-url", "--push", "--all", remote_name,
+        allowed_statuses={0, 2, 128},
+    )
+    push_urls = push.stdout.splitlines()
+    if fetch.returncode != 0 or not fetch.stdout.strip() or push.returncode != 0:
+        raise ArtifactValidationError(
+            f"selected existing remote {remote_name!r} is unavailable; Relay will not create it"
+        )
+    if len(push_urls) != 1 or not push_urls[0]:
+        raise ArtifactValidationError(
+            "terminal cleanup requires exactly one explicitly confirmed push destination"
+        )
+    return fetch.stdout.strip(), push_urls[0]
+
+
+def confirm_github_remote(
+    store: ArtifactStore,
+    remote_name: str,
+    *,
+    exposure_confirmed: bool,
+) -> ArchiveRemoteConfirmation:
+    """Bind explicit exposure consent to the selected remote's current URL."""
+    if not exposure_confirmed:
+        raise ArtifactValidationError(
+            "GitHub archival requires explicit confirmation that ticket content will be exposed"
+        )
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", remote_name):
+        raise ArtifactValidationError(f"invalid configured remote name: {remote_name!r}")
+    remote_url, push_url = _configured_remote_urls(store, remote_name)
+    if not _is_github_url(remote_url) or not _is_github_url(push_url):
+        raise ArtifactValidationError(
+            "terminal cleanup requires an explicitly confirmed github.com remote for both fetch and push"
+        )
+    return ArchiveRemoteConfirmation(
+        service="github",
+        remote_name=remote_name,
+        remote_url_sha256=hashlib.sha256(remote_url.encode("utf-8")).hexdigest(),
+        push_url_sha256=hashlib.sha256(push_url.encode("utf-8")).hexdigest(),
+        exposure_confirmed=True,
+    )
 
 
 class SnapshotLeaseStore:
@@ -421,6 +483,8 @@ class ArtifactRetentionManager:
         *,
         lease_store: SnapshotLeaseStore | None = None,
         remote_mode: str = "local_only",
+        remote_confirmation: ArchiveRemoteConfirmation | None = None,
+        synchronizer: object | None = None,
         enabled: bool = False,
         now: Callable[[], datetime] | None = None,
         failure_injector: Callable[[str], None] | None = None,
@@ -430,37 +494,64 @@ class ArtifactRetentionManager:
         self.store = store
         self.lease_store = lease_store or SnapshotLeaseStore(store)
         self.remote_mode = remote_mode
+        self.remote_confirmation = remote_confirmation
+        self.synchronizer = synchronizer
         self.enabled = enabled
         self.now = now or (lambda: datetime.now(UTC))
         self.failure_injector = failure_injector
+        self.transaction_path = store.project_state / "retention-transaction.json"
 
     def preview(self, *, evaluated_at: datetime | None = None) -> RetentionPlan:
         instant = _utc(evaluated_at or self.now())
         snapshot = self.store.snapshot()
-        entries = self.store._tree_entries(snapshot.commit_id)
-        leased = self.lease_store.active_ticket_ids()
+        return self._preview_head(
+            snapshot.commit_id,
+            snapshot.files,
+            evaluated_at=instant,
+            leased=self.lease_store.active_ticket_ids(),
+            include_transaction=True,
+        )
+
+    def _preview_head(
+        self,
+        head: str,
+        files: Mapping[str, bytes],
+        *,
+        evaluated_at: datetime,
+        leased: frozenset[str],
+        include_transaction: bool,
+    ) -> RetentionPlan:
+        entries = self.store._tree_entries(head)
+        transaction = self._read_transaction() if include_transaction else None
+        transaction_ids = set(transaction.get("ticket_ids", [])) if transaction else set()
         canonical: dict[str, RetentionTicket] = {}
-        for path in sorted(snapshot.files):
+        for path in sorted(files):
             if not _is_ticket_path(path):
                 continue
             ticket_id = PurePosixPath(path).stem
-            content = snapshot.files[path]
+            content = files[path]
             ticket = self._retention_ticket(
-                snapshot.commit_id,
+                head,
                 ticket_id,
                 path,
                 content,
                 entries[path].oid,
-                snapshot.files,
+                files,
                 leased,
             )
+            if ticket_id in transaction_ids:
+                reasons = set(ticket.exemptions)
+                reasons.add("in_flight_transaction")
+                if transaction and transaction.get("last_error"):
+                    reasons.add("retryable_verification_failure")
+                ticket = dataclasses.replace(ticket, exemptions=tuple(sorted(reasons)))
             if ticket.artifact_id in canonical:
                 raise ArtifactValidationError(
                     f"duplicate immutable artifact_id in materialized tickets: {ticket.artifact_id}"
                 )
             canonical[ticket.artifact_id] = ticket
 
-        for artifact_id, entry in self._catalog_from_files(snapshot.files).items():
+        for artifact_id, entry in self._catalog_from_files(files).items():
             if artifact_id in canonical or entry.get("state") == RetentionState.DELETED_TOMBSTONE.value:
                 continue
             ticket = self._catalog_ticket(entry)
@@ -496,8 +587,8 @@ class ArtifactRetentionManager:
             policy=RETENTION_POLICY,
             limit=TERMINAL_RETENTION_LIMIT,
             project_id=self.store.project_id,
-            artifact_head=snapshot.commit_id,
-            evaluated_at=instant,
+            artifact_head=head,
+            evaluated_at=evaluated_at,
             candidates=tuple(candidates),
             retained_terminal=tuple(retained_terminal),
             nonterminal=tuple(sorted(nonterminal, key=lambda ticket: ticket.ticket_id)),
@@ -519,8 +610,29 @@ class ArtifactRetentionManager:
         self._require_enabled()
         if plan.project_id != self.store.project_id:
             raise ArtifactValidationError("retention plan belongs to another project")
+        synchronizer = synchronizer or self.synchronizer
+        existing_transaction = self._read_transaction()
+        if existing_transaction:
+            if existing_transaction.get("event_id") != event_id:
+                raise ArtifactConcurrentUpdate(
+                    "another retention publication transaction must be recovered first"
+                )
+            self._validate_remote_transaction(
+                synchronizer,
+                confirmation=self._transaction_confirmation(existing_transaction),
+            )
+            with self.lease_store._locked(), self.store._writer_lock():
+                return self._resume_archive(existing_transaction, synchronizer)
+        prior = self.store._find_event(event_id)
+        if prior:
+            return ArchiveResult(
+                RetentionState.ARCHIVED,
+                _prior_result(self.store, event_id, prior[0]),
+                plan.candidate_ids,
+            )
         if not plan.candidates:
             return ArchiveResult(RetentionState.ARCHIVED, None, ())
+        confirmation = self._validate_remote_transaction(synchronizer)
         with self.lease_store._locked(), self.store._writer_lock():
             current = self.store._head()
             if current != plan.artifact_head:
@@ -528,6 +640,34 @@ class ArtifactRetentionManager:
             refreshed = self.preview(evaluated_at=plan.evaluated_at)
             if _plan_identity(refreshed) != _plan_identity(plan):
                 raise ArtifactConcurrentUpdate("retention eligibility changed since preview")
+            preflight = synchronizer.sync_confirmed(
+                expected_remote_url_sha256=confirmation.remote_url_sha256,
+                expected_push_url_sha256=confirmation.push_url_sha256,
+            )
+            if getattr(getattr(preflight, "state", None), "value", None) != "clean":
+                return ArchiveResult(
+                    RetentionState.ARCHIVE_PENDING_SYNC,
+                    None,
+                    refreshed.candidate_ids,
+                    recovery=(
+                        getattr(preflight, "recovery", None)
+                        or "Reconcile the selected GitHub artifact ref and retry."
+                    ),
+                )
+            if (
+                getattr(preflight, "local_head", None) != current
+                or getattr(preflight, "remote_head", None) != current
+                or self.store._head() != current
+            ):
+                return ArchiveResult(
+                    RetentionState.ARCHIVE_PENDING_SYNC,
+                    None,
+                    refreshed.candidate_ids,
+                    recovery=(
+                        "Artifact synchronization changed the canonical head; preview the "
+                        "terminal candidates again before deletion."
+                    ),
+                )
             entries = self.store._tree_entries(current)
             catalog = self._catalog(current)
             for ticket in refreshed.candidates:
@@ -536,7 +676,7 @@ class ArtifactRetentionManager:
             operations = [ArchiveIndexWrite(_encode_catalog(catalog))]
             operations.extend(TicketDelete(ticket.ticket_id) for ticket in refreshed.candidates)
             self._inject("before_archive_commit")
-            write = self.store.mutate(
+            write = self.store.prepare_mutation(
                 ArtifactMutation(
                     event_id=event_id,
                     actor_type=actor_type,
@@ -548,38 +688,80 @@ class ArtifactRetentionManager:
                 )
             )
             self._verify_archived_reachability(write.commit_id, refreshed.candidates, catalog)
-            if self.remote_mode == "enabled":
-                if synchronizer is None:
-                    self._rewind_unpublished_archive(write)
-                    return ArchiveResult(
-                        RetentionState.ARCHIVE_PENDING_SYNC,
-                        None,
-                        refreshed.candidate_ids,
-                        recovery="Remote-enabled archival requires a verified synchronizer; active files were retained.",
-                    )
-                sync_result = synchronizer.sync()
-                if getattr(getattr(sync_result, "state", None), "value", None) != "clean":
-                    self._rewind_unpublished_archive(write)
-                    return ArchiveResult(
-                        RetentionState.ARCHIVE_PENDING_SYNC,
-                        None,
-                        refreshed.candidate_ids,
-                        recovery=(
-                            getattr(sync_result, "recovery", None)
-                            or "Artifact archive could not be fast-forward-published; active files were retained."
-                        ),
-                    )
-            warnings = ()
-            if self.remote_mode == "local_only":
-                warnings = (
-                    "Archived history is local only; device loss is not remotely recoverable.",
-                )
-            return ArchiveResult(
-                RetentionState.ARCHIVED,
-                write,
-                refreshed.candidate_ids,
-                warnings=warnings,
+            candidate_entries = self.store._tree_entries(write.commit_id)
+            proofs = self._archive_proofs(
+                write.commit_id,
+                refreshed.candidates,
+                entries,
+                candidate_entries,
             )
+            scratch_ref = self._scratch_ref(event_id)
+            transaction = {
+                "schema_version": RETENTION_TRANSACTION_SCHEMA_VERSION,
+                "project_id": self.store.project_id,
+                "event_id": event_id,
+                "device_id": device_id,
+                "actor_type": actor_type,
+                "provider": provider,
+                "phase": "prepared",
+                "base_head": current,
+                "candidate_head": write.commit_id,
+                "scratch_ref": scratch_ref,
+                "ticket_ids": list(refreshed.candidate_ids),
+                "proofs": [dataclasses.asdict(proof) for proof in proofs],
+                "remote_confirmation": dataclasses.asdict(confirmation),
+                "last_error": None,
+            }
+            self._publish_transaction_scratch(transaction)
+            self._inject("after_archive_scratch")
+            self._write_transaction(transaction)
+            self._inject("after_archive_prepare")
+            return self._resume_archive(transaction, synchronizer)
+
+    def recover_archive(self, *, synchronizer: object | None = None) -> ArchiveResult | None:
+        """Resume an interrupted publication transaction without a stale plan."""
+        self._require_enabled()
+        transaction = self._read_transaction()
+        if not transaction:
+            return None
+        synchronizer = synchronizer or self.synchronizer
+        self._validate_remote_transaction(
+            synchronizer,
+            confirmation=self._transaction_confirmation(transaction),
+        )
+        with self.lease_store._locked(), self.store._writer_lock():
+            return self._resume_archive(transaction, synchronizer)
+
+    def recover_from_remote(self, *, synchronizer: object | None = None) -> object:
+        """Restore a compliant projection from only the confirmed artifact ref."""
+        self._require_enabled()
+        synchronizer = synchronizer or self.synchronizer
+        confirmation = self._validate_remote_transaction(synchronizer)
+
+        def validate(head: str) -> None:
+            self.store._validate_artifact_head(head)
+            entries = self.store._tree_entries(head)
+            files = {path: self.store._cat_blob(entry.oid) for path, entry in entries.items()}
+            plan = self._preview_head(
+                head,
+                files,
+                evaluated_at=_utc(self.now()),
+                leased=frozenset(),
+                include_transaction=False,
+            )
+            materialized_ids = {
+                PurePosixPath(path).stem for path in files if _is_ticket_path(path)
+            }
+            expected_ids = set(plan.nonterminal_ids) | set(plan.retained_terminal_ids)
+            if plan.candidates or plan.materialize or materialized_ids != expected_ids:
+                raise ArtifactValidationError(
+                    "remote artifact ref does not materialize every nonterminal ticket and the newest 25 terminal tickets"
+                )
+
+        return synchronizer.recover_exact_ref(
+            expected_remote_url_sha256=confirmation.remote_url_sha256,
+            validate_head=validate,
+        )
 
     def historical_search(self, query: str = "") -> tuple[HistoricalCard, ...]:
         catalog = self._catalog(self._head_required())
@@ -1033,21 +1215,402 @@ class ArtifactRetentionManager:
             "cat-file", "-e", object_id, allowed_statuses={0, 1, 128}
         ).returncode == 0
 
-    def _rewind_unpublished_archive(self, write: ArtifactWriteResult) -> None:
-        if not write.base_commit:
-            raise ArtifactValidationError("archive commit has no verified parent for recovery")
+    def _resume_archive(
+        self,
+        transaction: Mapping[str, object],
+        synchronizer: object,
+    ) -> ArchiveResult:
+        transaction = dict(transaction)
+        self._validate_transaction(transaction)
+        base_head = str(transaction["base_head"])
+        candidate_head = str(transaction["candidate_head"])
+        ticket_ids = tuple(str(value) for value in transaction["ticket_ids"])
+        phase = str(transaction["phase"])
+        proofs = tuple(
+            ArtifactRemoteProof(
+                source_commit=str(value["source_commit"]),
+                path=str(value["path"]),
+                blob_id=str(value["blob_id"]),
+                sha256=str(value["sha256"]),
+            )
+            for value in transaction["proofs"]
+        )
+        if not self._object_exists(candidate_head):
+            raise ArtifactValidationError(
+                "prepared retention commit is unavailable; active files were retained"
+            )
+        if self.store._first_parent(candidate_head) != base_head:
+            raise ArtifactValidationError("prepared retention commit no longer matches its base")
+        self._ensure_transaction_scratch(transaction)
+
+        current = self.store._head()
+        if phase == "prepared":
+            if current != base_head:
+                raise ArtifactConcurrentUpdate(
+                    "artifact authority changed before remote archive verification"
+                )
+            confirmation = self._transaction_confirmation(transaction)
+            self._validate_remote_transaction(
+                synchronizer,
+                confirmation=confirmation,
+            )
+            result = synchronizer.publish_prepared(
+                candidate_head,
+                expected_remote_head=base_head,
+                proofs=proofs,
+                expected_remote_url_sha256=confirmation.remote_url_sha256,
+                expected_push_url_sha256=confirmation.push_url_sha256,
+            )
+            state_value = getattr(getattr(result, "state", None), "value", None)
+            if state_value != "clean":
+                transaction["last_error"] = (
+                    getattr(result, "recovery", None)
+                    or "Prepared archive publication could not be independently verified."
+                )
+                if state_value in {"ahead", "behind", "conflict"} and getattr(
+                    result, "remote_head", None
+                ):
+                    self._discard_prepared_transaction(transaction)
+                    return ArchiveResult(
+                        RetentionState.ARCHIVE_PENDING_SYNC,
+                        None,
+                        ticket_ids,
+                        recovery=(
+                            str(transaction["last_error"])
+                            + " The unpublished prepared transaction was discarded; "
+                            "synchronize, preview, and retry."
+                        ),
+                    )
+                self._write_transaction(transaction)
+                return ArchiveResult(
+                    RetentionState.ARCHIVE_PENDING_SYNC,
+                    None,
+                    ticket_ids,
+                    recovery=str(transaction["last_error"]),
+                )
+            transaction["phase"] = "published"
+            transaction["last_error"] = None
+            transaction["verified_remote_head"] = getattr(result, "remote_head", None)
+            self._write_transaction(transaction)
+            self._inject("after_remote_verification")
+            phase = "published"
+
+        current = self.store._head()
+        if phase == "published":
+            if current not in {base_head, candidate_head}:
+                raise ArtifactConcurrentUpdate(
+                    "artifact authority differs from the verified archive transaction"
+                )
+            self.store._ensure_materialization_consistent(base_head)
+            if current == base_head:
+                update = self.store._git(
+                    "update-ref",
+                    self.store.artifact_ref,
+                    candidate_head,
+                    base_head,
+                    allowed_statuses={0, 128},
+                )
+                if update.returncode != 0:
+                    raise ArtifactConcurrentUpdate(
+                        "artifact authority changed during verified archive adoption"
+                    )
+            self._inject("after_local_ref_update")
+            transaction["phase"] = "local_ref_advanced"
+            self._write_transaction(transaction)
+            phase = "local_ref_advanced"
+
+        if phase == "local_ref_advanced":
+            if self.store._head() != candidate_head:
+                raise ArtifactConcurrentUpdate(
+                    "verified archive commit is no longer the local artifact authority"
+                )
+            self.store._recover_materialization_transaction()
+            self.store._materialize(candidate_head, force=True)
+            transaction["phase"] = "materialized"
+            self._write_transaction(transaction)
+            self._inject("after_archive_materialization")
+            phase = "materialized"
+
+        if phase != "materialized":
+            raise ArtifactValidationError(f"unsupported retention transaction phase: {phase!r}")
+        if self.store._head() != candidate_head:
+            raise ArtifactConcurrentUpdate(
+                "materialized archive transaction lost canonical authority"
+            )
+        self.store._recover_materialization_transaction()
+        self.store._ensure_materialization_consistent(candidate_head)
+        self.store._git(
+            "update-ref",
+            "-d",
+            str(transaction["scratch_ref"]),
+            candidate_head,
+            allowed_statuses={0, 128},
+        )
+        self._remove_transaction()
+        return ArchiveResult(
+            RetentionState.ARCHIVED,
+            ArtifactWriteResult(
+                event_id=str(transaction["event_id"]),
+                commit_id=candidate_head,
+                tree_id=self.store._tree_id(candidate_head),
+                base_commit=base_head,
+                idempotent=False,
+            ),
+            ticket_ids,
+        )
+
+    def _archive_proofs(
+        self,
+        candidate_head: str,
+        tickets: Sequence[RetentionTicket],
+        base_entries: Mapping[str, object],
+        candidate_entries: Mapping[str, object],
+    ) -> tuple[ArtifactRemoteProof, ...]:
+        proofs: list[ArtifactRemoteProof] = []
+        for ticket in tickets:
+            content = self.store._cat_blob(ticket.blob_id)
+            proofs.append(
+                ArtifactRemoteProof(
+                    source_commit=ticket.source_commit,
+                    path=ticket.path,
+                    blob_id=ticket.blob_id,
+                    sha256=hashlib.sha256(content).hexdigest(),
+                )
+            )
+            for path in ticket.attachment_paths:
+                entry = base_entries.get(path)
+                if entry is None:
+                    raise ArtifactValidationError(f"referenced attachment is missing: {path}")
+                attachment = self.store._cat_blob(entry.oid)
+                proofs.append(
+                    ArtifactRemoteProof(
+                        source_commit=ticket.source_commit,
+                        path=path,
+                        blob_id=entry.oid,
+                        sha256=hashlib.sha256(attachment).hexdigest(),
+                    )
+                )
+        catalog_path = ".orchestrator/archive-index.jsonl"
+        catalog_entry = candidate_entries.get(catalog_path)
+        if catalog_entry is None:
+            raise ArtifactValidationError("prepared archive commit has no catalog")
+        catalog_content = self.store._cat_blob(catalog_entry.oid)
+        proofs.append(
+            ArtifactRemoteProof(
+                source_commit=candidate_head,
+                path=catalog_path,
+                blob_id=catalog_entry.oid,
+                sha256=hashlib.sha256(catalog_content).hexdigest(),
+            )
+        )
+        return tuple(sorted(proofs, key=lambda value: (value.source_commit, value.path)))
+
+    def _validate_remote_transaction(
+        self,
+        synchronizer: object | None,
+        *,
+        confirmation: ArchiveRemoteConfirmation | None = None,
+    ) -> ArchiveRemoteConfirmation:
+        if self.remote_mode != "enabled":
+            raise ArtifactValidationError(
+                "terminal cleanup remains preview-only until a GitHub remote is selected and confirmed"
+            )
+        if synchronizer is None or not all(
+            hasattr(synchronizer, name)
+            for name in (
+                "sync_confirmed",
+                "publish_prepared",
+                "recover_exact_ref",
+                "remote_name",
+            )
+        ):
+            raise ArtifactValidationError(
+                "remote-enabled retention requires the exact-ref verified synchronizer"
+            )
+        confirmation = confirmation or self.remote_confirmation
+        if (
+            confirmation is None
+            or confirmation.service != "github"
+            or not confirmation.exposure_confirmed
+        ):
+            raise ArtifactValidationError(
+                "GitHub archival exposure has not been explicitly confirmed"
+            )
+        if confirmation.remote_name != getattr(synchronizer, "remote_name", None):
+            raise ArtifactValidationError("confirmed GitHub remote does not match the synchronizer")
+        remote_url, push_url = _configured_remote_urls(self.store, confirmation.remote_name)
+        remote_digest = hashlib.sha256(remote_url.encode("utf-8")).hexdigest()
+        if remote_digest != confirmation.remote_url_sha256:
+            raise ArtifactValidationError(
+                "the selected GitHub remote URL changed after exposure confirmation"
+            )
+        push_digest = hashlib.sha256(push_url.encode("utf-8")).hexdigest()
+        if push_digest != confirmation.push_url_sha256:
+            raise ArtifactValidationError(
+                "the selected GitHub push destination changed after exposure confirmation"
+            )
+        return confirmation
+
+    def _scratch_ref(self, event_id: str) -> str:
+        digest = hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:32]
+        return f"refs/relay-runner/retention/{self.store.project_id}/{digest}"
+
+    def _transaction_confirmation(
+        self,
+        transaction: Mapping[str, object],
+    ) -> ArchiveRemoteConfirmation:
+        value = transaction.get("remote_confirmation")
+        if not isinstance(value, Mapping):
+            raise ArtifactValidationError("retention transaction has no remote confirmation")
+        return ArchiveRemoteConfirmation(
+            service=str(value.get("service", "")),
+            remote_name=str(value.get("remote_name", "")),
+            remote_url_sha256=str(value.get("remote_url_sha256", "")),
+            push_url_sha256=str(value.get("push_url_sha256", "")),
+            exposure_confirmed=value.get("exposure_confirmed") is True,
+        )
+
+    def _ensure_transaction_scratch(self, transaction: Mapping[str, object]) -> None:
+        scratch_ref = str(transaction["scratch_ref"])
+        candidate_head = str(transaction["candidate_head"])
+        found = self.store._git(
+            "rev-parse", "--verify", scratch_ref, allowed_statuses={0, 128}
+        )
+        if found.returncode == 0:
+            if found.stdout.strip() != candidate_head:
+                raise ArtifactConcurrentUpdate(
+                    "retention scratch ref already names another commit"
+                )
+            return
         update = self.store._git(
             "update-ref",
-            self.store.artifact_ref,
-            write.base_commit,
-            write.commit_id,
+            scratch_ref,
+            candidate_head,
+            self.store._zero_oid(),
+            allowed_statuses={0, 128},
+        )
+        if update.returncode != 0:
+            raise ArtifactConcurrentUpdate("retention scratch ref changed during recovery")
+
+    def _publish_transaction_scratch(self, transaction: Mapping[str, object]) -> None:
+        """Pin a prepared candidate before making its journal durable."""
+        if self.transaction_path.exists():
+            raise ArtifactConcurrentUpdate(
+                "another retention transaction appeared before candidate preparation"
+            )
+        scratch_ref = str(transaction["scratch_ref"])
+        candidate_head = str(transaction["candidate_head"])
+        found = self.store._git(
+            "rev-parse", "--verify", scratch_ref, allowed_statuses={0, 128}
+        )
+        previous = (
+            found.stdout.strip() if found.returncode == 0 else self.store._zero_oid()
+        )
+        if previous == candidate_head:
+            return
+        update = self.store._git(
+            "update-ref",
+            scratch_ref,
+            candidate_head,
+            previous,
             allowed_statuses={0, 128},
         )
         if update.returncode != 0:
             raise ArtifactConcurrentUpdate(
-                "archive publication failed and the local artifact ref advanced; explicit reconciliation required"
+                "retention scratch ref changed before journal publication"
             )
-        self.store._materialize(write.base_commit)
+
+    def _discard_prepared_transaction(self, transaction: Mapping[str, object]) -> None:
+        if transaction.get("phase") != "prepared" or self.store._head() != transaction.get(
+            "base_head"
+        ):
+            raise ArtifactConcurrentUpdate(
+                "only an unpublished prepared retention transaction can be discarded"
+            )
+        self.store._git(
+            "update-ref",
+            "-d",
+            str(transaction["scratch_ref"]),
+            str(transaction["candidate_head"]),
+            allowed_statuses={0, 128},
+        )
+        self._remove_transaction()
+
+    def _read_transaction(self) -> dict[str, object] | None:
+        if not self.transaction_path.exists():
+            return None
+        try:
+            value = json.loads(self.transaction_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ArtifactValidationError(f"retention transaction journal is corrupt: {error}") from error
+        if not isinstance(value, dict):
+            raise ArtifactValidationError("retention transaction journal is not an object")
+        self._validate_transaction(value)
+        return value
+
+    def _write_transaction(self, transaction: Mapping[str, object]) -> None:
+        self._validate_transaction(transaction)
+        self.transaction_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.transaction_path.with_name(
+            self.transaction_path.name + f".{uuid.uuid4().hex}.tmp"
+        )
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(_canonical_json(transaction) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.transaction_path)
+            directory = os.open(self.transaction_path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _remove_transaction(self) -> None:
+        self.transaction_path.unlink(missing_ok=True)
+        directory = os.open(self.transaction_path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    def _validate_transaction(self, transaction: Mapping[str, object]) -> None:
+        if transaction.get("schema_version") != RETENTION_TRANSACTION_SCHEMA_VERSION:
+            raise ArtifactValidationError("retention transaction schema is unsupported")
+        if transaction.get("project_id") != self.store.project_id:
+            raise ArtifactValidationError("retention transaction belongs to another project")
+        required_strings = (
+            "event_id",
+            "device_id",
+            "actor_type",
+            "phase",
+            "base_head",
+            "candidate_head",
+            "scratch_ref",
+        )
+        if any(not isinstance(transaction.get(key), str) or not transaction[key] for key in required_strings):
+            raise ArtifactValidationError("retention transaction journal is incomplete")
+        if transaction.get("phase") not in {"prepared", "published", "local_ref_advanced", "materialized"}:
+            raise ArtifactValidationError("retention transaction phase is invalid")
+        if transaction.get("scratch_ref") != self._scratch_ref(str(transaction["event_id"])):
+            raise ArtifactValidationError("retention transaction scratch ref is invalid")
+        if not isinstance(transaction.get("ticket_ids"), list) or not transaction["ticket_ids"]:
+            raise ArtifactValidationError("retention transaction has no ticket identities")
+        proofs = transaction.get("proofs")
+        if not isinstance(proofs, list) or not proofs or any(not isinstance(value, dict) for value in proofs):
+            raise ArtifactValidationError("retention transaction proofs are incomplete")
+        confirmation = self._transaction_confirmation(transaction)
+        if (
+            confirmation.service != "github"
+            or not confirmation.exposure_confirmed
+            or not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", confirmation.remote_name)
+            or not re.fullmatch(r"[0-9a-f]{64}", confirmation.remote_url_sha256)
+            or not re.fullmatch(r"[0-9a-f]{64}", confirmation.push_url_sha256)
+        ):
+            raise ArtifactValidationError("retention transaction remote confirmation is invalid")
 
     def _catalog(self, head: str) -> dict[str, dict[str, object]]:
         snapshot = self.store.snapshot()
@@ -1089,6 +1652,15 @@ class ArtifactRetentionManager:
 
 class _MissingHistoricalObject(Exception):
     pass
+
+
+def _is_github_url(value: str) -> bool:
+    repository = r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+    return bool(
+        re.fullmatch(rf"https://github\.com/{repository}", value, re.IGNORECASE)
+        or re.fullmatch(rf"ssh://git@github\.com/{repository}", value, re.IGNORECASE)
+        or re.fullmatch(rf"git@github\.com:{repository}", value, re.IGNORECASE)
+    )
 
 
 def _is_ticket_path(path: str) -> bool:
@@ -1269,6 +1841,7 @@ def _disk_usage(path: Path) -> int:
 
 __all__ = [
     "ACTIVITY_FIELDS",
+    "ArchiveRemoteConfirmation",
     "ArchiveResult",
     "ArtifactRetentionManager",
     "HistoricalCard",
@@ -1280,4 +1853,5 @@ __all__ = [
     "SnapshotLease",
     "SnapshotLeaseStore",
     "StorageMetrics",
+    "confirm_github_remote",
 ]

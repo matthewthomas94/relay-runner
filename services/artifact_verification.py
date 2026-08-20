@@ -76,14 +76,31 @@ PROVIDER_DIFFERENCE_IDS = frozenset(
 # test renames from silently shrinking the gate.  The harness below supplements
 # these unit/integration tests with real two-clone Git operations.
 SOURCE_MATRIX: Mapping[str, tuple[str, ...]] = {
-    "age_boundaries_and_exemptions": (
+    "terminal_count_and_exemptions": (
         "tests/test_artifact_retention.py",
-        "test_activity_uses_durable_max_and_exact_utc_boundary",
-        "test_every_active_dependency_sync_pin_and_lease_exemption_is_fail_safe",
+        "test_mixed_terminal_pool_uses_one_25_ticket_limit",
+        "test_terminal_overage_has_only_bounded_exact_reasons",
+        "test_hundreds_of_terminal_tickets_keep_exactly_newest_25",
     ),
     "archive_restore_dependencies": (
         "tests/test_artifact_retention.py",
         "test_historical_search_detail_restore_and_dependency_resolution",
+    ),
+    "remote_archive_transaction": (
+        "tests/test_artifact_retention.py",
+        "test_archive_failures_preserve_or_recover_projection_from_canonical_ref",
+        "test_crash_after_push_is_resolved_by_refetch_without_local_loss",
+        "test_remote_archive_failure_never_advances_local_authority",
+        "test_remote_race_discards_only_unpublished_candidate_for_safe_replan",
+        "test_unconfirmed_non_github_pushurl_never_publishes",
+        "test_push_destination_is_revalidated_immediately_before_publication",
+        "test_fresh_recovery_materializes_nonterminal_and_newest_25_only",
+    ),
+    "prepared_publication_and_exact_ref_recovery": (
+        "tests/test_artifact_sync.py",
+        "test_prepared_publication_refetches_proofs_before_local_ref_moves",
+        "test_fresh_device_recovers_only_exact_remote_artifact_ref",
+        "test_second_device_recovery_preserves_manual_materialization_edits",
     ),
     "sync_conflicts_and_source_isolation": (
         "tests/test_artifact_sync.py",

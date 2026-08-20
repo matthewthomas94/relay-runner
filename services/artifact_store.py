@@ -300,6 +300,34 @@ class ArtifactStore:
             self._ensure_materialization_consistent(head)
             return self._commit_mutation(mutation, current_head=head, digest=digest)
 
+    def prepare_mutation(self, mutation: ArtifactMutation) -> ArtifactWriteResult:
+        """Validate and build a commit without advancing the artifact authority.
+
+        Destructive publication workflows use this to place a candidate commit
+        on their own scratch ref before any materialized file can disappear.
+        The caller remains responsible for a later compare-and-swap update of
+        ``artifact_ref`` after its external durability checks succeed.
+        """
+        self._require_enabled()
+        self._validate_mutation_envelope(mutation)
+        with self._writer_lock():
+            self._verify_repository()
+            self._recover_materialization_transaction()
+            head = self._head()
+            if not head:
+                raise ArtifactValidationError("artifact store is not initialized")
+            self._validate_artifact_head(head)
+            if mutation.expected_base != head:
+                raise ArtifactConcurrentUpdate(
+                    f"prepared artifact base changed: expected {mutation.expected_base}, found {head}"
+                )
+            self._ensure_materialization_consistent(head)
+            return self._build_mutation_commit(
+                mutation,
+                current_head=head,
+                digest=self._mutation_digest(mutation),
+            )
+
     def bootstrap_legacy(self, mutation: ArtifactMutation) -> ArtifactWriteResult:
         """Create an orphan ref from a reviewed legacy import without cutover.
 
@@ -388,7 +416,39 @@ class ArtifactStore:
         digest: str | None = None,
         materialize: bool = True,
     ) -> ArtifactWriteResult:
-        digest = digest or self._mutation_digest(mutation)
+        prepared = self._build_mutation_commit(
+            mutation,
+            current_head=current_head,
+            digest=digest or self._mutation_digest(mutation),
+        )
+
+        self._inject("during_cas")
+        expected = current_head or self._zero_oid()
+        update = self._git(
+            "update-ref",
+            self.artifact_ref,
+            prepared.commit_id,
+            expected,
+            allowed_statuses={0, 128},
+        )
+        if update.returncode != 0:
+            found = self._head()
+            raise ArtifactConcurrentUpdate(
+                f"artifact ref CAS failed: expected {expected}, found {found or 'missing'}"
+            )
+
+        self._inject("after_ref_update")
+        if materialize:
+            self._materialize(prepared.commit_id)
+        return prepared
+
+    def _build_mutation_commit(
+        self,
+        mutation: ArtifactMutation,
+        *,
+        current_head: str | None,
+        digest: str,
+    ) -> ArtifactWriteResult:
         entries = self._tree_entries(current_head) if current_head else {}
         prepared, warnings = self._prepare_operations(mutation.operations, entries)
 
@@ -429,25 +489,6 @@ class ArtifactStore:
             if current_head:
                 args.extend(["-p", current_head])
             commit_id = self._git(*args, input_bytes=message.encode("utf-8")).stdout.strip()
-
-        self._inject("during_cas")
-        expected = current_head or self._zero_oid()
-        update = self._git(
-            "update-ref",
-            self.artifact_ref,
-            commit_id,
-            expected,
-            allowed_statuses={0, 128},
-        )
-        if update.returncode != 0:
-            found = self._head()
-            raise ArtifactConcurrentUpdate(
-                f"artifact ref CAS failed: expected {expected}, found {found or 'missing'}"
-            )
-
-        self._inject("after_ref_update")
-        if materialize:
-            self._materialize(commit_id)
         return ArtifactWriteResult(
             event_id=mutation.event_id,
             commit_id=commit_id,

@@ -17,6 +17,7 @@ from services.artifact_store import (
     TicketWrite,
 )
 from services.artifact_sync import (
+    ArtifactRemoteProof,
     ArtifactSyncEngine,
     ArtifactSyncMode,
     ArtifactSyncState,
@@ -116,6 +117,168 @@ class ArtifactSyncTests(unittest.TestCase):
             self.run_git(other_remote, "rev-parse", ARTIFACT_REF),
             published.local_head,
         )
+
+    def test_prepared_publication_refetches_proofs_before_local_ref_moves(self):
+        base = self.device_a.store._head()
+        content = self.ticket_bytes("RR-prepared", "Prepared", "artifact-RR-prepared")
+        prepared = self.device_a.store.prepare_mutation(
+            self.mutation(
+                self.device_a,
+                "prepared-ticket",
+                TicketWrite("RR-prepared", "artifact-RR-prepared", content),
+                expected_base=base,
+            )
+        )
+        proof = ArtifactRemoteProof(
+            source_commit=prepared.commit_id,
+            path=".orchestrator/RR-prepared.md",
+            blob_id=self.device_a.store._tree_entries(prepared.commit_id)[
+                ".orchestrator/RR-prepared.md"
+            ].oid,
+            sha256=hashlib.sha256(content).hexdigest(),
+        )
+
+        failed = self.engine(self.device_a).publish_prepared(
+            prepared.commit_id,
+            expected_remote_head=base,
+            proofs=(dataclasses.replace(proof, sha256="0" * 64),),
+        )
+
+        self.assertEqual(failed.state, ArtifactSyncState.FAILED)
+        self.assertEqual(self.device_a.store._head(), base)
+        self.assertNotIn(".orchestrator/RR-prepared.md", self.device_a.store.snapshot().files)
+        self.assertEqual(self.run_git(self.remote, "rev-parse", ARTIFACT_REF), prepared.commit_id)
+
+        verified = self.engine(self.device_a).publish_prepared(
+            prepared.commit_id,
+            expected_remote_head=base,
+            proofs=(proof,),
+        )
+        self.assertEqual(verified.state, ArtifactSyncState.CLEAN)
+        self.assertEqual(verified.remote_head, prepared.commit_id)
+        self.assertEqual(self.device_a.store._head(), base)
+
+    def test_fresh_device_recovers_only_exact_remote_artifact_ref(self):
+        remote_head = self.write_ticket(
+            self.device_a, "recovery-ticket", "RR-recovery", "Recovered"
+        )
+        self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
+        fresh_repo = self.root / "fresh-device"
+        fresh_repo.mkdir()
+        self.run_git(fresh_repo, "init", "--initial-branch=main", "--quiet")
+        (fresh_repo / "source.txt").write_text("fresh source\n")
+        self.commit_source(fresh_repo, "fresh source")
+        self.run_git(fresh_repo, "remote", "add", "origin", str(self.remote))
+        fresh = Device(
+            "fresh",
+            fresh_repo,
+            self.root / "state-fresh",
+            ArtifactStore(
+                fresh_repo,
+                "project-sync",
+                self.root / "state-fresh",
+                enabled=True,
+            ),
+        )
+        validated = []
+
+        result = self.engine(fresh).recover_exact_ref(
+            expected_remote_url_sha256=self.confirmed_fetch_digest(fresh),
+            validate_head=lambda head: validated.append(head)
+        )
+
+        self.assertEqual(result.state, ArtifactSyncState.CLEAN)
+        self.assertEqual(result.local_head, remote_head)
+        self.assertEqual(validated, [remote_head])
+        self.assertIn(".orchestrator/RR-recovery.md", fresh.store.snapshot().files)
+        refs = self.run_git(fresh_repo, "for-each-ref", "--format=%(refname)").splitlines()
+        self.assertEqual(
+            refs,
+            ["refs/heads/main", ARTIFACT_REF],
+        )
+
+    def test_fresh_device_restart_materializes_after_recovery_ref_update_crash(self):
+        remote_head = self.write_ticket(
+            self.device_a, "recovery-crash-ticket", "RR-recovery-crash", "Recovered"
+        )
+        self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
+        fresh_repo = self.root / "fresh-device-crash"
+        fresh_repo.mkdir()
+        self.run_git(fresh_repo, "init", "--initial-branch=main", "--quiet")
+        (fresh_repo / "source.txt").write_text("fresh source\n")
+        self.commit_source(fresh_repo, "fresh source")
+        self.run_git(fresh_repo, "remote", "add", "origin", str(self.remote))
+        fresh_state = self.root / "state-fresh-crash"
+        fresh = Device(
+            "fresh-crash",
+            fresh_repo,
+            fresh_state,
+            ArtifactStore(fresh_repo, "project-sync", fresh_state, enabled=True),
+        )
+
+        def crash_after_ref_update(stage):
+            if stage == "after_recovery_ref_update":
+                raise RuntimeError(stage)
+
+        with self.assertRaisesRegex(RuntimeError, "after_recovery_ref_update"):
+            self.engine(
+                fresh,
+                failure_injector=crash_after_ref_update,
+            ).recover_exact_ref(
+                expected_remote_url_sha256=self.confirmed_fetch_digest(fresh)
+            )
+
+        self.assertEqual(fresh.store._head(), remote_head)
+        self.assertFalse(fresh.store.materialized_path.exists())
+        self.assertFalse(fresh.store.metadata_path.exists())
+        self.assertFalse(fresh.store.journal_path.exists())
+
+        restarted = Device(
+            "fresh-crash-restarted",
+            fresh_repo,
+            fresh_state,
+            ArtifactStore(fresh_repo, "project-sync", fresh_state, enabled=True),
+        )
+        result = self.engine(restarted).recover_exact_ref(
+            expected_remote_url_sha256=self.confirmed_fetch_digest(restarted)
+        )
+
+        self.assertEqual(result.state, ArtifactSyncState.CLEAN)
+        self.assertEqual(result.local_head, remote_head)
+        recovered_ticket = restarted.store.materialized_path / "RR-recovery-crash.md"
+        self.assertTrue(recovered_ticket.is_file())
+        self.assertIn("Recovered", recovered_ticket.read_text())
+        metadata = json.loads(restarted.store.metadata_path.read_text())
+        self.assertEqual(metadata["commit_id"], remote_head)
+        self.assertFalse(restarted.store.journal_path.exists())
+
+    def test_second_device_recovery_preserves_manual_materialization_edits(self):
+        self.write_ticket(
+            self.device_a, "manual-base", "RR-manual", "Shared before edit"
+        )
+        self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
+        self.assertEqual(self.engine(self.device_b).sync().state, ArtifactSyncState.CLEAN)
+        local_head = self.device_b.store._head()
+        ticket_path = self.device_b.repo / ".orchestrator/RR-manual.md"
+        manual_content = ticket_path.read_bytes().replace(
+            b"Shared before edit", b"Manual materialization edit"
+        )
+        ticket_path.write_bytes(manual_content)
+
+        remote_head = self.write_ticket(
+            self.device_a, "remote-ahead", "RR-remote", "Remote ahead"
+        )
+        self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
+
+        result = self.engine(self.device_b).recover_exact_ref(
+            expected_remote_url_sha256=self.confirmed_fetch_digest(self.device_b)
+        )
+
+        self.assertEqual(result.state, ArtifactSyncState.FAILED)
+        self.assertIn("edited manually", result.recovery)
+        self.assertEqual(self.device_b.store._head(), local_head)
+        self.assertEqual(ticket_path.read_bytes(), manual_content)
+        self.assertEqual(self.run_git(self.remote, "rev-parse", ARTIFACT_REF), remote_head)
 
     def test_two_devices_rebase_unrelated_offline_events_and_preserve_source_state(self):
         shared = self.write_ticket(self.device_a, "base-ticket", "RR-1", "Base")
@@ -453,6 +616,10 @@ class ArtifactSyncTests(unittest.TestCase):
             jitter=lambda: 0,
             **kwargs,
         )
+
+    def confirmed_fetch_digest(self, device):
+        destination = self.run_git(device.repo, "remote", "get-url", "origin")
+        return hashlib.sha256(destination.encode()).hexdigest()
 
     def write_ticket(self, device, event_id, ticket_id, title):
         mutation = self.ticket_mutation(device, event_id, ticket_id, title)
