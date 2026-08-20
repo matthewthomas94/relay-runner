@@ -55,3 +55,5 @@ Relay Runner honors reduced-motion behavior where the relevant animation support
 The `[general]` table also persists provider command paths, messenger enable/model/effort, sub-agent policy/model/effort, and compatibility values. Unknown or unsupported provider/model/effort combinations are normalized by the app. Do not copy a config between accounts and assume the same provider catalog is available.
 
 Project registry, ticket, artifact, and daemon configuration have separate ownership. See [Registry v2](architecture/registry-v2.md), [Project scope](architecture/project-scope-v2.md), and [Orchestrator tickets](specs/orchestrator-tickets.md) before changing those files by hand.
+
+Continuity recovery uses the configured foreground provider by default. Cross-provider fallback is disabled unless `[continuity]` explicitly provides all four values: `fallback_provider`, `fallback_command`, `fallback_model`, and `fallback_effort`. An incomplete policy fails closed on the original provider; Relay Runner never infers a different authentication, model, effort, or billing path.

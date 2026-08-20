@@ -460,7 +460,7 @@ def create_provider_session_factory(
     *,
     cwd: str | os.PathLike[str],
 ) -> Callable[[str, str, str], ContinuityProviderSession]:
-    """Resolve only the configured provider; cross-provider fallback is never implicit."""
+    """Resolve the configured provider and only an explicitly complete fallback policy."""
     raw_config = dict(app_config)
     general = dict(raw_config.get("general") or {})
     continuity = dict(raw_config.get("continuity") or {})
@@ -471,6 +471,29 @@ def create_provider_session_factory(
     raw_config["general"] = general
     config = MessengerConfig.from_app_config(raw_config, cwd=cwd)
     resolved_command = resolve_messenger_command(config.provider, config.command)
+    if resolved_command is None and continuity.get("fallback_provider"):
+        fallback_fields = (
+            "fallback_provider", "fallback_command", "fallback_model", "fallback_effort",
+        )
+        if all(str(continuity.get(field) or "").strip() for field in fallback_fields):
+            fallback_provider = str(continuity["fallback_provider"]).strip().lower()
+            if fallback_provider in {"codex", "claude"} and fallback_provider != config.provider:
+                fallback_raw = dict(raw_config)
+                fallback_general = dict(general)
+                fallback_general.update({
+                    "provider": fallback_provider,
+                    "command": continuity["fallback_command"],
+                    "messenger_model": continuity["fallback_model"],
+                    "messenger_effort": continuity["fallback_effort"],
+                })
+                fallback_raw["general"] = fallback_general
+                fallback = MessengerConfig.from_app_config(fallback_raw, cwd=cwd)
+                fallback_command = resolve_messenger_command(
+                    fallback.provider, fallback.command
+                )
+                if fallback_command is not None:
+                    config = fallback
+                    resolved_command = fallback_command
     if resolved_command is None:
         reason_code = "configured_provider_unavailable"
 
