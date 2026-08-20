@@ -23,6 +23,10 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Mapping, Sequence
 
 try:
+    from services.artifact_catalog import (
+        CatalogSemanticError,
+        validate_catalog_ticket_metadata,
+    )
     from services.artifact_store import (
         ArchiveIndexWrite,
         ArtifactConcurrentUpdate,
@@ -38,6 +42,10 @@ try:
     )
     from services.artifact_sync import ArtifactRemoteProof
 except ModuleNotFoundError:  # Direct services/*.py execution.
+    from artifact_catalog import (  # type: ignore[no-redef]
+        CatalogSemanticError,
+        validate_catalog_ticket_metadata,
+    )
     from artifact_store import (  # type: ignore[no-redef]
         ArchiveIndexWrite,
         ArtifactConcurrentUpdate,
@@ -836,6 +844,11 @@ class ArtifactRetentionManager:
                 str(entry["ticket_path"]),
                 str(entry["ticket_blob"]),
             )
+            validate_catalog_ticket_metadata(
+                entry,
+                ticket_bytes,
+                activity_fields=ACTIVITY_FIELDS,
+            )
             for attachment in entry.get("attachments", []):
                 self._verified_historical_blob(
                     source_commit,
@@ -848,7 +861,7 @@ class ArtifactRetentionManager:
                 card,
                 recovery="Required historical objects are unavailable; explicitly deepen while online.",
             )
-        except ArtifactValidationError as error:
+        except (ArtifactValidationError, CatalogSemanticError) as error:
             return HistoricalDetail(
                 HistoryAvailability.TAMPERED,
                 card,

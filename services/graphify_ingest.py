@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import quote
 
+from artifact_catalog import (
+    CatalogSemanticError,
+    DEFAULT_ACTIVITY_FIELDS,
+    validate_catalog_ticket_metadata,
+)
 from graphify_core import (
     EDGE_AWAITS_MERGE,
     EDGE_BELONGS_TO,
@@ -727,6 +732,21 @@ def _archive_catalog_tickets(
             raise ValueError(
                 f"archive catalog line {line_number} has mismatched historical identity"
             )
+        historical = _git(repo_path, "cat-file", "blob", ticket_blob)
+        if historical.returncode != 0:
+            raise ValueError(
+                f"archive catalog line {line_number} has unreachable historical identity"
+            )
+        try:
+            validate_catalog_ticket_metadata(
+                entry,
+                historical.stdout.encode("utf-8", "surrogateescape"),
+                activity_fields=DEFAULT_ACTIVITY_FIELDS,
+            )
+        except CatalogSemanticError as error:
+            raise ValueError(
+                f"archive catalog line {line_number} has mismatched historical metadata: {error}"
+            ) from error
         if str(entry["status"]).lower() not in {"done", "canceled", "cancelled"}:
             raise ValueError(
                 f"archive catalog line {line_number} has nonterminal history"

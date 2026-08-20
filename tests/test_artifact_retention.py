@@ -435,6 +435,31 @@ class ArtifactRetentionTests(unittest.TestCase):
         self.assertIn("not reachable", detail.recovery)
         self.assertFalse(self.manager.dependency_satisfied("RR-1"))
 
+    def test_catalog_status_tamper_cannot_promote_canceled_history_to_done(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-1",
+            "Canceled predecessor",
+            activity_at=self.now - timedelta(days=31),
+            extra={"status": "backlog", "canceled": "true"},
+        )
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-canceled", device_id="device-a"
+        )
+        snapshot = self.store.snapshot()
+        catalog = json.loads(snapshot.files[".orchestrator/archive-index.jsonl"])
+        self.assertEqual(catalog["status"], "canceled")
+        catalog["status"] = "done"
+        self.replace_catalog(catalog, "tamper-canceled-status")
+
+        detail = self.manager.historical_detail(
+            "artifact-RR-1", online=True, deepen=lambda _: self.fail("unexpected deepen")
+        )
+
+        self.assertEqual(detail.availability, HistoryAvailability.TAMPERED)
+        self.assertIn("status and canceled semantics", detail.recovery)
+        self.assertFalse(self.manager.dependency_satisfied("RR-1"))
+
     def test_verified_attachment_read_and_reopen_do_not_leave_terminal_work_capped(self):
         self.seed_retained_terminal()
         old = self.now - timedelta(days=31)

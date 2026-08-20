@@ -578,6 +578,36 @@ class GraphifyIngestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unreachable historical identity"):
             ingest_registered_projects(self.make_store(), registry_path=registry_path)
 
+    def test_archive_catalog_rejects_status_tamper_against_canceled_markdown(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "tampered-archive-status")
+        _install_confirmed_archive(repo, [{
+            "schema_version": 1,
+            "artifact_id": "artifact-TAMPER-2",
+            "ticket_id": "TAMPER-2",
+            "title": "Canceled history",
+            "status": "canceled",
+            "activity_at": "2026-01-01T00:00:00Z",
+            "state": "archived",
+            "ticket_path": ".orchestrator/TAMPER-2.md",
+            "attachments": [],
+            "_source_status": "backlog",
+            "_source_canceled": True,
+        }])
+        _rewrite_confirmed_archive(repo, {"status": "done"})
+        registry_path = root / "projects.json"
+        registry_path.write_text(json.dumps({
+            "activeProjectID": str(repo.resolve()),
+            "projects": [{
+                "id": str(repo.resolve()),
+                "repoPath": str(repo.resolve()),
+            }],
+        }))
+
+        with self.assertRaisesRegex(ValueError, "status and canceled semantics"):
+            ingest_registered_projects(self.make_store(), registry_path=registry_path)
+
     def test_prunes_stale_run_nodes_missing_from_run_history(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: _remove_tree(root))
@@ -738,17 +768,19 @@ def _install_confirmed_archive(repo: Path, entries: list[dict]) -> None:
     archived_paths = []
     for entry in entries:
         ticket_path = repo / str(entry["ticket_path"])
+        source_status = entry.get("_source_status", entry["status"])
+        source_canceled = str(entry.get("_source_canceled", False)).lower()
         ticket_path.write_text(
             f"""---
 id: {entry['ticket_id']}
 artifact_id: {entry['artifact_id']}
 title: {entry['title']}
-status: {entry['status']}
+status: {source_status}
 activity_at: {entry['activity_at']}
 execution_mode: implementation
 depends_on: []
 run_id: null
-canceled: false
+canceled: {source_canceled}
 ---
 
 ## Description
@@ -767,7 +799,7 @@ Archived Graphify fixture.
         tree_entries[path] = metadata.split()[2]
     catalog = []
     for entry in entries:
-        completed = dict(entry)
+        completed = {key: value for key, value in entry.items() if not key.startswith("_")}
         completed["source_commit"] = source_commit
         completed["ticket_blob"] = tree_entries[str(entry["ticket_path"])]
         catalog.append(completed)
