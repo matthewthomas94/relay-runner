@@ -50,6 +50,7 @@ try:
     from services.artifact_lifecycle import ArtifactLifecycleCoordinator
     from services.artifact_retention import (
         ArtifactRetentionManager,
+        DependencyHistoryUnavailable,
         confirm_github_remote,
     )
     from services.artifact_rollout import (
@@ -72,6 +73,7 @@ except ModuleNotFoundError:  # Installed direct-script layout.
     from artifact_lifecycle import ArtifactLifecycleCoordinator  # type: ignore[no-redef]
     from artifact_retention import (  # type: ignore[no-redef]
         ArtifactRetentionManager,
+        DependencyHistoryUnavailable,
         confirm_github_remote,
     )
     from artifact_rollout import (  # type: ignore[no-redef]
@@ -5806,6 +5808,13 @@ class Daemon:
                     "availability": "available" if satisfied else "unsatisfied",
                     "recovery": None,
                 })
+            except DependencyHistoryUnavailable as error:
+                summaries.append({
+                    "ticket_id": dependency_id,
+                    "satisfied": False,
+                    "availability": error.detail.availability.value,
+                    "recovery": error.detail.recovery,
+                })
             except ArtifactValidationError as error:
                 summaries.append({
                     "ticket_id": dependency_id,
@@ -8025,6 +8034,15 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     all_tickets=all_tickets,
                     artifact_lifecycle=artifact_lifecycle,
                 )
+            except DependencyHistoryUnavailable as error:
+                skip(
+                    ticket,
+                    "dependency_history_unavailable",
+                    availability=error.detail.availability.value,
+                    recovery=error.detail.recovery,
+                    message=str(error),
+                )
+                continue
             except ArtifactValidationError as error:
                 skip(
                     ticket,

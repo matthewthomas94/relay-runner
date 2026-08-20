@@ -10,6 +10,7 @@ from pathlib import Path
 from services.artifact_retention import (
     ArchiveRemoteConfirmation,
     ArtifactRetentionManager,
+    DependencyHistoryUnavailable,
     HistoryAvailability,
     RetentionState,
     SnapshotLeaseStore,
@@ -433,7 +434,9 @@ class ArtifactRetentionTests(unittest.TestCase):
 
         self.assertEqual(detail.availability, HistoryAvailability.TAMPERED)
         self.assertIn("not reachable", detail.recovery)
-        self.assertFalse(self.manager.dependency_satisfied("RR-1"))
+        with self.assertRaises(DependencyHistoryUnavailable) as caught:
+            self.manager.dependency_satisfied("RR-1")
+        self.assertEqual(caught.exception.detail, detail)
 
     def test_catalog_status_tamper_cannot_promote_canceled_history_to_done(self):
         self.seed_retained_terminal()
@@ -458,7 +461,9 @@ class ArtifactRetentionTests(unittest.TestCase):
 
         self.assertEqual(detail.availability, HistoryAvailability.TAMPERED)
         self.assertIn("status and canceled semantics", detail.recovery)
-        self.assertFalse(self.manager.dependency_satisfied("RR-1"))
+        with self.assertRaises(DependencyHistoryUnavailable) as caught:
+            self.manager.dependency_satisfied("RR-1")
+        self.assertEqual(caught.exception.detail, detail)
 
     def test_catalog_activity_tamper_blocks_preview_before_ranking_or_materialization(self):
         self.seed_retained_terminal()
@@ -1460,6 +1465,11 @@ class ArtifactRetentionTests(unittest.TestCase):
         )
         self.assertEqual(missing.availability, HistoryAvailability.NEEDS_NETWORK)
         self.assertEqual(calls, ["0" * 40])
+        unavailable = self.manager.historical_detail("artifact-RR-1")
+        with self.assertRaises(DependencyHistoryUnavailable) as caught:
+            self.manager.dependency_satisfied("RR-1")
+        self.assertEqual(unavailable.availability, HistoryAvailability.NEEDS_NETWORK)
+        self.assertEqual(caught.exception.detail, unavailable)
 
     def test_recoverable_delete_warns_history_remains_and_can_restore(self):
         old = self.now - timedelta(days=31)

@@ -213,6 +213,18 @@ class HistoricalDetail:
     recovery: str | None = None
 
 
+class DependencyHistoryUnavailable(ArtifactValidationError):
+    """Preserve a verified history failure across dependency evaluation."""
+
+    def __init__(self, dependency_id: str, detail: HistoricalDetail):
+        self.dependency_id = dependency_id
+        self.detail = detail
+        super().__init__(
+            detail.recovery
+            or f"archived dependency {dependency_id} is {detail.availability.value}"
+        )
+
+
 @dataclasses.dataclass(frozen=True)
 class HistoricalAttachment:
     artifact_id: str
@@ -1137,7 +1149,9 @@ class ArtifactRetentionManager:
                 if entry.get("status") != "done":
                     return False
                 detail = self.historical_detail(str(entry.get("artifact_id", "")))
-                return detail.availability == HistoryAvailability.AVAILABLE
+                if detail.availability != HistoryAvailability.AVAILABLE:
+                    raise DependencyHistoryUnavailable(dependency_id, detail)
+                return True
         return False
 
     def dependency_execution_mode(self, dependency_id: str) -> str | None:
@@ -1151,10 +1165,7 @@ class ArtifactRetentionManager:
                 continue
             detail = self.historical_detail(str(entry.get("artifact_id", "")))
             if detail.availability != HistoryAvailability.AVAILABLE or detail.ticket_bytes is None:
-                raise ArtifactValidationError(
-                    detail.recovery
-                    or f"archived dependency {dependency_id} is unavailable"
-                )
+                raise DependencyHistoryUnavailable(dependency_id, detail)
             return _front_matter(detail.ticket_bytes).get("execution_mode", "implementation")
         return None
 
@@ -2117,6 +2128,7 @@ __all__ = [
     "ArchiveRemoteConfirmation",
     "ArchiveResult",
     "ArtifactRetentionManager",
+    "DependencyHistoryUnavailable",
     "HistoricalCard",
     "HistoricalAttachment",
     "HistoricalDetail",
