@@ -73,6 +73,57 @@ class ContinuityResumeBridgeTests(unittest.TestCase):
             text=voice_bridge.PLEASE_REPEAT_TEXT,
         )
 
+    def test_commandless_transcription_loss_asks_through_canonical_tts_path(self):
+        payload = {
+            **self.payload,
+            "component": "transcription",
+            "phase": "transcription",
+        }
+        with (
+            patch("voice_bridge._queue_tts_text", return_value=True) as queue_text,
+            patch("voice_bridge._notify_state") as notify,
+        ):
+            result = self.call(payload)
+
+        self.assertEqual(result["action"], "ask_repeat")
+        queue_text.assert_called_once()
+        notify.assert_called_once_with(
+            "continuity_repeat",
+            text=voice_bridge.PLEASE_REPEAT_TEXT,
+        )
+
+    def test_commandless_liveness_recovery_never_asks_repeat(self):
+        cases = (
+            ("bridge", "delivery"),
+            ("messenger", "component_liveness"),
+            ("daemon", "component_liveness"),
+            ("session", "session_liveness"),
+        )
+        with (
+            patch("voice_bridge._queue_tts_text") as queue_text,
+            patch("voice_bridge._notify_state") as notify,
+        ):
+            for index, (component, phase) in enumerate(cases, start=1):
+                with self.subTest(component=component):
+                    result = self.call({
+                        **self.payload,
+                        "incident_id": f"inc-liveness-{index}",
+                        "component": component,
+                        "phase": phase,
+                    })
+                    self.assertEqual(
+                        result,
+                        {
+                            "phase": "commandless_liveness",
+                            "action": "noop",
+                            "reason": "no_command_resume_required",
+                            "intent_id": None,
+                        },
+                    )
+
+        queue_text.assert_not_called()
+        notify.assert_not_called()
+
     def test_command_captured_during_recovery_suppresses_stale_repeat(self):
         metadata = {
             "relay_command_seq": 1,

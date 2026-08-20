@@ -52,6 +52,33 @@ class ContinuityResumeDecisionTests(unittest.TestCase):
         )
         self.assertIn("Please repeat your request", PLEASE_REPEAT_TEXT)
 
+    def test_commandless_liveness_recovery_has_no_speech_outcome(self):
+        for component, phase in (
+            ("bridge", "delivery"),
+            ("messenger", "component_liveness"),
+            ("daemon", "component_liveness"),
+            ("session", "session_liveness"),
+        ):
+            with self.subTest(component=component):
+                decision = plan_continuity_resume(
+                    {
+                        **incident(None),
+                        "component": component,
+                        "phase": phase,
+                    },
+                    [],
+                    final_result="restored",
+                )
+
+                self.assertEqual(
+                    (decision.phase, decision.action, decision.reason),
+                    (
+                        "commandless_liveness",
+                        "noop",
+                        "no_command_resume_required",
+                    ),
+                )
+
     def test_handoff_waits_for_stable_health_result(self):
         decision = plan_continuity_resume(
             incident(), [record("pending")], final_result="circuit_open"
