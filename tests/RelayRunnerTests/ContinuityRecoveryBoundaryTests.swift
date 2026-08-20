@@ -237,7 +237,26 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
                 voiceDelivery: .appOwned,
                 recoveryGeneration: current
             )
-            let request = try makeRequest(generation: try XCTUnwrap(launch.recoveryGeneration))
+            var config = AppConfig()
+            config.general.provider = target == .codex ? .codex : .claude
+            let launcher = ProcessManager.launchScript(
+                relayBridge: "/Relay Runner/scripts/relay-bridge",
+                target: target,
+                agentBinary: "/usr/local/bin/agent",
+                config: config,
+                voiceDelivery: .appOwned,
+                appSessionID: "app-session",
+                recoveryGeneration: try XCTUnwrap(launch.recoveryGeneration),
+                foregroundGateHandle: "foreground-gate"
+            )
+            XCTAssertTrue(launcher.contains(
+                "export RELAY_RECOVERY_GENERATION='\(current)'"
+            ))
+
+            let bridgeState = ["recovery_generation": try XCTUnwrap(launch.recoveryGeneration)]
+            let request = try makeRequest(
+                generation: try XCTUnwrap(bridgeState["recovery_generation"])
+            )
 
             XCTAssertEqual(
                 AppState.continuityRecoveryDecision(

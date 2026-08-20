@@ -499,7 +499,11 @@ final class BridgeRecoveryTests: XCTestCase {
     func testRecoveryScriptPreservesProviderSessionIDForBothLaunchPaths() throws {
         let script = ProcessManager.bridgeRecoveryScript(
             relayBridge: "/usr/local/bin/relay-bridge",
-            context: .init(workingDirectory: "/Users/example/dev", provider: "codex")
+            context: .init(
+                workingDirectory: "/Users/example/dev",
+                provider: "codex",
+                recoveryGeneration: "12345678-1234-4abc-8def-1234567890ab"
+            )
         )
         let lines = script.split(separator: "\n").map(String.init)
         let launchctl = try XCTUnwrap(lines.first { $0.contains("launchctl submit") })
@@ -508,7 +512,14 @@ final class BridgeRecoveryTests: XCTestCase {
         for launch in [launchctl, direct] {
             XCTAssertTrue(launch.contains("export RELAY_PROVIDER_SESSION_ID=\"$5\""))
             XCTAssertTrue(launch.contains("\"$VOICE_BRIDGE_LOG\" \"$RELAY_PROVIDER_SESSION_ID\""))
+            XCTAssertTrue(launch.contains("export RELAY_RECOVERY_GENERATION=\"$6\""))
+            XCTAssertTrue(launch.contains(
+                "\"$RELAY_PROVIDER_SESSION_ID\" \"$RELAY_RECOVERY_GENERATION\""
+            ))
         }
+        XCTAssertTrue(script.contains(
+            "RELAY_RECOVERY_GENERATION='12345678-1234-4abc-8def-1234567890ab'"
+        ))
     }
 
     func testRecoveryScriptPreservesTutorialGreetingSuppression() {

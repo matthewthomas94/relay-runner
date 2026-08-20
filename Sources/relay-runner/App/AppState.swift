@@ -1827,9 +1827,17 @@ final class AppState {
         if bridgeRecoverySuppressedForUpdate { return false }
         if processManager.bridgeStopRequested() { return false }
         if bridgeRecoveryInFlight { return true }
-        guard let context = processManager.bridgeRecoveryContext(fallbackConfig: bridgeRecoveryFallbackConfig) else {
+        guard let baseContext = processManager.bridgeRecoveryContext(fallbackConfig: bridgeRecoveryFallbackConfig) else {
             return false
         }
+        let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
+            repositoryPath: baseContext.workingDirectory
+        )
+        let context = ProcessManager.BridgeRecoveryContext(
+            workingDirectory: baseContext.workingDirectory,
+            provider: baseContext.provider,
+            recoveryGeneration: continuityRecoveryGenerationBySession[sessionID]
+        )
         let now = Date()
         if now.timeIntervalSince(lastBridgeRecoveryAt) < Self.bridgeRecoveryCooldown {
             return true
