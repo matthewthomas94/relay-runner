@@ -444,10 +444,8 @@ class ArtifactSyncEngine:
                         )
                 self._inject("after_recovery_ref_update")
                 try:
-                    if current:
-                        self.store._ensure_materialization_consistent(remote.head)
-                    else:
-                        self.store._materialize(remote.head, force=True)
+                    self.store._ensure_materialization_consistent(remote.head)
+                    self.store._materialize(remote.head)
                 except ArtifactMaterializationConflict as error:
                     return self._finish(
                         ArtifactSyncState.FAILED,

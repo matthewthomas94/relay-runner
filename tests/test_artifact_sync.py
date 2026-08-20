@@ -196,6 +196,57 @@ class ArtifactSyncTests(unittest.TestCase):
             ["refs/heads/main", ARTIFACT_REF],
         )
 
+    def test_fresh_device_restart_materializes_after_recovery_ref_update_crash(self):
+        remote_head = self.write_ticket(
+            self.device_a, "recovery-crash-ticket", "RR-recovery-crash", "Recovered"
+        )
+        self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
+        fresh_repo = self.root / "fresh-device-crash"
+        fresh_repo.mkdir()
+        self.run_git(fresh_repo, "init", "--initial-branch=main", "--quiet")
+        (fresh_repo / "source.txt").write_text("fresh source\n")
+        self.commit_source(fresh_repo, "fresh source")
+        self.run_git(fresh_repo, "remote", "add", "origin", str(self.remote))
+        fresh_state = self.root / "state-fresh-crash"
+        fresh = Device(
+            "fresh-crash",
+            fresh_repo,
+            fresh_state,
+            ArtifactStore(fresh_repo, "project-sync", fresh_state, enabled=True),
+        )
+
+        def crash_after_ref_update(stage):
+            if stage == "after_recovery_ref_update":
+                raise RuntimeError(stage)
+
+        with self.assertRaisesRegex(RuntimeError, "after_recovery_ref_update"):
+            self.engine(
+                fresh,
+                failure_injector=crash_after_ref_update,
+            ).recover_exact_ref()
+
+        self.assertEqual(fresh.store._head(), remote_head)
+        self.assertFalse(fresh.store.materialized_path.exists())
+        self.assertFalse(fresh.store.metadata_path.exists())
+        self.assertFalse(fresh.store.journal_path.exists())
+
+        restarted = Device(
+            "fresh-crash-restarted",
+            fresh_repo,
+            fresh_state,
+            ArtifactStore(fresh_repo, "project-sync", fresh_state, enabled=True),
+        )
+        result = self.engine(restarted).recover_exact_ref()
+
+        self.assertEqual(result.state, ArtifactSyncState.CLEAN)
+        self.assertEqual(result.local_head, remote_head)
+        recovered_ticket = restarted.store.materialized_path / "RR-recovery-crash.md"
+        self.assertTrue(recovered_ticket.is_file())
+        self.assertIn("Recovered", recovered_ticket.read_text())
+        metadata = json.loads(restarted.store.metadata_path.read_text())
+        self.assertEqual(metadata["commit_id"], remote_head)
+        self.assertFalse(restarted.store.journal_path.exists())
+
     def test_second_device_recovery_preserves_manual_materialization_edits(self):
         self.write_ticket(
             self.device_a, "manual-base", "RR-manual", "Shared before edit"
