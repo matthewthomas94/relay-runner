@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -149,6 +151,103 @@ class ContinuityResumeInboxTests(unittest.TestCase):
                 intent_id="intent-1", recovery_generation="generation-7"
             ))
             self.assertEqual(inbox.records()[0]["state"], "pending")
+
+    def test_schema_v4_migration_preserves_generation_for_continuity_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "inbox.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.executescript(
+                """
+                CREATE TABLE inbox_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO inbox_meta(key, value) VALUES('schema_version', '4');
+                CREATE TABLE intents (
+                    ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+                    intent_id TEXT NOT NULL UNIQUE,
+                    command_seq INTEGER NOT NULL,
+                    command_id TEXT NOT NULL,
+                    within_turn_order INTEGER NOT NULL DEFAULT 1,
+                    prompt TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    route TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    delivery_id TEXT NOT NULL UNIQUE,
+                    claim_id TEXT,
+                    ack_id TEXT,
+                    created_at REAL NOT NULL,
+                    delivered_at REAL,
+                    claimed_at REAL,
+                    acked_at REAL,
+                    cancelled_at REAL,
+                    transport TEXT,
+                    lease_attempts INTEGER NOT NULL DEFAULT 0,
+                    recovered_at REAL
+                );
+                """
+            )
+            metadata = self.metadata(1, "command-one")
+            connection.execute(
+                """
+                INSERT INTO intents(
+                    intent_id, command_seq, command_id, prompt, metadata_json,
+                    route, state, delivery_id, created_at, delivered_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "intent-1",
+                    1,
+                    "command-one",
+                    "private prompt",
+                    json.dumps(metadata),
+                    "continue_current",
+                    "delivered",
+                    "delivery:intent-1",
+                    1.0,
+                    2.0,
+                ),
+            )
+            invalid_metadata = self.metadata(2, "command-two")
+            invalid_metadata["recovery_generation"] = "generation 8"
+            connection.execute(
+                """
+                INSERT INTO intents(
+                    intent_id, command_seq, command_id, prompt, metadata_json,
+                    route, state, delivery_id, created_at, delivered_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "intent-2",
+                    2,
+                    "command-two",
+                    "another private prompt",
+                    json.dumps(invalid_metadata),
+                    "continue_current",
+                    "delivered",
+                    "delivery:intent-2",
+                    1.0,
+                    2.0,
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            restarted = IntentInbox(path, hold_recovered_delivery=True)
+
+            record, invalid_record = restarted.records()
+            self.assertEqual(record["state"], "recovery_pending")
+            self.assertEqual(record["recovery_generation"], "generation-7")
+            self.assertEqual(invalid_record["recovery_generation"], "0")
+            self.assertTrue(restarted.resume_after_recovery(
+                intent_id="intent-1",
+                recovery_generation="generation-7",
+            ))
+            self.assertFalse(restarted.resume_after_recovery(
+                intent_id="intent-2",
+                recovery_generation="generation-8",
+            ))
+            restarted.close()
 
     def test_restart_requeues_unclaimed_delivery_but_holds_claimed_effect(self):
         with tempfile.TemporaryDirectory() as directory:

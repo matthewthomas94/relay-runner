@@ -106,6 +106,22 @@ class IntentInbox:
                 self._connection.execute(
                     "ALTER TABLE intents ADD COLUMN recovery_generation TEXT NOT NULL DEFAULT '0'"
                 )
+                for row in self._connection.execute(
+                    "SELECT intent_id, metadata_json FROM intents"
+                ).fetchall():
+                    try:
+                        metadata = json.loads(row["metadata_json"])
+                        if not isinstance(metadata, dict):
+                            continue
+                        generation = normalize_recovery_generation(
+                            metadata.get("recovery_generation")
+                        )
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        continue
+                    self._connection.execute(
+                        "UPDATE intents SET recovery_generation=? WHERE intent_id=?",
+                        (generation, str(row["intent_id"])),
+                    )
             if "recovery_decision" not in columns:
                 self._connection.execute(
                     "ALTER TABLE intents ADD COLUMN recovery_decision TEXT"
