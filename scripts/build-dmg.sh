@@ -231,7 +231,7 @@ if [ "$DEPENDENCY_LICENSE_COUNT" -eq 0 ]; then
 fi
 
 # Python services
-for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py continuity_incidents.py continuity_agent.py relay_authorization.py intent_arbitration.py intent_inbox.py provider_turn_broker.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py \
+for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py continuity_incidents.py continuity_agent.py continuity_recovery.py relay_authorization.py intent_arbitration.py intent_inbox.py provider_turn_broker.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py \
          artifact_lifecycle.py artifact_migration.py artifact_migration_cli.py \
          artifact_retention.py artifact_rollout.py artifact_rollout_cli.py artifact_store.py artifact_sync.py \
          artifact_verification.py artifact_verification_cli.py fresh_install.py fresh_install_cli.py \

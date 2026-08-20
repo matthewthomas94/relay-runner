@@ -291,7 +291,7 @@ class RecoveryBroker(Protocol):
 
 
 class UnavailableRecoveryBroker:
-    """Safe placeholder until component-owned actions are supplied by RR-334."""
+    """Compatibility fallback for callers that have not installed the broker."""
 
     def capabilities(self, incident: Mapping[str, object]) -> tuple[str, ...]:
         del incident
@@ -798,6 +798,10 @@ class ContinuityAgentLane:
     ) -> str:
         payload = {
             "incident": incident,
+            "broker_objective": {
+                "name": "restore_processing",
+                **dict(incident["recovery_objective"]),
+            },
             "broker_capabilities": list(capabilities),
             "sanitized_outcomes": history,
             "attempt": attempt,

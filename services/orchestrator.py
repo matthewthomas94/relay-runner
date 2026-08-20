@@ -92,10 +92,10 @@ from continuity_incidents import (
 from continuity_agent import (
     ContinuityAgentConfig,
     ContinuityAgentLane,
-    UnavailableRecoveryBroker,
     append_audit_record,
     create_provider_session_factory,
 )
+from continuity_recovery import ComponentOwnedRecoveryBroker
 from codex_model_catalog import (
     CODEX_FAMILIES,
     CODEX_WORKER_TIER_FAMILIES,
@@ -4412,7 +4412,7 @@ class ReviewWorker:
 # ---------------------------------------------------------------------------
 
 class Daemon:
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, *, continuity_recovery_owners=None):
         self.cfg = cfg
         orch_cfg = cfg.get("orchestrator", {})
         self.workspace_root = _resolve_workspace_root(orch_cfg.get("workspace_root", ""))
@@ -4544,7 +4544,7 @@ class Daemon:
             )
             self.continuity_agents = ContinuityAgentLane(
                 create_continuity_session,
-                UnavailableRecoveryBroker(),
+                ComponentOwnedRecoveryBroker(continuity_recovery_owners),
                 on_audit=lambda record: append_audit_record(
                     self.continuity_agent_audit_path,
                     record,
