@@ -116,6 +116,7 @@ final class WorkspaceDotMatrixTests: XCTestCase {
             presentation(showsCreateTicket: true),
             presentation(showsEditTicket: true),
             presentation(showsSpikeFollowup: true),
+            presentation(showsHistory: true),
         ]
 
         XCTAssertFalse(none.isVisible)
@@ -130,6 +131,7 @@ final class WorkspaceDotMatrixTests: XCTestCase {
             .createTicket,
             .editTicket,
             .spikeFollowup,
+            .history,
         ])
 
         let shortScreen = presentation(showsCreateTicket: true, viewportHeight: 320)
@@ -205,6 +207,7 @@ final class WorkspaceDotMatrixTests: XCTestCase {
         showsCreateTicket: Bool = false,
         showsEditTicket: Bool = false,
         showsSpikeFollowup: Bool = false,
+        showsHistory: Bool = false,
         viewportHeight: CGFloat = ProgramBoardBackdropStyle.backdropHeight + 100
     ) -> ProgramWorkspaceDotMatrixPresentation {
         ProgramWorkspaceDotMatrixPresentation.resolve(
@@ -212,6 +215,7 @@ final class WorkspaceDotMatrixTests: XCTestCase {
             showsCreateTicket: showsCreateTicket,
             showsEditTicket: showsEditTicket,
             showsSpikeFollowup: showsSpikeFollowup,
+            showsHistory: showsHistory,
             viewportHeight: viewportHeight
         )
     }

@@ -488,6 +488,9 @@ final class ProgramBoardOverlayController {
                 onWorkspaceTabChange: { [weak self] tab in self?.workspaceTabDidChange(tab) },
                 onRefresh: { [weak self] in self?.checkForUpdates(inBackground: false) },
                 onCreateDiagnostics: { [weak self] in self?.exportSupportBundle() },
+                onHistoryStart: { [weak self] in self?.beginHistory() },
+                onHistoryClose: { [weak self] in self?.closeHistory() },
+                onHistoryChanged: { [weak self] in self?.checkForUpdates(inBackground: true) },
                 onAddExistingProject: { [weak self] in self?.addExistingProjectHandler?() },
                 onCreateProject: { [weak self] in self?.createProjectHandler?() },
                 onSelectProject: { [weak self] repoPath in self?.selectProject(repoPath) },
@@ -880,6 +883,24 @@ final class ProgramBoardOverlayController {
         }
     }
 
+    private func beginHistory() {
+        guard let repoPath = model.selectedProjectPath,
+              let target = model.projectTargets.first(where: { $0.path == repoPath }) else {
+            return
+        }
+        model.presentHistory(
+            repoPath: repoPath,
+            projectName: target.name,
+            projectScopeToken: projectScopeTokenProvider(repoPath)
+        )
+        updatePanelKeyEligibility()
+    }
+
+    private func closeHistory() {
+        model.closeHistory()
+        updatePanelKeyEligibility()
+    }
+
     private func cancelCreate() {
         model.cancelCreate()
         updatePanelKeyEligibility()
@@ -1060,7 +1081,10 @@ final class ProgramBoardOverlayController {
 
     private func updatePanelKeyEligibility() {
         setPanelKeyEligible(
-            model.creating != nil || model.editing != nil || workspace.selectedTab.requiresKeyWindow
+            model.creating != nil
+                || model.editing != nil
+                || model.history != nil
+                || workspace.selectedTab.requiresKeyWindow
         )
         if workspace.selectedTab == .terminal {
             DispatchQueue.main.async { [weak self] in

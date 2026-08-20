@@ -1394,6 +1394,7 @@ final class ProgramBoardViewModel {
     var hasActiveSession = false
     var selectedProjectPath: String?
     var selectedTicketDetail: ProgramTicketDetail?
+    var history: WorkspaceHistoryViewModel?
     var spikeFollowupBatch: SpikeFollowupBatch?
     var creating: ProgramBoardCreateDraft?
     var editing: ProgramBoardEditDraft?
@@ -1434,6 +1435,7 @@ final class ProgramBoardViewModel {
         errorMessage = nil
         supportBundlePreview = nil
         selectedTicketDetail = nil
+        history = nil
         spikeFollowupBatch = nil
         creating = nil
         editing = nil
@@ -1460,6 +1462,7 @@ final class ProgramBoardViewModel {
         snapshot = nil
         self.selectedProjectPath = selectedProjectPath
         selectedTicketDetail = nil
+        history = nil
         spikeFollowupBatch = nil
     }
 
@@ -1577,6 +1580,7 @@ final class ProgramBoardViewModel {
 
     func selectProject(path: String) {
         selectedProjectPath = path
+        history = nil
         if selectedTicketDetail?.identity?.projectPath != path {
             selectedTicketDetail = nil
         }
@@ -1596,6 +1600,26 @@ final class ProgramBoardViewModel {
 
     func clearSelectedTicket() {
         selectedTicketDetail = nil
+    }
+
+    func presentHistory(
+        repoPath: String,
+        projectName: String,
+        projectScopeToken: String?
+    ) {
+        selectedTicketDetail = nil
+        creating = nil
+        editing = nil
+        spikeFollowupBatch = nil
+        history = WorkspaceHistoryViewModel(
+            repoPath: repoPath,
+            projectName: projectName,
+            projectScopeToken: projectScopeToken
+        )
+    }
+
+    func closeHistory() {
+        history = nil
     }
 
     func beginCreate(in lane: ProgramBoardLane) {
