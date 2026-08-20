@@ -2592,17 +2592,12 @@ def _bridge_continuity_resume_response(
         else:
             return {"action": "foreground_review", "reason": "repeat_delivery_unavailable"}
     elif decision.action == "resume_exact" and decision.intent_id:
-        record = next(
-            (item for item in records if item.get("intent_id") == decision.intent_id),
-            None,
+        resumed = inbox.resume_after_recovery(
+            intent_id=decision.intent_id,
+            recovery_generation=generation,
         )
-        if record is not None and str(record.get("state")) in {"pending", "recovery_pending"}:
-            resumed = inbox.resume_after_recovery(
-                intent_id=decision.intent_id,
-                recovery_generation=generation,
-            )
-            if not resumed:
-                return {"action": "noop", "reason": "resume_already_applied"}
+        if not resumed:
+            return {"action": "noop", "reason": "resume_already_applied"}
         _notify_state(
             "working",
             text="Relay Runner recovered the original command and resumed it.",

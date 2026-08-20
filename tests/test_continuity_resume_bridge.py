@@ -109,6 +109,119 @@ class ContinuityResumeBridgeTests(unittest.TestCase):
         self.assertEqual(first["action"], "resume_exact")
         self.assertEqual(duplicate, {"action": "noop", "reason": "handoff_already_applied"})
 
+    def test_delivered_unclaimed_command_is_released_and_rematerialized_exactly(self):
+        command_path = self.root / "ready"
+        metadata_path = self.root / "ready.meta"
+        metadata = {
+            "relay_command_seq": 1,
+            "relay_command_id": "command-one",
+            "intent_id": "intent-1",
+            "within_turn_order": 1,
+            "recovery_generation": "generation-7",
+        }
+        original = self.inbox.enqueue("private prompt", metadata, "continue_current")
+        self.inbox.materialize_next(
+            command_path=str(command_path),
+            metadata_path=str(metadata_path),
+            transport="codex",
+        )
+        command_path.unlink()
+        metadata_path.unlink()
+        payload = {
+            **self.payload,
+            "command_id": opaque_identifier("command", "command-one"),
+            "component": "command",
+            "phase": "command_processing",
+        }
+
+        with patch("voice_bridge._notify_state"):
+            result = self.call(payload)
+
+        self.assertEqual(result["action"], "resume_exact")
+        self.assertEqual(self.inbox.records()[0]["state"], "pending")
+        resumed = self.inbox.materialize_next(
+            command_path=str(command_path),
+            metadata_path=str(metadata_path),
+            transport="claude",
+        )
+        self.assertEqual(resumed["intent_id"], original["intent_id"])
+        self.assertEqual(resumed["intent_delivery_id"], original["intent_delivery_id"])
+
+    def test_recovered_siblings_release_in_order_after_each_acknowledgement(self):
+        self.inbox.close()
+        database = self.root / "siblings.sqlite3"
+        inbox = IntentInbox(database)
+        for intent_id, order, generation in (
+            ("intent-1", 1, "generation-7"),
+            ("intent-2", 2, "generation-7"),
+            ("intent-wrong-generation", 3, "generation-8"),
+        ):
+            inbox.enqueue(
+                f"private prompt {order}",
+                {
+                    "relay_command_seq": 1,
+                    "relay_command_id": "command-one",
+                    "intent_id": intent_id,
+                    "within_turn_order": order,
+                    "recovery_generation": generation,
+                },
+                "continue_current",
+            )
+        inbox.enqueue(
+            "unrelated prompt",
+            {
+                "relay_command_seq": 2,
+                "relay_command_id": "command-two",
+                "intent_id": "intent-unrelated",
+                "within_turn_order": 1,
+                "recovery_generation": "generation-7",
+            },
+            "continue_current",
+        )
+        inbox.close()
+        self.inbox = IntentInbox(database, hold_recovered_delivery=True)
+        self.addCleanup(self.inbox.close)
+        payload = {
+            **self.payload,
+            "command_id": opaque_identifier("command", "command-one"),
+            "component": "command",
+            "phase": "command_processing",
+        }
+
+        with patch("voice_bridge._notify_state"):
+            result = self.call(payload)
+
+        self.assertEqual(result["intent_id"], "intent-1")
+        self.assertEqual(
+            [record["state"] for record in self.inbox.records()],
+            ["pending", "recovery_pending", "recovery_pending", "recovery_pending"],
+        )
+        command_path = self.root / "ready"
+        metadata_path = self.root / "ready.meta"
+        first = self.inbox.materialize_next(
+            command_path=str(command_path),
+            metadata_path=str(metadata_path),
+            transport="codex",
+        )
+        self.inbox.observe_claim(first, provider_turn_seen=True)
+        command_path.unlink()
+        metadata_path.unlink()
+        self.assertEqual(
+            [record["state"] for record in self.inbox.records()],
+            ["acked", "pending", "recovery_pending", "recovery_pending"],
+        )
+        second = self.inbox.materialize_next(
+            command_path=str(command_path),
+            metadata_path=str(metadata_path),
+            transport="claude",
+        )
+        self.assertEqual(second["intent_id"], "intent-2")
+        self.inbox.observe_claim(second, provider_turn_seen=True)
+        self.assertEqual(
+            [record["state"] for record in self.inbox.records()],
+            ["acked", "acked", "recovery_pending", "recovery_pending"],
+        )
+
     def test_stale_generation_and_ambiguous_claim_never_resume(self):
         stale = {**self.payload, "recovery_generation": "generation-6"}
         self.assertEqual(self.call(stale)["reason"], "stale_recovery_generation")

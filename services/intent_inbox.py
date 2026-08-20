@@ -511,17 +511,23 @@ class IntentInbox:
         with self._lock, self._connection:
             if intent_id:
                 row = self._connection.execute(
-                    "SELECT state, claim_id, ack_id, intent_id FROM intents WHERE intent_id=?",
+                    "SELECT state, claim_id, ack_id, intent_id, command_seq, command_id, "
+                    "within_turn_order, ordinal, claimed_at, recovery_generation, "
+                    "recovery_decision FROM intents WHERE intent_id=?",
                     (intent_id,),
                 ).fetchone()
             else:
                 row = self._connection.execute(
-                    "SELECT state, claim_id, ack_id, intent_id FROM intents "
+                    "SELECT state, claim_id, ack_id, intent_id, command_seq, command_id, "
+                    "within_turn_order, ordinal, claimed_at, recovery_generation, "
+                    "recovery_decision FROM intents "
                     "WHERE command_seq=? AND command_id=? "
                     "ORDER BY within_turn_order, ordinal LIMIT 1",
                     key,
                 ).fetchone()
             if row is None:
+                return False
+            if (int(row["command_seq"]), str(row["command_id"])) != key:
                 return False
             state = str(row["state"])
             resolved_intent_id = str(row["intent_id"])
@@ -545,7 +551,8 @@ class IntentInbox:
                         occurred_at=now,
                     )) or projection_changed
                 state = "claimed"
-            if provider_turn_seen and state == "claimed":
+            recovered_claim = state == "review_required" and row["claimed_at"] is not None
+            if provider_turn_seen and (state == "claimed" or recovered_claim):
                 self._connection.execute(
                     """
                     UPDATE intents SET state='acked', ack_id=?, acked_at=?
@@ -561,6 +568,42 @@ class IntentInbox:
                         event_scope=ack_id,
                         occurred_at=now,
                     )) or projection_changed
+                generation = str(row["recovery_generation"])
+                if str(row["recovery_decision"] or "") == f"resumed:{generation}":
+                    next_sibling = self._connection.execute(
+                        """
+                        SELECT intent_id, recovery_generation
+                          FROM intents
+                         WHERE command_seq=? AND command_id=?
+                           AND state='recovery_pending'
+                           AND (within_turn_order > ?
+                                OR (within_turn_order=? AND ordinal > ?))
+                         ORDER BY within_turn_order, ordinal
+                         LIMIT 1
+                        """,
+                        (
+                            int(row["command_seq"]),
+                            str(row["command_id"]),
+                            int(row["within_turn_order"]),
+                            int(row["within_turn_order"]),
+                            int(row["ordinal"]),
+                        ),
+                    ).fetchone()
+                    if (
+                        next_sibling is not None
+                        and str(next_sibling["recovery_generation"]) == generation
+                    ):
+                        self._connection.execute(
+                            "UPDATE intents SET state='pending', recovered_at=?, "
+                            "recovery_decision=? WHERE intent_id=? "
+                            "AND state='recovery_pending' AND recovery_generation=?",
+                            (
+                                now,
+                                f"resumed:{generation}",
+                                str(next_sibling["intent_id"]),
+                                generation,
+                            ),
+                        )
             observed = True
         if projection_changed:
             self._project_provider_turns()
