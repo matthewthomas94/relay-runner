@@ -25,7 +25,6 @@ from messenger import (
     CodexMessengerBackend,
     MessengerConfig,
     _command_prefix,
-    provider_child_environment,
     resolve_messenger_catalog_selection,
     resolve_messenger_command,
 )
@@ -34,15 +33,15 @@ from messenger import (
 ACTOR_ROLE = "continuity-agent"
 SCHEMA_VERSION = 1
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_SECRET_ENV_MARKERS = (
-    "API_KEY",
-    "AUTH_TOKEN",
-    "ACCESS_TOKEN",
-    "CREDENTIAL",
-    "PASSWORD",
-    "PRIVATE_KEY",
-    "SECRET",
-)
+_CHILD_ENVIRONMENT_ALLOWLIST = frozenset({
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "PATH",
+    "SHELL",
+    "TMPDIR",
+})
 _INCIDENT_FIELDS = (
     "schema_version",
     "incident_id",
@@ -138,17 +137,12 @@ def continuity_agent_environment(
     parent: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Build a child environment without foreground authority or secret values."""
-    environment = provider_child_environment(
-        ACTOR_ROLE,
-        parent=dict(os.environ if parent is None else parent),
-    )
-    for key in tuple(environment):
-        upper = key.upper()
-        if (
-            upper.startswith(("RELAY_", "VOICE_", "TTS_", "SPEECH_"))
-            or any(marker in upper for marker in _SECRET_ENV_MARKERS)
-        ):
-            environment.pop(key, None)
+    parent_environment = os.environ if parent is None else parent
+    environment = {
+        key: parent_environment[key]
+        for key in _CHILD_ENVIRONMENT_ALLOWLIST
+        if key in parent_environment
+    }
     environment.update({
         "RELAY_ACTOR_ROLE": ACTOR_ROLE,
         "RELAY_CONTINUITY_PROCESS_ID": process_identity,
@@ -571,6 +565,7 @@ class ContinuityAgentLane:
         generation = int(incident["recovery_generation"])
         process_identity = "continuity-" + uuid.uuid4().hex
         started = self._monotonic()
+        deadline = started + self.config.wall_clock_seconds
         try:
             session = self._session_factory(process_identity, incident_id, generation)
         except Exception as error:  # noqa: BLE001 - launch details stay private.
@@ -608,7 +603,7 @@ class ContinuityAgentLane:
                 if self._shutdown.is_set():
                     final_result = "canceled"
                     break
-                remaining = self.config.wall_clock_seconds - (self._monotonic() - started)
+                remaining = deadline - self._monotonic()
                 if remaining <= 0:
                     break
                 prompt = self._prompt(incident, capabilities, history, attempt)
@@ -632,15 +627,14 @@ class ContinuityAgentLane:
                     )
                 else:
                     try:
-                        outcome = self._broker.perform(
+                        outcome = self._perform_broker_action(
                             capability,
                             incident=incident,
                             process_identity=process_identity,
                             recovery_generation=generation,
                             attempt=attempt,
+                            deadline=deadline,
                         )
-                        if not isinstance(outcome, RecoveryBrokerOutcome):
-                            raise ValueError("broker returned an invalid outcome")
                     except Exception as error:  # noqa: BLE001 - broker internals stay private.
                         print(
                             f"[continuity-agent] recovery broker failed ({type(error).__name__})",
@@ -694,6 +688,60 @@ class ContinuityAgentLane:
                 self._active_incident = None
                 self._active_session = None
                 self._idle.set()
+
+    def _perform_broker_action(
+        self,
+        capability: str,
+        *,
+        incident: Mapping[str, object],
+        process_identity: str,
+        recovery_generation: int,
+        attempt: int,
+        deadline: float,
+    ) -> RecoveryBrokerOutcome:
+        remaining = deadline - self._monotonic()
+        if remaining <= 0:
+            return RecoveryBrokerOutcome(
+                capability,
+                "circuit_open",
+                "broker_call_timed_out",
+            )
+        completed = threading.Event()
+        outcomes: list[RecoveryBrokerOutcome] = []
+        errors: list[Exception] = []
+
+        def perform() -> None:
+            try:
+                outcome = self._broker.perform(
+                    capability,
+                    incident=incident,
+                    process_identity=process_identity,
+                    recovery_generation=recovery_generation,
+                    attempt=attempt,
+                )
+                if not isinstance(outcome, RecoveryBrokerOutcome):
+                    raise ValueError("broker returned an invalid outcome")
+                outcomes.append(outcome)
+            except Exception as error:  # noqa: BLE001 - re-raised on the lane thread.
+                errors.append(error)
+            finally:
+                completed.set()
+
+        threading.Thread(
+            target=perform,
+            name=f"relay-continuity-broker-{capability}",
+            daemon=True,
+        ).start()
+        remaining = deadline - self._monotonic()
+        if remaining <= 0 or not completed.wait(timeout=remaining):
+            return RecoveryBrokerOutcome(
+                capability,
+                "circuit_open",
+                "broker_call_timed_out",
+            )
+        if errors:
+            raise errors[0]
+        return outcomes[0]
 
     @staticmethod
     def _validated_capabilities(capabilities: tuple[str, ...]) -> tuple[str, ...]:

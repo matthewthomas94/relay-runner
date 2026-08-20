@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -147,9 +148,18 @@ class ContinuityAgentTests(unittest.TestCase):
             "inc-safe",
             4,
             parent={
+                "HOME": "/Users/test",
+                "LANG": "en_US.UTF-8",
                 "PATH": "/usr/bin",
                 "OPENAI_API_KEY": "secret",
                 "CUSTOM_ACCESS_TOKEN": "secret",
+                "GH_TOKEN": "secret",
+                "GITHUB_TOKEN": "secret",
+                "AWS_ACCESS_KEY_ID": "secret",
+                "AWS_SECRET_ACCESS_KEY": "secret",
+                "AWS_SESSION_TOKEN": "secret",
+                "UNRECOGNIZED_CREDENTIAL_NAME": "secret",
+                "BENIGN_PARENT_CONTEXT": "not needed by the provider",
                 "RELAY_REPLY_HELPER": "/private/reply",
                 "VOICE_COMMAND_CLAIM_FILE": "/private/claim",
                 "VOICE_FIFO": "/private/voice",
@@ -161,13 +171,25 @@ class ContinuityAgentTests(unittest.TestCase):
         self.assertEqual(environment["RELAY_CONTINUITY_PROCESS_ID"], "continuity-process")
         self.assertEqual(environment["RELAY_CONTINUITY_INCIDENT_ID"], "inc-safe")
         self.assertEqual(environment["RELAY_RECOVERY_GENERATION"], "4")
+        self.assertEqual(environment["HOME"], "/Users/test")
+        self.assertEqual(environment["LANG"], "en_US.UTF-8")
         self.assertEqual(environment["PATH"], "/usr/bin")
-        self.assertNotIn("OPENAI_API_KEY", environment)
-        self.assertNotIn("CUSTOM_ACCESS_TOKEN", environment)
-        self.assertNotIn("RELAY_REPLY_HELPER", environment)
-        self.assertNotIn("VOICE_COMMAND_CLAIM_FILE", environment)
-        self.assertNotIn("VOICE_FIFO", environment)
-        self.assertNotIn("TTS_CONTROL_SOCK", environment)
+        for excluded in (
+            "OPENAI_API_KEY",
+            "CUSTOM_ACCESS_TOKEN",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "UNRECOGNIZED_CREDENTIAL_NAME",
+            "BENIGN_PARENT_CONTEXT",
+            "RELAY_REPLY_HELPER",
+            "VOICE_COMMAND_CLAIM_FILE",
+            "VOICE_FIFO",
+            "TTS_CONTROL_SOCK",
+        ):
+            self.assertNotIn(excluded, environment)
 
     def test_codex_and_claude_have_equivalent_authority_boundaries(self):
         codex = CodexContinuityBackend(
@@ -300,6 +322,48 @@ class ContinuityAgentTests(unittest.TestCase):
         self.assertEqual(audit[-1]["final_result"], "circuit_open")
         broker_records = [record for record in audit if record["phase"] == "broker_outcome"]
         self.assertEqual(len(broker_records), 1)
+
+    def test_blocking_broker_cannot_overrun_wall_clock_budget(self):
+        broker_started = threading.Event()
+        release_broker = threading.Event()
+
+        class BlockingBroker(IterativeBroker):
+            def perform(self, capability, **context):
+                self.calls.append((capability, context))
+                broker_started.set()
+                release_broker.wait()
+                return RecoveryBrokerOutcome(capability, "noop", "broker_released")
+
+        session = FakeSession([
+            '{"kind":"broker_call","capability":"restart_bridge"}',
+        ])
+        audit = []
+        lane = ContinuityAgentLane(
+            lambda *_args: session,
+            BlockingBroker(),
+            on_audit=audit.append,
+            config=ContinuityAgentConfig(
+                max_attempts=1,
+                wall_clock_seconds=0.05,
+                cooldown_seconds=0,
+            ),
+        )
+
+        try:
+            started_at = time.monotonic()
+            self.assertEqual(lane.submit(incident()), "launched")
+            self.assertTrue(broker_started.wait(1))
+            self.assertTrue(lane.wait_until_idle(1))
+            self.assertLess(time.monotonic() - started_at, 0.5)
+            self.assertEqual(audit[-2]["broker_outcome"]["status"], "circuit_open")
+            self.assertEqual(
+                audit[-2]["broker_outcome"]["outcome_code"],
+                "broker_call_timed_out",
+            )
+            self.assertEqual(audit[-1]["final_result"], "circuit_open")
+            self.assertTrue(session.shutdown_called)
+        finally:
+            release_broker.set()
 
     def test_configured_provider_never_silently_falls_back(self):
         app_config = {
