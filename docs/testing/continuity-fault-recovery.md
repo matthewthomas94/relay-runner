@@ -12,7 +12,7 @@ Every safety count is derived from the append-only effect ledger rather than the
 
 ## Signed mounted app lane
 
-Automated source evidence does not establish a signed mounted app or audible output. With a Developer ID signed app and authenticated real Codex and Claude sessions, record one complete voice scenario per provider in a privacy-safe continuity JSONL file. Each scenario uses a stable `scenario_id`, provider, command sequence/id, and these events: `speech_captured`, `transcript_captured`, `command_accepted`, and `command_completed`. Preserve the corresponding terminal-delivery and speech logs, then run:
+Automated source evidence does not establish a signed mounted app or audible output. With a Developer ID signed app and authenticated real Codex and Claude sessions, record one complete recovered voice scenario per provider in a privacy-safe continuity JSONL file. Every event uses one stable `scenario_id`, provider, command sequence/id, and the recovery events use one exact `recovery_generation`, incident ID, opaque session ID, and opaque command ID. Required events are `speech_captured`, `transcript_captured`, `incident_classified`, `continuity_agent_launched`, `broker_result`, `continuity_agent_completed`, canonical `continuity_resume`, `command_accepted`, `command_completed`, and `audible_playback_attested`. The broker result must contain production `broker_outcome` evidence for at least 60 seconds of restored health; the completion and handoff must both report `restored`, and the handoff must record the canonical bridge's `resume_exact` or `reattach` action. The audible attestation must name the exact play-request and utterance IDs from the speech log. Preserve the corresponding terminal-delivery and speech logs, then run:
 
 ```sh
 python3 scripts/continuity-mounted-verification.py \
@@ -22,7 +22,7 @@ python3 scripts/continuity-mounted-verification.py \
   --speech-log /tmp/relay_speech_events.jsonl
 ```
 
-The mounted gate verifies the Developer ID identity and correlates each provider's capture, transcript, command lifecycle, unique provider acknowledgement, play-request ID, utterance ID, and `afplay_started`. Duplicate acknowledgements or playback fail closed. `afplay_started` is process evidence, not proof that sound was audible, so the default result remains `verification_blocked` until a human completes the physical-audio check and reruns with `--physical-audio-attested`.
+The mounted gate verifies the Developer ID identity and correlates each provider's production incident classification, continuity-agent process, broker outcome, restored stable health, canonical recovery handoff, command lifecycle, unique terminal provider acknowledgement, play-request ID, utterance ID, `afplay_started`, and human audible-playback attestation. Healthy non-recovery paths, duplicate effects, and mixed provider, generation, incident, session, or command evidence fail closed. `afplay_started` remains process evidence rather than proof that sound was audible, so the default result stays `verification_blocked` until the matching attestation is recorded and the human reruns with `--physical-audio-attested`.
 
 Keep the three evidence classes separate in the ticket run log:
 

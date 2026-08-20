@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -21,8 +22,25 @@ SPEC.loader.exec_module(speech_latency_report)
 
 
 PROVIDERS = ("codex", "claude")
-REQUIRED_TRANSCRIPT_EVENTS = frozenset({
-    "speech_captured", "transcript_captured", "command_accepted", "command_completed",
+REQUIRED_SCENARIO_EVENTS = (
+    "speech_captured",
+    "transcript_captured",
+    "incident_classified",
+    "continuity_agent_launched",
+    "broker_result",
+    "continuity_agent_completed",
+    "continuity_resume",
+    "command_accepted",
+    "command_completed",
+    "audible_playback_attested",
+)
+RECOVERY_EVENTS = frozenset({
+    "incident_classified",
+    "continuity_agent_launched",
+    "broker_result",
+    "continuity_agent_completed",
+    "continuity_resume",
+    "audible_playback_attested",
 })
 
 
@@ -68,6 +86,65 @@ def _key(record: dict[str, Any]) -> tuple[int, str] | None:
         return None
 
 
+def _recovery_identity(record: dict[str, Any]) -> tuple[str, str, str, str] | None:
+    values = tuple(
+        str(record.get(field) or "").strip()
+        for field in ("recovery_generation", "incident_id", "session_id", "command_id")
+    )
+    generation, incident_id, session_id, command_id = values
+    if not all(values):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", generation):
+        return None
+    if not re.fullmatch(r"inc-[0-9a-f]{12}", incident_id):
+        return None
+    if not re.fullmatch(r"session-[0-9a-f]{24}", session_id):
+        return None
+    if not re.fullmatch(r"command-[0-9a-f]{24}", command_id):
+        return None
+    return values
+
+
+def _opaque_command_id(command_id: str) -> str:
+    material = f"continuity-v1:command:{command_id}".encode("utf-8")
+    return "command-" + hashlib.sha256(material).hexdigest()[:24]
+
+
+def _broker_health(record: dict[str, Any]) -> tuple[str, str, str, float] | None:
+    outcome = record.get("broker_outcome")
+    if not isinstance(outcome, dict):
+        return None
+    health = outcome.get("health")
+    if not isinstance(health, dict) or health.get("objective_restored") is not True:
+        return None
+    stable_for = health.get("stable_for_seconds")
+    if isinstance(stable_for, bool):
+        return None
+    try:
+        stable_for = float(stable_for)
+    except (TypeError, ValueError):
+        return None
+    status = str(outcome.get("status") or "")
+    capability = str(outcome.get("capability") or "")
+    outcome_code = str(outcome.get("outcome_code") or "")
+    evidence_codes = health.get("evidence_codes")
+    if (
+        status not in {"applied", "noop"}
+        or stable_for < 60
+        or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", capability)
+        or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", outcome_code)
+        or not isinstance(evidence_codes, list)
+        or not evidence_codes
+        or any(
+            not isinstance(code, str)
+            or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code)
+            for code in evidence_codes
+        )
+    ):
+        return None
+    return status, capability, outcome_code, stable_for
+
+
 def build_mounted_report(
     signature: dict[str, Any],
     continuity_records: list[dict[str, Any]],
@@ -96,7 +173,7 @@ def build_mounted_report(
         for scenario_id, records in sorted(by_scenario.items()):
             event_records = {
                 event: [item for item in records if str(item.get("event") or "") == event]
-                for event in REQUIRED_TRANSCRIPT_EVENTS
+                for event in REQUIRED_SCENARIO_EVENTS
             }
             event_keys = {event: {_key(item) for item in items} for event, items in event_records.items()}
             command_keys = set().union(*event_keys.values())
@@ -111,15 +188,71 @@ def build_mounted_report(
             sample = samples_by_key.get(command_key)
             if sample is None or sample.get("provider") != provider:
                 continue
+            recovery_identities = {
+                _recovery_identity(item)
+                for event in RECOVERY_EVENTS
+                for item in event_records[event]
+            }
+            if len(recovery_identities) != 1 or None in recovery_identities:
+                continue
+            recovery_generation, incident_id, session_id, command_id = next(
+                iter(recovery_identities)
+            )
+            if command_id != _opaque_command_id(command_key[1]):
+                continue
+            incident = event_records["incident_classified"][0]
+            launch = event_records["continuity_agent_launched"][0]
+            broker = event_records["broker_result"][0]
+            completed = event_records["continuity_agent_completed"][0]
+            handoff = event_records["continuity_resume"][0]
+            audible = event_records["audible_playback_attested"][0]
+            broker_health = _broker_health(broker)
+            process_identity = str(launch.get("process_identity") or "")
+            if (
+                incident.get("classification") not in {"stalled", "recurring"}
+                or incident.get("health") not in {"unavailable", "recovery_failed"}
+                or not re.fullmatch(r"continuity-[0-9a-f]{32}", process_identity)
+                or any(
+                    item.get("process_identity") != process_identity
+                    for item in (broker, completed)
+                )
+                or broker_health is None
+                or completed.get("final_result") != "restored"
+                or handoff.get("final_result") != "restored"
+                or handoff.get("actor_role") != "canonical_bridge"
+                or handoff.get("action") not in {"resume_exact", "reattach"}
+                or audible.get("audible") is not True
+                or audible.get("play_request_id") != sample["play_request_id"]
+                or audible.get("utterance_id") != sample["utterance_id"]
+            ):
+                continue
+            (
+                broker_status,
+                broker_capability,
+                broker_outcome_code,
+                stable_for_seconds,
+            ) = broker_health
             valid = {
                 "provider": provider,
                 "scenario_id": scenario_id,
                 "outcome": "transcript_captured",
+                "classification": incident["classification"],
+                "recovery_generation": recovery_generation,
+                "incident_id": incident_id,
+                "session_id": session_id,
+                "command_id": command_id,
+                "continuity_process_identity": process_identity,
+                "broker_status": broker_status,
+                "broker_capability": broker_capability,
+                "broker_outcome_code": broker_outcome_code,
+                "stable_health_seconds": stable_for_seconds,
+                "continuity_resume_action": handoff["action"],
                 "command_lifecycle_complete": True,
                 "provider_acknowledged": True,
                 "play_request_id": sample["play_request_id"],
                 "utterance_id": sample["utterance_id"],
                 "afplay_started": True,
+                "audible_playback_attested": True,
                 "ack_to_first_audio_ms": sample["ack_to_first_audio_ms"],
             }
             break
