@@ -585,6 +585,18 @@ class ArtifactRetentionManager:
             if artifact_id in canonical or entry.get("state") == RetentionState.DELETED_TOMBSTONE.value:
                 continue
             ticket = self._catalog_ticket(entry)
+            ticket_id = str(entry.get("ticket_id") or artifact_id)
+            try:
+                self._verified_catalog_markdown(head, entry)
+            except _MissingHistoricalObject as error:
+                raise ArtifactValidationError(
+                    f"archive catalog integrity blocker for {ticket_id}: "
+                    "required historical objects are unavailable"
+                ) from error
+            except (ArtifactValidationError, CatalogSemanticError) as error:
+                raise ArtifactValidationError(
+                    f"archive catalog integrity blocker for {ticket_id}: {error}"
+                ) from error
             if any(existing.ticket_id == ticket.ticket_id for existing in canonical.values()):
                 raise ArtifactValidationError(
                     f"ticket {ticket.ticket_id} has conflicting materialized and catalog identities"
@@ -829,26 +841,8 @@ class ArtifactRetentionManager:
                     recovery="Connect and explicitly deepen the configured artifact ref.",
                 )
             deepen(source_commit)
-        if self._object_exists(source_commit) and self.store._git(
-            "merge-base", "--is-ancestor", source_commit, artifact_head,
-            allowed_statuses={0, 1, 128},
-        ).returncode != 0:
-            return HistoricalDetail(
-                HistoryAvailability.TAMPERED,
-                card,
-                recovery="Archive catalog source commit is not reachable from the current artifact head.",
-            )
         try:
-            ticket_bytes = self._verified_historical_blob(
-                source_commit,
-                str(entry["ticket_path"]),
-                str(entry["ticket_blob"]),
-            )
-            validate_catalog_ticket_metadata(
-                entry,
-                ticket_bytes,
-                activity_fields=ACTIVITY_FIELDS,
-            )
+            ticket_bytes = self._verified_catalog_markdown(artifact_head, entry)
             for attachment in entry.get("attachments", []):
                 self._verified_historical_blob(
                     source_commit,
@@ -1444,6 +1438,33 @@ class ArtifactRetentionManager:
                 self._verified_historical_blob(
                     str(entry["source_commit"]), str(attachment["path"]), str(attachment["blob"])
                 )
+
+    def _verified_catalog_markdown(
+        self,
+        artifact_head: str,
+        entry: Mapping[str, object],
+    ) -> bytes:
+        source_commit = str(entry.get("source_commit") or "")
+        if not self._object_exists(source_commit):
+            raise _MissingHistoricalObject()
+        if self.store._git(
+            "merge-base", "--is-ancestor", source_commit, artifact_head,
+            allowed_statuses={0, 1, 128},
+        ).returncode != 0:
+            raise ArtifactValidationError(
+                "archive catalog source commit is not reachable from the current artifact head"
+            )
+        content = self._verified_historical_blob(
+            source_commit,
+            str(entry.get("ticket_path") or ""),
+            str(entry.get("ticket_blob") or ""),
+        )
+        validate_catalog_ticket_metadata(
+            entry,
+            content,
+            activity_fields=ACTIVITY_FIELDS,
+        )
+        return content
 
     def _verified_historical_blob(self, commit_id: str, path: str, expected_blob: str) -> bytes:
         if not self._object_exists(commit_id) or not self._object_exists(expected_blob):

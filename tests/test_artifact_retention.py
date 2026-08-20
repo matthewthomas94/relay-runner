@@ -460,6 +460,36 @@ class ArtifactRetentionTests(unittest.TestCase):
         self.assertIn("status and canceled semantics", detail.recovery)
         self.assertFalse(self.manager.dependency_satisfied("RR-1"))
 
+    def test_catalog_activity_tamper_blocks_preview_before_ranking_or_materialization(self):
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-1",
+            "Archived terminal",
+            activity_at=self.now - timedelta(days=31),
+            extra={"status": "done"},
+        )
+        self.manager.archive(
+            self.manager.preview(), event_id="archive-activity", device_id="device-a"
+        )
+        untampered = self.manager.preview()
+        self.assertEqual(self.manager.preview(), untampered)
+        self.assertNotIn("RR-1", untampered.retained_terminal_ids)
+        self.assertNotIn("RR-1", untampered.materialize_ids)
+
+        snapshot = self.store.snapshot()
+        catalog = json.loads(snapshot.files[".orchestrator/archive-index.jsonl"])
+        catalog["activity_at"] = format_instant(self.now + timedelta(days=1))
+        self.replace_catalog(catalog, "tamper-activity")
+
+        detail = self.manager.historical_detail("artifact-RR-1")
+        self.assertEqual(detail.availability, HistoryAvailability.TAMPERED)
+        self.assertIn("activity timestamp", detail.recovery)
+        with self.assertRaisesRegex(
+            Exception, "integrity blocker.*activity timestamp"
+        ):
+            self.manager.preview()
+        self.assertNotIn(".orchestrator/RR-1.md", self.store.snapshot().files)
+
     def test_verified_attachment_read_and_reopen_do_not_leave_terminal_work_capped(self):
         self.seed_retained_terminal()
         old = self.now - timedelta(days=31)
