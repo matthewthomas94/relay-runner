@@ -313,8 +313,7 @@ class OrchestrationTraceEvent:
         object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "source", source)
         object.__setattr__(self, "message", _clip_public_message(public_detail))
-        if kind in LIFECYCLE_DETAIL_TRACE_KINDS:
-            object.__setattr__(self, "lifecycle_detail", public_detail)
+        object.__setattr__(self, "lifecycle_detail", public_detail)
         if self.ticket_id:
             object.__setattr__(self, "ticket_id", self.ticket_id.upper())
 

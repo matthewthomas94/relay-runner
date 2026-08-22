@@ -78,6 +78,30 @@ final class TranscriptionPillScrollTests: XCTestCase {
         XCTAssertEqual(bodyLabel.frame.minY, minY, accuracy: 0.01)
     }
 
+    func testLongPlaybackProgressRemainsCompleteAndScrollableAtPillWidth() throws {
+        let mounted = mountLongPill()
+        defer { mounted.close() }
+        let completeProgress = Array(
+            repeating: "I am separating the real-world evidence requirements from local checks.",
+            count: 8
+        ).joined(separator: " ") + " COMPLETE-END"
+
+        mounted.pill.showFull(
+            title: "Double tap Control to cancel",
+            body: completeProgress,
+            theme: .tts,
+            animated: false
+        )
+
+        let bodyLabel = try XCTUnwrap(bodyLabel(in: mounted.pill))
+        let container = try XCTUnwrap(bodyLabel.superview)
+        XCTAssertEqual(bodyLabel.stringValue, completeProgress)
+        XCTAssertTrue(bodyLabel.stringValue.hasSuffix("COMPLETE-END"))
+        XCTAssertFalse(bodyLabel.cell?.truncatesLastVisibleLine ?? true)
+        XCTAssertGreaterThan(bodyLabel.frame.height, container.frame.height)
+        XCTAssertNotNil(mounted.pill.manualScrollFrameOnScreen())
+    }
+
     func testMouseAndNaturalTrackpadDeltasNormalizeInExpectedDirection() {
         XCTAssertEqual(
             TranscriptionPill.manualScrollDelta(
