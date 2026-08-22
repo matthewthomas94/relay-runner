@@ -306,6 +306,9 @@ class ContinuityLifecycleAdapter:
         self._active_incidents: dict[
             tuple[str, str | None, str, str, str, str], Observation
         ] = {}
+        self._active_incident_identity: dict[
+            tuple[str, str | None, str, str, str, str], tuple[str, str]
+        ] = {}
         self._suppressed_sessions: dict[str, str] = {}
         self._objective_evidence: dict[
             tuple[str, str | None, str], dict[str, float]
@@ -355,6 +358,8 @@ class ContinuityLifecycleAdapter:
                     )
                 ):
                     store.pop(key, None)
+                    if store is self._active_incidents:
+                        self._active_incident_identity.pop(key, None)
         self.detector.resolve_related(observation)
 
     def _clear_component_watches(
@@ -374,6 +379,8 @@ class ContinuityLifecycleAdapter:
                     )
                 ):
                     store.pop(key, None)
+                    if store is self._active_incidents:
+                        self._active_incident_identity.pop(key, None)
                     self.detector.resolve_related(watched)
 
     def _watch_transient(self, observation: Observation) -> None:
@@ -385,6 +392,10 @@ class ContinuityLifecycleAdapter:
             self._watches.pop(key, None)
             if result.envelope is not None:
                 self._active_incidents[key] = observation
+                self._active_incident_identity[key] = (
+                    result.envelope.incident_id,
+                    result.envelope.classification,
+                )
 
     def observe(self, event: dict[str, Any]):
         source = str(event.get("source") or "").strip().lower()
@@ -474,6 +485,7 @@ class ContinuityLifecycleAdapter:
                 for key, active in tuple(self._active_incidents.items()):
                     if active.session_id == session_id:
                         self._active_incidents.pop(key, None)
+                        self._active_incident_identity.pop(key, None)
                 return self.detector.observe(observation, suppression=suppression)
 
             suppressed = self._suppressed_sessions.get(session_id)
@@ -498,6 +510,10 @@ class ContinuityLifecycleAdapter:
                     self._watches.pop(key, None)
                     if result.envelope is not None:
                         self._active_incidents[key] = observation
+                        self._active_incident_identity[key] = (
+                            result.envelope.incident_id,
+                            result.envelope.classification,
+                        )
             else:
                 deadline_component = _CONTINUITY_DEADLINE_STARTS.get((source, name))
                 if source == "provider" and name in {
@@ -559,6 +575,7 @@ class ContinuityLifecycleAdapter:
         """Inspect the exact active detector watch; never infer a live owner."""
         watched = None
         confirmed_dead = False
+        classified_stall = False
         with self._lock:
             observations = tuple(self._watches.values()) + tuple(
                 self._active_incidents.values()
@@ -571,10 +588,21 @@ class ContinuityLifecycleAdapter:
                     and observation.provider == request.provider
                     and observation.phase == request.incident_phase
                 ):
+                    key = self._watch_key(observation)
+                    incident_identity = self._active_incident_identity.get(key)
+                    if (
+                        incident_identity is not None
+                        and incident_identity[0] != request.incident_id
+                    ):
+                        continue
                     watched = observation
                     confirmed_dead = (
-                        self._watch_key(observation) in self._confirmed_dead
+                        key in self._confirmed_dead
                         or observation.native_recovery_failed
+                    )
+                    classified_stall = (
+                        incident_identity is not None
+                        and incident_identity[1] in {"stalled", "recurring"}
                     )
                     break
         command_phase = {
@@ -595,7 +623,7 @@ class ContinuityLifecycleAdapter:
             liveness = (
                 "confirmed_dead"
                 if confirmed_dead
-                else "unhealthy"
+                else "stalled" if classified_stall else "unhealthy"
             )
         return RecoveryActionValidation(
             validation_token="live_continuity_watch",
@@ -628,6 +656,10 @@ class ContinuityLifecycleAdapter:
                     self._watches.pop(key, None)
                     if result.envelope is not None:
                         self._active_incidents[key] = watched
+                        self._active_incident_identity[key] = (
+                            result.envelope.incident_id,
+                            result.envelope.classification,
+                        )
         return results
 
 WORKER_SIZING_FIELDS = (

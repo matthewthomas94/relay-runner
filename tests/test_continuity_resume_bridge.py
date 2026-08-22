@@ -155,6 +155,21 @@ class ContinuityResumeBridgeTests(unittest.TestCase):
         queue_text.assert_not_called()
         notify.assert_not_called()
 
+    def test_circuit_open_handoff_surfaces_an_explicit_recovery_action(self):
+        payload = {**self.payload, "final_result": "circuit_open"}
+        with (
+            patch("voice_bridge._queue_tts_text") as queue_text,
+            patch("voice_bridge._notify_state") as notify,
+        ):
+            result = self.call(payload)
+
+        self.assertEqual(result["action"], "foreground_review")
+        notify.assert_called_once_with(
+            "working",
+            text=voice_bridge.RECOVERY_ACTION_REQUIRED_TEXT,
+        )
+        queue_text.assert_not_called()
+
     def test_command_captured_during_recovery_suppresses_stale_repeat(self):
         metadata = {
             "relay_command_seq": 1,
