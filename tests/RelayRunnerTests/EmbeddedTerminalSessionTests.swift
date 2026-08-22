@@ -1452,6 +1452,105 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertFalse(events.contains(#""event":"delivery_failure_published""#))
     }
 
+    func testQueuedDraftDrainsAfterIdentityReconciledManualCompletionForCodexAndClaude() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-342\",\"relay_command_seq\":342,\"intent_id\":\"intent-342\"}"
+            try "Queued voice work\n".write(
+                to: fixture.command,
+                atomically: true,
+                encoding: .utf8
+            )
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            var currentTime = Date(timeIntervalSince1970: 100)
+            var sent: [String] = []
+            var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { sent.append(String(decoding: $0, as: UTF8.self)) },
+                schedule: { delay, _, work in scheduled.append((delay, work)) },
+                isRunning: { true },
+                now: { currentTime },
+                providerSessionID: "embedded-\(provider)",
+                appSessionID: "app-session",
+                recoveryGeneration: "generation-2",
+                foregroundGateHandle: "gate-2"
+            )
+
+            XCTAssertTrue(delivery.recordUserInput(ArraySlice(Array("private draft".utf8))), provider)
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+            currentTime = Date(timeIntervalSince1970: 100.05)
+            XCTAssertTrue(delivery.recordUserInput(ArraySlice(Array(" grows".utf8))), provider)
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+
+            currentTime = Date(timeIntervalSince1970: 100.1)
+            XCTAssertTrue(delivery.recordUserInput(ArraySlice([13])), provider)
+            try writeProviderTurnRecords([[
+                "state": "active",
+                "origin": "manual",
+                "provider": provider,
+                "provider_session_id": "embedded-\(provider)",
+                "app_session_id": "app-session",
+                "recovery_generation": "generation-2",
+                "actor_role": "foreground_manual",
+                "foreground_gate_handle": "gate-2",
+                "session_id": "transient-session",
+                "turn_id": "physical-manual-turn",
+                "created_at": 100.1,
+                "updated_at": 100.1,
+            ]], to: fixture.providerTurns)
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(sent, [], provider)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.command.path), provider)
+
+            currentTime = Date(timeIntervalSince1970: 100.3)
+            try writeProviderTurnRecords([[
+                "state": "completed_manual",
+                "origin": "manual",
+                "provider": provider,
+                "provider_session_id": "embedded-\(provider)",
+                "app_session_id": "app-session",
+                "recovery_generation": "generation-2",
+                "actor_role": "foreground_manual",
+                "foreground_gate_handle": "gate-2",
+                "session_id": "transient-session",
+                "turn_id": "physical-manual-turn",
+                "created_at": 100.1,
+                "updated_at": 100.3,
+                "completion_native_session_id": "persisted-session",
+                "completion_correlation": "provider_identity_reconciled",
+                "release_reason": "provider_stop_identity_reconciled",
+            ]], to: fixture.providerTurns)
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(sent, ["Queued voice work"], provider)
+            XCTAssertLessThanOrEqual(currentTime.timeIntervalSince1970 - 100.1, 0.5, provider)
+            XCTAssertEqual(scheduled.count, 1, provider)
+            XCTAssertLessThan(scheduled[0].delay, 0.5, provider)
+            scheduled[0].work()
+            XCTAssertEqual(sent, ["Queued voice work", "\r"], provider)
+            XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata, provider)
+
+            let events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertTrue(events.contains(#""event":"deferred_terminal_draft""#), provider)
+            XCTAssertTrue(events.contains(#""event":"manual_submit_barrier_started""#), provider)
+            XCTAssertTrue(events.contains(#""event":"safe_boundary_wait""#), provider)
+            XCTAssertTrue(events.contains(#""event":"safe_boundary_verified""#), provider)
+            XCTAssertTrue(events.contains(#""next_drain_decision":"claim_oldest_eligible""#), provider)
+            XCTAssertTrue(events.contains(#""provider_turn_release_reason":"provider_stop_identity_reconciled""#), provider)
+            XCTAssertTrue(events.contains(#""intent_id":"intent-342""#), provider)
+            XCTAssertEqual(countEvent("claimed", in: events), 1, provider)
+            XCTAssertFalse(events.contains("private draft"), provider)
+            XCTAssertFalse(events.contains("Queued voice work"), provider)
+            let journal = try String(contentsOf: fixture.actionJournal)
+            XCTAssertTrue(journal.contains(#""barrier_owner":"terminal_composer""#), provider)
+            XCTAssertTrue(journal.contains(#""next_drain_decision":"claim_oldest_eligible""#), provider)
+            XCTAssertFalse(journal.contains("private draft"), provider)
+            XCTAssertFalse(journal.contains("Queued voice work"), provider)
+        }
+    }
+
     func testRapidCommandPreemptsBeforeFirstSubmitWithoutStaleEnter() throws {
         let fixture = try makeFixture()
         let firstMetadata = #"{"relay_command_id":"cmd-1","relay_command_seq":1}"#
