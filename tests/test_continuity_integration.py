@@ -23,6 +23,7 @@ sys.modules.setdefault(
 import orchestrator  # noqa: E402
 import relay_completion_hook  # noqa: E402
 import voice_bridge  # noqa: E402
+from continuity_agent import ContinuityAgentConfig, ContinuityAgentLane  # noqa: E402
 from messenger import MessengerRuntime  # noqa: E402
 from orchestrator import ContinuityLifecycleAdapter, Daemon  # noqa: E402
 from continuity_incidents import opaque_identifier  # noqa: E402
@@ -283,7 +284,8 @@ class ContinuityIntegrationTests(unittest.TestCase):
         )
 
     def test_live_recovery_validation_requires_exact_active_owner_and_generation(self):
-        adapter = ContinuityLifecycleAdapter(emit=lambda _event: None)
+        emitted = []
+        adapter = ContinuityLifecycleAdapter(emit=emitted.append)
         adapter.observe({
             "source": "provider",
             "event": "process_exit",
@@ -295,9 +297,10 @@ class ContinuityIntegrationTests(unittest.TestCase):
         })
         adapter.sample(observed_at=200)
         adapter.sample(observed_at=201)
+        self.assertEqual(len(emitted), 1)
         request = RecoveryActionRequest(
             capability="launch_foreground_provider",
-            incident_id="inc-123456789abc",
+            incident_id=str(emitted[0]["incident_id"]),
             session_id=opaque_identifier("session", "native-session"),
             command_id=opaque_identifier("command", "native-command"),
             component="foreground_provider",
@@ -332,6 +335,270 @@ class ContinuityIntegrationTests(unittest.TestCase):
         self.assertFalse(missing_owner.exact_target_owned)
         self.assertFalse(missing_owner.incident_active)
         self.assertEqual(missing_owner.liveness, "unknown")
+
+    def test_classified_provider_stall_is_bound_to_exact_incident_and_clears_on_progress(self):
+        for provider, started, progress in (
+            ("codex", "turn_started", "turn_progress"),
+            ("claude", "stream_started", "stream_progress"),
+        ):
+            with self.subTest(provider=provider):
+                emitted = []
+                adapter = ContinuityLifecycleAdapter(emit=emitted.append)
+                common = {
+                    "source": "provider",
+                    "session_id": f"{provider}-session",
+                    "relay_command_id": f"{provider}-command",
+                    "provider": provider,
+                    "recovery_generation": "generation-4",
+                }
+                adapter.observe({**common, "event": started, "observed_at": 100})
+                adapter.sample(observed_at=130)
+                adapter.sample(observed_at=131)
+                self.assertEqual(len(emitted), 1)
+                incident = emitted[0]
+                request = RecoveryActionRequest(
+                    capability="launch_foreground_provider",
+                    incident_id=str(incident["incident_id"]),
+                    session_id=str(incident["session_id"]),
+                    command_id=str(incident["command_id"]),
+                    component="foreground_provider",
+                    provider=provider,
+                    recovery_generation="generation-4",
+                    incident_phase="provider_turn",
+                    process_identity="continuity-1234567890abcdef1234567890abcdef",
+                    attempt=1,
+                    idempotency_key="recovery_123456789012345678901234",
+                    expected_postcondition="provider_process_alive",
+                    incident_observed_at=131,
+                    deadline=200,
+                )
+
+                stalled = adapter.recovery_validation(request)
+                wrong_incident = adapter.recovery_validation(RecoveryActionRequest(**{
+                    **request.__dict__,
+                    "incident_id": "inc-abcdefabcdef",
+                }))
+                adapter.observe({**common, "event": progress, "observed_at": 132})
+                recovered = adapter.recovery_validation(request)
+
+                self.assertEqual(incident["classification"], "stalled")
+                self.assertTrue(stalled.exact_target_owned)
+                self.assertEqual(stalled.liveness, "stalled")
+                self.assertFalse(wrong_incident.exact_target_owned)
+                self.assertEqual(wrong_incident.liveness, "unknown")
+                self.assertNotEqual(recovered.liveness, "stalled")
+
+    def test_mounted_health_only_sequence_reproduces_circular_rejection(self):
+        emitted = []
+        adapter = ContinuityLifecycleAdapter(emit=emitted.append)
+        common = {
+            "source": "provider",
+            "session_id": "mounted-session",
+            "relay_command_id": "mounted-command",
+            "provider": "codex",
+            "recovery_generation": "generation-4",
+        }
+        adapter.observe({**common, "event": "turn_started", "observed_at": 100})
+        adapter.sample(observed_at=130)
+        adapter.sample(observed_at=131)
+        self.assertEqual(len(emitted), 1)
+
+        class HealthOnlyOwner:
+            owner = "app"
+
+            def inspect(self, request):
+                live = adapter.recovery_validation(request)
+                return RecoveryActionValidation(
+                    validation_token=live.validation_token,
+                    exact_target_owned=live.exact_target_owned,
+                    liveness="unhealthy",
+                    incident_active=live.incident_active,
+                    generation_matches=live.generation_matches,
+                    command_phase=live.command_phase,
+                    command_phase_matches=live.command_phase_matches,
+                    idempotency_state=live.idempotency_state,
+                    compensation_available=live.compensation_available,
+                    cooldown_remaining=live.cooldown_remaining,
+                    expected_postcondition=live.expected_postcondition,
+                )
+
+            def execute(self, *_args):
+                raise AssertionError("health-only stalled target must not execute")
+
+            def cleanup(self, *_args):
+                return False
+
+        class SequenceSession:
+            provider = "codex"
+
+            def __init__(self):
+                self.decisions = iter((
+                    {"kind": "broker_call", "capability": "release_dead_ownership"},
+                    {"kind": "broker_call", "capability": "launch_foreground_provider"},
+                    {"kind": "finish", "result": "escalate"},
+                ))
+
+            def decide(self, _prompt, _timeout):
+                return json.dumps(next(self.decisions))
+
+            def interrupt(self):
+                return None
+
+            def shutdown(self):
+                return None
+
+        audits = []
+        handoffs = []
+        lane = ContinuityAgentLane(
+            lambda *_args: SequenceSession(),
+            ComponentOwnedRecoveryBroker({"app": HealthOnlyOwner()}),
+            on_audit=audits.append,
+            on_result=lambda incident, result: handoffs.append((incident, result)),
+            config=ContinuityAgentConfig(
+                max_attempts=1,
+                wall_clock_seconds=5,
+                stable_health_seconds=60,
+                cooldown_seconds=0,
+            ),
+        )
+
+        self.assertEqual(lane.submit(emitted[0]), "launched")
+        self.assertTrue(lane.wait_until_idle(2))
+        outcomes = [
+            record["broker_outcome"]
+            for record in audits
+            if record["phase"] == "broker_outcome"
+        ]
+        self.assertEqual(emitted[0]["classification"], "stalled")
+        self.assertEqual(
+            [outcome["outcome_code"] for outcome in outcomes],
+            ["target_health_not_proven", "target_health_not_proven"],
+        )
+        self.assertEqual(handoffs, [(emitted[0], "circuit_open")])
+
+    def test_mounted_stall_sequence_recovers_and_hands_off_for_both_providers(self):
+        class SequenceSession:
+            def __init__(self, provider):
+                self.provider = provider
+                self.actions = iter((
+                    "release_dead_ownership",
+                    "launch_foreground_provider",
+                ))
+
+            def decide(self, _prompt, _timeout):
+                return json.dumps({
+                    "kind": "broker_call",
+                    "capability": next(self.actions),
+                })
+
+            def interrupt(self):
+                return None
+
+            def shutdown(self):
+                return None
+
+        for provider, started, progress in (
+            ("codex", "turn_started", "turn_progress"),
+            ("claude", "stream_started", "stream_progress"),
+        ):
+            with self.subTest(provider=provider):
+                base = time.time() - 120
+                emitted = []
+                adapter = ContinuityLifecycleAdapter(emit=emitted.append)
+                native_session = f"{provider}-mounted-session"
+                native_command = f"{provider}-mounted-command"
+                common = {
+                    "source": "provider",
+                    "session_id": native_session,
+                    "relay_command_id": native_command,
+                    "provider": provider,
+                    "recovery_generation": "generation-4",
+                }
+                adapter.observe({**common, "event": started, "observed_at": base})
+                adapter.sample(observed_at=base + 30)
+                adapter.sample(observed_at=base + 31)
+                self.assertEqual(len(emitted), 1)
+                incident = emitted[0]
+
+                daemon = Daemon.__new__(Daemon)
+                daemon.continuity = adapter
+                capabilities = {
+                    capability: ProductionRecoveryCapability(
+                        adapter.recovery_validation,
+                        daemon._execute_continuity_recovery_action,
+                    )
+                    for capability in CAPABILITY_POLICIES
+                    if capability != "check_processing_health"
+                }
+                broker = ComponentOwnedRecoveryBroker(production_recovery_owners(
+                    adapter.recovery_health,
+                    capabilities=capabilities,
+                ))
+                dispatched = []
+                audits = []
+                handoffs = []
+
+                def acknowledge(_state, **payload):
+                    dispatched.append(payload)
+                    if payload["capability"] == "launch_foreground_provider":
+                        adapter.observe({
+                            **common,
+                            "event": started,
+                            "observed_at": base + 40,
+                        })
+                        adapter.observe({
+                            **common,
+                            "event": progress,
+                            "observed_at": base + 41,
+                        })
+                    Path(payload["reply_path"]).write_text(json.dumps({
+                        "status": "applied",
+                        "outcome_code": "component_action_requested",
+                    }))
+                    return True
+
+                lane = ContinuityAgentLane(
+                    lambda *_args: SequenceSession(provider),
+                    broker,
+                    on_audit=audits.append,
+                    on_result=lambda exact_incident, result: handoffs.append(
+                        (exact_incident, result)
+                    ),
+                    config=ContinuityAgentConfig(
+                        max_attempts=1,
+                        wall_clock_seconds=5,
+                        stable_health_seconds=60,
+                        cooldown_seconds=0,
+                    ),
+                )
+                with patch("orchestrator._notify_state", side_effect=acknowledge):
+                    self.assertEqual(lane.submit(incident), "launched")
+                    self.assertTrue(lane.wait_until_idle(2))
+
+                outcomes = [
+                    record["broker_outcome"]
+                    for record in audits
+                    if record["phase"] == "broker_outcome"
+                ]
+                self.assertEqual(incident["classification"], "stalled")
+                self.assertEqual(
+                    [payload["capability"] for payload in dispatched],
+                    ["release_dead_ownership", "launch_foreground_provider"],
+                )
+                self.assertEqual(
+                    [payload["liveness"] for payload in dispatched],
+                    ["stalled", "stalled"],
+                )
+                self.assertNotIn(
+                    "target_health_not_proven",
+                    [outcome["outcome_code"] for outcome in outcomes],
+                )
+                self.assertTrue(outcomes[-1]["health"]["objective_restored"])
+                self.assertGreaterEqual(
+                    outcomes[-1]["health"]["stable_for_seconds"],
+                    60,
+                )
+                self.assertEqual(handoffs, [(incident, "restored")])
 
     def test_production_provider_and_session_relaunch_resolve_same_generation_for_both_providers(self):
         generation = "12345678-1234-4abc-8def-1234567890ab"

@@ -118,6 +118,117 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
         )
     }
 
+    func testExactStalledForegroundOwnerCanBeReleasedOrReplacedForBothProviders() throws {
+        for provider in ["codex", "claude"] {
+            for (capability, action, postcondition) in [
+                (
+                    "release_dead_ownership",
+                    AppState.ContinuityRecoveryComponentAction.releaseForegroundProviderOwnership,
+                    "dead_ownership_released"
+                ),
+                (
+                    "launch_foreground_provider",
+                    AppState.ContinuityRecoveryComponentAction.launchForegroundProvider,
+                    "provider_process_alive"
+                ),
+            ] {
+                let request = try makeRequest(
+                    capability: capability,
+                    component: "foreground_provider",
+                    provider: provider,
+                    incidentPhase: "provider_turn",
+                    commandPhase: "in_flight",
+                    liveness: "stalled",
+                    postcondition: postcondition
+                )
+
+                XCTAssertEqual(
+                    AppState.continuityRecoveryDecision(
+                        for: request,
+                        boundary: boundary(
+                            liveWorkActive: true,
+                            provider: provider,
+                            providerProcessRunning: true,
+                            stalledProviderTargetOwned: true
+                        ),
+                        nowMonotonic: 150,
+                        nowEpoch: 1_050
+                    ),
+                    .apply(action),
+                    "\(provider):\(capability)"
+                )
+            }
+        }
+    }
+
+    func testStalledForegroundRecoveryRejectsUnownedHealthyStaleAndCrossProviderTargets() throws {
+        let stalled = try makeRequest(
+            capability: "launch_foreground_provider",
+            component: "foreground_provider",
+            provider: "codex",
+            incidentPhase: "provider_turn",
+            commandPhase: "in_flight",
+            liveness: "stalled",
+            postcondition: "provider_process_alive"
+        )
+        XCTAssertEqual(
+            AppState.continuityRecoveryDecision(
+                for: stalled,
+                boundary: boundary(
+                    liveWorkActive: true,
+                    providerProcessRunning: true,
+                    stalledProviderTargetOwned: false
+                ),
+                nowMonotonic: 150,
+                nowEpoch: 1_050
+            ),
+            .reject("stalled_provider_ownership_not_proven")
+        )
+        XCTAssertEqual(
+            AppState.continuityRecoveryDecision(
+                for: stalled,
+                boundary: boundary(
+                    generation: "generation-5",
+                    stalledProviderTargetOwned: true
+                ),
+                nowMonotonic: 150,
+                nowEpoch: 1_050
+            ),
+            .reject("stale_recovery_generation")
+        )
+        XCTAssertEqual(
+            AppState.continuityRecoveryDecision(
+                for: stalled,
+                boundary: boundary(
+                    provider: "claude",
+                    stalledProviderTargetOwned: true
+                ),
+                nowMonotonic: 150,
+                nowEpoch: 1_050
+            ),
+            .reject("provider_target_mismatch")
+        )
+
+        let healthy = try makeRequest(
+            capability: "launch_foreground_provider",
+            component: "foreground_provider",
+            provider: "codex",
+            incidentPhase: "provider_turn",
+            commandPhase: "in_flight",
+            liveness: "healthy",
+            postcondition: "provider_process_alive"
+        )
+        XCTAssertEqual(
+            AppState.continuityRecoveryDecision(
+                for: healthy,
+                boundary: boundary(stalledProviderTargetOwned: true),
+                nowMonotonic: 150,
+                nowEpoch: 1_050
+            ),
+            .reject("recovery_contract_mismatch")
+        )
+    }
+
     func testConfirmedDeadProviderAndSessionLaunchPreserveLiveBridgeForBothProviders() throws {
         let generation = "12345678-1234-4abc-8def-1234567890ab"
         for target in [ProcessManager.AgentTarget.codex, .claude] {
@@ -281,6 +392,7 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
             provider: "codex",
             liveWorkActive: false,
             providerProcessRunning: false,
+            stalledProviderTargetOwned: false,
             bridgeAlive: false,
             idempotencyAlreadyApplied: false,
             cooldownActive: false
@@ -517,6 +629,7 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
         liveWorkActive: Bool = false,
         provider: String = "codex",
         providerProcessRunning: Bool = false,
+        stalledProviderTargetOwned: Bool = false,
         bridgeAlive: Bool = false
     ) -> AppState.ContinuityRecoveryBoundary {
         AppState.ContinuityRecoveryBoundary(
@@ -526,6 +639,7 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
             provider: provider,
             liveWorkActive: liveWorkActive,
             providerProcessRunning: providerProcessRunning,
+            stalledProviderTargetOwned: stalledProviderTargetOwned,
             bridgeAlive: bridgeAlive,
             idempotencyAlreadyApplied: false,
             cooldownActive: false

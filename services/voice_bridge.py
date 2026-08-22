@@ -61,7 +61,11 @@ from continuity_recovery import (
     RecoveryExecutionContext,
     recovery_owner_for,
 )
-from continuity_resume import PLEASE_REPEAT_TEXT, plan_continuity_resume
+from continuity_resume import (
+    PLEASE_REPEAT_TEXT,
+    RECOVERY_ACTION_REQUIRED_TEXT,
+    plan_continuity_resume,
+)
 from messenger import MessengerRuntime, create_messenger_runtime
 from sidecar_lane import (
     SidecarLane,
@@ -2619,9 +2623,14 @@ def _bridge_continuity_resume_response(
             text="Relay Runner recovered the original command and resumed it.",
         )
     elif decision.action == "foreground_review":
+        message = (
+            RECOVERY_ACTION_REQUIRED_TEXT
+            if str(payload.get("final_result") or "") != "restored"
+            else "Recovery needs foreground review; Relay did not replay the command."
+        )
         _notify_state(
             "working",
-            text="Recovery needs foreground review; Relay did not replay the command.",
+            text=message,
         )
     elif decision.action == "reattach":
         _notify_state(

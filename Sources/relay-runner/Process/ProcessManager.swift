@@ -458,6 +458,48 @@ final class ProcessManager {
         )
     }
 
+    static func stalledForegroundProviderTurnOwned(
+        commandID: String?,
+        provider: String,
+        recoveryGeneration: String,
+        incidentObservedAt: Double,
+        providerTurnsURL: URL = URL(fileURLWithPath: voiceProviderTurnsPath),
+        providerSessionID: String? = currentProviderSessionID(),
+        appSessionID: String = RelayDiagnostics.shared.appSessionID
+    ) -> Bool {
+        guard let commandID,
+              let providerSessionID,
+              !providerSessionID.isEmpty,
+              !appSessionID.isEmpty,
+              let data = try? Data(contentsOf: providerTurnsURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["schema_version"] as? NSNumber)?.intValue == 2,
+              let records = object["records"] as? [[String: Any]] else {
+            return false
+        }
+        return records.contains { record in
+            guard (record["state"] as? String) == "active",
+                  (record["origin"] as? String) == "relay",
+                  (record["actor_role"] as? String) == "foreground_pm",
+                  (record["provider"] as? String) == provider,
+                  (record["provider_session_id"] as? String) == providerSessionID,
+                  (record["app_session_id"] as? String) == appSessionID,
+                  (record["recovery_generation"] as? String) == recoveryGeneration,
+                  let foregroundGateHandle = record["foreground_gate_handle"] as? String,
+                  !foregroundGateHandle.isEmpty,
+                  let nativeCommandID = record["relay_command_id"] as? String,
+                  !nativeCommandID.isEmpty,
+                  let updatedAt = (record["updated_at"] as? NSNumber)?.doubleValue,
+                  updatedAt <= incidentObservedAt else {
+                return false
+            }
+            return ContinuityRecoveryRequest.opaqueIdentifier(
+                kind: "command",
+                nativeValue: nativeCommandID
+            ) == commandID
+        }
+    }
+
     static func currentRelayCommandID() -> String? {
         readJSONDictionary(from: URL(fileURLWithPath: voiceCommandStatePath))
             .flatMap { relayCommandId($0["relay_command_id"]) }

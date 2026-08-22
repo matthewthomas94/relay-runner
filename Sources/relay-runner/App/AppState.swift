@@ -26,6 +26,7 @@ final class AppState {
         let provider: String
         let liveWorkActive: Bool
         let providerProcessRunning: Bool
+        let stalledProviderTargetOwned: Bool
         let bridgeAlive: Bool
         let idempotencyAlreadyApplied: Bool
         let cooldownActive: Bool
@@ -217,6 +218,7 @@ final class AppState {
     @ObservationIgnored private var activeSessionLaunchConfig: AppConfig?
     @ObservationIgnored private var continuityRecoveryGenerationBySession: [String: String] = [:]
     @ObservationIgnored private var appliedContinuityRecoveryKeys: Set<String> = []
+    @ObservationIgnored private var releasedContinuityProviderTargets: Set<String> = []
     @ObservationIgnored private var continuityRecoveryCooldowns: [String: CFTimeInterval] = [:]
     @ObservationIgnored private let projectRegistryV2 = ProjectRegistryV2Service.makeIfEnabled()
     @ObservationIgnored private let projectScopeCoordinator = ProjectScopeCoordinator()
@@ -2368,12 +2370,12 @@ final class AppState {
         case ("release_dead_ownership", "foreground_provider"):
             (
                 .releaseForegroundProviderOwnership, ["provider_turn"], ["in_flight"],
-                ["confirmed_dead"], "dead_ownership_released", 1, true
+                ["stalled", "confirmed_dead"], "dead_ownership_released", 1, true
             )
         case ("launch_foreground_provider", "foreground_provider"):
             (
                 .launchForegroundProvider, ["provider_turn"], ["in_flight"],
-                ["confirmed_dead"], "provider_process_alive", 1, true
+                ["stalled", "confirmed_dead"], "provider_process_alive", 1, true
             )
         case ("launch_foreground_provider", "session"):
             (
@@ -2426,15 +2428,25 @@ final class AppState {
                 return .reject("unrelated_command_target")
             }
         }
-        if contract.disruptive && boundary.liveWorkActive {
+        let stalledProviderRecovery = request.component == "foreground_provider"
+            && request.liveness == "stalled"
+            && boundary.stalledProviderTargetOwned
+        if request.component == "foreground_provider",
+           request.liveness == "stalled",
+           !stalledProviderRecovery {
+            return .reject("stalled_provider_ownership_not_proven")
+        }
+        if contract.disruptive && boundary.liveWorkActive && !stalledProviderRecovery {
             return .reject("live_work_active")
         }
         if contract.action == .releaseForegroundProviderOwnership,
-           boundary.providerProcessRunning {
+           boundary.providerProcessRunning,
+           !stalledProviderRecovery {
             return .reject("live_provider_must_not_be_killed")
         }
         if contract.action == .launchForegroundProvider,
-           boundary.providerProcessRunning {
+           boundary.providerProcessRunning,
+           !stalledProviderRecovery {
             return .reject("live_session_must_not_be_replaced")
         }
         return .apply(contract.action)
@@ -2460,6 +2472,21 @@ final class AppState {
             || pendingDelivery == .waiting
             || pendingDelivery == .claimed
         let cooldownKey = continuityRecoveryCooldownKey(request)
+        let providerTargetKey = continuityProviderTargetKey(request)
+        let stalledProviderTargetOwned = request.component == "foreground_provider"
+            && request.liveness == "stalled"
+            && (
+                releasedContinuityProviderTargets.contains(providerTargetKey)
+                || (
+                    embeddedTerminal.isEmbeddedProcessRunning
+                    && ProcessManager.stalledForegroundProviderTurnOwned(
+                        commandID: request.commandID,
+                        provider: request.provider,
+                        recoveryGeneration: request.recoveryGeneration,
+                        incidentObservedAt: request.incidentObservedAt
+                    )
+                )
+            )
         let boundary = ContinuityRecoveryBoundary(
             currentSessionID: sessionID,
             currentRecoveryGeneration: currentGeneration,
@@ -2469,6 +2496,7 @@ final class AppState {
             liveWorkActive: liveWorkActive,
             providerProcessRunning: embeddedTerminal.phase.isActive
                 || embeddedTerminal.isEmbeddedProcessRunning,
+            stalledProviderTargetOwned: stalledProviderTargetOwned,
             bridgeAlive: processManager.bridgeAlive(),
             idempotencyAlreadyApplied: appliedContinuityRecoveryKeys.contains(
                 request.idempotencyKey
@@ -2506,20 +2534,42 @@ final class AppState {
             }
             applied = true
         case .releaseForegroundProviderOwnership:
-            guard activeSessionLaunchConfig != nil,
-                  !embeddedTerminal.phase.isActive,
-                  !ProcessManager.foregroundProviderTurnActive()
-            else { return .failed("live_provider_must_not_be_killed") }
+            guard activeSessionLaunchConfig != nil else {
+                return .failed("provider_session_unavailable")
+            }
+            if request.liveness == "stalled" {
+                guard stalledProviderTargetOwned else {
+                    return .failed("stalled_provider_ownership_not_proven")
+                }
+            } else {
+                guard !embeddedTerminal.phase.isActive,
+                      !ProcessManager.foregroundProviderTurnActive()
+                else { return .failed("live_provider_must_not_be_killed") }
+            }
             embeddedTerminal.end()
+            releasedContinuityProviderTargets.insert(providerTargetKey)
             applied = true
         case .launchForegroundProvider:
             let delivery = processManager.pendingVoiceCommandDeliveryState()
-            guard let launch = activeSessionLaunchConfig,
-                  !embeddedTerminal.phase.isActive,
-                  !embeddedTerminal.isEmbeddedProcessRunning,
-                  !ProcessManager.foregroundProviderTurnActive()
-            else { return .failed("live_session_must_not_be_replaced") }
-            guard delivery != .waiting, delivery != .claimed else {
+            guard let launch = activeSessionLaunchConfig else {
+                return .failed("provider_session_unavailable")
+            }
+            if request.liveness == "stalled" {
+                guard stalledProviderTargetOwned else {
+                    return .failed("stalled_provider_ownership_not_proven")
+                }
+                if embeddedTerminal.phase.isActive || embeddedTerminal.isEmbeddedProcessRunning {
+                    embeddedTerminal.end()
+                    releasedContinuityProviderTargets.insert(providerTargetKey)
+                }
+            } else {
+                guard !embeddedTerminal.phase.isActive,
+                      !embeddedTerminal.isEmbeddedProcessRunning,
+                      !ProcessManager.foregroundProviderTurnActive()
+                else { return .failed("live_session_must_not_be_replaced") }
+            }
+            guard (delivery != .waiting && delivery != .claimed)
+                    || stalledProviderTargetOwned else {
                 return .failed("live_work_active")
             }
             let preservesVoiceBridge = processManager.bridgeAlive()
@@ -2529,6 +2579,9 @@ final class AppState {
                 recoveryGeneration: request.recoveryGeneration,
                 preservesVoiceBridge: preservesVoiceBridge
             )
+            if applied {
+                releasedContinuityProviderTargets.remove(providerTargetKey)
+            }
         }
         guard applied else { return .failed("component_action_unavailable") }
         appliedContinuityRecoveryKeys.insert(request.idempotencyKey)
@@ -2538,6 +2591,16 @@ final class AppState {
 
     private func continuityRecoveryCooldownKey(_ request: ContinuityRecoveryRequest) -> String {
         "\(request.sessionID)|\(request.component)|\(request.capability)"
+    }
+
+    private func continuityProviderTargetKey(_ request: ContinuityRecoveryRequest) -> String {
+        [
+            request.incidentID,
+            request.sessionID,
+            request.commandID ?? "none",
+            request.provider,
+            request.recoveryGeneration,
+        ].joined(separator: "|")
     }
 
     private func continuityRecoveryCooldown(_ request: ContinuityRecoveryRequest) -> Double {

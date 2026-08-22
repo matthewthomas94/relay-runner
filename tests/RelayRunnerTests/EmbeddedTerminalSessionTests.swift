@@ -1992,6 +1992,63 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         }
     }
 
+    func testStalledRecoveryRequiresExactRelayOwnedNonManualProviderTurn() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let commandID = ContinuityRecoveryRequest.opaqueIdentifier(
+                kind: "command",
+                nativeValue: "command-id"
+            )
+            let exact: [String: Any] = [
+                "state": "active",
+                "origin": "relay",
+                "actor_role": "foreground_pm",
+                "provider": provider,
+                "provider_session_id": "provider-session",
+                "app_session_id": "app-session",
+                "recovery_generation": "generation-4",
+                "foreground_gate_handle": "gate",
+                "relay_command_id": "command-id",
+                "updated_at": 100.0,
+            ]
+            try writeProviderTurnRecords([exact], to: fixture.providerTurns)
+
+            XCTAssertTrue(ProcessManager.stalledForegroundProviderTurnOwned(
+                commandID: commandID,
+                provider: provider,
+                recoveryGeneration: "generation-4",
+                incidentObservedAt: 130,
+                providerTurnsURL: fixture.providerTurns,
+                providerSessionID: "provider-session",
+                appSessionID: "app-session"
+            ), provider)
+
+            let rejected: [[String: Any]] = [
+                exact.merging(["origin": "manual"]) { _, new in new },
+                exact.merging(["actor_role": "foreground_manual"]) { _, new in new },
+                exact.merging(["provider": provider == "codex" ? "claude" : "codex"]) {
+                    _, new in new
+                },
+                exact.merging(["recovery_generation": "generation-5"]) { _, new in new },
+                exact.merging(["app_session_id": "other-session"]) { _, new in new },
+                exact.merging(["relay_command_id": "other-command"]) { _, new in new },
+                exact.merging(["updated_at": 131.0]) { _, new in new },
+            ]
+            for record in rejected {
+                try writeProviderTurnRecords([record], to: fixture.providerTurns)
+                XCTAssertFalse(ProcessManager.stalledForegroundProviderTurnOwned(
+                    commandID: commandID,
+                    provider: provider,
+                    recoveryGeneration: "generation-4",
+                    incidentObservedAt: 130,
+                    providerTurnsURL: fixture.providerTurns,
+                    providerSessionID: "provider-session",
+                    appSessionID: "app-session"
+                ), provider)
+            }
+        }
+    }
+
     func testInterruptBypassesActiveProviderTurnDeferral() throws {
         let fixture = try makeFixture()
         let metadata = #"{"relay_command_id":"cmd-3","relay_command_seq":3}"#

@@ -12,6 +12,10 @@ PLEASE_REPEAT_TEXT = (
     "Relay Runner is listening again, but your last speech was not captured. "
     "Please repeat your request."
 )
+RECOVERY_ACTION_REQUIRED_TEXT = (
+    "Relay Runner could not safely restore processing. "
+    "Start a new session, then repeat or review the command."
+)
 _PRECOMMAND_SPEECH_LOSS = {
     ("speech_capture", "capture"): (
         "Relay Runner cannot capture speech for the active voice session."

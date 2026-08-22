@@ -286,6 +286,32 @@ class ComponentOwnedRecoveryBrokerTests(unittest.TestCase):
                 self.assertEqual(outcome.outcome_code, "live_provider_must_not_be_killed")
                 self.assertEqual(owners["app"].executions, [])
 
+    def test_classified_stall_authorizes_only_foreground_provider_release_or_relaunch(self):
+        for capability in ("release_dead_ownership", "launch_foreground_provider"):
+            with self.subTest(capability=capability):
+                broker, owners = broker_and_owners()
+                owners["app"].liveness = "stalled"
+                outcome = perform(
+                    broker,
+                    capability,
+                    incident("foreground_provider", provider="codex"),
+                )
+                self.assertEqual(outcome.status, "applied")
+                self.assertEqual(len(owners["app"].executions), 1)
+
+        broker, owners = broker_and_owners()
+        owners["app"].liveness = "stalled"
+        outcome = perform(
+            broker,
+            "launch_foreground_provider",
+            incident("session", provider="codex"),
+        )
+        self.assertEqual(
+            (outcome.status, outcome.outcome_code),
+            ("rejected", "target_health_not_proven"),
+        )
+        self.assertEqual(owners["app"].executions, [])
+
     def test_idempotency_attempt_caps_and_component_cooldown_fail_closed(self):
         broker, owners = broker_and_owners()
         first = perform(broker, "restart_bridge", incident(), attempt=1)

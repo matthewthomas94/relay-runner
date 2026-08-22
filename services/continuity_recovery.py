@@ -24,7 +24,7 @@ RESTORE_PROCESSING_OBJECTIVE = "restore_processing"
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _PROCESS_ID_RE = re.compile(r"^continuity-[0-9a-f]{32}$")
 _LIVENESS = frozenset({
-    "healthy", "slow", "unhealthy", "confirmed_dead", "unknown",
+    "healthy", "slow", "unhealthy", "stalled", "confirmed_dead", "unknown",
 })
 _IDEMPOTENCY_STATES = frozenset({"new", "applied", "compensated", "conflict"})
 _SAFE_COMMAND_PHASES = frozenset({
@@ -753,7 +753,17 @@ class ComponentOwnedRecoveryBroker:
             return "authorization_required", "command_phase_ambiguous"
         if validation.command_phase not in policy.command_phases:
             return "authorization_required", "command_replay_not_recoverable"
-        if validation.liveness not in policy.required_liveness:
+        stalled_provider_authority = (
+            request.component == "foreground_provider"
+            and request.capability in {
+                "release_dead_ownership", "launch_foreground_provider",
+            }
+            and validation.liveness == "stalled"
+        )
+        if (
+            validation.liveness not in policy.required_liveness
+            and not stalled_provider_authority
+        ):
             code = "live_provider_must_not_be_killed" if (
                 request.capability in {"release_dead_ownership", "launch_foreground_provider"}
                 and validation.liveness in {"healthy", "slow"}
