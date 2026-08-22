@@ -666,8 +666,6 @@ class SpeechCoordinator:
             previous,
             utterance_id=str(uuid.uuid4()),
             dedup_key=f"replay:{previous.utterance_id}:{uuid.uuid4()}",
-            source="fallback",
-            kind="final",
             created_at=time.time(),
             replacement_policy="replay",
             original_utterance_id=previous.original_utterance_id,

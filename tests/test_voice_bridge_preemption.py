@@ -1197,6 +1197,37 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertEqual(messenger.traces[0]["kind"], "reasoning-summary")
             self.assertEqual(messenger.traces[0]["command"]["relay_command_id"], relay_command["relay_command_id"])
 
+    def test_long_progress_keeps_compact_notch_and_complete_messenger_detail(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            relay_command = voice_bridge._begin_relay_command(
+                "review blocked verification",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            detail = (
+                "I found three verification-blocked tickets. I am separating their real-world "
+                "evidence requirements from the checks that can run in this worktree now."
+            )
+            notifications: list[tuple[str, dict]] = []
+            messenger = FakeMessenger()
+
+            emitted = voice_bridge.emit_orchestration_trace(
+                kind="reasoning-summary",
+                relay_command=relay_command,
+                message=detail,
+                messenger=messenger,
+                state_path=state_path,
+                notify_state=lambda state, **kwargs: notifications.append((state, kwargs)),
+            )
+
+            self.assertTrue(emitted)
+            compact = notifications[0][1]["text"]
+            self.assertLessEqual(len(compact), 96)
+            self.assertTrue(compact.endswith("..."))
+            self.assertEqual(messenger.traces[0]["message"], compact)
+            self.assertEqual(messenger.traces[0]["lifecycle_detail"], detail)
+
     def test_orchestrator_reply_control_is_routed_to_messenger(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             voice_bridge._reset_foreground_reply_delivery_for_tests()

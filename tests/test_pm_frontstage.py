@@ -112,7 +112,8 @@ class PMFrontstageTests(unittest.TestCase):
             message="A" * 120,
         ).to_dict()
         self.assertLessEqual(len(progress["message"]), 96)
-        self.assertNotIn("lifecycle_detail", progress)
+        self.assertTrue(progress["message"].endswith("..."))
+        self.assertEqual(progress["lifecycle_detail"], "A" * 120)
 
     def test_lifecycle_detail_uses_the_same_public_content_validation(self):
         for private_detail in (
