@@ -998,6 +998,56 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
+    def test_lossy_long_progress_uses_complete_detail_for_speech_and_display(self):
+        detail = (
+            "I found three verification-blocked tickets. I am separating their real-world "
+            "evidence requirements from the checks that can run in this worktree now."
+        )
+        backend = FakeBackend([
+            "I picked up the ticket review and will report what is blocked.",
+            json.dumps({
+                "decision": "delta",
+                "spoken_text": "I found three verification-blocked tickets.",
+            }),
+        ])
+        spoken = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda *args: spoken.append(args),
+            is_current=lambda seq, command_id: True,
+            coverage_provider=lambda seq, command_id: ({
+                "lifecycle_role": "acknowledgement",
+                "covered_facts": ("ticket review accepted",),
+                "spoken_text": "I picked up the ticket review and will report what is blocked.",
+            },),
+        )
+        runtime.start()
+        try:
+            command = {
+                "relay_command_seq": 34,
+                "relay_command_id": "cmd-34",
+                "work_disposition": {"route": "continue_current"},
+            }
+            runtime.submit_user("Review the blocked tickets", command)
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            runtime.submit_trace({
+                "kind": "reasoning-summary",
+                "message": detail[:93] + "...",
+                "lifecycle_detail": detail,
+                "command": command,
+            })
+
+            self.assertTrue(wait_until(lambda: len(spoken) == 2))
+            self.assertIn(detail, backend.prompts[1])
+            self.assertEqual(spoken[1][0], detail)
+            self.assertEqual(spoken[1][3], detail)
+            self.assertEqual(spoken[1][4]["kind"], "progress")
+            self.assertEqual(spoken[1][4]["lifecycle_role"], "progress")
+            self.assertEqual(spoken[1][4]["realization_decision"], "full")
+            self.assertEqual(spoken[1][4]["suppression_reason"], "lossy_delta")
+        finally:
+            runtime.shutdown()
+
     def test_redundant_progress_is_suppressed_but_clarification_fails_open(self):
         backend = FakeBackend([
             "I picked up the bridge review and will inspect the wiring.",

@@ -180,6 +180,38 @@ class SpeechCoordinatorTests(unittest.TestCase):
         self.assertEqual(replay["_speech_intent"]["spoken_text"], handoff.spoken_text)
         self.assertEqual(worker.calls, ["play"])
 
+    def test_replay_preserves_progress_semantics_when_no_final_was_accepted(self):
+        worker, coordinator, _ = self.make_coordinator()
+        progress = SpeechIntent.build(
+            spoken_text="Complete retained progress.",
+            display_text="Complete retained progress.",
+            command_seq=1,
+            command_id="one",
+            source="lifecycle",
+            kind="progress",
+            authoritative=False,
+            replayable=True,
+            lifecycle_role="progress",
+            realization_decision="full",
+            suppression_reason="lossy_delta",
+        )
+        coordinator.submit(progress)
+        payload = worker.input_queue.get_nowait()
+        worker.observer("started", payload["_speech_intent"])
+        worker.observer("completed", payload["_speech_intent"])
+
+        self.assertTrue(coordinator.play_or_replay())
+        replay = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(replay["source"], "lifecycle")
+        self.assertEqual(replay["kind"], "progress")
+        self.assertFalse(replay["authoritative"])
+        self.assertEqual(replay["lifecycle_role"], "progress")
+        self.assertEqual(replay["spoken_text"], progress.spoken_text)
+        self.assertEqual(replay["display_text"], progress.display_text)
+        self.assertEqual(replay["realization_decision"], "full")
+        self.assertEqual(replay["suppression_reason"], "lossy_delta")
+        self.assertEqual(replay["replacement_policy"], "replay")
+
     def test_replay_selects_latest_fresh_completed_target(self):
         worker, coordinator, holder = self.make_coordinator()
         work_result = intent(

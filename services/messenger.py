@@ -976,7 +976,7 @@ class MessengerRuntime:
         kind = str(trace.get("kind") or "progress").strip().lower()
         summary = str(trace.get("message") or "").strip()
         detail = str(trace.get("lifecycle_detail") or "").strip()
-        message = detail if kind in LIFECYCLE_DETAIL_TRACE_KINDS and detail else summary
+        message = detail or summary
         work_lifecycle = (
             kind in _WORK_LIFECYCLE_KINDS
             and trace.get("work_valid") is True
@@ -1213,10 +1213,7 @@ class MessengerRuntime:
                     if (
                         event.kind == "orchestrator_final"
                         or event.work_lifecycle
-                        or (
-                            event.kind == "orchestrator_trace"
-                            and event.detail in LIFECYCLE_DETAIL_TRACE_KINDS
-                        )
+                        or event.kind == "orchestrator_trace"
                     )
                     else None
                 ),
