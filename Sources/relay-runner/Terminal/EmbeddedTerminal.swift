@@ -922,13 +922,16 @@ final class RelayVoiceCommandDelivery {
                 touchPendingCommand()
                 return false
             }
+            var fields: [String: Any] = [
+                "barrier_elapsed_ms": elapsedMilliseconds(since: boundary.startedAt),
+                "deferral_reason": boundary.reason.rawValue,
+                "next_drain_decision": "claim_oldest_eligible",
+            ]
+            fields.merge(providerTurnDiagnosticFields(activeOnly: false)) { current, _ in current }
             recordDeliveryEvent(
                 "safe_boundary_verified",
                 key: key,
-                fields: [
-                    "barrier_elapsed_ms": elapsedMilliseconds(since: boundary.startedAt),
-                    "deferral_reason": boundary.reason.rawValue,
-                ]
+                fields: fields
             )
             manualBoundary = nil
             deliveryState = .queued(key: key, since: queuedAt(for: key))
@@ -953,7 +956,8 @@ final class RelayVoiceCommandDelivery {
            deferral.key == key,
            deferral.reason == .providerTurn || deferral.reason == .providerPreemption {
             var fields: [String: Any] = [
-                "deferral_reason": deferral.reason?.rawValue ?? "provider_turn"
+                "deferral_reason": deferral.reason?.rawValue ?? "provider_turn",
+                "next_drain_decision": "claim_oldest_eligible",
             ]
             fields.merge(providerTurnDiagnosticFields(activeOnly: false)) { current, _ in current }
             recordDeliveryEvent(
@@ -1259,10 +1263,11 @@ final class RelayVoiceCommandDelivery {
         if case .blockedByDraft(let existing) = deliveryState, existing.key == key {
             deferral = existing
         } else {
+            let barrierStartedAt = now()
             deferral = Deferral(
                 key: key,
                 queuedAt: queuedAt(for: key),
-                barrierStartedAt: nil,
+                barrierStartedAt: barrierStartedAt,
                 reason: nil,
                 lastDiagnosticAt: .distantPast
             )
@@ -1279,6 +1284,8 @@ final class RelayVoiceCommandDelivery {
                     "elapsed_ms": elapsedMilliseconds(since: deferral.queuedAt),
                     "pending_byte_count": inputTracker.pendingByteCount,
                     "deferral_reason": "terminal_draft",
+                    "barrier_owner": "terminal_composer",
+                    "next_drain_decision": "wait_exact_safe_boundary",
                 ]
             )
             deferral.lastDiagnosticAt = currentTime
@@ -1323,10 +1330,22 @@ final class RelayVoiceCommandDelivery {
         }
         let currentTime = now()
         if currentTime.timeIntervalSince(deferral.lastDiagnosticAt) >= deferralDiagnosticInterval {
+            let barrierOwner: String
+            switch reason {
+            case .manualSubmission, .manualDraftCleared:
+                barrierOwner = "manual_input"
+            case .providerTurn, .providerPreemption:
+                barrierOwner = "provider_turn"
+            }
             var fields: [String: Any] = [
+                "barrier_elapsed_ms": deferral.barrierStartedAt.map {
+                    elapsedMilliseconds(since: $0)
+                } ?? 0,
+                "barrier_owner": barrierOwner,
                 "elapsed_ms": elapsedMilliseconds(since: deferral.queuedAt),
                 "pending_byte_count": inputTracker.pendingByteCount,
                 "deferral_reason": reason.rawValue,
+                "next_drain_decision": "wait_exact_safe_boundary",
             ]
             fields.merge(providerTurnDiagnosticFields(activeOnly: true)) { current, _ in current }
             recordDeliveryEvent(
@@ -1875,8 +1894,10 @@ final class RelayVoiceCommandDelivery {
         let allowedFields = Set([
             "attempt",
             "barrier_elapsed_ms",
+            "barrier_owner",
             "deferral_reason",
             "elapsed_ms",
+            "next_drain_decision",
             "pending_byte_count",
             "provider_turn_state",
             "provider_turn_app_session_id",

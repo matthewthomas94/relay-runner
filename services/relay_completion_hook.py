@@ -607,6 +607,15 @@ def _provider_matches(record: dict, payload: dict) -> bool:
     return not record_provider or not payload_provider or record_provider == payload_provider
 
 
+def _can_reconcile_provider_identity(record: dict) -> bool:
+    if _relay_command_key(record) is not None:
+        return True
+    return (
+        str(record.get("state") or "") == "active"
+        and str(record.get("origin") or "") == "manual"
+    )
+
+
 def _find_turn_record(
     path: str,
     payload: dict,
@@ -640,7 +649,7 @@ def _find_turn_record(
                 str(record.get("provider_session_id") or "") == provider_session_id
                 and _record_matches_current_foreground(record)
                 and str(record.get("turn_id") or "") == turn_id
-                and _relay_command_key(record) is not None
+                and _can_reconcile_provider_identity(record)
                 and _provider_matches(record, payload)
             )
         ]
@@ -989,10 +998,20 @@ def _complete_turn(
     identity_reconciled = correlation == "provider_identity_reconciled"
     if _relay_command_key(record) is None:
         event = _hook_event_name(payload)
-        completed = dict(record)
+        completed = (
+            _annotate_identity_reconciliation(record, payload, now=now)
+            if identity_reconciled
+            else dict(record)
+        )
         completed["state"] = "failed_manual" if event == "StopFailure" else "completed_manual"
         completed["release_reason"] = (
-            "provider_stop_failure" if event == "StopFailure" else "provider_stop"
+            "provider_stop_failure_identity_reconciled"
+            if identity_reconciled and event == "StopFailure"
+            else "provider_stop_identity_reconciled"
+            if identity_reconciled
+            else "provider_stop_failure"
+            if event == "StopFailure"
+            else "provider_stop"
         )
         if not _transition_broker_turn(
             broker,
@@ -1005,6 +1024,15 @@ def _complete_turn(
             print("[relay_completion_hook] ignored duplicate provider completion", file=stderr)
             return False
         _upsert_turn_record(turns_path, completed, now=now)
+        if identity_reconciled:
+            _emit_completion_correlation_diagnostic(
+                payload,
+                candidates=[completed],
+                decision="accepted_provider_identity_reconciliation",
+                release_reason=completed["release_reason"],
+                now=now,
+                stderr=stderr,
+            )
         return False
     if not _relay_command_current(record, state_path=state_path):
         stale_record = (

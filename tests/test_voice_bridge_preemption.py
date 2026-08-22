@@ -2526,6 +2526,66 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 self.assertIn('"decision":"rejected_duplicate_provider_completion"', errors.getvalue())
                 self.assertNotIn("Private duplicate final", errors.getvalue())
 
+    def test_completion_hook_reconciles_exact_manual_turn_identity_drift(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                provider_session_id = f"embedded-{provider}"
+                with mock.patch.dict(os.environ, {
+                    "RELAY_RUNNER_PROVIDER": provider,
+                    "RELAY_PROVIDER_SESSION_ID": provider_session_id,
+                }):
+                    self.assertTrue(relay_completion_hook.handle_hook_payload(
+                        {
+                            "hook_event_name": "UserPromptSubmit",
+                            "session_id": f"{provider}-transient",
+                            "turn_id": "physical-manual-turn",
+                            "provider_session_id": provider_session_id,
+                            "provider": provider,
+                            "prompt": "Private manual prompt",
+                        },
+                        claim_path=os.path.join(temp_dir, "missing-claim.json"),
+                        turns_path=turns_path,
+                        now=100,
+                        stderr=io.StringIO(),
+                    ))
+
+                    errors = io.StringIO()
+                    self.assertFalse(relay_completion_hook.handle_hook_payload(
+                        {
+                            "hook_event_name": "Stop",
+                            "session_id": f"{provider}-persisted",
+                            "turn_id": "physical-manual-turn",
+                            "provider_session_id": provider_session_id,
+                            "provider": provider,
+                            "last_assistant_message": "Private manual final",
+                        },
+                        turns_path=turns_path,
+                        now=100.2,
+                        stderr=errors,
+                    ))
+
+                records = json.loads(Path(turns_path).read_text())["records"]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]["state"], "completed_manual")
+                self.assertEqual(
+                    records[0]["release_reason"],
+                    "provider_stop_identity_reconciled",
+                )
+                self.assertEqual(
+                    records[0]["completion_correlation"],
+                    "provider_identity_reconciled",
+                )
+                self.assertEqual(
+                    records[0]["completion_native_session_id"],
+                    f"{provider}-persisted",
+                )
+                diagnostic = errors.getvalue()
+                self.assertIn('"decision":"accepted_provider_identity_reconciliation"', diagnostic)
+                self.assertIn('"release_reason":"provider_stop_identity_reconciled"', diagnostic)
+                self.assertNotIn("Private manual prompt", Path(turns_path).read_text())
+                self.assertNotIn("Private manual final", diagnostic)
+
     def test_completion_hook_reconciles_claude_stop_failure_identity_drift(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "voice_command_state.json")
