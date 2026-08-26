@@ -42,7 +42,7 @@ def incident(provider: str = "codex") -> dict:
         },
         "recovery_objective": {
             "unavailable_capability": "Relay Runner cannot continue foreground project processing.",
-            "restored_when": ["provider_process_alive", "provider_progress_observed"],
+            "restored_when": ["provider_process_alive", "provider_processing_ready"],
         },
     }
 

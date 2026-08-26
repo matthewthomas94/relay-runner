@@ -276,7 +276,7 @@ class ContinuityAgentTests(unittest.TestCase):
             self.assertNotIn("private transcript", prompt)
             self.assertNotIn("/private/repository", prompt)
 
-    def test_single_flight_deduplication_and_cooldown(self):
+    def test_single_flight_queues_distinct_incident_and_cooldown(self):
         started = threading.Event()
         release = threading.Event()
 
@@ -309,7 +309,7 @@ class ContinuityAgentTests(unittest.TestCase):
         release.set()
         self.assertTrue(lane.wait_until_idle(2))
         self.assertEqual(lane.submit(first), "cooldown")
-        self.assertEqual(len(sessions), 1)
+        self.assertEqual(len(sessions), 2)
 
     def test_attempt_exhaustion_opens_circuit_and_never_accepts_agent_health_claim(self):
         session = FakeSession([
@@ -330,6 +330,65 @@ class ContinuityAgentTests(unittest.TestCase):
         self.assertEqual(audit[-1]["final_result"], "circuit_open")
         broker_records = [record for record in audit if record["phase"] == "broker_outcome"]
         self.assertEqual(len(broker_records), 1)
+
+    def test_finish_after_applied_recovery_forces_stable_health_verification(self):
+        session = FakeSession([
+            '{"kind":"broker_call","capability":"restart_bridge"}',
+            '{"kind":"finish","result":"escalate"}',
+        ])
+        waits = []
+
+        class StableHealthBroker:
+            def __init__(self):
+                self.calls = []
+
+            def capabilities(self, _incident):
+                return ("restart_bridge", "check_processing_health")
+
+            def perform(self, capability, **context):
+                self.calls.append((capability, context))
+                if capability == "restart_bridge":
+                    return RecoveryBrokerOutcome(
+                        capability,
+                        "applied",
+                        "bridge_restart_started",
+                    )
+                stable_for = 5 if len(self.calls) == 2 else 60
+                return RecoveryBrokerOutcome(
+                    capability,
+                    "noop",
+                    "processing_restored",
+                    RecoveryHealthEvidence(
+                        True,
+                        stable_for,
+                        ("bridge_process_alive", "command_delivered"),
+                    ),
+                )
+
+        broker = StableHealthBroker()
+        audits = []
+        lane = ContinuityAgentLane(
+            lambda *_args: session,
+            broker,
+            on_audit=audits.append,
+            config=ContinuityAgentConfig(
+                max_attempts=2,
+                wall_clock_seconds=120,
+                stable_health_seconds=60,
+                cooldown_seconds=0,
+            ),
+            wait=lambda seconds: waits.append(seconds) or False,
+        )
+
+        self.assertEqual(lane.submit(incident()), "launched")
+        self.assertTrue(lane.wait_until_idle(2))
+
+        self.assertEqual(
+            [call[0] for call in broker.calls],
+            ["restart_bridge", "check_processing_health", "check_processing_health"],
+        )
+        self.assertEqual(waits, [55])
+        self.assertEqual(audits[-1]["final_result"], "restored")
 
     def test_timed_out_broker_stops_before_single_flight_is_released(self):
         broker_started = threading.Event()
@@ -396,14 +455,22 @@ class ContinuityAgentTests(unittest.TestCase):
                 and thread.name == "relay-continuity-broker-restart_bridge"
                 for thread in threading.enumerate()
             ))
-            self.assertEqual(audit[-2]["broker_outcome"]["status"], "circuit_open")
+            first_audit = [
+                record
+                for record in audit
+                if record["incident_id"] == "inc-123456789abc"
+            ]
+            self.assertEqual(first_audit[-2]["broker_outcome"]["status"], "circuit_open")
             self.assertEqual(
-                audit[-2]["broker_outcome"]["outcome_code"],
+                first_audit[-2]["broker_outcome"]["outcome_code"],
                 "broker_call_timed_out",
             )
-            self.assertEqual(audit[-1]["final_result"], "circuit_open")
-            self.assertEqual(lane.submit(other), "launched")
-            self.assertTrue(lane.wait_until_idle(1))
+            self.assertEqual(first_audit[-1]["final_result"], "circuit_open")
+            self.assertTrue(any(
+                record["incident_id"] == other["incident_id"]
+                and record["phase"] == "completed"
+                for record in audit
+            ))
             self.assertEqual(len(broker.calls), 2)
             self.assertEqual(broker.max_active, 1)
             self.assertEqual(broker.active, 0)

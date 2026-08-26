@@ -162,6 +162,7 @@ class _MessengerAdapter:
 class _CompletionAdapter:
     def __init__(self, scenario: _Scenario) -> None:
         self.scenario = scenario
+        self.provider_events: list[dict[str, Any]] = []
 
     def prompt_submitted(self) -> bool:
         payload = {
@@ -177,6 +178,9 @@ class _CompletionAdapter:
                 claim_path=str(self.scenario.claim_path),
                 state_path=str(self.scenario.state_path),
                 turns_path=str(self.scenario.turns_path),
+                write_provider_event=(
+                    lambda event: self.provider_events.append(event) or True
+                ),
                 stderr=io.StringIO(),
             )
 

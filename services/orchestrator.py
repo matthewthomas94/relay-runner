@@ -276,14 +276,20 @@ _CONTINUITY_OBJECTIVE_EVIDENCE = {
         "session_owner_alive",
         "session_heartbeat_fresh",
     ),
+    ("provider", "process_ready"): (
+        "provider_process_alive",
+        "provider_processing_ready",
+    ),
     ("provider", "turn_started"): ("provider_process_alive",),
     ("provider", "stream_started"): ("provider_process_alive",),
     ("provider", "turn_progress"): (
         "provider_process_alive",
+        "provider_processing_ready",
         "provider_progress_observed",
     ),
     ("provider", "stream_progress"): (
         "provider_process_alive",
+        "provider_processing_ready",
         "provider_progress_observed",
     ),
 }

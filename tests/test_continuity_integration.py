@@ -483,13 +483,14 @@ class ContinuityIntegrationTests(unittest.TestCase):
                 self.actions = iter((
                     "release_dead_ownership",
                     "launch_foreground_provider",
+                    None,
                 ))
 
             def decide(self, _prompt, _timeout):
-                return json.dumps({
-                    "kind": "broker_call",
-                    "capability": next(self.actions),
-                })
+                capability = next(self.actions)
+                if capability is None:
+                    return '{"kind":"finish","result":"escalate"}'
+                return json.dumps({"kind": "broker_call", "capability": capability})
 
             def interrupt(self):
                 return None
@@ -497,12 +498,13 @@ class ContinuityIntegrationTests(unittest.TestCase):
             def shutdown(self):
                 return None
 
-        for provider, started, progress in (
-            ("codex", "turn_started", "turn_progress"),
-            ("claude", "stream_started", "stream_progress"),
+        for provider, started in (
+            ("codex", "turn_started"),
+            ("claude", "stream_started"),
         ):
             with self.subTest(provider=provider):
-                base = time.time() - 120
+                epoch = [time.time()]
+                base = epoch[0] - 32
                 emitted = []
                 adapter = ContinuityLifecycleAdapter(emit=emitted.append)
                 native_session = f"{provider}-mounted-session"
@@ -543,13 +545,8 @@ class ContinuityIntegrationTests(unittest.TestCase):
                     if payload["capability"] == "launch_foreground_provider":
                         adapter.observe({
                             **common,
-                            "event": started,
-                            "observed_at": base + 40,
-                        })
-                        adapter.observe({
-                            **common,
-                            "event": progress,
-                            "observed_at": base + 41,
+                            "event": "process_ready",
+                            "observed_at": epoch[0],
                         })
                     Path(payload["reply_path"]).write_text(json.dumps({
                         "status": "applied",
@@ -565,13 +562,17 @@ class ContinuityIntegrationTests(unittest.TestCase):
                         (exact_incident, result)
                     ),
                     config=ContinuityAgentConfig(
-                        max_attempts=1,
-                        wall_clock_seconds=5,
+                        max_attempts=2,
+                        wall_clock_seconds=65,
                         stable_health_seconds=60,
                         cooldown_seconds=0,
                     ),
+                    wait=lambda seconds: epoch.__setitem__(0, epoch[0] + seconds) or False,
                 )
-                with patch("orchestrator._notify_state", side_effect=acknowledge):
+                with (
+                    patch("orchestrator._notify_state", side_effect=acknowledge),
+                    patch("orchestrator.time.time", side_effect=lambda: epoch[0]),
+                ):
                     self.assertEqual(lane.submit(incident), "launched")
                     self.assertTrue(lane.wait_until_idle(2))
 
@@ -593,7 +594,10 @@ class ContinuityIntegrationTests(unittest.TestCase):
                     "target_health_not_proven",
                     [outcome["outcome_code"] for outcome in outcomes],
                 )
-                self.assertTrue(outcomes[-1]["health"]["objective_restored"])
+                self.assertTrue(
+                    outcomes[-1]["health"]["objective_restored"],
+                    outcomes,
+                )
                 self.assertGreaterEqual(
                     outcomes[-1]["health"]["stable_for_seconds"],
                     60,
@@ -1594,6 +1598,54 @@ class ContinuityIntegrationTests(unittest.TestCase):
                     [event["event"] for event in posted],
                     list(expected_signals[:2]) + [expected_signals[1]],
                 )
+                self.assertEqual(emitted, [])
+
+    def test_replacement_readiness_is_health_evidence_without_starting_a_turn_deadline(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                posted = []
+                with patch.object(
+                    voice_bridge,
+                    "_post_continuity_event",
+                    side_effect=lambda source, event, metadata, **_kwargs: posted.append({
+                        **metadata,
+                        "source": source,
+                        "event": event,
+                        "session_id": "project:canonical",
+                        "observed_at": 100,
+                    }) or {},
+                ):
+                    self.assertTrue(voice_bridge._handle_provider_turn_event_control(
+                        json.dumps({
+                            "event": "provider_ready",
+                            "provider": provider,
+                            "relay_command_id": f"{provider}-recovery-command",
+                            "recovery_generation": "generation-4",
+                        }),
+                        provider_turn_broker=None,
+                    ))
+
+                self.assertEqual(posted[0]["event"], "process_ready")
+                emitted = []
+                adapter = ContinuityLifecycleAdapter(emit=emitted.append)
+                adapter.observe(posted[0])
+                request = SimpleNamespace(
+                    session_id=opaque_identifier("session", "project:canonical"),
+                    command_id=opaque_identifier(
+                        "command", f"{provider}-recovery-command"
+                    ),
+                    recovery_generation="generation-4",
+                    incident_observed_at=99,
+                )
+                health = adapter.recovery_health(request)
+                self.assertTrue(health.objective_restored)
+                self.assertEqual(
+                    health.evidence_codes,
+                    ("provider_process_alive", "provider_processing_ready"),
+                )
+
+                adapter.sample(observed_at=200)
+                adapter.sample(observed_at=201)
                 self.assertEqual(emitted, [])
 
     def test_bridge_uses_canonical_session_identity_for_stop_update_and_reset(self):

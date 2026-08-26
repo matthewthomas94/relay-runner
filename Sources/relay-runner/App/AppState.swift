@@ -32,6 +32,40 @@ final class AppState {
         let cooldownActive: Bool
     }
 
+    struct ContinuityProviderReadyContext: Equatable {
+        let nativeCommandID: String
+        let commandID: String
+        let provider: String
+        let recoveryGeneration: String
+
+        func controlMessage(
+            currentCommandID: String?,
+            currentProvider: String,
+            currentRecoveryGeneration: String?
+        ) -> String? {
+            guard currentCommandID == nativeCommandID,
+                  ContinuityRecoveryRequest.opaqueIdentifier(
+                    kind: "command",
+                    nativeValue: nativeCommandID
+                  ) == commandID,
+                  currentProvider == provider,
+                  currentRecoveryGeneration == recoveryGeneration
+            else { return nil }
+            let payload: [String: Any] = [
+                "type": "continuity_provider_ready",
+                "event": "provider_ready",
+                "relay_command_id": nativeCommandID,
+                "provider": provider,
+                "recovery_generation": recoveryGeneration,
+            ]
+            guard let data = try? JSONSerialization.data(
+                withJSONObject: payload,
+                options: [.sortedKeys]
+            ) else { return nil }
+            return String(data: data, encoding: .utf8)
+        }
+    }
+
     enum SessionLaunchDestination: Equatable {
         case embedded
         case externalTerminal
@@ -220,6 +254,7 @@ final class AppState {
     @ObservationIgnored private var appliedContinuityRecoveryKeys: Set<String> = []
     @ObservationIgnored private var releasedContinuityProviderTargets: Set<String> = []
     @ObservationIgnored private var continuityRecoveryCooldowns: [String: CFTimeInterval] = [:]
+    @ObservationIgnored private var pendingContinuityProviderReady: ContinuityProviderReadyContext?
     @ObservationIgnored private let projectRegistryV2 = ProjectRegistryV2Service.makeIfEnabled()
     @ObservationIgnored private let projectScopeCoordinator = ProjectScopeCoordinator()
     @ObservationIgnored private var activeSessionProjectScopeToken: ConfirmedProjectScopeToken?
@@ -564,6 +599,9 @@ final class AppState {
         }
         embeddedTerminal.setExitHandler { [weak self] exitCode in
             self?.embeddedTerminalDidExit(exitCode: exitCode)
+        }
+        embeddedTerminal.setReadyHandler { [weak self] in
+            self?.embeddedTerminalDidBecomeReady()
         }
         notchStatusController.setGlyphClickHandler { [weak self] in
             self?.toggleBoard()
@@ -1003,6 +1041,9 @@ final class AppState {
         recoveryGeneration: String? = nil,
         preservesVoiceBridge: Bool = false
     ) -> Bool {
+        if !preservesVoiceBridge {
+            pendingContinuityProviderReady = nil
+        }
         guard allowsAppShellAccess || allowDuringFirstRun else { return false }
         if preservesVoiceBridge {
             guard destination == .embedded,
@@ -1113,6 +1154,7 @@ final class AppState {
                 )
             }
         } catch {
+            pendingContinuityProviderReady = nil
             if !preservesVoiceBridge {
                 continuityRecoveryGenerationBySession.removeValue(
                     forKey: ContinuityRecoveryRequest.projectSessionIdentifier(
@@ -2463,7 +2505,8 @@ final class AppState {
         )
         guard let currentGeneration = continuityRecoveryGenerationBySession[sessionID]
         else { return .failed("recovery_generation_unavailable") }
-        let currentCommandID = ProcessManager.currentRelayCommandID().map {
+        let nativeCurrentCommandID = ProcessManager.currentRelayCommandID()
+        let currentCommandID = nativeCurrentCommandID.map {
             ContinuityRecoveryRequest.opaqueIdentifier(kind: "command", nativeValue: $0)
         }
         let pendingDelivery = processManager.pendingVoiceCommandDeliveryState()
@@ -2572,7 +2615,21 @@ final class AppState {
                     || stalledProviderTargetOwned else {
                 return .failed("live_work_active")
             }
+            guard let nativeCurrentCommandID,
+                  let commandID = request.commandID,
+                  ContinuityRecoveryRequest.opaqueIdentifier(
+                    kind: "command",
+                    nativeValue: nativeCurrentCommandID
+                  ) == commandID else {
+                return .failed("unrelated_command_target")
+            }
             let preservesVoiceBridge = processManager.bridgeAlive()
+            pendingContinuityProviderReady = ContinuityProviderReadyContext(
+                nativeCommandID: nativeCurrentCommandID,
+                commandID: commandID,
+                provider: request.provider,
+                recoveryGeneration: request.recoveryGeneration
+            )
             applied = newSession(
                 workingDirectory: launch.general.working_directory,
                 suppressesStartupGreeting: true,
@@ -2581,12 +2638,29 @@ final class AppState {
             )
             if applied {
                 releasedContinuityProviderTargets.remove(providerTargetKey)
+            } else {
+                pendingContinuityProviderReady = nil
             }
         }
         guard applied else { return .failed("component_action_unavailable") }
         appliedContinuityRecoveryKeys.insert(request.idempotencyKey)
         continuityRecoveryCooldowns[cooldownKey] = now + continuityRecoveryCooldown(request)
         return .applied()
+    }
+
+    private func embeddedTerminalDidBecomeReady() {
+        guard let context = pendingContinuityProviderReady else { return }
+        pendingContinuityProviderReady = nil
+        guard let launch = activeSessionLaunchConfig else { return }
+        let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
+            repositoryPath: launch.general.working_directory
+        )
+        guard let control = context.controlMessage(
+            currentCommandID: ProcessManager.currentRelayCommandID(),
+            currentProvider: launch.general.provider.rawValue,
+            currentRecoveryGeneration: continuityRecoveryGenerationBySession[sessionID]
+        ) else { return }
+        _ = SocketClient.bridgeSend(control)
     }
 
     private func continuityRecoveryCooldownKey(_ request: ContinuityRecoveryRequest) -> String {

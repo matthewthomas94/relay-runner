@@ -126,7 +126,7 @@ def plan_continuity_resume(
             "claimed_ambiguous", "foreground_review", "claim_may_have_started_effect", intent_id
         )
     if state == "acked":
-        if provider_turn_state in {"active", "completed_final"}:
+        if provider_turn_state in {"active", "completed_final", "terminated"}:
             return ContinuityResumeDecision(
                 "in_flight_or_completed", "reattach", "authoritative_provider_state", intent_id
             )

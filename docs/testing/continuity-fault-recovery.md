@@ -24,6 +24,20 @@ python3 scripts/continuity-mounted-verification.py \
 
 The mounted gate verifies the Developer ID identity and correlates each provider's production incident classification, continuity-agent process, broker outcome, restored stable health, canonical recovery handoff, command lifecycle, unique terminal provider acknowledgement, play-request ID, utterance ID, `afplay_started`, and human audible-playback attestation. Healthy non-recovery paths, duplicate effects, and mixed provider, generation, incident, session, or command evidence fail closed. `afplay_started` remains process evidence rather than proof that sound was audible, so the default result stays `verification_blocked` until the matching attestation is recorded and the human reruns with `--physical-audio-attested`.
 
+The default provider scope remains strict and requires both Codex and Claude. When the user explicitly defers a provider because the mounted environment cannot exercise it, record that decision with a nonempty reason while running at least one other supported provider:
+
+```sh
+python3 scripts/continuity-mounted-verification.py \
+  --app '/Volumes/Relay Runner/Relay Runner.app' \
+  --continuity-log /tmp/relay_continuity_mounted_events.jsonl \
+  --delivery-log /tmp/relay_terminal_delivery_events.jsonl \
+  --speech-log /tmp/relay_speech_events.jsonl \
+  --physical-audio-attested \
+  --defer-provider 'claude=User deferred: no active subscription.'
+```
+
+The report lists that provider as `deferred`, never `passed`, and preserves the reason in `provider_scope`. Empty reasons, unsupported providers, duplicate CLI entries, and attempts to defer every provider fail or remain verification-blocked.
+
 Keep the three evidence classes separate in the ticket run log:
 
 - automated source: deterministic suites and their counts;

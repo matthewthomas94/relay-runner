@@ -8,10 +8,16 @@ module maintains a small sidecar ledger of still-authorized project mutations.
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
 import time
+from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 from typing import Any
+
+import fcntl
 
 AUTHORIZATION_CONTRACT_VERSION = 1
 AUTHORIZATION_LIMIT = 32
@@ -40,6 +46,29 @@ _NATURAL_CANCEL_RE = re.compile(
 _TICKET_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
 
 
+@contextmanager
+def _authorization_ledger_lock(path: str | Path):
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.with_name(target.name + ".lock")
+    with lock_path.open("a+") as handle:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _serialized_ledger_mutation(function):
+    @wraps(function)
+    def wrapped(path: str | Path, *args, **kwargs):
+        with _authorization_ledger_lock(path):
+            return function(path, *args, **kwargs)
+
+    return wrapped
+
+
 def _read_json_file(path: str | Path) -> dict[str, Any]:
     try:
         with Path(path).open() as f:
@@ -51,10 +80,15 @@ def _read_json_file(path: str | Path) -> dict[str, Any]:
 
 def _atomic_write_json(path: str | Path, payload: dict[str, Any]) -> None:
     target = Path(path)
-    tmp = target.with_name(target.name + ".tmp")
-    with tmp.open("w") as f:
-        json.dump(payload, f, sort_keys=True)
-    tmp.replace(target)
+    tmp = target.with_name(
+        f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        with tmp.open("w") as f:
+            json.dump(payload, f, sort_keys=True)
+        tmp.replace(target)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _coerce_seq(value: Any) -> int | None:
@@ -186,6 +220,7 @@ def _prune_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return (inactive[-AUTHORIZATION_LIMIT:] + active)[-AUTHORIZATION_LIMIT:]
 
 
+@_serialized_ledger_mutation
 def record_command_authorization(
     path: str | Path,
     metadata: dict[str, Any],
@@ -320,6 +355,7 @@ def mutation_fingerprint(mutation: dict[str, Any]) -> str:
     return json.dumps(kept, sort_keys=True)
 
 
+@_serialized_ledger_mutation
 def validate_and_mark_mutation(
     path: str | Path,
     relay_command_seq: Any,
@@ -388,6 +424,7 @@ def validate_and_mark_mutation(
     return record
 
 
+@_serialized_ledger_mutation
 def mark_mutations_canceled(
     path: str | Path,
     relay_command_seq: Any,

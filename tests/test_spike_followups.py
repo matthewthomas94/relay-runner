@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,38 @@ from tickets import read as read_ticket  # noqa: E402
 
 
 class SpikeFollowupTests(unittest.TestCase):
+    def test_authorization_ledger_serializes_concurrent_turns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "authorizations.json"
+
+            def record(index: int) -> None:
+                metadata = {
+                    "relay_command_seq": index,
+                    "relay_command_id": f"command-{index}",
+                    "action": "update_ticket",
+                    "source_text": f"also update RR-{index}",
+                    "ticket_id": f"RR-{index}",
+                }
+                record_command_authorization(
+                    ledger,
+                    metadata,
+                    relationship="additive",
+                    allowed_mutations=allowed_mutations_for_metadata(metadata),
+                )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                list(executor.map(record, range(1, 17)))
+
+            payload = json.loads(ledger.read_text())
+            self.assertEqual(
+                {
+                    record["relay_command_id"]
+                    for record in payload["authorizations"]
+                },
+                {f"command-{index}" for index in range(1, 17)},
+            )
+            self.assertEqual(list(Path(tmp).glob("*.tmp")), [])
+
     def test_ticket_command_authorization_allows_spike_followup_accept(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

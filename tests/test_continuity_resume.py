@@ -137,7 +137,7 @@ class ContinuityResumeDecisionTests(unittest.TestCase):
                 self.assertEqual(decision.reason, "claim_may_have_started_effect")
 
     def test_acknowledged_command_reattaches_only_to_authoritative_provider_state(self):
-        for provider_state in ("active", "completed_final"):
+        for provider_state in ("active", "completed_final", "terminated"):
             with self.subTest(provider_state=provider_state):
                 decision = plan_continuity_resume(
                     incident(),

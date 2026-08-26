@@ -27,7 +27,7 @@ OBJECTIVE_EVIDENCE = {
     "transcription": ("transcription_completed", "command_created"),
     "bridge": ("bridge_process_alive", "bridge_heartbeat_fresh", "command_delivered"),
     "messenger": ("messenger_process_alive", "messenger_progress_observed"),
-    "foreground_provider": ("provider_process_alive", "provider_progress_observed"),
+    "foreground_provider": ("provider_process_alive", "provider_processing_ready"),
     "orchestrator": ("orchestrator_heartbeat_fresh", "command_progress_observed"),
     "daemon": ("daemon_process_alive", "daemon_heartbeat_fresh"),
     "session": ("session_owner_alive", "session_heartbeat_fresh"),

@@ -43,6 +43,7 @@ SUPPRESSION_REASONS = frozenset({"explicit_stop", "update", "reset"})
 _RECOVERY_GENERATION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 _CODEX_SIGNALS = {
+    "process_ready": "healthy",
     "turn_started": "healthy",
     "turn_progress": "healthy",
     "turn_completed": "completed",
@@ -51,6 +52,7 @@ _CODEX_SIGNALS = {
     "process_exit": "unavailable",
 }
 _CLAUDE_SIGNALS = {
+    "process_ready": "healthy",
     "stream_started": "healthy",
     "stream_progress": "healthy",
     "result_success": "completed",
@@ -78,7 +80,7 @@ _OBJECTIVES = {
     ),
     "foreground_provider": (
         "Relay Runner cannot continue foreground project processing.",
-        ("provider_process_alive", "provider_progress_observed"),
+        ("provider_process_alive", "provider_processing_ready"),
     ),
     "orchestrator": (
         "Relay Runner cannot plan or route accepted project work.",

@@ -5,6 +5,50 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
     private let sessionID = "session-1234567890abcdef12345678"
     private let commandID = "command-1234567890abcdef12345678"
 
+    func testProviderReadyContextPublishesOnlyForTheExactReplacement() throws {
+        let nativeCommandID = "native-command-id"
+        let opaqueCommandID = ContinuityRecoveryRequest.opaqueIdentifier(
+            kind: "command",
+            nativeValue: nativeCommandID
+        )
+        let context = AppState.ContinuityProviderReadyContext(
+            nativeCommandID: nativeCommandID,
+            commandID: opaqueCommandID,
+            provider: "codex",
+            recoveryGeneration: "generation-4"
+        )
+
+        let control = try XCTUnwrap(context.controlMessage(
+            currentCommandID: nativeCommandID,
+            currentProvider: "codex",
+            currentRecoveryGeneration: "generation-4"
+        ))
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(control.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(payload["type"] as? String, "continuity_provider_ready")
+        XCTAssertEqual(payload["event"] as? String, "provider_ready")
+        XCTAssertEqual(payload["relay_command_id"] as? String, nativeCommandID)
+        XCTAssertEqual(payload["provider"] as? String, "codex")
+        XCTAssertEqual(payload["recovery_generation"] as? String, "generation-4")
+
+        XCTAssertNil(context.controlMessage(
+            currentCommandID: "newer-command",
+            currentProvider: "codex",
+            currentRecoveryGeneration: "generation-4"
+        ))
+        XCTAssertNil(context.controlMessage(
+            currentCommandID: nativeCommandID,
+            currentProvider: "claude",
+            currentRecoveryGeneration: "generation-4"
+        ))
+        XCTAssertNil(context.controlMessage(
+            currentCommandID: nativeCommandID,
+            currentProvider: "codex",
+            currentRecoveryGeneration: "generation-5"
+        ))
+    }
+
     func testEveryAppOwnedComponentHasExecutableProductionAction() throws {
         let cases: [(
             capability: String,

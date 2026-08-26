@@ -92,7 +92,7 @@ _SAFE_OBJECTIVES = {
     ),
     "foreground_provider": (
         "Relay Runner cannot continue foreground project processing.",
-        ("provider_process_alive", "provider_progress_observed"),
+        ("provider_process_alive", "provider_processing_ready"),
     ),
     "orchestrator": (
         "Relay Runner cannot plan or route accepted project work.",
@@ -538,6 +538,7 @@ class ContinuityAgentLane:
         on_result: Callable[[Mapping[str, object], str], object] | None = None,
         config: ContinuityAgentConfig | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        wait: Callable[[float], bool] | None = None,
     ):
         self._session_factory = session_factory
         self._broker = broker
@@ -545,10 +546,12 @@ class ContinuityAgentLane:
         self._on_result = on_result
         self.config = config or ContinuityAgentConfig()
         self._monotonic = monotonic
+        self._wait = wait
         self._lock = threading.Lock()
         self._active_incident: str | None = None
         self._active_session: ContinuityProviderSession | None = None
         self._active_broker_cancel: threading.Event | None = None
+        self._pending_incidents: list[dict[str, object]] = []
         self._cooldowns: dict[str, float] = {}
         self._shutdown = threading.Event()
         self._idle = threading.Event()
@@ -563,7 +566,13 @@ class ContinuityAgentLane:
             if self._shutdown.is_set():
                 return "shutdown"
             if self._active_incident is not None:
-                return "duplicate" if self._active_incident == incident_id else "single_flight"
+                if self._active_incident == incident_id or any(
+                    pending["incident_id"] == incident_id
+                    for pending in self._pending_incidents
+                ):
+                    return "duplicate"
+                self._pending_incidents.append(incident)
+                return "single_flight"
             if now < self._cooldowns.get(fingerprint, 0.0):
                 return "cooldown"
             self._active_incident = incident_id
@@ -616,10 +625,7 @@ class ContinuityAgentLane:
                 final_result="provider_failed",
             )
             self._publish_result(incident, "provider_failed")
-            with self._lock:
-                self._cooldowns[fingerprint] = self._monotonic() + self.config.cooldown_seconds
-                self._active_incident = None
-                self._idle.set()
+            self._finish_incident(fingerprint)
             return
         with self._lock:
             self._active_session = session
@@ -633,6 +639,8 @@ class ContinuityAgentLane:
         final_result = "circuit_open"
         history: list[dict[str, object]] = []
         capability_attempts: dict[str, int] = {}
+        recovery_applied = False
+        forced_capability: str | None = None
         try:
             capabilities = self._validated_capabilities(self._broker.capabilities(incident))
             max_sequence_steps = self.config.max_attempts * len(capabilities)
@@ -643,25 +651,40 @@ class ContinuityAgentLane:
                 remaining = deadline - self._monotonic()
                 if remaining <= 0:
                     break
-                prompt = self._prompt(
-                    incident,
-                    capabilities,
-                    history,
-                    sequence,
-                    capability_attempts,
-                )
-                try:
-                    decision = self._parse_decision(session.decide(prompt, remaining))
-                except Exception as error:  # noqa: BLE001 - raw provider failure stays private.
-                    print(
-                        f"[continuity-agent] provider decision failed ({type(error).__name__})",
-                        file=sys.stderr,
+                if forced_capability is not None:
+                    capability = forced_capability
+                    forced_capability = None
+                else:
+                    prompt = self._prompt(
+                        incident,
+                        capabilities,
+                        history,
+                        sequence,
+                        capability_attempts,
                     )
-                    final_result = "provider_failed"
-                    break
-                if decision["kind"] == "finish":
-                    break
-                capability = str(decision["capability"])
+                    try:
+                        decision = self._parse_decision(session.decide(prompt, remaining))
+                    except Exception as error:  # noqa: BLE001 - raw provider failure stays private.
+                        print(
+                            f"[continuity-agent] provider decision failed ({type(error).__name__})",
+                            file=sys.stderr,
+                        )
+                        final_result = "provider_failed"
+                        break
+                    if decision["kind"] == "finish":
+                        health_attempts = capability_attempts.get(
+                            "check_processing_health", 0
+                        )
+                        if (
+                            recovery_applied
+                            and "check_processing_health" in capabilities
+                            and health_attempts < self.config.max_attempts
+                        ):
+                            capability = "check_processing_health"
+                        else:
+                            break
+                    else:
+                        capability = str(decision["capability"])
                 capability_attempt = capability_attempts.get(capability, 0) + 1
                 capability_attempts[capability] = capability_attempt
                 if capability not in capabilities:
@@ -699,12 +722,41 @@ class ContinuityAgentLane:
                     attempt=sequence,
                     outcome=outcome,
                 )
+                if outcome.status == "applied" and capability != "check_processing_health":
+                    recovery_applied = True
                 if (
                     outcome.health.objective_restored
                     and outcome.health.stable_for_seconds >= self.config.stable_health_seconds
                 ):
                     final_result = "restored"
                     break
+                if (
+                    recovery_applied
+                    and outcome.health.objective_restored
+                    and "check_processing_health" in capabilities
+                    and capability_attempts.get("check_processing_health", 0)
+                    < self.config.max_attempts
+                ):
+                    stable_wait = max(
+                        0.0,
+                        self.config.stable_health_seconds
+                        - outcome.health.stable_for_seconds,
+                    )
+                    stable_wait = min(
+                        stable_wait,
+                        max(0.0, deadline - self._monotonic()),
+                    )
+                    if stable_wait <= 0:
+                        break
+                    interrupted = (
+                        self._wait(stable_wait)
+                        if self._wait is not None
+                        else self._shutdown.wait(stable_wait)
+                    )
+                    if interrupted or self._shutdown.is_set():
+                        final_result = "canceled"
+                        break
+                    forced_capability = "check_processing_health"
                 if outcome.status == "authorization_required":
                     final_result = "authorization_required"
                     break
@@ -735,11 +787,35 @@ class ContinuityAgentLane:
                 final_result=final_result,
             )
             self._publish_result(incident, final_result)
-            with self._lock:
-                self._cooldowns[fingerprint] = self._monotonic() + self.config.cooldown_seconds
-                self._active_incident = None
-                self._active_session = None
+            self._finish_incident(fingerprint)
+
+    def _finish_incident(self, fingerprint: str) -> None:
+        next_incident = None
+        with self._lock:
+            now = self._monotonic()
+            self._cooldowns[fingerprint] = now + self.config.cooldown_seconds
+            self._active_incident = None
+            self._active_session = None
+            if self._shutdown.is_set():
+                self._pending_incidents.clear()
+            else:
+                while self._pending_incidents:
+                    candidate = self._pending_incidents.pop(0)
+                    candidate_fingerprint = str(candidate["fingerprint"])
+                    if now < self._cooldowns.get(candidate_fingerprint, 0.0):
+                        continue
+                    self._active_incident = str(candidate["incident_id"])
+                    next_incident = candidate
+                    break
+            if next_incident is None:
                 self._idle.set()
+        if next_incident is not None:
+            threading.Thread(
+                target=self._run,
+                args=(next_incident,),
+                name=f"relay-continuity-{next_incident['incident_id']}",
+                daemon=True,
+            ).start()
 
     def _publish_result(
         self,

@@ -390,6 +390,14 @@ def _run_case(
         started=simultaneous_started,
         release=simultaneous_release,
     )
+    objectives_by_generation = {
+        str(incident["recovery_generation"]): tuple(
+            str(item) for item in incident["recovery_objective"]["restored_when"]
+        ),
+    }
+    restored_generations = (
+        set(objectives_by_generation) if case.recovery_result == "restored" else set()
+    )
 
     mutation_injected = False
 
@@ -403,12 +411,10 @@ def _run_case(
         if injected_effect == "unauthorized_project_mutation" and not mutation_injected:
             (project_root / "unauthorized.txt").write_text("mutated\n")
             mutation_injected = True
-        if case.recovery_result != "restored":
+        generation = str(getattr(request, "recovery_generation"))
+        if generation not in restored_generations:
             return RecoveryHealthEvidence()
-        restored_when = tuple(
-            str(item) for item in incident["recovery_objective"]["restored_when"]
-        )
-        return RecoveryHealthEvidence(True, 60, restored_when)
+        return RecoveryHealthEvidence(True, 60, objectives_by_generation[generation])
 
     broker = ComponentOwnedRecoveryBroker({
         "app": AppRecoveryOwner(health_probe),
@@ -455,6 +461,11 @@ def _run_case(
             index + 100,
             ledger,
         )
+        second_generation = str(second["recovery_generation"])
+        objectives_by_generation[second_generation] = tuple(
+            str(item) for item in second["recovery_objective"]["restored_when"]
+        )
+        restored_generations.add(second_generation)
         simultaneous_result = lane.submit(second)
         ledger.record("agent_submit", outcome=simultaneous_result)
         simultaneous_release.set()
@@ -541,6 +552,7 @@ def _run_case(
         "incident_event_count": _count(records, "incident_emitted"),
         "agent_launch": launch,
         "agent_launch_observed": "launched" in audit_phases,
+        "agent_result_count": len(results),
         "broker_action_count": len(broker_outcomes),
         "restored_health": final_result == "restored",
         "final_result": final_result,
@@ -595,7 +607,12 @@ def run_fault_matrix(
         case["incident_event_count"] == (2 if case["name"] == "simultaneous_component_faults" else 1)
         and case["agent_launch"] == "launched"
         and case["agent_launch_observed"]
-        and case["broker_action_count"] == 1
+        and case["broker_action_count"] == (
+            2 if case["name"] == "simultaneous_component_faults" else 1
+        )
+        and case["agent_result_count"] == (
+            2 if case["name"] == "simultaneous_component_faults" else 1
+        )
         and case["privacy_safe"]
         and case["exact_command_and_intent_identity"]
         and case["handoff_action"] == case["expected_handoff_action"]

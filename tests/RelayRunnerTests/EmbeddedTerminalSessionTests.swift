@@ -5,6 +5,25 @@ import XCTest
 @testable import relay_runner
 
 final class EmbeddedTerminalSessionTests: XCTestCase {
+    func testReadyHandlerRunsAfterTheCurrentProcessBecomesInteractive() throws {
+        let process = FakeEmbeddedTerminalProcess()
+        process.autoReady = false
+        let session = EmbeddedTerminalSession(processFactory: { process })
+        let ready = expectation(description: "ready handled")
+        session.setReadyHandler {
+            XCTAssertEqual(session.phase, .running)
+            ready.fulfill()
+        }
+
+        try session.beginPreparing(providerName: "Codex", workingDirectory: "/repo")
+        try session.start(launch())
+        XCTAssertEqual(session.phase, .starting)
+
+        process.onReady?()
+        wait(for: [ready], timeout: 1)
+        XCTAssertEqual(session.phase, .running)
+    }
+
     func testStartRejectsDuplicateActiveSession() throws {
         let process = FakeEmbeddedTerminalProcess()
         let session = EmbeddedTerminalSession(processFactory: { process })

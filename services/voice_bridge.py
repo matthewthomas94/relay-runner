@@ -96,6 +96,7 @@ _FOREGROUND_REPLY_LOCK = threading.Lock()
 _FOREGROUND_REPLIED_COMMANDS: set[tuple[int, str]] = set()
 _FOREGROUND_REPLY_IN_FLIGHT: set[tuple[int, str]] = set()
 _VOICE_STATE_LOCK = threading.RLock()
+_COMMAND_EVENT_LOG_LOCK = threading.Lock()
 _RELAY_CONTROL_TYPE_RE = re.compile(r"^__[A-Z][A-Z0-9_]*__$")
 _RAW_RELAY_CONTROL_TYPE_RE = re.compile(
     r'"type"\s*:\s*"(?P<type>__[A-Z][A-Z0-9_]*__)"'
@@ -1318,22 +1319,23 @@ def _record_private_command_capture(
     if metadata.get("provider"):
         event["provider"] = metadata["provider"]
     try:
-        existing: list[str] = []
-        if os.path.exists(event_log_path):
-            with open(event_log_path) as f:
-                existing = [line.rstrip("\n") for line in f if line.strip()]
-        existing = existing[-(limit - 1):] if limit > 1 else []
-        tmp = event_log_path + ".tmp"
-        parent = os.path.dirname(event_log_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-            os.chmod(parent, 0o700)
-        with open(tmp, "w") as f:
-            for line in existing:
-                f.write(line + "\n")
-            f.write(json.dumps(event, sort_keys=True) + "\n")
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, event_log_path)
+        with _COMMAND_EVENT_LOG_LOCK:
+            existing: list[str] = []
+            if os.path.exists(event_log_path):
+                with open(event_log_path) as f:
+                    existing = [line.rstrip("\n") for line in f if line.strip()]
+            existing = existing[-(limit - 1):] if limit > 1 else []
+            tmp = event_log_path + ".tmp"
+            parent = os.path.dirname(event_log_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+                os.chmod(parent, 0o700)
+            with open(tmp, "w") as f:
+                for line in existing:
+                    f.write(line + "\n")
+                f.write(json.dumps(event, sort_keys=True) + "\n")
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, event_log_path)
     except (OSError, TypeError, ValueError) as e:
         print(f"[voice_bridge] Could not record private command event: {e}", file=sys.stderr)
 
@@ -2682,6 +2684,18 @@ def _start_control_socket(
                             bridge_generation=context.get("recovery_generation"),
                         )
                         continue
+                    elif (
+                        isinstance(candidate, dict)
+                        and candidate.get("type") == "continuity_provider_ready"
+                    ):
+                        if candidate.get("event") == "provider_ready":
+                            _handle_provider_turn_event_control(
+                                json.dumps(candidate),
+                                provider_turn_broker=(recovery_context or {}).get(
+                                    "provider_turn_broker"
+                                ),
+                            )
+                        continue
                 if recovery_payload is not None:
                     context = recovery_context or {}
                     response = _bridge_continuity_recovery_response(
@@ -3697,8 +3711,10 @@ def _handle_provider_turn_event_control(
         or os.environ.get("RELAY_RUNNER_PROVIDER")
         or "codex"
     ).strip().lower()
-    if event in {"provider_started", "provider_progress"}:
-        if event == "provider_progress":
+    if event in {"provider_ready", "provider_started", "provider_progress"}:
+        if event == "provider_ready":
+            signal = "process_ready"
+        elif event == "provider_progress":
             signal = "stream_progress" if "claude" in provider else "turn_progress"
         else:
             signal = "stream_started" if "claude" in provider else "turn_started"
@@ -4181,6 +4197,7 @@ def main():
             "messenger": messenger,
             "orchestrator_session": orchestrator_session,
             "inbox": intent_inbox,
+            "provider_turn_broker": provider_turn_broker,
             "recovery_generation": normalize_recovery_generation(
                 os.environ.get("RELAY_RECOVERY_GENERATION") or "0"
             ),

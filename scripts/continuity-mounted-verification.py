@@ -34,14 +34,65 @@ REQUIRED_SCENARIO_EVENTS = (
     "command_completed",
     "audible_playback_attested",
 )
-RECOVERY_EVENTS = frozenset({
+TRIGGER_EVENTS = frozenset({
     "incident_classified",
     "continuity_agent_launched",
     "broker_result",
     "continuity_agent_completed",
     "continuity_resume",
+})
+CONTINUATION_EVENTS = frozenset({
+    "speech_captured",
+    "transcript_captured",
+    "command_accepted",
+    "command_completed",
     "audible_playback_attested",
 })
+RECOVERY_IDENTITY_EVENTS = TRIGGER_EVENTS | {"audible_playback_attested"}
+
+
+def _provider_scope(
+    provider_deferrals: dict[str, str] | None,
+) -> tuple[list[str], list[dict[str, str]], list[str]]:
+    valid_deferrals: dict[str, str] = {}
+    blocker_codes: list[str] = []
+    for raw_provider, raw_reason in (provider_deferrals or {}).items():
+        provider = raw_provider.strip().lower() if isinstance(raw_provider, str) else ""
+        reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
+        if provider not in PROVIDERS:
+            if "provider_deferral_unsupported" not in blocker_codes:
+                blocker_codes.append("provider_deferral_unsupported")
+        elif not reason:
+            blocker_codes.append(f"provider_deferral_reason_missing:{provider}")
+        else:
+            valid_deferrals[provider] = reason
+
+    required_providers = [
+        provider for provider in PROVIDERS if provider not in valid_deferrals
+    ]
+    deferred_providers = [
+        {
+            "provider": provider,
+            "status": "deferred",
+            "reason": valid_deferrals[provider],
+        }
+        for provider in PROVIDERS
+        if provider in valid_deferrals
+    ]
+    if not required_providers:
+        blocker_codes.append("provider_scope_empty")
+    return required_providers, deferred_providers, blocker_codes
+
+
+def _provider_deferral(value: str) -> tuple[str, str]:
+    provider, separator, reason = value.partition("=")
+    provider = provider.strip().lower()
+    reason = reason.strip()
+    if not separator or provider not in PROVIDERS or not reason:
+        raise argparse.ArgumentTypeError(
+            "expected a supported provider and nonempty reason as PROVIDER=REASON"
+        )
+    return provider, reason
 
 
 def _signature_field(text: str, field: str) -> str | None:
@@ -81,6 +132,17 @@ def _key(record: dict[str, Any]) -> tuple[int, str] | None:
         if isinstance(sequence, bool):
             return None
         command_id = str(record["relay_command_id"] or "").strip()
+        return (int(sequence), command_id) if command_id else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _trigger_key(record: dict[str, Any]) -> tuple[int, str] | None:
+    try:
+        sequence = record["trigger_relay_command_seq"]
+        if isinstance(sequence, bool):
+            return None
+        command_id = str(record["trigger_relay_command_id"] or "").strip()
         return (int(sequence), command_id) if command_id else None
     except (KeyError, TypeError, ValueError):
         return None
@@ -152,14 +214,18 @@ def build_mounted_report(
     delivery_records: list[dict[str, Any]],
     *,
     physical_audio_attested: bool = False,
+    provider_deferrals: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     latency = speech_latency_report.build_report(speech_records, delivery_records)
     samples_by_key = {
         tuple(sample["command_key"]): sample for sample in latency["samples"]
     }
     scenarios: list[dict[str, Any]] = []
-    blocker_codes: list[str] = []
-    for provider in PROVIDERS:
+    required_providers, deferred_providers, scope_blocker_codes = _provider_scope(
+        provider_deferrals
+    )
+    blocker_codes = list(scope_blocker_codes)
+    for provider in required_providers:
         provider_records = [
             item for item in continuity_records
             if str(item.get("provider") or "").strip().lower() == provider
@@ -175,22 +241,34 @@ def build_mounted_report(
                 event: [item for item in records if str(item.get("event") or "") == event]
                 for event in REQUIRED_SCENARIO_EVENTS
             }
-            event_keys = {event: {_key(item) for item in items} for event, items in event_records.items()}
-            command_keys = set().union(*event_keys.values())
+            if any(len(items) != 1 for items in event_records.values()):
+                continue
+            event_keys = {
+                event: _key(items[0]) for event, items in event_records.items()
+            }
+            trigger_keys = {event_keys[event] for event in TRIGGER_EVENTS}
+            continuation_keys = {event_keys[event] for event in CONTINUATION_EVENTS}
             if (
-                len(command_keys) != 1
-                or None in command_keys
-                or any(len(items) != 1 for items in event_records.values())
-                or any(keys != command_keys for keys in event_keys.values())
+                len(trigger_keys) != 1
+                or None in trigger_keys
+                or len(continuation_keys) != 1
+                or None in continuation_keys
             ):
                 continue
-            command_key = next(iter(command_keys))
-            sample = samples_by_key.get(command_key)
+            trigger_key = next(iter(trigger_keys))
+            continuation_key = next(iter(continuation_keys))
+            if trigger_key != continuation_key:
+                if continuation_key[0] <= trigger_key[0] or any(
+                    _trigger_key(event_records[event][0]) != trigger_key
+                    for event in CONTINUATION_EVENTS
+                ):
+                    continue
+            sample = samples_by_key.get(continuation_key)
             if sample is None or sample.get("provider") != provider:
                 continue
             recovery_identities = {
                 _recovery_identity(item)
-                for event in RECOVERY_EVENTS
+                for event in RECOVERY_IDENTITY_EVENTS
                 for item in event_records[event]
             }
             if len(recovery_identities) != 1 or None in recovery_identities:
@@ -198,7 +276,7 @@ def build_mounted_report(
             recovery_generation, incident_id, session_id, command_id = next(
                 iter(recovery_identities)
             )
-            if command_id != _opaque_command_id(command_key[1]):
+            if command_id != _opaque_command_id(trigger_key[1]):
                 continue
             incident = event_records["incident_classified"][0]
             launch = event_records["continuity_agent_launched"][0]
@@ -221,6 +299,10 @@ def build_mounted_report(
                 or handoff.get("final_result") != "restored"
                 or handoff.get("actor_role") != "canonical_bridge"
                 or handoff.get("action") not in {"resume_exact", "reattach"}
+                or (
+                    trigger_key != continuation_key
+                    and handoff.get("action") != "reattach"
+                )
                 or audible.get("audible") is not True
                 or audible.get("play_request_id") != sample["play_request_id"]
                 or audible.get("utterance_id") != sample["utterance_id"]
@@ -235,6 +317,8 @@ def build_mounted_report(
             valid = {
                 "provider": provider,
                 "scenario_id": scenario_id,
+                "trigger_command_key": list(trigger_key),
+                "continuation_command_key": list(continuation_key),
                 "outcome": "transcript_captured",
                 "classification": incident["classification"],
                 "recovery_generation": recovery_generation,
@@ -261,6 +345,25 @@ def build_mounted_report(
         else:
             scenarios.append(valid)
 
+    scenarios_by_provider = {
+        scenario["provider"]: scenario for scenario in scenarios
+    }
+    deferred_by_provider = {
+        item["provider"]: item for item in deferred_providers
+    }
+    provider_results = []
+    for provider in PROVIDERS:
+        if provider in deferred_by_provider:
+            provider_results.append(deferred_by_provider[provider])
+        elif provider in scenarios_by_provider:
+            provider_results.append({
+                "provider": provider,
+                "status": "passed",
+                "scenario_id": scenarios_by_provider[provider]["scenario_id"],
+            })
+        else:
+            provider_results.append({"provider": provider, "status": "blocked"})
+
     signature_passed = all((
         signature.get("verified"),
         signature.get("developer_id"),
@@ -269,7 +372,11 @@ def build_mounted_report(
     ))
     if not signature_passed:
         blocker_codes.append("developer_id_signature_missing")
-    mounted_passed = signature_passed and len(scenarios) == len(PROVIDERS)
+    mounted_passed = (
+        signature_passed
+        and not scope_blocker_codes
+        and len(scenarios) == len(required_providers)
+    )
     if not physical_audio_attested:
         blocker_codes.append("physical_audio_attestation_missing")
     return {
@@ -279,6 +386,12 @@ def build_mounted_report(
         "mounted_app_evidence": {
             "status": "passed" if mounted_passed else "blocked",
             "signature": signature,
+            "provider_scope": {
+                "status": "invalid" if scope_blocker_codes else "valid",
+                "required_providers": required_providers,
+                "deferred_providers": deferred_providers,
+            },
+            "provider_results": provider_results,
             "provider_scenarios": scenarios,
             "provider_sample_counts": latency["provider_sample_counts"],
             "ack_to_first_audio_p95_ms": latency["ack_to_first_audio_p95_ms"],
@@ -306,13 +419,27 @@ def main() -> int:
     parser.add_argument("--speech-log", required=True)
     parser.add_argument("--delivery-log", required=True)
     parser.add_argument("--physical-audio-attested", action="store_true")
+    parser.add_argument(
+        "--defer-provider",
+        action="append",
+        default=[],
+        type=_provider_deferral,
+        metavar="PROVIDER=REASON",
+        help="defer one supported provider with an explicit reason",
+    )
     args = parser.parse_args()
+    provider_deferrals: dict[str, str] = {}
+    for provider, reason in args.defer_provider:
+        if provider in provider_deferrals:
+            parser.error(f"provider deferred more than once: {provider}")
+        provider_deferrals[provider] = reason
     report = build_mounted_report(
         inspect_signature(Path(args.app)),
         _records(Path(args.continuity_log)),
         _records(Path(args.speech_log)),
         _records(Path(args.delivery_log)),
         physical_audio_attested=args.physical_audio_attested,
+        provider_deferrals=provider_deferrals,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["status"] == "passed" else 2

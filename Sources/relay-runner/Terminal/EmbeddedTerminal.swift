@@ -65,6 +65,7 @@ final class EmbeddedTerminalSession {
     @ObservationIgnored private let processFactory: ProcessFactory
     @ObservationIgnored private var process: EmbeddedTerminalProcess?
     @ObservationIgnored private var exitHandler: ((Int32?) -> Void)?
+    @ObservationIgnored private var readyHandler: (() -> Void)?
     @ObservationIgnored private var diagnostics: EmbeddedAgentDiagnostics?
     @ObservationIgnored private var providerKey: String?
     @ObservationIgnored private var supportCorrelationID: String?
@@ -82,6 +83,10 @@ final class EmbeddedTerminalSession {
 
     func setExitHandler(_ handler: @escaping (Int32?) -> Void) {
         exitHandler = handler
+    }
+
+    func setReadyHandler(_ handler: @escaping () -> Void) {
+        readyHandler = handler
     }
 
     func beginPreparing(
@@ -135,6 +140,7 @@ final class EmbeddedTerminalSession {
                     correlationID: self.supportCorrelationID ?? launch.diagnosticsCorrelationID,
                     provider: self.providerKey
                 )
+                self.readyHandler?()
             }
             if Thread.isMainThread {
                 applyReady()

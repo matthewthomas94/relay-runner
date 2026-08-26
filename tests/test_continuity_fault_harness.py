@@ -37,7 +37,11 @@ class ContinuityFaultHarnessTests(unittest.TestCase):
         ]
         self.assertTrue(all(case["classification"] == "stalled" for case in recoverable))
         self.assertTrue(all(case["agent_launch"] == "launched" for case in recoverable))
-        self.assertTrue(all(case["broker_action_count"] == 1 for case in recoverable))
+        self.assertTrue(all(
+            case["broker_action_count"]
+            == (2 if case["name"] == "simultaneous_component_faults" else 1)
+            for case in recoverable
+        ))
         self.assertTrue(all(case["restored_health"] for case in recoverable))
         self.assertTrue(all(case["continued_without_session_restart"] for case in recoverable))
 
@@ -58,6 +62,8 @@ class ContinuityFaultHarnessTests(unittest.TestCase):
             if case["name"] == "simultaneous_component_faults"
         )
         self.assertEqual(simultaneous["simultaneous_second_launch"], "single_flight")
+        self.assertEqual(simultaneous["agent_result_count"], 2)
+        self.assertTrue(simultaneous["continued_without_session_restart"])
 
         exhausted = next(
             case for case in report["cases"]

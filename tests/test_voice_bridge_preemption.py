@@ -5420,6 +5420,42 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(os.stat(temp_dir).st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(os.stat(event_path).st_mode), 0o600)
 
+    def test_private_command_event_log_serializes_concurrent_captures(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            event_path = os.path.join(temp_dir, "voice_command_events.jsonl")
+            start = threading.Barrier(8)
+            errors = []
+
+            def record(index: int) -> None:
+                try:
+                    start.wait(2)
+                    voice_bridge._record_private_command_capture(
+                        {
+                            "relay_command_seq": index,
+                            "relay_command_id": f"cmd-{index}",
+                            "received_at": float(index),
+                            "source_text": f"command {index}",
+                            "action": "received",
+                        },
+                        event_log_path=event_path,
+                        limit=8,
+                    )
+                except Exception as error:  # noqa: BLE001 - captured for thread assertion.
+                    errors.append(error)
+
+            threads = [threading.Thread(target=record, args=(index,)) for index in range(1, 9)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(3)
+
+            self.assertEqual(errors, [])
+            events = [json.loads(line) for line in Path(event_path).read_text().splitlines()]
+            self.assertEqual(
+                {event["relay_command_seq"] for event in events},
+                set(range(1, 9)),
+            )
+
     def test_delivery_failed_recovery_names_the_actual_outcome(self):
         notifications: list[tuple[str, dict]] = []
 
