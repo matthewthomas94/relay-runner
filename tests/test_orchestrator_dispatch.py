@@ -2354,6 +2354,255 @@ verification_resume: Connect physical input and resume.
             self.assertEqual(read_ticket(repo / ".orchestrator/RR-2.md")["status"], "backlog")
             self.assertEqual(dispatches, [])
 
+    def test_recover_preserved_run_collision_relinks_idempotently_then_resumes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            ticket = repo / ".orchestrator/RR-1.md"
+            ticket.write_text(
+                """---
+id: RR-1
+title: RR-1
+status: verification_blocked
+priority: medium
+depends_on: []
+run_id: 7
+canceled: false
+verification_blocker: Physical input unavailable.
+verification_resume: Connect physical input and resume.
+---
+
+## Run log
+
+### Run 7 (attempt 2) — branch `relay/rr-1`
+
+- Reviewed and blocked.
+"""
+            )
+            self.write_ticket(
+                repo,
+                "RR-2",
+                status="done",
+                run_id=7,
+                sizing=True,
+                body="## Run log\n\n- **Run 7** (attempt 1) reviewed and merged.\n",
+            )
+            self.write_ticket(
+                repo,
+                "RR-3",
+                status="backlog",
+                run_id=None,
+                depends_on=["RR-1"],
+                sizing=True,
+            )
+            self.git(
+                repo,
+                "add",
+                ".orchestrator/RR-1.md",
+                ".orchestrator/RR-2.md",
+                ".orchestrator/RR-3.md",
+            )
+            self.git(repo, "commit", "-m", "record colliding preserved run")
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.runs.insert_reconciled(
+                run_id=7,
+                ticket_id="RR-2",
+                repo_path=str(repo.resolve()),
+                state="Merged",
+                attempt=1,
+            )
+            occupied_before = daemon.runs.get(7)
+            dispatches: list[dict] = []
+            daemon.dispatch = lambda **kwargs: dispatches.append(kwargs)
+
+            result = daemon.recover_preserved_run_collision(
+                repo_path=str(repo),
+                ticket_id="RR-1",
+            )
+
+            replacement_id = result["replacement_run_id"]
+            recovered = read_ticket(ticket)
+            self.assertTrue(result["recovered"])
+            self.assertNotEqual(replacement_id, 7)
+            self.assertEqual(recovered["status"], "verification_blocked")
+            self.assertEqual(recovered["run_id"], replacement_id)
+            self.assertIn(
+                f"historical run 7 (attempt 2); replacement run {replacement_id}; "
+                "occupied row retained for RR-2",
+                recovered["body"],
+            )
+            self.assertEqual(daemon.runs.get(7), occupied_before)
+            self.assertEqual(result["run"]["ticket_id"], "RR-1")
+            self.assertEqual(result["run"]["state"], "VerificationBlocked")
+            self.assertEqual(result["run"]["attempt"], 2)
+            self.assertEqual(read_ticket(repo / ".orchestrator/RR-3.md")["status"], "backlog")
+            self.assertEqual(dispatches, [])
+            self.assertEqual(self.git(repo, "status", "--porcelain").stdout.strip(), "")
+
+            repeated = daemon.recover_preserved_run_collision(
+                repo_path=str(repo),
+                ticket_id="RR-1",
+            )
+
+            self.assertFalse(repeated["recovered"])
+            self.assertEqual(repeated["replacement_run_id"], replacement_id)
+            self.assertEqual(daemon.runs.get(7), occupied_before)
+            self.assertEqual(
+                len(daemon.runs.reconciled_replacements(
+                    historical_run_id=7,
+                    ticket_id="RR-1",
+                    repo_path=str(repo),
+                )),
+                1,
+            )
+
+            resumed = daemon.resume_verification_blocked(
+                replacement_id,
+                reason="A physical HID route is now connected.",
+                redispatch=False,
+            )
+
+            self.assertTrue(resumed["resumed"])
+            self.assertEqual(resumed["previous_run"]["ticket_id"], "RR-1")
+            self.assertEqual(read_ticket(ticket)["status"], "ready")
+            self.assertEqual(daemon.runs.get(7), occupied_before)
+
+    def test_recover_preserved_run_collision_rejects_unsafe_evidence(self):
+        def fixture(
+            root: Path,
+            *,
+            status: str = "verification_blocked",
+            body: str = "## Run log\n\n- **Run 7** (attempt 2) reviewed and blocked.\n",
+            occupied_repo: Path | None = None,
+        ) -> tuple[Path, Daemon]:
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            blocker_fields = ""
+            if status == "verification_blocked":
+                blocker_fields = (
+                    "verification_blocker: Physical input unavailable.\n"
+                    "verification_resume: Connect physical input and resume.\n"
+                )
+            (repo / ".orchestrator/RR-1.md").write_text(
+                f"""---
+id: RR-1
+title: RR-1
+status: {status}
+priority: medium
+depends_on: []
+run_id: 7
+canceled: false
+{blocker_fields}---
+
+{body}
+"""
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "record collision evidence")
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.runs.insert_reconciled(
+                run_id=7,
+                ticket_id="RR-2",
+                repo_path=str((occupied_repo or repo).resolve()),
+                state="Merged",
+            )
+            return repo, daemon
+
+        cases = (
+            ("nonterminal", {"status": "ready"}, "only committed done or verification_blocked"),
+            (
+                "missing-attempt",
+                {"body": "## Run log\n\n- **Run 7** reviewed and blocked.\n"},
+                "attempt evidence",
+            ),
+            (
+                "repository-mismatch",
+                {"occupied_repo_name": "other-repo"},
+                "different repository",
+            ),
+        )
+        for name, options, error in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                occupied_repo_name = options.pop("occupied_repo_name", None)
+                occupied_repo = root / occupied_repo_name if occupied_repo_name else None
+                repo, daemon = fixture(root, occupied_repo=occupied_repo, **options)
+
+                with self.assertRaisesRegex(ValueError, error):
+                    daemon.recover_preserved_run_collision(
+                        repo_path=str(repo),
+                        ticket_id="RR-1",
+                    )
+
+                self.assertEqual(len(daemon.runs.list()), 1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo, daemon = fixture(root)
+            ticket = repo / ".orchestrator/RR-1.md"
+            ticket.write_text(ticket.read_text() + "\nUncommitted claim.\n")
+
+            with self.assertRaisesRegex(ValueError, "existing changes"):
+                daemon.recover_preserved_run_collision(
+                    repo_path=str(repo),
+                    ticket_id="RR-1",
+                )
+
+            self.assertEqual(len(daemon.runs.list()), 1)
+
+    def test_recover_preserved_run_collision_rejects_ambiguous_repeat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            ticket = repo / ".orchestrator/RR-1.md"
+            ticket.write_text(
+                """---
+id: RR-1
+title: RR-1
+status: verification_blocked
+priority: medium
+depends_on: []
+run_id: 7
+canceled: false
+verification_blocker: Physical input unavailable.
+verification_resume: Connect physical input and resume.
+---
+
+## Run log
+
+- **Run 7** (attempt 2) reviewed and blocked.
+"""
+            )
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "record collision evidence")
+            daemon = self.make_daemon(root, provider="codex")
+            daemon.runs.insert_reconciled(
+                run_id=7,
+                ticket_id="RR-2",
+                repo_path=str(repo.resolve()),
+                state="Merged",
+            )
+            result = daemon.recover_preserved_run_collision(
+                repo_path=str(repo),
+                ticket_id="RR-1",
+            )
+            entry = (
+                "- **Preserved run collision recovery** — historical run 7 "
+                f"(attempt 2); replacement run {result['replacement_run_id']}; "
+                "occupied row retained for RR-2.\n"
+            )
+            ticket.write_text(ticket.read_text() + "\n" + entry)
+            self.git(repo, "add", ".orchestrator/RR-1.md")
+            self.git(repo, "commit", "-m", "add ambiguous recovery evidence")
+
+            with self.assertRaisesRegex(ValueError, "ambiguous"):
+                daemon.recover_preserved_run_collision(
+                    repo_path=str(repo),
+                    ticket_id="RR-1",
+                )
+
     def test_reconcile_preserved_run_rejects_dirty_ticket_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

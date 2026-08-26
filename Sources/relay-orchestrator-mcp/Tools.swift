@@ -368,6 +368,42 @@ struct ReconcilePreservedRunTool: MCPTool {
     }
 }
 
+// MARK: - recover_preserved_run_collision
+
+struct RecoverPreservedRunCollisionTool: MCPTool {
+    let name = "recover_preserved_run_collision"
+    let description = """
+        Recover a clean, committed terminal ticket whose historical run_id is occupied by another ticket in the same repository. The daemon preserves the occupied row, allocates a terminal replacement row, and commits the old and replacement identities to the canonical ticket. This action does not resume or dispatch work or progress dependencies.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "repo_path": [
+                    "type": "string",
+                    "description": "Absolute path to the git repo containing the committed canonical ticket.",
+                ],
+                "ticket_id": [
+                    "type": "string",
+                    "description": "Canonical ticket id whose occupied historical run link should be replaced.",
+                ],
+            ],
+            "required": ["repo_path", "ticket_id"],
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        let repoPath = try requireString(arguments, "repo_path")
+        let ticketID = try requireString(arguments, "ticket_id")
+        return try await proxy(
+            method: "POST",
+            path: "/v1/runs/recover-preserved-collision",
+            body: ["repo_path": repoPath, "ticket_id": ticketID]
+        )
+    }
+}
+
 // MARK: - resume_verification_blocked
 
 struct ResumeVerificationBlockedTool: MCPTool {

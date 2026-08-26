@@ -277,6 +277,10 @@ class ContinuityMountedVerificationTests(unittest.TestCase):
                 "at": 100.2 + index,
                 "play_request_id": f"play-{provider}",
                 "utterance_id": f"utterance-{provider}",
+                "authoritative": True,
+                "kind": "final",
+                "source": "orchestrator",
+                "lifecycle_role": "result",
                 "relay_command_seq": index,
                 "relay_command_id": f"command-{provider}",
             })

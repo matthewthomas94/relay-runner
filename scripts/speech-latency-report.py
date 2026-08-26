@@ -73,29 +73,48 @@ def build_report(
     by_command: dict[tuple[int, str], dict[str, float]] = {}
     by_play_request: dict[str, dict[str, float]] = {}
     by_utterance: dict[str, dict[str, Any]] = {}
-    playback_counts: dict[tuple[int, str], int] = {}
+    playback_by_utterance: dict[str, list[dict[str, Any]]] = {}
+    authoritative_playback_counts: dict[tuple[int, str], int] = {}
     for record in speech_records:
         event = str(record.get("event") or "")
+        command_key = _command_key(record)
+        if (
+            event == "afplay_started"
+            and record.get("authoritative") is True
+            and command_key is not None
+        ):
+            authoritative_playback_counts[command_key] = (
+                authoritative_playback_counts.get(command_key, 0) + 1
+            )
         at = record.get("at")
         at = _finite_float(at)
         if at is None:
             continue
-        command_key = _command_key(record)
-        if command_key is not None:
-            by_command.setdefault(command_key, {})[event] = at
         play_request_id = str(record.get("play_request_id") or "")
-        if play_request_id:
-            by_play_request.setdefault(play_request_id, {})[event] = at
         utterance_id = str(record.get("utterance_id") or "")
+        if command_key is not None and not utterance_id:
+            by_command.setdefault(command_key, {})[event] = at
+        if play_request_id and not utterance_id:
+            by_play_request.setdefault(play_request_id, {})[event] = at
         if utterance_id:
             sample = by_utterance.setdefault(utterance_id, {"utterance_id": utterance_id})
             sample[event] = at
             if command_key is not None:
                 sample["command_key"] = command_key
+                sample["relay_command_seq"] = command_key[0]
+                sample["relay_command_id"] = command_key[1]
             if play_request_id:
                 sample["play_request_id"] = play_request_id
-            if event == "afplay_started" and command_key is not None and play_request_id:
-                playback_counts[command_key] = playback_counts.get(command_key, 0) + 1
+            if event == "afplay_started":
+                playback_by_utterance.setdefault(utterance_id, []).append({
+                    "authoritative": record.get("authoritative"),
+                    "kind": str(record.get("kind") or "").strip().lower(),
+                    "source": str(record.get("source") or "").strip().lower(),
+                    "lifecycle_role": str(record.get("lifecycle_role") or "").strip().lower(),
+                    "command_key": command_key,
+                    "play_request_id": play_request_id,
+                    "utterance_id": utterance_id,
+                })
 
     samples: list[dict[str, Any]] = []
     stages = (
@@ -112,10 +131,24 @@ def build_report(
         if sample.get("command_key") is None or not sample.get("play_request_id"):
             continue
         command_key = sample["command_key"]
+        playback_records = playback_by_utterance.get(sample["utterance_id"], [])
+        if len(playback_records) != 1:
+            continue
+        playback = playback_records[0]
+        if (
+            playback.get("authoritative") is not True
+            or playback.get("kind") != "final"
+            or not playback.get("source")
+            or not playback.get("lifecycle_role")
+            or playback.get("command_key") != command_key
+            or playback.get("play_request_id") != sample.get("play_request_id")
+            or authoritative_playback_counts.get(command_key) != 1
+        ):
+            continue
         command = by_command.get(command_key, {})
         request = by_play_request.get(sample.get("play_request_id"), {})
         terminal_acknowledgements = acknowledgements.get(command_key, [])
-        if len(terminal_acknowledgements) != 1 or playback_counts.get(command_key) != 1:
+        if len(terminal_acknowledgements) != 1:
             continue
         timeline = {
             stage: sample.get(stage, request.get(stage, command.get(stage)))
@@ -147,6 +180,10 @@ def build_report(
         if durations["ack_to_first_audio_ms"] is not None:
             samples.append({
                 **sample,
+                "authoritative": True,
+                "kind": playback["kind"],
+                "source": playback["source"],
+                "lifecycle_role": playback["lifecycle_role"],
                 "provider": terminal_acknowledgements[0]["provider"],
                 "provider_acknowledged": timeline["provider_acknowledged"],
                 **durations,

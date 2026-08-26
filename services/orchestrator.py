@@ -674,6 +674,12 @@ SPIKE_COMPLETED_RUN_STATE = "SpikeCompleted"
 VERIFICATION_BLOCKED_STATUS = "verification_blocked"
 VERIFICATION_BLOCKED_RUN_STATE = "VerificationBlocked"
 VERIFICATION_BLOCKER_FIELDS = ("verification_blocker", "verification_resume")
+PRESERVED_RUN_COLLISION_ENTRY_RE = re.compile(
+    r"^- \*\*Preserved run collision recovery\*\* — historical run (\d+) "
+    r"\(attempt (\d+)\); replacement run (\d+); occupied row retained for "
+    r"([^\s;]+)\.$",
+    re.MULTILINE,
+)
 INTEGRATION_BLOCKED_RUN_STATE = "IntegrationBlocked"
 REVIEW_BLOCKING_STATES = ("AwaitingReview", "Reviewing", "MergeConflict", "Succeeded")
 MERGEABLE_REVIEW_STATES = REVIEW_BLOCKING_STATES + (INTEGRATION_BLOCKED_RUN_STATE,)
@@ -2355,6 +2361,63 @@ class RunsStore:
             reconciled = dict(row)
         self.write_index()
         return reconciled
+
+    def insert_reconciled_replacement(
+        self,
+        *,
+        historical_run_id: int,
+        ticket_id: str,
+        repo_path: str,
+        state: str,
+        attempt: int,
+        last_error: str | None = None,
+    ) -> dict[str, Any]:
+        """Allocate a replacement identity without altering the occupied row."""
+        if historical_run_id <= 0:
+            raise ValueError("historical_run_id must be positive")
+        if attempt <= 0:
+            raise ValueError("attempt must be positive")
+        now = time.time()
+        activity = f"Reconciled replacement for occupied run {historical_run_id}"
+        with self._conn() as c:
+            cur = c.execute(
+                "INSERT INTO runs(ticket_id, repo_path, workspace_path, branch, "
+                "state, attempt, started_at, ended_at, exit_code, last_error, activity, "
+                "activity_at) VALUES (?, ?, '', ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+                (
+                    ticket_id,
+                    repo_path,
+                    f"preserved/{sanitize_identifier(ticket_id)}",
+                    state,
+                    attempt,
+                    now,
+                    now,
+                    last_error,
+                    activity,
+                    now,
+                ),
+            )
+            row = c.execute("SELECT * FROM runs WHERE id = ?", (int(cur.lastrowid),)).fetchone()
+            replacement = dict(row)
+        self.write_index()
+        return replacement
+
+    def reconciled_replacements(
+        self,
+        *,
+        historical_run_id: int,
+        ticket_id: str,
+        repo_path: str,
+    ) -> list[dict[str, Any]]:
+        activity = f"Reconciled replacement for occupied run {historical_run_id}"
+        repo = str(Path(repo_path).expanduser().resolve())
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM runs WHERE ticket_id = ? AND repo_path = ? AND activity = ? "
+                "ORDER BY id",
+                (ticket_id, repo, activity),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def update(self, run_id: int, *, state: str | None = None, pid: int | None = None,
                exit_code: int | None = None,
@@ -8761,7 +8824,10 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         """
         repo = Path(repo_path).expanduser().resolve()
         canonical_ticket_id = _clean_required_text(ticket_id, "ticket_id")
-        if Path(canonical_ticket_id).name != canonical_ticket_id or canonical_ticket_id in {".", ".."}:
+        if (
+            Path(canonical_ticket_id).name != canonical_ticket_id
+            or canonical_ticket_id in {".", ".."}
+        ):
             raise ValueError("ticket_id must be a canonical ticket filename stem")
         ticket_path = repo / ".orchestrator" / f"{canonical_ticket_id}.md"
         with self._authoring_mutex():
@@ -8860,6 +8926,265 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             provider_key=reconciled.get("provider_key"),
         )
         return {"reconciled": True, "run": reconciled, "source": "canonical-ticket"}
+
+    def recover_preserved_run_collision(
+        self,
+        *,
+        repo_path: str,
+        ticket_id: str,
+    ) -> dict[str, Any]:
+        """Replace an occupied historical id without changing its ledger row.
+
+        Unlike ordinary preserved-run reconciliation, this explicit action
+        commits a new canonical run link. It remains terminal and does not
+        resume, dispatch, progress dependencies, or drive queue reconciliation.
+        """
+        repo = Path(repo_path).expanduser().resolve()
+        canonical_ticket_id = _clean_required_text(ticket_id, "ticket_id")
+        if Path(canonical_ticket_id).name != canonical_ticket_id or canonical_ticket_id in {".", ".."}:
+            raise ValueError("ticket_id must be a canonical ticket filename stem")
+        ticket_path = repo / ".orchestrator" / f"{canonical_ticket_id}.md"
+        with self._authoring_mutex():
+            _ensure_ticket_authoring_paths_clean(repo, [ticket_path])
+            tracked = _git(
+                str(repo),
+                "cat-file",
+                "-e",
+                f"HEAD:.orchestrator/{canonical_ticket_id}.md",
+                check=False,
+            )
+            if tracked.returncode != 0:
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} is not committed at repository HEAD"
+                )
+            staged = _git(str(repo), "diff", "--cached", "--name-only", check=False)
+            if staged.returncode != 0:
+                raise ValueError(
+                    f"could not inspect staged changes before collision recovery: "
+                    f"{staged.stderr.strip()}"
+                )
+            if staged.stdout.strip():
+                raise ValueError(
+                    "preserved-run collision recovery blocked by already-staged changes"
+                )
+
+            ticket = read_ticket(ticket_path)
+            if ticket.get("id") != canonical_ticket_id:
+                raise ValueError(
+                    f"ticket file id is {ticket.get('id')!r}, expected {canonical_ticket_id!r}"
+                )
+            status = str(ticket.get("status") or "")
+            expected_states = {
+                VERIFICATION_BLOCKED_STATUS: VERIFICATION_BLOCKED_RUN_STATE,
+                "done": "Merged",
+            }
+            expected_state = expected_states.get(status)
+            if expected_state is None:
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} is {status!r}; only committed done or "
+                    "verification_blocked tickets can recover preserved-run collisions"
+                )
+            if status == VERIFICATION_BLOCKED_STATUS:
+                blocker = str(ticket.get("verification_blocker") or "").strip()
+                resume = str(ticket.get("verification_resume") or "").strip()
+                if not blocker or not resume:
+                    raise ValueError(
+                        f"ticket {canonical_ticket_id} lacks verification blocker metadata"
+                    )
+                blocker_error = f"verification blocked: {blocker}; resume: {resume}"
+            else:
+                blocker_error = None
+
+            current_run_id = ticket.get("run_id")
+            if (
+                not isinstance(current_run_id, int)
+                or isinstance(current_run_id, bool)
+                or current_run_id <= 0
+            ):
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} does not declare a positive run_id"
+                )
+            body = str(ticket.get("body") or "")
+            collision_entries = list(PRESERVED_RUN_COLLISION_ENTRY_RE.finditer(body))
+            if len(collision_entries) > 1:
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} has ambiguous preserved-run collision evidence"
+                )
+
+            if collision_entries:
+                entry = collision_entries[0]
+                historical_run_id = int(entry.group(1))
+                preserved_attempt = int(entry.group(2))
+                replacement_run_id = int(entry.group(3))
+                occupied_ticket_id = entry.group(4)
+                historical_evidence = re.search(
+                    rf"^(?:###\s+Run|-\s+\*\*Run)\s+{historical_run_id}"
+                    rf"(?:\*\*)?\s+\(attempt\s+(\d+)\)",
+                    body,
+                    re.IGNORECASE | re.MULTILINE,
+                )
+                replacement = self.runs.get(replacement_run_id)
+                occupied = self.runs.get(historical_run_id)
+                replacement_repo = str(
+                    Path(str((replacement or {}).get("repo_path") or "")).expanduser().resolve()
+                )
+                occupied_repo = str(
+                    Path(str((occupied or {}).get("repo_path") or "")).expanduser().resolve()
+                )
+                expected_activity = (
+                    f"Reconciled replacement for occupied run {historical_run_id}"
+                )
+                if (
+                    current_run_id != replacement_run_id
+                    or historical_evidence is None
+                    or int(historical_evidence.group(1)) != preserved_attempt
+                    or replacement is None
+                    or replacement.get("ticket_id") != canonical_ticket_id
+                    or replacement_repo != str(repo)
+                    or replacement.get("state") != expected_state
+                    or replacement.get("attempt") != preserved_attempt
+                    or replacement.get("activity") != expected_activity
+                    or replacement.get("workspace_path") != ""
+                    or replacement.get("branch")
+                    != f"preserved/{sanitize_identifier(canonical_ticket_id)}"
+                    or replacement.get("exit_code") != 0
+                    or replacement.get("last_error") != blocker_error
+                    or occupied is None
+                    or occupied.get("ticket_id") != occupied_ticket_id
+                    or occupied_ticket_id == canonical_ticket_id
+                    or Path(occupied_ticket_id).name != occupied_ticket_id
+                    or occupied_repo != str(repo)
+                ):
+                    raise ValueError(
+                        f"ticket {canonical_ticket_id} has inconsistent preserved-run "
+                        "collision evidence"
+                    )
+                return {
+                    "recovered": False,
+                    "historical_run_id": historical_run_id,
+                    "replacement_run_id": replacement_run_id,
+                    "run": replacement,
+                    "source": "existing-collision-recovery",
+                }
+
+            historical_run_id = current_run_id
+            if "## Run log" not in body:
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} lacks preserved run {historical_run_id} evidence"
+                )
+            attempt_evidence = re.search(
+                rf"^(?:###\s+Run|-\s+\*\*Run)\s+{historical_run_id}"
+                rf"(?:\*\*)?\s+\(attempt\s+(\d+)\)",
+                body,
+                re.IGNORECASE | re.MULTILINE,
+            )
+            if attempt_evidence is None:
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} lacks preserved run {historical_run_id} "
+                    "attempt evidence"
+                )
+            preserved_attempt = int(attempt_evidence.group(1))
+            if preserved_attempt <= 0:
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} declares an invalid attempt for run "
+                    f"{historical_run_id}"
+                )
+
+            occupied = self.runs.get(historical_run_id)
+            if occupied is None:
+                raise ValueError(
+                    f"run {historical_run_id} is missing; use reconcile_preserved_run instead"
+                )
+            occupied_repo = str(
+                Path(str(occupied.get("repo_path") or "")).expanduser().resolve()
+            )
+            if occupied_repo != str(repo):
+                raise ValueError(
+                    f"run {historical_run_id} belongs to a different repository"
+                )
+            occupied_ticket_id = str(occupied.get("ticket_id") or "").strip()
+            if (
+                not occupied_ticket_id
+                or occupied_ticket_id == canonical_ticket_id
+                or Path(occupied_ticket_id).name != occupied_ticket_id
+                or re.search(r"[\s;]", occupied_ticket_id)
+            ):
+                raise ValueError(
+                    f"run {historical_run_id} does not represent a different-ticket collision"
+                )
+
+            pending = self.runs.reconciled_replacements(
+                historical_run_id=historical_run_id,
+                ticket_id=canonical_ticket_id,
+                repo_path=str(repo),
+            )
+            if len(pending) > 1:
+                raise ValueError(
+                    f"ticket {canonical_ticket_id} has ambiguous pending collision recoveries"
+                )
+            if pending:
+                replacement = pending[0]
+                if (
+                    replacement.get("state") != expected_state
+                    or replacement.get("attempt") != preserved_attempt
+                    or replacement.get("workspace_path") != ""
+                    or replacement.get("branch")
+                    != f"preserved/{sanitize_identifier(canonical_ticket_id)}"
+                    or replacement.get("exit_code") != 0
+                    or replacement.get("last_error") != blocker_error
+                ):
+                    raise ValueError(
+                        f"ticket {canonical_ticket_id} has an inconsistent pending "
+                        "collision recovery"
+                    )
+            else:
+                replacement = self.runs.insert_reconciled_replacement(
+                    historical_run_id=historical_run_id,
+                    ticket_id=canonical_ticket_id,
+                    repo_path=str(repo),
+                    state=expected_state,
+                    attempt=preserved_attempt,
+                    last_error=blocker_error,
+                )
+            replacement_run_id = int(replacement["id"])
+            ticket["run_id"] = replacement_run_id
+            ticket["body"] = (
+                f"{body.rstrip()}\n\n"
+                f"- **Preserved run collision recovery** — historical run "
+                f"{historical_run_id} (attempt {preserved_attempt}); replacement run "
+                f"{replacement_run_id}; occupied row retained for {occupied_ticket_id}.\n"
+            )
+            write_ticket(ticket_path, ticket)
+            _commit_ticket_authorship(
+                repo,
+                [ticket_path],
+                [canonical_ticket_id],
+                message=(
+                    f"chore: recover {canonical_ticket_id} preserved run collision"
+                ),
+            )
+            recovery_commit = _git_head(str(repo))
+
+        self._emit_lifecycle(
+            "run-reconciled",
+            ticket_id=canonical_ticket_id,
+            run_id=replacement_run_id,
+            source="orchestrator",
+            message=(
+                f"{canonical_ticket_id} historical run {historical_run_id} was relinked "
+                f"to run {replacement_run_id}"
+            ),
+            repo_path=str(repo),
+            provider_key=replacement.get("provider_key"),
+        )
+        return {
+            "recovered": True,
+            "historical_run_id": historical_run_id,
+            "replacement_run_id": replacement_run_id,
+            "recovery_commit": recovery_commit,
+            "run": replacement,
+            "source": "canonical-ticket-collision",
+        }
 
     def reconcile_orchestrator_command_states(
         self,
@@ -10983,6 +11308,14 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST" and segments == ["v1", "runs", "reconcile-preserved"]:
                 body = _read_body(self)
                 result = self.daemon.reconcile_preserved_run(
+                    repo_path=body.get("repo_path", ""),
+                    ticket_id=body.get("ticket_id", ""),
+                )
+                return 200, result
+
+            if method == "POST" and segments == ["v1", "runs", "recover-preserved-collision"]:
+                body = _read_body(self)
+                result = self.daemon.recover_preserved_run_collision(
                     repo_path=body.get("repo_path", ""),
                     ticket_id=body.get("ticket_id", ""),
                 )

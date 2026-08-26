@@ -194,6 +194,7 @@ The daemon refuses to dispatch a ticket that:
 - Already has a non-null `run_id` whose run is `Claimed | Running`.
 - Is `verification_blocked`; use the explicit resume action rather than dispatching it directly.
 - Declares a historical terminal `run_id` whose local ledger row was lost; use `reconcile_preserved_run` against the clean, committed canonical ticket before review or resume. Reconciliation restores only the `Merged` or `VerificationBlocked` record and never edits the ticket, progresses dependencies, or dispatches work.
+- Declares a historical terminal `run_id` occupied by another ticket in the same repository; use the separate `recover_preserved_run_collision` action. It leaves the occupied row unchanged, allocates a terminal replacement identity with the preserved attempt, and commits an old-to-new audit entry plus the replacement `run_id` to the canonical ticket. Identical repeats are no-ops; dirty, nonterminal, cross-repository, missing-attempt, or ambiguous evidence fails closed. Recovery still does not resume, dispatch, progress dependencies, or satisfy external verification.
 
 ## Validation rules
 

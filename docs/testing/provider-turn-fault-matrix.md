@@ -63,7 +63,18 @@ The mounted gate passes only when both providers have complete correlated
 samples, no duplicate accepted effect, and
 `ack_to_first_audio_p95_ms <= 500`. An Option gesture is not required: a mounted
 resume sample is valid when the terminal acknowledgement and a unique
-`afplay_started` record have the required privacy-safe identities.
+`afplay_started` record have the required privacy-safe identities. The exact
+RR-325 reporter contract requires that playback record to carry
+`authoritative: true`, `kind: final`, a non-empty `source` and `lifecycle_role`,
+the acknowledged command sequence/id, and non-empty play-request and utterance
+ids. Exactly one authoritative playback may exist for that command. Messenger
+handoffs and other non-authoritative conversation are excluded from both sample
+selection and duplicate-authoritative-effect counting.
+
+The report is process evidence: it proves that the correlated `afplay` process
+started and measures that boundary, but it cannot prove that a person heard the
+audio. Human audible attestation is a separate mounted acceptance record and
+must not be inferred from `afplay_started` alone.
 
 The remaining physical gate is exact: a signed Relay Runner app with
 authenticated real Codex and Claude clients is unavailable in an isolated
