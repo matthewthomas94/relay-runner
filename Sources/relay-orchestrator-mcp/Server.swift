@@ -26,6 +26,7 @@ final class MCPServer {
             ReviewRunTool(),
             CancelRunTool(),
             ReconcilePreservedRunTool(),
+            RecoverPreservedRunCollisionTool(),
             ResumeVerificationBlockedTool(),
             ProposeSpikeFollowupsTool(),
             ReviewSpikeFollowupTool(),
