@@ -43,6 +43,12 @@ class SpeechLatencyReportTests(unittest.TestCase):
                 **command,
             })
             speech_records.extend([
+                {
+                    "event": "accepted",
+                    "at": acknowledged_at + 0.005,
+                    **AUTHORITATIVE_FINAL,
+                    **utterance,
+                },
                 {"event": "option_detected", "at": acknowledged_at + 0.01, **request},
                 {"event": "tts_preparing", "at": acknowledged_at + 0.02, **utterance},
                 {"event": "first_wav_ready", "at": acknowledged_at + 0.12, **utterance},
@@ -59,7 +65,10 @@ class SpeechLatencyReportTests(unittest.TestCase):
         self.assertEqual(report["sample_count"], 3)
         self.assertEqual(report["provider_sample_counts"], {"codex": 2, "claude": 1})
         self.assertEqual(report["ack_to_first_audio_p95_ms"], 420.0)
+        self.assertEqual(report["provider_ack_to_first_audio_p95_ms"], 420.0)
+        self.assertEqual(report["realization_trigger_to_first_audio_p95_ms"], 410.0)
         self.assertEqual(report["option_to_first_audio_p95_ms"], 410.0)
+        self.assertEqual(report["samples"][0]["realization_trigger_event"], "option_detected")
         self.assertEqual(report["samples"][0]["play_request_id"], "play-1")
         self.assertEqual(report["samples"][0]["utterance_id"], "utt-1")
         self.assertNotIn("text", report["samples"][0])
@@ -70,14 +79,24 @@ class SpeechLatencyReportTests(unittest.TestCase):
             "relay_command_id": "mounted-resume",
         }
         report = speech_latency_report.build_report(
-            [{
-                "event": "afplay_started",
-                "at": 50.420,
-                "play_request_id": "play-resume",
-                "utterance_id": "utterance-resume",
-                **AUTHORITATIVE_FINAL,
-                **identifiers,
-            }],
+            [
+                {
+                    "event": "accepted",
+                    "at": 50.010,
+                    "play_request_id": "play-resume",
+                    "utterance_id": "utterance-resume",
+                    **AUTHORITATIVE_FINAL,
+                    **identifiers,
+                },
+                {
+                    "event": "afplay_started",
+                    "at": 50.420,
+                    "play_request_id": "play-resume",
+                    "utterance_id": "utterance-resume",
+                    **AUTHORITATIVE_FINAL,
+                    **identifiers,
+                },
+            ],
             [{
                 "event": "provider_acknowledged",
                 "timestamp": 50.0,
@@ -88,7 +107,78 @@ class SpeechLatencyReportTests(unittest.TestCase):
 
         self.assertEqual(report["sample_count"], 1)
         self.assertEqual(report["ack_to_first_audio_p95_ms"], 420.0)
+        self.assertEqual(report["realization_trigger_to_first_audio_p95_ms"], 410.0)
         self.assertIsNone(report["option_to_first_audio_p95_ms"])
+        self.assertEqual(report["samples"][0]["realization_trigger_event"], "accepted")
+
+    def test_automatic_playback_ignores_non_authoritative_acceptance(self):
+        identifiers = {
+            "relay_command_seq": 12,
+            "relay_command_id": "mounted-resume",
+            "play_request_id": "play-resume",
+            "utterance_id": "utterance-resume",
+        }
+        report = speech_latency_report.build_report(
+            [
+                {
+                    "event": "accepted",
+                    "at": 50.010,
+                    "authoritative": False,
+                    "kind": "handoff",
+                    "source": "messenger",
+                    "lifecycle_role": "conversation",
+                    **identifiers,
+                },
+                {
+                    "event": "afplay_started",
+                    "at": 50.420,
+                    **AUTHORITATIVE_FINAL,
+                    **identifiers,
+                },
+            ],
+            [{
+                "event": "provider_acknowledged",
+                "timestamp": 50.0,
+                "provider": "claude",
+                "relay_command_seq": 12,
+                "relay_command_id": "mounted-resume",
+            }],
+        )
+
+        self.assertEqual(report["sample_count"], 1)
+        self.assertIsNone(report["realization_trigger_to_first_audio_p95_ms"])
+        self.assertIsNone(report["samples"][0]["realization_trigger"])
+
+    def test_queue_wait_is_not_counted_as_playback_realization_latency(self):
+        command = {
+            "relay_command_seq": 7,
+            "relay_command_id": "queued-command",
+        }
+        request = {**command, "play_request_id": "queued-play"}
+        utterance = {**request, "utterance_id": "queued-utterance"}
+        report = speech_latency_report.build_report(
+            [
+                {"event": "accepted", "at": 12.0, **AUTHORITATIVE_FINAL, **utterance},
+                {"event": "option_detected", "at": 42.0, **request},
+                {
+                    "event": "afplay_started",
+                    "at": 42.011,
+                    **AUTHORITATIVE_FINAL,
+                    **utterance,
+                },
+            ],
+            [{
+                "event": "provider_acknowledged",
+                "timestamp": 10.0,
+                "provider": "codex",
+                **command,
+            }],
+        )
+
+        self.assertEqual(report["sample_count"], 1)
+        self.assertEqual(report["provider_ack_to_first_audio_p95_ms"], 32_011.0)
+        self.assertEqual(report["realization_trigger_to_first_audio_p95_ms"], 11.0)
+        self.assertEqual(report["samples"][0]["realization_trigger_event"], "option_detected")
 
     def test_report_rejects_incomplete_duplicate_and_non_finite_evidence(self):
         identifiers = {
@@ -239,15 +329,21 @@ class SpeechLatencyReportTests(unittest.TestCase):
             **AUTHORITATIVE_FINAL,
             **command,
         }
+        accepted = {
+            **final,
+            "event": "accepted",
+            "at": 20.010,
+        }
 
         report = speech_latency_report.build_report(
-            [handoff, final],
+            [handoff, accepted, final],
             [acknowledgement],
         )
 
         self.assertEqual(report["sample_count"], 1)
         sample = report["samples"][0]
         self.assertEqual(sample["ack_to_first_audio_ms"], 420.0)
+        self.assertEqual(sample["realization_trigger_to_first_audio_ms"], 410.0)
         self.assertEqual(sample["relay_command_seq"], 10)
         self.assertEqual(sample["relay_command_id"], "mounted-command")
         self.assertEqual(sample["play_request_id"], "play-final")

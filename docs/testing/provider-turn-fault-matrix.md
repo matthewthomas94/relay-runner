@@ -50,9 +50,13 @@ and speech event logs. The accepted playback must correlate one command
 sequence/id, one play-request id, one utterance id, one `provider_acknowledged`,
 and one `afplay_started` event, with no second authoritative effect.
 
-Measure mounted acknowledgement-to-playback latency by correlating the terminal
-delivery log's `provider_acknowledged.timestamp` with the speech log's
-`afplay_started.at` through command, play-request, and utterance identities:
+Require the terminal delivery log's `provider_acknowledged` event as the exact
+command-consumption identity, then measure the system-owned realization path to
+the speech log's `afplay_started.at`. In Queue mode the realization trigger is
+the matching `option_detected` event; in automatic or mounted-resume playback it
+is the authoritative final's matching `accepted` event. This excludes provider
+generation time and an intentional human Queue-mode wait without weakening the
+terminal acknowledgement or exactly-once correlation requirements:
 
 ```sh
 python3 scripts/speech-latency-report.py /tmp/relay_speech_events.jsonl \
@@ -61,8 +65,11 @@ python3 scripts/speech-latency-report.py /tmp/relay_speech_events.jsonl \
 
 The mounted gate passes only when both providers have complete correlated
 samples, no duplicate accepted effect, and
-`ack_to_first_audio_p95_ms <= 500`. An Option gesture is not required: a mounted
-resume sample is valid when the terminal acknowledgement and a unique
+`realization_trigger_to_first_audio_p95_ms <= 500`. The diagnostic
+`provider_ack_to_first_audio_p95_ms` remains available, but it includes provider
+generation and any human Queue-mode wait and is not the playback-realization
+gate. An Option gesture is not required: a mounted resume sample is valid when
+the terminal acknowledgement, authoritative-final acceptance, and a unique
 `afplay_started` record have the required privacy-safe identities. The exact
 RR-325 reporter contract requires that playback record to carry
 `authoritative: true`, `kind: final`, a non-empty `source` and `lifecycle_role`,

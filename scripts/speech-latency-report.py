@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Correlate terminal delivery acknowledgement to real audio playback."""
+"""Correlate authoritative playback realization to real audio playback."""
 
 from __future__ import annotations
 
@@ -98,7 +98,14 @@ def build_report(
             by_play_request.setdefault(play_request_id, {})[event] = at
         if utterance_id:
             sample = by_utterance.setdefault(utterance_id, {"utterance_id": utterance_id})
-            sample[event] = at
+            authoritative_final_acceptance = (
+                record.get("authoritative") is True
+                and str(record.get("kind") or "").strip().lower() == "final"
+                and bool(str(record.get("source") or "").strip())
+                and bool(str(record.get("lifecycle_role") or "").strip())
+            )
+            if event != "accepted" or authoritative_final_acceptance:
+                sample[event] = at
             if command_key is not None:
                 sample["command_key"] = command_key
                 sample["relay_command_seq"] = command_key[0]
@@ -118,6 +125,7 @@ def build_report(
 
     samples: list[dict[str, Any]] = []
     stages = (
+        "accepted",
         "option_detected",
         "visual_play_acknowledged",
         "fifo_play_received",
@@ -159,6 +167,12 @@ def build_report(
         ]
         if timeline["afplay_started"] is None:
             continue
+        realization_trigger_event = (
+            "option_detected"
+            if timeline["option_detected"] is not None
+            else "accepted"
+        )
+        timeline["realization_trigger"] = timeline[realization_trigger_event]
         durations = {
             "option_to_ack_ms": _delta(timeline, "option_detected", "visual_play_acknowledged"),
             "option_to_fifo_ms": _delta(timeline, "option_detected", "fifo_play_received"),
@@ -170,14 +184,19 @@ def build_report(
             "commit_to_preparing_ms": _delta(timeline, "intent_committed", "tts_preparing"),
             "preparing_to_wav_ms": _delta(timeline, "tts_preparing", "first_wav_ready"),
             "wav_to_afplay_ms": _delta(timeline, "first_wav_ready", "afplay_started"),
-            "ack_to_first_audio_ms": _delta(
+            "provider_ack_to_first_audio_ms": _delta(
                 timeline,
                 "provider_acknowledged",
                 "afplay_started",
             ),
+            "realization_trigger_to_first_audio_ms": _delta(
+                timeline,
+                "realization_trigger",
+                "afplay_started",
+            ),
             "option_to_first_audio_ms": _delta(timeline, "option_detected", "afplay_started"),
         }
-        if durations["ack_to_first_audio_ms"] is not None:
+        if durations["provider_ack_to_first_audio_ms"] is not None:
             samples.append({
                 **sample,
                 "authoritative": True,
@@ -186,6 +205,12 @@ def build_report(
                 "lifecycle_role": playback["lifecycle_role"],
                 "provider": terminal_acknowledgements[0]["provider"],
                 "provider_acknowledged": timeline["provider_acknowledged"],
+                "realization_trigger": timeline["realization_trigger"],
+                "realization_trigger_event": realization_trigger_event,
+                # Backward-compatible diagnostic alias. This interval includes
+                # provider generation and, in Queue mode, human waiting; it is
+                # not the RR-325 playback-realization latency gate.
+                "ack_to_first_audio_ms": durations["provider_ack_to_first_audio_ms"],
                 **durations,
             })
 
@@ -199,10 +224,15 @@ def build_report(
         for sample in samples
         if sample["option_to_ack_ms"] is not None
     ]
-    acknowledgement_to_audio = [
-        sample["ack_to_first_audio_ms"]
+    provider_acknowledgement_to_audio = [
+        sample["provider_ack_to_first_audio_ms"]
         for sample in samples
-        if sample["ack_to_first_audio_ms"] is not None
+        if sample["provider_ack_to_first_audio_ms"] is not None
+    ]
+    realization_trigger_to_audio = [
+        sample["realization_trigger_to_first_audio_ms"]
+        for sample in samples
+        if sample["realization_trigger_to_first_audio_ms"] is not None
     ]
     provider_sample_counts = {
         provider: sum(sample["provider"] == provider for sample in samples)
@@ -213,7 +243,19 @@ def build_report(
         "provider_sample_counts": provider_sample_counts,
         "option_to_first_audio_p95_ms": _percentile(audio, 95),
         "option_to_ack_p95_ms": _percentile(acknowledgements, 95),
-        "ack_to_first_audio_p95_ms": _percentile(acknowledgement_to_audio, 95),
+        "realization_trigger_to_first_audio_p95_ms": _percentile(
+            realization_trigger_to_audio,
+            95,
+        ),
+        "provider_ack_to_first_audio_p95_ms": _percentile(
+            provider_acknowledgement_to_audio,
+            95,
+        ),
+        # Backward-compatible diagnostic alias; see the per-sample note above.
+        "ack_to_first_audio_p95_ms": _percentile(
+            provider_acknowledgement_to_audio,
+            95,
+        ),
         "samples": samples,
     }
 
@@ -247,7 +289,14 @@ def main() -> int:
     else:
         print(f"samples: {report['sample_count']}")
         print(f"Option to acknowledgement p95: {report['option_to_ack_p95_ms']} ms")
-        print(f"Acknowledgement to first audio p95: {report['ack_to_first_audio_p95_ms']} ms")
+        print(
+            "Realization trigger to first audio p95: "
+            f"{report['realization_trigger_to_first_audio_p95_ms']} ms"
+        )
+        print(
+            "Provider acknowledgement to first audio p95 (diagnostic): "
+            f"{report['provider_ack_to_first_audio_p95_ms']} ms"
+        )
         print(f"Option to first audio p95: {report['option_to_first_audio_p95_ms']} ms")
         for sample in report["samples"]:
             print(json.dumps(sample, sort_keys=True))
