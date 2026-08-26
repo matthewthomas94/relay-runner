@@ -48,7 +48,12 @@ and Claude clients. For each provider, accept one current voice turn, play its
 retained authoritative result, then preserve the privacy-safe terminal delivery
 and speech event logs. The accepted playback must correlate one command
 sequence/id, one play-request id, one utterance id, one `provider_acknowledged`,
-and one `afplay_started` event, with no second authoritative effect.
+and one authoritative playback lifecycle, with no second authoritative effect.
+Multi-sentence speech may launch one `afplay` process per synthesized chunk; all
+segments must retain the same play-request and utterance identities, with one
+`started` and one terminal `played`. The first matching `afplay_started` is the
+audio-onset timestamp. A distinct playback identity or multiple lifecycle
+starts/completions fails the sample.
 
 Require the terminal delivery log's `provider_acknowledged` event as the exact
 command-consumption identity, then measure the system-owned realization path to

@@ -180,6 +180,78 @@ class SpeechLatencyReportTests(unittest.TestCase):
         self.assertEqual(report["realization_trigger_to_first_audio_p95_ms"], 11.0)
         self.assertEqual(report["samples"][0]["realization_trigger_event"], "option_detected")
 
+    def test_multi_chunk_final_uses_first_audio_onset_as_one_effect(self):
+        command = {
+            "relay_command_seq": 8,
+            "relay_command_id": "chunked-final",
+        }
+        request = {**command, "play_request_id": "chunked-play"}
+        utterance = {**request, "utterance_id": "chunked-utterance"}
+        report = speech_latency_report.build_report(
+            [
+                {"event": "accepted", "at": 12.0, **AUTHORITATIVE_FINAL, **utterance},
+                {"event": "option_detected", "at": 42.0, **request},
+                {"event": "started", "at": 42.001, **AUTHORITATIVE_FINAL, **utterance},
+                {
+                    "event": "afplay_started",
+                    "at": 42.011,
+                    **AUTHORITATIVE_FINAL,
+                    **utterance,
+                },
+                {
+                    "event": "afplay_started",
+                    "at": 42.500,
+                    **AUTHORITATIVE_FINAL,
+                    **utterance,
+                },
+                {"event": "played", "at": 43.0, **AUTHORITATIVE_FINAL, **utterance},
+            ],
+            [{
+                "event": "provider_acknowledged",
+                "timestamp": 10.0,
+                "provider": "codex",
+                **command,
+            }],
+        )
+
+        self.assertEqual(report["sample_count"], 1)
+        self.assertEqual(report["realization_trigger_to_first_audio_p95_ms"], 11.0)
+        self.assertEqual(report["samples"][0]["afplay_segment_count"], 2)
+
+    def test_multi_segment_playback_requires_one_started_and_played_lifecycle(self):
+        command = {
+            "relay_command_seq": 8,
+            "relay_command_id": "invalid-chunked-final",
+        }
+        request = {**command, "play_request_id": "invalid-chunked-play"}
+        utterance = {**request, "utterance_id": "invalid-chunked-utterance"}
+        speech = [
+            {"event": "accepted", "at": 12.0, **AUTHORITATIVE_FINAL, **utterance},
+            {"event": "option_detected", "at": 42.0, **request},
+            {"event": "started", "at": 42.001, **AUTHORITATIVE_FINAL, **utterance},
+            {"event": "afplay_started", "at": 42.011, **AUTHORITATIVE_FINAL, **utterance},
+            {"event": "afplay_started", "at": 42.500, **AUTHORITATIVE_FINAL, **utterance},
+        ]
+        delivery = [{
+            "event": "provider_acknowledged",
+            "timestamp": 10.0,
+            "provider": "codex",
+            **command,
+        }]
+
+        self.assertEqual(
+            speech_latency_report.build_report(speech, delivery)["sample_count"],
+            0,
+        )
+        speech.extend([
+            {"event": "started", "at": 42.700, **AUTHORITATIVE_FINAL, **utterance},
+            {"event": "played", "at": 43.0, **AUTHORITATIVE_FINAL, **utterance},
+        ])
+        self.assertEqual(
+            speech_latency_report.build_report(speech, delivery)["sample_count"],
+            0,
+        )
+
     def test_report_rejects_incomplete_duplicate_and_non_finite_evidence(self):
         identifiers = {
             "relay_command_seq": 1,

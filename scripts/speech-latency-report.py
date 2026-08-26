@@ -74,7 +74,12 @@ def build_report(
     by_play_request: dict[str, dict[str, float]] = {}
     by_utterance: dict[str, dict[str, Any]] = {}
     playback_by_utterance: dict[str, list[dict[str, Any]]] = {}
-    authoritative_playback_counts: dict[tuple[int, str], int] = {}
+    authoritative_playback_identities: dict[
+        tuple[int, str], set[tuple[str, str]]
+    ] = {}
+    authoritative_lifecycle_counts: dict[
+        tuple[tuple[int, str], str], dict[str, int]
+    ] = {}
     for record in speech_records:
         event = str(record.get("event") or "")
         command_key = _command_key(record)
@@ -83,9 +88,10 @@ def build_report(
             and record.get("authoritative") is True
             and command_key is not None
         ):
-            authoritative_playback_counts[command_key] = (
-                authoritative_playback_counts.get(command_key, 0) + 1
-            )
+            authoritative_playback_identities.setdefault(command_key, set()).add((
+                str(record.get("utterance_id") or ""),
+                str(record.get("play_request_id") or ""),
+            ))
         at = record.get("at")
         at = _finite_float(at)
         if at is None:
@@ -104,7 +110,10 @@ def build_report(
                 and bool(str(record.get("source") or "").strip())
                 and bool(str(record.get("lifecycle_role") or "").strip())
             )
-            if event != "accepted" or authoritative_final_acceptance:
+            if event == "afplay_started":
+                previous = _finite_float(sample.get(event))
+                sample[event] = at if previous is None else min(previous, at)
+            elif event != "accepted" or authoritative_final_acceptance:
                 sample[event] = at
             if command_key is not None:
                 sample["command_key"] = command_key
@@ -122,6 +131,16 @@ def build_report(
                     "play_request_id": play_request_id,
                     "utterance_id": utterance_id,
                 })
+            if (
+                event in {"started", "played"}
+                and authoritative_final_acceptance
+                and command_key is not None
+            ):
+                lifecycle = authoritative_lifecycle_counts.setdefault(
+                    (command_key, utterance_id),
+                    {"started": 0, "played": 0},
+                )
+                lifecycle[event] += 1
 
     samples: list[dict[str, Any]] = []
     stages = (
@@ -140,19 +159,31 @@ def build_report(
             continue
         command_key = sample["command_key"]
         playback_records = playback_by_utterance.get(sample["utterance_id"], [])
-        if len(playback_records) != 1:
+        if not playback_records:
             continue
         playback = playback_records[0]
         if (
-            playback.get("authoritative") is not True
-            or playback.get("kind") != "final"
-            or not playback.get("source")
-            or not playback.get("lifecycle_role")
-            or playback.get("command_key") != command_key
-            or playback.get("play_request_id") != sample.get("play_request_id")
-            or authoritative_playback_counts.get(command_key) != 1
+            any(
+                record.get("authoritative") is not True
+                or record.get("kind") != "final"
+                or not record.get("source")
+                or not record.get("lifecycle_role")
+                or record.get("command_key") != command_key
+                or record.get("play_request_id") != sample.get("play_request_id")
+                for record in playback_records
+            )
+            or authoritative_playback_identities.get(command_key) != {
+                (sample["utterance_id"], sample["play_request_id"])
+            }
         ):
             continue
+        if len(playback_records) > 1:
+            lifecycle = authoritative_lifecycle_counts.get(
+                (command_key, sample["utterance_id"]),
+                {},
+            )
+            if lifecycle.get("started") != 1 or lifecycle.get("played") != 1:
+                continue
         command = by_command.get(command_key, {})
         request = by_play_request.get(sample.get("play_request_id"), {})
         terminal_acknowledgements = acknowledgements.get(command_key, [])
@@ -205,6 +236,7 @@ def build_report(
                 "lifecycle_role": playback["lifecycle_role"],
                 "provider": terminal_acknowledgements[0]["provider"],
                 "provider_acknowledged": timeline["provider_acknowledged"],
+                "afplay_segment_count": len(playback_records),
                 "realization_trigger": timeline["realization_trigger"],
                 "realization_trigger_event": realization_trigger_event,
                 # Backward-compatible diagnostic alias. This interval includes
