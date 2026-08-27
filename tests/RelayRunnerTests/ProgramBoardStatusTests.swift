@@ -973,6 +973,37 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(spy.scopes, [["/demo/aurora-web", "/demo/harbor-api"]])
     }
 
+    func testProgramBoardViewModelPreservesScopedPathWhileMatchingCanonicalSnapshot() async throws {
+        let alias = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("relay-runner-path-tests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("project", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: alias.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: alias, withIntermediateDirectories: true)
+
+        let canonicalPath = "/private\(alias.path)"
+        let snapshot = try programBoardSnapshot(
+            clientPath: canonicalPath,
+            toolsPath: "/demo/harbor-api"
+        )
+        let spy = ScopedProgramDashboardFetchSpy(snapshot: snapshot)
+        let model = ProgramBoardViewModel(fetchDashboard: spy.fetch)
+
+        model.setProjectScope([alias.path])
+        await model.reload().value
+
+        XCTAssertEqual(spy.scopes, [[alias.path]])
+        XCTAssertNil(model.selectedProjectPath)
+        XCTAssertNotNil(model.snapshot)
+
+        model.setProjectScope([alias.path], selectedProjectPath: canonicalPath)
+
+        XCTAssertEqual(model.selectedProjectPath, alias.path)
+        XCTAssertEqual(model.selectedSessionProjectPath, alias.path)
+        XCTAssertEqual(model.projectTargets.first?.path, alias.path)
+        XCTAssertFalse(model.ticketItems(in: .backlog).isEmpty)
+        XCTAssertNotNil(model.snapshot)
+    }
+
     func testProgramBoardViewModelReloadFailureKeepsPreviousDataVisible() async throws {
         let previous = try programBoardSnapshot(
             clientPath: "/repo/client-dashboard",

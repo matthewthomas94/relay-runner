@@ -88,6 +88,16 @@ class ArtifactLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(internal.project_id, "lifecycle-project")
 
+    def test_scope_accepts_registered_path_alias_resolving_to_same_repository(self):
+        alias = self.root / "repository-alias"
+        alias.symlink_to(self.repo, target_is_directory=True)
+
+        validated = self.coordinator.validate_scope(
+            self.scope_token(repository_path=str(alias))
+        )
+
+        self.assertEqual(validated.repository_path, str(self.store.repo_path))
+
     def test_claim_materializes_only_immutable_ticket_dependencies_and_owned_attachments(self):
         self.write_ticket("RR-1", "Done dependency", status="done")
         self.write_ticket("RR-2", "Assigned", depends_on=("RR-1",))
@@ -129,6 +139,24 @@ class ArtifactLifecycleTests(unittest.TestCase):
     def test_completed_worker_source_only_outcome_review_merge_and_dependency_are_atomic(self):
         self.write_ticket("RR-1", "Work")
         self.write_ticket("RR-2", "Dependent", status="backlog", depends_on=("RR-1",))
+        self.write_ticket(
+            "RR-3",
+            "Canceled dependent",
+            status="backlog",
+            depends_on=("RR-1",),
+            canceled=True,
+        )
+        self.write_ticket(
+            "RR-4",
+            "Draft dependent",
+            status="backlog",
+            depends_on=("RR-1",),
+            draft=True,
+        )
+        excluded_before = {
+            ticket_id: self.store.snapshot().files[f".orchestrator/{ticket_id}.md"]
+            for ticket_id in ("RR-3", "RR-4")
+        }
         worktree = self.create_worktree("run-2")
         snapshot = self.coordinator.claim_and_materialize(
             ticket_id="RR-1", run_id=2, provider="claude", workspace_path=worktree
@@ -233,6 +261,8 @@ class ArtifactLifecycleTests(unittest.TestCase):
         self.assertIn("run_state: merged", first)
         self.assertIn("reviewed source merge", first)
         self.assertIn("status: ready", second)
+        for ticket_id, content in excluded_before.items():
+            self.assertEqual(files[f".orchestrator/{ticket_id}.md"], content)
         self.assertEqual(
             self.git(self.repo, "show", "--pretty=", "--name-only", source_commit),
             "source.txt",
@@ -446,12 +476,12 @@ class ArtifactLifecycleTests(unittest.TestCase):
             operations=(ConfigWrite(config.encode()),),
         ))
 
-    def scope_token(self, *, fingerprint="fingerprint-a"):
+    def scope_token(self, *, fingerprint="fingerprint-a", repository_path=None):
         payload = {
             "version": 1,
             "registrySchemaVersion": 2,
             "projectID": "lifecycle-project",
-            "repositoryPath": str(self.store.repo_path),
+            "repositoryPath": repository_path or str(self.store.repo_path),
             "gitCommonDirectoryFingerprint": fingerprint,
             "registryRecordUpdatedAt": datetime.fromisoformat(
                 self.registry_updated.replace("Z", "+00:00")
@@ -462,7 +492,16 @@ class ArtifactLifecycleTests(unittest.TestCase):
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).decode()
 
-    def write_ticket(self, ticket_id, title, *, status="ready", depends_on=()):
+    def write_ticket(
+        self,
+        ticket_id,
+        title,
+        *,
+        status="ready",
+        depends_on=(),
+        canceled=False,
+        draft=False,
+    ):
         fields = [
             f"id: {ticket_id}",
             f"artifact_id: artifact-{ticket_id}",
@@ -470,7 +509,8 @@ class ArtifactLifecycleTests(unittest.TestCase):
             f"status: {status}",
             "activity_at: 2026-08-04T00:00:00.000000Z",
             f"depends_on: [{', '.join(depends_on)}]",
-            "canceled: false",
+            f"canceled: {str(canceled).lower()}",
+            f"draft: {str(draft).lower()}",
             "worker_model: strong",
             "worker_effort: high",
             "worker_sizing_rationale: fixture",

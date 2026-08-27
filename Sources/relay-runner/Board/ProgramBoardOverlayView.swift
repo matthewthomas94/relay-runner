@@ -937,6 +937,7 @@ private struct ProgramBoardContent: View {
                 HStack(alignment: .top, spacing: BoardSurfaceLayout.columnSpacing) {
                     ProgramOverviewColumn(
                         snapshot: snapshot,
+                        projectTargets: model.projectTargets,
                         selectedProjectPath: model.selectedProjectPath,
                         selectedScopeTitle: model.selectedScopeTitle,
                         errorMessage: model.errorMessage,
@@ -1011,6 +1012,7 @@ private struct ProgramBoardContent: View {
 
 private struct ProgramOverviewColumn: View {
     let snapshot: ProgramDashboardSnapshot
+    let projectTargets: [ProgramBoardProjectTarget]
     let selectedProjectPath: String?
     let selectedScopeTitle: String
     let errorMessage: String?
@@ -1050,11 +1052,19 @@ private struct ProgramOverviewColumn: View {
             BoardOverlayScrollView(contentInsets: ProgramBoardLayout.projectScrollContentInsets) {
                 VStack(alignment: .leading, spacing: ProgramBoardLayout.projectCardSpacing) {
                     ForEach(snapshot.projects) { item in
+                        let itemPath = item.project?.path
+                        let scopedPath = itemPath.flatMap { path in
+                            projectTargets.first {
+                                ProgramBoardProjectPath.matches($0.path, path)
+                            }?.path ?? path
+                        }
                         ProgramProjectCard(
                             item: item,
-                            isSelected: selectedProjectPath == item.project?.path,
+                            isSelected: scopedPath.map {
+                                ProgramBoardProjectPath.matches(selectedProjectPath, $0)
+                            } ?? false,
                             onSelect: {
-                                if let path = item.project?.path {
+                                if let path = scopedPath {
                                     onSelectProject(path)
                                 }
                             }

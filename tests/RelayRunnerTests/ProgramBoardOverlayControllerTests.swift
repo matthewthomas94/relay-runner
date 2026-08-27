@@ -75,6 +75,24 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         )
     }
 
+    func testRegistryV2RefreshPreservesScopedPathWhileMatchingCanonicalAlias() throws {
+        let alias = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("relay-runner-path-tests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("project", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: alias.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: alias, withIntermediateDirectories: true)
+        let active = ProjectResolver.LinkedProject(repoPath: alias)
+
+        XCTAssertEqual(
+            ProgramBoardOverlayController.refreshedProjectSelection(
+                route: .project(active),
+                currentSelection: "/private\(alias.path)",
+                projectScope: [alias.path]
+            ),
+            alias.path
+        )
+    }
+
     func testRegistryInvalidationWiresImmediateVisibleWorkspaceScopeRefresh() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

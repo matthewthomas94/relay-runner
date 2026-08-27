@@ -179,6 +179,21 @@ struct ArtifactRetentionStatus: Decodable, Equatable {
         case blockedReasons = "blocked_reasons"
         case retryActions = "retry_actions"
     }
+
+    func canSubmit(exposureConfirmed: Bool, retry: Bool) -> Bool {
+        guard remoteMode == "enabled" else { return false }
+        guard !exposureConfirmationRequired || exposureConfirmed else { return false }
+        return retry ? transaction.retryAvailable : state == "ready"
+    }
+
+    func recoveryMessages(excluding globalError: String?) -> [String] {
+        let candidates = blockedReasons + [remote?.recovery, transaction.lastError].compactMap { $0 }
+        return candidates.reduce(into: []) { messages, candidate in
+            let message = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !message.isEmpty, message != globalError, !messages.contains(message) else { return }
+            messages.append(message)
+        }
+    }
 }
 
 struct ArtifactRetentionTransaction: Decodable, Equatable {
@@ -434,6 +449,7 @@ final class WorkspaceHistoryViewModel {
     }
 
     func applyRetention(retry: Bool = false) async {
+        guard !isLoading else { return }
         guard retentionStatus?.remoteMode == "enabled" else {
             errorMessage = "Select and enable an existing GitHub remote before applying cleanup."
             return

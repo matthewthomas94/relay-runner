@@ -930,7 +930,9 @@ class ArtifactMigrationCoordinator:
             )
         )
         operations, projected_hashes = self._bootstrap_operations(
-            journal["manifest"], remote_mode="enabled" if remote_enabled else "local_only"
+            journal["manifest"],
+            remote_mode="enabled" if remote_enabled else "local_only",
+            remote_name=str(remote["name"]) if remote_enabled else None,
         )
         if remote.get("state") == "ref_present":
             remote_snapshot = self._inspect_remote_artifact(str(remote["name"]))
@@ -1210,12 +1212,19 @@ class ArtifactMigrationCoordinator:
     # ------------------------------------------------------------------
 
     def _bootstrap_operations(
-        self, manifest: Mapping[str, Any], *, remote_mode: str
+        self,
+        manifest: Mapping[str, Any],
+        *,
+        remote_mode: str,
+        remote_name: str | None = None,
     ) -> tuple[list[Any], dict[str, str]]:
         source = self._backup_bytes()
         legacy = manifest["legacy_config"]
         config = self._artifact_config(
-            str(legacy["prefix"]), int(legacy["next_id"]), remote_mode=remote_mode
+            str(legacy["prefix"]),
+            int(legacy["next_id"]),
+            remote_mode=remote_mode,
+            remote_name=remote_name,
         )
         operations: list[Any] = [ConfigWrite(config)]
         projected: dict[str, str] = {
@@ -1261,15 +1270,32 @@ class ArtifactMigrationCoordinator:
             projected[".orchestrator/archive-index.jsonl"] = hashlib.sha256(b"").hexdigest()
         return operations, projected
 
-    def _artifact_config(self, prefix: str, next_id: int, *, remote_mode: str) -> bytes:
+    def _artifact_config(
+        self,
+        prefix: str,
+        next_id: int,
+        *,
+        remote_mode: str,
+        remote_name: str | None = None,
+    ) -> bytes:
         if remote_mode not in {"local_only", "enabled"}:
             raise ValueError(f"invalid migration remote mode: {remote_mode}")
+        if remote_mode == "enabled" and not remote_name:
+            raise ValueError("remote-enabled migration requires a selected remote name")
+        if remote_mode == "local_only" and remote_name is not None:
+            raise ValueError("local-only migration cannot name a sync remote")
+        remote_line = (
+            f"remote_name = {json.dumps(remote_name)}\n"
+            if remote_name is not None
+            else ""
+        )
         return (
             "schema_version = 2\n"
             f"project_id = {json.dumps(self.project_id)}\n"
             f"prefix = {json.dumps(prefix)}\n"
             f"artifact_ref = {json.dumps(ARTIFACT_REF)}\n"
             f"remote_sync = {json.dumps(remote_mode)}\n"
+            f"{remote_line}"
             'artifact_lifecycle = "enabled"\n'
             f"next_id = {next_id}\n"
         ).encode()

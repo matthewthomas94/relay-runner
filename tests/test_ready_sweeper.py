@@ -362,6 +362,88 @@ class ReadySweeperTests(unittest.TestCase):
             self.assertEqual(calls, [])
             self.assertIn("status: backlog", (repo / ".orchestrator" / "RR-2.md").read_text())
 
+    def test_dependency_progression_preserves_canceled_and_draft_dependents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="done")
+            self.write_ticket(
+                repo,
+                "RR-2",
+                status="backlog",
+                canceled=True,
+                depends_on=["RR-1"],
+            )
+            self.write_ticket(
+                repo,
+                "RR-3",
+                status="backlog",
+                draft=True,
+                depends_on=["RR-1"],
+            )
+            before = {
+                ticket_id: (repo / ".orchestrator" / f"{ticket_id}.md").read_bytes()
+                for ticket_id in ("RR-2", "RR-3")
+            }
+
+            daemon = object.__new__(Daemon)
+            calls: list[dict] = []
+            daemon.dispatch = lambda **kwargs: calls.append(kwargs)
+
+            Daemon._progress_dependents(
+                daemon,
+                repo_path=str(repo),
+                finished_ticket_id="RR-1",
+            )
+
+            self.assertEqual(calls, [])
+            for ticket_id, content in before.items():
+                self.assertEqual(
+                    (repo / ".orchestrator" / f"{ticket_id}.md").read_bytes(),
+                    content,
+                )
+
+    def test_ready_sweep_preserves_canceled_and_draft_backlog_dependents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="done")
+            self.write_ticket(
+                repo,
+                "RR-2",
+                status="backlog",
+                canceled=True,
+                depends_on=["RR-1"],
+            )
+            self.write_ticket(
+                repo,
+                "RR-3",
+                status="backlog",
+                draft=True,
+                depends_on=["RR-1"],
+            )
+            before = {
+                ticket_id: (repo / ".orchestrator" / f"{ticket_id}.md").read_bytes()
+                for ticket_id in ("RR-2", "RR-3")
+            }
+
+            daemon = object.__new__(Daemon)
+            daemon.runs = FakeRuns()
+            daemon.dispatch = lambda **kwargs: self.fail(f"unexpected dispatch: {kwargs}")
+
+            result = Daemon.sweep_ready_tickets(
+                daemon,
+                repo_path=str(repo),
+                trigger="test",
+            )
+
+            self.assertEqual(result["promoted"], [])
+            for ticket_id, content in before.items():
+                self.assertEqual(
+                    (repo / ".orchestrator" / f"{ticket_id}.md").read_bytes(),
+                    content,
+                )
+
     def test_ready_sweep_promotes_merged_done_dependency_then_dispatches(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"

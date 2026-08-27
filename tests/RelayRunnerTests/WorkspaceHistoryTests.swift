@@ -85,6 +85,28 @@ final class WorkspaceHistoryTests: XCTestCase {
         XCTAssertEqual(status.transaction.lastError, "offline")
     }
 
+    func testBlockedRetentionCannotApplyButPreparedRecoveryCanRetry() throws {
+        let status = try JSONDecoder().decode(
+            ArtifactRetentionStatus.self,
+            from: Data(Self.statusJSON.utf8)
+        )
+
+        XCTAssertFalse(status.canSubmit(exposureConfirmed: true, retry: false))
+        XCTAssertTrue(status.canSubmit(exposureConfirmed: true, retry: true))
+    }
+
+    func testRecoveryMessagesAreUniqueAndExcludeTheGlobalError() throws {
+        let status = try JSONDecoder().decode(
+            ArtifactRetentionStatus.self,
+            from: Data(Self.statusJSON.utf8)
+        )
+
+        XCTAssertEqual(
+            status.recoveryMessages(excluding: "offline"),
+            ["Reconnect and retry."]
+        )
+    }
+
     func testStorageMetricsDistinguishMaterializationFromOtherLocalData() throws {
         let json = """
         {
@@ -122,6 +144,22 @@ final class WorkspaceHistoryTests: XCTestCase {
         XCTAssertEqual(values["repo_path"], "/tmp/My Project")
         XCTAssertEqual(values["project_scope_token"], "scope-token")
         XCTAssertEqual(values["query"], "canceled release")
+        XCTAssertEqual(request.timeoutInterval, 120)
+    }
+
+    func testRetentionMutationRequestAllowsVerifiedLargeCorpusCleanup() throws {
+        let request = try XCTUnwrap(OrchestratorClient.artifactPostRequest(
+            path: "/v1/artifacts/retention/apply",
+            payload: [
+                "repo_path": "/tmp/My Project",
+                "project_scope_token": "scope-token",
+                "request_id": "retention-1",
+            ],
+            port: 7634
+        ))
+
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.timeoutInterval, 600)
     }
 
     @MainActor

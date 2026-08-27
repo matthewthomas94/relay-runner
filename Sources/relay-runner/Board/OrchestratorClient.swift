@@ -128,6 +128,8 @@ enum OrchestratorClient {
 
     private static let portFile = "/tmp/relay_orchestrator.port"
     private static let defaultPort = 7634
+    private static let artifactReadTimeout: TimeInterval = 120
+    private static let artifactMutationTimeout: TimeInterval = 600
     static let programDashboardConnectionRetryDelaysNanoseconds: [UInt64] = [
         150_000_000,
         300_000_000,
@@ -263,7 +265,25 @@ enum OrchestratorClient {
             query.append(URLQueryItem(name: "project_scope_token", value: projectScopeToken))
         }
         query.append(contentsOf: values)
-        return getRequest(path: path, query: query, port: port)
+        return getRequest(
+            path: path,
+            query: query,
+            port: port,
+            timeout: artifactReadTimeout
+        )
+    }
+
+    static func artifactPostRequest(
+        path: String,
+        payload: [String: Any],
+        port: Int
+    ) -> URLRequest? {
+        postRequest(
+            path: path,
+            payload: payload,
+            port: port,
+            timeout: artifactMutationTimeout
+        )
     }
 
     static func fetchArtifactHistory(
@@ -805,7 +825,11 @@ enum OrchestratorClient {
         payload: [String: Any],
         timeout: TimeInterval = 15
     ) throws -> Data {
-        guard let request = postRequest(path: path, payload: payload, port: readPort()) else {
+        guard let request = artifactPostRequest(
+            path: path,
+            payload: payload,
+            port: readPort()
+        ) else {
             throw OrchestratorClientError.invalidRequest
         }
         let result = BlockingHTTPResult()
@@ -870,7 +894,11 @@ enum OrchestratorClient {
         path: String,
         payload: [String: Any]
     ) async throws -> Value {
-        guard let request = postRequest(path: path, payload: payload, port: readPort()) else {
+        guard let request = artifactPostRequest(
+            path: path,
+            payload: payload,
+            port: readPort()
+        ) else {
             throw OrchestratorClientError.invalidRequest
         }
         return try await response(type, for: request)
@@ -893,20 +921,30 @@ enum OrchestratorClient {
         value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
     }
 
-    private static func postRequest(path: String, payload: [String: Any], port: Int) -> URLRequest? {
+    private static func postRequest(
+        path: String,
+        payload: [String: Any],
+        port: Int,
+        timeout: TimeInterval = 10
+    ) -> URLRequest? {
         guard let url = URL(string: "http://127.0.0.1:\(port)\(path)"),
               let body = try? JSONSerialization.data(withJSONObject: payload, options: [.withoutEscapingSlashes]) else {
             return nil
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.timeoutInterval = 10
+        req.timeoutInterval = timeout
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
         return req
     }
 
-    private static func getRequest(path: String, query: [URLQueryItem], port: Int) -> URLRequest? {
+    private static func getRequest(
+        path: String,
+        query: [URLQueryItem],
+        port: Int,
+        timeout: TimeInterval = 10
+    ) -> URLRequest? {
         var components = URLComponents()
         components.scheme = "http"
         components.host = "127.0.0.1"
@@ -916,7 +954,7 @@ enum OrchestratorClient {
         guard let url = components.url else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
-        req.timeoutInterval = 10
+        req.timeoutInterval = timeout
         return req
     }
 

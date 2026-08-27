@@ -434,6 +434,48 @@ Saved through the daemon-owned typed writer.
         self.assertEqual(unscoped_code, 422)
         self.assertIn("scope token", unscoped["error"])
 
+    def test_retention_status_blocks_non_github_remote_before_apply(self):
+        remote = self.root / "origin.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--quiet", str(remote)],
+            check=True,
+        )
+        self.git("remote", "add", "origin", str(remote))
+
+        snapshot = self.store.snapshot()
+        config = snapshot.files[".orchestrator/config.toml"].decode("utf-8")
+        self.assertIn('remote_sync = "local_only"', config)
+        config = config.replace(
+            'remote_sync = "local_only"',
+            'remote_sync = "enabled"\nremote_name = "origin"',
+        )
+        self.store.mutate(ArtifactMutation(
+            event_id="enable-local-retention-remote",
+            actor_type="user",
+            device_id="test-device",
+            expected_base=snapshot.commit_id,
+            operations=(ConfigWrite(config.encode("utf-8")),),
+        ))
+        for number in range(2, 28):
+            self.write_ticket(f"RR-{number}", status="done")
+        self.git(
+            "push",
+            "origin",
+            "refs/heads/relay/artifacts:refs/heads/relay/artifacts",
+        )
+
+        status = self.daemon.artifact_retention_status(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+        )
+
+        self.assertEqual(status["state"], "blocked")
+        self.assertTrue(status["plan"]["eviction_candidate_ids"])
+        self.assertTrue(
+            any("github.com remote" in reason for reason in status["blocked_reasons"]),
+            status["blocked_reasons"],
+        )
+
     def test_ready_sweep_promotes_verified_archived_dependencies_through_artifact_writer(self):
         self.write_ticket("RR-archived", status="done")
         self.write_ticket(

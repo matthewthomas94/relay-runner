@@ -1,7 +1,36 @@
 import AppKit
+import Darwin
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
+
+enum ProgramBoardProjectPath {
+    static func normalized(_ path: String) -> String {
+        let standardizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard let resolvedPath = realpath(standardizedPath, nil) else {
+            return standardizedPath
+        }
+        defer { free(resolvedPath) }
+        return String(cString: resolvedPath)
+    }
+
+    static func matches(_ lhs: String, _ rhs: String) -> Bool {
+        normalized(lhs) == normalized(rhs)
+    }
+
+    static func matches(_ lhs: String?, _ rhs: String) -> Bool {
+        guard let lhs else { return false }
+        return matches(lhs, rhs)
+    }
+
+    static func deduplicated(_ paths: [String]) -> [String] {
+        var seen = Set<String>()
+        return paths.compactMap { path in
+            let normalizedPath = normalized(path)
+            return seen.insert(normalizedPath).inserted ? path : nil
+        }
+    }
+}
 
 struct ProgramDashboardSnapshot: Equatable {
     let summary: ProgramStatusResponse
@@ -70,7 +99,7 @@ struct ProgramDashboardSnapshot: Equatable {
             items = doneWork.items
         }
         let filtered = selectedProjectPath.map { path in
-            items.filter { $0.project?.path == path }
+            items.filter { ProgramBoardProjectPath.matches($0.project?.path, path) }
         } ?? items
         return filtered
     }
@@ -81,16 +110,19 @@ struct ProgramDashboardSnapshot: Equatable {
 
     func ticketItem(ticketID: String, projectPath: String) -> ProgramStatusItem? {
         allTicketItems.first {
-            $0.ticketID == ticketID && $0.project?.path == projectPath
+            $0.ticketID == ticketID
+                && ProgramBoardProjectPath.matches($0.project?.path, projectPath)
         }
     }
 
     func containsProject(path: String) -> Bool {
-        projects.contains { $0.project?.path == path }
+        projects.contains { ProgramBoardProjectPath.matches($0.project?.path, path) }
     }
 
     func projectName(for path: String) -> String? {
-        projects.first { $0.project?.path == path }?.project?.name
+        projects.first {
+            ProgramBoardProjectPath.matches($0.project?.path, path)
+        }?.project?.name
     }
 
     private var allTicketItems: [ProgramStatusItem] {
@@ -152,7 +184,8 @@ struct ProgramDashboardSnapshot: Equatable {
             lane: ProgramBoardLane
         ) -> [ProgramStatusItem] {
             var items = source.items.filter {
-                !($0.ticketID == ticketID && $0.project?.path == projectPath)
+                !($0.ticketID == ticketID
+                    && ProgramBoardProjectPath.matches($0.project?.path, projectPath))
             }
             if lane == targetLane, let replacement {
                 items.append(replacement)
@@ -1454,16 +1487,24 @@ final class ProgramBoardViewModel {
     }
 
     func setProjectScope(_ paths: [String], selectedProjectPath: String? = nil) {
-        var seen = Set<String>()
-        let paths = paths.filter { seen.insert($0).inserted }
-        let selectedProjectPath = selectedProjectPath.flatMap { paths.contains($0) ? $0 : nil }
-        guard paths != projectPaths || selectedProjectPath != self.selectedProjectPath else { return }
+        let paths = ProgramBoardProjectPath.deduplicated(paths)
+        let selectedProjectPath = selectedProjectPath
+            .flatMap { selectedPath in
+                paths.first { ProgramBoardProjectPath.matches($0, selectedPath) }
+            }
+        let scopeChanged = paths != projectPaths
+        let selectionChanged = selectedProjectPath != self.selectedProjectPath
+        guard scopeChanged || selectionChanged else { return }
         projectPaths = paths
-        snapshot = nil
         self.selectedProjectPath = selectedProjectPath
-        selectedTicketDetail = nil
-        history = nil
-        spikeFollowupBatch = nil
+        if scopeChanged {
+            snapshot = nil
+        }
+        if scopeChanged || selectionChanged {
+            selectedTicketDetail = nil
+            history = nil
+            spikeFollowupBatch = nil
+        }
     }
 
     @discardableResult
@@ -1567,9 +1608,12 @@ final class ProgramBoardViewModel {
     var projectTargets: [ProgramBoardProjectTarget] {
         snapshot?.projects.compactMap { item in
             guard let path = clean(item.project?.path) else { return nil }
+            let scopedPath = projectPaths.first {
+                ProgramBoardProjectPath.matches($0, path)
+            } ?? path
             return ProgramBoardProjectTarget(
                 name: clean(item.project?.name) ?? path,
-                path: path
+                path: scopedPath
             )
         } ?? []
     }
@@ -1581,10 +1625,10 @@ final class ProgramBoardViewModel {
     func selectProject(path: String) {
         selectedProjectPath = path
         history = nil
-        if selectedTicketDetail?.identity?.projectPath != path {
+        if !ProgramBoardProjectPath.matches(selectedTicketDetail?.identity?.projectPath, path) {
             selectedTicketDetail = nil
         }
-        if editing?.identity.projectPath != path {
+        if !ProgramBoardProjectPath.matches(editing?.identity.projectPath, path) {
             editing = nil
             editingErrorMessage = nil
         }
@@ -1782,7 +1826,10 @@ final class ProgramBoardViewModel {
             projectName: projectName
         )
         if selectedTicketDetail?.identity?.ticketID == ticket.id,
-           selectedTicketDetail?.identity?.projectPath == projectPath,
+           ProgramBoardProjectPath.matches(
+               selectedTicketDetail?.identity?.projectPath,
+               projectPath
+           ),
            let refreshedItem = snapshot?.ticketItem(ticketID: ticket.id, projectPath: projectPath) {
             selectedTicketDetail = ProgramTicketDetail.load(item: refreshedItem)
         }
@@ -1791,7 +1838,10 @@ final class ProgramBoardViewModel {
     func removeTicket(ticketID: String, projectPath: String) {
         snapshot = snapshot?.removingTicket(ticketID: ticketID, projectPath: projectPath)
         if selectedTicketDetail?.identity?.ticketID == ticketID,
-           selectedTicketDetail?.identity?.projectPath == projectPath {
+           ProgramBoardProjectPath.matches(
+               selectedTicketDetail?.identity?.projectPath,
+               projectPath
+           ) {
             selectedTicketDetail = nil
         }
     }

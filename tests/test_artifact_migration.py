@@ -225,6 +225,9 @@ class ArtifactMigrationTests(unittest.TestCase):
         self.assertEqual(result.remote_result["force"], False)
         self.assertFalse(result.remote_result["source_ref_published"])
         self.assertIsNone(self.optional_git_dir(remote, "rev-parse", "refs/heads/main"))
+        config = (self.repo / ".orchestrator/config.toml").read_text()
+        self.assertIn('remote_sync = "enabled"', config)
+        self.assertIn('remote_name = "origin"', config)
 
     def test_verified_same_project_remote_ref_is_adopted_without_force_or_source_publication(self):
         remote = self.root / "adoption.git"

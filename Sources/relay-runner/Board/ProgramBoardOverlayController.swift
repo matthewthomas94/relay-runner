@@ -383,19 +383,22 @@ final class ProgramBoardOverlayController {
         activityProjectPaths: [String],
         showsRegisteredProjectCatalog: Bool
     ) -> [String] {
+        let paths: [String]
         switch route {
         case .project(let project):
             let activePath = project.repoPath.path
             if showsRegisteredProjectCatalog,
                activityProjectPaths.contains(activePath) {
-                return activityProjectPaths
+                paths = activityProjectPaths
+            } else {
+                paths = [activePath]
             }
-            return [activePath]
         case .programBoard:
-            return activityProjectPaths
+            paths = activityProjectPaths
         case .unavailable:
-            return []
+            paths = []
         }
+        return ProgramBoardProjectPath.deduplicated(paths)
     }
 
     static func refreshedProjectSelection(
@@ -403,11 +406,18 @@ final class ProgramBoardOverlayController {
         currentSelection: String?,
         projectScope: [String]
     ) -> String? {
-        if let currentSelection, projectScope.contains(currentSelection) {
-            return currentSelection
+        let projectScope = ProgramBoardProjectPath.deduplicated(projectScope)
+        if let currentSelection,
+           let scopedPath = projectScope.first(where: {
+               ProgramBoardProjectPath.matches($0, currentSelection)
+           }) {
+            return scopedPath
         }
         if case .project(let project) = route {
-            return project.repoPath.path
+            let activePath = project.repoPath.path
+            return projectScope.first {
+                ProgramBoardProjectPath.matches($0, activePath)
+            }
         }
         return nil
     }

@@ -175,9 +175,21 @@ class ArtifactLifecycleCoordinator:
         if not isinstance(token, dict) or token.get("version") != 1:
             raise ArtifactValidationError("confirmed project scope token version is invalid")
         record, schema = self._registry_record()
+        repository_path = token.get("repositoryPath")
+        try:
+            resolved_repository_path = (
+                Path(repository_path).resolve(strict=True)
+                if isinstance(repository_path, str)
+                else None
+            )
+        except (OSError, RuntimeError):
+            resolved_repository_path = None
+        if resolved_repository_path != self.store.repo_path:
+            raise ArtifactValidationError(
+                "confirmed project scope token has stale repositoryPath"
+            )
         expected = {
             "projectID": self.store.project_id,
-            "repositoryPath": str(self.store.repo_path),
             "gitCommonDirectoryFingerprint": record.get("git_common_directory_fingerprint"),
             "registrySchemaVersion": schema,
         }
@@ -595,6 +607,10 @@ class ArtifactLifecycleCoordinator:
                 candidate_fields, _ = _split_ticket(content)
                 if candidate_fields.get("status") != "backlog":
                     continue
+                if _truthy(candidate_fields.get("canceled", "false")) or _truthy(
+                    candidate_fields.get("draft", "false")
+                ):
+                    continue
                 dependencies = _parse_list(candidate_fields.get("depends_on", "[]"))
                 if not dependencies or not self._dependencies_allow_automatic_promotion(
                     dependencies,
@@ -657,6 +673,10 @@ class ArtifactLifecycleCoordinator:
             content = snapshot.files[candidate_path]
             fields, _ = _split_ticket(content)
             if fields.get("status") != "backlog":
+                continue
+            if _truthy(fields.get("canceled", "false")) or _truthy(
+                fields.get("draft", "false")
+            ):
                 continue
             dependencies = _parse_list(fields.get("depends_on", "[]"))
             if not dependencies or not self._dependencies_allow_automatic_promotion(

@@ -368,18 +368,8 @@ struct WorkspaceHistoryView: View {
             Text("Relay publishes and refetches the exact archive commit before any candidate file is removed. Before local adoption, rollback leaves the current materialization untouched; after publication, retry completes the journaled transaction forward. Offline, authentication, divergence, interruption, or integrity failures keep affected files materialized. Neither path purges Git history.")
                 .font(.system(size: 11))
                 .foregroundStyle(Color.white.opacity(0.62))
-            ForEach(status.blockedReasons, id: \.self) { reason in
-                Text(reason)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.orange)
-            }
-            if let recovery = status.remote?.recovery, !recovery.isEmpty {
-                Text(recovery)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.orange)
-            }
-            if let error = status.transaction.lastError, !error.isEmpty {
-                Text(error)
+            ForEach(status.recoveryMessages(excluding: model.errorMessage), id: \.self) { message in
+                Text(message)
                     .font(.system(size: 11))
                     .foregroundStyle(Color.orange)
             }
@@ -388,8 +378,11 @@ struct WorkspaceHistoryView: View {
 
     @ViewBuilder
     private func applyControls(_ status: ArtifactRetentionStatus) -> some View {
-        let canSubmit = status.remoteMode == "enabled"
-            && (!status.exposureConfirmationRequired || model.exposureConfirmed)
+        let retry = status.transaction.retryAvailable
+        let canSubmit = status.canSubmit(
+            exposureConfirmed: model.exposureConfirmed,
+            retry: retry
+        )
         if status.plan.evictionCandidateIDs.isEmpty {
             Text("No terminal files are currently eligible for cleanup.")
                 .font(.system(size: 12, weight: .medium))
@@ -402,7 +395,7 @@ struct WorkspaceHistoryView: View {
             .font(.system(size: 12))
             .accessibilityLabel("Confirm GitHub privacy exposure")
             HStack {
-                if status.transaction.retryAvailable {
+                if retry {
                     Button("Retry blocked migration") {
                         Task {
                             await model.applyRetention(retry: true)
@@ -410,7 +403,7 @@ struct WorkspaceHistoryView: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!canSubmit)
+                    .disabled(!canSubmit || model.isLoading)
                 } else {
                     Button("Apply verified cleanup") {
                         Task {
@@ -419,7 +412,7 @@ struct WorkspaceHistoryView: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!canSubmit)
+                    .disabled(!canSubmit || model.isLoading)
                 }
                 Text("Candidate files remain local until remote verification succeeds.")
                     .font(.system(size: 10))

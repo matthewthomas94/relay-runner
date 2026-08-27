@@ -5637,6 +5637,14 @@ class Daemon:
                     observed.recovery
                     or f"Artifact synchronization is {observed.state.value}."
                 )
+            try:
+                confirm_github_remote(
+                    manager.store,
+                    synchronizer.remote_name,
+                    exposure_confirmed=True,
+                )
+            except ArtifactValidationError as error:
+                blocked_reasons.append(str(error))
         if transaction.get("last_error"):
             blocked_reasons.append(str(transaction["last_error"]))
         elif transaction.get("retry_available"):
@@ -8017,6 +8025,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         for dep in dependents:
             if dep["status"] not in ("backlog", "ready"):
                 continue
+            if dep.get("canceled") or dep.get("draft"):
+                continue
             if not self._all_dependencies_done(
                 repo=repo, ticket=dep, all_tickets=all_tickets
             ):
@@ -8047,6 +8057,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         promoted: list[str] = []
         for ticket in all_tickets:
             if ticket["status"] != "backlog" or not ticket["depends_on"]:
+                continue
+            if ticket.get("canceled") or ticket.get("draft"):
                 continue
             if not self._all_dependencies_done(
                 repo=repo, ticket=ticket, all_tickets=all_tickets
