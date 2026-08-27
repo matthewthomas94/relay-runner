@@ -802,7 +802,8 @@ enum OrchestratorClient {
                 URLQueryItem(name: "limit", value: "\(limit)"),
                 URLQueryItem(name: "trigger", value: trigger),
             ] + repoPaths.map { URLQueryItem(name: "repo_path", value: $0) },
-            port: port
+            port: port,
+            timeout: artifactReadTimeout
         )
     }
 

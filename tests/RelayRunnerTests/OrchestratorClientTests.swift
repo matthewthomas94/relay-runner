@@ -219,6 +219,7 @@ final class OrchestratorClientTests: XCTestCase {
             "http://127.0.0.1:8123/v1/program/dashboard?limit=0&trigger=program-board-refresh&repo_path=/repo/aurora-web&repo_path=/repo/harbor%20api"
         )
         XCTAssertNil(request.httpBody)
+        XCTAssertEqual(request.timeoutInterval, 120)
     }
 
     func testProgramDashboardFetchesCanonicalBoardLanes() async throws {
