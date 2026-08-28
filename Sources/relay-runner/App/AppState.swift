@@ -1850,7 +1850,7 @@ final class AppState {
             }
             return .waitForLaunch
         }
-        if hasSessionContext {
+        if hasSessionContext && wasAlive {
             return .recoverDaemon
         }
         return .markDead

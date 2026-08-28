@@ -340,7 +340,7 @@ def _relay_intent_matches(left: dict | None, right: dict | None) -> bool:
     return True
 
 
-def _relay_command_current(command: dict, *, state_path: str) -> bool:
+def _relay_command_current_or_preserved(command: dict, *, state_path: str) -> bool:
     expected = _relay_command_key(command)
     if expected is None:
         return False
@@ -350,7 +350,18 @@ def _relay_command_current(command: dict, *, state_path: str) -> bool:
         str(value) for value in cancelled
     }:
         return False
-    return _relay_command_key(current) == expected
+    current_key = _relay_command_key(current)
+    if current_key == expected:
+        return True
+    if current_key is None or current_key[0] <= expected[0]:
+        return False
+    disposition = current.get("work_disposition")
+    return (
+        isinstance(disposition, dict)
+        and disposition.get("route") == "continue_current"
+        and disposition.get("authorization_effect") == "preserve"
+        and disposition.get("cancellation_scope") in {None, "none"}
+    )
 
 
 def _relay_command_deliverable(command: dict, *, state_path: str) -> bool:
@@ -1034,7 +1045,7 @@ def _complete_turn(
                 stderr=stderr,
             )
         return False
-    if not _relay_command_current(record, state_path=state_path):
+    if not _relay_command_current_or_preserved(record, state_path=state_path):
         stale_record = (
             _annotate_identity_reconciliation(record, payload, now=now)
             if identity_reconciled

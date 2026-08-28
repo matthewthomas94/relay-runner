@@ -909,7 +909,10 @@ def _repository_snapshot(repo: Path, *, project_id: Any) -> dict[str, Any]:
             )
         return process.stdout
 
-    head = git("rev-parse", "--verify", "HEAD").decode().strip()
+    head = git("rev-parse", "--verify", "HEAD", allowed={0, 128}).decode().strip()
+    head_ref = None
+    if not head:
+        head_ref = git("symbolic-ref", "--quiet", "HEAD").decode().strip()
     refs = git("for-each-ref", "--format=%(refname)%00%(objectname)")
     status = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
     index = git("ls-files", "--stage", "-z")
@@ -918,7 +921,8 @@ def _repository_snapshot(repo: Path, *, project_id: Any) -> dict[str, Any]:
         "project_id": project_id,
         "repo_path": str(repo),
         "available": True,
-        "head": head,
+        "head": head or None,
+        "head_ref": head_ref,
         "refs_sha256": hashlib.sha256(refs).hexdigest(),
         "status_sha256": hashlib.sha256(status).hexdigest(),
         "index_sha256": hashlib.sha256(index).hexdigest(),

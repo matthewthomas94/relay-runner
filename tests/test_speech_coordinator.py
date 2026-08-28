@@ -79,15 +79,49 @@ def intent(
 
 
 class SpeechCoordinatorTests(unittest.TestCase):
-    def make_coordinator(self, *, current=(1, "one"), log=None):
+    def make_coordinator(
+        self,
+        *,
+        current=(1, "one"),
+        log=None,
+        has_foreground_ownership=None,
+    ):
         worker = FakeWorker()
         holder = {"key": current}
         coordinator = SpeechCoordinator(
             worker,
             is_current=lambda seq, command_id: holder["key"] == (seq, command_id),
+            has_foreground_ownership=has_foreground_ownership,
             event_log_path=log,
         )
         return worker, coordinator, holder
+
+    def test_messenger_handoff_waits_for_exact_foreground_ownership(self):
+        owned: set[tuple[int, str]] = {(1, "one")}
+        worker, coordinator, _ = self.make_coordinator(
+            current=(2, "two"),
+            has_foreground_ownership=lambda seq, command_id: (
+                (seq, command_id) in owned
+            ),
+        )
+
+        self.assertFalse(coordinator.submit(intent(
+            seq=2,
+            command_id="two",
+            kind="handoff",
+            text="later provisional",
+        )))
+        self.assertTrue(worker.input_queue.empty())
+
+        owned.add((2, "two"))
+        self.assertTrue(coordinator.submit(intent(
+            seq=2,
+            command_id="two",
+            kind="handoff",
+            text="owned provisional",
+        )))
+        queued = worker.input_queue.get_nowait()
+        self.assertEqual(queued["_speech_intent"]["command_seq"], 2)
 
     def test_final_replaces_unstarted_handoff_and_deduplicates_fallback(self):
         worker, coordinator, _ = self.make_coordinator()

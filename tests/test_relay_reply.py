@@ -96,6 +96,44 @@ class RelayReplyTests(unittest.TestCase):
             for private_value in ("secret-command-id", "private prompt", "private final"):
                 self.assertNotIn(private_value, diagnostic)
 
+    def test_newer_continue_current_command_preserves_claimed_reply(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            fifo_path = os.path.join(temp_dir, "voice_in.fifo")
+            claim = {
+                "relay_command_seq": 17,
+                "relay_command_id": "cmd-17",
+                "intent_id": "cmd-17:item:1",
+            }
+            Path(claim_path).write_text(json.dumps(claim))
+            Path(state_path).write_text(json.dumps({
+                "relay_command_seq": 18,
+                "relay_command_id": "cmd-18",
+                "intent_id": "cmd-18:item:1",
+                "cancelled_intent_ids": [],
+                "work_disposition": {
+                    "route": "continue_current",
+                    "authorization_effect": "preserve",
+                    "cancellation_scope": "none",
+                },
+            }))
+            os.mkfifo(fifo_path)
+            reader = os.open(fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+            self.addCleanup(os.close, reader)
+
+            self.assertTrue(relay_reply.publish_current_reply(
+                "First reply.",
+                claim_path=claim_path,
+                state_path=state_path,
+                fifo_path=fifo_path,
+                stderr=io.StringIO(),
+            ))
+
+            payload = os.read(reader, 4096).decode()
+            self.assertIn('"relay_command_id": "cmd-17"', payload)
+            self.assertIn('"text": "First reply."', payload)
+
     def test_non_foreground_actor_cannot_publish_authoritative_reply(self):
         stderr = io.StringIO()
         with mock.patch.dict(os.environ, {"RELAY_ACTOR_ROLE": "messenger"}):

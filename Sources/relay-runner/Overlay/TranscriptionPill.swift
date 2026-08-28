@@ -66,6 +66,8 @@ final class TranscriptionPill: NSView {
     /// back in at peak blur.
     private var pendingTransitionWidth: CGFloat?
     private var pendingTransitionHeight: CGFloat?
+    /// Invalidates a hide completion when newer pill content is presented.
+    private var visibilityGeneration: UInt = 0
 
     /// Active body-scroll animation timer. Replaced/cancelled when state
     /// changes or the pill hides.
@@ -158,6 +160,7 @@ final class TranscriptionPill: NSView {
     // MARK: - Public API
 
     func showCompact(title: String, theme: Theme, animated: Bool = true) {
+        visibilityGeneration &+= 1
         let wasVisible = alphaValue > 0.01
         let wasCompact = isCompact
         let themeChanged = currentTheme.map { type(of: $0) != type(of: theme) } ?? true
@@ -191,6 +194,7 @@ final class TranscriptionPill: NSView {
                   theme: Theme,
                   animated: Bool = true,
                   suppressShadow: Bool = false) {
+        visibilityGeneration &+= 1
         let wasVisible = alphaValue > 0.01
         let wasCompact = isCompact
 
@@ -244,6 +248,8 @@ final class TranscriptionPill: NSView {
     func hide(animated: Bool = true) {
         guard alphaValue > 0.01 else { return }
 
+        visibilityGeneration &+= 1
+        let generation = visibilityGeneration
         cancelBodyScroll()
 
         if animated {
@@ -258,9 +264,10 @@ final class TranscriptionPill: NSView {
                 animator().frame = exitFrame
                 animator().alphaValue = 0
             }, completionHandler: { [weak self] in
-                self?.resetBlurFilter()
-                self?.bodyContainer.isHidden = true
-                self?.bodyContainer.alphaValue = 0
+                guard let self, self.visibilityGeneration == generation else { return }
+                self.resetBlurFilter()
+                self.bodyContainer.isHidden = true
+                self.bodyContainer.alphaValue = 0
             })
         } else {
             alphaValue = 0

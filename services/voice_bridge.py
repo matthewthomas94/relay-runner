@@ -1861,6 +1861,35 @@ def _relay_command_key(command: dict | None) -> tuple[int, str] | None:
     return command_seq, command_id
 
 
+def _relay_command_current_or_preserved(
+    relay_command: dict,
+    *,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> bool:
+    expected = _relay_command_key(relay_command)
+    if expected is None:
+        return False
+    with _VOICE_STATE_LOCK:
+        current = _read_json_file(state_path)
+    cancelled = current.get("cancelled_intent_ids")
+    if isinstance(cancelled, list) and str(relay_command.get("intent_id") or "") in {
+        str(value) for value in cancelled
+    }:
+        return False
+    current_key = _relay_command_key(current)
+    if current_key == expected:
+        return True
+    if current_key is None or current_key[0] <= expected[0]:
+        return False
+    disposition = current.get("work_disposition")
+    return (
+        isinstance(disposition, dict)
+        and disposition.get("route") == IntentRoute.CONTINUE_CURRENT.value
+        and disposition.get("authorization_effect") == "preserve"
+        and disposition.get("cancellation_scope") in {None, "none"}
+    )
+
+
 def _relay_intent_matches(left: dict | None, right: dict | None) -> bool:
     if _relay_command_key(left) != _relay_command_key(right):
         return False
@@ -2192,6 +2221,7 @@ def _start_intent_inbox_pump(
                         os.unlink(manual_ack_path)
                     except OSError:
                         pass
+            inbox.reconcile_terminal_claims()
             inbox.materialize_next(
                 command_path=command_path,
                 metadata_path=meta_path,
@@ -2219,6 +2249,21 @@ def _sync_intent_inbox_state(
             sync_deliverable_state(state_path, inbox)
     except OSError as exc:
         print(f"[voice_bridge] Could not sync intent inbox state: {exc}", file=sys.stderr)
+
+
+def _intent_has_foreground_ownership(
+    inbox: IntentInbox | None,
+    command_seq: int,
+    command_id: str,
+) -> bool:
+    if inbox is None:
+        return False
+    return any(
+        int(record.get("command_seq") or -1) == int(command_seq)
+        and str(record.get("command_id") or "") == str(command_id)
+        and str(record.get("state") or "") in {"claimed", "acked"}
+        for record in inbox.records()
+    )
 
 
 def _enqueue_sidecar_intent(
@@ -2820,6 +2865,7 @@ def _queue_tts_text(
     command_path: str = VOICE_CMD_FILE,
     state_path: str = VOICE_COMMAND_STATE_FILE,
     allow_pending_command: bool = False,
+    preserved_command: dict | None = None,
     notify_waiting_preview=None,
     source: str = "fallback",
     kind: str = "fallback",
@@ -2849,7 +2895,16 @@ def _queue_tts_text(
         and kind == "final"
     )
     if (command_seq is not None or command_id) and not work_fresh:
-        if not _relay_command_current(command_seq, command_id, state_path=state_path):
+        current = _relay_command_current(command_seq, command_id, state_path=state_path)
+        preserved = (
+            not current
+            and _relay_command_key(preserved_command) == (command_seq, command_id)
+            and _relay_command_current_or_preserved(
+                preserved_command,
+                state_path=state_path,
+            )
+        )
+        if not current and not preserved:
             print(
                 "[voice_bridge] Dropping TTS because its Relay command was superseded.",
                 file=sys.stderr,
@@ -2861,6 +2916,17 @@ def _queue_tts_text(
             file=sys.stderr,
         )
         return False
+    speech_work_disposition = work_disposition
+    if isinstance(preserved_command, dict):
+        if speech_work_disposition is None and isinstance(
+            preserved_command.get("work_disposition"),
+            dict,
+        ):
+            speech_work_disposition = dict(preserved_command["work_disposition"])
+        intent_id = str(preserved_command.get("intent_id") or "").strip()
+        if intent_id:
+            speech_work_disposition = dict(speech_work_disposition or {})
+            speech_work_disposition.setdefault("intent_id", intent_id)
     coordinated = hasattr(tts_queue, "submit_text")
     publisher = publish_waiting_preview if notify_waiting_preview is None else notify_waiting_preview
     if coordinated:
@@ -2875,7 +2941,7 @@ def _queue_tts_text(
             authoritative=authoritative,
             priority=priority,
             dedup_key=dedup_key,
-            work_disposition=work_disposition,
+            work_disposition=speech_work_disposition,
             replayable=replayable,
             freshness_scope="work" if work_fresh else "conversation",
             lifecycle_role=lifecycle_role,
@@ -3261,7 +3327,7 @@ def _deliver_missing_foreground_reply(
         return False
     if _foreground_reply_delivered(relay_command):
         return None
-    if not _relay_command_current(key[0], key[1], state_path=state_path):
+    if not _relay_command_current_or_preserved(relay_command, state_path=state_path):
         return False
     effect_id = None
     if provider_turn_broker is not None:
@@ -3300,6 +3366,7 @@ def _deliver_missing_foreground_reply(
             tts_worker.input_queue,
             state_path=state_path,
             allow_pending_command=True,
+            preserved_command=relay_command,
             notify_waiting_preview=lambda _text: None,
             source="fallback",
             kind="fallback",
@@ -3398,7 +3465,7 @@ def _schedule_foreground_reply_fallback(
                     reason="reply_delivered",
                 )
                 return
-            if not _relay_command_current(key[0], key[1], state_path=state_path):
+            if not _relay_command_current_or_preserved(relay_command, state_path=state_path):
                 _log_foreground_reply_fallback_event(
                     "cancelled",
                     relay_command=relay_command,
@@ -3522,7 +3589,7 @@ def _handle_provider_completion_control(
     )
     if _foreground_reply_delivered(command):
         return True
-    if not _relay_command_current(key[0], key[1], state_path=state_path):
+    if not _relay_command_current_or_preserved(command, state_path=state_path):
         print(
             "[voice_bridge] Dropping provider completion because its Relay command was superseded.",
             file=sys.stderr,
@@ -3619,7 +3686,7 @@ def _handle_orchestrator_reply_control(
         return False
     if _foreground_reply_delivered(command):
         return True
-    if not _relay_command_current(command_key[0], command_key[1], state_path=state_path):
+    if not _relay_command_current_or_preserved(command, state_path=state_path):
         print(
             "[voice_bridge] Dropping foreground reply because its Relay command was superseded.",
             file=sys.stderr,
@@ -3669,6 +3736,7 @@ def _handle_orchestrator_reply_control(
         tts_worker.input_queue,
         state_path=state_path,
         allow_pending_command=True,
+        preserved_command=command,
         notify_waiting_preview=lambda _text: None,
         source=(
             "lifecycle"
@@ -4117,6 +4185,20 @@ def main():
             is_current=lambda command_seq, command_id: _relay_command_current(
                 command_seq,
                 command_id,
+            ),
+            is_preserved=lambda command_seq, command_id, disposition: (
+                _relay_command_current_or_preserved({
+                    "relay_command_seq": command_seq,
+                    "relay_command_id": command_id,
+                    "intent_id": disposition.get("intent_id"),
+                })
+            ),
+            has_foreground_ownership=lambda command_seq, command_id: (
+                _intent_has_foreground_ownership(
+                    intent_inbox,
+                    command_seq,
+                    command_id,
+                )
             ),
             event_log_path=SPEECH_EVENT_LOG,
             control_socket_path=TTS_CONTROL_SOCK,

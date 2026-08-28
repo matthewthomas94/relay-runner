@@ -122,6 +122,126 @@ class ProviderTurnBrokerTests(unittest.TestCase):
                 },
             )
 
+    def test_next_intent_waits_for_predecessor_authoritative_effect(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = os.path.join(temp_dir, "inbox.sqlite3")
+            projection = os.path.join(temp_dir, "provider-turns-v2.json")
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            metadata_path = command_path + ".meta"
+            inbox = IntentInbox(database, provider_turn_projection_path=projection)
+            broker = ProviderTurnBroker(database, projection_path=projection)
+            self.addCleanup(broker.close)
+            self.addCleanup(inbox.close)
+            first = {
+                "relay_command_seq": 1,
+                "relay_command_id": "command-1",
+                "intent_id": "intent-1",
+            }
+            second = {
+                "relay_command_seq": 2,
+                "relay_command_id": "command-2",
+                "intent_id": "intent-2",
+            }
+            turn = {
+                **turn_record("codex"),
+                "relay_command_id": "command-1",
+            }
+            stored = inbox.enqueue("private first", first, "continue_current")
+            inbox.enqueue("private second", second, "continue_current")
+            self.assertIsNotNone(inbox.materialize_next(
+                command_path=command_path,
+                metadata_path=metadata_path,
+                transport="test",
+            ))
+            self.assertTrue(broker.activate(turn, now=100.0))
+            self.assertTrue(inbox.observe_claim(stored, provider_turn_seen=True, now=100.1))
+            os.unlink(command_path)
+            os.unlink(metadata_path)
+
+            self.assertIsNone(inbox.materialize_next(
+                command_path=command_path,
+                metadata_path=metadata_path,
+                transport="test",
+            ))
+            self.assertTrue(broker.transition(
+                turn,
+                to_state="completed_final",
+                event_type="provider_completed",
+                release_reason="provider_stop",
+                now=101.0,
+            ))
+            self.assertIsNone(inbox.materialize_next(
+                command_path=command_path,
+                metadata_path=metadata_path,
+                transport="test",
+            ))
+
+            reservation = broker.reserve_effect(turn, now=101.1)
+            self.assertTrue(reservation.accepted)
+            self.assertTrue(broker.authorize_effect_delivery(reservation.effect_id, now=101.2))
+            broker.finish_effect(reservation.effect_id, delivered=True, now=101.3)
+
+            materialized = inbox.materialize_next(
+                command_path=command_path,
+                metadata_path=metadata_path,
+                transport="test",
+            )
+            self.assertEqual(materialized["intent_id"], "intent-2")
+
+    def test_failed_authoritative_effect_releases_successor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = os.path.join(temp_dir, "inbox.sqlite3")
+            projection = os.path.join(temp_dir, "provider-turns-v2.json")
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            metadata_path = command_path + ".meta"
+            inbox = IntentInbox(database, provider_turn_projection_path=projection)
+            broker = ProviderTurnBroker(database, projection_path=projection)
+            self.addCleanup(broker.close)
+            self.addCleanup(inbox.close)
+            first = {
+                "relay_command_seq": 1,
+                "relay_command_id": "command-1",
+                "intent_id": "intent-1",
+            }
+            second = {
+                "relay_command_seq": 2,
+                "relay_command_id": "command-2",
+                "intent_id": "intent-2",
+            }
+            turn = {
+                **turn_record("codex"),
+                "relay_command_id": "command-1",
+            }
+            stored = inbox.enqueue("private first", first, "continue_current")
+            inbox.enqueue("private second", second, "continue_current")
+            inbox.materialize_next(
+                command_path=command_path,
+                metadata_path=metadata_path,
+                transport="test",
+            )
+            self.assertTrue(broker.activate(turn, now=100.0))
+            self.assertTrue(inbox.observe_claim(stored, provider_turn_seen=True, now=100.1))
+            os.unlink(command_path)
+            os.unlink(metadata_path)
+            self.assertTrue(broker.transition(
+                turn,
+                to_state="completed_final",
+                event_type="provider_completed",
+                release_reason="provider_stop",
+                now=101.0,
+            ))
+            reservation = broker.reserve_effect(turn, now=101.1)
+            self.assertTrue(reservation.accepted)
+            self.assertTrue(broker.authorize_effect_delivery(reservation.effect_id, now=101.2))
+            broker.finish_effect(reservation.effect_id, delivered=False, now=101.3)
+
+            materialized = inbox.materialize_next(
+                command_path=command_path,
+                metadata_path=metadata_path,
+                transport="test",
+            )
+            self.assertEqual(materialized["intent_id"], "intent-2")
+
     def test_concurrent_effect_reservations_accept_exactly_one(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = os.path.join(temp_dir, "inbox.sqlite3")
@@ -174,6 +294,7 @@ class ProviderTurnBrokerTests(unittest.TestCase):
             recovered = IntentInbox(database, provider_turn_projection_path=projection)
             try:
                 self.assertEqual(recovered.records()[0]["state"], "review_required")
+                self.assertEqual(recovered.reconcile_terminal_claims(), 0)
                 event_types = {
                     row["event_type"]
                     for row in broker.table_records("provider_turn_transitions")

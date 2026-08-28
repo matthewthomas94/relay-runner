@@ -195,6 +195,68 @@ start_voice_bridge_daemon
                 "33333333-3333-4333-8333-333333333333",
             )
 
+    def test_running_launchctl_bridge_gets_a_full_cold_start_window(self):
+        source = (ROOT / "scripts" / "relay-bridge").read_text()
+        functions = "\n".join(
+            shell_function(source, name)
+            for name in ("voice_bridge_log_path", "start_voice_bridge_daemon")
+        )
+        with tempfile.TemporaryDirectory(dir="/tmp") as temp:
+            root = Path(temp)
+            bridge = root / "relay-bridge"
+            socket_path = root / "voice.sock"
+            log = root / "voice.log"
+            bridge.write_text(
+                "#!/bin/bash\n"
+                "[ \"${1:-}\" = --rotate-log ] && exit 0\n"
+                "/bin/sleep 0.3\n"
+                "python3 - \"$BRIDGE_TEST_SOCK\" <<'PY'\n"
+                "import socket, sys\n"
+                "sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)\n"
+                "sock.bind(sys.argv[1])\n"
+                "sock.close()\n"
+                "PY\n"
+            )
+            bridge.chmod(0o700)
+            harness = functions + """
+record_embedded_session_event() { :; }
+sleep() { /bin/sleep 0.01; }
+launchctl() {
+    case "$1" in
+        remove) return 0 ;;
+        submit)
+            while [ "$1" != "--" ]; do shift; done
+            shift
+            "$@" &
+            return 0
+            ;;
+        print) return 0 ;;
+    esac
+}
+SUPPRESS_STARTUP_GREETING=false
+start_voice_bridge_daemon
+"""
+            result = subprocess.run(
+                ["/bin/bash", "-c", harness],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "SCRIPT_DIR": str(root),
+                    "BRIDGE_SOCK": str(socket_path),
+                    "BRIDGE_TEST_SOCK": str(socket_path),
+                    "VOICE_BRIDGE_LOG_PATH": str(log),
+                    "RELAY_RUNNER_PROVIDER": "codex",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            contents = log.read_text()
+            self.assertEqual(result.returncode, 0, result.stderr + "\n" + contents)
+            self.assertIn("launchctl produced socket", contents)
+            self.assertNotIn("falling back to direct background launch", contents)
+
     def test_launchctl_and_direct_failures_are_reported_as_failure(self):
         source = (ROOT / "scripts" / "relay-bridge").read_text()
         functions = "\n".join(

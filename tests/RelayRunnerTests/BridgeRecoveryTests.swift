@@ -103,6 +103,21 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
+    func testWatchdogDoesNotRecoverStaleContextBeforeBridgeWasObserved() {
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: false,
+                daemonAlive: false,
+                consumerAlive: false,
+                hasSessionContext: true,
+                wasAlive: false,
+                sessionBridgeSeen: false,
+                elapsedSinceSessionStart: 0
+            ),
+            .markDead
+        )
+    }
+
     func testWatchdogWaitsForConsumerWhenLiveDaemonHasTimedOutPendingVoiceCommand() {
         XCTAssertEqual(
             AppState.bridgeWatchdogAction(
@@ -483,6 +498,15 @@ final class BridgeRecoveryTests: XCTestCase {
             XCTAssertTrue(script.contains("/tmp/voice_cmd_claimed.json"))
             XCTAssertTrue(script.contains("nohup /bin/bash -lc"))
         }
+    }
+
+    func testRecoveryScriptAllowsColdBridgeStartupBeforeFallingBack() {
+        let script = ProcessManager.bridgeRecoveryScript(
+            relayBridge: "/usr/local/bin/relay-bridge",
+            context: .init(workingDirectory: "/Users/example/dev", provider: "codex")
+        )
+
+        XCTAssertEqual(script.components(separatedBy: "seq 1 60").count - 1, 2)
     }
 
     func testRecoveryScriptHandlesManualBridgeWithoutProvider() {

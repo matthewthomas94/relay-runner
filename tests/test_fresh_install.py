@@ -90,6 +90,33 @@ class FreshInstallTests(unittest.TestCase):
             b"old-app",
         )
 
+    def test_normal_reinstall_preserves_registered_repository_without_commits(self):
+        shutil.rmtree(self.repo)
+        self.repo.mkdir()
+        self.git("init", "--initial-branch=main", "--quiet")
+        (self.repo / "untracked.txt").write_text("untracked\n")
+        repo_before = self.git_bytes(
+            "status", "--porcelain=v1", "-z", "--untracked-files=all"
+        )
+
+        preview = self.coordinator().preview_reinstall(
+            source_app=self.source_app,
+            destination_app=self.destination_app,
+        )
+        result = self.coordinator().reinstall(
+            source_app=self.source_app,
+            destination_app=self.destination_app,
+            execute=True,
+        )
+
+        self.assertIsNone(preview.registered_repositories[0]["head"])
+        self.assertEqual(preview.registered_repositories[0]["head_ref"], "refs/heads/main")
+        self.assertTrue(result.repositories_preserved)
+        self.assertEqual(
+            self.git_bytes("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+            repo_before,
+        )
+
     def test_deliberate_reset_moves_only_owned_state_to_trash_and_restore_is_exact(self):
         state_before = self.tree(self.state)
         repo_before = self.repo_snapshot()

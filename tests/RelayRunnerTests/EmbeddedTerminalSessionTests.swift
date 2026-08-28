@@ -783,6 +783,17 @@ final class RelayTerminalInputTrackerTests: XCTestCase {
         XCTAssertFalse(tracker.hasUnsubmittedInput)
     }
 
+    func testTrackerIgnoresTerminalNavigationSequences() {
+        var tracker = RelayTerminalInputTracker()
+
+        tracker.record(data: ArraySlice(Array("\u{1B}[D".utf8)))
+        tracker.record(data: ArraySlice(Array("\u{1B}[D".utf8)))
+        tracker.record(data: ArraySlice(Array("\u{1B}[D".utf8)))
+
+        XCTAssertFalse(tracker.hasUnsubmittedInput)
+        XCTAssertEqual(tracker.pendingByteCount, 0)
+    }
+
     func testTrackerCountsUnicodePasteBytesButDeletesOneInputUnit() {
         var tracker = RelayTerminalInputTracker()
 

@@ -13,6 +13,7 @@ from typing import Any
 from continuity_incidents import normalize_recovery_generation
 from provider_turn_broker import (
     ProviderTurnBroker,
+    TERMINAL_STATES,
     ensure_broker_schema,
     record_intent_events,
 )
@@ -454,6 +455,46 @@ class IntentInbox:
             ).fetchone()
             if unacked is not None:
                 return None
+            if self.provider_turn_events_enabled:
+                predecessor = self._connection.execute(
+                    """
+                    SELECT intents.ordinal
+                     FROM intents
+                     WHERE intents.state='acked'
+                       AND (
+                           EXISTS (
+                               SELECT 1
+                                 FROM provider_turns
+                                WHERE provider_turns.intent_id=intents.intent_id
+                                  AND provider_turns.command_seq=intents.command_seq
+                                  AND provider_turns.command_id=intents.command_id
+                                  AND provider_turns.state='active'
+                           )
+                           OR (
+                               EXISTS (
+                                   SELECT 1
+                                     FROM provider_turns
+                                    WHERE provider_turns.intent_id=intents.intent_id
+                                      AND provider_turns.command_seq=intents.command_seq
+                                      AND provider_turns.command_id=intents.command_id
+                                      AND provider_turns.state='completed_final'
+                               )
+                               AND NOT EXISTS (
+                                   SELECT 1
+                                     FROM provider_turn_effects
+                                    WHERE provider_turn_effects.intent_id=intents.intent_id
+                                      AND provider_turn_effects.effect_kind='authoritative_reply'
+                                      AND provider_turn_effects.state IN ('delivered', 'failed')
+                               )
+                           )
+                       )
+                     ORDER BY intents.command_seq, intents.within_turn_order,
+                              intents.ordinal
+                     LIMIT 1
+                    """
+                ).fetchone()
+                if predecessor is not None:
+                    return None
             row = self._connection.execute(
                 """
                 SELECT *
@@ -608,6 +649,53 @@ class IntentInbox:
         if projection_changed:
             self._project_provider_turns()
         return observed
+
+    def reconcile_terminal_claims(self, *, now: float | None = None) -> int:
+        """Acknowledge recovered claims only after their exact turn is terminal."""
+        if not self.provider_turn_events_enabled:
+            return 0
+        now = time.time() if now is None else now
+        terminal_states = sorted(TERMINAL_STATES)
+        placeholders = ",".join("?" for _ in terminal_states)
+        projection_changed = False
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                f"""
+                SELECT intent_id, ack_id
+                  FROM intents
+                 WHERE state='review_required'
+                   AND claimed_at IS NOT NULL
+                   AND EXISTS (
+                       SELECT 1
+                         FROM provider_turns
+                        WHERE provider_turns.intent_id=intents.intent_id
+                          AND provider_turns.command_seq=intents.command_seq
+                          AND provider_turns.command_id=intents.command_id
+                          AND provider_turns.state IN ({placeholders})
+                   )
+                 ORDER BY ordinal
+                """,
+                terminal_states,
+            ).fetchall()
+            for row in rows:
+                intent_id = str(row["intent_id"])
+                ack_id = str(row["ack_id"] or f"ack:{intent_id}")
+                self._connection.execute(
+                    "UPDATE intents SET state='acked', ack_id=?, acked_at=?, "
+                    "recovery_decision='terminal_claim_reconciled' "
+                    "WHERE intent_id=? AND state='review_required'",
+                    (ack_id, now, intent_id),
+                )
+                projection_changed = bool(record_intent_events(
+                    self._connection,
+                    [intent_id],
+                    event_type="intent_acknowledged",
+                    event_scope=ack_id,
+                    occurred_at=now,
+                )) or projection_changed
+        if projection_changed:
+            self._project_provider_turns()
+        return len(rows)
 
     def pending_for_route(self, route: str) -> list[dict[str, Any]]:
         """Return durable work owned by a non-mailbox execution lane."""

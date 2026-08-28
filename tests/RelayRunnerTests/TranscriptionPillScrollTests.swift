@@ -102,6 +102,27 @@ final class TranscriptionPillScrollTests: XCTestCase {
         XCTAssertNotNil(mounted.pill.manualScrollFrameOnScreen())
     }
 
+    func testNewWaitingResponseSurvivesAnOlderHideCompletion() throws {
+        let mounted = mountLongPill()
+        defer { mounted.close() }
+        let bodyLabel = try XCTUnwrap(bodyLabel(in: mounted.pill))
+        let bodyContainer = try XCTUnwrap(bodyLabel.superview)
+
+        mounted.pill.hide(animated: true)
+        mounted.pill.showFull(
+            title: "Double tap Option to play",
+            body: "Fresh response.",
+            theme: .tts,
+            animated: false
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+
+        XCTAssertEqual(bodyLabel.stringValue, "Fresh response.")
+        XCTAssertGreaterThan(mounted.pill.alphaValue, 0.99)
+        XCTAssertFalse(bodyContainer.isHidden)
+        XCTAssertGreaterThan(bodyContainer.alphaValue, 0.99)
+    }
+
     func testMouseAndNaturalTrackpadDeltasNormalizeInExpectedDirection() {
         XCTAssertEqual(
             TranscriptionPill.manualScrollDelta(

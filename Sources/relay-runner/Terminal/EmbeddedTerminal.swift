@@ -471,7 +471,7 @@ struct RelayTerminalInputTracker: Equatable {
     @discardableResult
     mutating func record(data: ArraySlice<UInt8>) -> Transition {
         if let transition = recordKittyKeyEvent(data) { return transition }
-        if isNavigationShortcut(data) { return .none }
+        if isNavigationShortcut(data) || isTerminalControlSequence(data) { return .none }
 
         var transition: Transition = .none
         let bytes = Array(data)
@@ -517,6 +517,18 @@ struct RelayTerminalInputTracker: Equatable {
     private func isNavigationShortcut(_ data: ArraySlice<UInt8>) -> Bool {
         let bytes = Array(data)
         return bytes == [27, 98] || bytes == [27, 102] || bytes == [1] || bytes == [5]
+    }
+
+    private func isTerminalControlSequence(_ data: ArraySlice<UInt8>) -> Bool {
+        let bytes = Array(data)
+        guard bytes.count >= 3, bytes[0] == 27 else { return false }
+        if bytes[1] == 91 {
+            return bytes[2..<bytes.count - 1].allSatisfy { (0x20...0x3f).contains($0) }
+                && (0x40...0x7e).contains(bytes[bytes.count - 1])
+        }
+        return bytes.count == 3
+            && bytes[1] == 79
+            && (0x40...0x7e).contains(bytes[2])
     }
 
     private mutating func recordKittyKeyEvent(_ data: ArraySlice<UInt8>) -> Transition? {

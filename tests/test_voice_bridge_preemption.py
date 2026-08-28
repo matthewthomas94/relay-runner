@@ -167,6 +167,48 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             "foreground_gate_handle": "test-gate",
         }
 
+    def test_messenger_handoff_ownership_requires_exact_claimed_or_acked_intent(self):
+        for provider in ("codex", "claude"):
+            inbox = mock.Mock()
+            inbox.records.return_value = [
+                {
+                    "command_seq": 1,
+                    "command_id": f"{provider}-claimed",
+                    "state": "claimed",
+                },
+                {
+                    "command_seq": 2,
+                    "command_id": f"{provider}-queued",
+                    "state": "queued",
+                },
+                {
+                    "command_seq": 3,
+                    "command_id": f"{provider}-acked",
+                    "state": "acked",
+                },
+            ]
+
+            self.assertTrue(voice_bridge._intent_has_foreground_ownership(
+                inbox,
+                1,
+                f"{provider}-claimed",
+            ))
+            self.assertFalse(voice_bridge._intent_has_foreground_ownership(
+                inbox,
+                2,
+                f"{provider}-queued",
+            ))
+            self.assertTrue(voice_bridge._intent_has_foreground_ownership(
+                inbox,
+                3,
+                f"{provider}-acked",
+            ))
+            self.assertFalse(voice_bridge._intent_has_foreground_ownership(
+                inbox,
+                3,
+                f"{provider}-wrong-command",
+            ))
+
     def test_completion_hook_requires_matching_foreground_owner_for_both_providers(self):
         for provider in ("codex", "claude"):
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -484,7 +526,11 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 "_begin_relay_command",
                 return_value=command,
             ) as begin_command,
-            mock.patch.object(voice_bridge, "_relay_command_current", return_value=True),
+            mock.patch.object(
+                voice_bridge,
+                "_relay_command_current_or_preserved",
+                return_value=True,
+            ),
             mock.patch.object(voice_bridge, "record_command_authorization"),
             mock.patch.object(voice_bridge, "_queue_voice_acknowledgement", return_value=True),
             mock.patch.object(voice_bridge, "_start_pm_update_mode"),
@@ -2370,6 +2416,69 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 self.assertNotIn("Claimed Relay prompt", stored)
                 self.assertNotIn("stale private final", stored)
 
+    def test_completion_hook_preserves_active_final_for_newer_continue_current_command(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                claim = {
+                    "relay_command_seq": 61,
+                    "relay_command_id": "cmd-61",
+                    "intent_id": "cmd-61:item:1",
+                    "agent_prompt": "First queued prompt",
+                    "provider": provider,
+                }
+                Path(state_path).write_text(json.dumps(claim))
+                Path(claim_path).write_text(json.dumps(claim))
+                submit = {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": f"{provider}-session",
+                    "turn_id": f"{provider}-turn-61",
+                    "provider": provider,
+                    "prompt": claim["agent_prompt"],
+                }
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    submit,
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    now=30,
+                    stderr=io.StringIO(),
+                ))
+
+                Path(state_path).write_text(json.dumps({
+                    "relay_command_seq": 62,
+                    "relay_command_id": "cmd-62",
+                    "intent_id": "cmd-62:item:1",
+                    "work_disposition": {
+                        "route": "continue_current",
+                        "authorization_effect": "preserve",
+                        "cancellation_scope": "none",
+                    },
+                    "cancelled_intent_ids": [],
+                }))
+                delivered: list[dict] = []
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    {
+                        "hook_event_name": "Stop",
+                        "session_id": submit["session_id"],
+                        "turn_id": submit["turn_id"],
+                        "provider": provider,
+                        "last_assistant_message": "first queued reply",
+                    },
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    write_control=lambda payload: delivered.append(payload) or True,
+                    now=31,
+                    stderr=io.StringIO(),
+                ))
+
+                record = json.loads(Path(turns_path).read_text())["records"][0]
+                self.assertEqual(record["state"], "completed_final")
+                self.assertEqual(record["release_reason"], "provider_stop")
+                self.assertEqual(delivered[0]["text"], "first queued reply")
+
     def test_completion_hook_rebinds_duplicate_relay_prompt_identity_for_both_providers(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
@@ -3508,6 +3617,181 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                         pump.join(timeout=1)
                         restarted.close()
 
+    def test_pump_releases_terminal_recovered_claim_before_materializing_next(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command_path = os.path.join(temp_dir, "voice_cmd_ready")
+            meta_path = command_path + ".meta"
+            claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            inbox_path = os.path.join(temp_dir, "intent_inbox.sqlite3")
+            first = {
+                "relay_command_seq": 1,
+                "relay_command_id": "cmd-1",
+                "intent_id": "intent-1",
+                "provider": "codex",
+            }
+            second = {
+                "relay_command_seq": 2,
+                "relay_command_id": "cmd-2",
+                "intent_id": "intent-2",
+                "provider": "codex",
+            }
+            turn = {
+                "app_session_id": "app-session",
+                "recovery_generation": "generation-1",
+                "actor_role": "foreground_pm",
+                "foreground_gate_handle": "gate-1",
+                "provider": "codex",
+                "provider_session_id": "provider-session",
+                "session_id": "native-session",
+                "turn_id": "native-turn",
+                "origin": "relay",
+                "intent_id": "intent-1",
+                "relay_command_seq": 1,
+                "relay_command_id": "cmd-1",
+            }
+
+            inbox = voice_bridge.IntentInbox(
+                inbox_path,
+                provider_turn_projection_path=turns_path,
+            )
+            broker = ProviderTurnBroker(inbox_path, projection_path=turns_path)
+            stored = inbox.enqueue("private first prompt", first, "continue_current")
+            inbox.enqueue("private second prompt", second, "continue_current")
+            inbox.materialize_next(
+                command_path=command_path,
+                metadata_path=meta_path,
+                transport="app-owned",
+            )
+            inbox.observe_claim(stored, provider_turn_seen=False, now=100.0)
+            broker.activate(turn, now=100.1)
+            broker.transition(
+                turn,
+                to_state="completed_final",
+                event_type="provider_final",
+                release_reason="provider_stop",
+                now=101.0,
+            )
+            os.unlink(command_path)
+            os.unlink(meta_path)
+            inbox.close()
+
+            restarted = voice_bridge.IntentInbox(
+                inbox_path,
+                provider_turn_projection_path=turns_path,
+            )
+            shutdown_event = threading.Event()
+            pump = voice_bridge._start_intent_inbox_pump(
+                restarted,
+                shutdown_event,
+                command_path=command_path,
+                meta_path=meta_path,
+                claimed_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                transport="app-owned",
+                poll_seconds=0.005,
+            )
+            try:
+                for _ in range(100):
+                    if restarted.records()[0]["state"] == "acked":
+                        break
+                    shutdown_event.wait(0.005)
+
+                self.assertFalse(os.path.exists(meta_path))
+                reservation = broker.reserve_effect(turn, now=101.1)
+                self.assertTrue(reservation.accepted)
+                self.assertTrue(
+                    broker.authorize_effect_delivery(reservation.effect_id, now=101.2)
+                )
+                broker.finish_effect(reservation.effect_id, delivered=True, now=101.3)
+
+                for _ in range(100):
+                    if os.path.exists(meta_path):
+                        break
+                    shutdown_event.wait(0.005)
+
+                materialized = json.loads(Path(meta_path).read_text())
+                self.assertEqual(materialized["intent_id"], "intent-2")
+                self.assertEqual(
+                    [record["state"] for record in restarted.records()],
+                    ["acked", "delivered"],
+                )
+                self.assertEqual(broker.state_for(turn), "completed_final")
+            finally:
+                shutdown_event.set()
+                pump.join(timeout=1)
+                restarted.close()
+                broker.close()
+
+    def test_terminal_empty_predecessor_does_not_strand_next_intent(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                command_path = os.path.join(temp_dir, "voice_cmd_ready")
+                meta_path = command_path + ".meta"
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                inbox_path = os.path.join(temp_dir, "intent_inbox.sqlite3")
+                first = {
+                    **self.foreground_ownership(),
+                    "relay_command_seq": 1,
+                    "relay_command_id": "cmd-1",
+                    "intent_id": "intent-1",
+                    "provider": provider,
+                }
+                second = {
+                    **self.foreground_ownership(),
+                    "relay_command_seq": 2,
+                    "relay_command_id": "cmd-2",
+                    "intent_id": "intent-2",
+                    "provider": provider,
+                }
+                turn = {
+                    **first,
+                    "provider_session_id": "provider-session",
+                    "session_id": "native-session",
+                    "turn_id": "native-turn",
+                    "origin": "relay",
+                }
+
+                inbox = voice_bridge.IntentInbox(
+                    inbox_path,
+                    provider_turn_projection_path=turns_path,
+                )
+                broker = ProviderTurnBroker(inbox_path, projection_path=turns_path)
+                self.addCleanup(inbox.close)
+                self.addCleanup(broker.close)
+                stored = inbox.enqueue("private first prompt", first, "continue_current")
+                inbox.enqueue("private second prompt", second, "continue_current")
+                inbox.materialize_next(
+                    command_path=command_path,
+                    metadata_path=meta_path,
+                    transport="app-owned",
+                )
+                inbox.observe_claim(stored, provider_turn_seen=True, now=100.0)
+                broker.activate(turn, now=100.1)
+                broker.transition(
+                    turn,
+                    to_state="empty",
+                    event_type="provider_empty",
+                    release_reason="provider_stop",
+                    now=101.0,
+                )
+                os.unlink(command_path)
+                os.unlink(meta_path)
+
+                materialized = inbox.materialize_next(
+                    command_path=command_path,
+                    metadata_path=meta_path,
+                    transport="app-owned",
+                )
+
+                self.assertEqual(materialized["intent_id"], "intent-2")
+                self.assertEqual(
+                    [record["state"] for record in inbox.records()],
+                    ["acked", "delivered"],
+                )
+
     def test_manual_relay_bridge_claim_ack_advances_two_command_queue(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider):
@@ -3986,6 +4270,132 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 state_path=state_path,
             ))
             self.assertEqual(messenger.finals, [])
+
+    def test_provider_completion_control_preserves_reply_for_newer_continue_current(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            first = voice_bridge._begin_relay_command(
+                "first",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            first["intent_id"] = "first:item:1"
+            Path(state_path).write_text(json.dumps({
+                "relay_command_seq": 2,
+                "relay_command_id": "cmd-2",
+                "intent_id": "second:item:1",
+                "cancelled_intent_ids": [],
+                "work_disposition": {
+                    "route": "continue_current",
+                    "authorization_effect": "preserve",
+                    "cancellation_scope": "none",
+                },
+            }))
+            messenger = FakeMessenger()
+
+            self.assertTrue(voice_bridge._handle_provider_completion_control(
+                json.dumps({"text": "First reply.", **first}),
+                tts_worker=FakeTTSWorker(),
+                messenger=messenger,
+                state_path=state_path,
+            ))
+            self.assertEqual(messenger.finals, [{
+                "text": "First reply.",
+                "relay_command_seq": first["relay_command_seq"],
+                "relay_command_id": first["relay_command_id"],
+                "speech_source": "completion",
+            }])
+
+    def test_preserved_completion_falls_back_to_tts_after_messenger_advances(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            first = voice_bridge._begin_relay_command(
+                "first",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            first["intent_id"] = "first:item:1"
+            Path(state_path).write_text(json.dumps({
+                "relay_command_seq": 2,
+                "relay_command_id": "cmd-2",
+                "intent_id": "second:item:1",
+                "cancelled_intent_ids": [],
+                "work_disposition": {
+                    "route": "continue_current",
+                    "authorization_effect": "preserve",
+                    "cancellation_scope": "none",
+                },
+            }))
+            messenger = RejectingMessenger()
+            worker = FakeTTSWorker()
+
+            self.assertTrue(voice_bridge._handle_provider_completion_control(
+                json.dumps({"text": "First reply.", **first}),
+                tts_worker=worker,
+                messenger=messenger,
+                state_path=state_path,
+            ))
+            self.assertEqual(worker.input_queue.get_nowait(), {
+                "text": "First reply.",
+                "display_text": "First reply.",
+            })
+
+    def test_preserved_completion_stays_fresh_in_speech_coordinator(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            voice_bridge._reset_foreground_reply_delivery_for_tests()
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            first = voice_bridge._begin_relay_command(
+                "first",
+                state_path=state_path,
+                event_log_path=None,
+            )
+            first["intent_id"] = "first:item:1"
+            Path(state_path).write_text(json.dumps({
+                "relay_command_seq": 2,
+                "relay_command_id": "cmd-2",
+                "intent_id": "second:item:1",
+                "cancelled_intent_ids": [],
+                "work_disposition": {
+                    "route": "continue_current",
+                    "authorization_effect": "preserve",
+                    "cancellation_scope": "none",
+                },
+            }))
+            executor = FakeTTSWorker()
+            coordinator = voice_bridge.SpeechCoordinator(
+                executor,
+                is_current=lambda seq, command_id: voice_bridge._relay_command_current(
+                    seq,
+                    command_id,
+                    state_path=state_path,
+                ),
+                is_preserved=lambda seq, command_id, disposition: (
+                    voice_bridge._relay_command_current_or_preserved(
+                        {
+                            "relay_command_seq": seq,
+                            "relay_command_id": command_id,
+                            "intent_id": disposition.get("intent_id"),
+                        },
+                        state_path=state_path,
+                    )
+                ),
+            )
+
+            self.assertTrue(voice_bridge._handle_provider_completion_control(
+                json.dumps({"text": "First reply.", **first}),
+                tts_worker=coordinator,
+                messenger=RejectingMessenger(),
+                state_path=state_path,
+            ))
+            queued = executor.input_queue.get_nowait()
+            self.assertEqual(queued["text"], "First reply.")
+            self.assertEqual(queued["_speech_intent"]["command_seq"], 1)
+            self.assertEqual(
+                queued["_speech_intent"]["work_disposition"]["intent_id"],
+                "first:item:1",
+            )
 
     def test_provider_completion_control_routes_empty_completion_to_warning(self):
         with tempfile.TemporaryDirectory() as temp_dir:

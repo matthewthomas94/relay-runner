@@ -56,6 +56,29 @@ def _relay_command_key(command: dict | None) -> tuple[int, str] | None:
     return command_seq, command_id
 
 
+def _claimed_reply_authorized(claim: dict, state: dict) -> bool:
+    claim_key = _relay_command_key(claim)
+    state_key = _relay_command_key(state)
+    if claim_key is None:
+        return False
+    cancelled = state.get("cancelled_intent_ids")
+    if isinstance(cancelled, list) and str(claim.get("intent_id") or "") in {
+        str(value) for value in cancelled
+    }:
+        return False
+    if state_key == claim_key:
+        return True
+    if state_key is None or state_key[0] <= claim_key[0]:
+        return False
+    disposition = state.get("work_disposition")
+    return (
+        isinstance(disposition, dict)
+        and disposition.get("route") == "continue_current"
+        and disposition.get("authorization_effect") == "preserve"
+        and disposition.get("cancellation_scope") in {None, "none"}
+    )
+
+
 def encode_orchestrator_reply(text: str, command: dict) -> str:
     """Return the sole supported explicit foreground-reply wire envelope."""
     reply = str(text or "").strip()
@@ -95,7 +118,7 @@ def publish_current_reply(
     if key is None:
         print("[relay_reply] reply not emitted: claimed command unavailable", file=stderr)
         return False
-    if _relay_command_key(_read_json_file(state_path)) != key:
+    if not _claimed_reply_authorized(claim, _read_json_file(state_path)):
         print("[relay_reply] reply not emitted: claimed command is not current", file=stderr)
         return False
     try:
