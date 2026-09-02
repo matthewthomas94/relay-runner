@@ -412,6 +412,95 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(stateMachine.messagePreview, "Previously spoken reply")
     }
 
+    func testUncorrelatedAndDifferentWaitingPreviewsCannotReplaceActiveSpeech() {
+        let stateMachine = StateMachine()
+        let active = SpeechPresentation(
+            utteranceID: "speech-1",
+            originalUtteranceID: "speech-1",
+            mode: .newDelivery,
+            commandSequence: 1,
+            commandID: "command-1"
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "speaking",
+            text: "Complete active response.",
+            presentation: active
+        )
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "bounded final"
+        )
+        let different = SpeechPresentation(
+            utteranceID: "speech-2",
+            originalUtteranceID: "speech-2",
+            mode: .newDelivery,
+            commandSequence: 2,
+            commandID: "command-2"
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Different response.",
+            presentation: different
+        )
+
+        XCTAssertEqual(stateMachine.state, .speaking)
+        XCTAssertEqual(stateMachine.messagePreview, "Complete active response.")
+        XCTAssertEqual(stateMachine.speechPresentation, active)
+    }
+
+    func testMatchingPlaybackEventsAtomicallyReplaceProvisionalPreviewAndIgnoreForeignIdle() {
+        let stateMachine = StateMachine()
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Provisional response."
+        )
+        stateMachine.setPlaybackRequested()
+        let active = SpeechPresentation(
+            utteranceID: "speech-1",
+            originalUtteranceID: "speech-1",
+            mode: .newDelivery,
+            commandSequence: 1,
+            commandID: "command-1"
+        )
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "preparing",
+            text: "Complete validated response.",
+            presentation: active
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "speaking",
+            text: "Complete validated response.",
+            presentation: active
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "idle",
+            text: nil
+        )
+
+        XCTAssertEqual(stateMachine.state, .speaking)
+        XCTAssertEqual(stateMachine.messagePreview, "Complete validated response.")
+        XCTAssertEqual(stateMachine.speechPresentation, active)
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "idle",
+            text: nil,
+            presentation: active
+        )
+        XCTAssertEqual(stateMachine.state, .idle)
+        XCTAssertNil(stateMachine.messagePreview)
+        XCTAssertNil(stateMachine.speechPresentation)
+    }
+
     func testBlankWaitingAndPlaybackEventsPreserveAvailableResponsePreview() {
         let stateMachine = StateMachine()
 

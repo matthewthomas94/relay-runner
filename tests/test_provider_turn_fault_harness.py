@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -22,6 +23,7 @@ from provider_turn_fault_harness import (  # noqa: E402
     _same_invariant_value,
     run_fault_matrix,
 )
+import voice_bridge  # noqa: E402
 
 
 def swift_evidence():
@@ -36,10 +38,14 @@ def swift_evidence():
 
 class ProviderTurnFaultHarnessTests(unittest.TestCase):
     def test_restart_and_revocation_matrix_is_lossless_for_both_providers(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            mock.patch.object(voice_bridge, "_publish_authoritative_preview") as preview,
+        ):
             report = run_fault_matrix(Path(temp_dir), swift_evidence=swift_evidence())
 
         self.assertTrue(report["passed"], report["violations"])
+        preview.assert_not_called()
         self.assertEqual(report["providers"], ["codex", "claude"])
         self.assertEqual(
             report["normal_scenario_count"],

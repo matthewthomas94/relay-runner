@@ -102,6 +102,33 @@ final class TranscriptionPillScrollTests: XCTestCase {
         XCTAssertNotNil(mounted.pill.manualScrollFrameOnScreen())
     }
 
+    func testActivePlaybackReplacementRemovesStaleShortBodyAtPillWidth() throws {
+        let mounted = mountLongPill()
+        defer { mounted.close() }
+        let completeResponse = Array(
+            repeating: "The current utterance keeps its complete validated display text.",
+            count: 10
+        ).joined(separator: " ")
+
+        mounted.pill.showFull(
+            title: "Double tap Control to cancel",
+            body: "bounded final",
+            theme: .tts,
+            animated: false
+        )
+        mounted.pill.showFull(
+            title: "Double tap Control to cancel",
+            body: completeResponse,
+            theme: .tts,
+            animated: false
+        )
+
+        let bodyLabel = try XCTUnwrap(bodyLabel(in: mounted.pill))
+        XCTAssertEqual(bodyLabel.stringValue, completeResponse)
+        XCTAssertFalse(bodyLabel.stringValue.contains("bounded final"))
+        XCTAssertFalse(bodyLabel.cell?.truncatesLastVisibleLine ?? true)
+    }
+
     func testNewWaitingResponseSurvivesAnOlderHideCompletion() throws {
         let mounted = mountLongPill()
         defer { mounted.close() }

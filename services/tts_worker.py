@@ -187,6 +187,8 @@ class TTSWorker:
         self._last_unheard_display_text = ""
         self._last_response_text = ""
         self._last_response_display_text = ""
+        self._current_spoken_text = ""
+        self._current_display_text = ""
         self._chime_proc: subprocess.Popen | None = None
 
         # Speculative TTS — generation runs in parallel with the pill so the
@@ -475,6 +477,8 @@ class TTSWorker:
         preview_text = str(display_text or "").strip() or text
         self._last_response_text = text
         self._last_response_display_text = preview_text
+        self._current_spoken_text = text
+        self._current_display_text = preview_text
         generation = self._begin_playback()
         self._current_speech_intent = speech_intent
         _notify_state(
@@ -534,7 +538,14 @@ class TTSWorker:
             self._playing = False
             self._paused = False
             intent = getattr(self, "_current_speech_intent", None)
+            current_text = getattr(self, "_current_spoken_text", "")
+            current_display = getattr(self, "_current_display_text", "")
+            if current_text:
+                self._last_response_text = current_text
+                self._last_response_display_text = current_display or current_text
             self._current_speech_intent = None
+            self._current_spoken_text = ""
+            self._current_display_text = ""
             self._observe_speech("cancelled", intent)
 
     def publish_replay_retained(
@@ -619,6 +630,10 @@ class TTSWorker:
                 print("[tts_worker] Nothing to replay", file=sys.stderr)
                 return
             if self._last_response_display_text or self._last_response_text:
+                self._current_spoken_text = self._last_response_text
+                self._current_display_text = (
+                    self._last_response_display_text or self._last_response_text
+                )
                 _notify_state(
                     "preparing",
                     text=(self._last_response_display_text or self._last_response_text)[:2000],
@@ -642,11 +657,15 @@ class TTSWorker:
                 self._playing = False
                 self._paused = False
                 _notify_state("idle")
+                self._current_spoken_text = ""
+                self._current_display_text = ""
 
     def _play_wav_blocking(self, wav_path: str):
         """Play a single WAV file with afplay."""
+        preview = str(getattr(self, "_current_display_text", "") or "").strip()
         _notify_state(
             "speaking",
+            **({"text": preview[:2000]} if preview else {}),
             **_presentation_fields(self._current_speech_intent),
         )
         cmd = ["afplay", wav_path]
@@ -939,31 +958,38 @@ class TTSWorker:
         completed: bool = False,
         failed: bool = False,
     ):
+        current_text = getattr(self, "_current_spoken_text", "")
+        current_display = getattr(self, "_current_display_text", "") or current_text
         if getattr(self, "_playback_generation", 0) == generation:
             self._playing = False
             self._paused = False
             if failed:
-                preview = self._last_response_display_text or self._last_response_text
+                preview = current_display or self._last_response_display_text or self._last_response_text
                 _notify_state(
                     "failed",
                     text=preview[:2000],
                     **_presentation_fields(speech_intent),
                 )
             else:
-                _notify_state("idle")
+                _notify_state("idle", **_presentation_fields(speech_intent))
         elif not self._playing:
             if failed:
-                preview = self._last_response_display_text or self._last_response_text
+                preview = current_display or self._last_response_display_text or self._last_response_text
                 _notify_state(
                     "failed",
                     text=preview[:2000],
                     **_presentation_fields(speech_intent),
                 )
             else:
-                _notify_state("idle")
+                _notify_state("idle", **_presentation_fields(speech_intent))
         intent_was_current = getattr(self, "_current_speech_intent", None) == speech_intent
         if intent_was_current:
+            if current_text:
+                self._last_response_text = current_text
+                self._last_response_display_text = current_display
             self._current_speech_intent = None
+            self._current_spoken_text = ""
+            self._current_display_text = ""
             if failed:
                 self._observe_speech("failed", speech_intent)
             elif completed:
