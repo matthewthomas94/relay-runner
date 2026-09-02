@@ -66,7 +66,7 @@ from continuity_resume import (
     RECOVERY_ACTION_REQUIRED_TEXT,
     plan_continuity_resume,
 )
-from messenger import MessengerRuntime, create_messenger_runtime
+from messenger import MESSENGER_DEGRADED_TEXT, MessengerRuntime, create_messenger_runtime
 from sidecar_lane import (
     SidecarLane,
     SidecarLifecycleEvent,
@@ -2251,21 +2251,6 @@ def _sync_intent_inbox_state(
         print(f"[voice_bridge] Could not sync intent inbox state: {exc}", file=sys.stderr)
 
 
-def _intent_has_foreground_ownership(
-    inbox: IntentInbox | None,
-    command_seq: int,
-    command_id: str,
-) -> bool:
-    if inbox is None:
-        return False
-    return any(
-        int(record.get("command_seq") or -1) == int(command_seq)
-        and str(record.get("command_id") or "") == str(command_id)
-        and str(record.get("state") or "") in {"claimed", "acked"}
-        for record in inbox.records()
-    )
-
-
 def _enqueue_sidecar_intent(
     *,
     prompt: str,
@@ -2963,6 +2948,49 @@ def _queue_tts_text(
         except Exception as exc:
             print(f"[voice_bridge] Could not publish waiting preview: {exc}", file=sys.stderr)
     return True
+
+
+def _record_messenger_stage(
+    speech_gateway,
+    stage: str,
+    command: dict,
+    *,
+    at: float | None = None,
+    outcome: str = "ok",
+) -> None:
+    observer = getattr(speech_gateway, "record_messenger_stage", None)
+    command_key = _relay_command_key(command)
+    if not callable(observer) or command_key is None:
+        return
+    observer(
+        stage,
+        command_key[0],
+        command_key[1],
+        at=at,
+        provider=str(command.get("provider") or "").strip().lower() or None,
+        outcome=outcome,
+    )
+
+
+def _queue_messenger_degraded(command: dict, speech_gateway) -> bool:
+    command_key = _relay_command_key(command)
+    if command_key is None:
+        return False
+    return _queue_tts_text(
+        json.dumps({
+            "text": MESSENGER_DEGRADED_TEXT,
+            "relay_command_seq": command_key[0],
+            "relay_command_id": command_key[1],
+        }),
+        speech_gateway.input_queue,
+        allow_pending_command=True,
+        source="fallback",
+        kind="handoff",
+        authoritative=False,
+        semantic_brief="Messenger unavailable; foreground delivery preserved.",
+        replayable=True,
+        lifecycle_role="acknowledgement",
+    )
 
 
 def _queue_voice_acknowledgement(
@@ -3847,6 +3875,7 @@ def _run_relay(
     *,
     orchestrator_session: dict | None = None,
     messenger: MessengerRuntime | None = None,
+    messenger_expected: bool = True,
     suppress_startup_greeting: bool = False,
     inbox: IntentInbox | None = None,
     provider_turn_broker: ProviderTurnBroker | None = None,
@@ -3980,6 +4009,12 @@ def _run_relay(
                     text = "/" + slash_match.group(1).replace(" ", "-")
 
                 relay_command = _begin_relay_command(text)
+                _record_messenger_stage(
+                    tts_worker,
+                    "user_turn_received",
+                    relay_command,
+                    at=relay_command.get("received_at"),
+                )
                 if hasattr(tts_worker, "new_turn"):
                     tts_worker.new_turn(
                         relay_command["relay_command_seq"],
@@ -3987,6 +4022,24 @@ def _run_relay(
                     )
                 else:
                     tts_worker.skip()
+                # Submit before deterministic routing, inbox publication, or
+                # foreground delivery. The Messenger infers a safe response
+                # from the user text while the PM path proceeds independently.
+                should_submit_to_messenger = not suppress_next_messenger_user_reply
+                suppress_next_messenger_user_reply = False
+                if should_submit_to_messenger:
+                    submitted = bool(
+                        messenger is not None
+                        and messenger.submit_user(text, relay_command)
+                    )
+                    if not submitted and messenger_expected:
+                        _record_messenger_stage(
+                            tts_worker,
+                            "messenger_unavailable",
+                            relay_command,
+                            outcome="foreground_delivery_preserved",
+                        )
+                        _queue_messenger_degraded(relay_command, tts_worker)
                 resolved_items = _resolve_voice_work_items(
                     text,
                     relay_command,
@@ -4000,14 +4053,9 @@ def _run_relay(
                     relay_command["work_disposition"] = resolved_items[-1][
                         "disposition"
                     ].to_dict()
-                # Tutorial sessions need one authoritative reply to exercise
-                # play, replay, and cancel. A fast social reply here would race
-                # the foreground provider and leave its second greeting queued
-                # after the tutorial has already advanced.
-                should_submit_to_messenger = not suppress_next_messenger_user_reply
-                suppress_next_messenger_user_reply = False
-                if messenger is not None and should_submit_to_messenger:
-                    messenger.submit_user(text, relay_command)
+                update_user_context = getattr(messenger, "update_user_context", None)
+                if should_submit_to_messenger and callable(update_user_context):
+                    update_user_context(relay_command)
                 _queue_voice_acknowledgement(
                     relay_command,
                     tts_worker.input_queue,
@@ -4195,13 +4243,6 @@ def main():
                     "intent_id": disposition.get("intent_id"),
                 })
             ),
-            has_foreground_ownership=lambda command_seq, command_id: (
-                _intent_has_foreground_ownership(
-                    intent_inbox,
-                    command_seq,
-                    command_id,
-                )
-            ),
             event_log_path=SPEECH_EVENT_LOG,
             control_socket_path=TTS_CONTROL_SOCK,
         )
@@ -4269,6 +4310,7 @@ def main():
             ),
             coverage_provider=tts_worker.played_coverage,
             realization_observer=tts_worker.record_realization,
+            timing_observer=tts_worker.record_messenger_stage,
             continuity_observer=lambda event: _post_continuity_event(
                 "messenger",
                 str(event.get("event") or ""),
@@ -4315,6 +4357,9 @@ def main():
                 shutdown_event,
                 orchestrator_session=orchestrator_session,
                 messenger=messenger,
+                messenger_expected=bool(
+                    cfg.get("general", {}).get("messenger_enabled", True)
+                ),
                 suppress_startup_greeting=cli.get(
                     "suppress_startup_greeting",
                     False,

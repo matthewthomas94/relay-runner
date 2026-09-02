@@ -15,6 +15,7 @@ SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
 from messenger import (  # noqa: E402
+    MESSENGER_DEGRADED_TEXT,
     MESSENGER_SYSTEM_PROMPT,
     RELAY_RUNNER_DEMO_EXPLANATION,
     ClaudeMessengerBackend,
@@ -113,9 +114,9 @@ class MessengerConfigTests(unittest.TestCase):
         claude = MessengerConfig.from_app_config({"general": {"provider": "claude"}})
 
         self.assertTrue(codex.enabled)
-        self.assertEqual(codex.model, "sol")
-        self.assertEqual(codex.effort, "default")
-        self.assertEqual(claude.model, "best")
+        self.assertEqual(codex.model, "luna")
+        self.assertEqual(codex.effort, "low")
+        self.assertEqual(claude.model, "haiku")
         self.assertEqual(claude.effort, "default")
 
     def test_explicit_messenger_settings_are_provider_validated(self):
@@ -141,8 +142,8 @@ class MessengerConfigTests(unittest.TestCase):
                 "messenger_effort": "ultra",
             }
         })
-        self.assertEqual(invalid.model, "sol")
-        self.assertEqual(invalid.effort, "default")
+        self.assertEqual(invalid.model, "luna")
+        self.assertEqual(invalid.effort, "low")
 
     def test_codex_messenger_family_resolves_from_runtime_catalogue(self):
         config = MessengerConfig(True, "codex", "codex", "sol", "default", "/tmp")
@@ -277,6 +278,23 @@ class MessengerBackendContractTests(unittest.TestCase):
         self.assertTrue(event.is_set())
         self.assertEqual(backend._turn_text["turn-1"], "Fast reply")
 
+    def test_codex_backend_emits_first_complete_semantic_sentence_from_deltas(self):
+        config = MessengerConfig(True, "codex", "codex", "gpt-5.6-luna", "low", "/tmp")
+        backend = CodexMessengerBackend(config)
+        partials: list[str] = []
+        backend._turn_partial_callbacks["turn-1"] = partials.append
+
+        for delta in ("I picked up the latency ", "investigation and I'll report back.", " Extra"):
+            backend._handle_message({
+                "method": "item/agentMessage/delta",
+                "params": {"turnId": "turn-1", "delta": delta},
+            })
+
+        self.assertEqual(
+            partials,
+            ["I picked up the latency investigation and I'll report back."],
+        )
+
     def test_claude_backend_uses_stream_json_haiku_without_tools(self):
         config = MessengerConfig(
             enabled=True,
@@ -318,8 +336,172 @@ class MessengerBackendContractTests(unittest.TestCase):
         self.assertTrue(pending["event"].is_set())
         self.assertEqual(pending["text"], "Fast reply")
 
+    def test_claude_backend_emits_first_complete_semantic_sentence_from_stream(self):
+        class FakeProcess:
+            stdout = iter([
+                json.dumps({
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": "I understood the request"},
+                    },
+                }) + "\n",
+                json.dumps({
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": " and I'll return with the result."},
+                    },
+                }) + "\n",
+                json.dumps({"type": "result", "result": "I understood the request and I'll return with the result."}) + "\n",
+            ])
+
+        config = MessengerConfig(True, "claude", "claude", "haiku", "default", "/tmp")
+        backend = ClaudeMessengerBackend(config)
+        partials: list[str] = []
+        pending = {
+            "event": threading.Event(),
+            "text": "",
+            "error": None,
+            "on_partial": partials.append,
+            "partial_delivered": False,
+        }
+        process = FakeProcess()
+        backend._pending = pending
+        backend._proc = process
+
+        backend._read_stream(process)
+
+        self.assertEqual(
+            partials,
+            ["I understood the request and I'll return with the result."],
+        )
+
 
 class MessengerRuntimeTests(unittest.TestCase):
+    def test_streaming_response_is_spoken_before_provider_turn_completes(self):
+        class StreamingBackend(FakeBackend):
+            config = MessengerConfig(True, "codex", "codex", "gpt-5.6-luna", "low", "/tmp")
+
+            def __init__(self):
+                super().__init__()
+                self.release = threading.Event()
+
+            def ask(self, prompt, timeout=60.0, on_partial=None):
+                self.prompts.append(prompt)
+                on_partial("I picked up the latency regression and I'll return with the result.")
+                self.release.wait(timeout)
+                return "I picked up the latency regression and I'll return with the result."
+
+        backend = StreamingBackend()
+        spoken: list[str] = []
+        timing: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+            timing_observer=lambda stage, *_args, **_kwargs: timing.append(stage),
+        )
+        runtime.start()
+        try:
+            runtime.submit_user(
+                "Investigate the latency regression",
+                {"relay_command_seq": 1, "relay_command_id": "streaming"},
+            )
+
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            self.assertFalse(backend.release.is_set())
+            self.assertEqual(
+                timing[:3],
+                [
+                    "messenger_submitted",
+                    "messenger_provider_started",
+                    "messenger_first_semantic_output",
+                ],
+            )
+            backend.release.set()
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 1))
+            time.sleep(0.05)
+            self.assertEqual(len(spoken), 1)
+        finally:
+            backend.release.set()
+            runtime.shutdown()
+
+    def test_provider_failure_reports_degraded_state_without_swallowing_final(self):
+        class FailingBackend(FakeBackend):
+            def ask(self, prompt: str, timeout: float = 60.0) -> str:
+                self.prompts.append(prompt)
+                raise RuntimeError("provider unavailable")
+
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            FailingBackend(),
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            command = {"relay_command_seq": 2, "relay_command_id": "degraded"}
+            runtime.submit_user("Fix the provider path", command)
+            self.assertTrue(wait_until(lambda: spoken == [MESSENGER_DEGRADED_TEXT]))
+
+            self.assertTrue(runtime.submit_final({"text": "The foreground result is ready.", **command}))
+            self.assertEqual(
+                spoken,
+                [MESSENGER_DEGRADED_TEXT, "The foreground result is ready."],
+            )
+        finally:
+            runtime.shutdown()
+
+    def test_direct_conversation_answer_suppresses_redundant_foreground_final(self):
+        backend = FakeBackend(["You're welcome."])
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        command = {"relay_command_seq": 3, "relay_command_id": "conversation"}
+        runtime.submit_user("Thanks", command)
+        runtime.update_user_context({
+            **command,
+            "source_text": "Thanks",
+            "work_disposition": {"route": "continue_current", "public_reason": "Conversation."},
+        })
+        runtime.start()
+        try:
+            self.assertTrue(wait_until(lambda: spoken == ["You're welcome."]))
+            self.assertTrue(runtime.submit_final({"text": "You're welcome again.", **command}))
+            self.assertEqual(spoken, ["You're welcome."])
+        finally:
+            runtime.shutdown()
+
+    def test_control_only_handoff_preserves_authoritative_foreground_result(self):
+        backend = FakeBackend(["I'll open Chrome and report back."])
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        command = {"relay_command_seq": 4, "relay_command_id": "control-only"}
+        runtime.submit_user("Open Chrome", command)
+        runtime.update_user_context({
+            **command,
+            "source_text": "Open Chrome",
+            "work_disposition": {"route": "control_only", "public_reason": "Direct action."},
+        })
+        runtime.start()
+        try:
+            self.assertTrue(wait_until(lambda: len(spoken) == 1))
+            self.assertTrue(runtime.submit_final({"text": "Chrome is open.", **command}))
+            self.assertEqual(
+                spoken,
+                ["I'll open Chrome and report back.", "Chrome is open."],
+            )
+        finally:
+            runtime.shutdown()
+
     def test_demo_self_explanation_is_answered_directly_without_foreground_duplicate(self):
         answer = (
             "Relay Runner is a local Mac workspace for turning conversation into "
@@ -1103,7 +1285,7 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
-    def test_conversational_final_uses_authoritative_text_without_model_round_trip(self):
+    def test_conversational_final_does_not_repeat_direct_messenger_answer(self):
         backend = FakeBackend([
             "You’re welcome.",
             json.dumps({
@@ -1135,8 +1317,8 @@ class MessengerRuntimeTests(unittest.TestCase):
             self.assertTrue(wait_until(lambda: len(spoken) == 1))
             runtime.submit_final({"text": "You are welcome.", **command})
 
-            self.assertTrue(wait_until(lambda: len(spoken) == 2))
-            self.assertEqual(spoken[1][0], "You are welcome.")
+            time.sleep(0.05)
+            self.assertEqual(len(spoken), 1)
             self.assertEqual(len(backend.prompts), 1)
         finally:
             runtime.shutdown()

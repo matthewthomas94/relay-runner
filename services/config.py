@@ -5,7 +5,11 @@ from __future__ import annotations
 import os
 import sys
 
-from codex_model_catalog import CODEX_FAMILIES, normalize_codex_family
+from codex_model_catalog import (
+    CODEX_FAMILIES,
+    CODEX_MESSENGER_DEFAULT_FAMILY,
+    normalize_codex_family,
+)
 
 # Try tomllib (Python 3.11+), fall back to toml package, fall back to manual parsing
 try:
@@ -125,8 +129,8 @@ def load_config(config_path: str | None = None) -> dict:
             "orchestrator_effort": "xhigh",
             "codex_reasoning_effort": "default",
             "messenger_enabled": True,
-            "messenger_model": "sol",
-            "messenger_effort": "default",
+            "messenger_model": "luna",
+            "messenger_effort": "low",
             "subagent_sizing_policy": "orchestrator_decides",
             "prevent_sleep_while_running": False,
         },
@@ -284,21 +288,33 @@ def _migrate_config(
     )
 
     raw_messenger_model = str(general.get("messenger_model", general["model"])).strip().lower()
+    raw_messenger_effort = str(general.get("messenger_effort", "default")).strip().lower()
+    # RR-229 persisted the foreground defaults into Messenger configuration,
+    # turning the lightweight lane into Sol/Best at their default effort. Those
+    # generated pairs were never exposed in Settings, so migrate them back to
+    # the provider-specific lightweight defaults.
+    if provider == "codex" and (raw_messenger_model, raw_messenger_effort) == ("sol", "default"):
+        raw_messenger_model, raw_messenger_effort = "luna", "low"
+    elif provider == "claude" and (raw_messenger_model, raw_messenger_effort) == ("best", "default"):
+        raw_messenger_model, raw_messenger_effort = "haiku", "default"
     messenger_model = raw_messenger_model
     if provider == "codex":
-        messenger_model = normalize_codex_family(messenger_model)
+        messenger_model = normalize_codex_family(
+            messenger_model,
+            default_family=CODEX_MESSENGER_DEFAULT_FAMILY,
+        )
         messenger_effort = (
-            "default"
+            "low"
             if messenger_model != raw_messenger_model
-            else str(general.get("messenger_effort", "default")).strip().lower()
+            else raw_messenger_effort
         )
         if messenger_effort not in valid_messenger_efforts(provider, messenger_model):
-            messenger_effort = "default"
+            messenger_effort = "low"
     elif messenger_model not in {"best", "fable", "opus", "sonnet", "haiku"}:
-        messenger_model = "best"
+        messenger_model = "haiku"
         messenger_effort = "default"
     else:
-        messenger_effort = str(general.get("messenger_effort", "default")).strip().lower()
+        messenger_effort = raw_messenger_effort
         effective_messenger_model = messenger_model
         if messenger_effort not in valid_messenger_efforts(provider, effective_messenger_model):
             messenger_effort = "default"

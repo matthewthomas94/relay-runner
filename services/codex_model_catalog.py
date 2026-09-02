@@ -17,7 +17,7 @@ from typing import Any, Iterable
 
 CODEX_FAMILIES = frozenset({"sol", "terra", "luna"})
 CODEX_DEFAULT_FAMILY = "sol"
-CODEX_MESSENGER_DEFAULT_FAMILY = "sol"
+CODEX_MESSENGER_DEFAULT_FAMILY = "luna"
 CODEX_WORKER_TIER_FAMILIES = {
     "fast": "luna",
     "balanced": "terra",

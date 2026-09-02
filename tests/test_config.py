@@ -59,8 +59,8 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("subagent_model", config["general"])
         self.assertNotIn("subagent_effort", config["general"])
         self.assertTrue(config["general"]["messenger_enabled"])
-        self.assertEqual(config["general"]["messenger_model"], "sol")
-        self.assertEqual(config["general"]["messenger_effort"], "default")
+        self.assertEqual(config["general"]["messenger_model"], "luna")
+        self.assertEqual(config["general"]["messenger_effort"], "low")
         self.assertFalse(config["general"]["prevent_sleep_while_running"])
         self.assertEqual(config["orchestrator"]["worker_health_check_seconds"], 600)
         self.assertNotIn("worker_timeout_seconds", config["orchestrator"])
@@ -74,6 +74,8 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config["general"]["model"], "opus")
         self.assertEqual(config["general"]["orchestrator_effort"], "xhigh")
+        self.assertEqual(config["general"]["messenger_model"], "haiku")
+        self.assertEqual(config["general"]["messenger_effort"], "default")
 
     def test_load_config_migrates_legacy_orchestrator_values_without_resetting_explicit_values(self):
         cases = [
@@ -297,8 +299,29 @@ class ConfigTests(unittest.TestCase):
 
             config = load_config(str(path))
 
-        self.assertEqual(config["general"]["messenger_model"], "sol")
-        self.assertEqual(config["general"]["messenger_effort"], "default")
+        self.assertEqual(config["general"]["messenger_model"], "luna")
+        self.assertEqual(config["general"]["messenger_effort"], "low")
+
+    def test_load_config_migrates_generated_foreground_messenger_defaults(self):
+        cases = (
+            ("codex", "sol", "default", "luna", "low"),
+            ("claude", "best", "default", "haiku", "default"),
+        )
+        for provider, model, effort, expected_model, expected_effort in cases:
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "config.toml"
+                path.write_text(
+                    "[general]\n"
+                    f'provider = "{provider}"\n'
+                    f'messenger_model = "{model}"\n'
+                    f'messenger_effort = "{effort}"\n',
+                    encoding="utf-8",
+                )
+
+                config = load_config(str(path))
+
+            self.assertEqual(config["general"]["messenger_model"], expected_model)
+            self.assertEqual(config["general"]["messenger_effort"], expected_effort)
 
 
 if __name__ == "__main__":

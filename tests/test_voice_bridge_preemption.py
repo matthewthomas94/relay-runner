@@ -167,47 +167,79 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             "foreground_gate_handle": "test-gate",
         }
 
-    def test_messenger_handoff_ownership_requires_exact_claimed_or_acked_intent(self):
-        for provider in ("codex", "claude"):
-            inbox = mock.Mock()
-            inbox.records.return_value = [
-                {
-                    "command_seq": 1,
-                    "command_id": f"{provider}-claimed",
-                    "state": "claimed",
-                },
-                {
-                    "command_seq": 2,
-                    "command_id": f"{provider}-queued",
-                    "state": "queued",
-                },
-                {
-                    "command_seq": 3,
-                    "command_id": f"{provider}-acked",
-                    "state": "acked",
-                },
-            ]
+    def test_relay_submits_messenger_before_command_classification(self):
+        worker = FakeTTSWorker()
+        messenger = FakeMessenger()
+        shutdown_event = threading.Event()
 
-            self.assertTrue(voice_bridge._intent_has_foreground_ownership(
-                inbox,
-                1,
-                f"{provider}-claimed",
-            ))
-            self.assertFalse(voice_bridge._intent_has_foreground_ownership(
-                inbox,
-                2,
-                f"{provider}-queued",
-            ))
-            self.assertTrue(voice_bridge._intent_has_foreground_ownership(
-                inbox,
-                3,
-                f"{provider}-acked",
-            ))
-            self.assertFalse(voice_bridge._intent_has_foreground_ownership(
-                inbox,
-                3,
-                f"{provider}-wrong-command",
-            ))
+        def read_once(_fd, _size):
+            shutdown_event.set()
+            return b"Investigate the speech delay\n"
+
+        def resolve_after_submit(*_args, **_kwargs):
+            self.assertEqual(len(messenger.users), 1)
+            self.assertEqual(messenger.users[0][0], "Investigate the speech delay")
+            return []
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge.os, "close"),
+            mock.patch.object(voice_bridge.os, "read", side_effect=read_once),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=123),
+            mock.patch.object(voice_bridge.select, "select", return_value=([123], [], [])),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_begin_relay_command", return_value={
+                "relay_command_seq": 1,
+                "relay_command_id": "fast-submit",
+                "received_at": 1.0,
+            }),
+            mock.patch.object(voice_bridge, "_active_work", return_value=[]),
+            mock.patch.object(
+                voice_bridge,
+                "_resolve_voice_work_items",
+                side_effect=resolve_after_submit,
+            ),
+            mock.patch.object(voice_bridge, "_queue_voice_acknowledgement"),
+        ):
+            voice_bridge._run_relay(worker, shutdown_event, messenger=messenger)
+
+        self.assertEqual(messenger.users[0][1]["relay_command_id"], "fast-submit")
+
+    def test_explicitly_disabled_messenger_does_not_emit_degraded_prompt(self):
+        worker = FakeTTSWorker()
+        shutdown_event = threading.Event()
+
+        def read_once(_fd, _size):
+            shutdown_event.set()
+            return b"Keep working\n"
+
+        with (
+            mock.patch.object(voice_bridge.os, "unlink"),
+            mock.patch.object(voice_bridge.os, "close"),
+            mock.patch.object(voice_bridge.os, "read", side_effect=read_once),
+            mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+            mock.patch.object(voice_bridge, "open_fifo", return_value=123),
+            mock.patch.object(voice_bridge.select, "select", return_value=([123], [], [])),
+            mock.patch.object(voice_bridge.threading, "Thread"),
+            mock.patch.object(voice_bridge, "_begin_relay_command", return_value={
+                "relay_command_seq": 1,
+                "relay_command_id": "messenger-disabled",
+                "received_at": 1.0,
+            }),
+            mock.patch.object(voice_bridge, "_active_work", return_value=[]),
+            mock.patch.object(voice_bridge, "_resolve_voice_work_items", return_value=[]),
+            mock.patch.object(voice_bridge, "_queue_voice_acknowledgement"),
+            mock.patch.object(voice_bridge, "_queue_messenger_degraded") as degraded,
+        ):
+            voice_bridge._run_relay(
+                worker,
+                shutdown_event,
+                messenger=None,
+                messenger_expected=False,
+            )
+
+        degraded.assert_not_called()
 
     def test_completion_hook_requires_matching_foreground_owner_for_both_providers(self):
         for provider in ("codex", "claude"):

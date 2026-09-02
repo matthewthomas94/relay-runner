@@ -9,8 +9,8 @@ session remains authoritative.
 
 from __future__ import annotations
 
-import json
 import inspect
+import json
 import os
 import queue
 import re
@@ -30,7 +30,6 @@ from continuity_incidents import normalize_recovery_generation
 from codex_model_catalog import (
     CODEX_FAMILIES,
     CODEX_MESSENGER_DEFAULT_FAMILY,
-    CODEX_PROVIDER_DEFAULT_EFFORT,
     CodexModelResolutionError,
     codex_family_for_model,
     normalize_codex_family,
@@ -41,10 +40,14 @@ from command_actions import is_relay_runner_self_explanation
 from pm_frontstage import LIFECYCLE_DETAIL_TRACE_KINDS
 
 CODEX_DEFAULT_MODEL = CODEX_MESSENGER_DEFAULT_FAMILY
-CODEX_DEFAULT_EFFORT = CODEX_PROVIDER_DEFAULT_EFFORT
-CLAUDE_DEFAULT_MODEL = "best"
+CODEX_DEFAULT_EFFORT = "low"
+CLAUDE_DEFAULT_MODEL = "haiku"
 CLAUDE_DEFAULT_EFFORT = "default"
 SILENT_RESPONSE = "__SILENT__"
+MESSENGER_DEGRADED_TEXT = (
+    "I couldn't produce a fast response, but your request is still with the "
+    "foreground session."
+)
 RELAY_RUNNER_DEMO_EXPLANATION = (
     "Relay Runner is a local macOS workspace that turns natural conversation "
     "into visible, coordinated software work. It organizes requests into tickets, "
@@ -90,6 +93,18 @@ _BASE_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
 _UNSCOPED_LIFECYCLE_KINDS = LIFECYCLE_DETAIL_TRACE_KINDS
 _WORK_LIFECYCLE_KINDS = frozenset({"sidecar-outcome"})
 
+
+def _first_semantic_response(text: str, *, complete: bool = False) -> str | None:
+    """Return the first speakable sentence without exposing partial token noise."""
+    cleaned = " ".join(str(text or "").split()).strip()
+    if not cleaned or cleaned == SILENT_RESPONSE:
+        return None
+    boundary = re.search(r"[.!?](?:[\"'’])?(?=\s|$)", cleaned)
+    candidate = cleaned[:boundary.end()] if boundary else (cleaned if complete else "")
+    if len(_SEMANTIC_TOKEN_RE.findall(candidate)) < 3:
+        return None
+    return candidate
+
 FOREGROUND_ONLY_ENVIRONMENT_KEYS = frozenset({
     "RELAY_CONTEXT_COMPACTION_EVENTS",
     "RELAY_FOREGROUND_GATE_HANDLE",
@@ -131,12 +146,14 @@ as the worker or workers instead of folding their actions into "I".
 For a new work request or substantive question that should be handed off, give a
 brief contextual acknowledgement that reflects the request, says you received
 or picked it up, confirms the immediate next step, and says you will return with
-the result or a decision request. Keep that handoff to one or two short spoken
-sentences. Do not claim that a ticket, worker, or implementation exists unless a
-later authoritative event says so. The notch
-already provides deterministic visual receipt, so do not add a canned spoken
-acknowledgement that ignores the user's actual request.
+the result or a decision request. Keep that handoff to one short spoken sentence
+so it can be delivered as soon as the sentence is complete. Do not claim that a
+ticket, worker, or implementation exists unless a later authoritative event says
+so. The notch already provides deterministic visual receipt, so do not add a
+canned spoken acknowledgement that ignores the user's actual request.
 You may answer lightweight social conversation when no orchestration is needed.
+Keep those direct social answers to one short spoken sentence so their complete
+meaning can be delivered on the first semantic boundary.
 When the user asks what Relay Runner is, what it does, or requests a short
 introduction for a demo audience, answer immediately in one or two natural
 sentences. Do not hand that request off or promise a later answer. Describe Relay
@@ -317,7 +334,12 @@ def provider_child_environment(
 
 class MessengerBackend(Protocol):
     def start(self) -> None: ...
-    def ask(self, prompt: str, timeout: float = 60.0) -> str: ...
+    def ask(
+        self,
+        prompt: str,
+        timeout: float = 60.0,
+        on_partial: Callable[[str], object] | None = None,
+    ) -> str: ...
     def interrupt(self) -> None: ...
     def shutdown(self) -> None: ...
 
@@ -346,6 +368,8 @@ class CodexMessengerBackend:
         self._turn_events: dict[str, threading.Event] = {}
         self._turn_text: dict[str, str] = {}
         self._turn_errors: dict[str, str] = {}
+        self._turn_partial_callbacks: dict[str, Callable[[str], object]] = {}
+        self._pending_partial_callback: Callable[[str], object] | None = None
         self._thread_id: str | None = None
         self._active_turn_id: str | None = None
         self._ask_in_progress = False
@@ -434,7 +458,12 @@ class CodexMessengerBackend:
                 raise
             self._thread_id = str(thread_id)
 
-    def ask(self, prompt: str, timeout: float = 60.0) -> str:
+    def ask(
+        self,
+        prompt: str,
+        timeout: float = 60.0,
+        on_partial: Callable[[str], object] | None = None,
+    ) -> str:
         self.start()
         thread_id = self._thread_id
         if not thread_id:
@@ -442,6 +471,7 @@ class CodexMessengerBackend:
 
         with self._state_lock:
             self._ask_in_progress = True
+            self._pending_partial_callback = on_partial
         try:
             params = {
                 "threadId": thread_id,
@@ -460,9 +490,15 @@ class CodexMessengerBackend:
             turn_id = str(turn_id)
             with self._state_lock:
                 self._active_turn_id = turn_id
+                callback = self._pending_partial_callback
+                self._pending_partial_callback = None
+                if callback is not None:
+                    self._turn_partial_callbacks[turn_id] = callback
                 event = self._turn_events.setdefault(turn_id, threading.Event())
                 if turn_id in self._turn_text or turn_id in self._turn_errors:
                     event.set()
+                partial = self._take_partial_locked(turn_id, complete=False)
+            self._emit_partial(partial)
             if not event.wait(timeout=max(0.1, timeout)):
                 self.interrupt()
                 raise MessengerError("Codex messenger response timed out")
@@ -470,6 +506,7 @@ class CodexMessengerBackend:
                 error = self._turn_errors.pop(turn_id, None)
                 text = self._turn_text.pop(turn_id, "")
                 self._turn_events.pop(turn_id, None)
+                self._turn_partial_callbacks.pop(turn_id, None)
                 if self._active_turn_id == turn_id:
                     self._active_turn_id = None
             if error:
@@ -478,6 +515,7 @@ class CodexMessengerBackend:
         finally:
             with self._state_lock:
                 self._ask_in_progress = False
+                self._pending_partial_callback = None
 
     def interrupt(self) -> None:
         with self._state_lock:
@@ -589,6 +627,8 @@ class CodexMessengerBackend:
             delta = str(params.get("delta") or "")
             with self._state_lock:
                 self._turn_text[turn_id] = self._turn_text.get(turn_id, "") + delta
+                partial = self._take_partial_locked(turn_id, complete=False)
+            self._emit_partial(partial)
             return
         if method == "item/completed" and turn_id:
             item = params.get("item")
@@ -597,6 +637,8 @@ class CodexMessengerBackend:
                 if text:
                     with self._state_lock:
                         self._turn_text[turn_id] = text
+                        partial = self._take_partial_locked(turn_id, complete=True)
+                    self._emit_partial(partial)
             return
         if method != "turn/completed":
             return
@@ -613,9 +655,39 @@ class CodexMessengerBackend:
         with self._state_lock:
             if final_text:
                 self._turn_text[turn_id] = final_text
+            partial = self._take_partial_locked(turn_id, complete=True)
             if status == "failed" or error:
                 self._turn_errors[turn_id] = f"Codex messenger turn failed: {error or status}"
             self._turn_events.setdefault(turn_id, threading.Event()).set()
+        self._emit_partial(partial)
+
+    def _take_partial_locked(
+        self,
+        turn_id: str,
+        *,
+        complete: bool,
+    ) -> tuple[Callable[[str], object], str] | None:
+        callback = self._turn_partial_callbacks.get(turn_id)
+        response = _first_semantic_response(
+            self._turn_text.get(turn_id, ""),
+            complete=complete,
+        )
+        if callback is None or response is None:
+            return None
+        self._turn_partial_callbacks.pop(turn_id, None)
+        return callback, response
+
+    @staticmethod
+    def _emit_partial(
+        pending: tuple[Callable[[str], object], str] | None,
+    ) -> None:
+        if pending is None:
+            return
+        callback, response = pending
+        try:
+            callback(response)
+        except Exception:
+            pass
 
     def _fail_pending(self, message: str, *, proc: subprocess.Popen | None = None) -> None:
         with self._state_lock:
@@ -629,6 +701,8 @@ class CodexMessengerBackend:
                 event.set()
             self._thread_id = None
             self._active_turn_id = None
+            self._turn_partial_callbacks.clear()
+            self._pending_partial_callback = None
             if proc is not None:
                 self._proc = None
 
@@ -637,6 +711,7 @@ class CodexMessengerBackend:
         self._proc = None
         self._thread_id = None
         self._active_turn_id = None
+        self._pending_partial_callback = None
         if proc is None:
             return
         try:
@@ -736,12 +811,19 @@ class ClaudeMessengerBackend:
             )
             self._reader_thread.start()
 
-    def ask(self, prompt: str, timeout: float = 60.0) -> str:
+    def ask(
+        self,
+        prompt: str,
+        timeout: float = 60.0,
+        on_partial: Callable[[str], object] | None = None,
+    ) -> str:
         self.start()
         pending = {
             "event": threading.Event(),
             "text": "",
             "error": None,
+            "on_partial": on_partial,
+            "partial_delivered": False,
         }
         with self._state_lock:
             self._pending = pending
@@ -810,6 +892,29 @@ class ClaudeMessengerBackend:
                 session_id = message.get("session_id")
                 if session_id:
                     self._session_id = str(session_id)
+                if message.get("type") == "stream_event":
+                    stream_event = message.get("event")
+                    delta = stream_event.get("delta") if isinstance(stream_event, dict) else None
+                    if (
+                        isinstance(stream_event, dict)
+                        and stream_event.get("type") == "content_block_delta"
+                        and isinstance(delta, dict)
+                        and delta.get("type") == "text_delta"
+                    ):
+                        self._append_partial(str(delta.get("text") or ""), complete=False)
+                    continue
+                if message.get("type") == "assistant":
+                    assistant = message.get("message")
+                    content = assistant.get("content") if isinstance(assistant, dict) else None
+                    if isinstance(content, list):
+                        text = "".join(
+                            str(block.get("text") or "")
+                            for block in content
+                            if isinstance(block, dict) and block.get("type") == "text"
+                        )
+                        if text:
+                            self._set_partial(text, complete=False)
+                    continue
                 if message.get("type") != "result":
                     continue
                 with self._state_lock:
@@ -820,7 +925,10 @@ class ClaudeMessengerBackend:
                         pending["error"] = message.get("result") or "Claude messenger turn failed"
                     else:
                         pending["text"] = message.get("result") or ""
+                        partial = self._take_claude_partial_locked(pending, complete=True)
                     pending["event"].set()
+                if not message.get("is_error"):
+                    self._emit_claude_partial(partial)
         except (OSError, ValueError):
             pass
         finally:
@@ -831,6 +939,56 @@ class ClaudeMessengerBackend:
                     pending["event"].set()
                 if self._proc is proc:
                     self._proc = None
+
+    def _append_partial(self, text: str, *, complete: bool) -> None:
+        if not text:
+            return
+        with self._state_lock:
+            pending = self._pending
+            if pending is None:
+                return
+            pending["text"] = str(pending.get("text") or "") + text
+            partial = self._take_claude_partial_locked(pending, complete=complete)
+        self._emit_claude_partial(partial)
+
+    def _set_partial(self, text: str, *, complete: bool) -> None:
+        with self._state_lock:
+            pending = self._pending
+            if pending is None:
+                return
+            pending["text"] = text
+            partial = self._take_claude_partial_locked(pending, complete=complete)
+        self._emit_claude_partial(partial)
+
+    @staticmethod
+    def _take_claude_partial_locked(
+        pending: dict,
+        *,
+        complete: bool,
+    ) -> tuple[Callable[[str], object], str] | None:
+        if pending.get("partial_delivered"):
+            return None
+        callback = pending.get("on_partial")
+        response = _first_semantic_response(
+            str(pending.get("text") or ""),
+            complete=complete,
+        )
+        if not callable(callback) or response is None:
+            return None
+        pending["partial_delivered"] = True
+        return callback, response
+
+    @staticmethod
+    def _emit_claude_partial(
+        partial: tuple[Callable[[str], object], str] | None,
+    ) -> None:
+        if partial is None:
+            return
+        callback, response = partial
+        try:
+            callback(response)
+        except Exception:
+            pass
 
 
 @dataclass(frozen=True)
@@ -870,6 +1028,7 @@ class MessengerRuntime:
         coverage_provider: Callable[[int, str], object] | None = None,
         realization_observer: Callable[..., object] | None = None,
         continuity_observer: Callable[[dict], object] | None = None,
+        timing_observer: Callable[..., object] | None = None,
         recovery_generation: str = "0",
     ):
         self.backend = backend
@@ -883,6 +1042,7 @@ class MessengerRuntime:
         self._coverage_provider = coverage_provider
         self._realization_observer = realization_observer
         self._continuity_observer = continuity_observer
+        self._timing_observer = timing_observer
         self._recovery_generation = normalize_recovery_generation(recovery_generation)
         self._coverage_error_events: set[tuple[int, int, str]] = set()
         self._lock = threading.Lock()
@@ -892,6 +1052,9 @@ class MessengerRuntime:
         self._final_commands: set[tuple[int, str]] = set()
         self._active_event: _MessengerEvent | None = None
         self._action_kinds: dict[tuple[int, str], str] = {}
+        self._work_dispositions: dict[tuple[int, str], dict] = {}
+        self._user_response_commands: set[tuple[int, str]] = set()
+        self._conversation_commands_answered: set[tuple[int, str]] = set()
         self._started = False
         self._shutdown = threading.Event()
         self._worker_thread: threading.Thread | None = None
@@ -938,14 +1101,19 @@ class MessengerRuntime:
                 if is_relay_runner_self_explanation(cleaned)
                 else (
                     "conversation"
-                    if route in {"continue_current", "control_only"}
-                    else "work"
+                    if route == "continue_current"
+                    else "work" if route else "pending"
                 )
             )
             self._action_kinds[command_key] = action_kind
+            if disposition:
+                self._work_dispositions[command_key] = disposition
             if len(self._action_kinds) > 100:
                 for old in list(self._action_kinds)[:50]:
                     self._action_kinds.pop(old, None)
+                    self._work_dispositions.pop(old, None)
+                    self._user_response_commands.discard(old)
+                    self._conversation_commands_answered.discard(old)
             self._has_trace_for_current_command = False
             self._context.append(f"USER: {cleaned}")
             if disposition:
@@ -956,6 +1124,7 @@ class MessengerRuntime:
             self._discard_pending_events_locked()
         if supersedes:
             self.backend.interrupt()
+        self._observe_timing("messenger_submitted", command_key[0], command_key[1])
         self._events.put(_MessengerEvent(
             kind="user_turn",
             text=cleaned,
@@ -966,6 +1135,34 @@ class MessengerRuntime:
             work_disposition=disposition,
             action_kind=action_kind,
         ))
+        return True
+
+    def update_user_context(self, command: dict) -> bool:
+        """Attach deterministic routing context without delaying Messenger start."""
+        command_key = _command_key(command)
+        disposition = command.get("work_disposition") if isinstance(command, dict) else None
+        if command_key is None or not isinstance(disposition, dict):
+            return False
+        route = str(disposition.get("route") or "").strip().lower()
+        source_text = str(command.get("source_text") or "").strip()
+        with self._lock:
+            if command_key != self._current_command:
+                return False
+            self._action_kinds[command_key] = (
+                "self_explanation"
+                if is_relay_runner_self_explanation(source_text)
+                else "conversation" if route == "continue_current" else "work"
+            )
+            self._work_dispositions[command_key] = dict(disposition)
+            if (
+                self._action_kinds[command_key] == "conversation"
+                and command_key in self._user_response_commands
+            ):
+                self._conversation_commands_answered.add(command_key)
+            self._context.append(
+                "PUBLIC WORK DISPOSITION: "
+                f"{disposition.get('route')} — {disposition.get('public_reason')}"
+            )
         return True
 
     def submit_trace(self, trace: dict) -> bool:
@@ -1040,7 +1237,10 @@ class MessengerRuntime:
                 return False
             if command_key in self._final_commands:
                 return True
-            if self._action_kinds.get(command_key) == "self_explanation":
+            if (
+                self._action_kinds.get(command_key) == "self_explanation"
+                or command_key in self._conversation_commands_answered
+            ):
                 self._final_commands.add(command_key)
                 self._context.append(f"AUTHORITATIVE ORCHESTRATOR FINAL: {text}")
                 return True
@@ -1152,13 +1352,49 @@ class MessengerRuntime:
             prompt = self._prompt_for(event)
             with self._lock:
                 self._active_event = event
+            delivered_early = threading.Event()
+
+            def deliver_partial(response: str) -> None:
+                if delivered_early.is_set() or not self._event_is_current(event):
+                    return
+                delivered_early.set()
+                self._observe_timing(
+                    "messenger_first_semantic_output",
+                    event.command_seq,
+                    event.command_id,
+                )
+                self._deliver_response(event, response)
+
             try:
                 self._observe_continuity("progress", event)
-                response = self.backend.ask(prompt, timeout=self._response_timeout).strip()
+                if event.kind == "user_turn":
+                    self._observe_timing(
+                        "messenger_provider_started",
+                        event.command_seq,
+                        event.command_id,
+                    )
+                if event.kind == "user_turn" and self._backend_accepts_partial():
+                    response = self.backend.ask(
+                        prompt,
+                        timeout=self._response_timeout,
+                        on_partial=deliver_partial,
+                    ).strip()
+                else:
+                    response = self.backend.ask(prompt, timeout=self._response_timeout).strip()
             except Exception as exc:
                 self._observe_continuity("failed", event)
+                if event.kind == "user_turn":
+                    self._observe_timing(
+                        "messenger_failed",
+                        event.command_seq,
+                        event.command_id,
+                        outcome="provider_unavailable",
+                    )
                 print(f"[messenger] response failed: {exc}", file=sys.stderr)
-                if self._must_fail_open(event) and self._event_is_current(event):
+                if (
+                    (event.kind == "user_turn" or self._must_fail_open(event))
+                    and self._event_is_current(event)
+                ):
                     realization = self._fallback_realization(event, "arbitration_error")
                     self._observe_realization(event, realization)
                     self._speak_safely(
@@ -1180,8 +1416,12 @@ class MessengerRuntime:
             self._observe_continuity("progress", event)
             if not self._event_is_current(event):
                 continue
+            if delivered_early.is_set():
+                continue
             if not response or response == SILENT_RESPONSE:
-                if self._must_fail_open(event):
+                if self._must_fail_open(event) or (
+                    event.kind == "user_turn" and not response
+                ):
                     realization = self._fallback_realization(event, "arbitration_unavailable")
                     self._observe_realization(event, realization)
                     self._speak_safely(
@@ -1196,33 +1436,86 @@ class MessengerRuntime:
                         ),
                     )
                 continue
-            realization = self._realization_for(event, response)
-            if realization is not None:
-                self._observe_realization(event, realization)
-                if realization.decision == "suppress":
-                    continue
-                response = realization.spoken_text
-            with self._lock:
-                self._context.append(f"MESSENGER: {response}")
-            self._speak_safely(
-                response,
-                event.command_seq,
-                event.command_id,
-                display_text=(
-                    event.text
-                    if (
-                        event.kind == "orchestrator_final"
-                        or event.work_lifecycle
-                        or event.kind == "orchestrator_trace"
-                    )
-                    else None
-                ),
-                speech_metadata=self._speech_metadata_for(
-                    event,
-                    realization=realization,
-                    spoken_text=response,
-                ),
+            if event.kind == "user_turn":
+                self._observe_timing(
+                    "messenger_first_semantic_output",
+                    event.command_seq,
+                    event.command_id,
+                )
+            self._deliver_response(event, response)
+
+    def _deliver_response(self, event: _MessengerEvent, response: str) -> None:
+        if not self._event_is_current(event):
+            return
+        realization = self._realization_for(event, response)
+        if realization is not None:
+            self._observe_realization(event, realization)
+            if realization.decision == "suppress":
+                return
+            response = realization.spoken_text
+        if not response or response == SILENT_RESPONSE:
+            return
+        with self._lock:
+            self._context.append(f"MESSENGER: {response}")
+            if event.kind == "user_turn" and event.command_seq is not None and event.command_id:
+                command_key = (event.command_seq, event.command_id)
+                self._user_response_commands.add(command_key)
+                if self._action_kinds.get(command_key) == "conversation":
+                    self._conversation_commands_answered.add(command_key)
+        self._speak_safely(
+            response,
+            event.command_seq,
+            event.command_id,
+            display_text=(
+                event.text
+                if (
+                    event.kind == "orchestrator_final"
+                    or event.work_lifecycle
+                    or event.kind == "orchestrator_trace"
+                )
+                else None
+            ),
+            speech_metadata=self._speech_metadata_for(
+                event,
+                realization=realization,
+                spoken_text=response,
+            ),
+        )
+
+    def _backend_accepts_partial(self) -> bool:
+        try:
+            parameters = inspect.signature(self.backend.ask).parameters.values()
+        except (TypeError, ValueError):
+            return False
+        return any(
+            parameter.name == "on_partial"
+            or parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+
+    def _observe_timing(
+        self,
+        stage: str,
+        command_seq: int | None,
+        command_id: str | None,
+        *,
+        outcome: str = "ok",
+    ) -> None:
+        observer = self._timing_observer
+        if observer is None or command_seq is None or command_id is None:
+            return
+        config = getattr(self.backend, "config", None)
+        try:
+            observer(
+                stage,
+                command_seq,
+                command_id,
+                at=time.time(),
+                provider=getattr(config, "provider", None),
+                outcome=outcome,
             )
+        except Exception:
+            pass
 
     def _observe_continuity(
         self,
@@ -1283,7 +1576,8 @@ class MessengerRuntime:
                 "question that should be handed off, give a brief contextual acknowledgement "
                 "that reflects the request, uses first-person singular language such as I or "
                 "me, confirms the accepted action, states the immediate next step, and promises "
-                "to return with the result or a decision request. Do not claim unperformed work. "
+                "to return with the result or a decision request, all in one short sentence. "
+                "Do not claim unperformed work. "
                 "Do not call yourself the orchestrator in the spoken response. "
                 "If authoritative context names workers, refer to the workers directly. Do not "
                 "invent scope or "
@@ -1495,13 +1789,20 @@ class MessengerRuntime:
             if token not in _SEMANTIC_STOPWORDS and token not in {"will", "going"}
         ]
 
-    @staticmethod
-    def _fallback_realization(event: _MessengerEvent, reason: str) -> _SpeechRealization:
+    def _fallback_realization(
+        self,
+        event: _MessengerEvent,
+        reason: str,
+    ) -> _SpeechRealization:
         role = MessengerRuntime._lifecycle_role_for(event)
         text = (
             RELAY_RUNNER_DEMO_EXPLANATION
             if event.action_kind == "self_explanation"
-            else event.text
+            else (
+                MESSENGER_DEGRADED_TEXT
+                if event.kind == "user_turn"
+                else event.text
+            )
         )
         return _SpeechRealization(
             "full",
@@ -1614,25 +1915,33 @@ class MessengerRuntime:
             or len(positional) >= 5
         )
 
-    @staticmethod
     def _speech_metadata_for(
+        self,
         event: _MessengerEvent,
         *,
         fallback: bool = False,
         realization: _SpeechRealization | None = None,
         spoken_text: str | None = None,
     ) -> dict:
+        action_kind = self._action_kinds.get(
+            (event.command_seq, event.command_id),
+            event.action_kind,
+        )
         if event.work_lifecycle:
             source = "lifecycle"
             kind = "final"
         elif fallback:
             source = "fallback"
-            kind = "fallback"
+            kind = (
+                "handoff"
+                if event.kind == "user_turn" and action_kind != "self_explanation"
+                else "fallback"
+            )
         elif event.kind == "user_turn":
             source = "messenger"
             kind = (
                 "conversation"
-                if event.action_kind == "self_explanation"
+                if action_kind in {"conversation", "self_explanation"}
                 else "handoff"
             )
         elif event.kind == "orchestrator_final":
@@ -1659,7 +1968,12 @@ class MessengerRuntime:
             "lifecycle_role": (
                 realization.lifecycle_role
                 if realization is not None
-                else MessengerRuntime._lifecycle_role_for(event)
+                else (
+                    "conversation"
+                    if event.kind == "user_turn"
+                    and action_kind in {"conversation", "self_explanation"}
+                    else MessengerRuntime._lifecycle_role_for(event)
+                )
             ),
             "covered_facts": (
                 realization.covered_facts
@@ -1681,7 +1995,10 @@ class MessengerRuntime:
                     and event.command_id is not None
                 )
             ),
-            "work_disposition": event.work_disposition,
+            "work_disposition": self._work_dispositions.get(
+                (event.command_seq, event.command_id),
+                event.work_disposition,
+            ),
             "freshness_scope": "work" if event.work_lifecycle else "conversation",
             "dedup_key": (
                 f"work-outcome:{event.command_seq}:{event.command_id}:{event.detail}"
@@ -1736,6 +2053,7 @@ def create_messenger_runtime(
     coverage_provider: Callable[[int, str], object] | None = None,
     realization_observer: Callable[..., object] | None = None,
     continuity_observer: Callable[[dict], object] | None = None,
+    timing_observer: Callable[..., object] | None = None,
     recovery_generation: str | None = None,
 ) -> MessengerRuntime | None:
     config = MessengerConfig.from_app_config(app_config, cwd=cwd)
@@ -1765,6 +2083,7 @@ def create_messenger_runtime(
         coverage_provider=coverage_provider,
         realization_observer=realization_observer,
         continuity_observer=continuity_observer,
+        timing_observer=timing_observer,
         recovery_generation=(
             recovery_generation
             or os.environ.get("RELAY_RECOVERY_GENERATION")

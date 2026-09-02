@@ -84,14 +84,12 @@ class SpeechCoordinatorTests(unittest.TestCase):
         *,
         current=(1, "one"),
         log=None,
-        has_foreground_ownership=None,
     ):
         worker = FakeWorker()
         holder = {"key": current}
         coordinator = SpeechCoordinator(
             worker,
             is_current=lambda seq, command_id: holder["key"] == (seq, command_id),
-            has_foreground_ownership=has_foreground_ownership,
             event_log_path=log,
         )
         return worker, coordinator, holder
@@ -115,29 +113,14 @@ class SpeechCoordinatorTests(unittest.TestCase):
         )
         self.assertNotEqual(speech.display_text, speech.semantic_brief)
 
-    def test_messenger_handoff_waits_for_exact_foreground_ownership(self):
-        owned: set[tuple[int, str]] = {(1, "one")}
-        worker, coordinator, _ = self.make_coordinator(
-            current=(2, "two"),
-            has_foreground_ownership=lambda seq, command_id: (
-                (seq, command_id) in owned
-            ),
-        )
+    def test_current_messenger_handoff_does_not_wait_for_foreground_claim(self):
+        worker, coordinator, _ = self.make_coordinator(current=(2, "two"))
 
-        self.assertFalse(coordinator.submit(intent(
-            seq=2,
-            command_id="two",
-            kind="handoff",
-            text="later provisional",
-        )))
-        self.assertTrue(worker.input_queue.empty())
-
-        owned.add((2, "two"))
         self.assertTrue(coordinator.submit(intent(
             seq=2,
             command_id="two",
             kind="handoff",
-            text="owned provisional",
+            text="immediate semantic handoff",
         )))
         queued = worker.input_queue.get_nowait()
         self.assertEqual(queued["_speech_intent"]["command_seq"], 2)
@@ -635,12 +618,47 @@ class SpeechCoordinatorTests(unittest.TestCase):
             records = [json.loads(line) for line in log.read_text().splitlines()]
             self.assertEqual(
                 [record["event"] for record in records],
-                ["proposed", "accepted", "realization"],
+                ["proposed", "tts_enqueued", "accepted", "realization"],
             )
             self.assertEqual(records[-1]["lifecycle_role"], "progress")
             self.assertEqual(records[-1]["realization_decision"], "suppress")
             self.assertEqual(records[-1]["suppression_reason"], "covered_by_played_speech")
             self.assertNotIn("private words", log.read_text())
+
+    def test_messenger_timing_stages_are_command_scoped_and_privacy_safe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "speech.jsonl"
+            _, coordinator, _ = self.make_coordinator(log=log)
+
+            coordinator.record_messenger_stage(
+                "user_turn_received",
+                7,
+                "timing-command",
+                at=10.0,
+                provider="codex",
+            )
+            coordinator.record_messenger_stage(
+                "messenger_first_semantic_output",
+                7,
+                "timing-command",
+                at=10.4,
+                provider="codex",
+            )
+            coordinator.record_messenger_stage(
+                "not_a_supported_stage",
+                7,
+                "timing-command",
+            )
+
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+
+        self.assertEqual(
+            [record["event"] for record in records],
+            ["user_turn_received", "messenger_first_semantic_output"],
+        )
+        self.assertTrue(all(record["relay_command_seq"] == 7 for record in records))
+        self.assertTrue(all(record["relay_command_id"] == "timing-command" for record in records))
+        self.assertTrue(all("text" not in record for record in records))
 
     def test_replay_rejection_reports_selection_boundary_without_text(self):
         with tempfile.TemporaryDirectory() as directory:
