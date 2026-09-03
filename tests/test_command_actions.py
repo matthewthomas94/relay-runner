@@ -15,6 +15,8 @@ from command_actions import (  # noqa: E402
     classify_command,
     create_ticket_for_command,
     format_command_for_agent,
+    is_information_query,
+    is_mixed_query_and_mutation,
     is_relay_runner_self_explanation,
     resolve_command_action,
 )
@@ -180,6 +182,163 @@ class CommandActionsTests(unittest.TestCase):
 
     def test_project_work_with_open_word_still_requires_a_ticket(self):
         action = classify_command("fix the open source login retry bug")
+
+        self.assertEqual(action.kind, "create_ticket")
+        self.assertTrue(action.requires_ticket)
+
+    def test_information_queries_do_not_inherit_mutation_from_work_words(self):
+        samples = [
+            "Was there a build?",
+            "Which release included these tickets?",
+            "Did we ship this?",
+            "Why did the build fail?",
+            "So my question is, did we release a build containing RR-325 through RR-343?",
+            "No, I mean a release, not a build.",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                action = classify_command(sample)
+
+                self.assertTrue(is_information_query(sample))
+                self.assertIn(action.kind, {"conversation", "inspect_ticket"})
+                self.assertFalse(action.requires_ticket)
+                self.assertEqual(action.reason, "information_query")
+
+    def test_ticket_questions_inspect_without_mutation_authority(self):
+        samples = [
+            "Can you tell me whether RR-325 is done?",
+            "Did we ship RR-325?",
+            "What is the status of RR-325?",
+            "RR-325",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                action = classify_command(sample)
+
+                self.assertEqual(action.kind, "inspect_ticket")
+                self.assertFalse(action.requires_ticket)
+                self.assertEqual(action.ticket_id, "RR-325")
+
+    def test_positive_mutation_requests_retain_work_routing(self):
+        samples = [
+            ("Build the release", "create_ticket", None),
+            ("Can you build a release?", "create_ticket", None),
+            ("Update RR-325", "update_ticket", "RR-325"),
+            ("Dispatch RR-325", "dispatch_ticket", "RR-325"),
+        ]
+        for sample, kind, ticket_id in samples:
+            with self.subTest(sample=sample):
+                action = classify_command(sample)
+
+                self.assertEqual(action.kind, kind)
+                self.assertTrue(action.requires_ticket)
+                self.assertEqual(action.ticket_id, ticket_id)
+
+    def test_classifier_applies_authority_precedence_before_ticket_references(self):
+        cases = [
+            ("__PLAY__", "control", False, None, "play"),
+            ("Open Chrome", "direct_action", False, None, "desktop_control"),
+            ("Track an investigation into RR-325", "create_ticket", True, None, ""),
+            ("Queue a review of RR-325", "create_ticket", True, None, ""),
+            ("Do a clean build", "create_ticket", True, None, ""),
+            ("Have the worker fix RR-325", "dispatch_ticket", True, "RR-325", ""),
+            (
+                "Please review RR-325 and merge it",
+                "conversation",
+                False,
+                None,
+                "mixed_query_and_mutation_clarification",
+            ),
+            ("Have we shipped RR-325?", "inspect_ticket", False, "RR-325", "information_query"),
+            ("Do we have a clean build?", "conversation", False, None, "information_query"),
+            ("RR-325", "inspect_ticket", False, "RR-325", "ticket_reference"),
+            ("Sounds good", "conversation", False, None, ""),
+        ]
+
+        for source, kind, requires_ticket, ticket_id, reason in cases:
+            with self.subTest(source=source):
+                action = classify_command(source)
+
+                self.assertEqual(action.kind, kind)
+                self.assertEqual(action.requires_ticket, requires_ticket)
+                self.assertEqual(action.ticket_id, ticket_id)
+                self.assertEqual(action.reason, reason)
+
+    def test_classifier_uses_grammatical_role_not_bare_work_verbs(self):
+        cases = [
+            ("Answer whether the release included RR-325.", "inspect_ticket", False, "RR-325"),
+            ("Explain why the build failed.", "conversation", False, None),
+            ("Show me the build history.", "conversation", False, None),
+            ("Summarize the latest build.", "conversation", False, None),
+            ("Can you summarize the latest build?", "conversation", False, None),
+            ("Review the build history", "conversation", False, None),
+            ("Please review whether the release shipped.", "conversation", False, None),
+            ("Investigate why the build failed", "conversation", False, None),
+            ("Could you investigate whether RR-325 shipped?", "inspect_ticket", False, "RR-325"),
+            ("Check whether the build shipped", "conversation", False, None),
+            ("Check if the latest build included RR-325.", "inspect_ticket", False, "RR-325"),
+            ("Report the status of RR-325.", "inspect_ticket", False, "RR-325"),
+            ("Compare the latest build with the last release.", "conversation", False, None),
+            ("Explain the RR-325 build failure.", "inspect_ticket", False, "RR-325"),
+            ("Find evidence that RR-325 shipped in the build.", "inspect_ticket", False, "RR-325"),
+            ("Can you tell me whether RR-325 is done?", "inspect_ticket", False, "RR-325"),
+            ("What is the status of RR-325?", "inspect_ticket", False, "RR-325"),
+            ("Can you update me on RR-325?", "inspect_ticket", False, "RR-325"),
+            ("Give me an update on RR-325.", "inspect_ticket", False, "RR-325"),
+            ("Can you run me through RR-325?", "inspect_ticket", False, "RR-325"),
+            ("Any status update on RR-325?", "inspect_ticket", False, "RR-325"),
+            ("Run me through the latest build.", "conversation", False, None),
+            ("Fix RR-325.", "update_ticket", True, "RR-325"),
+            ("Update RR-325.", "update_ticket", True, "RR-325"),
+            ("Build the release.", "create_ticket", True, None),
+            ("Run RR-325.", "dispatch_ticket", True, "RR-325"),
+            ("Dispatch RR-325.", "dispatch_ticket", True, "RR-325"),
+            ("Track an investigation into the build failure.", "create_ticket", True, None),
+            ("Delegate an investigation into why the build failed.", "create_ticket", True, None),
+            ("Queue a spike to compare release history.", "create_ticket", True, None),
+            ("Track an investigation into RR-325.", "create_ticket", True, None),
+            ("Queue a review of RR-325.", "create_ticket", True, None),
+            ("Do a clean build.", "create_ticket", True, None),
+            ("Have the worker fix RR-325.", "dispatch_ticket", True, "RR-325"),
+        ]
+
+        for source, kind, requires_ticket, ticket_id in cases:
+            with self.subTest(source=source):
+                action = classify_command(source)
+
+                self.assertEqual(action.kind, kind)
+                self.assertEqual(action.requires_ticket, requires_ticket)
+                self.assertEqual(action.ticket_id, ticket_id)
+                if not requires_ticket:
+                    self.assertEqual(action.reason, "information_query")
+
+    def test_mixed_conditional_request_requires_clarification_without_authority(self):
+        samples = [
+            "Is there a release, and if not, build one",
+            "Can you run me through RR-325, and if it needs changes, update RR-325",
+            "Why did the build fail, and then fix it",
+            "Can you tell me whether RR-325 is done, then dispatch it",
+            "Summarize the build history, then queue a spike to investigate gaps",
+            "Explain why the build failed, and if needed, delegate an investigation",
+            "Review the build history, then build the release",
+            "Investigate why the build failed, then repair it",
+            "Check whether the build shipped, and if not, build it",
+        ]
+
+        for source in samples:
+            with self.subTest(source=source):
+                action = classify_command(source)
+                prompt = format_command_for_agent(action)
+
+                self.assertTrue(is_mixed_query_and_mutation(source))
+                self.assertEqual(action.kind, "conversation")
+                self.assertFalse(action.requires_ticket)
+                self.assertEqual(action.reason, "mixed_query_and_mutation_clarification")
+                self.assertIn("Ask one concise clarification", prompt)
+                self.assertIn("mutation_authorized: false", prompt)
+
+    def test_explicit_tracking_request_can_create_read_only_spike(self):
+        action = classify_command("Queue a spike to investigate the release history")
 
         self.assertEqual(action.kind, "create_ticket")
         self.assertTrue(action.requires_ticket)
