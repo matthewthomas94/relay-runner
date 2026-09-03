@@ -623,6 +623,7 @@ final class RelayVoiceCommandDelivery {
         var consumerAcknowledgement = "/tmp/voice_cmd_manual_ack.json"
         var commandState = "/tmp/voice_command_state.json"
         var providerTurns = "/tmp/voice_provider_turns_v2.json"
+        var manualSubmissions = "/tmp/relay_terminal_manual_submission.json"
         var deliveryEvents = "/tmp/relay_terminal_delivery_events.jsonl"
         var actionJournal = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -727,6 +728,7 @@ final class RelayVoiceCommandDelivery {
     private let fileManager: FileManager
     private let now: () -> Date
     private let providerSessionID: String?
+    private let provider: String?
     private let appSessionID: String?
     private let recoveryGeneration: String?
     private let foregroundGateHandle: String?
@@ -756,6 +758,7 @@ final class RelayVoiceCommandDelivery {
         fileManager: FileManager = .default,
         now: @escaping () -> Date = Date.init,
         providerSessionID: String? = nil,
+        provider: String? = nil,
         appSessionID: String? = nil,
         recoveryGeneration: String? = nil,
         foregroundGateHandle: String? = nil
@@ -775,6 +778,7 @@ final class RelayVoiceCommandDelivery {
         self.fileManager = fileManager
         self.now = now
         self.providerSessionID = providerSessionID
+        self.provider = provider
         self.appSessionID = appSessionID
         self.recoveryGeneration = recoveryGeneration
         self.foregroundGateHandle = foregroundGateHandle
@@ -875,6 +879,7 @@ final class RelayVoiceCommandDelivery {
         guard !hasSubmittedVoicePrompt else { return }
         switch transition {
         case .submitted(let pendingByteCount) where pendingByteCount > 0:
+            recordManualSubmissionEvidence(recordedAt: recordedAt)
             let boundary = ManualBoundary(
                 startedAt: recordedAt,
                 reason: .manualSubmission
@@ -904,6 +909,59 @@ final class RelayVoiceCommandDelivery {
             }
         default:
             break
+        }
+    }
+
+    private func recordManualSubmissionEvidence(recordedAt: Date) {
+        guard let providerSessionID, !providerSessionID.isEmpty,
+              let appSessionID, !appSessionID.isEmpty,
+              let recoveryGeneration, !recoveryGeneration.isEmpty,
+              let foregroundGateHandle, !foregroundGateHandle.isEmpty else { return }
+        let resolvedProvider = (provider
+            ?? ProcessInfo.processInfo.environment["RELAY_RUNNER_PROVIDER"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard let resolvedProvider, !resolvedProvider.isEmpty else { return }
+
+        let submissionID = UUID().uuidString.lowercased()
+        let payload: [String: Any] = [
+            "version": 1,
+            "state": "pending",
+            "submission_id": submissionID,
+            "evidence_source": "relay_terminal_manual_submit",
+            "observed_at": recordedAt.timeIntervalSince1970,
+            "provider": resolvedProvider,
+            "provider_session_id": providerSessionID,
+            "app_session_id": appSessionID,
+            "recovery_generation": recoveryGeneration,
+            "actor_role": "foreground_pm",
+            "foreground_gate_handle": foregroundGateHandle,
+        ]
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: payload,
+            options: [.sortedKeys]
+        ) else { return }
+        let url = URL(fileURLWithPath: paths.manualSubmissions)
+        do {
+            try data.write(to: url, options: .atomic)
+            try? fileManager.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: url.path
+            )
+            recordDeliveryEvent(
+                "manual_submit_boundary_published",
+                key: pendingCommandKey(),
+                fields: [
+                    "manual_submission_id": submissionID,
+                    "manual_submit_evidence_source": "relay_terminal_manual_submit",
+                ]
+            )
+        } catch {
+            recordDeliveryEvent(
+                "manual_submit_boundary_publish_failed",
+                key: pendingCommandKey(),
+                fields: ["manual_submit_evidence_source": "relay_terminal_manual_submit"]
+            )
         }
     }
 
@@ -1574,6 +1632,8 @@ final class RelayVoiceCommandDelivery {
             ("turn_id", "provider_native_turn_id"),
             ("state", "provider_turn_record_state"),
             ("release_reason", "provider_turn_release_reason"),
+            ("manual_submission_id", "manual_submission_id"),
+            ("manual_submit_evidence_source", "manual_submit_evidence_source"),
         ]
         for (source, destination) in mappings {
             if let value = record[source] as? String, !value.isEmpty {
@@ -2447,6 +2507,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
                     self?.localProcess.running == true
                 },
                 providerSessionID: launch.providerSessionID,
+                provider: launch.target.providerMetadataValue,
                 appSessionID: launch.appSessionID,
                 recoveryGeneration: launch.recoveryGeneration,
                 foregroundGateHandle: launch.foregroundGateHandle
