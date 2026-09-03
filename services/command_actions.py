@@ -103,12 +103,14 @@ _MUTATION_VERB = (
     r"update(?!\s+(?:me|us)\b)|run(?!\s+(?:me|us)\s+through\b))"
 )
 EXPLICIT_MUTATION_REQUEST_RE = re.compile(
-    rf"^\s*{_COMMAND_LEAD}(?:(?:i\s+mean|please)\s+)?(?:"
+    rf"^\s*{_COMMAND_LEAD}(?:(?:i\s+mean|please|go\s+ahead\s+and)\s+)?(?:"
     rf"{_MUTATION_VERB}\b|(?:do|perform)\s+(?:an?|the)\b)"
     rf"|^\s*{_COMMAND_LEAD}(?:please\s+)?(?:can|could|would|will)\s+"
     rf"(?:you|we)\s+(?:please\s+)?(?:{_MUTATION_VERB}\b|(?:do|perform)\s+(?:an?|the)\b)"
     rf"|^\s*{_COMMAND_LEAD}(?:i|we)\s+(?:need|want|would\s+like)\s+"
     rf"(?:you\s+|us\s+)?to\s+{_MUTATION_VERB}\b"
+    rf"|^\s*{_COMMAND_LEAD}(?:i|we)\s+(?:need|want|would\s+like)\s+"
+    r"(?:an?\s+)?clean\s+build\b"
     rf"|^\s*{_COMMAND_LEAD}let['’]?s\s+{_MUTATION_VERB}\b",
     re.IGNORECASE,
 )
@@ -130,7 +132,7 @@ DURABLE_WORK_ESCALATION_RE = re.compile(
 WORKER_DELEGATION_RE = re.compile(
     rf"^\s*{_COMMAND_LEAD}(?:(?:i\s+mean|please)\s+)?"
     rf"(?:have|ask|tell)\s+(?:(?:the|a|another)\s+)?(?:worker|agent)\s+"
-    rf"(?:to\s+)?{_MUTATION_VERB}\b",
+    rf"(?:to\s+)?(?:{_MUTATION_VERB}|investigate|review)\b",
     re.IGNORECASE,
 )
 WH_QUESTION_RE = re.compile(

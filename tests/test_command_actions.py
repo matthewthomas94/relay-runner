@@ -242,6 +242,10 @@ class CommandActionsTests(unittest.TestCase):
             ("Queue a review of RR-325", "create_ticket", True, None, ""),
             ("Do a clean build", "create_ticket", True, None, ""),
             ("Have the worker fix RR-325", "dispatch_ticket", True, "RR-325", ""),
+            ("Tell the worker to investigate RR-325", "dispatch_ticket", True, "RR-325", ""),
+            ("Ask the agent to review RR-325", "dispatch_ticket", True, "RR-325", ""),
+            ("I need a clean build", "create_ticket", True, None, ""),
+            ("Go ahead and build the release", "create_ticket", True, None, ""),
             (
                 "Please review RR-325 and merge it",
                 "conversation",
@@ -300,6 +304,10 @@ class CommandActionsTests(unittest.TestCase):
             ("Queue a review of RR-325.", "create_ticket", True, None),
             ("Do a clean build.", "create_ticket", True, None),
             ("Have the worker fix RR-325.", "dispatch_ticket", True, "RR-325"),
+            ("Tell the worker to investigate RR-325.", "dispatch_ticket", True, "RR-325"),
+            ("Ask the agent to review RR-325.", "dispatch_ticket", True, "RR-325"),
+            ("I need a clean build.", "create_ticket", True, None),
+            ("Go ahead and build the release.", "create_ticket", True, None),
         ]
 
         for source, kind, requires_ticket, ticket_id in cases:

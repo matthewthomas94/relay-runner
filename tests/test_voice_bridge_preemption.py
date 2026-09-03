@@ -5342,6 +5342,10 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             ("Queue a review of RR-325.", "create_ticket"),
             ("Do a clean build.", "create_ticket"),
             ("Have the worker fix RR-325.", "dispatch_ticket"),
+            ("Tell the worker to investigate RR-325.", "dispatch_ticket"),
+            ("Ask the agent to review RR-325.", "dispatch_ticket"),
+            ("I need a clean build.", "create_ticket"),
+            ("Go ahead and build the release.", "create_ticket"),
         ]
 
         for provider in ("codex", "claude"):

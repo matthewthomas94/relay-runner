@@ -12,6 +12,7 @@ from intent_arbitration import (  # noqa: E402
     AuthorizationEffect,
     CancellationScope,
     IntentRoute,
+    authorization_relationship_for,
     normalize_voice_work_items,
     resolve_intent_disposition,
     sidecar_eligible,
@@ -36,6 +37,15 @@ class IntentArbitrationTests(unittest.TestCase):
         self.assertEqual(disposition.route, IntentRoute.CONTINUE_CURRENT)
         self.assertEqual(disposition.authorization_effect, AuthorizationEffect.PRESERVE)
         self.assertEqual(disposition.target_work_ids, ("1:active",))
+
+    def test_read_only_ticket_inspection_preserves_inspection_relationship(self):
+        disposition = self.resolve("Is RR-325 done?", kind="inspect_ticket")
+
+        self.assertEqual(disposition.route, IntentRoute.CONTINUE_CURRENT)
+        self.assertEqual(
+            authorization_relationship_for(disposition, fallback="inspection"),
+            "inspection",
+        )
 
     def test_negated_stop_status_preserves_active_work_even_with_cancel_hint(self):
         disposition = self.resolve(
@@ -152,6 +162,15 @@ class IntentArbitrationTests(unittest.TestCase):
         )
 
         self.assertEqual([item.source_text for item in items], ["Fix login", "open Chrome"])
+
+    def test_go_ahead_and_work_phrase_stays_one_item(self):
+        items = normalize_voice_work_items(
+            "Go ahead and build the release",
+            relay_command_seq=8,
+            relay_command_id="cmd-8",
+        )
+
+        self.assertEqual([item.source_text for item in items], ["Go ahead and build the release"])
 
     def test_same_turn_abandonment_cancels_only_the_named_item(self):
         items = normalize_voice_work_items(

@@ -29,7 +29,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from command_actions import format_command_for_agent, resolve_command_action
+from command_actions import (
+    format_command_for_agent,
+    is_mixed_query_and_mutation,
+    resolve_command_action,
+)
 from intent_arbitration import (
     ActiveWork,
     CancellationScope,
@@ -1493,11 +1497,25 @@ def _resolve_voice_work_items(
     active_work: tuple[ActiveWork, ...] = (),
 ) -> list[dict]:
     """Normalize one real turn into provider-neutral ordered item deliveries."""
-    items = normalize_voice_work_items(
-        source_text,
-        relay_command_seq=int(relay_command["relay_command_seq"]),
-        relay_command_id=str(relay_command["relay_command_id"]),
-    )
+    relay_command_seq = int(relay_command["relay_command_seq"])
+    relay_command_id = str(relay_command["relay_command_id"])
+    if is_mixed_query_and_mutation(source_text):
+        items = (
+            VoiceWorkItem(
+                intent_id=f"{relay_command_id}:item:1",
+                source_command_seq=relay_command_seq,
+                source_command_id=relay_command_id,
+                within_turn_order=1,
+                source_text=str(source_text or "").strip(),
+                target=None,
+            ),
+        )
+    else:
+        items = normalize_voice_work_items(
+            source_text,
+            relay_command_seq=relay_command_seq,
+            relay_command_id=relay_command_id,
+        )
     resolved: list[dict] = []
     known_work = list(active_work)
     for item in items:

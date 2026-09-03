@@ -83,11 +83,11 @@ _TICKET_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
 _ITEM_START = (
     r"add|build|cancel|change|click|create|debug|delete|design|dispatch|drag|edit|fix|"
     r"focus|implement|install|launch|merge|never\s+mind|nevermind|open|press|redirect|"
-    r"refactor|remove|repair|replace|reveal|scratch|scroll|select|ship|show|start|stop|"
+    r"refactor|remove|repair|replace|reveal|run|scratch|scroll|select|ship|show|start|stop|"
     r"switch|tap|test|type|update|wire|write"
 )
 _ITEM_BOUNDARY_RE = re.compile(
-    rf"(?:\s*[.;]\s*|\s+\b(?:and(?:\s+then)?|but|then)\b\s+)"
+    rf"(?<!go ahead)(?:\s*[.;]\s*|\s+\b(?:and(?:\s+then)?|but|then)\b\s+)"
     rf"(?=(?:please\s+)?(?:{_ITEM_START})\b)",
     re.IGNORECASE,
 )
@@ -566,6 +566,8 @@ def authorization_relationship_for(disposition: IntentDisposition, *, fallback: 
         return "redirect"
     if disposition.authorization_effect == AuthorizationEffect.PRESERVE:
         if disposition.route == IntentRoute.CONTINUE_CURRENT:
+            if fallback == "inspection":
+                return fallback
             return "conversation"
         return "additive"
     return fallback
