@@ -28,10 +28,6 @@ CONTROL_COMMANDS = {
 }
 
 TICKET_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
-DISPATCH_RE = re.compile(
-    r"\b(dispatch|delegate|hand\s+off|kick\s+off|start|run|spin\s+up|work\s+on)\b",
-    re.IGNORECASE,
-)
 INSPECT_RE = re.compile(
     r"\b(status|state|how'?s|how\s+is|what'?s|what\s+is|show|summarize|check)\b",
     re.IGNORECASE,
@@ -100,9 +96,107 @@ RELAY_RUNNER_OVERVIEW_RE = re.compile(
     r"(?:the\s+)?relay\s+runner\b",
     re.IGNORECASE,
 )
-WORK_RE = re.compile(
-    r"\b(add|build|change|clean\s+up|create|debug|delete|design|fix|implement|"
-    r"install|make|migrate|refactor|remove|repair|ship|test|update|wire|write)\b",
+_COMMAND_LEAD = r"(?:(?:hey|hi|okay|ok|so|actually|no)\b[,!\s]*)*"
+LEADING_TARGET_CONTEXT_RE = re.compile(
+    rf"^\s*{_COMMAND_LEAD}(?:"
+    r"(?:for|in|on|regarding|about)\s+[^,;:?!]{1,120}"
+    r"|[A-Za-z][A-Za-z0-9]*-\d+"
+    r")\s*[,;:]\s*(?P<command>.+)$",
+    re.IGNORECASE,
+)
+_MUTATION_VERB = (
+    r"(?:add|build|change|clean\s+up|create|debug|delete|design|fix|implement|"
+    r"install|make|merge|migrate|refactor|remove|repair|ship|test|wire|write|"
+    r"update(?!\s+(?:me|us)\b)|run(?!\s+(?:me|us)\s+through\b))"
+)
+EXPLICIT_MUTATION_REQUEST_RE = re.compile(
+    rf"^\s*{_COMMAND_LEAD}(?:(?:i\s+mean|please|go\s+ahead\s+and)\s+)?(?:"
+    rf"{_MUTATION_VERB}\b|(?:do|perform)\s+(?:an?|the)\b)"
+    rf"|^\s*{_COMMAND_LEAD}(?:please\s+)?(?:can|could|would|will)\s+"
+    rf"you\s+(?:please\s+)?(?:{_MUTATION_VERB}\b|(?:do|perform)\s+(?:an?|the)\b)"
+    rf"|^\s*{_COMMAND_LEAD}(?:i|we)\s+(?:need|want|would\s+like)\s+"
+    rf"(?:you\s+|us\s+)?to\s+{_MUTATION_VERB}\b"
+    rf"|^\s*{_COMMAND_LEAD}(?:i|we)\s+(?:need|want|would\s+like)\s+"
+    r"(?:an?\s+)?clean\s+build\b"
+    rf"|^\s*{_COMMAND_LEAD}let['’]?s\s+{_MUTATION_VERB}\b",
+    re.IGNORECASE,
+)
+EXPLICIT_DISPATCH_REQUEST_RE = re.compile(
+    rf"^\s*{_COMMAND_LEAD}(?:(?:i\s+mean|please)\s+)?"
+    r"(?:dispatch|delegate|hand\s+off|kick\s+off|start|spin\s+up|work\s+on|"
+    r"run(?!\s+(?:me|us)\s+through\b))\b"
+    rf"|^\s*{_COMMAND_LEAD}(?:please\s+)?(?:can|could|would|will)\s+"
+    r"you\s+(?:please\s+)?"
+    r"(?:dispatch|delegate|hand\s+off|kick\s+off|start|spin\s+up|work\s+on|"
+    r"run(?!\s+(?:me|us)\s+through\b))\b",
+    re.IGNORECASE,
+)
+DURABLE_WORK_ESCALATION_RE = re.compile(
+    rf"^\s*{_COMMAND_LEAD}(?:(?:please|also)\s+)?(?:queue|track)\b[^.?!]{{0,120}}"
+    r"\b(?:analysis|audit|investigation|research|review|spike)\b",
+    re.IGNORECASE,
+)
+WORKER_DELEGATION_RE = re.compile(
+    rf"^\s*{_COMMAND_LEAD}(?:(?:i\s+mean|please)\s+)?"
+    rf"(?:have|ask|tell)\s+(?:(?:the|a|another)\s+)?(?:worker|agent)\s+"
+    rf"(?:to\s+)?(?:{_MUTATION_VERB}|investigate|review)\b",
+    re.IGNORECASE,
+)
+WH_QUESTION_RE = re.compile(
+    r"^\s*(?:(?:hey|hi|okay|ok|so|actually|just)\b[,!\s]*)*"
+    r"(?:(?:my\s+question\s+is|i\s+(?:wanted|want)\s+to\s+(?:ask|know))\b[:,\s]*)?"
+    r"(?:what|which|who|when|where|why|how)\b",
+    re.IGNORECASE,
+)
+AUXILIARY_QUESTION_RE = re.compile(
+    r"^\s*(?:(?:hey|hi|okay|ok|so|actually|just)\b[,!\s]*)*"
+    r"(?:(?:my\s+question\s+is|i\s+(?:wanted|want)\s+to\s+(?:ask|know))\b[:,\s]*)?"
+    r"(?:is|are|am|was|were|do|does|did|has|have|had|should|would|can|could|will)\s+"
+    r"(?:i|you|we|they|he|she|it|there|this|that|these|those|the\b)",
+    re.IGNORECASE,
+)
+EPISTEMIC_QUERY_RE = re.compile(
+    r"\b(?:can|could|would)\s+you\s+(?:please\s+)?"
+    r"(?:check|explain|find\s+out|show|tell)\b"
+    r"|\b(?:do|does|did)\s+(?:you|we)\s+know\b"
+    r"|\bi(?:'m|\s+am|\s+was)\s+(?:just\s+)?(?:asking|wondering)\b"
+    r"|\b(?:my\s+question\s+is|i\s+(?:wanted|want)\s+to\s+know)\b"
+    r"|^\s*(?:(?:no|sorry)\b[,!\s]*)*(?:i\s+mean|to\s+clarify|clarification)\b",
+    re.IGNORECASE,
+)
+READ_ONLY_REQUEST_RE = re.compile(
+    r"^\s*(?:(?:hey|hi|okay|ok|so|actually|just|please)\b[,!\s]*)*"
+    r"(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?"
+    r"(?:update\s+(?:me|us)\b"
+    r"|(?:give|provide)\s+(?:me|us)\s+(?:(?:an?|the)\s+)?(?:update|status)\b"
+    r"|(?:run|walk)\s+(?:me|us)\s+through\b"
+    r"|(?:any|an|the\s+latest)\s+(?:status\s+)?updates?\b)",
+    re.IGNORECASE,
+)
+INFORMATION_IMPERATIVE_RE = re.compile(
+    r"^\s*(?:(?:hey|hi|okay|ok|so|actually|just|please)\b[,!\s]*)*"
+    r"(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?"
+    r"(?:"
+    r"(?:answer|describe|explain|summari[sz]e)\b"
+    r"|(?:review|investigate)\b"
+    r"|check\s+(?:whether|if|why|how)\b"
+    r"|(?:show|tell)\s+(?:me|us)\b"
+    r"|(?:find\s+(?:evidence|out)\b|compare\b)"
+    r"|(?:check|give|list|present|provide|report|show)\b[^.?!]{0,100}"
+    r"\b(?:answer|comparison|details?|differences?|evidence|history|overview|results?|status|summary)\b"
+    r")",
+    re.IGNORECASE,
+)
+CONDITIONAL_WORK_RE = re.compile(
+    r"\b(?:and|but)\s+(?P<condition>(?:if|unless)\b[^,;.!?]{0,60})\s*,",
+    re.IGNORECASE,
+)
+MIXED_WORK_CLAUSE_RE = re.compile(
+    r"(?:\s*[.;]\s*|\s+\b(?:and(?:\s+then)?|but|then)\b\s+)"
+    r"(?P<work>(?:please\s+)?(?:add|build|change|clean\s+up|create|debug|delete|"
+    r"delegate|design|dispatch|fix|hand\s+off|implement|install|kick\s+off|make|"
+    r"merge|migrate|queue|refactor|remove|repair|run|ship|spin\s+up|start|test|track|"
+    r"update|wire|work\s+on|write)\b.*)$",
     re.IGNORECASE,
 )
 PREFIX_RE = re.compile(r'^\s*prefix\s*=\s*["\']?([A-Za-z][A-Za-z0-9]*)["\']?\s*$', re.MULTILINE)
@@ -238,6 +332,69 @@ def is_relay_runner_self_explanation(text: str) -> bool:
     )
 
 
+def is_information_query(text: str) -> bool:
+    """Return whether a turn asks for knowledge without authorizing mutation."""
+    source = (text or "").strip()
+    if not source:
+        return False
+    command = _command_clause(source)
+    if READ_ONLY_REQUEST_RE.search(source) or READ_ONLY_REQUEST_RE.search(command):
+        return True
+    if _explicit_project_work_kind(source, _extract_ticket_id(source)) is not None:
+        return False
+    return bool(
+        WH_QUESTION_RE.search(source)
+        or WH_QUESTION_RE.search(command)
+        or AUXILIARY_QUESTION_RE.search(source)
+        or AUXILIARY_QUESTION_RE.search(command)
+        or EPISTEMIC_QUERY_RE.search(source)
+        or EPISTEMIC_QUERY_RE.search(command)
+        or INFORMATION_IMPERATIVE_RE.search(source)
+        or INFORMATION_IMPERATIVE_RE.search(command)
+    )
+
+
+def _command_clause(source: str) -> str:
+    """Return the operative clause after a punctuated leading target context."""
+    match = LEADING_TARGET_CONTEXT_RE.search(source)
+    return match.group("command").strip() if match else source
+
+
+def _explicit_project_work_kind(source: str, ticket_id: str | None) -> str | None:
+    """Return the mutation route authorized by command grammar, if any."""
+    command = _command_clause(source)
+    if DURABLE_WORK_ESCALATION_RE.search(command):
+        return "create_ticket"
+    if WORKER_DELEGATION_RE.search(command) or EXPLICIT_DISPATCH_REQUEST_RE.search(command):
+        return "dispatch_ticket" if ticket_id else "create_ticket"
+    if EXPLICIT_MUTATION_REQUEST_RE.search(command):
+        return "update_ticket" if ticket_id else "create_ticket"
+    return None
+
+
+def is_mixed_query_and_mutation(text: str) -> bool:
+    """Detect a mutation clause attached to a read-only query."""
+    source = (text or "").strip()
+    for match in CONDITIONAL_WORK_RE.finditer(source):
+        query_clause = source[:match.start()].rstrip(" ,")
+        work_clause = source[match.end():].lstrip(" ,")
+        if is_information_query(query_clause) and _explicit_project_work_kind(
+            work_clause,
+            _extract_ticket_id(work_clause),
+        ) is not None:
+            return True
+    match = MIXED_WORK_CLAUSE_RE.search(source)
+    if match:
+        query_clause = source[:match.start()].rstrip(" ,")
+        work_clause = match.group("work")
+        if is_information_query(query_clause) and _explicit_project_work_kind(
+            work_clause,
+            _extract_ticket_id(work_clause),
+        ) is not None:
+            return True
+    return False
+
+
 def classify_command(text: str) -> CommandAction:
     source = (text or "").strip()
     if is_control_command(source):
@@ -284,34 +441,53 @@ def classify_command(text: str) -> CommandAction:
     if PENDING_WORK_RE.search(source):
         return CommandAction(kind="control", source_text=source, reason="pending_work_instruction")
 
-    if SESSION_OPERATION_RE.search(source):
+    ticket_id = _extract_ticket_id(source)
+    project_work_kind = _explicit_project_work_kind(source, ticket_id)
+    if project_work_kind is not None:
+        if SESSION_OPERATION_RE.search(source):
+            return CommandAction(kind="inline_work", source_text=source)
+        return CommandAction(
+            kind=project_work_kind,
+            source_text=source,
+            requires_ticket=True,
+            ticket_id=ticket_id if project_work_kind != "create_ticket" else None,
+        )
+
+    if is_mixed_query_and_mutation(source):
+        return CommandAction(
+            kind="conversation",
+            source_text=source,
+            reason="mixed_query_and_mutation_clarification",
+        )
+
+    information_query = is_information_query(source)
+
+    if SESSION_OPERATION_RE.search(source) and not information_query:
         return CommandAction(kind="inline_work", source_text=source)
 
-    ticket_id = _extract_ticket_id(source)
-    if ticket_id:
-        if DISPATCH_RE.search(source):
-            return CommandAction(
-                kind="dispatch_ticket",
-                source_text=source,
-                requires_ticket=True,
-                ticket_id=ticket_id,
-            )
-        if INSPECT_RE.search(source):
+    if information_query:
+        if ticket_id:
             return CommandAction(
                 kind="inspect_ticket",
                 source_text=source,
-                requires_ticket=True,
+                requires_ticket=False,
                 ticket_id=ticket_id,
+                reason="information_query",
             )
         return CommandAction(
-            kind="update_ticket",
+            kind="conversation",
             source_text=source,
-            requires_ticket=True,
-            ticket_id=ticket_id,
+            reason="information_query",
         )
 
-    if WORK_RE.search(source):
-        return CommandAction(kind="create_ticket", source_text=source, requires_ticket=True)
+    if ticket_id:
+        return CommandAction(
+            kind="inspect_ticket",
+            source_text=source,
+            requires_ticket=False,
+            ticket_id=ticket_id,
+            reason="ticket_inspection" if INSPECT_RE.search(source) else "ticket_reference",
+        )
 
     return CommandAction(kind="conversation", source_text=source)
 
@@ -405,6 +581,16 @@ def refined_ticket_title(source_text: str) -> str:
 def format_command_for_agent(action: CommandAction, disposition: dict | None = None) -> str:
     if action.kind in {"conversation", "control"}:
         prompt = action.source_text
+        if action.reason == "mixed_query_and_mutation_clarification":
+            prompt = (
+                f"{prompt}\n\n"
+                "Relay Runner command action:\n"
+                "- action: conversation\n"
+                "- mutation_authorized: false\n"
+                "- Ask one concise clarification before creating, editing, or dispatching any ticket. "
+                "The information query may be answered, but its conditional work clause is not "
+                "durable mutation authority."
+            )
         return _append_work_disposition(prompt, disposition)
 
     if action.kind == "direct_action":

@@ -9615,7 +9615,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 )
                 self._observe_command_continuity(command, "completed")
                 return updated or {"relay_command_id": command_id, "status": "authored"}
-            if action.kind in {"update_ticket", "inspect_ticket"} and action.ticket_id:
+            if action.kind == "update_ticket" and action.ticket_id:
                 message = (
                     f"Clarification needed before changing {action.ticket_id}; "
                     "the backstage loop will not guess at ticket edits from raw command text."
@@ -9634,7 +9634,13 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 self._observe_command_continuity(command, "completed")
                 return updated or {"relay_command_id": command_id, "status": "blocked"}
 
-            if action.kind in {"conversation", "control", "inline_work", "direct_action"}:
+            if action.kind in {
+                "conversation",
+                "control",
+                "inline_work",
+                "direct_action",
+                "inspect_ticket",
+            }:
                 message = "No backstage ticket action is needed for this Relay command."
                 updated = self.orchestrator_commands.update_status(
                     command_id,

@@ -12,6 +12,7 @@ from intent_arbitration import (  # noqa: E402
     AuthorizationEffect,
     CancellationScope,
     IntentRoute,
+    authorization_relationship_for,
     normalize_voice_work_items,
     resolve_intent_disposition,
     sidecar_eligible,
@@ -37,6 +38,15 @@ class IntentArbitrationTests(unittest.TestCase):
         self.assertEqual(disposition.authorization_effect, AuthorizationEffect.PRESERVE)
         self.assertEqual(disposition.target_work_ids, ("1:active",))
 
+    def test_read_only_ticket_inspection_preserves_inspection_relationship(self):
+        disposition = self.resolve("Is RR-325 done?", kind="inspect_ticket")
+
+        self.assertEqual(disposition.route, IntentRoute.CONTINUE_CURRENT)
+        self.assertEqual(
+            authorization_relationship_for(disposition, fallback="inspection"),
+            "inspection",
+        )
+
     def test_negated_stop_status_preserves_active_work_even_with_cancel_hint(self):
         disposition = self.resolve(
             "don't stop the current work; just give me status",
@@ -53,6 +63,24 @@ class IntentArbitrationTests(unittest.TestCase):
         self.assertEqual(disposition.route, IntentRoute.QUEUE_PROJECT_WORK)
         self.assertEqual(disposition.authorization_effect, AuthorizationEffect.PRESERVE)
         self.assertIn("repository", disposition.resource_claims)
+
+    def test_contextual_ticket_update_queues_but_modal_we_query_continues(self):
+        mutation = self.resolve(
+            "For RR-325, fix the auth bug",
+            kind="update_ticket",
+        )
+        query = self.resolve(
+            "Will we ship RR-325 in the next release?",
+            kind="inspect_ticket",
+            reason="information_query",
+        )
+
+        self.assertEqual(mutation.route, IntentRoute.QUEUE_PROJECT_WORK)
+        self.assertEqual(mutation.authorization_effect, AuthorizationEffect.PRESERVE)
+        self.assertIn("repository", mutation.resource_claims)
+        self.assertEqual(query.route, IntentRoute.CONTINUE_CURRENT)
+        self.assertEqual(query.authorization_effect, AuthorizationEffect.PRESERVE)
+        self.assertNotIn("repository", query.resource_claims)
 
     def test_direct_computer_action_stays_foreground_and_claims_the_desktop(self):
         disposition = self.resolve("open Chrome", kind="direct_action")
@@ -152,6 +180,15 @@ class IntentArbitrationTests(unittest.TestCase):
         )
 
         self.assertEqual([item.source_text for item in items], ["Fix login", "open Chrome"])
+
+    def test_go_ahead_and_work_phrase_stays_one_item(self):
+        items = normalize_voice_work_items(
+            "Go ahead and build the release",
+            relay_command_seq=8,
+            relay_command_id="cmd-8",
+        )
+
+        self.assertEqual([item.source_text for item in items], ["Go ahead and build the release"])
 
     def test_same_turn_abandonment_cancels_only_the_named_item(self):
         items = normalize_voice_work_items(

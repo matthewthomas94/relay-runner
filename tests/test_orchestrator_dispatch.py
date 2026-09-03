@@ -16,6 +16,7 @@ SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
 import orchestrator  # noqa: E402
+from command_actions import classify_command  # noqa: E402
 from orchestrator import (  # noqa: E402
     Daemon,
     MessengerOutcomeStore,
@@ -27,6 +28,7 @@ from orchestrator import (  # noqa: E402
 )
 from relay_authorization import (  # noqa: E402
     allowed_mutations_for_metadata,
+    command_relationship,
     record_command_authorization,
     validate_and_mark_mutation,
 )
@@ -1400,6 +1402,73 @@ class OrchestratorDispatchTests(unittest.TestCase):
             create_worktree.assert_called_once()
             start_worker.assert_called_once()
             self.assertFalse(result["already_active"])
+
+    def test_contextual_update_dispatch_authority_survives_modal_we_query(self):
+        mutation_cases = [
+            "For RR-325, fix the auth bug",
+            "In RR-325, update the acceptance criteria",
+        ]
+        for provider in ("codex", "claude"):
+            for index, source_text in enumerate(mutation_cases, start=1):
+                with self.subTest(provider=provider, source_text=source_text), \
+                        tempfile.TemporaryDirectory() as tmp:
+                    auth_path = Path(tmp) / "voice_command_authorizations.json"
+                    action = classify_command(source_text)
+                    command = {
+                        "provider": provider,
+                        "relay_command_seq": 1,
+                        "relay_command_id": f"{provider}-contextual-{index}",
+                        "action": action.kind,
+                        "ticket_id": action.ticket_id,
+                        "source_text": source_text,
+                    }
+                    allowed = allowed_mutations_for_metadata(command)
+                    record_command_authorization(
+                        auth_path,
+                        command,
+                        relationship=command_relationship(
+                            action.kind,
+                            source_text=source_text,
+                        ),
+                        allowed_mutations=allowed,
+                        now=1,
+                    )
+
+                    query_text = "Will we ship RR-325 in the next release?"
+                    query_action = classify_command(query_text)
+                    query = {
+                        "provider": provider,
+                        "relay_command_seq": 2,
+                        "relay_command_id": f"{provider}-query-{index}",
+                        "action": query_action.kind,
+                        "ticket_id": query_action.ticket_id,
+                        "source_text": query_text,
+                    }
+                    self.assertEqual(allowed_mutations_for_metadata(query), [])
+                    record_command_authorization(
+                        auth_path,
+                        query,
+                        relationship=command_relationship(
+                            query_action.kind,
+                            reason=query_action.reason,
+                            source_text=query_text,
+                        ),
+                        allowed_mutations=[],
+                        now=2,
+                    )
+
+                    record = validate_and_mark_mutation(
+                        auth_path,
+                        1,
+                        command["relay_command_id"],
+                        {"kind": "dispatch_ticket", "ticket_id": "RR-325"},
+                        now=3,
+                    )
+                    self.assertEqual(record["status"], "active")
+                    self.assertEqual(
+                        record["started_mutations"][0]["mutation"],
+                        {"kind": "dispatch_ticket", "ticket_id": "RR-325"},
+                    )
 
     def test_multi_ticket_dispatch_authorization_rejects_outside_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:

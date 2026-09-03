@@ -5248,6 +5248,230 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 )
                 self.assertEqual(resolved[0]["metadata"]["provider"], provider)
 
+    def test_information_query_voice_metadata_never_authorizes_project_mutation(self):
+        read_only_cases = [
+            ("So my question is, did we release a build containing RR-325 through RR-343?", "inspect_ticket"),
+            ("Can you tell me whether RR-325 is done?", "inspect_ticket"),
+            ("What is the status of RR-325?", "inspect_ticket"),
+            ("Can you update me on RR-325?", "inspect_ticket"),
+            ("Give me an update on RR-325.", "inspect_ticket"),
+            ("Can you run me through RR-325?", "inspect_ticket"),
+            ("Explain why the build failed.", "conversation"),
+            ("Show me the build history.", "conversation"),
+            ("Summarize the latest build.", "conversation"),
+            ("Review the build history", "conversation"),
+            ("Please review whether the release shipped.", "conversation"),
+            ("Investigate why the build failed", "conversation"),
+            ("Could you investigate whether RR-325 shipped?", "inspect_ticket"),
+            ("Check whether the build shipped", "conversation"),
+            ("Check if the latest build included RR-325.", "inspect_ticket"),
+            ("Explain the RR-325 build failure.", "inspect_ticket"),
+            ("Find evidence that RR-325 shipped in the build.", "inspect_ticket"),
+            ("Have we shipped RR-325?", "inspect_ticket"),
+            ("Will we ship RR-325 in the next release?", "inspect_ticket"),
+            ("Do we have a clean build?", "conversation"),
+        ]
+
+        for provider in ("codex", "claude"):
+            for index, (source_text, expected_kind) in enumerate(read_only_cases, start=1):
+                with (
+                    self.subTest(provider=provider, source_text=source_text),
+                    tempfile.TemporaryDirectory() as temp_dir,
+                ):
+                    repo = Path(temp_dir)
+                    orch = repo / ".orchestrator"
+                    orch.mkdir()
+                    config = orch / "config.toml"
+                    config.write_text('prefix = "RR"\nnext_id = 400\n')
+                    command = {
+                        "provider": provider,
+                        "relay_command_seq": index,
+                        "relay_command_id": f"{provider}-query-{index}",
+                        "source_text": source_text,
+                    }
+
+                    resolved = voice_bridge._resolve_voice_work_items(
+                        source_text,
+                        command,
+                        repo_path=repo,
+                    )
+
+                    self.assertEqual(len(resolved), 1)
+                    entry = resolved[0]
+                    self.assertEqual(entry["action"].kind, expected_kind)
+                    self.assertFalse(entry["action"].requires_ticket)
+                    self.assertFalse(entry["metadata"]["requires_ticket"])
+                    self.assertEqual(
+                        entry["disposition"].route,
+                        voice_bridge.IntentRoute.CONTINUE_CURRENT,
+                    )
+                    self.assertEqual(entry["metadata"]["provider"], provider)
+                    self.assertEqual(
+                        entry["metadata"]["authorization_relationship"],
+                        "inspection" if expected_kind == "inspect_ticket" else "conversation",
+                    )
+                    self.assertNotIn(
+                        "repository",
+                        entry["disposition"].resource_claims,
+                    )
+                    self.assertEqual(
+                        voice_bridge.allowed_mutations_for_metadata(entry["metadata"]),
+                        [],
+                    )
+                    self.assertFalse(
+                        voice_bridge._should_fanout_raw_instruction_to_orchestrator(
+                            entry["action"]
+                        )
+                    )
+                    self.assertEqual(
+                        config.read_text(),
+                        'prefix = "RR"\nnext_id = 400\n',
+                    )
+                    self.assertEqual(list(orch.glob("RR-*.md")), [])
+
+    def test_explicit_mutation_voice_metadata_retains_authority_for_both_providers(self):
+        mutation_cases = [
+            ("Fix RR-325.", "update_ticket"),
+            ("Update RR-325.", "update_ticket"),
+            ("Build the release.", "create_ticket"),
+            ("Run RR-325.", "dispatch_ticket"),
+            ("Dispatch RR-325.", "dispatch_ticket"),
+            ("Track an investigation into why the build failed.", "create_ticket"),
+            ("Queue a review of the build history.", "create_ticket"),
+            ("Delegate an investigation into why RR-325 failed.", "dispatch_ticket"),
+            ("Track an investigation into RR-325.", "create_ticket"),
+            ("Queue a review of RR-325.", "create_ticket"),
+            ("Do a clean build.", "create_ticket"),
+            ("Have the worker fix RR-325.", "dispatch_ticket"),
+            ("Tell the worker to investigate RR-325.", "dispatch_ticket"),
+            ("Ask the agent to review RR-325.", "dispatch_ticket"),
+            ("I need a clean build.", "create_ticket"),
+            ("Go ahead and build the release.", "create_ticket"),
+            ("For RR-325, fix the auth bug", "update_ticket"),
+            ("In RR-325, update the acceptance criteria", "update_ticket"),
+        ]
+
+        for provider in ("codex", "claude"):
+            for index, (source_text, expected_kind) in enumerate(mutation_cases, start=1):
+                with self.subTest(provider=provider, source_text=source_text):
+                    command = {
+                        "provider": provider,
+                        "relay_command_seq": index,
+                        "relay_command_id": f"{provider}-mutation-{index}",
+                        "source_text": source_text,
+                    }
+
+                    resolved = voice_bridge._resolve_voice_work_items(
+                        source_text,
+                        command,
+                        repo_path="/tmp/repo",
+                    )
+
+                    self.assertEqual(len(resolved), 1)
+                    entry = resolved[0]
+                    self.assertEqual(entry["action"].kind, expected_kind)
+                    self.assertTrue(entry["action"].requires_ticket)
+                    self.assertEqual(
+                        entry["disposition"].route,
+                        voice_bridge.IntentRoute.QUEUE_PROJECT_WORK,
+                    )
+                    self.assertEqual(entry["metadata"]["provider"], provider)
+                    self.assertNotEqual(
+                        voice_bridge.allowed_mutations_for_metadata(entry["metadata"]),
+                        [],
+                    )
+                    self.assertTrue(
+                        voice_bridge._should_fanout_raw_instruction_to_orchestrator(
+                            entry["action"]
+                        )
+                    )
+
+    def test_mixed_query_and_mutation_stays_one_non_mutating_clarification(self):
+        mixed_cases = [
+            "Is there a release, and if not, build one",
+            "Can you run me through RR-325, and if it needs changes, update RR-325.",
+            "What is the status of RR-325, then update RR-325.",
+            "Can you run me through RR-325, then dispatch RR-325.",
+            "Review the build history, then build the release.",
+            "Investigate why the build failed, then repair it.",
+            "Check whether the build shipped, and if not, build it.",
+            "Please review RR-325 and merge it.",
+        ]
+
+        for provider in ("codex", "claude"):
+            for index, source_text in enumerate(mixed_cases, start=1):
+                with self.subTest(provider=provider, source_text=source_text):
+                    command = {
+                        "provider": provider,
+                        "relay_command_seq": index,
+                        "relay_command_id": f"{provider}-mixed-{index}",
+                        "source_text": source_text,
+                    }
+
+                    resolved = voice_bridge._resolve_voice_work_items(
+                        source_text,
+                        command,
+                        repo_path="/tmp/repo",
+                    )
+
+                    self.assertEqual(len(resolved), 1)
+                    self.assertEqual(resolved[0]["action"].kind, "conversation")
+                    self.assertFalse(resolved[0]["action"].requires_ticket)
+                    self.assertEqual(
+                        resolved[0]["disposition"].route,
+                        voice_bridge.IntentRoute.CONTINUE_CURRENT,
+                    )
+                    self.assertEqual(
+                        voice_bridge.allowed_mutations_for_metadata(resolved[0]["metadata"]),
+                        [],
+                    )
+                    self.assertFalse(
+                        voice_bridge._should_fanout_raw_instruction_to_orchestrator(
+                            resolved[0]["action"]
+                        )
+                    )
+                    self.assertIn("Ask one concise clarification", resolved[0]["prompt"])
+
+    def test_ordered_mutation_clauses_without_a_query_retain_authority(self):
+        source_text = "Fix RR-325, then dispatch RR-325."
+
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                command = {
+                    "provider": provider,
+                    "relay_command_seq": 12,
+                    "relay_command_id": f"{provider}-mutations-12",
+                    "source_text": source_text,
+                }
+
+                resolved = voice_bridge._resolve_voice_work_items(
+                    source_text,
+                    command,
+                    repo_path="/tmp/repo",
+                )
+
+                self.assertEqual(
+                    [entry["action"].kind for entry in resolved],
+                    ["update_ticket", "dispatch_ticket"],
+                )
+                self.assertEqual(
+                    [entry["disposition"].route for entry in resolved],
+                    [
+                        voice_bridge.IntentRoute.QUEUE_PROJECT_WORK,
+                        voice_bridge.IntentRoute.QUEUE_PROJECT_WORK,
+                    ],
+                )
+                for entry in resolved:
+                    self.assertNotEqual(
+                        voice_bridge.allowed_mutations_for_metadata(entry["metadata"]),
+                        [],
+                    )
+                    self.assertTrue(
+                        voice_bridge._should_fanout_raw_instruction_to_orchestrator(
+                            entry["action"]
+                        )
+                    )
+
     def test_real_same_turn_work_resolves_to_two_provider_neutral_deliveries(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider):
