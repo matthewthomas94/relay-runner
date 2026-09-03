@@ -64,6 +64,24 @@ class IntentArbitrationTests(unittest.TestCase):
         self.assertEqual(disposition.authorization_effect, AuthorizationEffect.PRESERVE)
         self.assertIn("repository", disposition.resource_claims)
 
+    def test_contextual_ticket_update_queues_but_modal_we_query_continues(self):
+        mutation = self.resolve(
+            "For RR-325, fix the auth bug",
+            kind="update_ticket",
+        )
+        query = self.resolve(
+            "Will we ship RR-325 in the next release?",
+            kind="inspect_ticket",
+            reason="information_query",
+        )
+
+        self.assertEqual(mutation.route, IntentRoute.QUEUE_PROJECT_WORK)
+        self.assertEqual(mutation.authorization_effect, AuthorizationEffect.PRESERVE)
+        self.assertIn("repository", mutation.resource_claims)
+        self.assertEqual(query.route, IntentRoute.CONTINUE_CURRENT)
+        self.assertEqual(query.authorization_effect, AuthorizationEffect.PRESERVE)
+        self.assertNotIn("repository", query.resource_claims)
+
     def test_direct_computer_action_stays_foreground_and_claims_the_desktop(self):
         disposition = self.resolve("open Chrome", kind="direct_action")
 

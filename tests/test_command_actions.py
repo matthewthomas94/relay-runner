@@ -234,6 +234,40 @@ class CommandActionsTests(unittest.TestCase):
                 self.assertTrue(action.requires_ticket)
                 self.assertEqual(action.ticket_id, ticket_id)
 
+    def test_leading_target_context_does_not_hide_mutation_authority(self):
+        cases = [
+            ("For RR-325, fix the auth bug", "update_ticket"),
+            ("In RR-325, update the acceptance criteria", "update_ticket"),
+            ("RR-325: fix the auth bug", "update_ticket"),
+            ("Regarding RR-325, can you update the acceptance criteria?", "update_ticket"),
+        ]
+
+        for source, kind in cases:
+            with self.subTest(source=source):
+                action = classify_command(source)
+
+                self.assertEqual(action.kind, kind)
+                self.assertTrue(action.requires_ticket)
+                self.assertEqual(action.ticket_id, "RR-325")
+
+    def test_modal_we_questions_do_not_authorize_mutation(self):
+        cases = [
+            "Will we ship RR-325 in the next release?",
+            "Can we ship RR-325 in the next release?",
+            "For RR-325, will we ship it in the next release?",
+            "In RR-325, could we update the acceptance criteria?",
+        ]
+
+        for source in cases:
+            with self.subTest(source=source):
+                action = classify_command(source)
+
+                self.assertTrue(is_information_query(source))
+                self.assertEqual(action.kind, "inspect_ticket")
+                self.assertFalse(action.requires_ticket)
+                self.assertEqual(action.ticket_id, "RR-325")
+                self.assertEqual(action.reason, "information_query")
+
     def test_classifier_applies_authority_precedence_before_ticket_references(self):
         cases = [
             ("__PLAY__", "control", False, None, "play"),

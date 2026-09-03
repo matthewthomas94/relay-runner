@@ -5268,6 +5268,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             ("Explain the RR-325 build failure.", "inspect_ticket"),
             ("Find evidence that RR-325 shipped in the build.", "inspect_ticket"),
             ("Have we shipped RR-325?", "inspect_ticket"),
+            ("Will we ship RR-325 in the next release?", "inspect_ticket"),
             ("Do we have a clean build?", "conversation"),
         ]
 
@@ -5346,6 +5347,8 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             ("Ask the agent to review RR-325.", "dispatch_ticket"),
             ("I need a clean build.", "create_ticket"),
             ("Go ahead and build the release.", "create_ticket"),
+            ("For RR-325, fix the auth bug", "update_ticket"),
+            ("In RR-325, update the acceptance criteria", "update_ticket"),
         ]
 
         for provider in ("codex", "claude"):

@@ -859,6 +859,7 @@ class OrchestratorLifecycleTests(unittest.TestCase):
             "Explain the RR-325 build failure.",
             "Find evidence that RR-325 shipped in the build.",
             "Have we shipped RR-325?",
+            "Will we ship RR-325 in the next release?",
             "Do we have a clean build?",
         ]
         for provider in ("codex", "claude"):
@@ -893,6 +894,91 @@ class OrchestratorLifecycleTests(unittest.TestCase):
                     self.assertEqual(command["outcome"], "non-work-command")
                     self.assertEqual(config.read_text(), original_config)
                     self.assertEqual(list((repo / ".orchestrator").glob("RR-*.md")), [])
+
+    def test_daemon_routes_contextual_updates_without_dispatch_for_both_providers(self):
+        mutation_cases = [
+            "For RR-325, fix the auth bug",
+            "In RR-325, update the acceptance criteria",
+        ]
+        for provider in ("codex", "claude"):
+            for index, source_text in enumerate(mutation_cases, start=1):
+                with (
+                    self.subTest(provider=provider, source_text=source_text),
+                    tempfile.TemporaryDirectory() as tmp,
+                ):
+                    root = Path(tmp)
+                    repo = root / "repo"
+                    self.make_git_repo(repo)
+                    self.write_ticket(repo, "RR-325")
+                    self.git(repo, "add", ".orchestrator/RR-325.md")
+                    self.git(repo, "commit", "-m", "add ticket")
+                    command_id = f"{provider}-contextual-update-{index}"
+                    state_path = root / "voice_command_state.json"
+                    state_path.write_text(json.dumps({
+                        "relay_command_seq": index,
+                        "relay_command_id": command_id,
+                    }))
+                    original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+                    orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+                    daemon = self.make_daemon(root, provider=provider)
+                    try:
+                        with patch("orchestrator.create_worktree") as create_worktree, \
+                                patch.object(orchestrator.Worker, "start") as start_worker:
+                            result = daemon.record_orchestrator_command(
+                                repo_path=str(repo),
+                                source_text=source_text,
+                                relay_command_seq=index,
+                                relay_command_id=command_id,
+                                provider=provider,
+                            )
+                    finally:
+                        orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+
+                    create_worktree.assert_not_called()
+                    start_worker.assert_not_called()
+                    command = result["orchestrator_command"]
+                    self.assertEqual(command["status"], "blocked")
+                    self.assertEqual(command["action"], "update_ticket")
+                    self.assertEqual(command["outcome"], "clarification-needed")
+                    self.assertEqual(command["ticket_id"], "RR-325")
+                    self.assertEqual(command["provider_key"], provider)
+
+    def test_daemon_modal_we_query_never_dispatches_for_both_providers(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                repo = root / "repo"
+                self.make_git_repo(repo)
+                self.write_ticket(repo, "RR-325")
+                command_id = f"{provider}-modal-query"
+                state_path = root / "voice_command_state.json"
+                state_path.write_text(json.dumps({
+                    "relay_command_seq": 1,
+                    "relay_command_id": command_id,
+                }))
+                original_state_path = orchestrator.RELAY_COMMAND_STATE_FILE
+                orchestrator.RELAY_COMMAND_STATE_FILE = state_path
+                daemon = self.make_daemon(root, provider=provider)
+                try:
+                    with patch("orchestrator.create_worktree") as create_worktree, \
+                            patch.object(orchestrator.Worker, "start") as start_worker:
+                        result = daemon.record_orchestrator_command(
+                            repo_path=str(repo),
+                            source_text="Will we ship RR-325 in the next release?",
+                            relay_command_seq=1,
+                            relay_command_id=command_id,
+                            provider=provider,
+                        )
+                finally:
+                    orchestrator.RELAY_COMMAND_STATE_FILE = original_state_path
+
+                create_worktree.assert_not_called()
+                start_worker.assert_not_called()
+                command = result["orchestrator_command"]
+                self.assertEqual(command["status"], "handled")
+                self.assertEqual(command["action"], "inspect_ticket")
+                self.assertEqual(command["outcome"], "non-work-command")
+                self.assertEqual(command["provider_key"], provider)
 
     def test_daemon_preserves_explicit_work_authority_for_both_providers(self):
         mutation_cases = [

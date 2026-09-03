@@ -97,6 +97,13 @@ RELAY_RUNNER_OVERVIEW_RE = re.compile(
     re.IGNORECASE,
 )
 _COMMAND_LEAD = r"(?:(?:hey|hi|okay|ok|so|actually|no)\b[,!\s]*)*"
+LEADING_TARGET_CONTEXT_RE = re.compile(
+    rf"^\s*{_COMMAND_LEAD}(?:"
+    r"(?:for|in|on|regarding|about)\s+[^,;:?!]{1,120}"
+    r"|[A-Za-z][A-Za-z0-9]*-\d+"
+    r")\s*[,;:]\s*(?P<command>.+)$",
+    re.IGNORECASE,
+)
 _MUTATION_VERB = (
     r"(?:add|build|change|clean\s+up|create|debug|delete|design|fix|implement|"
     r"install|make|merge|migrate|refactor|remove|repair|ship|test|wire|write|"
@@ -106,7 +113,7 @@ EXPLICIT_MUTATION_REQUEST_RE = re.compile(
     rf"^\s*{_COMMAND_LEAD}(?:(?:i\s+mean|please|go\s+ahead\s+and)\s+)?(?:"
     rf"{_MUTATION_VERB}\b|(?:do|perform)\s+(?:an?|the)\b)"
     rf"|^\s*{_COMMAND_LEAD}(?:please\s+)?(?:can|could|would|will)\s+"
-    rf"(?:you|we)\s+(?:please\s+)?(?:{_MUTATION_VERB}\b|(?:do|perform)\s+(?:an?|the)\b)"
+    rf"you\s+(?:please\s+)?(?:{_MUTATION_VERB}\b|(?:do|perform)\s+(?:an?|the)\b)"
     rf"|^\s*{_COMMAND_LEAD}(?:i|we)\s+(?:need|want|would\s+like)\s+"
     rf"(?:you\s+|us\s+)?to\s+{_MUTATION_VERB}\b"
     rf"|^\s*{_COMMAND_LEAD}(?:i|we)\s+(?:need|want|would\s+like)\s+"
@@ -119,7 +126,7 @@ EXPLICIT_DISPATCH_REQUEST_RE = re.compile(
     r"(?:dispatch|delegate|hand\s+off|kick\s+off|start|spin\s+up|work\s+on|"
     r"run(?!\s+(?:me|us)\s+through\b))\b"
     rf"|^\s*{_COMMAND_LEAD}(?:please\s+)?(?:can|could|would|will)\s+"
-    r"(?:you|we)\s+(?:please\s+)?"
+    r"you\s+(?:please\s+)?"
     r"(?:dispatch|delegate|hand\s+off|kick\s+off|start|spin\s+up|work\s+on|"
     r"run(?!\s+(?:me|us)\s+through\b))\b",
     re.IGNORECASE,
@@ -330,25 +337,37 @@ def is_information_query(text: str) -> bool:
     source = (text or "").strip()
     if not source:
         return False
-    if READ_ONLY_REQUEST_RE.search(source):
+    command = _command_clause(source)
+    if READ_ONLY_REQUEST_RE.search(source) or READ_ONLY_REQUEST_RE.search(command):
         return True
     if _explicit_project_work_kind(source, _extract_ticket_id(source)) is not None:
         return False
     return bool(
         WH_QUESTION_RE.search(source)
+        or WH_QUESTION_RE.search(command)
         or AUXILIARY_QUESTION_RE.search(source)
+        or AUXILIARY_QUESTION_RE.search(command)
         or EPISTEMIC_QUERY_RE.search(source)
+        or EPISTEMIC_QUERY_RE.search(command)
         or INFORMATION_IMPERATIVE_RE.search(source)
+        or INFORMATION_IMPERATIVE_RE.search(command)
     )
+
+
+def _command_clause(source: str) -> str:
+    """Return the operative clause after a punctuated leading target context."""
+    match = LEADING_TARGET_CONTEXT_RE.search(source)
+    return match.group("command").strip() if match else source
 
 
 def _explicit_project_work_kind(source: str, ticket_id: str | None) -> str | None:
     """Return the mutation route authorized by command grammar, if any."""
-    if DURABLE_WORK_ESCALATION_RE.search(source):
+    command = _command_clause(source)
+    if DURABLE_WORK_ESCALATION_RE.search(command):
         return "create_ticket"
-    if WORKER_DELEGATION_RE.search(source) or EXPLICIT_DISPATCH_REQUEST_RE.search(source):
+    if WORKER_DELEGATION_RE.search(command) or EXPLICIT_DISPATCH_REQUEST_RE.search(command):
         return "dispatch_ticket" if ticket_id else "create_ticket"
-    if EXPLICIT_MUTATION_REQUEST_RE.search(source):
+    if EXPLICIT_MUTATION_REQUEST_RE.search(command):
         return "update_ticket" if ticket_id else "create_ticket"
     return None
 
