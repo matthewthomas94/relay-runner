@@ -25,6 +25,14 @@ MESSENGER_STAGES = (
     "queued",
     "afplay_started",
 )
+MESSENGER_STAGE_OWNERS = {
+    "messenger_submitted": "bridge",
+    "messenger_provider_started": "provider",
+    "messenger_first_semantic_output": "provider",
+    "tts_enqueued": "speech_arbitration",
+    "queued": "visible_presentation",
+    "afplay_started": "audio_playback",
+}
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:
@@ -348,6 +356,7 @@ def build_messenger_latency_report(
         semantic_healthy = semantic_at is not None and timeline.get("failure_stage") is None
         visible_ms = _milliseconds(received, visible_at)
         audio_ms = _milliseconds(received, audio_at)
+        first_missing_stage = _messenger_first_missing_stage(timeline)
         sample = {
             "relay_command_seq": timeline["relay_command_seq"],
             "relay_command_id": timeline["relay_command_id"],
@@ -359,6 +368,12 @@ def build_messenger_latency_report(
             "semantic_healthy": semantic_healthy,
             "visible_within_2s": bool(semantic_healthy and visible_ms is not None and visible_ms <= 2_000),
             "audible_within_3s": bool(semantic_healthy and audio_ms is not None and audio_ms <= 3_000),
+            "first_missing_stage": first_missing_stage,
+            "first_missing_owner": (
+                MESSENGER_STAGE_OWNERS.get(first_missing_stage)
+                if first_missing_stage is not None
+                else None
+            ),
             "bottleneck": _messenger_bottleneck(timeline),
         }
         if timeline.get("failure_stage"):
@@ -368,20 +383,39 @@ def build_messenger_latency_report(
 
     visible_passes = sum(bool(sample["visible_within_2s"]) for sample in samples)
     audio_passes = sum(bool(sample["audible_within_3s"]) for sample in samples)
+    within_targets = sum(
+        bool(sample["visible_within_2s"] and sample["audible_within_3s"])
+        for sample in samples
+    )
     required_passes = math.ceil(len(samples) * 0.9) if samples else 0
+    provider_sample_counts = {
+        provider: sum(sample["provider"] == provider for sample in samples)
+        for provider in ("codex", "claude")
+    }
+    authenticated_provider_sample_counts = {
+        provider: sum(
+            sample["provider"] == provider and sample["semantic_healthy"]
+            for sample in samples
+        )
+        for provider in ("codex", "claude")
+    }
+    provider_coverage_passed = all(
+        authenticated_provider_sample_counts[provider] > 0
+        for provider in ("codex", "claude")
+    )
     return {
         "sample_count": len(samples),
-        "provider_sample_counts": {
-            provider: sum(sample["provider"] == provider for sample in samples)
-            for provider in ("codex", "claude")
-        },
+        "provider_sample_counts": provider_sample_counts,
+        "authenticated_provider_sample_counts": authenticated_provider_sample_counts,
+        "provider_coverage_passed": provider_coverage_passed,
         "visible_within_2s_count": visible_passes,
         "audible_within_3s_count": audio_passes,
+        "within_targets_count": within_targets,
         "required_pass_count": required_passes,
         "installed_uat_passed": bool(
             len(samples) >= 10
-            and visible_passes >= required_passes
-            and audio_passes >= required_passes
+            and within_targets >= required_passes
+            and provider_coverage_passed
         ),
         "samples": samples,
     }
@@ -414,6 +448,13 @@ def _messenger_bottleneck(timeline: dict[str, Any]) -> str:
     ]
     measured = [(duration, label) for duration, label in durations if duration is not None]
     return max(measured)[1] if measured else "unmeasured"
+
+
+def _messenger_first_missing_stage(timeline: dict[str, Any]) -> str | None:
+    for stage in MESSENGER_STAGES[1:]:
+        if _finite_float(timeline.get(stage)) is None:
+            return stage
+    return None
 
 
 def _delta(timeline: dict[str, float | None], start: str, end: str) -> float | None:
@@ -459,6 +500,9 @@ def main() -> int:
             "Messenger UAT: "
             f"{messenger['visible_within_2s_count']}/{messenger['sample_count']} visible, "
             f"{messenger['audible_within_3s_count']}/{messenger['sample_count']} audible, "
+            f"{messenger['within_targets_count']}/{messenger['sample_count']} within both, "
+            "authenticated providers="
+            f"{messenger['authenticated_provider_sample_counts']}, "
             f"passed={messenger['installed_uat_passed']}"
         )
         for sample in report["samples"]:

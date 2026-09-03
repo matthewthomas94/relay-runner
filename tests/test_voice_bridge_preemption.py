@@ -241,6 +241,72 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
         degraded.assert_not_called()
 
+    def test_enabled_unavailable_messenger_queues_visible_audible_degraded_response_and_delivers_foreground(self):
+        action = types.SimpleNamespace(kind="non_work", outcome="foreground command")
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                worker = FakeTTSWorker()
+                speech = CapturingSpeechQueue()
+                worker.input_queue = speech
+                shutdown_event = threading.Event()
+
+                def read_once(_fd, _size):
+                    shutdown_event.set()
+                    return b"Investigate the missing Messenger response\n"
+
+                command = {
+                    "relay_command_seq": 1,
+                    "relay_command_id": f"missing-{provider}",
+                    "provider": provider,
+                }
+                self.publish_waiting_preview.reset_mock()
+                with (
+                    mock.patch.object(voice_bridge.os, "unlink"),
+                    mock.patch.object(voice_bridge.os, "close"),
+                    mock.patch.object(voice_bridge.os, "read", side_effect=read_once),
+                    mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+                    mock.patch.object(voice_bridge, "open_fifo", return_value=123),
+                    mock.patch.object(voice_bridge.select, "select", return_value=([123], [], [])),
+                    mock.patch.object(voice_bridge.threading, "Thread"),
+                    mock.patch.object(voice_bridge, "_begin_relay_command", return_value=command),
+                    mock.patch.object(voice_bridge, "_relay_command_current", return_value=True),
+                    mock.patch.object(voice_bridge, "resolve_command_action", return_value=action),
+                    mock.patch.object(voice_bridge, "format_command_for_agent", return_value="agent prompt"),
+                    mock.patch.object(voice_bridge, "_metadata_for_action", return_value={
+                        **command,
+                        "action": "non_work",
+                    }),
+                    mock.patch.object(
+                        voice_bridge,
+                        "_should_fanout_raw_instruction_to_orchestrator",
+                        return_value=False,
+                    ),
+                    mock.patch.object(voice_bridge, "_queue_voice_acknowledgement", return_value=True),
+                    mock.patch.object(voice_bridge, "_start_pm_update_mode"),
+                    mock.patch.object(voice_bridge, "_publish_command") as publish_command,
+                ):
+                    voice_bridge._run_relay(
+                        worker,
+                        shutdown_event,
+                        messenger=None,
+                        messenger_expected=True,
+                    )
+
+                degraded = [
+                    (text, metadata)
+                    for text, metadata in speech.submissions
+                    if text == voice_bridge.MESSENGER_DEGRADED_TEXT
+                ]
+                self.assertEqual(len(degraded), 1)
+                self.assertEqual(degraded[0][1]["source"], "fallback")
+                self.assertEqual(degraded[0][1]["kind"], "handoff")
+                self.assertEqual(degraded[0][1]["command_id"], f"missing-{provider}")
+                self.assertIn(
+                    mock.call(voice_bridge.MESSENGER_DEGRADED_TEXT),
+                    self.publish_waiting_preview.call_args_list,
+                )
+                publish_command.assert_called_once()
+
     def test_completion_hook_requires_matching_foreground_owner_for_both_providers(self):
         for provider in ("codex", "claude"):
             with tempfile.TemporaryDirectory() as temp_dir:

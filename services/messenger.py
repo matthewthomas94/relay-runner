@@ -99,11 +99,13 @@ def _first_semantic_response(text: str, *, complete: bool = False) -> str | None
     cleaned = " ".join(str(text or "").split()).strip()
     if not cleaned or cleaned == SILENT_RESPONSE:
         return None
-    boundary = re.search(r"[.!?](?:[\"'’])?(?=\s|$)", cleaned)
-    candidate = cleaned[:boundary.end()] if boundary else (cleaned if complete else "")
-    if len(_SEMANTIC_TOKEN_RE.findall(candidate)) < 3:
-        return None
-    return candidate
+    for boundary in re.finditer(r"[.!?](?:[\"'’])?(?=\s|$)", cleaned):
+        candidate = cleaned[:boundary.end()]
+        if len(_SEMANTIC_TOKEN_RE.findall(candidate)) >= 3:
+            return candidate
+    if complete and len(_SEMANTIC_TOKEN_RE.findall(cleaned)) >= 3:
+        return cleaned
+    return None
 
 FOREGROUND_ONLY_ENVIRONMENT_KEYS = frozenset({
     "RELAY_CONTEXT_COMPACTION_EVENTS",
@@ -342,6 +344,34 @@ class MessengerBackend(Protocol):
     ) -> str: ...
     def interrupt(self) -> None: ...
     def shutdown(self) -> None: ...
+
+
+class UnavailableMessengerBackend:
+    """Provider-neutral sentinel that keeps degraded delivery command-scoped."""
+
+    actor_role = "messenger"
+
+    def __init__(self, config: MessengerConfig, reason: str):
+        self.config = config
+        self.reason = reason
+
+    def start(self) -> None:
+        raise MessengerError(self.reason)
+
+    def ask(
+        self,
+        prompt: str,
+        timeout: float = 60.0,
+        on_partial: Callable[[str], object] | None = None,
+    ) -> str:
+        del prompt, timeout, on_partial
+        raise MessengerError(self.reason)
+
+    def interrupt(self) -> None:
+        pass
+
+    def shutdown(self) -> None:
+        pass
 
 
 class CodexMessengerBackend:
@@ -602,13 +632,22 @@ class CodexMessengerBackend:
                 except (json.JSONDecodeError, TypeError):
                     continue
                 if isinstance(message, dict):
-                    self._handle_message(message)
+                    self._handle_message(message, proc=proc)
         except (OSError, ValueError):
             pass
         finally:
             self._fail_pending("Codex messenger process exited", proc=proc)
 
-    def _handle_message(self, message: dict) -> None:
+    def _handle_message(
+        self,
+        message: dict,
+        *,
+        proc: subprocess.Popen | None = None,
+    ) -> None:
+        if proc is not None:
+            with self._state_lock:
+                if self._proc is not proc:
+                    return
         request_id = message.get("id")
         if isinstance(request_id, int):
             with self._state_lock:
@@ -818,12 +857,16 @@ class ClaudeMessengerBackend:
         on_partial: Callable[[str], object] | None = None,
     ) -> str:
         self.start()
+        proc = self._proc
+        if proc is None or proc.poll() is not None:
+            raise MessengerError("Claude messenger is not ready")
         pending = {
             "event": threading.Event(),
             "text": "",
             "error": None,
             "on_partial": on_partial,
             "partial_delivered": False,
+            "process": proc,
         }
         with self._state_lock:
             self._pending = pending
@@ -832,7 +875,7 @@ class ClaudeMessengerBackend:
             "message": {"role": "user", "content": prompt},
         }
         try:
-            self._write_json(payload)
+            self._write_json(payload, proc=proc)
             if not pending["event"].wait(timeout=max(0.1, timeout)):
                 self.interrupt()
                 raise MessengerError("Claude messenger response timed out")
@@ -867,8 +910,16 @@ class ClaudeMessengerBackend:
         if proc and proc.poll() is None:
             proc.kill()
 
-    def _write_json(self, payload: dict) -> None:
-        proc = self._proc
+    def _write_json(
+        self,
+        payload: dict,
+        *,
+        proc: subprocess.Popen | None = None,
+    ) -> None:
+        current_proc = self._proc
+        if proc is not None and current_proc is not proc:
+            raise MessengerError("Claude messenger process was superseded")
+        proc = current_proc
         if proc is None or proc.stdin is None or proc.poll() is not None:
             raise MessengerError("Claude messenger process is not writable")
         try:
@@ -889,6 +940,9 @@ class ClaudeMessengerBackend:
                     continue
                 if not isinstance(message, dict):
                     continue
+                with self._state_lock:
+                    if self._proc is not proc:
+                        return
                 session_id = message.get("session_id")
                 if session_id:
                     self._session_id = str(session_id)
@@ -901,7 +955,11 @@ class ClaudeMessengerBackend:
                         and isinstance(delta, dict)
                         and delta.get("type") == "text_delta"
                     ):
-                        self._append_partial(str(delta.get("text") or ""), complete=False)
+                        self._append_partial(
+                            proc,
+                            str(delta.get("text") or ""),
+                            complete=False,
+                        )
                     continue
                 if message.get("type") == "assistant":
                     assistant = message.get("message")
@@ -913,13 +971,17 @@ class ClaudeMessengerBackend:
                             if isinstance(block, dict) and block.get("type") == "text"
                         )
                         if text:
-                            self._set_partial(text, complete=False)
+                            self._set_partial(proc, text, complete=False)
                     continue
                 if message.get("type") != "result":
                     continue
                 with self._state_lock:
                     pending = self._pending
-                    if pending is None:
+                    if (
+                        self._proc is not proc
+                        or pending is None
+                        or pending.get("process") is not proc
+                    ):
                         continue
                     if message.get("is_error"):
                         pending["error"] = message.get("result") or "Claude messenger turn failed"
@@ -933,28 +995,52 @@ class ClaudeMessengerBackend:
             pass
         finally:
             with self._state_lock:
-                pending = self._pending
-                if pending is not None and not pending["event"].is_set():
-                    pending["error"] = "Claude messenger process exited"
-                    pending["event"].set()
                 if self._proc is proc:
+                    pending = self._pending
+                    if (
+                        pending is not None
+                        and pending.get("process") is proc
+                        and not pending["event"].is_set()
+                    ):
+                        pending["error"] = "Claude messenger process exited"
+                        pending["event"].set()
                     self._proc = None
 
-    def _append_partial(self, text: str, *, complete: bool) -> None:
+    def _append_partial(
+        self,
+        proc: subprocess.Popen,
+        text: str,
+        *,
+        complete: bool,
+    ) -> None:
         if not text:
             return
         with self._state_lock:
             pending = self._pending
-            if pending is None:
+            if (
+                self._proc is not proc
+                or pending is None
+                or pending.get("process") is not proc
+            ):
                 return
             pending["text"] = str(pending.get("text") or "") + text
             partial = self._take_claude_partial_locked(pending, complete=complete)
         self._emit_claude_partial(partial)
 
-    def _set_partial(self, text: str, *, complete: bool) -> None:
+    def _set_partial(
+        self,
+        proc: subprocess.Popen,
+        text: str,
+        *,
+        complete: bool,
+    ) -> None:
         with self._state_lock:
             pending = self._pending
-            if pending is None:
+            if (
+                self._proc is not proc
+                or pending is None
+                or pending.get("process") is not proc
+            ):
                 return
             pending["text"] = text
             partial = self._take_claude_partial_locked(pending, complete=complete)
@@ -1354,16 +1440,20 @@ class MessengerRuntime:
                 self._active_event = event
             delivered_early = threading.Event()
 
-            def deliver_partial(response: str) -> None:
-                if delivered_early.is_set() or not self._event_is_current(event):
+            def deliver_partial(
+                response: str,
+                bound_event: _MessengerEvent = event,
+                delivery_guard: threading.Event = delivered_early,
+            ) -> None:
+                if delivery_guard.is_set() or not self._event_is_current(bound_event):
                     return
-                delivered_early.set()
+                delivery_guard.set()
                 self._observe_timing(
                     "messenger_first_semantic_output",
-                    event.command_seq,
-                    event.command_id,
+                    bound_event.command_seq,
+                    bound_event.command_id,
                 )
-                self._deliver_response(event, response)
+                self._deliver_response(bound_event, response)
 
             try:
                 self._observe_continuity("progress", event)
@@ -1419,9 +1509,7 @@ class MessengerRuntime:
             if delivered_early.is_set():
                 continue
             if not response or response == SILENT_RESPONSE:
-                if self._must_fail_open(event) or (
-                    event.kind == "user_turn" and not response
-                ):
+                if self._must_fail_open(event) or event.kind == "user_turn":
                     realization = self._fallback_realization(event, "arbitration_unavailable")
                     self._observe_realization(event, realization)
                     self._speak_safely(
@@ -2064,18 +2152,26 @@ def create_messenger_runtime(
     if resolved_command is None:
         executable = _command_prefix(config.command)[0]
         print(f"[messenger] provider command not found: {executable}", file=sys.stderr)
-        return None
-    config = replace(config, command=shlex.join(resolved_command))
-    try:
-        config = resolve_messenger_catalog_selection(config)
-    except CodexModelResolutionError as exc:
-        print(f"[messenger] could not resolve Codex messenger model: {exc}", file=sys.stderr)
-        return None
-    backend: MessengerBackend
-    if config.provider == "claude":
-        backend = ClaudeMessengerBackend(config)
+        backend: MessengerBackend = UnavailableMessengerBackend(
+            config,
+            "messenger provider command is unavailable",
+        )
     else:
-        backend = CodexMessengerBackend(config)
+        config = replace(config, command=shlex.join(resolved_command))
+        try:
+            config = resolve_messenger_catalog_selection(config)
+        except CodexModelResolutionError as exc:
+            print(f"[messenger] could not resolve Codex messenger model: {exc}", file=sys.stderr)
+            backend = UnavailableMessengerBackend(
+                config,
+                "messenger model selection is unavailable",
+            )
+        else:
+            backend = (
+                ClaudeMessengerBackend(config)
+                if config.provider == "claude"
+                else CodexMessengerBackend(config)
+            )
     return MessengerRuntime(
         backend,
         speak=speak,
