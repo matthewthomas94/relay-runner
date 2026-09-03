@@ -16,6 +16,23 @@ DEFAULT_DELIVERY_LOG = os.environ.get(
     "RELAY_TERMINAL_DELIVERY_EVENTS",
     "/tmp/relay_terminal_delivery_events.jsonl",
 )
+MESSENGER_STAGES = (
+    "user_turn_received",
+    "messenger_submitted",
+    "messenger_provider_started",
+    "messenger_first_semantic_output",
+    "tts_enqueued",
+    "queued",
+    "afplay_started",
+)
+MESSENGER_STAGE_OWNERS = {
+    "messenger_submitted": "bridge",
+    "messenger_provider_started": "provider",
+    "messenger_first_semantic_output": "provider",
+    "tts_enqueued": "speech_arbitration",
+    "queued": "visible_presentation",
+    "afplay_started": "audio_playback",
+}
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:
@@ -289,7 +306,155 @@ def build_report(
             95,
         ),
         "samples": samples,
+        "messenger_latency": build_messenger_latency_report(speech_records),
     }
+
+
+def build_messenger_latency_report(
+    speech_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Correlate the privacy-safe fast path from transcript to visible/audio output."""
+    timelines: dict[tuple[int, str], dict[str, Any]] = {}
+    for record in speech_records:
+        command_key = _command_key(record)
+        event = str(record.get("event") or "")
+        at = _finite_float(record.get("at"))
+        if command_key is None or at is None:
+            continue
+        if event not in {*MESSENGER_STAGES, "messenger_failed", "messenger_unavailable"}:
+            continue
+        source = str(record.get("source") or "").strip().lower()
+        if event in {"tts_enqueued", "queued", "afplay_started"} and source not in {
+            "messenger",
+            "fallback",
+        }:
+            continue
+        timeline = timelines.setdefault(command_key, {
+            "relay_command_seq": command_key[0],
+            "relay_command_id": command_key[1],
+        })
+        previous = _finite_float(timeline.get(event))
+        timeline[event] = at if previous is None else min(previous, at)
+        provider = str(record.get("provider") or "").strip().lower()
+        if provider in {"codex", "claude"}:
+            timeline["provider"] = provider
+        if event in {"messenger_failed", "messenger_unavailable"}:
+            timeline["failure_stage"] = event
+            timeline["failure_outcome"] = str(record.get("outcome") or "unknown")
+        if event in {"tts_enqueued", "queued", "afplay_started"}:
+            timeline[f"{event}_source"] = source
+
+    samples: list[dict[str, Any]] = []
+    for timeline in timelines.values():
+        received = _finite_float(timeline.get("user_turn_received"))
+        if received is None:
+            continue
+        visible_event = "queued" if timeline.get("queued") is not None else "tts_enqueued"
+        visible_at = _finite_float(timeline.get(visible_event))
+        audio_at = _finite_float(timeline.get("afplay_started"))
+        semantic_at = _finite_float(timeline.get("messenger_first_semantic_output"))
+        semantic_healthy = semantic_at is not None and timeline.get("failure_stage") is None
+        visible_ms = _milliseconds(received, visible_at)
+        audio_ms = _milliseconds(received, audio_at)
+        first_missing_stage = _messenger_first_missing_stage(timeline)
+        sample = {
+            "relay_command_seq": timeline["relay_command_seq"],
+            "relay_command_id": timeline["relay_command_id"],
+            "provider": timeline.get("provider"),
+            "semantic_output_ms": _milliseconds(received, semantic_at),
+            "visible_response_ms": visible_ms,
+            "audible_playback_ms": audio_ms,
+            "visible_event": visible_event if visible_at is not None else None,
+            "semantic_healthy": semantic_healthy,
+            "visible_within_2s": bool(semantic_healthy and visible_ms is not None and visible_ms <= 2_000),
+            "audible_within_3s": bool(semantic_healthy and audio_ms is not None and audio_ms <= 3_000),
+            "first_missing_stage": first_missing_stage,
+            "first_missing_owner": (
+                MESSENGER_STAGE_OWNERS.get(first_missing_stage)
+                if first_missing_stage is not None
+                else None
+            ),
+            "bottleneck": _messenger_bottleneck(timeline),
+        }
+        if timeline.get("failure_stage"):
+            sample["failure_stage"] = timeline["failure_stage"]
+            sample["failure_outcome"] = timeline.get("failure_outcome")
+        samples.append(sample)
+
+    visible_passes = sum(bool(sample["visible_within_2s"]) for sample in samples)
+    audio_passes = sum(bool(sample["audible_within_3s"]) for sample in samples)
+    within_targets = sum(
+        bool(sample["visible_within_2s"] and sample["audible_within_3s"])
+        for sample in samples
+    )
+    required_passes = math.ceil(len(samples) * 0.9) if samples else 0
+    provider_sample_counts = {
+        provider: sum(sample["provider"] == provider for sample in samples)
+        for provider in ("codex", "claude")
+    }
+    authenticated_provider_sample_counts = {
+        provider: sum(
+            sample["provider"] == provider and sample["semantic_healthy"]
+            for sample in samples
+        )
+        for provider in ("codex", "claude")
+    }
+    provider_coverage_passed = all(
+        authenticated_provider_sample_counts[provider] > 0
+        for provider in ("codex", "claude")
+    )
+    return {
+        "sample_count": len(samples),
+        "provider_sample_counts": provider_sample_counts,
+        "authenticated_provider_sample_counts": authenticated_provider_sample_counts,
+        "provider_coverage_passed": provider_coverage_passed,
+        "visible_within_2s_count": visible_passes,
+        "audible_within_3s_count": audio_passes,
+        "within_targets_count": within_targets,
+        "required_pass_count": required_passes,
+        "installed_uat_passed": bool(
+            len(samples) >= 10
+            and within_targets >= required_passes
+            and provider_coverage_passed
+        ),
+        "samples": samples,
+    }
+
+
+def _milliseconds(started: float | None, ended: float | None) -> float | None:
+    if started is None or ended is None or ended < started:
+        return None
+    return round((ended - started) * 1_000, 3)
+
+
+def _messenger_bottleneck(timeline: dict[str, Any]) -> str:
+    failure = str(timeline.get("failure_stage") or "")
+    if failure:
+        return failure
+    for stage in MESSENGER_STAGES[1:]:
+        if _finite_float(timeline.get(stage)) is None:
+            return f"missing_{stage}"
+    segments = (
+        ("submission", "user_turn_received", "messenger_submitted"),
+        ("provider_start", "messenger_submitted", "messenger_provider_started"),
+        ("provider_generation", "messenger_provider_started", "messenger_first_semantic_output"),
+        ("speech_enqueue", "messenger_first_semantic_output", "tts_enqueued"),
+        ("visible_presentation", "tts_enqueued", "queued"),
+        ("audio_playback", "queued", "afplay_started"),
+    )
+    durations = [
+        (_milliseconds(_finite_float(timeline.get(start)), _finite_float(timeline.get(end))), label)
+        for label, start, end in segments
+    ]
+    measured = [(duration, label) for duration, label in durations if duration is not None]
+    return max(measured)[1] if measured else "unmeasured"
+
+
+def _messenger_first_missing_stage(timeline: dict[str, Any]) -> str | None:
+    for stage in MESSENGER_STAGES[1:]:
+        if _finite_float(timeline.get(stage)) is None:
+            return stage
+    return None
 
 
 def _delta(timeline: dict[str, float | None], start: str, end: str) -> float | None:
@@ -330,6 +495,16 @@ def main() -> int:
             f"{report['provider_ack_to_first_audio_p95_ms']} ms"
         )
         print(f"Option to first audio p95: {report['option_to_first_audio_p95_ms']} ms")
+        messenger = report["messenger_latency"]
+        print(
+            "Messenger UAT: "
+            f"{messenger['visible_within_2s_count']}/{messenger['sample_count']} visible, "
+            f"{messenger['audible_within_3s_count']}/{messenger['sample_count']} audible, "
+            f"{messenger['within_targets_count']}/{messenger['sample_count']} within both, "
+            "authenticated providers="
+            f"{messenger['authenticated_provider_sample_counts']}, "
+            f"passed={messenger['installed_uat_passed']}"
+        )
         for sample in report["samples"]:
             print(json.dumps(sample, sort_keys=True))
     return 0

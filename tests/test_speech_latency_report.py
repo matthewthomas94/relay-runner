@@ -22,6 +22,200 @@ AUTHORITATIVE_FINAL = {
 
 
 class SpeechLatencyReportTests(unittest.TestCase):
+    @staticmethod
+    def messenger_sample(
+        index: int,
+        provider: str,
+        *,
+        visible_delay: float = 0.5,
+        audio_delay: float = 0.8,
+        omit: str | None = None,
+    ) -> list[dict]:
+        command = {
+            "relay_command_seq": index,
+            "relay_command_id": f"messenger-{index}",
+        }
+        started = 100.0 + index * 10
+        records = [
+            {"event": "user_turn_received", "at": started, "provider": provider, **command},
+            {"event": "messenger_submitted", "at": started + 0.01, "provider": provider, **command},
+            {"event": "messenger_provider_started", "at": started + 0.02, "provider": provider, **command},
+            {
+                "event": "messenger_first_semantic_output",
+                "at": started + 0.2,
+                "provider": provider,
+                **command,
+            },
+            {"event": "tts_enqueued", "at": started + 0.25, "source": "messenger", **command},
+            {"event": "queued", "at": started + visible_delay, "source": "messenger", **command},
+            {"event": "afplay_started", "at": started + audio_delay, "source": "messenger", **command},
+        ]
+        return [record for record in records if record["event"] != omit]
+
+    def test_messenger_report_enforces_nine_of_ten_visible_and_audible_gate(self):
+        records = []
+        for index in range(10):
+            command = {
+                "relay_command_seq": index + 1,
+                "relay_command_id": f"messenger-{index + 1}",
+            }
+            started = 100.0 + index * 10
+            provider = "codex" if index % 2 == 0 else "claude"
+            semantic_delay = 0.4 if index < 9 else 2.4
+            visible_delay = 0.5 if index < 9 else 2.5
+            audio_delay = 0.8 if index < 9 else 3.4
+            records.extend([
+                {"event": "user_turn_received", "at": started, "provider": provider, **command},
+                {"event": "messenger_submitted", "at": started + 0.01, "provider": provider, **command},
+                {"event": "messenger_provider_started", "at": started + 0.02, "provider": provider, **command},
+                {
+                    "event": "messenger_first_semantic_output",
+                    "at": started + semantic_delay,
+                    "provider": provider,
+                    **command,
+                },
+                {
+                    "event": "tts_enqueued",
+                    "at": started + semantic_delay + 0.01,
+                    "source": "messenger",
+                    **command,
+                },
+                {
+                    "event": "queued",
+                    "at": started + visible_delay,
+                    "source": "messenger",
+                    **command,
+                },
+                {
+                    "event": "afplay_started",
+                    "at": started + audio_delay,
+                    "source": "messenger",
+                    **command,
+                },
+            ])
+
+        report = speech_latency_report.build_messenger_latency_report(records)
+
+        self.assertEqual(report["sample_count"], 10)
+        self.assertEqual(report["provider_sample_counts"], {"codex": 5, "claude": 5})
+        self.assertEqual(report["visible_within_2s_count"], 9)
+        self.assertEqual(report["audible_within_3s_count"], 9)
+        self.assertEqual(report["within_targets_count"], 9)
+        self.assertEqual(report["required_pass_count"], 9)
+        self.assertTrue(report["provider_coverage_passed"])
+        self.assertTrue(report["installed_uat_passed"])
+        self.assertEqual(report["samples"][-1]["bottleneck"], "provider_generation")
+
+    def test_messenger_uat_requires_authenticated_samples_from_both_providers(self):
+        records = []
+        for index in range(1, 11):
+            records.extend(self.messenger_sample(index, "codex"))
+
+        report = speech_latency_report.build_messenger_latency_report(records)
+
+        self.assertEqual(report["sample_count"], 10)
+        self.assertEqual(report["provider_sample_counts"], {"codex": 10, "claude": 0})
+        self.assertEqual(
+            report["authenticated_provider_sample_counts"],
+            {"codex": 10, "claude": 0},
+        )
+        self.assertEqual(report["within_targets_count"], 10)
+        self.assertFalse(report["provider_coverage_passed"])
+        self.assertFalse(report["installed_uat_passed"])
+
+    def test_failed_provider_sample_does_not_count_as_authenticated_coverage(self):
+        records = []
+        for index in range(1, 10):
+            records.extend(self.messenger_sample(index, "codex"))
+        failed_command = {
+            "relay_command_seq": 10,
+            "relay_command_id": "messenger-10",
+        }
+        records.extend([
+            {"event": "user_turn_received", "at": 200.0, **failed_command},
+            {
+                "event": "messenger_submitted",
+                "at": 200.01,
+                "provider": "claude",
+                **failed_command,
+            },
+            {
+                "event": "messenger_provider_started",
+                "at": 200.02,
+                "provider": "claude",
+                **failed_command,
+            },
+            {
+                "event": "messenger_failed",
+                "at": 200.03,
+                "provider": "claude",
+                **failed_command,
+            },
+            {"event": "tts_enqueued", "at": 200.04, "source": "fallback", **failed_command},
+            {"event": "queued", "at": 200.05, "source": "fallback", **failed_command},
+            {"event": "afplay_started", "at": 200.06, "source": "fallback", **failed_command},
+        ])
+
+        report = speech_latency_report.build_messenger_latency_report(records)
+
+        self.assertEqual(report["provider_sample_counts"], {"codex": 9, "claude": 1})
+        self.assertEqual(
+            report["authenticated_provider_sample_counts"],
+            {"codex": 9, "claude": 0},
+        )
+        self.assertEqual(report["within_targets_count"], 9)
+        self.assertFalse(report["installed_uat_passed"])
+
+    def test_messenger_uat_requires_nine_samples_to_meet_both_targets(self):
+        records = []
+        for index in range(1, 11):
+            provider = "codex" if index % 2 else "claude"
+            visible_delay = 2.5 if index == 1 else 0.5
+            audio_delay = 3.2 if index == 2 else (2.8 if index == 1 else 0.8)
+            records.extend(self.messenger_sample(
+                index,
+                provider,
+                visible_delay=visible_delay,
+                audio_delay=audio_delay,
+            ))
+
+        report = speech_latency_report.build_messenger_latency_report(records)
+
+        self.assertEqual(report["visible_within_2s_count"], 9)
+        self.assertEqual(report["audible_within_3s_count"], 9)
+        self.assertEqual(report["within_targets_count"], 8)
+        self.assertFalse(report["installed_uat_passed"])
+
+    def test_messenger_report_attributes_first_missing_downstream_stage(self):
+        records = self.messenger_sample(1, "claude", omit="tts_enqueued")
+
+        report = speech_latency_report.build_messenger_latency_report(records)
+
+        sample = report["samples"][0]
+        self.assertEqual(sample["first_missing_stage"], "tts_enqueued")
+        self.assertEqual(sample["first_missing_owner"], "speech_arbitration")
+        self.assertEqual(sample["bottleneck"], "missing_tts_enqueued")
+
+    def test_messenger_report_labels_provider_failure_without_raw_content(self):
+        command = {"relay_command_seq": 1, "relay_command_id": "failed-messenger"}
+        report = speech_latency_report.build_messenger_latency_report([
+            {"event": "user_turn_received", "at": 1.0, **command},
+            {"event": "messenger_submitted", "at": 1.01, "provider": "claude", **command},
+            {"event": "messenger_provider_started", "at": 1.02, "provider": "claude", **command},
+            {
+                "event": "messenger_failed",
+                "at": 1.10,
+                "provider": "claude",
+                "outcome": "provider_unavailable",
+                **command,
+            },
+        ])
+
+        self.assertEqual(report["sample_count"], 1)
+        self.assertEqual(report["samples"][0]["bottleneck"], "messenger_failed")
+        self.assertEqual(report["samples"][0]["failure_outcome"], "provider_unavailable")
+        self.assertFalse(report["samples"][0]["semantic_healthy"])
+
     def test_report_correlates_terminal_acknowledgement_to_privacy_safe_playback(self):
         speech_records = []
         delivery_records = []

@@ -242,15 +242,43 @@ final class GeneralConfigTests: XCTestCase {
         config.selectProvider(.claude)
 
         XCTAssertTrue(config.messenger_enabled)
-        XCTAssertEqual(config.messenger_model, "best")
-        XCTAssertEqual(config.messenger_effort, GeneralConfig.defaultMessengerEffort)
+        XCTAssertEqual(config.messenger_model, "haiku")
+        XCTAssertEqual(config.messenger_effort, GeneralConfig.defaultReasoningEffort)
         XCTAssertEqual(
             GeneralConfig.normalizedMessengerEffort("low", for: .claude, model: "sonnet"),
             "low"
         )
         XCTAssertEqual(
             GeneralConfig.normalizedMessengerEffort("low", for: .claude, model: "haiku"),
-            GeneralConfig.defaultMessengerEffort
+            GeneralConfig.defaultReasoningEffort
+        )
+    }
+
+    func testGeneratedForegroundMessengerDefaultsMigrateToLightweightProviders() {
+        var codex = GeneralConfig()
+        codex.provider = .codex
+        codex.messenger_model = "sol"
+        codex.messenger_effort = "default"
+        codex.normalize(providerWasExplicit: true)
+        XCTAssertEqual(codex.messenger_model, "luna")
+        XCTAssertEqual(codex.messenger_effort, "low")
+
+        var claude = GeneralConfig()
+        claude.provider = .claude
+        claude.messenger_model = "best"
+        claude.messenger_effort = "default"
+        claude.normalize(providerWasExplicit: true)
+        XCTAssertEqual(claude.messenger_model, "haiku")
+        XCTAssertEqual(claude.messenger_effort, "default")
+
+        codex.messenger_model = "sol"
+        codex.messenger_effort = "high"
+        codex.normalize(providerWasExplicit: true)
+        XCTAssertEqual(codex.messenger_model, "sol")
+        XCTAssertEqual(codex.messenger_effort, "high")
+        XCTAssertEqual(
+            GeneralConfig.normalizedMessengerModel("gpt-5.6-terra", for: .codex),
+            "terra"
         )
     }
 

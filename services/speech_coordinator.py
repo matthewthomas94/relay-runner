@@ -40,6 +40,14 @@ LIFECYCLE_ROLES = frozenset({
 REALIZATION_DECISIONS = frozenset({"full", "delta", "suppress"})
 REPLAY_HISTORY_LIMIT = 32
 REPLAY_RETAINING_STOP_REASONS = frozenset({"user_stop"})
+MESSENGER_TIMING_STAGES = frozenset({
+    "user_turn_received",
+    "messenger_submitted",
+    "messenger_provider_started",
+    "messenger_first_semantic_output",
+    "messenger_failed",
+    "messenger_unavailable",
+})
 
 
 def _stable_digest(*values: object) -> str:
@@ -233,7 +241,6 @@ class SpeechCoordinator:
         *,
         is_current: Callable[[int, str], bool],
         is_preserved: Callable[[int, str, dict[str, Any]], bool] | None = None,
-        has_foreground_ownership: Callable[[int, str], bool] | None = None,
         event_log_path: str | os.PathLike[str] | None = None,
         control_socket_path: str | None = None,
     ):
@@ -241,7 +248,6 @@ class SpeechCoordinator:
         self.input_queue = CoordinatorInputQueue(self)
         self._is_current = is_current
         self._is_preserved = is_preserved
-        self._has_foreground_ownership = has_foreground_ownership
         self._event_log_path = str(event_log_path) if event_log_path else None
         self._lock = threading.RLock()
         self._accepted_keys: set[str] = set()
@@ -306,19 +312,34 @@ class SpeechCoordinator:
             "suppression_reason": reason,
         })
 
+    def record_messenger_stage(
+        self,
+        stage: str,
+        command_seq: int,
+        command_id: str,
+        *,
+        at: float | None = None,
+        provider: str | None = None,
+        outcome: str = "ok",
+    ) -> None:
+        """Record command-scoped latency stages without transcript or reply text."""
+        if stage not in MESSENGER_TIMING_STAGES:
+            return
+        normalized_provider = str(provider or "").strip().lower()
+        self._write_diagnostic({
+            "event": stage,
+            "at": time.time() if at is None else float(at),
+            "relay_command_seq": int(command_seq),
+            "relay_command_id": str(command_id),
+            "provider": normalized_provider if normalized_provider in {"codex", "claude"} else None,
+            "outcome": str(outcome or "ok"),
+        })
+
     def submit(self, intent: SpeechIntent) -> bool:
         started = time.perf_counter()
         self._diagnostic("proposed", intent)
         if not intent.spoken_text:
             self._diagnostic("expired", intent, latency_ms=_elapsed_ms(started))
-            return False
-        if not self._foreground_owned(intent):
-            self._diagnostic(
-                "suppressed",
-                intent,
-                latency_ms=_elapsed_ms(started),
-                suppression_reason="awaiting_foreground_ownership",
-            )
             return False
         if not self._fresh(intent):
             self._diagnostic("expired", intent, latency_ms=_elapsed_ms(started))
@@ -369,7 +390,7 @@ class SpeechCoordinator:
 
         if replace_committed:
             self.worker.skip()
-        self.worker.input_queue.put(intent.to_worker_payload())
+        self._enqueue_worker(intent)
         self._dispatch_requested_play()
         self._diagnostic("accepted", intent, latency_ms=_elapsed_ms(started))
         return True
@@ -792,16 +813,6 @@ class SpeechCoordinator:
             )
         )
 
-    def _foreground_owned(self, intent: SpeechIntent) -> bool:
-        if intent.source != "messenger" or intent.kind != "handoff":
-            return True
-        key = intent.command_key
-        return bool(
-            key is None
-            or self._has_foreground_ownership is None
-            or self._has_foreground_ownership(key[0], key[1])
-        )
-
     def _eligible_for_worker(self, payload: dict[str, Any]) -> bool:
         intent_id = str(payload.get("utterance_id") or "")
         with self._lock:
@@ -884,7 +895,7 @@ class SpeechCoordinator:
                 stop_reason=stop_reason,
             )
         if next_intent is not None:
-            self.worker.input_queue.put(next_intent.to_worker_payload())
+            self._enqueue_worker(next_intent)
         if retained_after_stop and next_intent is None:
             publish_retained = getattr(self.worker, "publish_replay_retained", None)
             if callable(publish_retained):
@@ -895,6 +906,11 @@ class SpeechCoordinator:
         if state in {"completed", "cancelled", "failed"}:
             self._utterance_timings.pop(intent_id, None)
             self._intent_committed_at.pop(intent_id, None)
+
+    def _enqueue_worker(self, intent: SpeechIntent) -> None:
+        self._diagnostic("tts_enqueued", intent)
+        self.worker.input_queue.put(intent.to_worker_payload())
+
     def _retain_replayable_locked(self, intent: SpeechIntent) -> bool:
         if not intent.replayable or not self._fresh(intent):
             return False

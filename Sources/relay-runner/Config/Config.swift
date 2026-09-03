@@ -78,8 +78,8 @@ struct GeneralConfig: Codable, Equatable {
     static let defaultReasoningEffort = "default"
     static let defaultOrchestratorEffort = "xhigh"
     static let defaultCodexReasoningEffort = defaultReasoningEffort
-    static let defaultMessengerModel = defaultCodexModelFamily
-    static let defaultMessengerEffort = defaultReasoningEffort
+    static let defaultMessengerModel = "luna"
+    static let defaultMessengerEffort = "low"
     static let defaultSubagentModel = "balanced"
     static let defaultSubagentEffort = "medium"
 
@@ -309,12 +309,26 @@ struct GeneralConfig: Codable, Equatable {
         let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch provider {
         case .codex:
-            return normalizeCodexFamily(normalized)
+            if codexModelOptions.contains(where: { $0.value == normalized }) {
+                return normalized
+            }
+            let parts = normalized.split(separator: "-").map(String.init)
+            if parts.count >= 3,
+               parts.first == "gpt",
+               let family = parts.last,
+               codexModelOptions.contains(where: { $0.value == family }) {
+                return family
+            }
+            return defaultMessengerModel
         case .claude:
             return ["best", "fable", "opus", "sonnet", "haiku"].contains(normalized)
                 ? normalized
-                : "best"
+                : "haiku"
         }
+    }
+
+    static func defaultMessengerEffort(for provider: AgentProvider) -> String {
+        provider == .codex ? defaultMessengerEffort : defaultReasoningEffort
     }
 
     static func normalizedMessengerEffort(
@@ -335,7 +349,9 @@ struct GeneralConfig: Codable, Equatable {
             default: validEfforts = ["default"]
             }
         }
-        return validEfforts.contains(normalized) ? normalized : defaultMessengerEffort
+        return validEfforts.contains(normalized)
+            ? normalized
+            : defaultMessengerEffort(for: provider)
     }
 
     static func inferProvider(from command: String) -> AgentProvider {
@@ -409,10 +425,18 @@ struct GeneralConfig: Codable, Equatable {
     }
 
     private mutating func normalizeMessengerDefaults() {
-        let originalModel = messenger_model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var originalModel = messenger_model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let originalEffort = messenger_effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if provider == .codex && originalModel == "sol" && originalEffort == "default" {
+            originalModel = Self.defaultMessengerModel
+            messenger_effort = Self.defaultMessengerEffort
+        } else if provider == .claude && originalModel == "best" && originalEffort == "default" {
+            originalModel = "haiku"
+            messenger_effort = Self.defaultReasoningEffort
+        }
         messenger_model = Self.normalizedMessengerModel(originalModel, for: provider)
         if originalModel != messenger_model {
-            messenger_effort = Self.defaultMessengerEffort
+            messenger_effort = Self.defaultMessengerEffort(for: provider)
             return
         }
         messenger_effort = Self.normalizedMessengerEffort(
