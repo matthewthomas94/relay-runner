@@ -56,6 +56,7 @@ RELAY_TEMPORARY_ARTIFACTS = (
     "relay_intent_inbox.sqlite3",
     "relay_orchestrator.port",
     "relay_speech_events.jsonl",
+    "relay_terminal_manual_submission.json",
     "relay_terminal_delivery_events.jsonl",
     "relay_tutorial_tts_control.sock",
     "tts_control.sock",

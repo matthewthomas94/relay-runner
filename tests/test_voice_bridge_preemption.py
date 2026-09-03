@@ -167,6 +167,30 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             "foreground_gate_handle": "test-gate",
         }
 
+    def write_manual_submission_evidence(
+        self,
+        temp_dir: str,
+        *,
+        provider: str,
+        provider_session_id: str,
+        observed_at: float,
+        **overrides,
+    ) -> str:
+        path = os.path.join(temp_dir, "relay_terminal_manual_submission.json")
+        evidence = {
+            **self.foreground_ownership(),
+            "version": 1,
+            "state": "pending",
+            "submission_id": f"manual-{provider}-{observed_at}",
+            "evidence_source": "relay_terminal_manual_submit",
+            "observed_at": observed_at,
+            "provider": provider,
+            "provider_session_id": provider_session_id,
+            **overrides,
+        }
+        Path(path).write_text(json.dumps(evidence))
+        return path
+
     def test_relay_submits_messenger_before_command_classification(self):
         worker = FakeTTSWorker()
         messenger = FakeMessenger()
@@ -2083,6 +2107,12 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     "provider": provider,
                     "provider_session_id": f"embedded-{provider}",
                 }
+                manual_path = self.write_manual_submission_evidence(
+                    temp_dir,
+                    provider=provider,
+                    provider_session_id=base["provider_session_id"],
+                    observed_at=11,
+                )
                 relay_submit = {
                     **base,
                     "hook_event_name": "UserPromptSubmit",
@@ -2114,6 +2144,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     claim_path=claim_path,
                     state_path=state_path,
                     turns_path=turns_path,
+                    manual_submissions_path=manual_path,
                     now=11,
                     stderr=io.StringIO(),
                 ))
@@ -2325,9 +2356,15 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             }
             Path(state_path).write_text(json.dumps(claim))
             Path(claim_path).write_text(json.dumps(claim))
+            provider_session_id = "embedded-codex"
+            base = {
+                "provider": "codex",
+                "provider_session_id": provider_session_id,
+            }
 
             self.assertTrue(relay_completion_hook.handle_hook_payload(
                 {
+                    **base,
                     "hook_event_name": "UserPromptSubmit",
                     "session_id": "session-1",
                     "turn_id": "turn-1",
@@ -2339,8 +2376,15 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 now=10,
                 stderr=io.StringIO(),
             ))
+            manual_path = self.write_manual_submission_evidence(
+                temp_dir,
+                provider="codex",
+                provider_session_id=provider_session_id,
+                observed_at=11,
+            )
             self.assertTrue(relay_completion_hook.handle_hook_payload(
                 {
+                    **base,
                     "hook_event_name": "UserPromptSubmit",
                     "session_id": "session-2",
                     "turn_id": "turn-2",
@@ -2349,11 +2393,19 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 claim_path=claim_path,
                 state_path=state_path,
                 turns_path=turns_path,
+                manual_submissions_path=manual_path,
                 now=11,
                 stderr=io.StringIO(),
             ))
+            manual_path = self.write_manual_submission_evidence(
+                temp_dir,
+                provider="codex",
+                provider_session_id=provider_session_id,
+                observed_at=12,
+            )
             self.assertTrue(relay_completion_hook.handle_hook_payload(
                 {
+                    **base,
                     "hook_event_name": "UserPromptSubmit",
                     "session_id": "session-3",
                     "turn_id": "turn-3",
@@ -2362,11 +2414,19 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 claim_path=claim_path,
                 state_path=state_path,
                 turns_path=turns_path,
+                manual_submissions_path=manual_path,
                 now=12,
                 stderr=io.StringIO(),
             ))
+            manual_path = self.write_manual_submission_evidence(
+                temp_dir,
+                provider="codex",
+                provider_session_id=provider_session_id,
+                observed_at=13,
+            )
             self.assertTrue(relay_completion_hook.handle_hook_payload(
                 {
+                    **base,
                     "hook_event_name": "UserPromptSubmit",
                     "session_id": "session-4",
                     "turn_id": "turn-4",
@@ -2375,6 +2435,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 claim_path=claim_path,
                 state_path=state_path,
                 turns_path=turns_path,
+                manual_submissions_path=manual_path,
                 now=13,
                 stderr=io.StringIO(),
             ))
@@ -2387,23 +2448,267 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertNotIn("raw voice text", stored)
             self.assertNotIn("Improve documentation", stored)
 
+    def test_unmatched_provider_continuation_preserves_exact_relay_turn(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                manual_path = os.path.join(temp_dir, "missing-manual-boundary.json")
+                provider_session_id = f"embedded-{provider}"
+                claim = {
+                    "relay_command_seq": 348,
+                    "relay_command_id": f"rr-348-{provider}",
+                    "intent_id": f"rr-348-{provider}:item:1",
+                    "agent_prompt": "Private Relay prompt",
+                    "provider": provider,
+                }
+                Path(state_path).write_text(json.dumps(claim))
+                Path(claim_path).write_text(json.dumps(claim))
+                base = {
+                    "provider": provider,
+                    "provider_session_id": provider_session_id,
+                }
+                relay_submit = {
+                    **base,
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": f"{provider}-relay-session",
+                    "turn_id": "relay-turn",
+                    "prompt": claim["agent_prompt"],
+                }
+                continuation = {
+                    **base,
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": f"{provider}-continuation-session",
+                    "turn_id": "continuation-turn",
+                    "prompt": "Private custom-tool continuation",
+                }
+                relay_stop = {
+                    **base,
+                    "hook_event_name": "Stop",
+                    "session_id": relay_submit["session_id"],
+                    "turn_id": relay_submit["turn_id"],
+                    "last_assistant_message": "Authoritative Relay final",
+                }
+                delivered: list[dict] = []
+                errors = io.StringIO()
+                with mock.patch.dict(os.environ, {
+                    "RELAY_RUNNER_PROVIDER": provider,
+                    "RELAY_PROVIDER_SESSION_ID": provider_session_id,
+                }):
+                    self.assertTrue(relay_completion_hook.handle_hook_payload(
+                        relay_submit,
+                        claim_path=claim_path,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        manual_submissions_path=manual_path,
+                        now=100,
+                        stderr=errors,
+                    ))
+                    self.assertFalse(relay_completion_hook.handle_hook_payload(
+                        continuation,
+                        claim_path=claim_path,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        manual_submissions_path=manual_path,
+                        now=100.1,
+                        stderr=errors,
+                    ))
+
+                    records = json.loads(Path(turns_path).read_text())["records"]
+                    self.assertEqual(len(records), 1)
+                    self.assertEqual(records[0]["state"], "active")
+                    self.assertEqual(records[0]["session_id"], relay_submit["session_id"])
+                    self.assertNotIn("origin", records[0])
+
+                    self.assertTrue(relay_completion_hook.handle_hook_payload(
+                        relay_stop,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        write_control=lambda payload: delivered.append(payload) or True,
+                        now=100.2,
+                        stderr=errors,
+                    ))
+                    self.assertFalse(relay_completion_hook.handle_hook_payload(
+                        relay_stop,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        write_control=lambda payload: delivered.append(payload) or True,
+                        now=100.3,
+                        stderr=errors,
+                    ))
+
+                records = json.loads(Path(turns_path).read_text())["records"]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]["state"], "completed_final")
+                self.assertEqual([item["relay_command_id"] for item in delivered], [claim["relay_command_id"]])
+                self.assertEqual(delivered[0]["text"], "Authoritative Relay final")
+                diagnostic = errors.getvalue()
+                self.assertIn("quarantined_provider_continuation_no_manual_boundary", diagnostic)
+                self.assertIn('"drain_result":"active_relay_turn_preserved"', diagnostic)
+                self.assertNotIn("Private Relay prompt", diagnostic)
+                self.assertNotIn("Private custom-tool continuation", diagnostic)
+                self.assertNotIn("Authoritative Relay final", diagnostic)
+
+    def test_manual_prompt_requires_exact_terminal_submit_boundary(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                provider_session_id = f"embedded-{provider}"
+                manual_path = self.write_manual_submission_evidence(
+                    temp_dir,
+                    provider=provider,
+                    provider_session_id=provider_session_id,
+                    observed_at=20,
+                )
+                payload = {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": f"{provider}-manual-session",
+                    "turn_id": "manual-turn",
+                    "provider_session_id": provider_session_id,
+                    "provider": provider,
+                    "prompt": "private typed terminal text",
+                }
+                errors = io.StringIO()
+                with mock.patch.dict(os.environ, {
+                    "RELAY_RUNNER_PROVIDER": provider,
+                    "RELAY_PROVIDER_SESSION_ID": provider_session_id,
+                }):
+                    self.assertTrue(relay_completion_hook.handle_hook_payload(
+                        payload,
+                        claim_path=os.path.join(temp_dir, "missing-claim.json"),
+                        state_path=os.path.join(temp_dir, "missing-state.json"),
+                        turns_path=turns_path,
+                        manual_submissions_path=manual_path,
+                        now=20.1,
+                        stderr=errors,
+                    ))
+                    self.assertFalse(relay_completion_hook.handle_hook_payload(
+                        {**payload, "session_id": f"{provider}-duplicate-session"},
+                        claim_path=os.path.join(temp_dir, "missing-claim.json"),
+                        state_path=os.path.join(temp_dir, "missing-state.json"),
+                        turns_path=turns_path,
+                        manual_submissions_path=manual_path,
+                        now=20.2,
+                        stderr=errors,
+                    ))
+
+                record = json.loads(Path(turns_path).read_text())["records"][0]
+                self.assertEqual(record["state"], "active")
+                self.assertEqual(record["origin"], "manual")
+                self.assertEqual(record["manual_submit_evidence_source"], "relay_terminal_manual_submit")
+                self.assertEqual(record["manual_submission_id"], f"manual-{provider}-20")
+                evidence = json.loads(Path(manual_path).read_text())
+                self.assertEqual(evidence["state"], "consumed")
+                self.assertEqual(evidence["native_session_id"], payload["session_id"])
+                diagnostic = errors.getvalue()
+                self.assertIn('"decision":"accepted_terminal_manual_submit"', diagnostic)
+                self.assertIn("quarantined_provider_continuation_boundary_consumed", diagnostic)
+                self.assertNotIn("private typed terminal text", diagnostic)
+
+    def test_manual_submit_evidence_rejects_stale_cross_session_and_ambiguous_boundaries(self):
+        cases = (
+            (
+                "stale",
+                {"observed_at": 1},
+                "quarantined_provider_continuation_stale_boundary",
+            ),
+            (
+                "cross_session",
+                {"provider_session_id": "other-embedded-session"},
+                "quarantined_provider_continuation_provider_session_mismatch",
+            ),
+            (
+                "cross_owner",
+                {"app_session_id": "other-app-session"},
+                "quarantined_provider_continuation_foreground_mismatch",
+            ),
+            (
+                "missing_nonce",
+                {"submission_id": ""},
+                "quarantined_provider_continuation_missing_nonce",
+            ),
+        )
+        for provider in ("codex", "claude"):
+            for name, overrides, expected_decision in cases:
+                with (
+                    self.subTest(provider=provider, case=name),
+                    tempfile.TemporaryDirectory() as temp_dir,
+                ):
+                    turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                    provider_session_id = f"embedded-{provider}"
+                    evidence_observed_at = overrides.get("observed_at", 20)
+                    evidence_provider_session_id = overrides.get(
+                        "provider_session_id",
+                        provider_session_id,
+                    )
+                    evidence_overrides = {
+                        key: value for key, value in overrides.items()
+                        if key not in {"observed_at", "provider_session_id"}
+                    }
+                    manual_path = self.write_manual_submission_evidence(
+                        temp_dir,
+                        provider=provider,
+                        provider_session_id=evidence_provider_session_id,
+                        observed_at=evidence_observed_at,
+                        **evidence_overrides,
+                    )
+                    errors = io.StringIO()
+                    with mock.patch.dict(os.environ, {
+                        "RELAY_RUNNER_PROVIDER": provider,
+                        "RELAY_PROVIDER_SESSION_ID": provider_session_id,
+                    }):
+                        self.assertFalse(relay_completion_hook.handle_hook_payload(
+                            {
+                                "hook_event_name": "UserPromptSubmit",
+                                "session_id": f"{provider}-continuation",
+                                "turn_id": "continuation-turn",
+                                "provider_session_id": provider_session_id,
+                                "provider": provider,
+                                "prompt": "private continuation",
+                            },
+                            claim_path=os.path.join(temp_dir, "missing-claim.json"),
+                            state_path=os.path.join(temp_dir, "missing-state.json"),
+                            turns_path=turns_path,
+                            manual_submissions_path=manual_path,
+                            now=20,
+                            stderr=errors,
+                        ))
+
+                    self.assertEqual(
+                        json.loads(Path(manual_path).read_text())["state"],
+                        "pending",
+                    )
+                    self.assertFalse(Path(turns_path).exists())
+                    self.assertIn(expected_decision, errors.getvalue())
+                    self.assertNotIn("private continuation", errors.getvalue())
+
     def test_completion_hook_tracks_manual_turn_boundaries_for_both_app_providers(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
                 turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
                 delivered: list[dict] = []
+                provider_session_id = f"embedded-{provider}"
+                manual_path = self.write_manual_submission_evidence(
+                    temp_dir,
+                    provider=provider,
+                    provider_session_id=provider_session_id,
+                    observed_at=20,
+                )
 
                 self.assertTrue(relay_completion_hook.handle_hook_payload(
                     {
                         "hook_event_name": "UserPromptSubmit",
                         "session_id": f"{provider}-manual-session",
                         "turn_id": "manual-turn",
+                        "provider_session_id": provider_session_id,
                         "provider": provider,
                         "prompt": "private typed terminal text",
                     },
                     claim_path=os.path.join(temp_dir, "missing-claim.json"),
                     state_path=os.path.join(temp_dir, "missing-state.json"),
                     turns_path=turns_path,
+                    manual_submissions_path=manual_path,
                     now=20,
                     stderr=io.StringIO(),
                 ))
@@ -2467,11 +2772,19 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     relay_submit["turn_id"] = "relay-turn"
                     relay_stop["turn_id"] = "relay-turn"
 
+                manual_path = self.write_manual_submission_evidence(
+                    temp_dir,
+                    provider=provider,
+                    provider_session_id=provider_session_id,
+                    observed_at=10,
+                )
+
                 self.assertTrue(relay_completion_hook.handle_hook_payload(
                     startup,
                     claim_path=claim_path,
                     state_path=state_path,
                     turns_path=turns_path,
+                    manual_submissions_path=manual_path,
                     now=10,
                     stderr=io.StringIO(),
                 ))
@@ -2738,6 +3051,12 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
                 turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
                 provider_session_id = f"embedded-{provider}"
+                manual_path = self.write_manual_submission_evidence(
+                    temp_dir,
+                    provider=provider,
+                    provider_session_id=provider_session_id,
+                    observed_at=100,
+                )
                 with mock.patch.dict(os.environ, {
                     "RELAY_RUNNER_PROVIDER": provider,
                     "RELAY_PROVIDER_SESSION_ID": provider_session_id,
@@ -2753,6 +3072,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                         },
                         claim_path=os.path.join(temp_dir, "missing-claim.json"),
                         turns_path=turns_path,
+                        manual_submissions_path=manual_path,
                         now=100,
                         stderr=io.StringIO(),
                     ))
@@ -2994,6 +3314,12 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 now=400,
                 stderr=io.StringIO(),
             )
+            manual_path = self.write_manual_submission_evidence(
+                temp_dir,
+                provider="codex",
+                provider_session_id="embedded-codex",
+                observed_at=401,
+            )
             relay_completion_hook.handle_hook_payload(
                 {
                     "hook_event_name": "UserPromptSubmit",
@@ -3006,6 +3332,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 claim_path=claim_path,
                 state_path=state_path,
                 turns_path=turns_path,
+                manual_submissions_path=manual_path,
                 now=401,
                 stderr=io.StringIO(),
             )
@@ -3086,6 +3413,13 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     manual_submit["turn_id"] = "manual-turn"
                     manual_stop["turn_id"] = "manual-turn"
 
+                manual_path = self.write_manual_submission_evidence(
+                    temp_dir,
+                    provider=provider,
+                    provider_session_id=provider_session_id,
+                    observed_at=32,
+                )
+
                 relay_completion_hook.handle_hook_payload(
                     relay_submit,
                     claim_path=claim_path,
@@ -3107,6 +3441,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     claim_path=claim_path,
                     state_path=state_path,
                     turns_path=turns_path,
+                    manual_submissions_path=manual_path,
                     now=32,
                     stderr=io.StringIO(),
                 ))
@@ -3181,15 +3516,18 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 Path(state_path).write_text(json.dumps(claim))
                 Path(claim_path).write_text(json.dumps(claim))
                 delivered: list[dict] = []
+                provider_session_id = f"embedded-{provider}"
                 relay_turn = {
                     "hook_event_name": "UserPromptSubmit",
                     "session_id": f"{provider}-identical-session",
+                    "provider_session_id": provider_session_id,
                     "provider": provider,
                     "prompt": "Identical prompt",
                 }
                 relay_stop = {
                     "hook_event_name": "Stop",
                     "session_id": f"{provider}-identical-session",
+                    "provider_session_id": provider_session_id,
                     "provider": provider,
                     "last_assistant_message": "Relay final.",
                 }
@@ -3203,6 +3541,13 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     relay_stop["turn_id"] = "relay-turn"
                     manual_turn["turn_id"] = "manual-turn"
                     manual_stop["turn_id"] = "manual-turn"
+
+                manual_path = self.write_manual_submission_evidence(
+                    temp_dir,
+                    provider=provider,
+                    provider_session_id=provider_session_id,
+                    observed_at=32,
+                )
 
                 self.assertTrue(relay_completion_hook.handle_hook_payload(
                     relay_turn,
@@ -3242,6 +3587,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     claim_path=claim_path,
                     state_path=state_path,
                     turns_path=turns_path,
+                    manual_submissions_path=manual_path,
                     now=32,
                     stderr=io.StringIO(),
                 ))

@@ -1414,6 +1414,69 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertFalse(feedback.contains("manual"))
     }
 
+    func testManualReturnPublishesExactAppOwnedBoundaryForBothProviders() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { _ in },
+                isRunning: { true },
+                now: { Date(timeIntervalSince1970: 348) },
+                providerSessionID: "embedded-\(provider)",
+                provider: provider,
+                appSessionID: "app-session",
+                recoveryGeneration: "generation-348",
+                foregroundGateHandle: "gate-348"
+            )
+
+            delivery.recordUserInput(ArraySlice(Array("private manual draft".utf8)))
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: fixture.manualSubmissions.path),
+                provider
+            )
+            delivery.recordUserInput(ArraySlice([13]))
+
+            let data = try Data(contentsOf: fixture.manualSubmissions)
+            let evidence = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: data) as? [String: Any]
+            )
+            XCTAssertEqual(evidence["version"] as? Int, 1, provider)
+            XCTAssertEqual(evidence["state"] as? String, "pending", provider)
+            XCTAssertEqual(
+                evidence["evidence_source"] as? String,
+                "relay_terminal_manual_submit",
+                provider
+            )
+            XCTAssertEqual(evidence["provider"] as? String, provider, provider)
+            XCTAssertEqual(
+                evidence["provider_session_id"] as? String,
+                "embedded-\(provider)",
+                provider
+            )
+            XCTAssertEqual(evidence["app_session_id"] as? String, "app-session", provider)
+            XCTAssertEqual(
+                evidence["recovery_generation"] as? String,
+                "generation-348",
+                provider
+            )
+            XCTAssertEqual(evidence["actor_role"] as? String, "foreground_pm", provider)
+            XCTAssertEqual(
+                evidence["foreground_gate_handle"] as? String,
+                "gate-348",
+                provider
+            )
+            XCTAssertNotNil(evidence["submission_id"] as? String, provider)
+            XCTAssertEqual(evidence["observed_at"] as? Double, 348, provider)
+
+            let stored = String(decoding: data, as: UTF8.self)
+            XCTAssertFalse(stored.contains("private manual draft"), provider)
+            let events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertTrue(events.contains(#""event":"manual_submit_boundary_published""#), provider)
+            XCTAssertTrue(events.contains(#""manual_submit_evidence_source":"relay_terminal_manual_submit""#), provider)
+            XCTAssertFalse(events.contains("private manual draft"), provider)
+        }
+    }
+
     func testManualReturnBarrierAndLateAcknowledgementHaveOneOutcome() throws {
         let fixture = try makeFixture()
         try Data().write(to: fixture.voiceInput)
@@ -2492,6 +2555,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         consumerAcknowledgement: URL,
         commandState: URL,
         providerTurns: URL,
+        manualSubmissions: URL,
         deliveryEvents: URL,
         actionJournal: URL,
         voiceInput: URL,
@@ -2508,6 +2572,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         let consumerAcknowledgement = root.appendingPathComponent("voice_cmd_manual_ack.json")
         let commandState = root.appendingPathComponent("voice_command_state.json")
         let providerTurns = root.appendingPathComponent("voice_provider_turns.json")
+        let manualSubmissions = root.appendingPathComponent("relay_terminal_manual_submission.json")
         let deliveryEvents = root.appendingPathComponent("relay_terminal_delivery_events.jsonl")
         let actionJournal = root.appendingPathComponent("command-actions.jsonl")
         let voiceInput = root.appendingPathComponent("voice_in.fifo")
@@ -2520,6 +2585,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
             consumerAcknowledgement: consumerAcknowledgement,
             commandState: commandState,
             providerTurns: providerTurns,
+            manualSubmissions: manualSubmissions,
             deliveryEvents: deliveryEvents,
             actionJournal: actionJournal,
             voiceInput: voiceInput,
@@ -2531,6 +2597,7 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
                 consumerAcknowledgement: consumerAcknowledgement.path,
                 commandState: commandState.path,
                 providerTurns: providerTurns.path,
+                manualSubmissions: manualSubmissions.path,
                 deliveryEvents: deliveryEvents.path,
                 actionJournal: actionJournal.path,
                 voiceInput: voiceInput.path,

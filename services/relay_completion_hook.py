@@ -26,6 +26,10 @@ VOICE_PROVIDER_TURN_PROJECTION_FILE = os.environ.get(
     "VOICE_PROVIDER_TURN_PROJECTION_FILE",
     "/tmp/voice_provider_turns_v2.json",
 )
+TERMINAL_MANUAL_SUBMISSION_FILE = os.environ.get(
+    "RELAY_TERMINAL_MANUAL_SUBMISSION_FILE",
+    "/tmp/relay_terminal_manual_submission.json",
+)
 VOICE_INTENT_INBOX = os.environ.get("VOICE_INTENT_INBOX", "/tmp/relay_intent_inbox.sqlite3")
 PROVIDER_TURN_BROKER_MODE = os.environ.get(
     "RELAY_PROVIDER_TURN_BROKER_MODE",
@@ -35,6 +39,9 @@ VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
 PROVIDER_SESSION_ID = os.environ.get("RELAY_PROVIDER_SESSION_ID", "").strip()
 PROVIDER_TURN_TTL_SECONDS = float(os.environ.get("VOICE_PROVIDER_TURN_TTL_SECONDS", "3600"))
 PROVIDER_TURN_LIMIT = int(os.environ.get("VOICE_PROVIDER_TURN_LIMIT", "32"))
+MANUAL_SUBMISSION_EVIDENCE_TTL_SECONDS = float(
+    os.environ.get("RELAY_MANUAL_SUBMISSION_EVIDENCE_TTL_SECONDS", "10")
+)
 SESSION_EVENTS_FILE = os.environ.get("RELAY_SESSION_EVENTS", "")
 CONTEXT_COMPACTION_EVENTS_FILE = os.environ.get(
     "RELAY_CONTEXT_COMPACTION_EVENTS", SESSION_EVENTS_FILE
@@ -454,6 +461,110 @@ def _provider_session_id(payload: dict) -> str | None:
     return os.environ.get("RELAY_PROVIDER_SESSION_ID", "").strip() or PROVIDER_SESSION_ID or None
 
 
+def _manual_submission_evidence(
+    payload: dict,
+    *,
+    path: str,
+    now: float,
+) -> tuple[dict | None, str]:
+    evidence = _read_json_file(path)
+    if not evidence:
+        return None, "quarantined_provider_continuation_no_manual_boundary"
+    if evidence.get("state") != "pending":
+        return evidence, "quarantined_provider_continuation_boundary_consumed"
+    if evidence.get("evidence_source") != "relay_terminal_manual_submit":
+        return evidence, "quarantined_provider_continuation_invalid_evidence_source"
+
+    ownership = _foreground_ownership()
+    if ownership is None or not _same_foreground_owner(evidence, ownership):
+        return evidence, "quarantined_provider_continuation_foreground_mismatch"
+
+    provider_session_id = _provider_session_id(payload)
+    evidence_provider_session_id = str(evidence.get("provider_session_id") or "").strip()
+    if not provider_session_id or evidence_provider_session_id != provider_session_id:
+        return evidence, "quarantined_provider_continuation_provider_session_mismatch"
+
+    provider = _provider_name(payload)
+    evidence_provider = str(evidence.get("provider") or "").strip().lower()
+    if not provider or evidence_provider != provider:
+        return evidence, "quarantined_provider_continuation_provider_mismatch"
+
+    try:
+        age = now - float(evidence["observed_at"])
+    except (KeyError, TypeError, ValueError):
+        return evidence, "quarantined_provider_continuation_invalid_boundary_time"
+    if age < -0.25:
+        return evidence, "quarantined_provider_continuation_future_boundary"
+    if age > MANUAL_SUBMISSION_EVIDENCE_TTL_SECONDS:
+        return evidence, "quarantined_provider_continuation_stale_boundary"
+
+    submission_id = str(evidence.get("submission_id") or "").strip()
+    if not submission_id:
+        return evidence, "quarantined_provider_continuation_missing_nonce"
+    return evidence, "accepted_terminal_manual_submit"
+
+
+def _consume_manual_submission_evidence(
+    evidence: dict,
+    payload: dict,
+    *,
+    path: str,
+    now: float,
+) -> None:
+    consumed = dict(evidence)
+    consumed.update({
+        "state": "consumed",
+        "consumed_at": now,
+        "native_session_id": _session_id(payload),
+    })
+    turn_id = _turn_id(payload)
+    if turn_id:
+        consumed["native_turn_id"] = turn_id
+    _atomic_write_json(path, consumed)
+
+
+def _emit_prompt_submit_diagnostic(
+    payload: dict,
+    evidence: dict | None,
+    *,
+    decision: str,
+    now: float,
+    stderr: TextIO,
+) -> None:
+    ownership = _foreground_ownership() or {}
+    diagnostic = {
+        "app_session_id": ownership.get("app_session_id"),
+        "actor_role": ownership.get("actor_role"),
+        "decision": decision,
+        "drain_result": (
+            "manual_owner_activated"
+            if decision == "accepted_terminal_manual_submit"
+            else "active_relay_turn_preserved"
+        ),
+        "event": _hook_event_name(payload),
+        "evidence_source": (
+            str((evidence or {}).get("evidence_source") or "none")
+        ),
+        "foreground_gate_handle": ownership.get("foreground_gate_handle"),
+        "native_session_id": _session_id(payload),
+        "native_turn_id": _turn_id(payload),
+        "provider": _provider_name(payload) or "unknown",
+        "provider_session_id": _provider_session_id(payload),
+        "recovery_generation": ownership.get("recovery_generation"),
+        "submission_id": (evidence or {}).get("submission_id"),
+    }
+    observed_at = (evidence or {}).get("observed_at")
+    try:
+        diagnostic["boundary_age_ms"] = max(0, int(round((now - float(observed_at)) * 1000)))
+    except (TypeError, ValueError):
+        pass
+    print(
+        "[relay_completion_hook] prompt_submit_ownership "
+        + json.dumps(diagnostic, sort_keys=True, separators=(",", ":")),
+        file=stderr,
+    )
+
+
 def _record_key(record: dict) -> str:
     session_id = str(record.get("session_id") or "unknown")
     turn_id = str(record.get("turn_id") or "").strip()
@@ -837,9 +948,11 @@ def _bind_prompt_submit(
     claim_path: str,
     state_path: str,
     turns_path: str,
+    manual_submissions_path: str,
     broker: ProviderTurnBroker | None,
     write_provider_event: Callable[[dict], bool],
     now: float,
+    stderr: TextIO,
 ) -> bool:
     ownership = _foreground_ownership()
     if ownership is None:
@@ -848,6 +961,13 @@ def _bind_prompt_submit(
     if not isinstance(prompt, str) or not prompt:
         return False
     if payload.get("parent_tool_use_id") or payload.get("parentToolUseId"):
+        _emit_prompt_submit_diagnostic(
+            payload,
+            None,
+            decision="ignored_provider_continuation_parent_tool_marker",
+            now=now,
+            stderr=stderr,
+        )
         return False
     claim = _read_json_file(claim_path)
     correlated = bool(
@@ -910,12 +1030,34 @@ def _bind_prompt_submit(
         correlated = False
 
     if not correlated:
+        evidence, decision = _manual_submission_evidence(
+            payload,
+            path=manual_submissions_path,
+            now=now,
+        )
+        if decision != "accepted_terminal_manual_submit" or evidence is None:
+            _emit_prompt_submit_diagnostic(
+                payload,
+                evidence,
+                decision=decision,
+                now=now,
+                stderr=stderr,
+            )
+            return False
+        _consume_manual_submission_evidence(
+            evidence,
+            payload,
+            path=manual_submissions_path,
+            now=now,
+        )
         session_id = _session_id(payload)
         record = {
             "state": "active",
             "origin": "manual",
             "session_id": session_id,
             "created_at": now,
+            "manual_submission_id": evidence["submission_id"],
+            "manual_submit_evidence_source": evidence["evidence_source"],
         }
         turn_id = _turn_id(payload)
         if turn_id:
@@ -934,6 +1076,13 @@ def _bind_prompt_submit(
         record.update(ownership)
         _activate_broker_turn(broker, record, now=now)
         _activate_turn_record(turns_path, record, now=now)
+        _emit_prompt_submit_diagnostic(
+            payload,
+            evidence,
+            decision=decision,
+            now=now,
+            stderr=stderr,
+        )
         return True
 
     key = _relay_command_key(claim)
@@ -1163,6 +1312,7 @@ def handle_hook_payload(
     claim_path: str = VOICE_COMMAND_CLAIM_FILE,
     state_path: str = VOICE_COMMAND_STATE_FILE,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+    manual_submissions_path: str = TERMINAL_MANUAL_SUBMISSION_FILE,
     write_control: Callable[[dict], bool] = _write_bridge_control,
     write_provider_event: Callable[[dict], bool] = _write_provider_turn_event,
     now: float | None = None,
@@ -1185,9 +1335,11 @@ def handle_hook_payload(
                 claim_path=claim_path,
                 state_path=state_path,
                 turns_path=turns_path,
+                manual_submissions_path=manual_submissions_path,
                 broker=broker,
                 write_provider_event=write_provider_event,
                 now=now,
+                stderr=stderr,
             )
         if event in {"Stop", "StopFailure"}:
             if payload.get("stop_hook_active"):

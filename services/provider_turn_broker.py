@@ -19,7 +19,7 @@ import time
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 PROJECTION_VERSION = 2
 OWNERSHIP_FIELDS = (
     "app_session_id",
@@ -130,6 +130,8 @@ def ensure_broker_schema(connection: sqlite3.Connection) -> None:
             intent_id TEXT,
             command_seq INTEGER,
             command_id TEXT,
+            manual_submission_id TEXT,
+            manual_submit_evidence_source TEXT,
             state TEXT NOT NULL,
             release_reason TEXT,
             created_at REAL NOT NULL,
@@ -163,6 +165,13 @@ def ensure_broker_schema(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    provider_turn_columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(provider_turns)").fetchall()
+    }
+    for column in ("manual_submission_id", "manual_submit_evidence_source"):
+        if column not in provider_turn_columns:
+            connection.execute(f"ALTER TABLE provider_turns ADD COLUMN {column} TEXT")
     connection.execute(
         "INSERT OR REPLACE INTO provider_turn_meta(key, value) VALUES('schema_version', ?)",
         (str(SCHEMA_VERSION),),
@@ -342,9 +351,10 @@ class ProviderTurnBroker:
                         turn_id, owner_id, app_session_id, recovery_generation, actor_role,
                         foreground_gate_handle, provider, provider_session_id,
                         native_session_id, native_turn_id, local_turn_seq, origin,
-                        intent_id, command_seq, command_id, state, release_reason,
+                        intent_id, command_seq, command_id, manual_submission_id,
+                        manual_submit_evidence_source, state, release_reason,
                         created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?, ?)
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?, ?)
                     """,
                     (
                         turn_id,
@@ -362,6 +372,8 @@ class ProviderTurnBroker:
                         _text(record.get("intent_id")) or None,
                         _integer(record.get("relay_command_seq")),
                         _text(record.get("relay_command_id")) or None,
+                        _text(record.get("manual_submission_id")) or None,
+                        _text(record.get("manual_submit_evidence_source")) or None,
                         float(record.get("created_at") or now),
                         now,
                     ),
@@ -681,6 +693,8 @@ class ProviderTurnBroker:
                     "local_turn_seq",
                     "origin",
                     "intent_id",
+                    "manual_submission_id",
+                    "manual_submit_evidence_source",
                     "state",
                     "release_reason",
                     "created_at",

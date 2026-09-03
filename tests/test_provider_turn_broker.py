@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -44,6 +45,51 @@ def turn_record(provider: str, *, intent_id: str = "intent-1") -> dict:
 
 
 class ProviderTurnBrokerTests(unittest.TestCase):
+    def test_schema_migrates_manual_submission_evidence_columns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = os.path.join(temp_dir, "inbox.sqlite3")
+            connection = sqlite3.connect(database)
+            connection.execute(
+                """
+                CREATE TABLE provider_turns (
+                    turn_id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    app_session_id TEXT NOT NULL,
+                    recovery_generation TEXT NOT NULL,
+                    actor_role TEXT NOT NULL,
+                    foreground_gate_handle TEXT NOT NULL,
+                    provider TEXT,
+                    provider_session_id TEXT,
+                    native_session_id TEXT NOT NULL,
+                    native_turn_id TEXT,
+                    local_turn_seq INTEGER,
+                    origin TEXT NOT NULL,
+                    intent_id TEXT,
+                    command_seq INTEGER,
+                    command_id TEXT,
+                    state TEXT NOT NULL,
+                    release_reason TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            broker = ProviderTurnBroker(database)
+            self.addCleanup(broker.close)
+            migrated = sqlite3.connect(database)
+            columns = {
+                row[1]
+                for row in migrated.execute("PRAGMA table_info(provider_turns)").fetchall()
+            }
+            migrated.close()
+            self.assertTrue({
+                "manual_submission_id",
+                "manual_submit_evidence_source",
+            }.issubset(columns))
+
     def test_schema_projection_and_generation_isolation(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = os.path.join(temp_dir, "inbox.sqlite3")
@@ -52,6 +98,8 @@ class ProviderTurnBrokerTests(unittest.TestCase):
             self.addCleanup(broker.close)
 
             current = turn_record("codex")
+            current["manual_submission_id"] = "manual-boundary-1"
+            current["manual_submit_evidence_source"] = "relay_terminal_manual_submit"
             stale = {
                 **turn_record("claude", intent_id="intent-stale"),
                 "recovery_generation": "generation-1",
@@ -71,6 +119,15 @@ class ProviderTurnBrokerTests(unittest.TestCase):
             self.assertEqual(
                 {row["recovery_generation"] for row in payload["records"]},
                 {"generation-1", "generation-2"},
+            )
+            current_projection = next(
+                row for row in payload["records"]
+                if row["recovery_generation"] == "generation-2"
+            )
+            self.assertEqual(current_projection["manual_submission_id"], "manual-boundary-1")
+            self.assertEqual(
+                current_projection["manual_submit_evidence_source"],
+                "relay_terminal_manual_submit",
             )
             self.assertNotIn("prompt", Path(projection).read_text())
 
