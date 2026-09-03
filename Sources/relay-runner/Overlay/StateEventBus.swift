@@ -332,7 +332,10 @@ actor StateEventBus {
                     continue
                 }
 
-                NSLog("[StateEventBus] \(source):\(state)\(text.map { " text=\($0.prefix(40))" } ?? "")")
+                let presentationLog = presentation.map {
+                    " utterance=\($0.utteranceID) command_seq=\($0.commandSequence.map(String.init) ?? "none") command_id=\($0.commandID ?? "none") mode=\($0.mode.rawValue)"
+                } ?? ""
+                NSLog("[StateEventBus] \(source):\(state) has_text=\(text != nil)\(presentationLog)")
 
                 let sm = await self.stateMachine
                 let shouldHandleServiceEvent = await self.shouldHandleServiceEvent

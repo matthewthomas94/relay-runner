@@ -3643,6 +3643,7 @@ def _handle_orchestrator_reply_control(
     messenger: MessengerRuntime | None,
     state_path: str = VOICE_COMMAND_STATE_FILE,
     provider_turn_broker: ProviderTurnBroker | None = None,
+    publish_authoritative_preview=None,
 ) -> bool:
     """Route the foreground agent's authoritative reply through the messenger."""
     text = raw.strip()
@@ -3722,7 +3723,8 @@ def _handle_orchestrator_reply_control(
         _finish_foreground_reply_delivery(command, delivered=False)
         return False
     if _arm_authoritative_playback(tts_worker, command_key[0], command_key[1]):
-        _publish_authoritative_preview(reply)
+        preview_publisher = publish_authoritative_preview or _publish_authoritative_preview
+        preview_publisher(reply)
     if messenger is not None and messenger.submit_final(payload):
         _finish_foreground_reply_delivery(command, delivered=True)
         if effect_id is not None:

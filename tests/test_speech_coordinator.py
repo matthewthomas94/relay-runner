@@ -96,6 +96,25 @@ class SpeechCoordinatorTests(unittest.TestCase):
         )
         return worker, coordinator, holder
 
+    def test_blank_display_text_falls_back_to_exact_spoken_text(self):
+        speech = SpeechIntent.build(
+            spoken_text="Complete user-facing response.",
+            display_text="  ",
+            semantic_brief="bounded internal summary",
+            command_seq=1,
+            command_id="one",
+            source="completion",
+            kind="final",
+            authoritative=True,
+        )
+
+        self.assertEqual(speech.display_text, "Complete user-facing response.")
+        self.assertEqual(
+            speech.to_worker_payload()["display_text"],
+            "Complete user-facing response.",
+        )
+        self.assertNotEqual(speech.display_text, speech.semantic_brief)
+
     def test_messenger_handoff_waits_for_exact_foreground_ownership(self):
         owned: set[tuple[int, str]] = {(1, "one")}
         worker, coordinator, _ = self.make_coordinator(

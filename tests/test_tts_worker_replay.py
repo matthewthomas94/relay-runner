@@ -65,6 +65,8 @@ class TTSWorkerReplayTests(unittest.TestCase):
         worker._last_unheard_display_text = ""
         worker._last_response_text = ""
         worker._last_response_display_text = ""
+        worker._current_spoken_text = ""
+        worker._current_display_text = ""
         worker._rate = 1.0
         worker.played_texts = []
         worker.played_displays = []
@@ -471,6 +473,59 @@ class TTSWorkerReplayTests(unittest.TestCase):
         self.assertEqual(retained.args, ("replay_retained",))
         self.assertEqual(retained.kwargs["presentation_mode"], "retained_replay")
         self.assertEqual(retained.kwargs["stop_reason"], "user_stop")
+
+    def test_speaking_event_keeps_active_intent_body_when_new_preview_is_queued(self):
+        worker = self.make_worker()
+        del worker._play_text
+        first_intent = {
+            "utterance_id": "speech-1",
+            "original_utterance_id": "speech-1",
+            "command_seq": 1,
+            "command_id": "command-1",
+        }
+        second_intent = {
+            "utterance_id": "speech-2",
+            "original_utterance_id": "speech-2",
+            "command_seq": 2,
+            "command_id": "command-2",
+        }
+
+        with (
+            patch.object(tts_worker.threading, "Thread", IdleThread),
+            patch.object(tts_worker, "_notify_state"),
+        ):
+            worker._play_text(
+                "First spoken response.",
+                display_text="Complete first display response.",
+                speech_intent=first_intent,
+            )
+            worker._handle_collected_chunk({
+                "text": "Second spoken response.",
+                "display_text": "bounded final",
+                "_speech_intent": second_intent,
+            })
+
+        class FakeProc:
+            def wait(self):
+                return 0
+
+        with (
+            patch.object(tts_worker.subprocess, "Popen", return_value=FakeProc()),
+            patch.object(tts_worker, "_notify_state") as notify_state,
+        ):
+            worker._play_wav_blocking("/tmp/first.wav")
+
+        notify_state.assert_called_once_with(
+            "speaking",
+            text="Complete first display response.",
+            utterance_id="speech-1",
+            original_utterance_id="speech-1",
+            replay_of=None,
+            presentation_mode="new_delivery",
+            stop_reason=None,
+            relay_command_seq=1,
+            relay_command_id="command-1",
+        )
 
     def test_sentence_chunks_preserve_sentence_boundaries_and_tail(self):
         chunks = tts_worker._sentence_chunks(" First sentence. Second? Tail without punctuation ")

@@ -121,7 +121,7 @@ class SpeechIntent:
         source = source if source in SPEECH_SOURCES else "fallback"
         kind = kind if kind in SPEECH_KINDS else "fallback"
         spoken = str(spoken_text or "").strip()
-        display = str(display_text or "").strip()
+        display = str(display_text or "").strip() or spoken
         brief = str(semantic_brief or display or spoken).strip()
         stable_key = dedup_key or (
             f"outcome:{command_seq}:{command_id}"

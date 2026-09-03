@@ -185,6 +185,7 @@ final class StateMachine: @unchecked Sendable {
     ) {
         switch (source, newState) {
         case ("tts", "message_waiting"):
+            guard canApplyWaitingPresentation(presentation) else { break }
             pendingAcknowledgement = nil
             clearWorkingProgress()
             let preview = normalizedMessagePreview(text) ?? messagePreview
@@ -219,6 +220,7 @@ final class StateMachine: @unchecked Sendable {
 
         case ("tts", "preparing"):
             guard !isLateOriginalPlaybackEvent(presentation) else { break }
+            guard canApplyPlaybackPresentation(presentation) else { break }
             pendingAcknowledgement = nil
             clearWorkingProgress()
             replayRetained = false
@@ -230,6 +232,7 @@ final class StateMachine: @unchecked Sendable {
 
         case ("tts", "speaking"):
             guard !isLateOriginalPlaybackEvent(presentation) else { break }
+            guard canApplyPlaybackPresentation(presentation) else { break }
             pendingAcknowledgement = nil
             clearWorkingProgress()
             replayRetained = false
@@ -241,6 +244,7 @@ final class StateMachine: @unchecked Sendable {
 
         case ("tts", "failed"):
             guard !isLateOriginalPlaybackEvent(presentation) else { break }
+            guard canApplyPlaybackPresentation(presentation) else { break }
             pendingAcknowledgement = nil
             clearWorkingProgress()
             replayRetained = false
@@ -251,6 +255,7 @@ final class StateMachine: @unchecked Sendable {
             state = .speechFailed
 
         case ("tts", "idle"):
+            guard canFinishSpeechPresentation(presentation) else { break }
             switch state {
             case .speaking, .preparing, .messageWaiting:
                 stateBeforeIdle = state
@@ -621,6 +626,47 @@ final class StateMachine: @unchecked Sendable {
         if presentedDeliveryIDs.count > 256 {
             presentedDeliveryIDs.removeFirst(presentedDeliveryIDs.count - 128)
         }
+    }
+
+    private func canApplyWaitingPresentation(_ incoming: SpeechPresentation?) -> Bool {
+        switch state {
+        case .preparing, .speaking:
+            return presentationMatchesActiveSpeech(incoming)
+        default:
+            return true
+        }
+    }
+
+    private func canApplyPlaybackPresentation(_ incoming: SpeechPresentation?) -> Bool {
+        switch state {
+        case .preparing, .speaking:
+            return presentationMatchesActiveSpeech(incoming)
+        default:
+            return true
+        }
+    }
+
+    private func canFinishSpeechPresentation(_ incoming: SpeechPresentation?) -> Bool {
+        switch state {
+        case .messageWaiting, .preparing, .speaking:
+            guard speechPresentation != nil else { return true }
+            return presentationMatchesActiveSpeech(incoming)
+        default:
+            return true
+        }
+    }
+
+    private func presentationMatchesActiveSpeech(_ incoming: SpeechPresentation?) -> Bool {
+        guard let active = speechPresentation else {
+            return true
+        }
+        guard let incoming else { return false }
+        if incoming.utteranceID == active.utteranceID {
+            return true
+        }
+        return active.mode == .retainedReplay
+            && incoming.mode == .explicitReplay
+            && incoming.originalUtteranceID == active.originalUtteranceID
     }
 
     private func clearReplayPresentation() {

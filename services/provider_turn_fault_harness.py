@@ -449,6 +449,7 @@ class _Scenario:
                 messenger=None,
                 state_path=str(self.state_path),
                 provider_turn_broker=self.broker,
+                publish_authoritative_preview=lambda _text: None,
             )
             if delivered:
                 self.speech.note_play_control()
