@@ -818,6 +818,58 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertEqual(previews, [("fresh response", False)])
             self.assertEqual(tts_queue.get_nowait(), "fresh response")
 
+    def test_authoritative_playback_gate_and_preview_follow_accepted_intent(self):
+        events: list[str] = []
+
+        class OrderedSpeechQueue:
+            def __init__(self, accepted: bool):
+                self.accepted = accepted
+
+            def submit_text(self, text: str, **metadata) -> bool:
+                del text, metadata
+                events.append("queued")
+                return self.accepted
+
+            def arm_waiting_playback(
+                self,
+                command_seq: int,
+                command_id: str,
+                *,
+                kind: str = "final",
+            ) -> None:
+                del command_seq, command_id, kind
+                events.append("armed")
+
+        payload = json.dumps({
+            "text": "The authoritative result.",
+            "relay_command_seq": 7,
+            "relay_command_id": "command-7",
+        })
+        with mock.patch.object(voice_bridge, "_relay_command_current", return_value=True):
+            self.assertTrue(voice_bridge._queue_tts_text(
+                payload,
+                OrderedSpeechQueue(True),
+                allow_pending_command=True,
+                notify_waiting_preview=lambda _text: events.append("preview"),
+                source="orchestrator",
+                kind="final",
+                authoritative=True,
+            ))
+        self.assertEqual(events, ["queued", "armed", "preview"])
+
+        events.clear()
+        with mock.patch.object(voice_bridge, "_relay_command_current", return_value=True):
+            self.assertFalse(voice_bridge._queue_tts_text(
+                payload,
+                OrderedSpeechQueue(False),
+                allow_pending_command=True,
+                notify_waiting_preview=lambda _text: events.append("preview"),
+                source="orchestrator",
+                kind="final",
+                authoritative=True,
+            ))
+        self.assertEqual(events, ["queued"])
+
     def test_tts_queue_uses_authoritative_display_text_separate_from_spoken_text(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")
@@ -1419,7 +1471,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 )
 
             self.assertTrue(handled)
-            preview.assert_called_once_with("The messenger is ready.")
+            preview.assert_not_called()
             self.assertEqual(messenger.finals, [{
                 "text": "The messenger is ready.",
                 "relay_command_seq": command["relay_command_seq"],
@@ -1486,7 +1538,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                         command["relay_command_id"],
                     ),
                 )
-                messenger = FakeMessenger()
+                messenger = RejectingMessenger()
                 payload = json.dumps({"text": "The authoritative result.", **command})
 
                 with mock.patch.object(
@@ -1505,18 +1557,109 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     )
 
                 self.assertTrue(handled)
+                self.assertEqual(executor.calls, ["play"])
+                speech = executor.input_queue.get_nowait()["_speech_intent"]
+                self.assertEqual(speech["display_text"], "The authoritative result.")
+                self.assertTrue(executor.eligibility(speech))
+
+    def test_suppressed_conversation_final_leaves_replay_target_intact(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                voice_bridge._reset_foreground_reply_delivery_for_tests()
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                command = voice_bridge._begin_relay_command(
+                    "thanks",
+                    state_path=state_path,
+                    event_log_path=None,
+                )
+                command.update({
+                    "provider": provider,
+                    "work_disposition": {"route": "continue_current"},
+                })
+                Path(state_path).write_text(json.dumps(command))
+                executor = FakeTTSWorker()
+                coordinator = voice_bridge.SpeechCoordinator(
+                    executor,
+                    is_current=lambda seq, command_id: (seq, command_id) == (
+                        command["relay_command_seq"],
+                        command["relay_command_id"],
+                    ),
+                )
+
+                def submit_speech(
+                    text,
+                    command_seq,
+                    command_id,
+                    display_text=None,
+                    speech_metadata=None,
+                ):
+                    return voice_bridge._queue_tts_text(
+                        json.dumps({
+                            "text": text,
+                            "display_text": display_text,
+                            "relay_command_seq": command_seq,
+                            "relay_command_id": command_id,
+                        }),
+                        coordinator.input_queue,
+                        state_path=state_path,
+                        allow_pending_command=True,
+                        **(speech_metadata or {}),
+                    )
+
+                messenger = voice_bridge.MessengerRuntime(
+                    mock.Mock(),
+                    speak=submit_speech,
+                    is_current=lambda seq, command_id: (seq, command_id) == (
+                        command["relay_command_seq"],
+                        command["relay_command_id"],
+                    ),
+                )
+                self.assertTrue(messenger.submit_user("thanks", command))
+                command_key = (
+                    command["relay_command_seq"],
+                    command["relay_command_id"],
+                )
+                with messenger._lock:
+                    messenger._conversation_commands_answered.add(command_key)
+
+                self.assertTrue(voice_bridge._queue_tts_text(
+                    json.dumps({
+                        "text": "You're welcome.",
+                        "display_text": "You're welcome.",
+                        "relay_command_seq": command["relay_command_seq"],
+                        "relay_command_id": command["relay_command_id"],
+                    }),
+                    coordinator.input_queue,
+                    state_path=state_path,
+                    allow_pending_command=True,
+                    source="messenger",
+                    kind="handoff",
+                    replayable=True,
+                ))
+                coordinator.note_play_control()
+                self.assertTrue(coordinator.play_or_replay())
+                original = executor.input_queue.get_nowait()["_speech_intent"]
+                executor.observer("started", original)
+                executor.observer("completed", original)
+                executor.calls.clear()
+
+                with mock.patch.object(voice_bridge, "publish_waiting_preview") as preview:
+                    self.assertTrue(voice_bridge._handle_orchestrator_reply_control(
+                        json.dumps({**command, "text": "Redundant foreground final."}),
+                        tts_worker=coordinator,
+                        messenger=messenger,
+                        state_path=state_path,
+                    ))
+
+                preview.assert_not_called()
+                self.assertTrue(coordinator.input_queue.empty())
                 self.assertEqual(executor.calls, [])
 
-                speech = SpeechIntent.build(
-                    spoken_text="Here is the result.",
-                    display_text="The authoritative result.",
-                    command_seq=command["relay_command_seq"],
-                    command_id=command["relay_command_id"],
-                    source="orchestrator",
-                    kind="final",
-                    authoritative=True,
-                )
-                self.assertTrue(coordinator.submit(speech))
+                coordinator.note_play_control()
+                self.assertTrue(coordinator.play_or_replay())
+                replay = executor.input_queue.get_nowait()["_speech_intent"]
+                self.assertEqual(replay["replay_of"], original["original_utterance_id"])
+                self.assertEqual(replay["display_text"], "You're welcome.")
                 self.assertEqual(executor.calls, ["play"])
 
     def test_raw_control_shaped_json_is_quarantined_without_payload_logging(self):

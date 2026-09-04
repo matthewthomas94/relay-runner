@@ -2339,8 +2339,6 @@ def _handle_sidecar_final(
     disposition = command.get("work_disposition")
     if not isinstance(disposition, dict):
         disposition = None
-    if _arm_authoritative_playback(tts_worker, key[0], key[1]):
-        _publish_authoritative_preview(reply)
     delivered = False
     if messenger is not None:
         delivered = messenger.submit_trace({
@@ -2361,7 +2359,6 @@ def _handle_sidecar_final(
             tts_worker.input_queue,
             state_path=state_path,
             allow_pending_command=True,
-            notify_waiting_preview=lambda _text: None,
             source="lifecycle",
             kind="final",
             authoritative=True,
@@ -2960,6 +2957,13 @@ def _queue_tts_text(
         accepted = True
     if not accepted:
         return False
+    if (
+        authoritative
+        and kind in {"final", "fallback"}
+        and command_seq is not None
+        and command_id
+    ):
+        _arm_authoritative_playback(tts_queue, command_seq, command_id)
     if publisher is not None:
         try:
             publisher(display_preview or text)
@@ -3401,8 +3405,6 @@ def _deliver_missing_foreground_reply(
     if effect_id is not None and not provider_turn_broker.authorize_effect_delivery(effect_id):
         _finish_foreground_reply_delivery(relay_command, delivered=False)
         return False
-    if _arm_authoritative_playback(tts_worker, key[0], key[1]):
-        _publish_authoritative_preview(payload["text"])
     delivered = False
     if messenger is not None:
         delivered = messenger.submit_final(payload)
@@ -3413,7 +3415,6 @@ def _deliver_missing_foreground_reply(
             state_path=state_path,
             allow_pending_command=True,
             preserved_command=relay_command,
-            notify_waiting_preview=lambda _text: None,
             source="fallback",
             kind="fallback",
             authoritative=True,
@@ -3768,9 +3769,6 @@ def _handle_orchestrator_reply_control(
     if effect_id is not None and not provider_turn_broker.authorize_effect_delivery(effect_id):
         _finish_foreground_reply_delivery(command, delivered=False)
         return False
-    if _arm_authoritative_playback(tts_worker, command_key[0], command_key[1]):
-        preview_publisher = publish_authoritative_preview or _publish_authoritative_preview
-        preview_publisher(reply)
     if messenger is not None and messenger.submit_final(payload):
         _finish_foreground_reply_delivery(command, delivered=True)
         if effect_id is not None:
@@ -3785,7 +3783,9 @@ def _handle_orchestrator_reply_control(
         state_path=state_path,
         allow_pending_command=True,
         preserved_command=command,
-        notify_waiting_preview=lambda _text: None,
+        notify_waiting_preview=(
+            publish_authoritative_preview or _publish_authoritative_preview
+        ),
         source=(
             "lifecycle"
             if payload.get("speech_source") == "lifecycle"

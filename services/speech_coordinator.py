@@ -228,6 +228,15 @@ class CoordinatorInputQueue:
     def submit_text(self, text: str, **metadata) -> bool:
         return self._coordinator.submit(SpeechIntent.build(spoken_text=text, **metadata))
 
+    def arm_waiting_playback(
+        self,
+        command_seq: int,
+        command_id: str,
+        *,
+        kind: str = "final",
+    ) -> None:
+        self._coordinator.arm_waiting_playback(command_seq, command_id, kind=kind)
+
     def empty(self) -> bool:
         return not self._coordinator.has_pending_speech
 
