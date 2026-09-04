@@ -1562,6 +1562,132 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 self.assertEqual(speech["display_text"], "The authoritative result.")
                 self.assertTrue(executor.eligibility(speech))
 
+    def test_continue_current_handoff_yields_first_play_and_replay_to_authoritative_final(self):
+        handoff = (
+            "I received your request and will check the most recent Git commit’s "
+            "subject, then return with the result."
+        )
+        final = "merge RR-347 worker run 105"
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                voice_bridge._reset_foreground_reply_delivery_for_tests()
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                command = voice_bridge._begin_relay_command(
+                    "Use the terminal to tell me the subject of the most recent git commit.",
+                    state_path=state_path,
+                    event_log_path=None,
+                )
+                command.update({
+                    "provider": provider,
+                    "work_disposition": {"route": "continue_current"},
+                })
+                Path(state_path).write_text(json.dumps(command))
+                executor = FakeTTSWorker()
+                coordinator = voice_bridge.SpeechCoordinator(
+                    executor,
+                    is_current=lambda seq, command_id: (seq, command_id) == (
+                        command["relay_command_seq"],
+                        command["relay_command_id"],
+                    ),
+                )
+
+                def submit_speech(
+                    text,
+                    command_seq,
+                    command_id,
+                    display_text=None,
+                    speech_metadata=None,
+                ):
+                    return voice_bridge._queue_tts_text(
+                        json.dumps({
+                            "text": text,
+                            "display_text": display_text,
+                            "relay_command_seq": command_seq,
+                            "relay_command_id": command_id,
+                        }),
+                        coordinator.input_queue,
+                        state_path=state_path,
+                        allow_pending_command=True,
+                        **(speech_metadata or {}),
+                    )
+
+                messenger = voice_bridge.MessengerRuntime(
+                    ImmediateMessengerBackend(handoff),
+                    speak=submit_speech,
+                    is_current=lambda seq, command_id: (seq, command_id) == (
+                        command["relay_command_seq"],
+                        command["relay_command_id"],
+                    ),
+                )
+                messenger.start()
+                try:
+                    self.assertTrue(messenger.submit_user(
+                        "Use the terminal to tell me the subject of the most recent git commit.",
+                        command,
+                    ))
+                    first = executor.input_queue.get(timeout=1.0)["_speech_intent"]
+                    self.assertEqual(first["kind"], "handoff")
+                    self.assertEqual(first["lifecycle_role"], "acknowledgement")
+                    executor.observer("started", first)
+                    executor.observer("completed", first)
+                    executor.calls.clear()
+                    self.publish_waiting_preview.reset_mock()
+                    self.publish_waiting_preview.side_effect = (
+                        lambda text: voice_bridge._handle_relay_control_message(
+                            "__PLAY__",
+                            coordinator,
+                        )
+                        if text == final
+                        else None
+                    )
+
+                    self.assertTrue(voice_bridge._handle_orchestrator_reply_control(
+                        json.dumps({**command, "text": final}),
+                        tts_worker=coordinator,
+                        messenger=messenger,
+                        state_path=state_path,
+                    ))
+
+                    authoritative = executor.input_queue.get_nowait()["_speech_intent"]
+                    self.publish_waiting_preview.assert_called_once_with(final)
+                    self.assertEqual(executor.calls, ["play"])
+                    self.assertEqual(authoritative["spoken_text"], final)
+                    self.assertEqual(authoritative["display_text"], final)
+                    self.assertEqual(
+                        (
+                            authoritative["command_seq"],
+                            authoritative["command_id"],
+                        ),
+                        (
+                            command["relay_command_seq"],
+                            command["relay_command_id"],
+                        ),
+                    )
+                    self.assertEqual(authoritative["kind"], "final")
+                    self.assertTrue(executor.eligibility(authoritative))
+                    executor.observer("started", authoritative)
+                    executor.observer("completed", authoritative)
+                    executor.calls.clear()
+
+                    self.assertTrue(voice_bridge._handle_relay_control_message(
+                        "__PLAY__",
+                        coordinator,
+                    ))
+                    replay = executor.input_queue.get_nowait()["_speech_intent"]
+                    self.assertEqual(executor.calls, ["play"])
+                    self.assertEqual(
+                        replay["replay_of"],
+                        authoritative["original_utterance_id"],
+                    )
+                    self.assertEqual(replay["spoken_text"], final)
+                    self.assertEqual(replay["display_text"], final)
+                    self.assertEqual(
+                        (replay["command_seq"], replay["command_id"]),
+                        (authoritative["command_seq"], authoritative["command_id"]),
+                    )
+                finally:
+                    messenger.shutdown()
+
     def test_suppressed_conversation_final_leaves_replay_target_intact(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:

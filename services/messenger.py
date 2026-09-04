@@ -71,6 +71,19 @@ _LIFECYCLE_ROLES_BY_DETAIL = {
     "sidecar-outcome": "result",
 }
 _SEMANTIC_TOKEN_RE = re.compile(r"[a-z0-9]+(?:[-_.:/][a-z0-9]+)*", re.IGNORECASE)
+_USER_RESPONSE_ROLE_RE = re.compile(
+    r"^__(?P<role>ANSWER|HANDOFF)__\s*(?::|-)?\s*",
+    re.IGNORECASE,
+)
+_HANDOFF_RESPONSE_RE = re.compile(
+    r"\b(?:"
+    r"(?:received|picked\s+up|understood)\b.{0,100}\b(?:request|task|question)"
+    r"|(?:i|we)\s+(?:will|(?:'|’)ll|am\s+going\s+to|are\s+going\s+to)\s+"
+    r"(?:check|confirm|find|inspect|investigate|look|open|report|review|run|use|verify)"
+    r"|(?:come|get)\s+back\b|report\s+back\b|return\s+with\b"
+    r")",
+    re.IGNORECASE,
+)
 _SEMANTIC_STOPWORDS = frozenset({
     "a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "for",
     "from", "i", "in", "is", "it", "me", "my", "of", "on", "or", "our",
@@ -106,6 +119,22 @@ def _first_semantic_response(text: str, *, complete: bool = False) -> str | None
     if complete and len(_SEMANTIC_TOKEN_RE.findall(cleaned)) >= 3:
         return cleaned
     return None
+
+
+def _user_response_role(text: str, *, action_kind: str) -> tuple[str, str]:
+    """Return speakable text and whether it answers now or promises a handoff."""
+    cleaned = " ".join(str(text or "").split()).strip()
+    marker = _USER_RESPONSE_ROLE_RE.match(cleaned)
+    explicit_role = marker.group("role").lower() if marker is not None else ""
+    if marker is not None:
+        cleaned = cleaned[marker.end():].strip()
+    if action_kind == "self_explanation":
+        return cleaned, "answer"
+    if explicit_role == "handoff" or _HANDOFF_RESPONSE_RE.search(cleaned):
+        return cleaned, "handoff"
+    if explicit_role == "answer" or action_kind == "conversation":
+        return cleaned, "answer"
+    return cleaned, "handoff"
 
 FOREGROUND_ONLY_ENVIRONMENT_KEYS = frozenset({
     "RELAY_CONTEXT_COMPACTION_EVENTS",
@@ -156,6 +185,11 @@ canned spoken acknowledgement that ignores the user's actual request.
 You may answer lightweight social conversation when no orchestration is needed.
 Keep those direct social answers to one short spoken sentence so their complete
 meaning can be delivered on the first semantic boundary.
+For every new user turn, prefix the response with exactly __ANSWER__ when those
+words fully answer the user now, or __HANDOFF__ when they acknowledge the turn
+and promise a later result. The prefix is delivery metadata and will not be
+spoken. Never label a promise to check, inspect, use a tool, report back, or
+return with a result as __ANSWER__.
 When the user asks what Relay Runner is, what it does, or requests a short
 introduction for a demo audience, answer immediately in one or two natural
 sentences. Do not hand that request off or promise a later answer. Describe Relay
@@ -1139,7 +1173,8 @@ class MessengerRuntime:
         self._active_event: _MessengerEvent | None = None
         self._action_kinds: dict[tuple[int, str], str] = {}
         self._work_dispositions: dict[tuple[int, str], dict] = {}
-        self._user_response_commands: set[tuple[int, str]] = set()
+        self._user_response_texts: dict[tuple[int, str], str] = {}
+        self._user_response_roles: dict[tuple[int, str], str] = {}
         self._conversation_commands_answered: set[tuple[int, str]] = set()
         self._started = False
         self._shutdown = threading.Event()
@@ -1198,7 +1233,8 @@ class MessengerRuntime:
                 for old in list(self._action_kinds)[:50]:
                     self._action_kinds.pop(old, None)
                     self._work_dispositions.pop(old, None)
-                    self._user_response_commands.discard(old)
+                    self._user_response_texts.pop(old, None)
+                    self._user_response_roles.pop(old, None)
                     self._conversation_commands_answered.discard(old)
             self._has_trace_for_current_command = False
             self._context.append(f"USER: {cleaned}")
@@ -1240,11 +1276,20 @@ class MessengerRuntime:
                 else "conversation" if route == "continue_current" else "work"
             )
             self._work_dispositions[command_key] = dict(disposition)
+            response_text = self._user_response_texts.get(command_key)
+            if response_text is not None:
+                _, response_role = _user_response_role(
+                    response_text,
+                    action_kind=self._action_kinds[command_key],
+                )
+                self._user_response_roles[command_key] = response_role
             if (
                 self._action_kinds[command_key] == "conversation"
-                and command_key in self._user_response_commands
+                and self._user_response_roles.get(command_key) == "answer"
             ):
                 self._conversation_commands_answered.add(command_key)
+            else:
+                self._conversation_commands_answered.discard(command_key)
             self._context.append(
                 "PUBLIC WORK DISPOSITION: "
                 f"{disposition.get('route')} — {disposition.get('public_reason')}"
@@ -1535,6 +1580,17 @@ class MessengerRuntime:
     def _deliver_response(self, event: _MessengerEvent, response: str) -> None:
         if not self._event_is_current(event):
             return
+        user_response_role = ""
+        raw_response = response
+        if event.kind == "user_turn":
+            action_kind = self._action_kinds.get(
+                (event.command_seq, event.command_id),
+                event.action_kind,
+            )
+            response, user_response_role = _user_response_role(
+                response,
+                action_kind=action_kind,
+            )
         realization = self._realization_for(event, response)
         if realization is not None:
             self._observe_realization(event, realization)
@@ -1547,9 +1603,15 @@ class MessengerRuntime:
             self._context.append(f"MESSENGER: {response}")
             if event.kind == "user_turn" and event.command_seq is not None and event.command_id:
                 command_key = (event.command_seq, event.command_id)
-                self._user_response_commands.add(command_key)
-                if self._action_kinds.get(command_key) == "conversation":
+                self._user_response_texts[command_key] = raw_response
+                self._user_response_roles[command_key] = user_response_role
+                if (
+                    self._action_kinds.get(command_key) == "conversation"
+                    and user_response_role == "answer"
+                ):
                     self._conversation_commands_answered.add(command_key)
+                else:
+                    self._conversation_commands_answered.discard(command_key)
         self._speak_safely(
             response,
             event.command_seq,
@@ -1567,6 +1629,7 @@ class MessengerRuntime:
                 event,
                 realization=realization,
                 spoken_text=response,
+                user_response_role=user_response_role,
             ),
         )
 
@@ -1669,7 +1732,9 @@ class MessengerRuntime:
                 "Do not call yourself the orchestrator in the spoken response. "
                 "If authoritative context names workers, refer to the workers directly. Do not "
                 "invent scope or "
-                "claim that a ticket, worker, or implementation already exists."
+                "claim that a ticket, worker, or implementation already exists. Prefix the "
+                "response with __ANSWER__ only when it fully answers the user now; otherwise "
+                "prefix it with __HANDOFF__."
             ),
             "orchestrator_trace": (
                 "This is a provider-visible public progress summary or worker lifecycle event. "
@@ -1724,7 +1789,11 @@ class MessengerRuntime:
             + (
                 "Return only the JSON object."
                 if realization_instructions
-                else "Return only the exact words to speak, or __SILENT__."
+                else (
+                    "Return only the role-prefixed words to speak, or __SILENT__."
+                    if event.kind == "user_turn"
+                    else "Return only the exact words to speak, or __SILENT__."
+                )
             )
         )
 
@@ -2010,6 +2079,7 @@ class MessengerRuntime:
         fallback: bool = False,
         realization: _SpeechRealization | None = None,
         spoken_text: str | None = None,
+        user_response_role: str = "",
     ) -> dict:
         action_kind = self._action_kinds.get(
             (event.command_seq, event.command_id),
@@ -2029,7 +2099,7 @@ class MessengerRuntime:
             source = "messenger"
             kind = (
                 "conversation"
-                if action_kind in {"conversation", "self_explanation"}
+                if user_response_role == "answer"
                 else "handoff"
             )
         elif event.kind == "orchestrator_final":
@@ -2057,9 +2127,12 @@ class MessengerRuntime:
                 realization.lifecycle_role
                 if realization is not None
                 else (
-                    "conversation"
+                    (
+                        "conversation"
+                        if user_response_role == "answer"
+                        else "acknowledgement"
+                    )
                     if event.kind == "user_turn"
-                    and action_kind in {"conversation", "self_explanation"}
                     else MessengerRuntime._lifecycle_role_for(event)
                 )
             ),

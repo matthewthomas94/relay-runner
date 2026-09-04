@@ -592,7 +592,7 @@ class MessengerRuntimeTests(unittest.TestCase):
                     runtime.shutdown()
 
     def test_direct_conversation_answer_suppresses_redundant_foreground_final(self):
-        backend = FakeBackend(["You're welcome."])
+        backend = FakeBackend(["__ANSWER__ You're welcome."])
         spoken: list[str] = []
         runtime = MessengerRuntime(
             backend,
@@ -600,19 +600,81 @@ class MessengerRuntimeTests(unittest.TestCase):
             is_current=lambda seq, command_id: True,
         )
         command = {"relay_command_seq": 3, "relay_command_id": "conversation"}
-        runtime.submit_user("Thanks", command)
-        runtime.update_user_context({
-            **command,
-            "source_text": "Thanks",
-            "work_disposition": {"route": "continue_current", "public_reason": "Conversation."},
-        })
         runtime.start()
         try:
+            runtime.submit_user("Thanks", command)
             self.assertTrue(wait_until(lambda: spoken == ["You're welcome."]))
+            self.assertTrue(runtime.update_user_context({
+                **command,
+                "source_text": "Thanks",
+                "work_disposition": {
+                    "route": "continue_current",
+                    "public_reason": "Conversation.",
+                },
+            }))
             self.assertTrue(runtime.submit_final({"text": "You're welcome again.", **command}))
             self.assertEqual(spoken, ["You're welcome."])
         finally:
             runtime.shutdown()
+
+    def test_continue_current_handoff_never_owns_later_authoritative_result(self):
+        handoff = (
+            "I received your request and will check the most recent Git commit’s "
+            "subject, then return with the result."
+        )
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                # Promise language remains a handoff even if a provider emits the
+                # wrong explicit role marker.
+                backend = FakeBackend([f"__ANSWER__ {handoff}"])
+                backend.config = MessengerConfig(
+                    True,
+                    provider,
+                    provider,
+                    "luna" if provider == "codex" else "haiku",
+                    "low" if provider == "codex" else "default",
+                    "/tmp",
+                )
+                spoken = []
+                runtime = MessengerRuntime(
+                    backend,
+                    speak=lambda text, seq, command_id, display_text, metadata: spoken.append(
+                        (text, seq, command_id, display_text, metadata)
+                    ),
+                    is_current=lambda seq, command_id: True,
+                )
+                command = {
+                    "provider": provider,
+                    "relay_command_seq": 67,
+                    "relay_command_id": f"commit-subject-{provider}",
+                }
+                runtime.start()
+                try:
+                    runtime.submit_user(
+                        "Use the terminal to tell me the subject of the most recent git commit.",
+                        command,
+                    )
+                    self.assertTrue(wait_until(lambda: len(spoken) == 1))
+                    self.assertEqual(spoken[0][0], handoff)
+                    self.assertEqual(spoken[0][4]["kind"], "handoff")
+                    self.assertEqual(spoken[0][4]["lifecycle_role"], "acknowledgement")
+                    self.assertTrue(runtime.update_user_context({
+                        **command,
+                        "source_text": (
+                            "Use the terminal to tell me the subject of the most recent "
+                            "git commit."
+                        ),
+                        "work_disposition": {"route": "continue_current"},
+                    }))
+
+                    final = "merge RR-347 worker run 105"
+                    self.assertTrue(runtime.submit_final({"text": final, **command}))
+                    self.assertEqual([item[0] for item in spoken], [handoff, final])
+                    self.assertEqual(spoken[-1][3], final)
+                    self.assertEqual(spoken[-1][4]["kind"], "final")
+                    self.assertTrue(spoken[-1][4]["authoritative"])
+                finally:
+                    runtime.shutdown()
 
     def test_control_only_handoff_preserves_authoritative_foreground_result(self):
         backend = FakeBackend(["I'll open Chrome and report back."])
