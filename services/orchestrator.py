@@ -705,7 +705,6 @@ GENERAL_MODEL_OPTIONS = {
 }
 BASE_GENERAL_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 AUTO_DISPATCH_SOURCES = frozenset({"ready-sweeper", "dependency-progression", "orchestrator-review-retry"})
-MAX_AUTO_DISPATCH_ATTEMPTS = 5
 AUTO_DISPATCH_BACKOFF_SECONDS = 30.0
 QUEUE_DRAIN_ACTIVE_STATES = frozenset({"active", "waiting", "blocked"})
 QUEUE_DRAIN_TERMINAL_STATES = frozenset({"completed", "canceled"})
@@ -6987,15 +6986,8 @@ Title: {ticket['title']}
     ) -> str | None:
         if source not in AUTO_DISPATCH_SOURCES:
             return None
-        history = self.runs.recent_for_ticket(ticket_id, repo_path=repo_path, limit=MAX_AUTO_DISPATCH_ATTEMPTS)
-        attempts = [run for run in history if int(run.get("attempt") or 0) > 0]
-        if len(attempts) >= MAX_AUTO_DISPATCH_ATTEMPTS:
-            return (
-                f"automatic retry exhausted after {len(attempts)} attempts; "
-                "fix the last error and explicitly redispatch the ticket"
-            )
-
-        latest = attempts[0] if attempts else None
+        history = self.runs.recent_for_ticket(ticket_id, repo_path=repo_path, limit=1)
+        latest = history[0] if history else None
         if not latest or latest.get("state") not in {"Failed", "Stalled"}:
             return None
         latest_error = str(latest.get("last_error") or "").strip()

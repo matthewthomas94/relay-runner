@@ -847,7 +847,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertIn("automatic retry backoff active after attempt 1", result["skipped"][0]["error"])
             self.assertEqual(len(daemon.runs.list()), 1)
 
-    def test_ready_sweeper_caps_automatic_retry_attempts(self):
+    def test_ready_sweeper_continues_automatic_retries_after_five_attempts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -869,14 +869,18 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 )
                 daemon.runs.update(run_id, ended=True, exit_code=1, last_error=f"transient failure {attempt}")
 
-            with patch("orchestrator.create_worktree") as create_worktree, \
+            latest = daemon.runs.recent_for_ticket("RR-1", repo_path=str(repo), limit=1)[0]
+            after_backoff = float(latest["ended_at"]) + orchestrator.AUTO_DISPATCH_BACKOFF_SECONDS + 1
+            with patch("orchestrator.time.time", return_value=after_backoff), \
+                    patch("orchestrator.create_worktree") as create_worktree, \
                     patch.object(Worker, "start") as start_worker:
                 result = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="test")
 
-            create_worktree.assert_not_called()
-            start_worker.assert_not_called()
-            self.assertIn("automatic retry exhausted after 5 attempts", result["skipped"][0]["error"])
-            self.assertEqual(len(daemon.runs.list()), 5)
+            create_worktree.assert_called_once()
+            start_worker.assert_called_once()
+            self.assertEqual(result["dispatched"][0]["ticket_id"], "RR-1")
+            self.assertEqual(daemon.runs.list()[0]["attempt"], 6)
+            self.assertEqual(len(daemon.runs.list()), 6)
 
     def test_dispatch_skips_succeeded_run_awaiting_merge(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2756,12 +2760,24 @@ verification_resume: Connect physical input and resume.
             self.git(repo, "commit", "-m", "add ticket")
             self.git(repo, "worktree", "add", "-b", "relay/rr-1", str(workspace), "HEAD")
             daemon = self.make_daemon(root, provider="codex")
+            for attempt in range(1, 5):
+                daemon.runs.insert(
+                    ticket_id="RR-1",
+                    repo_path=str(repo.resolve()),
+                    workspace_path=str(root / "workspaces" / f"rr-1-{attempt}"),
+                    branch=f"relay/rr-1-{attempt}",
+                    state="Failed",
+                    attempt=attempt,
+                    provider_key="codex",
+                    model_alias="gpt-5.5",
+                )
             run_id = daemon.runs.insert(
                 ticket_id="RR-1",
                 repo_path=str(repo.resolve()),
                 workspace_path=str(workspace),
                 branch="relay/rr-1",
                 state="AwaitingReview",
+                attempt=5,
                 provider_key="codex",
                 model_alias="gpt-5.5",
             )
@@ -2784,7 +2800,7 @@ verification_resume: Connect physical input and resume.
             self.assertEqual(result["run"]["state"], "Failed")
             self.assertIn("missing verification evidence", result["run"]["last_error"])
             self.assertEqual(result["redispatched"]["run"]["state"], "Claimed")
-            self.assertEqual(result["redispatched"]["run"]["attempt"], 2)
+            self.assertEqual(result["redispatched"]["run"]["attempt"], 6)
 
     def make_git_repo(self, repo: Path) -> None:
         (repo / ".orchestrator").mkdir(parents=True)

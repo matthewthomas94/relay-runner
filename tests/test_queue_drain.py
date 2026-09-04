@@ -16,7 +16,6 @@ SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
 from orchestrator import (  # noqa: E402
-    MAX_AUTO_DISPATCH_ATTEMPTS,
     Daemon,
     MessengerOutcomeStore,
     QueueDrainStore,
@@ -567,7 +566,7 @@ worker_provider_notes: Codex and Claude share the same lifecycle.
             self.assertEqual(item["state"], "reviewing")
             self.assertEqual(item["run_id"], run_id)
 
-    def test_retry_exhaustion_becomes_drain_blocker(self):
+    def test_retries_past_five_remain_scheduled_during_backoff(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -576,7 +575,7 @@ worker_provider_notes: Codex and Claude share the same lifecycle.
             self.git(repo, "add", ".orchestrator/RR-1.md")
             self.git(repo, "commit", "-m", "add ticket")
             daemon = self.make_daemon(root, provider="claude")
-            for attempt in range(1, MAX_AUTO_DISPATCH_ATTEMPTS + 1):
+            for attempt in range(1, 7):
                 run_id = daemon.runs.insert(
                     ticket_id="RR-1",
                     repo_path=str(repo.resolve()),
@@ -596,11 +595,10 @@ worker_provider_notes: Codex and Claude share the same lifecycle.
             create_worktree.assert_not_called()
             start_worker.assert_not_called()
             item = result["drain"]["items"][0]
-            self.assertEqual(result["drain"]["state"], "blocked")
-            self.assertEqual(item["state"], "blocked")
-            self.assertEqual(item["blocker_owner"], "human")
-            self.assertIn("automatic retry exhausted", item["reason"])
-            self.assertIn("explicitly redispatch", item["blocker_next_step"])
+            self.assertEqual(result["drain"]["state"], "active")
+            self.assertEqual(item["state"], "scheduled")
+            self.assertIn("backoff active after attempt 6", item["reason"])
+            self.assertIsNone(item["blocker_owner"])
 
     def test_quiescence_completes_and_next_ticket_starts_new_drain(self):
         with tempfile.TemporaryDirectory() as tmp:
