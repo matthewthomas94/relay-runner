@@ -2928,10 +2928,14 @@ def _queue_tts_text(
             speech_work_disposition = dict(speech_work_disposition or {})
             speech_work_disposition.setdefault("intent_id", intent_id)
     coordinated = hasattr(tts_queue, "submit_text")
+    atomic_waiting_playback = bool(
+        coordinated
+        and getattr(tts_queue, "supports_atomic_waiting_playback", False)
+    )
     publisher = publish_waiting_preview if notify_waiting_preview is None else notify_waiting_preview
     if coordinated:
-        accepted = bool(tts_queue.submit_text(
-            text,
+        speech_metadata = dict(
+            text=text,
             display_text=display_preview,
             semantic_brief=semantic_brief,
             command_seq=command_seq,
@@ -2948,7 +2952,16 @@ def _queue_tts_text(
             covered_facts=covered_facts,
             realization_decision=realization_decision,
             suppression_reason=suppression_reason,
-        ))
+        )
+        if (
+            atomic_waiting_playback
+            and authoritative
+            and kind in {"final", "fallback"}
+            and command_seq is not None
+            and command_id
+        ):
+            speech_metadata["waiting_playback_kind"] = "final"
+        accepted = bool(tts_queue.submit_text(**speech_metadata))
     else:
         if display_preview:
             tts_queue.put({"text": text, "display_text": display_preview})
@@ -2962,9 +2975,12 @@ def _queue_tts_text(
         and kind in {"final", "fallback"}
         and command_seq is not None
         and command_id
+        and not atomic_waiting_playback
     ):
         _arm_authoritative_playback(tts_queue, command_seq, command_id)
-    if publisher is not None:
+    if publisher is not None and not bool(
+        coordinated and getattr(tts_queue, "publishes_waiting_preview", False)
+    ):
         try:
             publisher(display_preview or text)
         except Exception as exc:
