@@ -209,6 +209,9 @@ def _default_lifecycle_role(kind: str) -> str:
 class CoordinatorInputQueue:
     """Queue-shaped adapter; producers cannot reach the executor queue directly."""
 
+    supports_atomic_waiting_playback = True
+    publishes_waiting_preview = True
+
     def __init__(self, coordinator: "SpeechCoordinator"):
         self._coordinator = coordinator
 
@@ -226,7 +229,11 @@ class CoordinatorInputQueue:
         return self.submit_text(str(item or ""))
 
     def submit_text(self, text: str, **metadata) -> bool:
-        return self._coordinator.submit(SpeechIntent.build(spoken_text=text, **metadata))
+        waiting_playback_kind = metadata.pop("waiting_playback_kind", None)
+        return self._coordinator.submit(
+            SpeechIntent.build(spoken_text=text, **metadata),
+            waiting_playback_kind=waiting_playback_kind,
+        )
 
     def arm_waiting_playback(
         self,
@@ -344,7 +351,12 @@ class SpeechCoordinator:
             "outcome": str(outcome or "ok"),
         })
 
-    def submit(self, intent: SpeechIntent) -> bool:
+    def submit(
+        self,
+        intent: SpeechIntent,
+        *,
+        waiting_playback_kind: str | None = None,
+    ) -> bool:
         started = time.perf_counter()
         self._diagnostic("proposed", intent)
         if not intent.spoken_text:
@@ -370,6 +382,10 @@ class SpeechCoordinator:
                     self._drop_obsolete_backlog(intent)
                     self._backlog.append(intent)
                     self._accept_locked(intent)
+                    self._arm_accepted_waiting_playback_locked(
+                        intent,
+                        waiting_playback_kind,
+                    )
                     self._diagnostic("accepted", intent, latency_ms=_elapsed_ms(started))
                     return True
                 replace_committed = True
@@ -377,12 +393,20 @@ class SpeechCoordinator:
                 self._drop_obsolete_backlog(intent)
                 self._backlog.append(intent)
                 self._accept_locked(intent)
+                self._arm_accepted_waiting_playback_locked(
+                    intent,
+                    waiting_playback_kind,
+                )
                 self._diagnostic("accepted", intent, latency_ms=_elapsed_ms(started))
                 return True
             else:
                 commit_now = True
 
             self._accept_locked(intent)
+            self._arm_accepted_waiting_playback_locked(
+                intent,
+                waiting_playback_kind,
+            )
             self._intent_committed_at[intent.utterance_id] = time.time()
             if len(self._intent_committed_at) > 512:
                 oldest = next(iter(self._intent_committed_at))
@@ -414,15 +438,7 @@ class SpeechCoordinator:
         """Bind the next play gesture to speech backing an imminent preview."""
         target = (int(command_seq), str(command_id))
         with self._lock:
-            previous = self._waiting_preview
-            self._waiting_preview = (target, kind)
-            if self._play_timing is not None and previous != self._waiting_preview:
-                self._play_timing["relay_command_seq"] = target[0]
-                self._play_timing["relay_command_id"] = target[1]
-                self._play_timing["kind"] = kind
-            dispatched = self._intent_for(self._play_dispatched_id)
-            if dispatched is not None and not self._matches_waiting_preview(dispatched):
-                self._play_dispatched_id = None
+            self._arm_waiting_playback_locked(target, kind)
 
     def note_play_control(
         self,
@@ -746,6 +762,29 @@ class SpeechCoordinator:
 
     def _intent_for(self, intent_id: str | None) -> SpeechIntent | None:
         return self._intents.get(intent_id) if intent_id else None
+
+    def _arm_accepted_waiting_playback_locked(
+        self,
+        intent: SpeechIntent,
+        kind: str | None,
+    ) -> None:
+        if kind and intent.command_key is not None:
+            self._arm_waiting_playback_locked(intent.command_key, kind)
+
+    def _arm_waiting_playback_locked(
+        self,
+        target: tuple[int, str],
+        kind: str,
+    ) -> None:
+        previous = self._waiting_preview
+        self._waiting_preview = (target, kind)
+        if self._play_timing is not None and previous != self._waiting_preview:
+            self._play_timing["relay_command_seq"] = target[0]
+            self._play_timing["relay_command_id"] = target[1]
+            self._play_timing["kind"] = kind
+        dispatched = self._intent_for(self._play_dispatched_id)
+        if dispatched is not None and not self._matches_waiting_preview(dispatched):
+            self._play_dispatched_id = None
 
     def _matches_waiting_preview(self, intent: SpeechIntent) -> bool:
         target = self._waiting_preview
