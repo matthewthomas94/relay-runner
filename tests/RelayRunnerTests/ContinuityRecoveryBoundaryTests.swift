@@ -5,6 +5,29 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
     private let sessionID = "session-1234567890abcdef12345678"
     private let commandID = "command-1234567890abcdef12345678"
 
+    func testReplacementClaimIdentityIsExactAndContentFree() throws {
+        let identity = try XCTUnwrap(ProcessManager.relayClaimIdentity([
+            "relay_command_seq": "79",
+            "relay_command_id": "cmd-79",
+            "intent_id": "intent-79",
+            "intent_delivery_id": "delivery:intent-79",
+            "intent_claim_id": "claim:intent-79",
+            "intent_ack_id": "ack:intent-79",
+            "agent_prompt": "private prompt",
+        ]))
+
+        XCTAssertEqual(identity["relay_command_seq"] as? Int, 79)
+        XCTAssertEqual(identity["intent_claim_id"] as? String, "claim:intent-79")
+        XCTAssertNil(identity["agent_prompt"])
+        XCTAssertNil(ProcessManager.relayClaimIdentity([
+            "relay_command_seq": 79,
+            "relay_command_id": "cmd-79",
+            "intent_id": "intent-79",
+            "intent_delivery_id": "delivery:intent-79",
+            "intent_claim_id": "claim:intent-79",
+        ]))
+    }
+
     func testProviderReadyContextPublishesOnlyForTheExactReplacement() throws {
         let nativeCommandID = "native-command-id"
         let opaqueCommandID = ContinuityRecoveryRequest.opaqueIdentifier(
@@ -15,13 +38,32 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
             nativeCommandID: nativeCommandID,
             commandID: opaqueCommandID,
             provider: "codex",
-            recoveryGeneration: "generation-4"
+            recoveryGeneration: "generation-4",
+            previousProviderSessionID: "provider-session-old",
+            providerSessionID: nil,
+            appSessionID: nil,
+            foregroundGateHandle: nil
         )
+        let replacement = try XCTUnwrap(context.authorizingReplacement(
+            providerSessionID: "provider-session-new",
+            appSessionID: "app-session",
+            foregroundGateHandle: "foreground-gate-new",
+            provider: "codex"
+        ))
+        let claim: [String: Any] = [
+            "relay_command_seq": 12,
+            "relay_command_id": nativeCommandID,
+            "intent_id": "intent-12",
+            "intent_delivery_id": "delivery:intent-12",
+            "intent_claim_id": "claim:intent-12",
+            "intent_ack_id": "ack:intent-12",
+        ]
 
-        let control = try XCTUnwrap(context.controlMessage(
-            currentCommandID: nativeCommandID,
+        let control = try XCTUnwrap(replacement.controlMessage(
+            currentClaimIdentity: claim,
             currentProvider: "codex",
-            currentRecoveryGeneration: "generation-4"
+            currentRecoveryGeneration: "generation-4",
+            currentProviderSessionID: "provider-session-new"
         ))
         let payload = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(control.utf8)) as? [String: Any]
@@ -31,21 +73,37 @@ final class ContinuityRecoveryBoundaryTests: XCTestCase {
         XCTAssertEqual(payload["relay_command_id"] as? String, nativeCommandID)
         XCTAssertEqual(payload["provider"] as? String, "codex")
         XCTAssertEqual(payload["recovery_generation"] as? String, "generation-4")
+        XCTAssertEqual(payload["previous_provider_session_id"] as? String, "provider-session-old")
+        XCTAssertEqual(payload["provider_session_id"] as? String, "provider-session-new")
+        XCTAssertEqual(payload["app_session_id"] as? String, "app-session")
+        XCTAssertEqual(payload["foreground_gate_handle"] as? String, "foreground-gate-new")
+        XCTAssertEqual(payload["intent_claim_id"] as? String, "claim:intent-12")
 
-        XCTAssertNil(context.controlMessage(
-            currentCommandID: "newer-command",
+        var newerClaim = claim
+        newerClaim["relay_command_id"] = "newer-command"
+        XCTAssertNil(replacement.controlMessage(
+            currentClaimIdentity: newerClaim,
             currentProvider: "codex",
-            currentRecoveryGeneration: "generation-4"
+            currentRecoveryGeneration: "generation-4",
+            currentProviderSessionID: "provider-session-new"
         ))
-        XCTAssertNil(context.controlMessage(
-            currentCommandID: nativeCommandID,
+        XCTAssertNil(replacement.controlMessage(
+            currentClaimIdentity: claim,
             currentProvider: "claude",
-            currentRecoveryGeneration: "generation-4"
+            currentRecoveryGeneration: "generation-4",
+            currentProviderSessionID: "provider-session-new"
         ))
-        XCTAssertNil(context.controlMessage(
-            currentCommandID: nativeCommandID,
+        XCTAssertNil(replacement.controlMessage(
+            currentClaimIdentity: claim,
             currentProvider: "codex",
-            currentRecoveryGeneration: "generation-5"
+            currentRecoveryGeneration: "generation-5",
+            currentProviderSessionID: "provider-session-new"
+        ))
+        XCTAssertNil(replacement.controlMessage(
+            currentClaimIdentity: claim,
+            currentProvider: "codex",
+            currentRecoveryGeneration: "generation-4",
+            currentProviderSessionID: "provider-session-old"
         ))
     }
 

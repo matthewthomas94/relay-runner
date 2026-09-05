@@ -37,27 +37,78 @@ final class AppState {
         let commandID: String
         let provider: String
         let recoveryGeneration: String
+        let previousProviderSessionID: String
+        let providerSessionID: String?
+        let appSessionID: String?
+        let foregroundGateHandle: String?
+
+        func authorizingReplacement(
+            providerSessionID: String?,
+            appSessionID: String?,
+            foregroundGateHandle: String?,
+            provider: String
+        ) -> Self? {
+            guard provider == self.provider,
+                  let providerSessionID, !providerSessionID.isEmpty,
+                  providerSessionID != previousProviderSessionID,
+                  let appSessionID, !appSessionID.isEmpty,
+                  let foregroundGateHandle, !foregroundGateHandle.isEmpty else {
+                return nil
+            }
+            return Self(
+                nativeCommandID: nativeCommandID,
+                commandID: commandID,
+                provider: self.provider,
+                recoveryGeneration: recoveryGeneration,
+                previousProviderSessionID: previousProviderSessionID,
+                providerSessionID: providerSessionID,
+                appSessionID: appSessionID,
+                foregroundGateHandle: foregroundGateHandle
+            )
+        }
 
         func controlMessage(
-            currentCommandID: String?,
+            currentClaimIdentity: [String: Any]?,
             currentProvider: String,
-            currentRecoveryGeneration: String?
+            currentRecoveryGeneration: String?,
+            currentProviderSessionID: String?
         ) -> String? {
-            guard currentCommandID == nativeCommandID,
+            guard let currentClaimIdentity,
+                  (currentClaimIdentity["relay_command_id"] as? String) == nativeCommandID,
                   ContinuityRecoveryRequest.opaqueIdentifier(
                     kind: "command",
                     nativeValue: nativeCommandID
                   ) == commandID,
                   currentProvider == provider,
-                  currentRecoveryGeneration == recoveryGeneration
+                  currentRecoveryGeneration == recoveryGeneration,
+                  let providerSessionID,
+                  currentProviderSessionID == providerSessionID,
+                  providerSessionID != previousProviderSessionID,
+                  let appSessionID,
+                  let foregroundGateHandle
             else { return nil }
-            let payload: [String: Any] = [
+            var payload: [String: Any] = [
                 "type": "continuity_provider_ready",
                 "event": "provider_ready",
-                "relay_command_id": nativeCommandID,
                 "provider": provider,
                 "recovery_generation": recoveryGeneration,
+                "previous_provider_session_id": previousProviderSessionID,
+                "provider_session_id": providerSessionID,
+                "app_session_id": appSessionID,
+                "actor_role": "foreground_pm",
+                "foreground_gate_handle": foregroundGateHandle,
             ]
+            for field in [
+                "relay_command_seq",
+                "relay_command_id",
+                "intent_id",
+                "intent_delivery_id",
+                "intent_claim_id",
+                "intent_ack_id",
+            ] {
+                guard let value = currentClaimIdentity[field] else { return nil }
+                payload[field] = value
+            }
             guard let data = try? JSONSerialization.data(
                 withJSONObject: payload,
                 options: [.sortedKeys]
@@ -1135,6 +1186,18 @@ final class AppState {
                 recoveryGeneration: recoveryGeneration,
                 startsVoiceBridge: !preservesVoiceBridge
             )
+            if preservesVoiceBridge {
+                guard let context = pendingContinuityProviderReady,
+                      let authorized = context.authorizingReplacement(
+                        providerSessionID: prepared.providerSessionID,
+                        appSessionID: prepared.appSessionID,
+                        foregroundGateHandle: prepared.foregroundGateHandle,
+                        provider: prepared.target.providerMetadataValue
+                      ) else {
+                    throw ProcessManager.SessionLaunchPreparationError.invalidRecoveryLaunch
+                }
+                pendingContinuityProviderReady = authorized
+            }
             if let generation = prepared.recoveryGeneration {
                 let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
                     repositoryPath: prepared.workingDirectory
@@ -2623,12 +2686,20 @@ final class AppState {
                   ) == commandID else {
                 return .failed("unrelated_command_target")
             }
+            guard let previousProviderSessionID = ProcessManager.currentProviderSessionID(),
+                  !previousProviderSessionID.isEmpty else {
+                return .failed("provider_session_unavailable")
+            }
             let preservesVoiceBridge = processManager.bridgeAlive()
             pendingContinuityProviderReady = ContinuityProviderReadyContext(
                 nativeCommandID: nativeCurrentCommandID,
                 commandID: commandID,
                 provider: request.provider,
-                recoveryGeneration: request.recoveryGeneration
+                recoveryGeneration: request.recoveryGeneration,
+                previousProviderSessionID: previousProviderSessionID,
+                providerSessionID: nil,
+                appSessionID: nil,
+                foregroundGateHandle: nil
             )
             applied = newSession(
                 workingDirectory: launch.general.working_directory,
@@ -2656,9 +2727,10 @@ final class AppState {
             repositoryPath: launch.general.working_directory
         )
         guard let control = context.controlMessage(
-            currentCommandID: ProcessManager.currentRelayCommandID(),
+            currentClaimIdentity: ProcessManager.currentRelayClaimIdentity(),
             currentProvider: launch.general.provider.rawValue,
-            currentRecoveryGeneration: continuityRecoveryGenerationBySession[sessionID]
+            currentRecoveryGeneration: continuityRecoveryGenerationBySession[sessionID],
+            currentProviderSessionID: ProcessManager.currentProviderSessionID()
         ) else { return }
         _ = SocketClient.bridgeSend(control)
     }
