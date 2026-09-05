@@ -190,6 +190,7 @@ class MessengerConfigTests(unittest.TestCase):
         self.assertIn("hidden chain-of-thought", MESSENGER_SYSTEM_PROMPT)
         self.assertIn("first-person singular", MESSENGER_SYSTEM_PROMPT)
         self.assertIn("refer to them directly", MESSENGER_SYSTEM_PROMPT)
+        self.assertIn("at most twelve spoken words", MESSENGER_SYSTEM_PROMPT)
         self.assertIn("__SILENT__", MESSENGER_SYSTEM_PROMPT)
 
     def test_codex_command_resolution_prefers_bundled_chatgpt_cli_without_path(self):
@@ -283,6 +284,7 @@ class MessengerBackendContractTests(unittest.TestCase):
         self.assertEqual(params["approvalPolicy"], "never")
         self.assertEqual(params["dynamicTools"], [])
         self.assertTrue(params["ephemeral"])
+        self.assertNotIn("developerInstructions", params)
 
     def test_codex_backend_collects_completed_agent_message(self):
         config = MessengerConfig(True, "codex", "codex", "gpt-5.6-terra", "low", "/tmp")
@@ -484,6 +486,26 @@ class MessengerBackendContractTests(unittest.TestCase):
 
 
 class MessengerRuntimeTests(unittest.TestCase):
+    def test_user_prompt_bounds_repeated_session_context(self):
+        runtime = MessengerRuntime(
+            FakeBackend(),
+            speak=lambda text, seq, command_id: None,
+            is_current=lambda seq, command_id: True,
+        )
+        runtime._context.extend(
+            f"ORCHESTRATOR UPDATE: old-{index}-" + ("x" * 2_000)
+            for index in range(16)
+        )
+        command = {"relay_command_seq": 1, "relay_command_id": "bounded"}
+
+        self.assertTrue(runtime.submit_user("Explain the latency fix", command))
+        event = runtime._events.get_nowait()
+        prompt = runtime._prompt_for(event)
+
+        self.assertIn("Explain the latency fix", prompt)
+        self.assertIn("Current event content:", prompt)
+        self.assertLess(len(prompt), 6_000)
+
     def test_streaming_response_is_spoken_before_provider_turn_completes(self):
         class StreamingBackend(FakeBackend):
             config = MessengerConfig(True, "codex", "codex", "gpt-5.6-luna", "low", "/tmp")

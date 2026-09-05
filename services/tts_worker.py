@@ -301,6 +301,15 @@ class TTSWorker:
 
             idle_ticks = 0
             self._handle_collected_item(chunk)
+            if (
+                self._auto_play
+                and isinstance(chunk, dict)
+                and isinstance(chunk.get("_speech_intent"), dict)
+                and not self._playing
+            ):
+                # Coordinated speech intents are complete, command-scoped
+                # responses. They do not need the legacy chunk coalescing delay.
+                self.play()
 
     def _handle_collected_item(self, chunk) -> None:
         if isinstance(chunk, dict) and chunk.get("_tutorial_control"):
@@ -361,7 +370,7 @@ class TTSWorker:
                 return
             self._observe_speech("queued", speech_intent)
 
-            if was_empty:
+            if was_empty and not self._auto_play:
                 self._play_chime()
 
             # Send the full text (capped generously) every time the queued
