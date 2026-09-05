@@ -71,3 +71,16 @@ This is not blanket completion of RR-347, RR-348, or RR-346:
 
 Ticket statuses remain unchanged; this report records partial verification
 without administratively clearing external acceptance requirements.
+
+## Subsequent acceptance and closure — 2026-09-05
+
+The user subsequently removed Apple Developer ID/notarization and mounted-DMG
+requirements, accepted the recorded Codex playback/replay evidence, and
+explicitly requested RR-347 be closed. RR-347 is Done on that accepted scope;
+Claude live testing remains deferred, not passed, and is non-blocking for this
+closure. The later test-generated preview leak was isolated in `320784d`, with
+36 replay tests passing and zero real-socket attempts under a guarded check.
+
+This supersedes the historical remaining-gate snapshot above without rewriting
+the observed evidence. RR-346 was separately closed on explicit user acceptance
+of its measured latency. RR-348 remains open for its own queued-audio UAT.
