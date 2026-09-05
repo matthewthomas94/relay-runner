@@ -4540,6 +4540,363 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                         pump.join(timeout=1)
                         restarted.close()
 
+    def test_retained_bridge_adopts_exact_app_owned_provider_replacement_and_drains_in_order(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                voice_bridge._reset_foreground_reply_delivery_for_tests()
+                command_path = os.path.join(temp_dir, "voice_cmd_ready")
+                meta_path = command_path + ".meta"
+                claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                projection_path = os.path.join(temp_dir, "voice_provider_turns_v2.json")
+                inbox_path = os.path.join(temp_dir, "intent_inbox.sqlite3")
+                manual_ack_path = os.path.join(temp_dir, "manual_ack.json")
+                recovery_claim = {
+                    "relay_command_seq": 78,
+                    "relay_command_id": "cmd-78",
+                    "intent_id": "intent-78",
+                    "intent_delivery_id": "delivery:intent-78",
+                    "intent_claim_id": "claim:intent-78",
+                    "intent_ack_id": "ack:intent-78",
+                    "provider": provider,
+                }
+                Path(claim_path).write_text(json.dumps(recovery_claim))
+                Path(state_path).write_text(json.dumps(recovery_claim))
+                ownership = voice_bridge.ProviderSessionOwnership(
+                    provider_session_id="provider-session-old",
+                    provider=provider,
+                    app_session_id="test-app-session",
+                    recovery_generation="test-generation",
+                )
+                transition = {
+                    **recovery_claim,
+                    "type": "continuity_provider_ready",
+                    "event": "provider_ready",
+                    "provider": provider,
+                    "recovery_generation": "test-generation",
+                    "previous_provider_session_id": "provider-session-old",
+                    "provider_session_id": "provider-session-new",
+                    "app_session_id": "test-app-session",
+                    "actor_role": "foreground_pm",
+                    "foreground_gate_handle": "replacement-gate",
+                }
+                with mock.patch.object(
+                    voice_bridge, "_post_continuity_event", return_value={}
+                ):
+                    self.assertTrue(voice_bridge._handle_provider_turn_event_control(
+                        json.dumps(transition),
+                        provider_turn_broker=None,
+                        provider_session_ownership=ownership,
+                        claimed_path=claim_path,
+                        state_path=state_path,
+                    ))
+
+                commands = [
+                    {
+                        "relay_command_seq": sequence,
+                        "relay_command_id": f"cmd-{sequence}",
+                        "intent_id": f"intent-{sequence}",
+                        "agent_prompt": f"Read-only prompt {sequence}",
+                        "provider": provider,
+                        "work_disposition": {
+                            "route": "continue_current",
+                            "authorization_effect": "preserve",
+                            "cancellation_scope": "none",
+                        },
+                        "cancelled_intent_ids": [],
+                    }
+                    for sequence in (79, 80, 81)
+                ]
+                inbox = voice_bridge.IntentInbox(
+                    inbox_path,
+                    provider_turn_projection_path=projection_path,
+                )
+                stored = [
+                    inbox.enqueue(command["agent_prompt"], command, "continue_current")
+                    for command in commands
+                ]
+                Path(state_path).write_text(json.dumps(stored[-1]))
+                first = inbox.materialize_next(
+                    command_path=command_path,
+                    metadata_path=meta_path,
+                    transport="app-owned",
+                )
+                self.assertEqual(first["relay_command_id"], "cmd-79")
+                shutdown_event = threading.Event()
+                pump = voice_bridge._start_intent_inbox_pump(
+                    inbox,
+                    shutdown_event,
+                    command_path=command_path,
+                    meta_path=meta_path,
+                    claimed_path=claim_path,
+                    manual_ack_path=manual_ack_path,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    transport="app-owned",
+                    poll_seconds=0.005,
+                    provider_session_ownership=ownership,
+                )
+                messenger = FakeMessenger()
+                completion_payloads: list[dict] = []
+
+                try:
+                    current = first
+                    for index, expected in enumerate(stored):
+                        Path(claim_path).write_text(json.dumps(current))
+                        for path in (command_path, meta_path):
+                            try:
+                                os.remove(path)
+                            except FileNotFoundError:
+                                pass
+
+                        delivered: list[dict] = []
+                        native_turn = f"{provider}-turn-{expected['relay_command_seq']}"
+                        hook_environment = {
+                            "RELAY_APP_SESSION_ID": "test-app-session",
+                            "RELAY_RECOVERY_GENERATION": "test-generation",
+                            "RELAY_ACTOR_ROLE": "foreground_pm",
+                            "RELAY_FOREGROUND_GATE_HANDLE": "replacement-gate",
+                            "RELAY_RUNNER_PROVIDER": provider,
+                            "RELAY_PROVIDER_SESSION_ID": "provider-session-new",
+                        }
+                        with (
+                            mock.patch.dict(os.environ, hook_environment, clear=False),
+                            mock.patch.object(
+                                relay_completion_hook,
+                                "VOICE_PROVIDER_TURNS_FILE",
+                                turns_path,
+                            ),
+                            mock.patch.object(
+                                relay_completion_hook,
+                                "VOICE_INTENT_INBOX",
+                                inbox_path,
+                            ),
+                            mock.patch.object(
+                                relay_completion_hook,
+                                "VOICE_PROVIDER_TURN_PROJECTION_FILE",
+                                projection_path,
+                            ),
+                        ):
+                            self.assertTrue(relay_completion_hook.handle_hook_payload(
+                                {
+                                    "hook_event_name": "UserPromptSubmit",
+                                    "session_id": f"{provider}-replacement",
+                                    "turn_id": native_turn,
+                                    "provider_session_id": "provider-session-new",
+                                    "provider": provider,
+                                    "prompt": current["agent_prompt"],
+                                },
+                                claim_path=claim_path,
+                                state_path=state_path,
+                                turns_path=turns_path,
+                                now=100 + index * 2,
+                                stderr=io.StringIO(),
+                            ))
+                            self.assertTrue(relay_completion_hook.handle_hook_payload(
+                                {
+                                    "hook_event_name": "Stop",
+                                    "session_id": f"{provider}-replacement",
+                                    "turn_id": native_turn,
+                                    "provider_session_id": "provider-session-new",
+                                    "provider": provider,
+                                    "last_assistant_message": f"Final {expected['relay_command_seq']}",
+                                },
+                                claim_path=claim_path,
+                                state_path=state_path,
+                                turns_path=turns_path,
+                                write_control=lambda payload: delivered.append(payload) or True,
+                                now=101 + index * 2,
+                                stderr=io.StringIO(),
+                            ))
+
+                        broker = ProviderTurnBroker(
+                            inbox_path,
+                            projection_path=projection_path,
+                        )
+                        try:
+                            with mock.patch.object(
+                                voice_bridge, "_post_continuity_event", return_value={}
+                            ):
+                                completion = json.dumps(delivered[0])
+                                self.assertTrue(voice_bridge._handle_provider_completion_control(
+                                    completion,
+                                    tts_worker=FakeTTSWorker(),
+                                    messenger=messenger,
+                                    state_path=state_path,
+                                    turns_path=turns_path,
+                                    provider_turn_broker=broker,
+                                ))
+                                self.assertTrue(voice_bridge._handle_provider_completion_control(
+                                    completion,
+                                    tts_worker=FakeTTSWorker(),
+                                    messenger=messenger,
+                                    state_path=state_path,
+                                    turns_path=turns_path,
+                                    provider_turn_broker=broker,
+                                ))
+                        finally:
+                            broker.close()
+                        completion_payloads.append(delivered[0])
+
+                        if index < 2:
+                            started = time.monotonic()
+                            self.assertTrue(wait_until(
+                                lambda: os.path.exists(command_path)
+                                and os.path.exists(meta_path),
+                                timeout=0.5,
+                            ))
+                            self.assertLess(time.monotonic() - started, 0.5)
+                            current = json.loads(Path(meta_path).read_text())
+                            self.assertEqual(
+                                current["relay_command_id"],
+                                stored[index + 1]["relay_command_id"],
+                            )
+                        else:
+                            self.assertTrue(wait_until(
+                                lambda: all(
+                                    record["state"] == "acked"
+                                    for record in inbox.records()
+                                )
+                            ))
+
+                    self.assertEqual(
+                        [payload["relay_command_id"] for payload in completion_payloads],
+                        ["cmd-79", "cmd-80", "cmd-81"],
+                    )
+                    self.assertEqual(
+                        [payload["text"] for payload in messenger.finals],
+                        ["Final 79", "Final 80", "Final 81"],
+                    )
+                finally:
+                    shutdown_event.set()
+                    pump.join(timeout=1)
+                    inbox.close()
+
+    def test_provider_session_replacement_rejects_stale_foreign_and_ambiguous_evidence(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            claim = {
+                "relay_command_seq": 79,
+                "relay_command_id": "cmd-79",
+                "intent_id": "intent-79",
+                "intent_delivery_id": "delivery:intent-79",
+                "intent_claim_id": "claim:intent-79",
+                "intent_ack_id": "ack:intent-79",
+                "provider": "codex",
+            }
+            Path(state_path).write_text(json.dumps(claim))
+            valid = {
+                **claim,
+                "previous_provider_session_id": "provider-session-old",
+                "provider_session_id": "provider-session-new",
+                "app_session_id": "test-app-session",
+                "recovery_generation": "test-generation",
+                "actor_role": "foreground_pm",
+                "foreground_gate_handle": "replacement-gate",
+            }
+            invalid_cases = {
+                "foreign_session": {"previous_provider_session_id": "foreign-session"},
+                "foreign_app": {"app_session_id": "foreign-app"},
+                "stale_generation": {"recovery_generation": "old-generation"},
+                "wrong_claim": {"intent_claim_id": "claim:other"},
+                "ambiguous_gate": {"foreground_gate_handle": ""},
+            }
+            for name, changes in invalid_cases.items():
+                with self.subTest(name=name):
+                    ownership = voice_bridge.ProviderSessionOwnership(
+                        provider_session_id="provider-session-old",
+                        provider="codex",
+                        app_session_id="test-app-session",
+                        recovery_generation="test-generation",
+                    )
+                    decision = ownership.authorize_transition(
+                        {**valid, **changes},
+                        claimed=claim,
+                        state_path=state_path,
+                    )
+                    self.assertNotEqual(decision, "accepted_exact_app_owned_replacement")
+                    self.assertEqual(
+                        ownership.provider_session_id(),
+                        "provider-session-old",
+                    )
+
+            for name, current in {
+                "cancelled": {
+                    **claim,
+                    "cancelled_intent_ids": [claim["intent_id"]],
+                },
+                "replaced": {
+                    "relay_command_seq": 80,
+                    "relay_command_id": "cmd-80",
+                    "intent_id": "intent-80",
+                    "work_disposition": {
+                        "route": "replace_current",
+                        "authorization_effect": "revoke",
+                        "cancellation_scope": "all_work",
+                    },
+                },
+            }.items():
+                with self.subTest(name=name):
+                    Path(state_path).write_text(json.dumps(current))
+                    ownership = voice_bridge.ProviderSessionOwnership(
+                        provider_session_id="provider-session-old",
+                        provider="codex",
+                        app_session_id="test-app-session",
+                        recovery_generation="test-generation",
+                    )
+                    self.assertEqual(
+                        ownership.authorize_transition(
+                            valid,
+                            claimed=claim,
+                            state_path=state_path,
+                        ),
+                        "claim_not_current_or_preserved",
+                    )
+
+            Path(state_path).write_text(json.dumps(claim))
+            ownership = voice_bridge.ProviderSessionOwnership(
+                provider_session_id="provider-session-old",
+                provider="codex",
+                app_session_id="test-app-session",
+                recovery_generation="test-generation",
+            )
+            self.assertEqual(
+                ownership.authorize_transition(valid, claimed=claim, state_path=state_path),
+                "accepted_exact_app_owned_replacement",
+            )
+            turns_path = os.path.join(temp_dir, "provider_turns.json")
+            Path(turns_path).write_text(json.dumps({
+                "records": [{
+                    **claim,
+                    "state": "completed_final",
+                    "provider_session_id": "provider-session-new",
+                    "provider": "codex",
+                    "app_session_id": "test-app-session",
+                    "recovery_generation": "test-generation",
+                    "actor_role": "foreground_pm",
+                    "foreground_gate_handle": "foreign-gate",
+                }],
+            }))
+            self.assertFalse(voice_bridge._provider_turn_seen(
+                claim,
+                turns_path=turns_path,
+                provider_session_id=ownership.provider_session_id(),
+                provider_ownership=ownership.provider_turn_scope(),
+            ))
+            turn_state = json.loads(Path(turns_path).read_text())
+            turn_state["records"][0]["foreground_gate_handle"] = "replacement-gate"
+            Path(turns_path).write_text(json.dumps(turn_state))
+            with mock.patch.object(
+                voice_bridge,
+                "_PROVIDER_SESSION_OWNERSHIP",
+                ownership,
+            ):
+                self.assertEqual(
+                    voice_bridge._provider_turn_state(claim, turns_path=turns_path),
+                    "completed_final",
+                )
+
     def test_pump_releases_terminal_recovered_claim_before_materializing_next(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")

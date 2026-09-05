@@ -95,6 +95,7 @@ MESSENGER_OUTCOME_FETCH_LIMIT = 50
 FOREGROUND_REPLY_FALLBACK_SECONDS = float(os.environ.get("FOREGROUND_REPLY_FALLBACK_SECONDS", "120"))
 PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS = float(os.environ.get("PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS", "5"))
 _CONTINUITY_SESSION_NATIVE_ID: str | None = None
+_PROVIDER_SESSION_OWNERSHIP = None
 
 _FOREGROUND_REPLY_LOCK = threading.Lock()
 _FOREGROUND_REPLIED_COMMANDS: set[tuple[int, str]] = set()
@@ -1918,12 +1919,33 @@ def _relay_intent_matches(left: dict | None, right: dict | None) -> bool:
     return True
 
 
+def _provider_turn_ownership_matches(record: dict, ownership: dict | None) -> bool:
+    if not ownership:
+        return True
+    return all(
+        not expected or str(record.get(field) or "") == str(expected)
+        for field, expected in ownership.items()
+    )
+
+
+def _authoritative_provider_session_id() -> str:
+    ownership = _PROVIDER_SESSION_OWNERSHIP
+    if ownership is not None:
+        provider_session_id = ownership.provider_session_id()
+        if provider_session_id:
+            return provider_session_id
+    return PROVIDER_SESSION_ID
+
+
 def _provider_turn_state(
     relay_command: dict | None,
     *,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
-    provider_session_id: str = PROVIDER_SESSION_ID,
+    provider_session_id: str | None = None,
+    provider_ownership: dict | None = None,
 ) -> str | None:
+    if provider_session_id is None:
+        provider_session_id = _authoritative_provider_session_id()
     key = _relay_command_key(relay_command)
     if key is None:
         return None
@@ -1938,6 +1960,7 @@ def _provider_turn_state(
                 not provider_session_id
                 or str(record.get("provider_session_id") or "") == provider_session_id
             )
+            and _provider_turn_ownership_matches(record, provider_ownership)
             and _relay_intent_matches(record, relay_command)
         ):
             state = str(record.get("state") or "").strip()
@@ -1949,7 +1972,7 @@ def _provider_turn_active(
     relay_command: dict | None,
     *,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
-    provider_session_id: str = PROVIDER_SESSION_ID,
+    provider_session_id: str | None = None,
 ) -> bool:
     return _provider_turn_state(
         relay_command,
@@ -1961,8 +1984,10 @@ def _provider_turn_active(
 def _any_provider_turn_active(
     *,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
-    provider_session_id: str = PROVIDER_SESSION_ID,
+    provider_session_id: str | None = None,
 ) -> bool:
+    if provider_session_id is None:
+        provider_session_id = _authoritative_provider_session_id()
     data = _read_json_file(turns_path)
     records = data.get("records") if isinstance(data, dict) else None
     if not isinstance(records, list):
@@ -1996,12 +2021,14 @@ def _source_turn_reply_arbitration(
     turns_path: str,
     command_path: str,
     meta_path: str,
-    provider_session_id: str = PROVIDER_SESSION_ID,
+    provider_session_id: str | None = None,
 ) -> dict:
     """Decide a missing-final once from every intent in the current source turn."""
     key = _relay_command_key(relay_command)
     if key is None:
         return {"decision": "cancel", "reason": "missing_source_identity", "siblings": []}
+    if provider_session_id is None:
+        provider_session_id = _authoritative_provider_session_id()
 
     with _VOICE_STATE_LOCK:
         state = _read_json_file(state_path)
@@ -2174,12 +2201,14 @@ def _provider_turn_seen(
     command: dict | None,
     *,
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
-    provider_session_id: str = PROVIDER_SESSION_ID,
+    provider_session_id: str | None = None,
+    provider_ownership: dict | None = None,
 ) -> bool:
     return _provider_turn_state(
         command,
         turns_path=turns_path,
         provider_session_id=provider_session_id,
+        provider_ownership=provider_ownership,
     ) is not None
 
 
@@ -2203,6 +2232,118 @@ def _manual_claim_ack_matches(
     return True
 
 
+class ProviderSessionOwnership:
+    """Track app-authorized provider replacement without reading mutable session files."""
+
+    def __init__(
+        self,
+        *,
+        provider_session_id: str,
+        provider: str,
+        app_session_id: str,
+        recovery_generation: str,
+    ):
+        self._lock = threading.Lock()
+        self._provider_session_id = str(provider_session_id or "").strip()
+        self._provider = str(provider or "").strip().lower()
+        self._app_session_id = str(app_session_id or "").strip()
+        self._recovery_generation = str(recovery_generation or "").strip()
+        self._foreground_gate_handle = ""
+
+    def provider_session_id(self) -> str:
+        with self._lock:
+            return self._provider_session_id
+
+    def provider_turn_scope(self) -> dict:
+        with self._lock:
+            return {
+                "provider": self._provider,
+                "app_session_id": self._app_session_id,
+                "recovery_generation": self._recovery_generation,
+                "actor_role": "foreground_pm",
+                "foreground_gate_handle": self._foreground_gate_handle,
+            }
+
+    def authorize_transition(
+        self,
+        payload: dict,
+        *,
+        claimed: dict,
+        state_path: str,
+    ) -> str:
+        required_context = (
+            self._provider_session_id,
+            self._provider,
+            self._app_session_id,
+            self._recovery_generation,
+        )
+        if any(not value for value in required_context):
+            return "ownership_context_unavailable"
+        if not _manual_claim_ack_matches(claimed, payload):
+            return "claim_identity_mismatch"
+        if not _relay_command_current_or_preserved(payload, state_path=state_path):
+            return "claim_not_current_or_preserved"
+
+        previous_session_id = str(
+            payload.get("previous_provider_session_id") or ""
+        ).strip()
+        replacement_session_id = str(payload.get("provider_session_id") or "").strip()
+        foreground_gate_handle = str(
+            payload.get("foreground_gate_handle") or ""
+        ).strip()
+        if not replacement_session_id or replacement_session_id == previous_session_id:
+            return "invalid_replacement_provider_session"
+        if not foreground_gate_handle:
+            return "replacement_foreground_gate_missing"
+        if str(payload.get("provider") or "").strip().lower() != self._provider:
+            return "provider_mismatch"
+        if str(payload.get("app_session_id") or "").strip() != self._app_session_id:
+            return "app_session_mismatch"
+        if (
+            str(payload.get("recovery_generation") or "").strip()
+            != self._recovery_generation
+        ):
+            return "recovery_generation_mismatch"
+        if str(payload.get("actor_role") or "") != "foreground_pm":
+            return "actor_role_mismatch"
+        claimed_provider = str(claimed.get("provider") or "").strip().lower()
+        if claimed_provider and claimed_provider != self._provider:
+            return "claimed_provider_mismatch"
+
+        with self._lock:
+            if previous_session_id != self._provider_session_id:
+                return "previous_provider_session_mismatch"
+            self._provider_session_id = replacement_session_id
+            self._foreground_gate_handle = foreground_gate_handle
+        return "accepted_exact_app_owned_replacement"
+
+
+def _log_provider_session_transition(payload: dict, *, decision: str) -> None:
+    diagnostic = {
+        "app_session_id": payload.get("app_session_id"),
+        "decision": decision,
+        "drain_result": (
+            "exact_claim_eligible"
+            if decision == "accepted_exact_app_owned_replacement"
+            else "quarantined"
+        ),
+        "evidence_source": "continuity_provider_ready",
+        "foreground_gate_handle": payload.get("foreground_gate_handle"),
+        "intent_id": payload.get("intent_id"),
+        "previous_provider_session_id": payload.get("previous_provider_session_id"),
+        "provider": payload.get("provider"),
+        "provider_session_id": payload.get("provider_session_id"),
+        "recovery_generation": payload.get("recovery_generation"),
+        "relay_command_id": payload.get("relay_command_id"),
+        "relay_command_seq": payload.get("relay_command_seq"),
+    }
+    print(
+        "[voice_bridge] provider_session_transition "
+        + json.dumps(diagnostic, sort_keys=True, separators=(",", ":")),
+        file=sys.stderr,
+    )
+
+
 def _start_intent_inbox_pump(
     inbox: IntentInbox,
     shutdown_event: threading.Event,
@@ -2215,6 +2356,7 @@ def _start_intent_inbox_pump(
     turns_path: str = VOICE_PROVIDER_TURNS_FILE,
     transport: str = "shared-ready-file",
     poll_seconds: float = 0.05,
+    provider_session_ownership: ProviderSessionOwnership | None = None,
 ) -> threading.Thread:
     """Bridge app-owned and manual consumers onto one ordered inbox protocol."""
 
@@ -2228,9 +2370,24 @@ def _start_intent_inbox_pump(
         while not shutdown_event.is_set():
             claimed = _read_json_file(claimed_path)
             if claimed:
+                provider_session_id = (
+                    provider_session_ownership.provider_session_id()
+                    if provider_session_ownership is not None
+                    else _authoritative_provider_session_id()
+                )
+                provider_ownership = (
+                    provider_session_ownership.provider_turn_scope()
+                    if provider_session_ownership is not None
+                    else None
+                )
                 inbox.observe_claim(
                     claimed,
-                    provider_turn_seen=_provider_turn_seen(claimed, turns_path=turns_path),
+                    provider_turn_seen=_provider_turn_seen(
+                        claimed,
+                        turns_path=turns_path,
+                        provider_session_id=provider_session_id,
+                        provider_ownership=provider_ownership,
+                    ),
                 )
             manual_ack = _read_json_file(manual_ack_path)
             if _manual_claim_ack_matches(claimed, manual_ack):
@@ -2639,7 +2796,7 @@ def _bridge_continuity_resume_response(
             provider_state = _provider_turn_state(
                 metadata,
                 turns_path=turns_path,
-                provider_session_id=PROVIDER_SESSION_ID,
+                provider_session_id=_authoritative_provider_session_id(),
             )
             decision = plan_continuity_resume(
                 incident,
@@ -2738,6 +2895,9 @@ def _start_control_socket(
                                 json.dumps(candidate),
                                 provider_turn_broker=(recovery_context or {}).get(
                                     "provider_turn_broker"
+                                ),
+                                provider_session_ownership=(recovery_context or {}).get(
+                                    "provider_session_ownership"
                                 ),
                             )
                         continue
@@ -3830,6 +3990,9 @@ def _handle_provider_turn_event_control(
     raw: str,
     *,
     provider_turn_broker: ProviderTurnBroker | None,
+    provider_session_ownership: ProviderSessionOwnership | None = None,
+    claimed_path: str = VOICE_COMMAND_CLAIM_FILE,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
 ) -> bool:
     try:
         payload = json.loads(raw.strip())
@@ -3845,6 +4008,15 @@ def _handle_provider_turn_event_control(
     ).strip().lower()
     if event in {"provider_ready", "provider_started", "provider_progress"}:
         if event == "provider_ready":
+            if provider_session_ownership is not None:
+                decision = provider_session_ownership.authorize_transition(
+                    payload,
+                    claimed=_read_json_file(claimed_path),
+                    state_path=state_path,
+                )
+                _log_provider_session_transition(payload, decision=decision)
+                if decision != "accepted_exact_app_owned_replacement":
+                    return False
             signal = "process_ready"
         elif event == "provider_progress":
             signal = "stream_progress" if "claude" in provider else "turn_progress"
@@ -3913,6 +4085,7 @@ def _run_relay(
     suppress_startup_greeting: bool = False,
     inbox: IntentInbox | None = None,
     provider_turn_broker: ProviderTurnBroker | None = None,
+    provider_session_ownership: ProviderSessionOwnership | None = None,
     sidecar_lane: SidecarLane | None = None,
     on_ready=None,
 ):
@@ -3945,7 +4118,11 @@ def _run_relay(
         return False
 
     if inbox is not None:
-        _start_intent_inbox_pump(inbox, shutdown_event)
+        _start_intent_inbox_pump(
+            inbox,
+            shutdown_event,
+            provider_session_ownership=provider_session_ownership,
+        )
         if sidecar_lane is not None:
             for pending in inbox.pending_for_route(IntentRoute.RUN_SIDECAR.value):
                 metadata = pending.get("metadata")
@@ -4242,6 +4419,7 @@ def _write_cmd_file(text: str, path: str = VOICE_CMD_FILE):
 
 
 def main():
+    global _PROVIDER_SESSION_OWNERSHIP
     cfg = load_config()
     cli = _parse_args()
     relay_mode = cli.get("relay", False)
@@ -4300,7 +4478,21 @@ def main():
             provider_turn_broker.project()
 
     shutdown_event = threading.Event()
-    recovery_context: dict[str, object] = {}
+    provider_session_context = {
+        "provider_session_id": PROVIDER_SESSION_ID,
+        "provider": os.environ.get("RELAY_RUNNER_PROVIDER", ""),
+        "app_session_id": os.environ.get("RELAY_APP_SESSION_ID", ""),
+        "recovery_generation": os.environ.get("RELAY_RECOVERY_GENERATION", ""),
+    }
+    provider_session_ownership = (
+        ProviderSessionOwnership(**provider_session_context)
+        if all(str(value or "").strip() for value in provider_session_context.values())
+        else None
+    )
+    _PROVIDER_SESSION_OWNERSHIP = provider_session_ownership
+    recovery_context: dict[str, object] = {
+        "provider_session_ownership": provider_session_ownership,
+    }
 
     # Control socket for reload/shutdown from Tauri app
     control_thread = threading.Thread(
@@ -4400,6 +4592,7 @@ def main():
                 ),
                 inbox=intent_inbox,
                 provider_turn_broker=provider_turn_broker,
+                provider_session_ownership=provider_session_ownership,
                 sidecar_lane=sidecar_lane,
                 on_ready=lambda: _record_bridge_readiness("ready"),
             )

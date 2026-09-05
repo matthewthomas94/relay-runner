@@ -507,7 +507,35 @@ final class ProcessManager {
             .flatMap { relayCommandId($0["relay_command_id"]) }
     }
 
-    private static func currentProviderSessionID() -> String? {
+    static func currentRelayClaimIdentity() -> [String: Any]? {
+        guard let claim = readJSONDictionary(
+            from: URL(fileURLWithPath: voiceCommandClaimedPath)
+        ) else { return nil }
+        return relayClaimIdentity(claim)
+    }
+
+    static func relayClaimIdentity(_ claim: [String: Any]) -> [String: Any]? {
+        guard let commandSeq = relayCommandSeq(claim["relay_command_seq"]),
+              let commandID = relayCommandId(claim["relay_command_id"]) else {
+            return nil
+        }
+        var identity: [String: Any] = [
+            "relay_command_seq": commandSeq,
+            "relay_command_id": commandID,
+        ]
+        for field in [
+            "intent_id",
+            "intent_delivery_id",
+            "intent_claim_id",
+            "intent_ack_id",
+        ] {
+            guard let value = claim[field] as? String, !value.isEmpty else { return nil }
+            identity[field] = value
+        }
+        return identity
+    }
+
+    static func currentProviderSessionID() -> String? {
         (try? String(
             contentsOfFile: voiceProviderSessionPath,
             encoding: .utf8
