@@ -44,6 +44,29 @@ class IdleThread:
 
 
 class TTSWorkerReplayTests(unittest.TestCase):
+    def setUp(self):
+        # Exercise notification payloads without reaching the running app's
+        # overlay or control sockets. Individual tests can provide stricter fakes.
+        socket_patch = patch.object(tts_worker.socket, "socket")
+        self.socket_factory = socket_patch.start()
+        self.addCleanup(socket_patch.stop)
+
+    def test_waiting_preview_uses_isolated_socket(self):
+        tts_worker.publish_waiting_preview(
+            "current response", {"utterance_id": "new"},
+        )
+
+        self.socket_factory.assert_called_once_with(
+            tts_worker.socket.AF_UNIX, tts_worker.socket.SOCK_DGRAM,
+        )
+        transport = self.socket_factory.return_value
+        transport.sendto.assert_called_once()
+        payload, destination = transport.sendto.call_args.args
+        self.assertEqual(destination, tts_worker.VOICE_STATE_SOCK)
+        self.assertEqual(json.loads(payload)["state"], "message_waiting")
+        self.assertEqual(json.loads(payload)["text"], "current response")
+        transport.close.assert_called_once()
+
     def make_worker(self):
         worker = TTSWorker.__new__(TTSWorker)
         worker.input_queue = queue.Queue()
