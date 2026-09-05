@@ -105,6 +105,8 @@ _CLAUDE_MODELS = frozenset({"best", "fable", "opus", "sonnet", "haiku"})
 _BASE_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
 _UNSCOPED_LIFECYCLE_KINDS = LIFECYCLE_DETAIL_TRACE_KINDS
 _WORK_LIFECYCLE_KINDS = frozenset({"sidecar-outcome"})
+_PROMPT_CONTEXT_ENTRY_LIMIT = 4
+_PROMPT_CONTEXT_ENTRY_CHAR_LIMIT = 640
 
 
 def _first_semantic_response(text: str, *, complete: bool = False) -> str | None:
@@ -185,6 +187,10 @@ canned spoken acknowledgement that ignores the user's actual request.
 You may answer lightweight social conversation when no orchestration is needed.
 Keep those direct social answers to one short spoken sentence so their complete
 meaning can be delivered on the first semantic boundary.
+For every user turn, make the first complete sentence semantically specific and
+use at most twelve spoken words whenever the full meaning can be preserved. End
+it promptly with sentence punctuation; never cut off a negation, qualifier,
+identifier, result, or required next-step promise merely to meet this length.
 For every new user turn, prefix the response with exactly __ANSWER__ when those
 words fully answer the user now, or __HANDOFF__ when they acknowledge the turn
 and promise a later result. The prefix is delivery metadata and will not be
@@ -460,7 +466,6 @@ class CodexMessengerBackend:
             "approvalPolicy": "never",
             "sandbox": "read-only",
             "baseInstructions": MESSENGER_SYSTEM_PROMPT,
-            "developerInstructions": MESSENGER_SYSTEM_PROMPT,
             "dynamicTools": [],
             "environments": [],
             "runtimeWorkspaceRoots": [],
@@ -1718,7 +1723,10 @@ class MessengerRuntime:
 
     def _prompt_for(self, event: _MessengerEvent) -> str:
         with self._lock:
-            context = "\n".join(self._context)
+            context_entries = list(self._context)[-_PROMPT_CONTEXT_ENTRY_LIMIT:]
+        context = "\n".join(
+            self._bounded_context_entry(entry) for entry in context_entries
+        )
         instructions = {
             "user_turn": (
                 "This is a new user turn delivered simultaneously to you and the authoritative "
@@ -1727,7 +1735,8 @@ class MessengerRuntime:
                 "question that should be handed off, give a brief contextual acknowledgement "
                 "that reflects the request, uses first-person singular language such as I or "
                 "me, confirms the accepted action, states the immediate next step, and promises "
-                "to return with the result or a decision request, all in one short sentence. "
+                "to return with the result or a decision request, all in one semantically "
+                "specific sentence of at most twelve spoken words when the meaning permits. "
                 "Do not claim unperformed work. "
                 "Do not call yourself the orchestrator in the spoken response. "
                 "If authoritative context names workers, refer to the workers directly. Do not "
@@ -1784,7 +1793,8 @@ class MessengerRuntime:
             f"{instructions}\n\n"
             "Recent session context, oldest to newest:\n"
             f"{context}\n\n"
-            f"Current event: {event.kind}"
+            f"Current event: {event.kind}\n"
+            f"Current event content:\n{event.text}"
             f"{realization_instructions}\n"
             + (
                 "Return only the JSON object."
@@ -1796,6 +1806,13 @@ class MessengerRuntime:
                 )
             )
         )
+
+    @staticmethod
+    def _bounded_context_entry(entry: str) -> str:
+        if len(entry) <= _PROMPT_CONTEXT_ENTRY_CHAR_LIMIT:
+            return entry
+        half = (_PROMPT_CONTEXT_ENTRY_CHAR_LIMIT - 5) // 2
+        return f"{entry[:half]} ... {entry[-half:]}"
 
     def _uses_coverage_arbitration(self, event: _MessengerEvent) -> bool:
         return (

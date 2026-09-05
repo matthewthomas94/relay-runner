@@ -68,6 +68,7 @@ class TTSWorkerReplayTests(unittest.TestCase):
         worker._current_spoken_text = ""
         worker._current_display_text = ""
         worker._rate = 1.0
+        worker._auto_play = False
         worker.played_texts = []
         worker.played_displays = []
         worker.played_intents = []
@@ -101,6 +102,61 @@ class TTSWorkerReplayTests(unittest.TestCase):
         os.close(fd)
         self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
         return path
+
+    def test_auto_play_coordinated_intent_skips_empty_queue_debounce(self):
+        worker = self.make_worker()
+        worker._auto_play = True
+        worker._shutdown = False
+        worker.input_queue.put({
+            "text": "The semantic response is ready.",
+            "_speech_intent": {"utterance_id": "current"},
+        })
+        chimes = []
+        worker._play_chime = lambda: chimes.append("chime")
+        get_calls = 0
+        original_get = worker.input_queue.get
+
+        def counted_get(*args, **kwargs):
+            nonlocal get_calls
+            get_calls += 1
+            return original_get(*args, **kwargs)
+
+        def play():
+            worker._shutdown = True
+            worker.played_texts.append(worker._pending_text)
+
+        worker.input_queue.get = counted_get
+        worker.play = play
+
+        worker._collect_loop()
+
+        self.assertEqual(worker.played_texts, ["The semantic response is ready."])
+        self.assertEqual(get_calls, 1)
+        self.assertEqual(chimes, [])
+
+    def test_manual_queue_keeps_coordinated_intent_pending(self):
+        worker = self.make_worker()
+        worker._auto_play = False
+        worker._shutdown = False
+        worker.input_queue.put({
+            "text": "Wait for the user's Option press.",
+            "_speech_intent": {"utterance_id": "current"},
+        })
+        chimes = []
+        worker._play_chime = lambda: chimes.append("chime")
+        original_get = worker.input_queue.get
+
+        def get_once(*args, **kwargs):
+            worker._shutdown = True
+            return original_get(*args, **kwargs)
+
+        worker.input_queue.get = get_once
+
+        worker._collect_loop()
+
+        self.assertEqual(worker.played_texts, [])
+        self.assertEqual(worker._pending_text, "Wait for the user's Option press.")
+        self.assertEqual(chimes, ["chime"])
 
     def test_replay_uses_pending_text_before_last_wav(self):
         worker = self.make_worker()
