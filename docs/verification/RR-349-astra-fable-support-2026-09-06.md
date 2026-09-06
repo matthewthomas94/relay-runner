@@ -49,3 +49,7 @@ This update supersedes the earlier not-yet-installed status above. The user expl
 - Installed executable exactly matches the build; SHA-256 `23b09b5992e7745cf5a4a24eb44b33509eb3d2d3e3d06ae457c7571a7563b430`. Installed `codex_model_catalog.py` and `orchestrator.py` also match the source. Installed deep/strict codesign verification passed.
 - Restarted the bundled daemon and opened the updated app. Observed app PID 17077 and daemon PID 17167; health endpoint returned healthy. Preserved settings remain Codex, command `codex`, model `sol`, auto-start false. The foreground resolver prefers the available ChatGPT-bundled Codex 0.153.4 for this non-absolute command.
 - Installed human model-selection and authenticated generation tests for Astra and Fable 5.1 are still pending. Build/install success is not a model-access or audio UAT pass.
+
+## User acceptance and closure — 2026-09-06
+
+Following the installed-app Astra test instruction, the user reported the test passed and explicitly authorized marking RR-349 Done. The canonical ticket is closed on this user-accepted scope. The confirmation did not enumerate separate model tests; no independently correlated Claude Fable 5.1 live smoke or per-model audio evidence is claimed. Earlier pending-gate statements above are historical and superseded by this closure decision, while the source tests and installation evidence remain unchanged.
