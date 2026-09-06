@@ -112,3 +112,10 @@ were acked and provider records completed_final with origin relay, with no
 phantom manual record in the fresh test. Codex installed-app queue/audio UAT
 passes. Claude live verification remains deferred, not passed; accepting it as
 non-blocking for ticket closure remains a separate scope decision.
+
+## User-authorized closure — 2026-09-06
+
+The user explicitly approved marking RR-348 Done with Claude live testing
+deferred, following successful Codex recovery and fresh queue/audio tests.
+Claude live testing is non-blocking for this accepted closure scope and is
+not recorded as passed. Original failure evidence is preserved above.
