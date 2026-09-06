@@ -701,7 +701,7 @@ CODEX_WORKER_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 CLAUDE_WORKER_EFFORTS = CODEX_WORKER_EFFORTS | frozenset({"max"})
 GENERAL_MODEL_OPTIONS = {
     "codex": CODEX_FAMILIES,
-    "claude": {"fable", "opus", "sonnet", "haiku"},
+    "claude": {"claude-fable-5-1", "fable", "opus", "sonnet", "haiku"},
 }
 BASE_GENERAL_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 AUTO_DISPATCH_SOURCES = frozenset({"ready-sweeper", "dependency-progression", "orchestrator-review-retry"})
@@ -1118,7 +1118,7 @@ def _normalized_general_model(general: dict[str, Any], agent_kind: str) -> str:
 def _general_effort_options(agent_kind: str, model: str) -> frozenset[str]:
     if agent_kind == "codex":
         return BASE_GENERAL_EFFORTS | frozenset({"max", "ultra"})
-    if model in {"fable", "opus"}:
+    if model in {"claude-fable-5-1", "fable", "opus"}:
         return BASE_GENERAL_EFFORTS | frozenset({"max"})
     if model == "sonnet":
         return frozenset({"low", "medium", "high", "max"})
@@ -1147,7 +1147,7 @@ def _inherited_worker_sizing(general: dict[str, Any], agent_kind: str) -> dict[s
         "worker_sizing_rationale": "Inherited provider, model, and effort from Relay Runner General Settings.",
         "worker_provider_notes": (
             "Use my defaults preserves explicit stable provider selections; Codex resolves "
-            "Sol/Terra/Luna then uses model_reasoning_effort and Claude uses --effort."
+            "Astra/Sol/Terra/Luna then uses model_reasoning_effort and Claude uses --effort."
         ),
     }
 
@@ -1156,13 +1156,20 @@ def _validate_worker_effort(worker_effort: str, *, worker_model: str, agent_kind
                             provider_notes: str) -> str:
     effort = worker_effort.strip().lower()
     allowed = CLAUDE_WORKER_EFFORTS if agent_kind == "claude" else CODEX_WORKER_EFFORTS
+    scoped_astra = agent_kind == "codex" and worker_model.strip().lower() in {
+        "codex:astra", "codex:gpt-6-astra",
+    }
+    # Astra advertises these levels; _agent_command still validates against
+    # the configured CLI catalogue before any worker process is launched.
+    if scoped_astra:
+        allowed = allowed | {"max", "ultra"}
     if effort not in allowed:
         allowed_text = ", ".join(sorted(allowed))
         raise ValueError(
             f"invalid worker_effort {worker_effort!r} for {agent_kind}; "
             f"expected one of {allowed_text}"
         )
-    if effort == "max":
+    if effort == "max" and not scoped_astra:
         scoped_to_claude = worker_model.strip().lower().startswith("claude:")
         notes_document_limitation = provider_notes.strip().lower() not in ("", "none")
         if not scoped_to_claude or not notes_document_limitation:

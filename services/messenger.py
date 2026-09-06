@@ -101,7 +101,7 @@ CLAUDE_CLI_CANDIDATES = (
 )
 
 _CODEX_MODELS = CODEX_FAMILIES
-_CLAUDE_MODELS = frozenset({"best", "fable", "opus", "sonnet", "haiku"})
+_CLAUDE_MODELS = frozenset({"best", "claude-fable-5-1", "fable", "opus", "sonnet", "haiku"})
 _BASE_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh"})
 _UNSCOPED_LIFECYCLE_KINDS = LIFECYCLE_DETAIL_TRACE_KINDS
 _WORK_LIFECYCLE_KINDS = frozenset({"sidecar-outcome"})
@@ -298,7 +298,7 @@ def _normalize_model_and_effort(
 def _valid_efforts(provider: str, model: str) -> frozenset[str]:
     if provider == "codex":
         return _BASE_EFFORTS | {"max", "ultra"}
-    if model in {"best", "fable", "opus"}:
+    if model in {"best", "claude-fable-5-1", "fable", "opus"}:
         return _BASE_EFFORTS | {"max"}
     if model == "sonnet":
         return frozenset({"default", "low", "medium", "high", "max"})

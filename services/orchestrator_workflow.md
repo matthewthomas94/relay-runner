@@ -31,7 +31,7 @@ The persistent orchestrator may have attached extra context for this ticket. Tre
 
    **Provider parity.** If the ticket touches provider-facing behavior for Codex or Claude, explicitly consider the equivalent user experience for every supported provider, not only the provider named in the request. Provider-specific commands, flags, auth paths, model names, permissions, and limitations are allowed, but intentional differences must be documented in the ticket, implementation notes, or run log.
 
-   **Sizing parity.** Codex effort is rendered as `model_reasoning_effort`; Claude effort is rendered as `--effort`. `low`, `medium`, `high`, and `xhigh` are shared current values; `max` is Claude-only until Codex support is verified. Do not infer a provider-specific downgrade unless the ticket or dispatcher context explicitly says to.
+   **Sizing parity.** Codex effort is rendered as `model_reasoning_effort`; Claude effort is rendered as `--effort`. `low`, `medium`, `high`, and `xhigh` are shared values. Explicit `codex:astra` or `codex:gpt-6-astra` tickets also support `max` and `ultra` when advertised by the configured CLI. Claude-scoped tickets support `max` with provider notes. Do not infer a provider-specific downgrade unless the ticket or dispatcher context explicitly says to.
 
 7. **Verify.** Run whatever this repo uses to verify changes — tests, type-check, lint, build. If tests don't exist for the change, add minimal ones only when the ticket or repo conventions demand it.
 

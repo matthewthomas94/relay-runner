@@ -90,7 +90,7 @@ Free-form prose explaining the work.
 | `canceled`    | boolean        | yes      | A flag, not a column. Default `false`. Canceled tickets stay in their existing column.      |
 | `draft`       | boolean        | no       | Temporary board-created editor state. `ready` drafts are visible but not auto-dispatched until saved. Omitted when false. |
 | `worker_model` | string       | for `ready` | Provider-neutral worker tier (`fast`, `balanced`, `strong`) or a provider-scoped model override (`codex:<model-slug>` or `claude:<model-alias>`). |
-| `worker_effort` | enum        | for `ready` | Reasoning-effort decision. Shared values: `low`, `medium`, `high`, `xhigh`. `max` is valid only for an explicitly Claude-scoped ticket with `worker_provider_notes` documenting the Codex limitation. |
+| `worker_effort` | enum        | for `ready` | Shared values: `low`, `medium`, `high`, `xhigh`. Explicit `codex:astra` or `codex:gpt-6-astra` also accepts `max` and `ultra`, validated against the configured CLI catalog at launch. Claude-scoped tickets accept `max` with provider notes. |
 | `worker_sizing_rationale` | string | for `ready` | Short non-empty explanation of why the ticket needs the selected model/tier and effort. |
 | `worker_provider_notes` | string | for `ready` | Provider-parity note. Use `none` only when the selected model/tier and effort are intentionally provider-neutral with no caveats. Otherwise name the Codex/Claude difference or limitation. |
 | `verification_blocker` | string | for `verification_blocked` | Exact external condition that prevented required verification. |
@@ -111,7 +111,7 @@ Use `worker_model` as the model/tier choice and `worker_effort` as the reasoning
 
 Provider-scoped model values are allowed when the ticket intentionally requires one provider's stable model surface, such as `codex:luna` or `claude:sonnet`. Keep effort separate from the model field.
 
-Provider parity is part of the sizing decision. RR-102 verified that Codex workers accept `low`, `medium`, `high`, and `xhigh` through `model_reasoning_effort`, while Claude workers accept `low`, `medium`, `high`, `xhigh`, and `max` through `--effort`. Do not use `max` for provider-neutral or Codex-dispatchable tickets until a future Codex release exposes it. If a ticket is intentionally Claude-only, write that limitation in `worker_provider_notes` instead of leaving the cold worker to discover it.
+Provider parity is part of the sizing decision. Shared worker tiers retain `low`, `medium`, `high`, and `xhigh`. RR-349 verified Astra's `max` and `ultra` through the Codex 0.153.4 provider catalog; use an explicit `codex:astra` or `codex:gpt-6-astra` override for those levels. The configured CLI must advertise the selected level at launch. Claude uses `--effort` and allows `max` on Claude-scoped tickets with provider notes; `claude:claude-fable-5-1` selects Fable 5.1 explicitly. Document intentional provider limits instead of leaving the cold worker to discover them.
 
 ### Execution modes
 

@@ -84,6 +84,7 @@ struct GeneralConfig: Codable, Equatable {
     static let defaultSubagentEffort = "medium"
 
     static let codexModelOptions: [ModelOption] = [
+        ModelOption(label: "Astra", value: "astra"),
         ModelOption(label: "Sol", value: "sol"),
         ModelOption(label: "Terra", value: "terra"),
         ModelOption(label: "Luna", value: "luna"),
@@ -92,6 +93,7 @@ struct GeneralConfig: Codable, Equatable {
     static let codexPlanAccessNote = "Codex family availability and Ultra effort depend on your Codex plan."
     static let claudeFableAccessNote = "Fable requires an eligible Claude plan or usage credits and is unavailable with zero data retention."
     static let claudeModelOptions: [ModelOption] = [
+        ModelOption(label: "Fable 5.1", value: "claude-fable-5-1"),
         ModelOption(label: "Fable", value: "fable"),
         ModelOption(label: "Opus", value: "opus"),
         ModelOption(label: "Sonnet", value: "sonnet"),
@@ -166,11 +168,11 @@ struct GeneralConfig: Codable, Equatable {
         let normalizedEffort = effort.trimmingCharacters(in: .whitespaces).lowercased()
         switch provider {
         case .codex:
-            if ["sol", "terra", "luna"].contains(normalizedModel) || normalizedEffort == "ultra" {
+            if codexModelOptions.contains(where: { $0.value == normalizedModel }) || normalizedEffort == "ultra" {
                 return codexPlanAccessNote
             }
         case .claude:
-            if normalizedModel == "fable" {
+            if ["fable", "claude-fable-5-1"].contains(normalizedModel) {
                 return claudeFableAccessNote
             }
         }
@@ -182,7 +184,7 @@ struct GeneralConfig: Codable, Equatable {
         switch provider {
         case .codex:
             switch normalizedModel {
-            case "sol", "terra":
+            case "astra", "sol", "terra":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption, ultraReasoningEffortOption]
             case "luna":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption]
@@ -191,7 +193,7 @@ struct GeneralConfig: Codable, Equatable {
             }
         case .claude:
             switch normalizedModel {
-            case "fable", "opus":
+            case "claude-fable-5-1", "fable", "opus":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption]
             case "sonnet":
                 return [
@@ -321,7 +323,7 @@ struct GeneralConfig: Codable, Equatable {
             }
             return defaultMessengerModel
         case .claude:
-            return ["best", "fable", "opus", "sonnet", "haiku"].contains(normalized)
+            return (normalized == "best" || isModel(normalized, validFor: .claude))
                 ? normalized
                 : "haiku"
         }
@@ -344,7 +346,7 @@ struct GeneralConfig: Codable, Equatable {
             validEfforts = ["default", "low", "medium", "high", "xhigh", "max", "ultra"]
         case .claude:
             switch normalizedModel {
-            case "best", "fable", "opus": validEfforts = ["default", "low", "medium", "high", "xhigh", "max"]
+            case "best", "claude-fable-5-1", "fable", "opus": validEfforts = ["default", "low", "medium", "high", "xhigh", "max"]
             case "sonnet": validEfforts = ["default", "low", "medium", "high", "max"]
             default: validEfforts = ["default"]
             }

@@ -193,7 +193,7 @@ enum CodexModelResolver {
         guard parts.count >= 3,
               parts.first == "gpt",
               let family = parts.last,
-              ["sol", "terra", "luna"].contains(family) else { return nil }
+              GeneralConfig.codexModelOptions.contains(where: { $0.value == family }) else { return nil }
         let version = parts[1].split(separator: ".").compactMap { Int($0) }
         return version.isEmpty ? nil : (family, version)
     }

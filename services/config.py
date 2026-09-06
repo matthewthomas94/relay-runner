@@ -8,6 +8,7 @@ import sys
 from codex_model_catalog import (
     CODEX_FAMILIES,
     CODEX_MESSENGER_DEFAULT_FAMILY,
+    codex_family_for_model,
     normalize_codex_family,
 )
 
@@ -227,7 +228,7 @@ def _migrate_config(
 
     valid_models = {
         "codex": CODEX_FAMILIES,
-        "claude": {"fable", "opus", "sonnet", "haiku"},
+        "claude": {"claude-fable-5-1", "fable", "opus", "sonnet", "haiku"},
     }
     model = str(general.get("model", "sol" if provider == "codex" else "opus")).strip().lower()
     if provider == "codex":
@@ -240,7 +241,7 @@ def _migrate_config(
     def valid_orchestrator_efforts(provider_name: str, model_name: str) -> set[str]:
         if provider_name == "codex":
             return explicit_reasoning_efforts | {"max", "ultra"}
-        if model_name in {"fable", "opus"}:
+        if model_name in {"claude-fable-5-1", "fable", "opus"}:
             return explicit_reasoning_efforts | {"max"}
         if model_name == "sonnet":
             return {"low", "medium", "high", "max"}
@@ -252,7 +253,7 @@ def _migrate_config(
         base = {"default", "low", "medium", "high", "xhigh"}
         if provider_name == "codex":
             return base | {"max", "ultra"}
-        if model_name in {"best", "fable", "opus"}:
+        if model_name in {"best", "claude-fable-5-1", "fable", "opus"}:
             return base | {"max"}
         if model_name == "sonnet":
             return {"default", "low", "medium", "high", "max"}
@@ -305,12 +306,12 @@ def _migrate_config(
         )
         messenger_effort = (
             "low"
-            if messenger_model != raw_messenger_model
+            if messenger_model != raw_messenger_model and codex_family_for_model(raw_messenger_model) is None
             else raw_messenger_effort
         )
         if messenger_effort not in valid_messenger_efforts(provider, messenger_model):
             messenger_effort = "low"
-    elif messenger_model not in {"best", "fable", "opus", "sonnet", "haiku"}:
+    elif messenger_model not in {"best", "claude-fable-5-1", "fable", "opus", "sonnet", "haiku"}:
         messenger_model = "haiku"
         messenger_effort = "default"
     else:

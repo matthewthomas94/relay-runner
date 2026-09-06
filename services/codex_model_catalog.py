@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 
-CODEX_FAMILIES = frozenset({"sol", "terra", "luna"})
+CODEX_FAMILIES = frozenset({"astra", "sol", "terra", "luna"})
 CODEX_DEFAULT_FAMILY = "sol"
 CODEX_MESSENGER_DEFAULT_FAMILY = "luna"
 CODEX_WORKER_TIER_FAMILIES = {
@@ -24,7 +24,7 @@ CODEX_WORKER_TIER_FAMILIES = {
     "strong": "sol",
 }
 CODEX_PROVIDER_DEFAULT_EFFORT = "default"
-_CODEX_FAMILY_RE = re.compile(r"^gpt-(?P<version>\d+(?:\.\d+)*)(?:-[a-z0-9]+)*-(?P<family>sol|terra|luna)$")
+_CODEX_FAMILY_RE = re.compile(r"^gpt-(?P<version>\d+(?:\.\d+)*)(?:-[a-z0-9]+)*-(?P<family>astra|sol|terra|luna)$")
 _CODEX_GENERIC_VERSION_RE = re.compile(r"^gpt-\d+(?:\.\d+)*(?:-[a-z0-9]+)*$")
 
 

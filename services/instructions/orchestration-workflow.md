@@ -11,12 +11,12 @@ Relay Runner supports multiple agent providers, especially Codex and Claude. Whe
 Every ticket promoted to `ready` must include an explicit worker-sizing decision in frontmatter before dispatch:
 
 - `worker_model`: `fast`, `balanced`, `strong`, or a provider-scoped stable override such as `codex:luna` or `claude:sonnet`.
-- `worker_effort`: `low`, `medium`, `high`, or `xhigh` for provider-neutral tickets. `max` is Claude-only unless a future Codex release verifies support.
+- `worker_effort`: `low`, `medium`, `high`, or `xhigh` for provider-neutral tickets. Explicit `codex:astra` or `codex:gpt-6-astra` tickets also support `max` and `ultra`, subject to the configured CLI's advertised efforts. Claude-scoped tickets support `max` with provider notes.
 - `worker_sizing_rationale`: one short sentence explaining why that tier and effort match the work.
 - `worker_provider_notes`: `none` only when there are no provider-specific caveats; otherwise name the Codex/Claude difference.
 - `execution_mode`: `implementation` for branch/review/merge work, or `spike` for branchless read-only research with a daemon-persisted structured report.
 
-Choose the sizing while you still have the full project overview. Base it on ambiguity, code blast radius, security risk, test/build cost, and expected implementation depth. Codex renders effort through `model_reasoning_effort`; Claude renders effort through `--effort`, and Claude currently supports `max` where Codex does not. Prefer shared model tiers and shared effort values for provider-neutral work.
+Choose the sizing while you still have the full project overview. Base it on ambiguity, code blast radius, security risk, test/build cost, and expected implementation depth. Codex renders effort through `model_reasoning_effort`; Claude renders effort through `--effort`. Astra's extended efforts require an explicit Astra override and provider catalog validation. Prefer shared model tiers and shared effort values for provider-neutral work.
 
 ### Command action contract
 

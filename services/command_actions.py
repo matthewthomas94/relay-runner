@@ -822,7 +822,7 @@ def _worker_sizing_frontmatter(general_config: dict | None = None) -> str:
         f"worker_model: {provider}:{model}\n"
         f"worker_effort: {effort}\n"
         "worker_sizing_rationale: \"Inherited provider, model, and effort from Relay Runner General Settings.\"\n"
-        "worker_provider_notes: \"Use my defaults preserves explicit stable provider selections; Codex resolves Sol/Terra/Luna then uses model_reasoning_effort and Claude uses --effort.\"\n"
+        "worker_provider_notes: \"Use my defaults preserves explicit stable provider selections; Codex resolves Astra/Sol/Terra/Luna then uses model_reasoning_effort and Claude uses --effort.\"\n"
     )
 
 
@@ -837,7 +837,7 @@ def _normalized_general_model(value: object, provider: str) -> str:
         return normalize_codex_family(model)
     valid_models = {
         "codex": CODEX_FAMILIES,
-        "claude": {"fable", "opus", "sonnet", "haiku"},
+        "claude": {"claude-fable-5-1", "fable", "opus", "sonnet", "haiku"},
     }
     return model if model in valid_models[provider] else "opus"
 
@@ -846,7 +846,7 @@ def _valid_general_efforts(provider: str, model: str) -> set[str]:
     base = {"low", "medium", "high", "xhigh"}
     if provider == "codex":
         return base | {"max", "ultra"}
-    if model in {"fable", "opus"}:
+    if model in {"claude-fable-5-1", "fable", "opus"}:
         return base | {"max"}
     if model == "sonnet":
         return {"low", "medium", "high", "max"}

@@ -28,6 +28,7 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(
             GeneralConfig.codexModelOptions,
             [
+                GeneralConfig.ModelOption(label: "Astra", value: "astra"),
                 GeneralConfig.ModelOption(label: "Sol", value: "sol"),
                 GeneralConfig.ModelOption(label: "Terra", value: "terra"),
                 GeneralConfig.ModelOption(label: "Luna", value: "luna"),
@@ -36,7 +37,7 @@ final class GeneralConfigTests: XCTestCase {
     }
 
     func testCodexFamiliesAreCodexOnlyPlanGatedOptions() {
-        let models = ["sol", "terra", "luna"]
+        let models = ["astra", "sol", "terra", "luna"]
 
         for model in models {
             XCTAssertTrue(GeneralConfig.isModel(model, validFor: .codex))
@@ -54,6 +55,7 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(
             GeneralConfig.claudeModelOptions,
             [
+                GeneralConfig.ModelOption(label: "Fable 5.1", value: "claude-fable-5-1"),
                 GeneralConfig.ModelOption(label: "Fable", value: "fable"),
                 GeneralConfig.ModelOption(label: "Opus", value: "opus"),
                 GeneralConfig.ModelOption(label: "Sonnet", value: "sonnet"),
