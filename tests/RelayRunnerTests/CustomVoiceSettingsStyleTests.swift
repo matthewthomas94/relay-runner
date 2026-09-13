@@ -20,7 +20,7 @@ final class CustomVoiceSettingsStyleTests: XCTestCase {
 
         XCTAssertTrue(standard.contains("SettingsSection(\"Standard Voices\")"))
         XCTAssertFalse(standard.contains("SettingsSection(\"Voice\")"))
-        XCTAssertTrue(custom.contains("SettingsSection(\"Custom Voices\")"))
+        XCTAssertTrue(custom.contains("SettingsSection(\"Custom Voices\", badge: \"Experimental\")"))
         XCTAssertTrue(shared.contains(".font(AppTypography.font(.sectionHeading))"))
         XCTAssertEqual(AppTypography.definition(for: .sectionHeading).size, 13)
     }
@@ -61,7 +61,7 @@ final class CustomVoiceSettingsStyleTests: XCTestCase {
 
     func testExperimentalReleaseExplainsTheSeparateRuntimeRequirement() throws {
         let custom = try source("CustomVoiceSettingsSection")
-        XCTAssertTrue(custom.contains("Experimental. Import a short recording"))
+        XCTAssertTrue(custom.contains("badge: \"Experimental\""))
         XCTAssertTrue(custom.contains("Requires a separately provisioned local cloning runtime."))
         XCTAssertTrue(custom.contains("The app download does not include the engine or models."))
         XCTAssertTrue(custom.contains("Standard voices remain available."))

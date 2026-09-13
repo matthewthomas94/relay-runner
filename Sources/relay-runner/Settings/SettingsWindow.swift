@@ -71,7 +71,7 @@ enum SettingsContentStyle {
 
     var fixedFrame: (width: CGFloat, height: CGFloat)? {
         switch self {
-        case .window: return (860, 640)
+        case .window: return (1148, 640)
         case .workspace: return nil
         }
     }
@@ -164,6 +164,7 @@ private struct SettingsContent: View {
     @State private var saving = false
     @State private var selectedCategory: SettingsCategory = .permissions
     @State private var scrollTarget: SettingsCategory = .permissions
+    @State private var customVoiceName: String?
 
     init(
         appState: AppState,
@@ -179,6 +180,50 @@ private struct SettingsContent: View {
     private var hasChanges: Bool { draft != appState.config }
 
     var body: some View {
+        GeometryReader { geometry in
+            HStack(spacing: SettingsAgentCardLayout.spacing) {
+                settingsPane
+                    .frame(maxWidth: .infinity)
+
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    SettingsAgentCard(
+                        presentation: SettingsAgentPresentation(
+                            name: SettingsAgentPresentation.voiceName(draft.tts, customName: customVoiceName),
+                            subtitle: SettingsAgentPresentation.subtitle(
+                                state: appState.stateMachine.state,
+                                hasActiveSession: appState.hasActiveSession,
+                                hasWorkingProgress: appState.stateMachine.currentWorkingProgress(now: context.date) != nil
+                            )
+                        ),
+                        handoff: appState.agentParticleHandoff,
+                        intensity: appState.config.awareness.glow_intensity
+                    )
+                }
+                .frame(width: style == .window ? 280 : SettingsAgentCardLayout.width(availableWidth: geometry.size.width))
+            }
+        }
+        .foregroundStyle(SettingsSurfaceColor.primaryText)
+        .tint(SettingsSurfaceColor.focusRing)
+        .environment(\.colorScheme, .dark)
+        .frame(width: style.fixedFrame?.width, height: style.fixedFrame?.height)
+        .onAppear { refreshAgentVoiceName() }
+        .onChange(of: draft.tts.custom_voice_id) { _, _ in refreshAgentVoiceName() }
+        .onReceive(NotificationCenter.default.publisher(for: CustomVoiceStore.didRenameNotification)) { _ in
+            refreshAgentVoiceName()
+        }
+        .onChange(of: appState.config) { oldValue, newValue in
+            draft = draft.mergingCustomVoiceRemoval(from: oldValue, to: newValue)
+        }
+        .onChange(of: selectedCategory) { _, newValue in
+            scrollTarget = newValue
+        }
+    }
+
+    private func refreshAgentVoiceName() {
+        customVoiceName = draft.tts.custom_voice_id.flatMap { try? CustomVoiceStore().load($0).name }
+    }
+
+    private var settingsPane: some View {
         HStack(spacing: 0) {
             SettingsCategorySidebar(
                 selection: $selectedCategory,
@@ -219,22 +264,12 @@ private struct SettingsContent: View {
             }
         }
         .background(BoardDarkSurfaceStyle.panelFill)
-        .foregroundStyle(SettingsSurfaceColor.primaryText)
-        .tint(SettingsSurfaceColor.focusRing)
-        .environment(\.colorScheme, .dark)
-        .frame(width: style.fixedFrame?.width, height: style.fixedFrame?.height)
         .clipShape(RoundedRectangle(cornerRadius: style.embeddedCornerRadius, style: .continuous))
         .overlay {
             if style.showsEmbeddedHairline {
                 RoundedRectangle(cornerRadius: style.embeddedCornerRadius, style: .continuous)
                     .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
             }
-        }
-        .onChange(of: appState.config) { oldValue, newValue in
-            draft = draft.mergingCustomVoiceRemoval(from: oldValue, to: newValue)
-        }
-        .onChange(of: selectedCategory) { _, newValue in
-            scrollTarget = newValue
         }
     }
 

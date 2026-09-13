@@ -37,9 +37,9 @@ struct CustomVoiceSettingsSection: View {
     }
 
     var body: some View {
-        SettingsSection("Custom Voices") {
+        SettingsSection("Custom Voices", badge: "Experimental") {
             SettingsRow {
-                Text("Experimental. Import a short recording to match a voice’s sound. Everything stays on this Mac. Pronunciation and accent still depend on the base voice above.")
+                Text("Import a short recording to match a voice’s sound. Everything stays on this Mac. Pronunciation and accent still depend on the base voice above.")
                     .font(AppTypography.font(.settingsDescription))
                     .foregroundStyle(SettingsSurfaceColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)

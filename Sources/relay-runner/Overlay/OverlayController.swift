@@ -7,8 +7,9 @@ import Combine
 final class OverlayController {
 
     private var panel: OverlayPanel?
-    private let particleField = ParticleFieldRenderer()
-    private let pill = TranscriptionPill(frame: .zero)
+    private let particleField: ParticleFieldRenderer
+    private let agentParticleHandoff: AgentParticleHandoff
+    private let pill: TranscriptionPill
     private let mediaController = MediaController()
     private var stateObservation: Any?
     private var globalPointerMonitor: Any?
@@ -24,8 +25,13 @@ final class OverlayController {
     /// so we restart the clock instead of carrying over the .sent elapsed.
     private var autoDismissState: OverlayState?
 
-    init(config: AwarenessConfig) {
+    init(config: AwarenessConfig, agentParticleHandoff: AgentParticleHandoff = AgentParticleHandoff(),
+         pill: TranscriptionPill = TranscriptionPill(frame: .zero),
+         particleField: ParticleFieldRenderer = ParticleFieldRenderer()) {
         self.config = config
+        self.agentParticleHandoff = agentParticleHandoff
+        self.pill = pill
+        self.particleField = particleField
     }
 
     // MARK: - Lifecycle
@@ -39,6 +45,7 @@ final class OverlayController {
         let contentView = NSView(frame: p.frame)
         contentView.wantsLayer = true
         contentView.layer?.backgroundColor = NSColor.clear.cgColor
+        contentView.layer?.masksToBounds = true
         p.contentView = contentView
 
         // Attach particle field behind the solid pill surfaces.
@@ -76,6 +83,7 @@ final class OverlayController {
 
         pill.hide(animated: false)
         particleField.transition(to: nil)
+        agentParticleHandoff.reset()
 
         panel?.orderOut(nil)
         panel = nil
@@ -297,20 +305,59 @@ final class OverlayController {
     }
 
     private func applyState(_ sm: StateMachine) {
+        let previousState = lastAppliedState
+        applyPresentation(sm)
+        let state = sm.state
+
+        // Media control: pause during recording/speaking, resume after
+        let wasActive = Self.isVoiceActive(previousState)
+        let isActive = Self.isVoiceActive(state)
+        if !wasActive && isActive {
+            NSLog("[OverlayController] Voice active \u{2192} pausing media (state=\(state))")
+            mediaController.pauseIfPlaying()
+        } else if wasActive && !isActive {
+            NSLog("[OverlayController] Voice inactive \u{2192} resuming media (state=\(state))")
+            mediaController.resumeIfWePaused()
+        }
+    }
+
+    static func showsPill(for state: OverlayState, replayRetained: Bool) -> Bool {
+        switch state {
+        case .idle, .paused, .acknowledgement, .actionGlow, .cancelled:
+            return false
+        case .replayWaiting:
+            return !replayRetained
+        default:
+            return true
+        }
+    }
+
+    func applyPresentation(
+        _ sm: StateMachine,
+        now: TimeInterval = CACurrentMediaTime(),
+        reduceMotion: Bool = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    ) {
         let state = sm.state
         let partial = sm.partialTranscription
         let preview = sm.messagePreview
 
         // Particle field
-        if config.screen_glow {
-            if state != lastAppliedState {
-                particleField.transition(to: state.particleTheme)
-            }
-        } else {
-            if lastAppliedState != .idle {
-                particleField.transition(to: nil)
-            }
-        }
+        let particleTheme = agentParticleHandoff.update(
+            theme: config.screen_glow && config.glow_intensity > 0 ? state.particleTheme : nil,
+            showsPill: Self.showsPill(for: state, replayRetained: sm.replayRetained),
+            reduceMotion: reduceMotion,
+            now: now
+        )
+        particleField.setDeparture(
+            agentParticleHandoff.overlayDeparture,
+            blurRadius: agentParticleHandoff.overlayBlurRadius
+        )
+        particleField.transition(to: particleTheme, reduceMotion: reduceMotion)
+        pill.setPresentation(
+            departure: agentParticleHandoff.pillDeparture,
+            blurRadius: agentParticleHandoff.pillBlurRadius,
+            reduceMotion: reduceMotion
+        )
 
         // Pill
         switch state {
@@ -339,17 +386,9 @@ final class OverlayController {
                 pill.showCompact(title: title, theme: .stt)
             }
 
-        case .cancelled(let source):
+        case .cancelled:
             if state != lastAppliedState {
-                if let preview = Self.previewBody(
-                    for: state,
-                    messagePreview: preview,
-                    messagePreviewEnabled: config.message_preview
-                ), let title = Self.fullPillTitle(for: state, actionHint: "Response cancelled") {
-                    pill.showFull(title: title, body: preview, theme: .tts)
-                } else if let title = Self.compactPillTitle(for: state) {
-                    pill.showCompact(title: title, theme: source == .stt ? .stt : .tts)
-                }
+                pill.hide()
             }
 
         case .speechFailed:
@@ -408,7 +447,11 @@ final class OverlayController {
             }
 
         case .replayWaiting:
-            if let preview = Self.previewBody(
+            if sm.replayRetained {
+                // Control cancellation retains Option replay in the state
+                // machine without reopening the outgoing playback pill.
+                if state != lastAppliedState { pill.hide() }
+            } else if let preview = Self.previewBody(
                 for: state,
                 messagePreview: preview,
                 messagePreviewEnabled: config.message_preview
@@ -463,17 +506,6 @@ final class OverlayController {
             if lastAppliedState != state || !lastPartial.isEmpty || lastPreview != nil {
                 pill.hide()
             }
-        }
-
-        // Media control: pause during recording/speaking, resume after
-        let wasActive = Self.isVoiceActive(lastAppliedState)
-        let isActive = Self.isVoiceActive(state)
-        if !wasActive && isActive {
-            NSLog("[OverlayController] Voice active \u{2192} pausing media (state=\(state))")
-            mediaController.pauseIfPlaying()
-        } else if wasActive && !isActive {
-            NSLog("[OverlayController] Voice inactive \u{2192} resuming media (state=\(state))")
-            mediaController.resumeIfWePaused()
         }
 
         lastAppliedState = state

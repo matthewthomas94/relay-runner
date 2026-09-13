@@ -40,8 +40,8 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertTrue(WorkspaceSurfaceSizing.settingsMaxWidth.isInfinite)
     }
 
-    func testStandaloneSettingsWindowKeepsItsFixedSize() {
-        XCTAssertEqual(SettingsContentStyle.window.fixedFrame?.width, 860)
+    func testStandaloneSettingsWindowKeepsItsDetailWidthAlongsideAgentCard() {
+        XCTAssertEqual(SettingsContentStyle.window.fixedFrame?.width, 860 + 8 + 280)
         XCTAssertEqual(SettingsContentStyle.window.fixedFrame?.height, 640)
         XCTAssertNil(SettingsContentStyle.workspace.fixedFrame)
     }

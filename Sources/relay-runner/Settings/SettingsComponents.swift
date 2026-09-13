@@ -14,19 +14,31 @@ struct SettingsStack<Content: View>: View {
 
 struct SettingsSection<Content: View>: View {
     let title: String?
+    let badge: String?
     @ViewBuilder let content: Content
 
-    init(_ title: String? = nil, @ViewBuilder content: () -> Content) {
+    init(_ title: String? = nil, badge: String? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
+        self.badge = badge
         self.content = content()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: SettingsLayout.sectionTitleSpacing) {
             if let title {
-                Text(title)
-                    .font(AppTypography.font(.sectionHeading))
-                    .foregroundStyle(SettingsSurfaceColor.primaryText)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title)
+                        .font(AppTypography.font(.sectionHeading))
+                        .foregroundStyle(SettingsSurfaceColor.primaryText)
+                    if let badge {
+                        Text(badge)
+                            .font(AppTypography.font(.metadata))
+                            .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(SettingsSurfaceColor.rowFill, in: Capsule())
+                    }
+                }
             }
 
             VStack(spacing: 0) {

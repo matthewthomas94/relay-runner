@@ -5,12 +5,18 @@ import CoreImage
 /// Dark solid surface matching the board overlay styling.
 ///
 /// Animation contract:
-///   - Entrance: slide up from below screen + Gaussian blur 64→0
-///   - Exit: slide down below screen + Gaussian blur 0→64
+///   - Entrance: slide up from below screen + Gaussian blur 48→0 + opacity fade
+///   - Exit: slide down below screen + Gaussian blur 0→48 + opacity fade
 ///   - State transitions (while visible): blur out → update content → blur in
 ///   - Content updates within same state: smooth in-place resize
 ///   - All movement is purely vertical (Y-axis only)
 final class TranscriptionPill: NSView {
+    enum MotionStyle {
+        static let exitBlurRadius: CGFloat = 48
+        static let entranceBlurRadius = exitBlurRadius
+        static let visibilityDuration: TimeInterval = 0.3
+    }
+
     enum DarkSurfaceStyle {
         static let pillFill = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
         static let border = NSColor(
@@ -68,6 +74,9 @@ final class TranscriptionPill: NSView {
     private var pendingTransitionHeight: CGFloat?
     /// Invalidates a hide completion when newer pill content is presented.
     private var visibilityGeneration: UInt = 0
+    private var contentTransitionGeneration: UInt = 0
+    private var sharedDeparture: CGFloat?
+    private var sharedReduceMotion = false
 
     /// Active body-scroll animation timer. Replaced/cancelled when state
     /// changes or the pill hides.
@@ -87,8 +96,8 @@ final class TranscriptionPill: NSView {
 
     // Spring-damped timing for Apple-like feel
     private let springTiming = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
-    private let entranceDuration: CFTimeInterval = 0.5
-    private let exitDuration: CFTimeInterval = 0.3
+    private let entranceDuration = MotionStyle.visibilityDuration
+    private let exitDuration = MotionStyle.visibilityDuration
     private let transitionBlurDuration: CFTimeInterval = 0.12
     private let transitionUnblurDuration: CFTimeInterval = 0.4
 
@@ -160,6 +169,7 @@ final class TranscriptionPill: NSView {
     // MARK: - Public API
 
     func showCompact(title: String, theme: Theme, animated: Bool = true) {
+        let animated = animated && !sharedReduceMotion && (sharedDeparture == nil || sharedDeparture == 0)
         visibilityGeneration &+= 1
         let wasVisible = alphaValue > 0.01
         let wasCompact = isCompact
@@ -194,6 +204,7 @@ final class TranscriptionPill: NSView {
                   theme: Theme,
                   animated: Bool = true,
                   suppressShadow: Bool = false) {
+        let animated = animated && !sharedReduceMotion && (sharedDeparture == nil || sharedDeparture == 0)
         visibilityGeneration &+= 1
         let wasVisible = alphaValue > 0.01
         let wasCompact = isCompact
@@ -246,15 +257,18 @@ final class TranscriptionPill: NSView {
     }
 
     func hide(animated: Bool = true) {
-        guard alphaValue > 0.01 else { return }
-
         visibilityGeneration &+= 1
         let generation = visibilityGeneration
         cancelBodyScroll()
+        cancelContentTransition()
+        // The shared clock keeps the current content alive until both
+        // surfaces have left. Stopping the controller can still hide at once.
+        if sharedDeparture != nil, animated { return }
+        guard alphaValue > 0.01 else { return }
 
         if animated {
             // Blur out + slide down
-            animateBlur(from: 0, to: 48, duration: exitDuration)
+            animateBlur(from: 0, to: MotionStyle.exitBlurRadius, duration: exitDuration)
 
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = exitDuration
@@ -279,6 +293,7 @@ final class TranscriptionPill: NSView {
     // MARK: - Animation: Entrance
 
     private func slideIn(animated: Bool) {
+        guard sharedDeparture == nil else { return }
         guard animated else {
             alphaValue = 1
             return
@@ -289,18 +304,51 @@ final class TranscriptionPill: NSView {
         var startFrame = targetFrame
         startFrame.origin.y = -targetFrame.height - 20
         frame = startFrame
-        alphaValue = 1
+        alphaValue = 0
 
 
-        // Blur entrance: 64 → 0
-        animateBlur(from: 64, to: 0, duration: entranceDuration)
+        // Use the exit values in both directions.
+        animateBlur(from: MotionStyle.entranceBlurRadius, to: 0, duration: entranceDuration)
 
-        // Slide up with spring timing
+        // Match the exit timing.
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = entranceDuration
-            ctx.timingFunction = springTiming
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             animator().frame = targetFrame
+            animator().alphaValue = 1
         })
+    }
+
+    /// The screen pill and particles consume the same frame of the handoff.
+    /// Content layout can change without starting another visibility animation.
+    func setPresentation(departure: CGFloat, blurRadius: CGFloat, reduceMotion: Bool) {
+        let previousDeparture = sharedDeparture
+        let previousReduceMotion = sharedReduceMotion
+        sharedDeparture = departure
+        sharedReduceMotion = reduceMotion
+        guard previousDeparture != departure || previousReduceMotion != reduceMotion else { return }
+        if departure > 0 || reduceMotion {
+            cancelContentTransition()
+            layer?.removeAllAnimations()
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        setFrameOrigin(NSPoint(
+            x: ((superview?.bounds.width ?? frame.width) - frame.width) / 2,
+            y: bottomOffset - (bottomOffset + frame.height + 20) * departure
+        ))
+        alphaValue = 1 - departure
+        resetBlurFilter()
+        layer?.setValue(reduceMotion ? 0 : blurRadius, forKeyPath: "filters.motionBlur.inputRadius")
+        CATransaction.commit()
+        if departure == 1 { cancelBodyScroll() }
+    }
+
+    private func cancelContentTransition() {
+        contentTransitionGeneration &+= 1
+        isTransitioning = false
+        pendingTransitionWidth = nil
+        pendingTransitionHeight = nil
     }
 
     // MARK: - Animation: State-to-state transition
@@ -321,13 +369,14 @@ final class TranscriptionPill: NSView {
             return
         }
         isTransitioning = true
+        let generation = contentTransitionGeneration
 
         // Phase 1: Blur out (quick)
         animateBlur(from: 0, to: 40, duration: transitionBlurDuration)
 
         // Phase 2: At peak blur, update layout and blur back in
         DispatchQueue.main.asyncAfter(deadline: .now() + transitionBlurDuration * 0.8) { [weak self] in
-            guard let self else { return }
+            guard let self, self.contentTransitionGeneration == generation else { return }
 
             // Update layout at peak blur (content change is invisible).
             // Read the latest target rather than the captured args.
@@ -350,6 +399,7 @@ final class TranscriptionPill: NSView {
             self.animateBlur(from: 40, to: 0, duration: self.transitionUnblurDuration)
 
             DispatchQueue.main.asyncAfter(deadline: .now() + self.transitionUnblurDuration) {
+                guard self.contentTransitionGeneration == generation else { return }
                 self.isTransitioning = false
             }
         }
@@ -396,7 +446,8 @@ final class TranscriptionPill: NSView {
         guard let superview = superview else { return }
 
         let x = (superview.bounds.width - width) / 2
-        let targetFrame = NSRect(x: x, y: bottomOffset, width: width, height: height)
+        let y = bottomOffset - (bottomOffset + height + 20) * (sharedDeparture ?? 0)
+        let targetFrame = NSRect(x: x, y: y, width: width, height: height)
         let targetBounds = NSRect(x: 0, y: 0, width: width, height: height)
 
         let inset = targetBounds.insetBy(dx: 0.5, dy: 0.5)

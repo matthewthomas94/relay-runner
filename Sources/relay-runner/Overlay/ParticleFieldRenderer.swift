@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import QuartzCore
 
 /// Renders an animated halftone dot particle field.
@@ -51,21 +52,25 @@ final class ParticleFieldRenderer {
     enum Coverage {
         case lowerScreen
         case fullBounds
+        case agentCard
 
         var boundsFraction: CGFloat {
             switch self {
             case .lowerScreen: return 0.44
-            case .fullBounds: return 1
+            case .fullBounds, .agentCard: return 1
             }
         }
     }
 
     private let gradientLayer = CAGradientLayer()
     private let particleLayer = CALayer()
+    private let motionBlur = CIFilter(name: "CIGaussianBlur")!
 
     private var currentTheme: Theme?
     private var intensityMultiplier: Double = 0.6
     private var reduceMotion = false
+    private var departure: CGFloat = 0
+    private var blurRadius: CGFloat = 0
 
     private var animationTimer: Timer?
     private var startTime: CFTimeInterval = 0
@@ -86,7 +91,7 @@ final class ParticleFieldRenderer {
     private var dots: [Theme: [Dot]] = [:]
 
     private let spacing: CGFloat = 8
-    private let maxDotRadius: CGFloat = 3.0
+    private let maxDotRadius: CGFloat = 3
     private let minDotRadius: CGFloat = 0.3
     private let coverage: Coverage
 
@@ -100,10 +105,12 @@ final class ParticleFieldRenderer {
         gradientLayer.startPoint = CGPoint(x: 0.5, y: 1)  // top in AppKit coords
         gradientLayer.endPoint = CGPoint(x: 0.5, y: 0)    // bottom
         gradientLayer.opacity = 0
+        gradientLayer.isHidden = coverage == .agentCard
         gradientLayer.actions = ["opacity": NSNull()]
 
         particleLayer.opacity = 0
         particleLayer.actions = ["opacity": NSNull()]
+        motionBlur.name = "motionBlur"
     }
 
     deinit {
@@ -123,7 +130,6 @@ final class ParticleFieldRenderer {
     func layoutInBounds(_ bounds: CGRect, backingScale: CGFloat? = nil) {
         let fieldH = bounds.height * coverage.boundsFraction
         gradientLayer.frame = bounds
-        particleLayer.frame = CGRect(x: 0, y: 0, width: bounds.width, height: fieldH)
 
         let resolvedScale = backingScale ?? NSScreen.main?.backingScaleFactor ?? 2.0
         if bounds.size != screenSize || resolvedScale != screenScale {
@@ -136,31 +142,49 @@ final class ParticleFieldRenderer {
                 renderFrame()
             }
         }
+        applyPresentation()
     }
 
     func setIntensity(_ value: Double) {
         intensityMultiplier = max(0, min(1, value))
-        if currentTheme != nil {
-            particleLayer.opacity = Float(intensityMultiplier)
-            gradientLayer.opacity = Float(intensityMultiplier)
+        applyPresentation()
+    }
+
+    /// Driven by the same presentation clock as the Settings card.
+    func setDeparture(_ value: CGFloat, blurRadius: CGFloat = 0) {
+        departure = max(0, min(1, value))
+        self.blurRadius = max(0, blurRadius)
+        applyPresentation()
+    }
+
+    private func applyPresentation() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        particleLayer.frame = CGRect(
+            x: 0, y: -fieldSize.height * departure,
+            width: fieldSize.width, height: fieldSize.height
+        )
+        particleLayer.opacity = currentTheme == nil ? 0 : Float(intensityMultiplier * (1 - departure))
+        gradientLayer.opacity = currentTheme == nil ? 0 : Float(intensityMultiplier * (1 - departure))
+        if currentTheme != nil, !reduceMotion, departure > 0, departure < 1, blurRadius > 0 {
+            motionBlur.setValue(blurRadius, forKey: kCIInputRadiusKey)
+            particleLayer.filters = [motionBlur]
+        } else {
+            // Keep resting, hidden, and reduced-motion fields unfiltered.
+            particleLayer.filters = nil
         }
+        CATransaction.commit()
     }
 
     func transition(to theme: Theme?, reduceMotion: Bool = false) {
         let resolvedReduceMotion = reduceMotion || theme == .workspace
         guard theme != currentTheme || resolvedReduceMotion != self.reduceMotion else { return }
-        let wasHidden = currentTheme == nil
         currentTheme = theme
         self.reduceMotion = resolvedReduceMotion
+        applyPresentation()
 
         guard theme != nil else {
             stopAnimation()
-            CATransaction.begin()
-            CATransaction.setAnimationDuration(0.5)
-            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
-            particleLayer.opacity = 0
-            gradientLayer.opacity = 0
-            CATransaction.commit()
             return
         }
 
@@ -169,15 +193,6 @@ final class ParticleFieldRenderer {
             renderFrame()
         } else {
             startAnimation()
-        }
-
-        if wasHidden {
-            CATransaction.begin()
-            CATransaction.setAnimationDuration(0.4)
-            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
-            particleLayer.opacity = Float(intensityMultiplier)
-            gradientLayer.opacity = Float(intensityMultiplier)
-            CATransaction.commit()
         }
     }
 
@@ -264,7 +279,7 @@ final class ParticleFieldRenderer {
     // MARK: - Dot grid generation
 
     private func buildDotGrid(theme: Theme, size: CGSize) -> [Dot] {
-        let fieldHeight = min(
+        let fieldHeight = coverage == .agentCard ? size.height : min(
             size.height,
             size.height * (theme.fieldFraction / coverage.boundsFraction)
         )
@@ -288,7 +303,15 @@ final class ParticleFieldRenderer {
                 let x = CGFloat(col) * spacing + spacing / 2
                 let y = CGFloat(row) * spacing + spacing / 2
 
-                let verticalT = CGFloat(row) / CGFloat(max(1, rows - 1))
+                let verticalT: CGFloat
+                if coverage == .agentCard {
+                    // Keep the card's rising silhouette while sharing the
+                    // overlay's size falloff, transparency, and highlights.
+                    let reach = size.height * (0.48 + 0.30 * x / max(1, size.width))
+                    verticalT = min(1, y / reach)
+                } else {
+                    verticalT = CGFloat(row) / CGFloat(max(1, rows - 1))
+                }
                 let combined: CGFloat
                 if theme == .workspace {
                     let dx = x - centerX

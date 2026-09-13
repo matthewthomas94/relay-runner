@@ -292,6 +292,7 @@ final class AppState {
 
     // Phase 2: Awareness overlay
     let stateMachine = StateMachine()
+    let agentParticleHandoff = AgentParticleHandoff()
     private var overlayController: OverlayController?
     @ObservationIgnored private let programBoardOverlay = ProgramBoardOverlayController()
     @ObservationIgnored private let notchStatusController = NotchStatusController()
@@ -2303,7 +2304,7 @@ final class AppState {
         }
 
         // Overlay controller (panel + glow + pill)
-        let oc = OverlayController(config: config.awareness)
+        let oc = OverlayController(config: config.awareness, agentParticleHandoff: agentParticleHandoff)
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 

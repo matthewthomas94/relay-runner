@@ -37,6 +37,7 @@ struct CustomVoiceProfile: Codable, Identifiable, Equatable, Sendable {
 
 /// Owns only normalized references and manifests; external originals are never changed.
 final class CustomVoiceStore: @unchecked Sendable {
+    static let didRenameNotification = Notification.Name("RelayCustomVoiceDidRename")
     static let supportRoot = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
         .first!.appendingPathComponent("relay-runner", isDirectory: true)
     let supportRoot: URL
@@ -212,6 +213,7 @@ final class CustomVoiceStore: @unchecked Sendable {
         var profile = try load(id)
         profile.name = try validatedName(name)
         try writePrivate(JSONEncoder().encode(profile), to: folder(id).appendingPathComponent("manifest.json"))
+        NotificationCenter.default.post(name: Self.didRenameNotification, object: nil)
     }
 
     func acceptPreview(_ profile: CustomVoiceProfile, runtimeID: String, baseVoice: String) throws {
