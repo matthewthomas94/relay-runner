@@ -195,8 +195,7 @@ private struct SettingsContent: View {
                                 hasWorkingProgress: appState.stateMachine.currentWorkingProgress(now: context.date) != nil
                             )
                         ),
-                        handoff: appState.agentParticleHandoff,
-                        intensity: appState.config.awareness.glow_intensity
+                        theme: appState.stateMachine.state.particleTheme ?? .idle
                     )
                 }
                 .frame(width: style == .window ? 280 : SettingsAgentCardLayout.width(availableWidth: geometry.size.width))

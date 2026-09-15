@@ -4,10 +4,11 @@ import QuartzCore
 
 /// Renders an animated halftone dot particle field.
 /// Dots are arranged in a grid with size varying across the presentation area.
-/// A slow diagonal wave adds subtle organic movement.
+/// Screen fields use diagonal waves; the agent card uses a deforming liquid volume.
 final class ParticleFieldRenderer {
 
     enum Theme: Hashable {
+        case idle   // white orb
         case stt    // yellow/amber
         case tts    // blue/purple
         case workspace  // modal backdrop navy
@@ -16,7 +17,7 @@ final class ParticleFieldRenderer {
             switch self {
             case .stt: return 0.04    // deeper blood orange
             case .tts: return 0.68    // blue-purple
-            case .workspace: return 0
+            case .idle, .workspace: return 0
             }
         }
 
@@ -24,7 +25,7 @@ final class ParticleFieldRenderer {
             switch self {
             case .stt: return 0.95
             case .tts: return 0.80
-            case .workspace: return 0
+            case .idle, .workspace: return 0
             }
         }
 
@@ -33,7 +34,7 @@ final class ParticleFieldRenderer {
             switch self {
             case .stt: return 0.32
             case .tts: return 0.44
-            case .workspace: return 1
+            case .idle, .workspace: return 1
             }
         }
 
@@ -42,6 +43,7 @@ final class ParticleFieldRenderer {
         /// tint), TTS base dots are #FDEADB cream.
         var baseHighlight: (r: CGFloat, g: CGFloat, b: CGFloat) {
             switch self {
+            case .idle: return (1, 1, 1)
             case .stt: return (1.000, 0.965, 0.900)
             case .tts: return (0.992, 0.918, 0.859)
             case .workspace: return (10.0 / 255.0, 15.0 / 255.0, 25.0 / 255.0)
@@ -52,12 +54,12 @@ final class ParticleFieldRenderer {
     enum Coverage {
         case lowerScreen
         case fullBounds
-        case agentCard
+        case agentOrb
 
         var boundsFraction: CGFloat {
             switch self {
             case .lowerScreen: return 0.44
-            case .fullBounds, .agentCard: return 1
+            case .fullBounds, .agentOrb: return 1
             }
         }
     }
@@ -89,6 +91,9 @@ final class ParticleFieldRenderer {
         let r: CGFloat, g: CGFloat, b: CGFloat
     }
     private var dots: [Theme: [Dot]] = [:]
+    private var displayedOrbColor: SIMD3<Double>?
+    private var previousOrbColor: SIMD3<Double>?
+    private var orbColorStartedAt: CFTimeInterval = 0
 
     private let spacing: CGFloat = 8
     private let maxDotRadius: CGFloat = 3
@@ -105,7 +110,7 @@ final class ParticleFieldRenderer {
         gradientLayer.startPoint = CGPoint(x: 0.5, y: 1)  // top in AppKit coords
         gradientLayer.endPoint = CGPoint(x: 0.5, y: 0)    // bottom
         gradientLayer.opacity = 0
-        gradientLayer.isHidden = coverage == .agentCard
+        gradientLayer.isHidden = coverage == .agentOrb
         gradientLayer.actions = ["opacity": NSNull()]
 
         particleLayer.opacity = 0
@@ -150,7 +155,7 @@ final class ParticleFieldRenderer {
         applyPresentation()
     }
 
-    /// Driven by the same presentation clock as the Settings card.
+    /// Driven by the same presentation clock as the transcription pill.
     func setDeparture(_ value: CGFloat, blurRadius: CGFloat = 0) {
         departure = max(0, min(1, value))
         self.blurRadius = max(0, blurRadius)
@@ -176,32 +181,39 @@ final class ParticleFieldRenderer {
         CATransaction.commit()
     }
 
-    func transition(to theme: Theme?, reduceMotion: Bool = false) {
+    func transition(to theme: Theme?, reduceMotion: Bool = false,
+                    now: CFTimeInterval = CACurrentMediaTime()) {
         let resolvedReduceMotion = reduceMotion || theme == .workspace
         guard theme != currentTheme || resolvedReduceMotion != self.reduceMotion else { return }
+        if coverage == .agentOrb, theme != currentTheme {
+            previousOrbColor = displayedOrbColor
+            orbColorStartedAt = now
+        }
         currentTheme = theme
         self.reduceMotion = resolvedReduceMotion
         applyPresentation()
 
         guard theme != nil else {
+            displayedOrbColor = nil
+            previousOrbColor = nil
             stopAnimation()
             return
         }
 
         if resolvedReduceMotion {
             stopAnimation()
-            renderFrame()
+            renderFrame(at: now)
         } else {
-            startAnimation()
+            startAnimation(now: now)
         }
     }
 
     // MARK: - Animation loop
 
-    private func startAnimation() {
+    private func startAnimation(now: CFTimeInterval) {
         guard animationTimer == nil else { return }
-        startTime = CACurrentMediaTime()
-        renderFrame()
+        startTime = now
+        renderFrame(at: now)
         let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             self?.renderFrame()
         }
@@ -214,19 +226,24 @@ final class ParticleFieldRenderer {
         animationTimer = nil
     }
 
-    private func renderFrame() {
+    func renderFrame(at time: CFTimeInterval = CACurrentMediaTime()) {
         guard let theme = currentTheme, let ctx = bitmapContext else { return }
         let size = fieldSize
         guard size.width > 0, size.height > 0 else { return }
 
-        let elapsed = reduceMotion ? 0 : CACurrentMediaTime() - startTime
+        let elapsed = reduceMotion ? 0 : time - startTime
         let scale = screenScale
 
-        // Ensure dots are pre-computed for this theme
-        if dots[theme] == nil {
-            dots[theme] = buildDotGrid(theme: theme, size: size)
+        let grid: [Dot]
+        if coverage == .agentOrb {
+            grid = buildOrbGrid(theme: theme, size: size, elapsed: elapsed, now: time)
+        } else {
+            if dots[theme] == nil {
+                dots[theme] = buildDotGrid(theme: theme, size: size)
+            }
+            guard let cached = dots[theme] else { return }
+            grid = cached
         }
-        guard let grid = dots[theme] else { return }
 
         // Clear
         ctx.clear(CGRect(x: 0, y: 0, width: Int(size.width * scale), height: Int(size.height * scale)))
@@ -235,25 +252,18 @@ final class ParticleFieldRenderer {
 
         // Draw each dot with wave-modulated radius
         for dot in grid {
-            // Primary diagonal wave
-            let wave1 = sin(
-                Double(dot.x) * 0.012
-                - Double(dot.y) * 0.008
-                - elapsed * 4.2
-            )
-            // Secondary wave at different angle and speed for variation
-            let wave2 = sin(
-                Double(dot.x) * 0.007
-                + Double(dot.y) * 0.011
-                - elapsed * 2.7
-            ) * 0.4
-            // Slow broad undulation
-            let wave3 = sin(
-                Double(dot.x) * 0.004
-                - elapsed * 1.1
-            ) * 0.3
-
-            let wave = CGFloat(wave1 + wave2 + wave3) / 1.7  // normalize
+            // The card's silhouette changes through the density field. Keep
+            // its dot centres fixed so the halftone grid stays crisp.
+            let wave: CGFloat
+            if coverage == .agentOrb {
+                wave = 0
+            } else {
+                // Diagonal waves at different angles and speeds.
+                let wave1 = sin(Double(dot.x) * 0.012 - Double(dot.y) * 0.008 - elapsed * 4.2)
+                let wave2 = sin(Double(dot.x) * 0.007 + Double(dot.y) * 0.011 - elapsed * 2.7) * 0.4
+                let wave3 = sin(Double(dot.x) * 0.004 - elapsed * 1.1) * 0.3
+                wave = CGFloat(wave1 + wave2 + wave3) / 1.7
+            }
             let radiusScale: CGFloat = 1.0 + wave * 0.2
             let radius = dot.baseRadius * radiusScale
             guard radius > 0.1 else { continue }
@@ -278,8 +288,71 @@ final class ParticleFieldRenderer {
 
     // MARK: - Dot grid generation
 
+    private func buildOrbGrid(theme: Theme, size: CGSize, elapsed: Double, now: CFTimeInterval) -> [Dot] {
+        let color = NSColor(hue: theme.baseHue, saturation: theme.baseSaturation,
+                            brightness: 1, alpha: 1).usingColorSpace(.sRGB)!
+        let target = SIMD3(Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent))
+        let progress = reduceMotion ? 1 : max(0, min(1, (now - orbColorStartedAt) / 0.3))
+        let blend = progress * progress * (3 - 2 * progress)
+        let previous = previousOrbColor ?? target
+        let rim = previous + (target - previous) * blend
+        displayedOrbColor = rim
+
+        // Overlapping, deforming lobes form one continuous liquid volume.
+        // Opposing stretches redistribute its shape without a breathing scale
+        // animation or moving the grid itself. Reduced Motion freezes this field.
+        let stretch = sin(elapsed * 0.72) * 0.10
+        let curl = sin(elapsed * 0.53) * 0.055
+        let lobes: [(x: Double, y: Double, rx: Double, ry: Double)] = [
+            (-0.27 + curl, -0.15 + sin(elapsed * 0.61) * 0.055,
+             0.64 + stretch, 0.59 / (1 + stretch)),
+            (0.26 - curl, 0.28 + sin(elapsed * 0.47) * 0.055,
+             0.54 - stretch * 0.4, 0.57 + sin(elapsed * 0.58) * 0.045),
+            (0.20 + sin(elapsed * 0.43) * 0.065, -0.26 - curl * 0.5,
+             0.50 + sin(elapsed * 0.67) * 0.035, 0.47 + stretch * 0.4)
+        ]
+        // Keep the changing volume centred and clear of the title and card edges.
+        let left = lobes.map { $0.x - $0.rx * 1.3 }.min()!
+        let right = lobes.map { $0.x + $0.rx * 1.3 }.max()!
+        let bottom = lobes.map { $0.y - $0.ry * 1.3 }.min()!
+        let top = lobes.map { $0.y + $0.ry * 1.3 }.max()!
+        let scale = min(max(1, size.width - 24) / (right - left),
+                        max(1, size.height - 240) / (top - bottom))
+        let step: CGFloat = 10
+        let cols = Int(size.width / step)
+        let rows = Int(size.height / step)
+        var result: [Dot] = []
+        result.reserveCapacity(cols * rows)
+        for row in 0..<rows {
+            for col in 0..<cols {
+                let x = CGFloat(col) * step + (size.width - CGFloat(cols - 1) * step) / 2
+                let y = CGFloat(row) * step + (size.height - CGFloat(rows - 1) * step) / 2
+                let nx = Double(x - size.width / 2) / scale + (left + right) / 2
+                let ny = Double(y - size.height / 2) / scale + (bottom + top) / 2
+                var density = 0.0
+                for lobe in lobes {
+                    let dx = (nx - lobe.x) / lobe.rx
+                    let dy = (ny - lobe.y) / lobe.ry
+                    density += exp(-2 * (dx * dx + dy * dy))
+                }
+                let body = max(0, min(1, (density - 0.035) / 0.85))
+                guard body > 0.001 else { continue }
+                let highlight = min(1, body / 0.7)
+                let white = highlight * highlight * (3 - 2 * highlight)
+                let rgb = rim + (SIMD3<Double>(repeating: 1) - rim) * white
+                result.append(Dot(
+                    x: x, y: y,
+                    baseRadius: step * 0.25 * pow(body, 0.72),
+                    baseAlpha: min(1, body * 5),
+                    r: rgb.x, g: rgb.y, b: rgb.z
+                ))
+            }
+        }
+        return result
+    }
+
     private func buildDotGrid(theme: Theme, size: CGSize) -> [Dot] {
-        let fieldHeight = coverage == .agentCard ? size.height : min(
+        let fieldHeight = min(
             size.height,
             size.height * (theme.fieldFraction / coverage.boundsFraction)
         )
@@ -303,15 +376,7 @@ final class ParticleFieldRenderer {
                 let x = CGFloat(col) * spacing + spacing / 2
                 let y = CGFloat(row) * spacing + spacing / 2
 
-                let verticalT: CGFloat
-                if coverage == .agentCard {
-                    // Keep the card's rising silhouette while sharing the
-                    // overlay's size falloff, transparency, and highlights.
-                    let reach = size.height * (0.48 + 0.30 * x / max(1, size.width))
-                    verticalT = min(1, y / reach)
-                } else {
-                    verticalT = CGFloat(row) / CGFloat(max(1, rows - 1))
-                }
+                let verticalT = CGFloat(row) / CGFloat(max(1, rows - 1))
                 let combined: CGFloat
                 if theme == .workspace {
                     let dx = x - centerX
@@ -343,7 +408,7 @@ final class ParticleFieldRenderer {
                 let r3 = CGFloat(seed >> 33) / CGFloat(UInt32.max)
 
                 var cr: CGFloat = 0, cg: CGFloat = 0, cb: CGFloat = 0, ca: CGFloat = 0
-                if theme == .workspace {
+                if theme == .workspace || theme == .idle {
                     let color = theme.baseHighlight
                     cr = color.r
                     cg = color.g

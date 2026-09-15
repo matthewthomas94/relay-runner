@@ -8,7 +8,7 @@ final class OverlayController {
 
     private var panel: OverlayPanel?
     private let particleField: ParticleFieldRenderer
-    private let agentParticleHandoff: AgentParticleHandoff
+    private let voiceMotion: VoiceOverlayMotion
     private let pill: TranscriptionPill
     private let mediaController = MediaController()
     private var stateObservation: Any?
@@ -25,11 +25,11 @@ final class OverlayController {
     /// so we restart the clock instead of carrying over the .sent elapsed.
     private var autoDismissState: OverlayState?
 
-    init(config: AwarenessConfig, agentParticleHandoff: AgentParticleHandoff = AgentParticleHandoff(),
+    init(config: AwarenessConfig, voiceMotion: VoiceOverlayMotion = VoiceOverlayMotion(),
          pill: TranscriptionPill = TranscriptionPill(frame: .zero),
          particleField: ParticleFieldRenderer = ParticleFieldRenderer()) {
         self.config = config
-        self.agentParticleHandoff = agentParticleHandoff
+        self.voiceMotion = voiceMotion
         self.pill = pill
         self.particleField = particleField
     }
@@ -83,7 +83,7 @@ final class OverlayController {
 
         pill.hide(animated: false)
         particleField.transition(to: nil)
-        agentParticleHandoff.reset()
+        voiceMotion.reset()
 
         panel?.orderOut(nil)
         panel = nil
@@ -342,20 +342,20 @@ final class OverlayController {
         let preview = sm.messagePreview
 
         // Particle field
-        let particleTheme = agentParticleHandoff.update(
+        let particleTheme = voiceMotion.update(
             theme: config.screen_glow && config.glow_intensity > 0 ? state.particleTheme : nil,
             showsPill: Self.showsPill(for: state, replayRetained: sm.replayRetained),
             reduceMotion: reduceMotion,
             now: now
         )
         particleField.setDeparture(
-            agentParticleHandoff.overlayDeparture,
-            blurRadius: agentParticleHandoff.overlayBlurRadius
+            voiceMotion.overlayDeparture,
+            blurRadius: voiceMotion.overlayBlurRadius
         )
         particleField.transition(to: particleTheme, reduceMotion: reduceMotion)
         pill.setPresentation(
-            departure: agentParticleHandoff.pillDeparture,
-            blurRadius: agentParticleHandoff.pillBlurRadius,
+            departure: voiceMotion.pillDeparture,
+            blurRadius: voiceMotion.pillBlurRadius,
             reduceMotion: reduceMotion
         )
 

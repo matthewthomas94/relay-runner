@@ -53,18 +53,14 @@ enum SettingsAgentCardLayout {
 
 struct SettingsAgentCard: View {
     let presentation: SettingsAgentPresentation
-    let handoff: AgentParticleHandoff
-    var intensity: Double = AwarenessConfig().glow_intensity
+    var theme: ParticleFieldRenderer.Theme = .idle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .top) {
             BoardDarkSurfaceStyle.panelFill
             SettingsAgentParticleView(
-                handoff: handoff,
-                departure: handoff.cardDeparture,
-                blurRadius: handoff.cardBlurRadius,
-                intensity: intensity,
+                theme: theme,
                 reduceMotion: reduceMotion
             )
             .allowsHitTesting(false)
@@ -98,19 +94,15 @@ struct SettingsAgentCard: View {
 }
 
 private struct SettingsAgentParticleView: NSViewRepresentable {
-    let handoff: AgentParticleHandoff
-    let departure: CGFloat
-    let blurRadius: CGFloat
-    let intensity: Double
+    let theme: ParticleFieldRenderer.Theme
     let reduceMotion: Bool
 
     func makeNSView(context: Context) -> SettingsAgentParticleHostView {
-        SettingsAgentParticleHostView(handoff: handoff)
+        SettingsAgentParticleHostView()
     }
 
     func updateNSView(_ nsView: SettingsAgentParticleHostView, context: Context) {
-        nsView.update(departure: departure, blurRadius: blurRadius,
-                      reduceMotion: reduceMotion, intensity: intensity)
+        nsView.update(theme: theme, reduceMotion: reduceMotion)
     }
 
     static func dismantleNSView(_ nsView: SettingsAgentParticleHostView, coordinator: ()) {
@@ -119,19 +111,18 @@ private struct SettingsAgentParticleView: NSViewRepresentable {
 }
 
 final class SettingsAgentParticleHostView: NSView {
-    private let renderer = ParticleFieldRenderer(coverage: .agentCard)
-    private let handoff: AgentParticleHandoff
-    private let cardID = UUID()
+    private let renderer = ParticleFieldRenderer(coverage: .agentOrb)
     private var windowObservation: NSObjectProtocol?
-    private var departure: CGFloat = 0
+    private var theme: ParticleFieldRenderer.Theme = .idle
     private var reduceMotion = false
 
-    init(handoff: AgentParticleHandoff) {
-        self.handoff = handoff
+    init() {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = true
         renderer.attach(to: self)
+        // The card's white core is opaque; overlay intensity applies to the screen field.
+        renderer.setIntensity(1)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -164,12 +155,9 @@ final class SettingsAgentParticleHostView: NSView {
     override func viewDidUnhide() { super.viewDidUnhide(); refreshVisibility() }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func update(departure: CGFloat, blurRadius: CGFloat = 0, reduceMotion: Bool,
-                intensity: Double = AwarenessConfig().glow_intensity) {
-        self.departure = departure
+    func update(theme: ParticleFieldRenderer.Theme, reduceMotion: Bool) {
+        self.theme = theme
         self.reduceMotion = reduceMotion
-        renderer.setIntensity(intensity)
-        renderer.setDeparture(departure, blurRadius: blurRadius)
         needsLayout = true
         refreshVisibility()
     }
@@ -177,7 +165,6 @@ final class SettingsAgentParticleHostView: NSView {
     func stop() {
         if let windowObservation { NotificationCenter.default.removeObserver(windowObservation) }
         windowObservation = nil
-        handoff.setCardVisible(false, id: cardID)
         renderer.transition(to: nil)
     }
 
@@ -185,8 +172,7 @@ final class SettingsAgentParticleHostView: NSView {
         let visible = window?.isVisible == true
             && window?.isMiniaturized == false
             && !isHiddenOrHasHiddenAncestor
-        handoff.setCardVisible(visible, id: cardID)
-        renderer.transition(to: visible && departure < 1 ? .tts : nil, reduceMotion: reduceMotion)
+        renderer.transition(to: visible ? theme : nil, reduceMotion: reduceMotion)
     }
 
     var isAnimationRunning: Bool { renderer.isAnimationRunning }

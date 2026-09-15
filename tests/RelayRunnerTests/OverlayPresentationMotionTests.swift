@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class OverlayPresentationMotionTests: XCTestCase {
-    func testPlaybackAndRecordingEnterAndExitTogetherAfterCardHandoff() {
+    func testPlaybackAndRecordingEnterAndExitTogetherWithoutWaitingForCard() {
         for recording in [false, true] {
             for showsCard in [false, true] {
                 let scene = Scene(showsCard: showsCard)
@@ -17,7 +17,7 @@ final class OverlayPresentationMotionTests: XCTestCase {
                 for time in [0.0, 0.15, 0.31, 0.46, 0.62] {
                     scene.step(time)
                     assertAligned(scene)
-                    if showsCard && time < 0.3 { XCTAssertEqual(scene.pill.alphaValue, 0) }
+                    if time == 0.15 { XCTAssertEqual(scene.pill.alphaValue, 0.5, accuracy: 0.001) }
                 }
                 XCTAssertEqual(scene.pill.alphaValue, 1)
                 scene.state.reset()
@@ -98,7 +98,6 @@ final class OverlayPresentationMotionTests: XCTestCase {
         scene.step(0)
         scene.step(0.31)
         XCTAssertEqual(scene.pill.alphaValue, 1)
-        XCTAssertEqual(scene.handoff.cardDeparture, 0)
         XCTAssertEqual(scene.particles.opacity, 0)
 
         let reduced = Scene(showsCard: true)
@@ -117,8 +116,8 @@ final class OverlayPresentationMotionTests: XCTestCase {
     }
 
     private func assertAligned(_ scene: Scene, file: StaticString = #filePath, line: UInt = #line) {
-        let departure = scene.handoff.overlayDeparture
-        XCTAssertEqual(scene.handoff.pillDeparture, departure, accuracy: 0.001, file: file, line: line)
+        let departure = scene.motion.overlayDeparture
+        XCTAssertEqual(scene.motion.pillDeparture, departure, accuracy: 0.001, file: file, line: line)
         XCTAssertEqual(scene.pill.alphaValue, 1 - departure, accuracy: 0.001, file: file, line: line)
         XCTAssertEqual(CGFloat(scene.particles.opacity), 0.6 * (1 - departure), accuracy: 0.001, file: file, line: line)
         let pillDeparture = (56 - scene.pill.frame.minY) / (scene.pill.frame.height + 76)
@@ -127,11 +126,12 @@ final class OverlayPresentationMotionTests: XCTestCase {
 
     private final class Scene {
         let state = StateMachine()
-        let handoff = AgentParticleHandoff()
+        let motion = VoiceOverlayMotion()
         let pill = TranscriptionPill(frame: .zero)
         let renderer = ParticleFieldRenderer()
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         let particles: CALayer
+        let card: SettingsAgentParticleHostView?
         let controller: OverlayController
 
         init(showsCard: Bool, screenGlow: Bool = true) {
@@ -141,12 +141,19 @@ final class OverlayPresentationMotionTests: XCTestCase {
             root.addSubview(pill)
             var config = AwarenessConfig()
             config.screen_glow = screenGlow
-            controller = OverlayController(config: config, agentParticleHandoff: handoff,
+            controller = OverlayController(config: config, voiceMotion: motion,
                                            pill: pill, particleField: renderer)
-            handoff.setCardVisible(showsCard, id: UUID())
+            card = showsCard ? SettingsAgentParticleHostView() : nil
+            if let card {
+                card.frame = root.bounds
+                root.addSubview(card)
+            }
         }
 
-        func step(_ time: TimeInterval) { controller.applyPresentation(state, now: time, reduceMotion: false) }
-        func stop() { pill.hide(animated: false); renderer.transition(to: nil) }
+        func step(_ time: TimeInterval) {
+            card?.update(theme: state.state.particleTheme ?? .idle, reduceMotion: true)
+            controller.applyPresentation(state, now: time, reduceMotion: false)
+        }
+        func stop() { card?.stop(); pill.hide(animated: false); renderer.transition(to: nil) }
     }
 }

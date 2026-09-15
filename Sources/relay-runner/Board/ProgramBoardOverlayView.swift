@@ -3865,7 +3865,7 @@ private struct ProgramBoardColumnChrome: ViewModifier {
 
     static func shadowColor(for theme: ParticleFieldRenderer.Theme?) -> Color {
         switch theme {
-        case .stt, .tts, .workspace, nil:
+        case .idle, .stt, .tts, .workspace, nil:
             return Color.black.opacity(BoardDarkSurfaceStyle.shadowOpacity)
         }
     }
