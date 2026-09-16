@@ -612,7 +612,7 @@ class ArtifactMigrationCoordinator:
                 continue
             ticket_id = pure.stem
             try:
-                ticket = parse_ticket(content.decode("utf-8"))
+                ticket = parse_ticket(legacy_ticket_content(content).decode("utf-8"))
             except (UnicodeDecodeError, TicketParseError, ValueError) as error:
                 raise ArtifactMigrationBlocked(
                     f"Malformed ticket {relative}: {error}",
@@ -1820,10 +1820,20 @@ def _front_value(content: bytes, key: str) -> str | None:
     return None
 
 
+def legacy_ticket_content(content: bytes) -> bytes:
+    """Older writers omitted the false cancellation flag; preserve their body."""
+    lines = content.decode("utf-8").splitlines(keepends=True)
+    if lines and lines[0].strip() == "---" and _front_value(content, "canceled") is None:
+        closing = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
+        if closing is not None:
+            lines.insert(closing, "canceled: false\n")
+    return "".join(lines).encode("utf-8")
+
+
 def _set_frontmatter_defaults(
     content: bytes, *, ticket_id: str, artifact_id: str, activity_at: str
 ) -> bytes:
-    text = content.decode("utf-8")
+    text = legacy_ticket_content(content).decode("utf-8")
     lines = text.splitlines()
     closing = next(index for index, line in enumerate(lines[1:], 1) if line.strip() == "---")
     id_index = next(

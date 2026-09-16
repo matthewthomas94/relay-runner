@@ -435,9 +435,13 @@ Saved through the daemon-owned typed writer.
         self.assertIn("scope token", unscoped["error"])
 
     def test_background_retention_uses_registered_scope_without_ui_and_respects_rollout_pause(self):
-        with patch.object(orchestrator, "sweep_automatic_retention", return_value={"state": "clean", "ticket_ids": []}) as sweep:
+        with (
+            patch.object(orchestrator, "prepare_project_retention", return_value=None) as prepare,
+            patch.object(orchestrator, "sweep_automatic_retention", return_value={"state": "clean", "ticket_ids": []}) as sweep,
+        ):
             results = self.daemon.sweep_artifact_retention()
             self.assertEqual([r["state"] for r in results], ["clean"])
+            self.assertEqual(prepare.call_args.args[0], self.repo.resolve())
             self.assertEqual(sweep.call_count, 1)
             self.assertEqual(sweep.call_args.args[0].project_id, self.store.project_id)
             self.daemon.artifact_rollout.pause_cohort(
@@ -450,7 +454,7 @@ Saved through the daemon-owned typed writer.
         with patch.object(self.daemon, "_artifact_lifecycle", return_value=None):
             result = self.daemon.artifact_history_search(repo_path=str(self.repo), project_scope_token=None)
         self.assertEqual(result["history"], [])
-        self.assertIn("not been enabled", result["recovery"])
+        self.assertIn("automatic GitHub backup", result["recovery"])
 
     def test_retention_status_blocks_non_github_remote_before_apply(self):
         remote = self.root / "origin.git"

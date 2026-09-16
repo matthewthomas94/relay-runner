@@ -94,7 +94,9 @@ use `scripts/relay-ticket-history search "words or ticket ID"` or
 These commands return verified text and permanent GitHub links without restoring
 Markdown. For other projects, use the installed command at
 `/Applications/Relay Runner.app/Contents/SharedSupport/scripts/relay-ticket-history`
-with `--repo /path/to/project`. Setup is an agent operation, not a Workspace UI task.
+with `--repo /path/to/project`. Setup and cleanup are automatic for registered
+projects once more than 25 completed tickets and a usable GitHub remote exist.
+An agent only needs `enable --remote <name>` to resolve an ambiguous destination.
 Add `--remote origin` to search/show from a fresh checkout without local archive
 state. The command verifies a disposable GitHub fetch and removes its temporary data.
 For an enabled project, `.orchestrator/` is a projection of `refs/heads/relay/artifacts`.

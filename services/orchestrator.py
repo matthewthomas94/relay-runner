@@ -48,7 +48,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
 try:
     from services.artifact_lifecycle import ArtifactLifecycleCoordinator
-    from services.automatic_retention import automatic_confirmation, sweep_automatic_retention
+    from services.automatic_retention import (
+        automatic_confirmation, prepare_project_retention, retention_registry_revision,
+        sweep_automatic_retention,
+    )
     from services.artifact_retention import (
         ArtifactRetentionManager,
         DependencyHistoryUnavailable,
@@ -72,7 +75,10 @@ try:
     from services.artifact_sync import ArtifactSyncEngine, ArtifactSyncMode
 except ModuleNotFoundError:  # Installed direct-script layout.
     from artifact_lifecycle import ArtifactLifecycleCoordinator  # type: ignore[no-redef]
-    from automatic_retention import automatic_confirmation, sweep_automatic_retention
+    from automatic_retention import (
+        automatic_confirmation, prepare_project_retention, retention_registry_revision,
+        sweep_automatic_retention,
+    )
     from artifact_retention import (  # type: ignore[no-redef]
         ArtifactRetentionManager,
         DependencyHistoryUnavailable,
@@ -5383,10 +5389,17 @@ class Daemon:
                 )
 
     def sweep_artifact_retention(self) -> list[dict[str, Any]]:
-        """Maintain opted-in projects without requiring a mounted Workspace."""
+        """Maintain every available registered project without a mounted Workspace."""
         results = []
         for repo_path in _registered_project_repo_paths(self.project_registry_v2_path):
             try:
+                preparation = prepare_project_retention(
+                    Path(repo_path), self._artifact_state_root,
+                    registry_path=self.project_registry_v2_path, rollout=self.artifact_rollout,
+                )
+                if preparation is not None:
+                    results.append({"repo_path": repo_path, **preparation})
+                    continue
                 lifecycle = self._artifact_lifecycle(repo_path)
                 if lifecycle is None:
                     continue
@@ -5800,7 +5813,7 @@ class Daemon:
     ) -> dict[str, Any]:
         if self._artifact_lifecycle(repo_path) is None:
             return {"history": [], "recovery": (
-                "Automatic archiving has not been enabled for this project yet."
+                "Older completed tickets will appear here after automatic GitHub backup."
             )}
         manager, _sync, _confirmation = self._artifact_retention_components(
             repo_path, project_scope_token
@@ -11533,11 +11546,19 @@ def serve(daemon: Daemon) -> None:
     threading.Thread(target=_queue_drain_loop, name="queue-drain-monitor", daemon=True).start()
 
     def _retention_loop():
-        # Start immediately, then retry offline/publication failures every minute.
+        # Registry changes cover opening, adding and creating projects. Inspect
+        # its revision frequently, while ordinary backup/retry runs every minute.
         # This lane is independent of voice, worker dispatch and Workspace refresh.
         previous = {}
+        registry_revision = None
+        next_sweep = 0.0
         while not stop.is_set():
             try:
+                revision = retention_registry_revision(daemon.project_registry_v2_path)
+                if revision == registry_revision and time.monotonic() < next_sweep:
+                    stop.wait(2)
+                    continue
+                registry_revision = revision
                 for result in daemon.sweep_artifact_retention():
                     repo = result["repo_path"]
                     state = result["state"]
@@ -11546,7 +11567,8 @@ def serve(daemon: Daemon) -> None:
                     previous[repo] = result
             except Exception as error:
                 print(f"[orchestrator] retention sweep failed: {error}", file=sys.stderr)
-            stop.wait(60)
+            next_sweep = time.monotonic() + 60
+            stop.wait(2)
 
     threading.Thread(target=_retention_loop, name="ticket-retention", daemon=True).start()
 

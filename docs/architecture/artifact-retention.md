@@ -4,21 +4,31 @@ RR-337 replaces the original RR-273 age policy with the accepted terminal-count 
 
 ## Automatic operation and agent retrieval
 
-Completed-ticket housekeeping runs in the daemon at startup and every 60 seconds,
-independently of the Workspace UI. One-time agent setup selects an existing
-GitHub remote and enables the journaled migration and background retention:
+Completed-ticket housekeeping runs for every available registered project at
+daemon startup and every 60 seconds, independently of the Workspace UI. Opening,
+adding, or creating a project also wakes the background check. Boards with 25 or
+fewer completed tickets are left unchanged; unfinished tickets have no count cap.
+
+When a project first exceeds 25 completed tickets, Relay automatically selects
+its configured archive remote, its existing `origin`, or its sole GitHub remote.
+It migrates a legacy board through the verified archive writer, publishes the
+records, and removes only the excess local files. No per-project activation or
+Storage screen is required. Missing, ambiguous, or unreachable backup destinations
+preserve local files and are retried; Relay does not create a GitHub repository.
+
+An agent can explicitly choose a destination when multiple remotes are ambiguous:
 
 ```bash
 scripts/relay-ticket-history enable --repo /path/to/project --remote origin
 ```
 
-This command is the authorization to publish ticket content and remove verified
-older local ticket files. It keeps all unfinished tickets and the newest 25
-combined Done-or-Canceled tickets. The authorization is durable and bound to the
-selected fetch and push destinations. Changed destinations pause housekeeping;
-ordinary batches need no confirmation or UI action. Local-only/paused projects
-and paused rollout cohorts are not published. Failed publication preserves the
-local files, and the daemon retries incomplete transactions automatically.
+The selected fetch and push destinations are recorded durably. Changed
+destinations pause housekeeping; ordinary batches need no confirmation or UI
+action. All unfinished tickets and the newest 25 combined Done-or-Canceled
+tickets stay local. Explicitly paused or opted-out projects and paused rollout
+cohorts are not published. Default `local_only` registration metadata does not
+disable automatic setup once a GitHub remote exists. Failed initial setup and
+incomplete archive transactions are retried automatically.
 
 Agents can discover and retrieve old work without restoring ticket files:
 
@@ -52,7 +62,7 @@ An older terminal ticket may remain temporarily materialized only for an active 
 
 ## Archive transaction
 
-The deterministic preview is re-evaluated under the project writer and lease locks. Cleanup is disabled until the user selects an existing `github.com` remote and explicitly confirms exposing Relay ticket content; the confirmation is bound to that remote name plus its fetch and sole effective push URL digests. Relay revalidates the push destination immediately before publication and pushes to that exact confirmed URL. Relay never creates, guesses, renames, or rewrites the remote. Local-only and paused projects remain visible temporary overage.
+The deterministic preview is re-evaluated under the project writer and lease locks. Automatic setup binds the existing `github.com` remote name plus its fetch and sole effective push URL digests. Relay revalidates the push destination immediately before archive publication and pushes to that exact destination. Relay never creates, renames, or rewrites a remote. Projects without a usable destination and explicitly paused projects remain temporary overage.
 
 Every ticket and attachment blob is validated before mutation. Relay prepares one ordinary descendant commit on a private scratch ref; it writes the sorted JSONL catalog and deletes only terminal candidates outside the retained 25. Catalog entries retain immutable artifact/display identity, title/status/activity/dependencies, exact source commit, ticket blob, and attachment paths/blob IDs/MIME/sizes. Preparing the commit does not advance `refs/heads/relay/artifacts` or rebuild `.orchestrator`.
 
@@ -76,7 +86,7 @@ The Workspace exposes this contract from the selected project's **History** cont
 
 User-facing state badges are intentionally specific: **Materialized**, **Temporary Safety Overage**, **GitHub-backed • Locally Reachable Through Git**, **Needs Network**, **Local Archive Only**, **Missing**, and **Tampered**. “GitHub-backed” never means “remote only”: a verified historical object may still be reachable in local Git even when its Markdown is absent from `.orchestrator/`.
 
-The diagnostic retention APIs still expose retained tickets, candidates and retry reasons to agents. Routine cleanup and retry are automatic after setup. Offline, authentication, divergence, interruption, or integrity failures keep candidate files materialized.
+The diagnostic retention APIs still expose retained tickets, candidates and retry reasons to agents. Setup, routine cleanup and retry are automatic. Offline, authentication, divergence, interruption, or integrity failures keep candidate files materialized.
 
 Routine Delete is an ordinary recoverable tombstone commit and warns that Git history remains. Sensitive-data purge is not a retention operation: rotate exposed credentials and use a separately reviewed, coordinated history-rewrite and remote-cleanup procedure.
 

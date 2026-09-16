@@ -31,8 +31,9 @@ def project_store(repo: Path, state: Path) -> ArtifactStore:
     config = tomllib.loads((repo / ".orchestrator/config.toml").read_text())
     if config.get("artifact_lifecycle") != "enabled":
         raise ArtifactValidationError(
-            "Automatic archive is not enabled. Run relay-ticket-history enable --repo "
-            f"{repo} --remote <existing-github-remote>."
+            "No local archive exists yet. Relay sets it up automatically when more than "
+            "25 completed tickets need cleanup and a GitHub remote is available. "
+            "Use --remote <name> to read history already stored on GitHub."
         )
     return ArtifactStore(repo, config["project_id"], state, enabled=True)
 
