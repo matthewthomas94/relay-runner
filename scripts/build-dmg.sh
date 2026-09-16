@@ -5,13 +5,14 @@
 #   ./scripts/build-dmg.sh              # Release build + DMG + Sparkle zip
 #   ./scripts/build-dmg.sh --debug      # Debug build + DMG + Sparkle zip
 #
-# Signing & notarisation are opt-in via environment variables so local
-# dev builds don't fail when no cert is installed:
+# Signing uses Relay Runner's Developer ID certificate automatically so local
+# updates keep the same macOS permission identity as distributed releases:
 #
 #   SIGN_IDENTITY    Developer ID Application identity (e.g. "Developer ID
-#                    Application: Jane Doe (TEAMID)"). Unset → ad-hoc sign,
-#                    which is fine for local testing but will not run
-#                    unquarantined on another Mac.
+#                    Application: Jane Doe (TEAMID)"). Unset → discover the
+#                    Relay Runner team's Developer ID in the keychain.
+#   RELAY_ALLOW_ADHOC_SIGNING  Set to 1 for isolated ad-hoc test artifacts
+#                    when no identity is available. Never refreshes /Applications.
 #
 #   NOTARY_PROFILE   notarytool keychain profile name (created once with
 #                    `xcrun notarytool store-credentials <name>`). When set
@@ -38,6 +39,12 @@ fi
 BUILD_DIR="$PROJECT_ROOT/.build/$CONFIG"
 DIST_DIR="$PROJECT_ROOT/dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
+INSTALLED="/Applications/$APP_NAME.app"
+
+# Resolve before building. Never silently replace a stable TCC identity with
+# an ad-hoc signature whose designated requirement changes on every rebuild.
+SIGN_IDENTITY="$(python3 "$PROJECT_ROOT/services/app_signing.py" identity)"
+NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 
 remove_tree() {
     local path="$1"
@@ -235,7 +242,7 @@ for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py co
          custom_voice.py custom_voice_worker.py custom_voice_install.py voice_audio_lease.py \
          artifact_lifecycle.py artifact_migration.py artifact_migration_cli.py \
          artifact_catalog.py artifact_retention.py artifact_rollout.py artifact_rollout_cli.py artifact_store.py artifact_sync.py \
-         artifact_verification.py artifact_verification_cli.py fresh_install.py fresh_install_cli.py \
+         artifact_verification.py artifact_verification_cli.py app_signing.py fresh_install.py fresh_install_cli.py \
          followup_tickets.py graphify_core.py graphify_ingest.py orchestrator.py orchestrator_artifact_workflow.md orchestrator_workflow.md \
          program_artifacts.py program_status.py requirements.txt session_capture.py support_diagnostics.py tickets.py toml_compat.py; do
     cp "$PROJECT_ROOT/services/$f" "$APP_DIR/Contents/SharedSupport/services/"
@@ -281,8 +288,6 @@ chmod +x "$APP_DIR/Contents/SharedSupport/setup-venv.sh"
 echo "==> Code signing..."
 
 ENTITLEMENTS="$PROJECT_ROOT/scripts/relay-runner.entitlements"
-SIGN_IDENTITY="${SIGN_IDENTITY:-}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 
 if [ -n "$SIGN_IDENTITY" ]; then
     if [ ! -f "$ENTITLEMENTS" ]; then
@@ -338,13 +343,16 @@ if [ -n "$SIGN_IDENTITY" ]; then
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR"
 else
-    echo "  (no SIGN_IDENTITY set — ad-hoc sign only; this build cannot be"
-    echo "   distributed outside this Mac)"
+    echo "  (explicit ad-hoc test artifact — permissions will not survive rebuilds;"
+    echo "   the installed app will not be replaced)"
     codesign --force --deep --sign - "$APP_DIR"
 fi
 # Verify. `--deep --strict` catches unsigned nested components that
 # would otherwise be rejected at notarisation / Gatekeeper time.
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+if [ -n "$SIGN_IDENTITY" ]; then
+    python3 "$PROJECT_ROOT/services/app_signing.py" verify "$APP_DIR"
+fi
 
 # Notarise and staple the app bundle before creating the Sparkle archive.
 # Sparkle validates the downloaded app with Gatekeeper after extraction; if CI
@@ -467,10 +475,12 @@ fi
 
 # If the app is already installed under /Applications, refresh it so this
 # rebuild is what Spotlight, the Dock and Cmd-Tab actually see.
-INSTALLED="/Applications/$APP_NAME.app"
 if [ "${RELAY_SKIP_APPLICATIONS_REFRESH:-0}" = "1" ]; then
     echo "==> Skipping installed app refresh (RELAY_SKIP_APPLICATIONS_REFRESH=1)."
+elif [ -z "$SIGN_IDENTITY" ]; then
+    echo "==> Skipping installed app refresh for an ad-hoc test artifact."
 elif [ -d "$INSTALLED" ]; then
+    python3 "$PROJECT_ROOT/services/app_signing.py" verify "$APP_DIR" --installed "$INSTALLED"
     echo "==> Updating installed copy at $INSTALLED..."
     remove_tree "$INSTALLED"
     cp -R "$APP_DIR" "$INSTALLED"

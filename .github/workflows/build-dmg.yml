@@ -16,6 +16,7 @@ on:
       - "assets/**"
       - "scripts/**"
       - "services/**"
+      - "tests/test_app_signing.py"
       - ".github/workflows/build-dmg.yml"
   # Allow manual trigger
   workflow_dispatch:
@@ -83,6 +84,9 @@ jobs:
       - name: Resolve Swift dependencies
         run: swift package resolve
 
+      - name: Verify permission identity policy
+        run: python3 -m unittest discover -s tests -p 'test_app_signing.py'
+
       # dmgbuild produces the styled installer DMG without Apple Events /
       # Finder. Installed to user site-packages — `python3 -m dmgbuild`
       # picks it up regardless of PATH (which is what build-dmg.sh uses).
@@ -97,8 +101,8 @@ jobs:
       # `secrets` to step-level `if:` conditions (it errors with
       # "Unrecognized named-value: 'secrets'"), so the presence-check
       # happens inside the script body. When the secret is absent,
-      # build-dmg.sh falls through to ad-hoc signing — useful for PR
-      # builds before secrets have been added to the repo.
+      # non-release builds explicitly allow isolated ad-hoc artifacts.
+      # Tagged releases must retain Relay Runner's Developer ID identity.
       - name: Import signing certificate
         env:
           SIGN_CERT_P12: ${{ secrets.SIGN_CERT_P12 }}
@@ -145,6 +149,8 @@ jobs:
         env:
           SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
           NOTARY_PROFILE: ${{ secrets.NOTARY_APPLE_ID != '' && 'relay-runner-notary' || '' }}
+          RELAY_ALLOW_ADHOC_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') && '0' || '1' }}
+          RELAY_SKIP_APPLICATIONS_REFRESH: '1'
         run: ./scripts/build-dmg.sh
 
       - name: Upload package artifacts

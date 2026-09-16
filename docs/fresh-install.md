@@ -1,5 +1,24 @@
 # Fresh-install and clean-user validation
 
+## Preserving app replacement
+
+For a normal update, build with Relay Runner's Developer ID certificate, then
+preview and execute the replacement:
+
+```bash
+RELAY_SKIP_APPLICATIONS_REFRESH=1 ./scripts/build-dmg.sh
+scripts/relay-runner-fresh-install --app 'dist/Relay Runner.app'
+scripts/relay-runner-fresh-install --app 'dist/Relay Runner.app' --execute
+```
+
+Quit the app and stop idle bundled services before replacement. Preflight checks
+the new app's signature against the release identity and the installed app's
+designated requirement. Incompatible or ad-hoc updates are rejected before any
+replacement; normal installs preserve Relay state and repositories and retain
+the old app in Trash for rollback. See [permission identity details](release-updates.md#preserve-permissions-across-updates).
+
+## Deliberate state resets
+
 `scripts/relay-runner-fresh-install` has three deliberately narrow reset
 profiles. Running a profile without `--execute` is a read-only inventory. An
 execution needs both `--confirm-daemon-stopped` and the exact profile repeated

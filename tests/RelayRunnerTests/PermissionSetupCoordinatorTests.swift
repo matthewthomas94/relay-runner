@@ -5,6 +5,76 @@ import XCTest
 
 final class PermissionSetupCoordinatorTests: XCTestCase {
 
+    func testAlreadyGrantedPermissionsCompleteWithoutPromptingOrOpeningSettings() {
+        for permission in PermissionKind.allCases {
+            let permissions = FakePermissionSetupPermissions()
+            permissions.statuses[permission] = .granted
+            let companion = FakePermissionSetupCompanion()
+            var prepared: [PermissionKind] = []
+            var granted: [PermissionKind] = []
+            let coordinator = PermissionSetupCoordinator(
+                permissions: permissions,
+                setSetupNotchState: { _ in },
+                prepareForExternalWindow: { prepared.append($0) },
+                postGrantReady: { kind, _ in granted.append(kind) },
+                companion: companion,
+                successAcknowledgementDelay: 0
+            )
+
+            coordinator.request(permission, source: .onboarding)
+
+            XCTAssertEqual(granted, [permission])
+            XCTAssertTrue(prepared.isEmpty)
+            XCTAssertTrue(permissions.openedSettings.isEmpty)
+            XCTAssertNil(permissions.microphoneCompletion)
+            XCTAssertFalse(permissions.promptedAccessibility)
+            XCTAssertFalse(permissions.promptedInputMonitoring)
+            XCTAssertFalse(permissions.promptedScreenRecording)
+            XCTAssertFalse(permissions.registeredInputMonitoring)
+            XCTAssertTrue(companion.shownRequests.isEmpty)
+            XCTAssertNil(coordinator.activePermission)
+        }
+    }
+
+    func testPermissionGrantedSinceLastPollIsRefreshedBeforeRequestingAgain() {
+        let permissions = FakePermissionSetupPermissions()
+        permissions.onRefresh = { permissions.statuses[.accessibility] = .granted }
+        var granted: [PermissionKind] = []
+        let coordinator = PermissionSetupCoordinator(
+            permissions: permissions,
+            setSetupNotchState: { _ in },
+            postGrantReady: { kind, _ in granted.append(kind) },
+            companion: FakePermissionSetupCompanion(),
+            successAcknowledgementDelay: 0
+        )
+
+        coordinator.request(.accessibility, source: .permissionRecovery)
+
+        XCTAssertEqual(granted, [.accessibility])
+        XCTAssertFalse(permissions.promptedAccessibility)
+        XCTAssertTrue(permissions.openedSettings.isEmpty)
+    }
+
+    func testPreviouslyGrantedButNowRevokedPermissionStillRequiresSetup() {
+        let permissions = FakePermissionSetupPermissions()
+        permissions.statuses[.accessibility] = .granted
+        permissions.onRefresh = { permissions.statuses[.accessibility] = .denied }
+        var granted: [PermissionKind] = []
+        let coordinator = PermissionSetupCoordinator(
+            permissions: permissions,
+            setSetupNotchState: { _ in },
+            postGrantReady: { kind, _ in granted.append(kind) },
+            companion: FakePermissionSetupCompanion(),
+            successAcknowledgementDelay: 0
+        )
+
+        coordinator.request(.accessibility, source: .permissionRecovery)
+
+        XCTAssertTrue(granted.isEmpty)
+        XCTAssertTrue(permissions.promptedAccessibility)
+        XCTAssertEqual(permissions.openedSettings, [.accessibility])
+    }
+
     func testExternalPermissionSetupPreparesWindowBeforePromptAndOpen() {
         let permissions = FakePermissionSetupPermissions()
         let companion = FakePermissionSetupCompanion()
@@ -1057,6 +1127,11 @@ private final class FakePermissionSetupPermissions: PermissionSetupPermissionMan
     private(set) var openedSettings: [PermissionKind] = []
     var onPromptAccessibility: (() -> Void)?
     var onOpenSettings: ((PermissionKind) -> Void)?
+    var onRefresh: (() -> Void)?
+
+    func refresh() {
+        onRefresh?()
+    }
 
     func status(for kind: PermissionKind) -> PermissionStatus {
         statuses[kind] ?? .denied

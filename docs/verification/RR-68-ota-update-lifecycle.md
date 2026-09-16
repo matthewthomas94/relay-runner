@@ -117,6 +117,19 @@ instead of adding a second daemon manager.
 
 ## TCC Attribution
 
+Before replacement, verify that the new app satisfies the existing app's
+permission identity (this also checks the fixed release identity and signature):
+
+```bash
+python3 services/app_signing.py verify 'dist/Relay Runner.app' --installed '/Applications/Relay Runner.app'
+```
+
+Record Microphone, Accessibility, and Screen Recording status before and after
+the update. Previously granted permissions must remain granted, and resuming a
+completed permission step must not reopen System Settings or request access
+again. Revoked permissions must still be reported as missing. An old ad-hoc
+install is a one-time migration case, not proof of signed-to-signed retention.
+
 Sparkle replacement must preserve the bundle identifier, signing team, and
 helper placement:
 

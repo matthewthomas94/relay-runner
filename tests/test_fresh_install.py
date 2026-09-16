@@ -20,6 +20,7 @@ from fresh_install import (  # noqa: E402
     FreshInstallError,
     FreshInstallInjectedFailure,
 )
+from app_signing import AppSigningError  # noqa: E402
 
 
 class FreshInstallTests(unittest.TestCase):
@@ -37,6 +38,11 @@ class FreshInstallTests(unittest.TestCase):
         self._make_state()
         self._make_app(self.source_app, marker=b"new-app")
         self._make_app(self.destination_app, marker=b"old-app")
+        # Filesystem fixtures contain marker bytes, not signed Mach-O bundles.
+        # The signing boundary has its own regression suite.
+        identity_patch = mock.patch("fresh_install.verify_update_identity")
+        self.verify_identity = identity_patch.start()
+        self.addCleanup(identity_patch.stop)
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -93,6 +99,24 @@ class FreshInstallTests(unittest.TestCase):
             (Path(result.replaced_app_backup) / "Contents/MacOS/relay-runner").read_bytes(),
             b"old-app",
         )
+
+    def test_identity_change_blocks_preflight_and_execution_without_changing_app_or_state(self):
+        self.verify_identity.side_effect = AppSigningError("Update changes the installed app's permission identity")
+        app_before = self.tree(self.destination_app)
+        state_before = self.tree(self.state)
+        for execute in (False, True):
+            with self.assertRaisesRegex(FreshInstallError, "permission identity"):
+                if execute:
+                    self.coordinator().reinstall(
+                        source_app=self.source_app, destination_app=self.destination_app, execute=True,
+                    )
+                else:
+                    self.coordinator().preview_reinstall(
+                        source_app=self.source_app, destination_app=self.destination_app,
+                    )
+        self.verify_identity.assert_called_with(self.source_app.resolve(), self.destination_app.resolve())
+        self.assertEqual(self.tree(self.destination_app), app_before)
+        self.assertEqual(self.tree(self.state), state_before)
 
     def test_normal_reinstall_preserves_registered_repository_without_commits(self):
         shutil.rmtree(self.repo)

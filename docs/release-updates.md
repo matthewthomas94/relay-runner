@@ -26,7 +26,7 @@ Tagged releases fail early unless all release secrets are present:
 - `SPARKLE_ED_PRIVATE_KEY`: Sparkle EdDSA private key that matches `SUPublicEDKey`.
 - `UPDATE_REPO_TOKEN`: GitHub token with permission to publish releases to `matthewthomas94/relay-runner-updates`.
 
-Pull requests and normal `main` pushes do not require these secrets. They build ad-hoc package artifacts so packaging regressions still surface, but they do not generate or publish an appcast.
+Pull requests and normal `main` pushes do not require these secrets. CI explicitly allows isolated ad-hoc package artifacts when signing credentials are unavailable, but these builds do not generate or publish an appcast and cannot replace the installed app.
 
 ## Feed Hosting
 
@@ -57,6 +57,16 @@ Sparkle compares `CFBundleVersion`, not `CFBundleShortVersionString`. Every publ
 ## Signing And Notarization
 
 `scripts/build-dmg.sh` signs the nested Sparkle framework, helper binaries, main executable, and outer app bundle, waits for app notarization, and staples the app before creating `RelayRunner.zip`. When `SIGN_IDENTITY` and `NOTARY_PROFILE` are set, CI also waits for DMG notarization and staples `RelayRunner.dmg` before publishing release assets.
+
+### Preserve permissions across updates
+
+Local builds automatically select the Developer ID Application certificate for Relay Runner's release team (`QK9K4AQRNH`). Without that certificate, the build stops before replacing anything. `SIGN_IDENTITY` can select a certificate explicitly, but the resulting app must still satisfy the release identity check. Certificate renewal within that team is supported; an app version or executable hash is never part of the release requirement.
+
+`services/app_signing.py` validates the signed app and its compatibility with the installed app's designated requirement before a build refresh or preserving reinstall. Tagged release packaging also checks the release identity before creating archives. These checks apply equally to Codex and Claude because the app owns their Relay permissions.
+
+Ad-hoc builds require `RELAY_ALLOW_ADHOC_SIGNING=1` (and `SIGN_IDENTITY=-` to force one when a certificate is available). They are isolated test artifacts: the build skips `/Applications`, and the preserving installer rejects them. Replacing an earlier ad-hoc install with a Developer ID build may need one final macOS permission grant; subsequent signed updates retain the same identity.
+
+macOS stores the app's designated requirement with a permission grant. A changing ad-hoc signature cannot preserve it. See [Apple's code signing requirements reference](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements).
 
 For the old-version to new-version update checklist, service lifecycle checks, Codex/Claude active-session behavior, and TCC attribution checks, see `docs/verification/RR-68-ota-update-lifecycle.md`.
 

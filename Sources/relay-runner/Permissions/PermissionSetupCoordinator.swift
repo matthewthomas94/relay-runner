@@ -79,6 +79,7 @@ struct PermissionSetupLifecycleEvent: Equatable {
 }
 
 protocol PermissionSetupPermissionManaging: AnyObject {
+    func refresh()
     func status(for kind: PermissionKind) -> PermissionStatus
     func requestMicrophonePrompt(completion: @escaping (Bool) -> Void)
     func promptAccessibility()
@@ -167,6 +168,14 @@ final class PermissionSetupCoordinator {
             bundleURL: Bundle.main.bundleURL
         )
         cancel(restoreNotch: false)
+        // Setup can be resumed after an update or after the user grants access
+        // in Settings. Recheck macOS before issuing another permission request.
+        permissions.refresh()
+        if permissions.status(for: permission) == .granted {
+            setSetupNotchState(nil)
+            postGrantReady(permission, source)
+            return
+        }
         active = ActiveSetup(request: request)
         setSetupNotchState(PermissionSetupNotchState(permission: permission))
 

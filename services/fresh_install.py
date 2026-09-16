@@ -24,6 +24,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from app_signing import AppSigningError, verify_update_identity
+
 
 RESET_ACTIVE_STATES = frozenset(
     {
@@ -157,6 +159,13 @@ class FreshInstallCoordinator:
         source = Path(source_app).expanduser().resolve()
         destination = Path(destination_app).expanduser().resolve()
         self._validate_app_bundle(source)
+        try:
+            verify_update_identity(source, destination)
+        except AppSigningError as error:
+            raise FreshInstallError(
+                str(error),
+                recovery="Rebuild with Relay Runner's Developer ID certificate, then repeat preflight.",
+            ) from error
         state = self._state_manifest()
         return FreshInstallPreview(
             action="reinstall",
