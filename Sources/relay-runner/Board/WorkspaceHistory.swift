@@ -3,6 +3,7 @@ import Observation
 
 struct ArtifactHistorySearchResponse: Decodable, Equatable {
     let history: [ArtifactHistoryCard]
+    let recovery: String?
 }
 
 struct ArtifactHistoryCard: Decodable, Equatable, Identifiable {
@@ -103,164 +104,6 @@ struct ArtifactDependencyItem: Decodable, Equatable, Identifiable {
     }
 }
 
-struct ArtifactRetentionTicket: Decodable, Equatable, Identifiable {
-    let ticketID: String
-    let artifactID: String
-    let title: String
-    let status: String
-    let activityAt: String
-    let dependencies: [String]
-    let attachmentPaths: [String]
-    let exemptions: [String]
-    let materialized: Bool
-
-    var id: String { ticketID }
-
-    private enum CodingKeys: String, CodingKey {
-        case title, status, dependencies, exemptions, materialized
-        case ticketID = "ticket_id"
-        case artifactID = "artifact_id"
-        case activityAt = "activity_at"
-        case attachmentPaths = "attachment_paths"
-    }
-}
-
-struct ArtifactRetentionPlan: Decodable, Equatable {
-    let schemaVersion: Int
-    let policy: String
-    let limit: Int
-    let projectID: String
-    let artifactHead: String
-    let evaluatedAt: String
-    let retainedTerminalIDs: [String]
-    let nonterminalIDs: [String]
-    let evictionCandidateIDs: [String]
-    let materializeIDs: [String]
-    let temporaryOverage: [String: [String]]
-    let retainedTerminal: [ArtifactRetentionTicket]
-    let evictionCandidates: [ArtifactRetentionTicket]
-
-    var estimatedRemovedFileCount: Int {
-        evictionCandidates.reduce(0) { $0 + 1 + $1.attachmentPaths.count }
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case policy, limit
-        case schemaVersion = "schema_version"
-        case projectID = "project_id"
-        case artifactHead = "artifact_head"
-        case evaluatedAt = "evaluated_at"
-        case retainedTerminalIDs = "retained_terminal_ids"
-        case nonterminalIDs = "nonterminal_ids"
-        case evictionCandidateIDs = "eviction_candidate_ids"
-        case materializeIDs = "materialize_ids"
-        case temporaryOverage = "temporary_overage"
-        case retainedTerminal = "retained_terminal"
-        case evictionCandidates = "eviction_candidates"
-    }
-}
-
-struct ArtifactRetentionStatus: Decodable, Equatable {
-    let state: String
-    let remoteMode: String
-    let remoteName: String?
-    let exposureConfirmationRequired: Bool
-    let plan: ArtifactRetentionPlan
-    let transaction: ArtifactRetentionTransaction
-    let remote: ArtifactRetentionRemote?
-    let blockedReasons: [String]
-    let retryActions: [String]
-
-    private enum CodingKeys: String, CodingKey {
-        case state, plan, transaction, remote
-        case remoteMode = "remote_mode"
-        case remoteName = "remote_name"
-        case exposureConfirmationRequired = "exposure_confirmation_required"
-        case blockedReasons = "blocked_reasons"
-        case retryActions = "retry_actions"
-    }
-
-    func canSubmit(exposureConfirmed: Bool, retry: Bool) -> Bool {
-        guard remoteMode == "enabled" else { return false }
-        guard !exposureConfirmationRequired || exposureConfirmed else { return false }
-        return retry ? transaction.retryAvailable : state == "ready"
-    }
-
-    func recoveryMessages(excluding globalError: String?) -> [String] {
-        let candidates = blockedReasons + [remote?.recovery, transaction.lastError].compactMap { $0 }
-        return candidates.reduce(into: []) { messages, candidate in
-            let message = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !message.isEmpty, message != globalError, !messages.contains(message) else { return }
-            messages.append(message)
-        }
-    }
-}
-
-struct ArtifactRetentionTransaction: Decodable, Equatable {
-    let state: String
-    let phase: String?
-    let retryAvailable: Bool
-    let lastError: String?
-
-    private enum CodingKeys: String, CodingKey {
-        case state, phase
-        case retryAvailable = "retry_available"
-        case lastError = "last_error"
-    }
-}
-
-struct ArtifactRetentionRemote: Decodable, Equatable {
-    let state: String
-    let recovery: String?
-}
-
-struct ArtifactStorageMetrics: Decodable, Equatable {
-    let materialized: ArtifactMaterializedStorage
-    let retention: ArtifactRetentionStorage
-    let reachableGitObjectsBytes: Int
-    let databasesBytes: Int
-    let runLogsBytes: Int
-    let indexesBytes: Int
-    let cachesBytes: Int
-    let reclaimableEstimateBytes: Int
-
-    private enum CodingKeys: String, CodingKey {
-        case materialized, retention
-        case reachableGitObjectsBytes = "reachable_git_objects_bytes"
-        case databasesBytes = "databases_bytes"
-        case runLogsBytes = "run_logs_bytes"
-        case indexesBytes = "indexes_bytes"
-        case cachesBytes = "caches_bytes"
-        case reclaimableEstimateBytes = "reclaimable_estimate_bytes"
-    }
-}
-
-struct ArtifactMaterializedStorage: Decodable, Equatable {
-    let bytes: Int
-    let files: Int
-    let tickets: ArtifactStorageCategory
-    let attachments: ArtifactStorageCategory
-}
-
-struct ArtifactStorageCategory: Decodable, Equatable {
-    let bytes: Int
-    let files: Int
-}
-
-struct ArtifactRetentionStorage: Decodable, Equatable {
-    let retainedTerminalCount: Int
-    let nonterminalCount: Int
-    let temporaryOverageCount: Int
-    let remotelyBackedHistoryCount: Int
-
-    private enum CodingKeys: String, CodingKey {
-        case retainedTerminalCount = "retained_terminal_count"
-        case nonterminalCount = "nonterminal_count"
-        case temporaryOverageCount = "temporary_overage_count"
-        case remotelyBackedHistoryCount = "remotely_backed_history_count"
-    }
-}
-
 struct ArtifactOperationResponse: Decodable, Equatable {
     let state: String
     let ticketIDs: [String]
@@ -271,13 +114,6 @@ struct ArtifactOperationResponse: Decodable, Equatable {
         case state, warnings, recovery
         case ticketIDs = "ticket_ids"
     }
-}
-
-enum WorkspaceHistorySection: String, CaseIterable, Identifiable {
-    case history = "History"
-    case migration = "Storage"
-
-    var id: String { rawValue }
 }
 
 struct WorkspaceHistoryBadge: Equatable {
@@ -320,26 +156,17 @@ struct WorkspaceHistoryBadge: Equatable {
 @Observable
 final class WorkspaceHistoryViewModel {
     static let policySummary = (
-        "All unfinished tickets stay materialized without a cap. Done and Canceled share one "
-        + "pool; the 25 most recently active terminal tickets stay materialized."
+        "All unfinished tickets stay local without a cap. The newest 25 Done and Canceled "
+        + "tickets stay local; older tickets are archived automatically."
     )
-    static let materializationDisclaimer = (
-        "Cleanup removes only materialized ticket Markdown and Relay-owned attachments. "
-        + "Archive catalog metadata, reachable Git objects, indexes, caches, databases, and run logs remain."
-    )
-
     let repoPath: String
     let projectName: String
     let projectScopeToken: String?
-    var section: WorkspaceHistorySection = .history
     var query = ""
     var cards: [ArtifactHistoryCard] = []
     var selectedCard: ArtifactHistoryCard?
     var detail: ArtifactHistoryDetailResponse?
     var dependencies: ArtifactDependencySummary?
-    var retentionStatus: ArtifactRetentionStatus?
-    var storage: ArtifactStorageMetrics?
-    var exposureConfirmed = false
     var isLoading = false
     var errorMessage: String?
     var notice: String?
@@ -354,23 +181,13 @@ final class WorkspaceHistoryViewModel {
         isLoading = true
         errorMessage = nil
         do {
-            async let history = OrchestratorClient.fetchArtifactHistory(
+            let response = try await OrchestratorClient.fetchArtifactHistory(
                 repoPath: repoPath,
                 query: query,
                 projectScopeToken: projectScopeToken
             )
-            async let status = OrchestratorClient.fetchArtifactRetentionStatus(
-                repoPath: repoPath,
-                projectScopeToken: projectScopeToken
-            )
-            async let metrics = OrchestratorClient.fetchArtifactStorageMetrics(
-                repoPath: repoPath,
-                projectScopeToken: projectScopeToken
-            )
-            let values = try await (history, status, metrics)
-            cards = values.0.history
-            retentionStatus = values.1
-            storage = values.2
+            cards = response.history
+            notice = response.recovery
         } catch {
             errorMessage = Self.message(for: error)
         }
@@ -378,18 +195,7 @@ final class WorkspaceHistoryViewModel {
     }
 
     func search() async {
-        isLoading = true
-        errorMessage = nil
-        do {
-            cards = try await OrchestratorClient.fetchArtifactHistory(
-                repoPath: repoPath,
-                query: query,
-                projectScopeToken: projectScopeToken
-            ).history
-        } catch {
-            errorMessage = Self.message(for: error)
-        }
-        isLoading = false
+        await refresh()
     }
 
     func select(_ card: ArtifactHistoryCard, online: Bool = false) async {
@@ -398,13 +204,12 @@ final class WorkspaceHistoryViewModel {
         dependencies = nil
         isLoading = true
         errorMessage = nil
-        let confirmsExposure = online && exposureConfirmed
         do {
             async let fetchedDetail = OrchestratorClient.fetchArtifactHistoryDetail(
                 repoPath: repoPath,
                 artifactID: card.artifactID,
                 online: online,
-                confirmGitHubExposure: confirmsExposure,
+                confirmGitHubExposure: false,
                 projectScopeToken: projectScopeToken
             )
             async let fetchedDependencies = OrchestratorClient.fetchArtifactDependencySummary(
@@ -431,7 +236,7 @@ final class WorkspaceHistoryViewModel {
                 artifactID: card.artifactID,
                 reopen: reopen,
                 online: detail?.availability == "needs_network",
-                confirmGitHubExposure: exposureConfirmed,
+                confirmGitHubExposure: false,
                 projectScopeToken: projectScopeToken
             )
             notice = reopen
@@ -441,35 +246,6 @@ final class WorkspaceHistoryViewModel {
             selectedCard = nil
             detail = nil
             dependencies = nil
-            await refresh()
-        } catch {
-            errorMessage = Self.message(for: error)
-        }
-        isLoading = false
-    }
-
-    func applyRetention(retry: Bool = false) async {
-        guard !isLoading else { return }
-        guard retentionStatus?.remoteMode == "enabled" else {
-            errorMessage = "Select and enable an existing GitHub remote before applying cleanup."
-            return
-        }
-        guard exposureConfirmed || retentionStatus?.exposureConfirmationRequired != true else {
-            errorMessage = "Confirm the selected GitHub exposure before applying cleanup."
-            return
-        }
-        isLoading = true
-        errorMessage = nil
-        do {
-            let result = try await OrchestratorClient.applyArtifactRetention(
-                repoPath: repoPath,
-                retry: retry,
-                confirmGitHubExposure: exposureConfirmed,
-                projectScopeToken: projectScopeToken
-            )
-            notice = result.recovery ?? (
-                retry ? "Retention recovery completed." : "Verified retention cleanup completed."
-            )
             await refresh()
         } catch {
             errorMessage = Self.message(for: error)

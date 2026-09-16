@@ -48,6 +48,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
 try:
     from services.artifact_lifecycle import ArtifactLifecycleCoordinator
+    from services.automatic_retention import automatic_confirmation, sweep_automatic_retention
     from services.artifact_retention import (
         ArtifactRetentionManager,
         DependencyHistoryUnavailable,
@@ -71,6 +72,7 @@ try:
     from services.artifact_sync import ArtifactSyncEngine, ArtifactSyncMode
 except ModuleNotFoundError:  # Installed direct-script layout.
     from artifact_lifecycle import ArtifactLifecycleCoordinator  # type: ignore[no-redef]
+    from automatic_retention import automatic_confirmation, sweep_automatic_retention
     from artifact_retention import (  # type: ignore[no-redef]
         ArtifactRetentionManager,
         DependencyHistoryUnavailable,
@@ -5380,6 +5382,26 @@ class Daemon:
                     file=sys.stderr,
                 )
 
+    def sweep_artifact_retention(self) -> list[dict[str, Any]]:
+        """Maintain opted-in projects without requiring a mounted Workspace."""
+        results = []
+        for repo_path in _registered_project_repo_paths(self.project_registry_v2_path):
+            try:
+                lifecycle = self._artifact_lifecycle(repo_path)
+                if lifecycle is None:
+                    continue
+                decision = self.artifact_rollout.decision(
+                    lifecycle.store.project_id, project_kind="existing", configured_opt_in=True,
+                )
+                if not decision.artifact_sync_enabled:
+                    continue
+                lifecycle.validate_scope(None, internally_confirmed_project_id=lifecycle.store.project_id)
+                result = sweep_automatic_retention(lifecycle.store, lease_store=lifecycle.leases)
+                results.append({"repo_path": repo_path, **result})
+            except Exception as error:  # A blocked project must not stop other projects.
+                results.append({"repo_path": repo_path, "state": "blocked", "recovery": str(error)})
+        return results
+
     def artifact_board_claim_next_id(
         self,
         *,
@@ -5581,7 +5603,7 @@ class Daemon:
             mode=mode,
             remote_name=remote_name,
         ) if mode != ArtifactSyncMode.LOCAL_ONLY else None
-        confirmation = None
+        confirmation = automatic_confirmation(lifecycle.store, config)
         if confirm_github_exposure:
             if mode != ArtifactSyncMode.ENABLED or remote_name is None:
                 raise ValueError("GitHub exposure confirmation requires enabled remote sync")
@@ -5693,7 +5715,7 @@ class Daemon:
             "remote_mode": manager.remote_mode,
             "remote_name": getattr(synchronizer, "remote_name", None),
             "exposure_confirmation_required": bool(
-                plan["eviction_candidate_ids"] and manager.remote_mode == "enabled"
+                plan["eviction_candidate_ids"] and manager.remote_mode == "enabled" and _confirmation is None
             ),
             "plan": plan,
             "transaction": transaction,
@@ -5776,6 +5798,10 @@ class Daemon:
         project_scope_token: str | None,
         query: str = "",
     ) -> dict[str, Any]:
+        if self._artifact_lifecycle(repo_path) is None:
+            return {"history": [], "recovery": (
+                "Automatic archiving has not been enabled for this project yet."
+            )}
         manager, _sync, _confirmation = self._artifact_retention_components(
             repo_path, project_scope_token
         )
@@ -11505,6 +11531,24 @@ def serve(daemon: Daemon) -> None:
                 print(f"[orchestrator] queue-drain monitor failed: {e}", file=sys.stderr)
 
     threading.Thread(target=_queue_drain_loop, name="queue-drain-monitor", daemon=True).start()
+
+    def _retention_loop():
+        # Start immediately, then retry offline/publication failures every minute.
+        # This lane is independent of voice, worker dispatch and Workspace refresh.
+        previous = {}
+        while not stop.is_set():
+            try:
+                for result in daemon.sweep_artifact_retention():
+                    repo = result["repo_path"]
+                    state = result["state"]
+                    if state not in {"clean", "disabled"} and result != previous.get(repo):
+                        print(f"[orchestrator] automatic retention: {result}", file=sys.stderr)
+                    previous[repo] = result
+            except Exception as error:
+                print(f"[orchestrator] retention sweep failed: {error}", file=sys.stderr)
+            stop.wait(60)
+
+    threading.Thread(target=_retention_loop, name="ticket-retention", daemon=True).start()
 
     try:
         server.serve_forever(poll_interval=0.5)

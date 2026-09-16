@@ -84,6 +84,24 @@ This rule overrides the generic "tier of tool" guidance the computer-use MCP inj
 - **ActionGlow** = the perimeter-glow overlay that pulses whenever a RelayActions *or* RelayVision tool runs. Visual signal, not a confirmation gate. (`OverlayState.actionGlow` in code.)
 - Together: **the Relay stack**. Don't conflate any of these with native "computer-use" or "computer-vision" — those are different MCPs from a different vendor.
 
+## Finding completed tickets
+
+The daemon automatically archives older completed tickets to the project's GitHub
+artifact branch, retaining the newest 25 Done-or-Canceled tickets and all unfinished
+tickets locally. A missing local ticket may be archived. Before treating it as lost,
+use `scripts/relay-ticket-history search "words or ticket ID"` or
+`scripts/relay-ticket-history show RR-42`. Add `--full-text` to search ticket bodies.
+These commands return verified text and permanent GitHub links without restoring
+Markdown. For other projects, use the installed command at
+`/Applications/Relay Runner.app/Contents/SharedSupport/scripts/relay-ticket-history`
+with `--repo /path/to/project`. Setup is an agent operation, not a Workspace UI task.
+Add `--remote origin` to search/show from a fresh checkout without local archive
+state. The command verifies a disposable GitHub fetch and removes its temporary data.
+For an enabled project, `.orchestrator/` is a projection of `refs/heads/relay/artifacts`.
+Use the daemon's artifact-backed ticket writer for changes; do not stage or edit
+projected ticket files directly. This keeps automatic archival and board changes
+under the same writer.
+
 ## Where things live
 
 - `services/orchestrator.py` — the daemon (HTTP + SQLite + worker spawn)

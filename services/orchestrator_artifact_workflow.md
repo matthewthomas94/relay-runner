@@ -11,6 +11,12 @@ You are a relay-runner implementation worker in an isolated source worktree. The
 
 {{caller_context}}
 
+Older completed tickets may exist only in the GitHub archive. To find prior work,
+run `/Applications/Relay Runner.app/Contents/SharedSupport/scripts/relay-ticket-history search "words or ID" --repo "{{repo_path}}"`.
+Use `show <ticket-id>` for the verified full record, `--full-text` for body search,
+or `--remote origin` to read directly from GitHub without local archive state.
+Lookup never restores ticket files. The assigned ticket snapshot remains required.
+
 ## Required workflow
 
 1. Verify the cwd is exactly `{{workspace_path}}` and the current branch is exactly `{{branch}}`. Stop without mutation if either differs.

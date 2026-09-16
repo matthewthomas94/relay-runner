@@ -434,6 +434,24 @@ Saved through the daemon-owned typed writer.
         self.assertEqual(unscoped_code, 422)
         self.assertIn("scope token", unscoped["error"])
 
+    def test_background_retention_uses_registered_scope_without_ui_and_respects_rollout_pause(self):
+        with patch.object(orchestrator, "sweep_automatic_retention", return_value={"state": "clean", "ticket_ids": []}) as sweep:
+            results = self.daemon.sweep_artifact_retention()
+            self.assertEqual([r["state"] for r in results], ["clean"])
+            self.assertEqual(sweep.call_count, 1)
+            self.assertEqual(sweep.call_args.args[0].project_id, self.store.project_id)
+            self.daemon.artifact_rollout.pause_cohort(
+                PROJECT_OPT_IN, writers_drained=True, sync_frozen=True, reason_code="cas_failure",
+            )
+            self.daemon.sweep_artifact_retention()
+            self.assertEqual(sweep.call_count, 1)
+
+    def test_legacy_history_explains_setup_without_artifact_writer_http_error(self):
+        with patch.object(self.daemon, "_artifact_lifecycle", return_value=None):
+            result = self.daemon.artifact_history_search(repo_path=str(self.repo), project_scope_token=None)
+        self.assertEqual(result["history"], [])
+        self.assertIn("not been enabled", result["recovery"])
+
     def test_retention_status_blocks_non_github_remote_before_apply(self):
         remote = self.root / "origin.git"
         subprocess.run(

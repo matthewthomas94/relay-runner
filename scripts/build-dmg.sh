@@ -240,7 +240,7 @@ fi
 # Python services
 for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py continuity_incidents.py continuity_agent.py continuity_recovery.py continuity_reports.py continuity_resume.py relay_authorization.py intent_arbitration.py intent_inbox.py provider_turn_broker.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py \
          custom_voice.py custom_voice_worker.py custom_voice_install.py voice_audio_lease.py \
-         artifact_lifecycle.py artifact_migration.py artifact_migration_cli.py \
+         artifact_lifecycle.py artifact_migration.py artifact_migration_cli.py artifact_history_cli.py automatic_retention.py \
          artifact_catalog.py artifact_retention.py artifact_rollout.py artifact_rollout_cli.py artifact_store.py artifact_sync.py \
          artifact_verification.py artifact_verification_cli.py app_signing.py fresh_install.py fresh_install_cli.py \
          followup_tickets.py graphify_core.py graphify_ingest.py orchestrator.py orchestrator_artifact_workflow.md orchestrator_workflow.md \
@@ -260,6 +260,8 @@ cp "$PROJECT_ROOT/scripts/relay-orchestrator" "$APP_DIR/Contents/SharedSupport/s
 chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-orchestrator"
 cp "$PROJECT_ROOT/scripts/relay-artifact-migrate" "$APP_DIR/Contents/SharedSupport/scripts/"
 chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-artifact-migrate"
+cp "$PROJECT_ROOT/scripts/relay-ticket-history" "$APP_DIR/Contents/SharedSupport/scripts/"
+chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-ticket-history"
 cp "$PROJECT_ROOT/scripts/relay-runner-fresh-install" "$APP_DIR/Contents/SharedSupport/scripts/"
 chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-runner-fresh-install"
 cp "$PROJECT_ROOT/scripts/relay-artifact-verify" "$APP_DIR/Contents/SharedSupport/scripts/"

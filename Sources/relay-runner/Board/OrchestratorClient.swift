@@ -335,30 +335,6 @@ enum OrchestratorClient {
         )
     }
 
-    static func fetchArtifactRetentionStatus(
-        repoPath: String,
-        projectScopeToken: String?
-    ) async throws -> ArtifactRetentionStatus {
-        try await artifactGet(
-            ArtifactRetentionStatus.self,
-            path: "/v1/artifacts/retention/status",
-            repoPath: repoPath,
-            projectScopeToken: projectScopeToken
-        )
-    }
-
-    static func fetchArtifactStorageMetrics(
-        repoPath: String,
-        projectScopeToken: String?
-    ) async throws -> ArtifactStorageMetrics {
-        try await artifactGet(
-            ArtifactStorageMetrics.self,
-            path: "/v1/artifacts/storage",
-            repoPath: repoPath,
-            projectScopeToken: projectScopeToken
-        )
-    }
-
     static func restoreArtifactHistory(
         repoPath: String,
         artifactID: String,
@@ -381,26 +357,6 @@ enum OrchestratorClient {
             ArtifactOperationResponse.self,
             path: "/v1/artifacts/history/\(pathComponent(artifactID))/\(reopen ? "reopen" : "restore")",
             payload: values
-        )
-    }
-
-    static func applyArtifactRetention(
-        repoPath: String,
-        retry: Bool,
-        confirmGitHubExposure: Bool,
-        projectScopeToken: String?
-    ) async throws -> ArtifactOperationResponse {
-        var payload = artifactPayload(
-            repoPath: repoPath,
-            projectScopeToken: projectScopeToken
-        )
-        payload["confirm_github_exposure"] = confirmGitHubExposure
-        return try await artifactPost(
-            ArtifactOperationResponse.self,
-            path: retry
-                ? "/v1/artifacts/retention/retry"
-                : "/v1/artifacts/retention/apply",
-            payload: payload
         )
     }
 

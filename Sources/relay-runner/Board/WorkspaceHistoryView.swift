@@ -15,14 +15,7 @@ struct WorkspaceHistoryView: View {
             if let notice = model.notice {
                 messageStrip(notice, warning: false)
             }
-            Group {
-                switch model.section {
-                case .history:
-                    historySurface
-                case .migration:
-                    storageSurface
-                }
-            }
+            historySurface
             .opacity(model.isLoading ? 0.65 : 1)
             .overlay {
                 if model.isLoading {
@@ -53,13 +46,6 @@ struct WorkspaceHistoryView: View {
                     .lineLimit(1)
             }
             Spacer()
-            Picker("History section", selection: $model.section) {
-                ForEach(WorkspaceHistorySection.allCases) { section in
-                    Text(section.rawValue).tag(section)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 210)
             Button("Close", action: onClose)
                 .buttonStyle(.bordered)
                 .keyboardShortcut(.cancelAction)
@@ -84,7 +70,7 @@ struct WorkspaceHistoryView: View {
                     .buttonStyle(.bordered)
                     .accessibilityLabel("Search history")
                 }
-                Text("Viewing history never restores ticket files.")
+                Text(WorkspaceHistoryViewModel.policySummary)
                     .font(.system(size: 11))
                     .foregroundStyle(Color.white.opacity(0.55))
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -117,7 +103,7 @@ struct WorkspaceHistoryView: View {
                             .foregroundStyle(Color.white.opacity(0.45))
                         Text("Select a historical ticket")
                             .foregroundStyle(Color.white.opacity(0.7))
-                        Text("Search and detail use archive metadata and verified Git objects without silently recreating Markdown.")
+                        Text("Search completed work without restoring ticket files.")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.white.opacity(0.5))
                             .multilineTextAlignment(.center)
@@ -199,13 +185,10 @@ struct WorkspaceHistoryView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Color.orange)
                     if detail.availability == "needs_network" {
-                        Toggle("Confirm access to the selected GitHub remote", isOn: $model.exposureConfirmed)
-                            .font(.system(size: 12))
                         Button("Fetch verified detail") {
                             Task { await model.select(card, online: true) }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(!model.exposureConfirmed)
                     }
                 }
             } else {
@@ -299,147 +282,6 @@ struct WorkspaceHistoryView: View {
         }
     }
 
-    private var storageSurface: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                Text(WorkspaceHistoryViewModel.policySummary)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.white)
-                Text(WorkspaceHistoryViewModel.materializationDisclaimer)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.white.opacity(0.6))
-
-                if let status = model.retentionStatus {
-                    storageSummary(status)
-                    exactSet(
-                        title: "Unfinished tickets — kept without a cap",
-                        ids: status.plan.nonterminalIDs
-                    )
-                    exactSet(
-                        title: "Retained Done or Canceled — newest \(status.plan.limit)",
-                        ids: status.plan.retainedTerminalIDs
-                    )
-                    exactSet(
-                        title: "Deletion candidates after verification",
-                        ids: status.plan.evictionCandidateIDs
-                    )
-                    if !status.plan.temporaryOverage.isEmpty {
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text("Temporary safety overage")
-                                .font(.system(size: 13, weight: .semibold))
-                            ForEach(status.plan.temporaryOverage.keys.sorted(), id: \.self) { id in
-                                Text("\(id): \(status.plan.temporaryOverage[id, default: []].joined(separator: ", "))")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(Color.orange)
-                            }
-                        }
-                    }
-                    recoverySummary(status)
-                    applyControls(status)
-                }
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func storageSummary(_ status: ArtifactRetentionStatus) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Migration preview")
-                .font(.system(size: 15, weight: .semibold))
-            HStack(spacing: 24) {
-                metric("Materialized files", "\(model.storage?.materialized.files ?? 0)")
-                metric("Estimated file reduction", "\(status.plan.estimatedRemovedFileCount)")
-                metric("Estimated reclaimable", formatBytes(model.storage?.reclaimableEstimateBytes ?? 0))
-                metric("Reachable Git objects", formatBytes(model.storage?.reachableGitObjectsBytes ?? 0))
-            }
-            Text("Selected remote: \(status.remoteName ?? "None — Local Archive Only")")
-                .font(.system(size: 12, weight: .medium))
-            Text("Remote state: \(status.remote?.state ?? status.remoteMode)")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.white.opacity(0.58))
-        }
-    }
-
-    private func recoverySummary(_ status: ArtifactRetentionStatus) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("Before apply")
-                .font(.system(size: 13, weight: .semibold))
-            Text("Relay publishes and refetches the exact archive commit before any candidate file is removed. Before local adoption, rollback leaves the current materialization untouched; after publication, retry completes the journaled transaction forward. Offline, authentication, divergence, interruption, or integrity failures keep affected files materialized. Neither path purges Git history.")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.white.opacity(0.62))
-            ForEach(status.recoveryMessages(excluding: model.errorMessage), id: \.self) { message in
-                Text(message)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.orange)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func applyControls(_ status: ArtifactRetentionStatus) -> some View {
-        let retry = status.transaction.retryAvailable
-        let canSubmit = status.canSubmit(
-            exposureConfirmed: model.exposureConfirmed,
-            retry: retry
-        )
-        if status.plan.evictionCandidateIDs.isEmpty {
-            Text("No terminal files are currently eligible for cleanup.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.green)
-        } else {
-            Toggle(
-                "I confirm that Relay ticket content may be published to the selected GitHub remote before local cleanup.",
-                isOn: $model.exposureConfirmed
-            )
-            .font(.system(size: 12))
-            .accessibilityLabel("Confirm GitHub privacy exposure")
-            HStack {
-                if retry {
-                    Button("Retry blocked migration") {
-                        Task {
-                            await model.applyRetention(retry: true)
-                            onWorkspaceChanged()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canSubmit || model.isLoading)
-                } else {
-                    Button("Apply verified cleanup") {
-                        Task {
-                            await model.applyRetention()
-                            onWorkspaceChanged()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canSubmit || model.isLoading)
-                }
-                Text("Candidate files remain local until remote verification succeeds.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.white.opacity(0.5))
-            }
-        }
-    }
-
-    private func exactSet(title: String, ids: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("\(title) (\(ids.count))")
-                .font(.system(size: 13, weight: .semibold))
-            Text(ids.isEmpty ? "None" : ids.joined(separator: ", "))
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(Color.white.opacity(0.62))
-                .textSelection(.enabled)
-        }
-    }
-
-    private func metric(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value).font(.system(size: 15, weight: .semibold))
-            Text(title).font(.system(size: 10)).foregroundStyle(Color.white.opacity(0.5))
-        }
-        .accessibilityElement(children: .combine)
-    }
-
     private func badgeView(_ badge: WorkspaceHistoryBadge) -> some View {
         Text(badge.label)
             .font(.system(size: 10, weight: .semibold))
@@ -462,7 +304,7 @@ struct WorkspaceHistoryView: View {
 
     private func unavailableExplanation(_ availability: String) -> String {
         switch availability {
-        case "needs_network": "This Git object is not available locally. Confirm the selected GitHub remote to fetch and verify it."
+        case "needs_network": "This ticket needs to be downloaded from its GitHub archive."
         case "tampered": "Archive metadata or Git object identity failed verification. Restore and reopen are disabled."
         case "not_found": "This historical ticket is missing from the verified archive catalog."
         default: "Historical detail is unavailable."

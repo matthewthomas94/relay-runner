@@ -2,6 +2,44 @@
 
 RR-337 replaces the original RR-273 age policy with the accepted terminal-count policy. The provider-neutral service API is `services/artifact_retention.py`; it writes only through `ArtifactStore`.
 
+## Automatic operation and agent retrieval
+
+Completed-ticket housekeeping runs in the daemon at startup and every 60 seconds,
+independently of the Workspace UI. One-time agent setup selects an existing
+GitHub remote and enables the journaled migration and background retention:
+
+```bash
+scripts/relay-ticket-history enable --repo /path/to/project --remote origin
+```
+
+This command is the authorization to publish ticket content and remove verified
+older local ticket files. It keeps all unfinished tickets and the newest 25
+combined Done-or-Canceled tickets. The authorization is durable and bound to the
+selected fetch and push destinations. Changed destinations pause housekeeping;
+ordinary batches need no confirmation or UI action. Local-only/paused projects
+and paused rollout cohorts are not published. Failed publication preserves the
+local files, and the daemon retries incomplete transactions automatically.
+
+Agents can discover and retrieve old work without restoring ticket files:
+
+```bash
+scripts/relay-ticket-history search "voice playback" --repo /path/to/project
+scripts/relay-ticket-history search "implementation detail" --full-text --repo /path/to/project
+scripts/relay-ticket-history show RR-42 --repo /path/to/project
+```
+
+Results include immutable GitHub blob URLs. `show` returns the verified complete
+ticket and attachment metadata. A fresh agent can add `--remote origin` to search
+or show directly from GitHub in a disposable repository; no migration, local
+archive checkout, or ticket restoration is required. The installed
+entrypoint is `/Applications/Relay Runner.app/Contents/SharedSupport/scripts/relay-ticket-history`.
+Codex and Claude use identical commands and retention behavior. History is an
+optional browser; there is no Storage tab or manual cleanup workflow.
+
+The limit applies to materialized ticket files and their managed attachments.
+Ordinary Git history, including historical archive blobs, remains recoverable;
+this is not a Git history purge.
+
 ## Terminal-only count and ordering
 
 Planning is read-only and remains available while retention is in preview-only mode. `terminal-count-v1` always materializes every nonterminal ticket without a count cap. Done and Canceled tickets form one pool; the 25 newest are retained. The deterministic order is descending canonical `activity_at`, then ascending immutable `artifact_id`. Display IDs and provider identity never affect the result.
@@ -38,7 +76,7 @@ The Workspace exposes this contract from the selected project's **History** cont
 
 User-facing state badges are intentionally specific: **Materialized**, **Temporary Safety Overage**, **GitHub-backed • Locally Reachable Through Git**, **Needs Network**, **Local Archive Only**, **Missing**, and **Tampered**. “GitHub-backed” never means “remote only”: a verified historical object may still be reachable in local Git even when its Markdown is absent from `.orchestrator/`.
 
-The Workspace Storage preview lists the exact uncapped nonterminal set, retained terminal set, deletion candidates, temporary-overage reasons, selected remote, and estimated materialized file reduction before apply. GitHub exposure requires an explicit confirmation. Offline, authentication, divergence, interruption, or integrity failures keep candidate files materialized and expose a journaled retry action.
+The diagnostic retention APIs still expose retained tickets, candidates and retry reasons to agents. Routine cleanup and retry are automatic after setup. Offline, authentication, divergence, interruption, or integrity failures keep candidate files materialized.
 
 Routine Delete is an ordinary recoverable tombstone commit and warns that Git history remains. Sensitive-data purge is not a retention operation: rotate exposed credentials and use a separately reviewed, coordinated history-rewrite and remote-cleanup procedure.
 

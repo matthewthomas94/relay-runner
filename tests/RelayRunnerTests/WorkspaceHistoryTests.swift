@@ -69,66 +69,6 @@ final class WorkspaceHistoryTests: XCTestCase {
         XCTAssertEqual(detail.attachments.first?.displayName, "proof.png")
     }
 
-    func testRetentionStatusDecodesExactPreviewAndStorageState() throws {
-        let status = try JSONDecoder().decode(
-            ArtifactRetentionStatus.self,
-            from: Data(Self.statusJSON.utf8)
-        )
-
-        XCTAssertEqual(status.plan.limit, 25)
-        XCTAssertEqual(status.plan.nonterminalIDs, ["RR-open"])
-        XCTAssertEqual(status.plan.retainedTerminalIDs, ["RR-new"])
-        XCTAssertEqual(status.plan.evictionCandidateIDs, ["RR-old"])
-        XCTAssertEqual(status.plan.estimatedRemovedFileCount, 3)
-        XCTAssertEqual(status.remoteName, "origin")
-        XCTAssertTrue(status.exposureConfirmationRequired)
-        XCTAssertEqual(status.transaction.lastError, "offline")
-    }
-
-    func testBlockedRetentionCannotApplyButPreparedRecoveryCanRetry() throws {
-        let status = try JSONDecoder().decode(
-            ArtifactRetentionStatus.self,
-            from: Data(Self.statusJSON.utf8)
-        )
-
-        XCTAssertFalse(status.canSubmit(exposureConfirmed: true, retry: false))
-        XCTAssertTrue(status.canSubmit(exposureConfirmed: true, retry: true))
-    }
-
-    func testRecoveryMessagesAreUniqueAndExcludeTheGlobalError() throws {
-        let status = try JSONDecoder().decode(
-            ArtifactRetentionStatus.self,
-            from: Data(Self.statusJSON.utf8)
-        )
-
-        XCTAssertEqual(
-            status.recoveryMessages(excluding: "offline"),
-            ["Reconnect and retry."]
-        )
-    }
-
-    func testStorageMetricsDistinguishMaterializationFromOtherLocalData() throws {
-        let json = """
-        {
-          "materialized":{"bytes":100,"files":3,"tickets":{"bytes":60,"files":2},"attachments":{"bytes":40,"files":1}},
-          "retention":{"retained_terminal_count":1,"nonterminal_count":1,"temporary_overage_count":0,"remotely_backed_history_count":30},
-          "reachable_git_objects_bytes":500,
-          "databases_bytes":20,
-          "run_logs_bytes":30,
-          "indexes_bytes":40,
-          "caches_bytes":50,
-          "reclaimable_estimate_bytes":45
-        }
-        """
-        let metrics = try JSONDecoder().decode(ArtifactStorageMetrics.self, from: Data(json.utf8))
-
-        XCTAssertEqual(metrics.materialized.tickets.files, 2)
-        XCTAssertEqual(metrics.materialized.attachments.files, 1)
-        XCTAssertEqual(metrics.retention.remotelyBackedHistoryCount, 30)
-        XCTAssertEqual(metrics.reachableGitObjectsBytes, 500)
-        XCTAssertEqual(metrics.reclaimableEstimateBytes, 45)
-    }
-
     func testHistoryGETRequestCarriesProjectScopeAndSearch() throws {
         let request = try XCTUnwrap(OrchestratorClient.artifactGetRequest(
             path: "/v1/artifacts/history/search",
@@ -178,46 +118,11 @@ final class WorkspaceHistoryTests: XCTestCase {
         XCTAssertNil(model.history)
     }
 
-    func testPolicyCopyKeepsUnfinishedUncappedAndExplainsGitObjectsRemain() {
+    func testPolicyCopyDescribesAutomaticRetentionAndKeepsUnfinishedUncapped() {
         XCTAssertTrue(WorkspaceHistoryViewModel.policySummary.contains("without a cap"))
         XCTAssertTrue(WorkspaceHistoryViewModel.policySummary.contains("Done and Canceled"))
         XCTAssertTrue(WorkspaceHistoryViewModel.policySummary.contains("25"))
-        XCTAssertTrue(WorkspaceHistoryViewModel.materializationDisclaimer.contains("reachable Git objects"))
-        XCTAssertTrue(WorkspaceHistoryViewModel.materializationDisclaimer.contains("run logs remain"))
+        XCTAssertTrue(WorkspaceHistoryViewModel.policySummary.contains("archived automatically"))
     }
 
-    private static let statusJSON = """
-    {
-      "state":"blocked",
-      "remote_mode":"enabled",
-      "remote_name":"origin",
-      "exposure_confirmation_required":true,
-      "plan":{
-        "schema_version":1,
-        "policy":"terminal-count-v1",
-        "limit":25,
-        "project_id":"project-1",
-        "artifact_head":"abc",
-        "evaluated_at":"2026-08-20T00:00:00Z",
-        "retained_terminal_ids":["RR-new"],
-        "nonterminal_ids":["RR-open"],
-        "eviction_candidate_ids":["RR-old"],
-        "materialize_ids":[],
-        "temporary_overage":{},
-        "retained_terminal":[{
-          "ticket_id":"RR-new","artifact_id":"artifact-new","title":"New","status":"done",
-          "activity_at":"2026-08-20T00:00:00Z","dependencies":[],"attachment_paths":[],"exemptions":[],"materialized":true
-        }],
-        "eviction_candidates":[{
-          "ticket_id":"RR-old","artifact_id":"artifact-old","title":"Old","status":"canceled",
-          "activity_at":"2026-01-01T00:00:00Z","dependencies":[],
-          "attachment_paths":["attachments/RR-old/a.png","attachments/RR-old/b.txt"],"exemptions":[],"materialized":true
-        }]
-      },
-      "transaction":{"state":"prepared","phase":"prepared","retry_available":true,"last_error":"offline"},
-      "remote":{"state":"offline","recovery":"Reconnect and retry."},
-      "blocked_reasons":["Reconnect and retry."],
-      "retry_actions":["POST /v1/artifacts/retention/retry"]
-    }
-    """
 }

@@ -191,6 +191,7 @@ class ArtifactMigrationCoordinator:
         provider: str | None = None,
         failure_injector: Callable[[str], None] | None = None,
         remote_timeout_seconds: float = 15.0,
+        remote_name: str | None = None,
     ) -> None:
         self.repo = Path(repo_path).expanduser().resolve()
         self.project_id = project_id
@@ -206,6 +207,7 @@ class ArtifactMigrationCoordinator:
         self.provider = provider
         self.failure_injector = failure_injector
         self.remote_timeout_seconds = max(1.0, float(remote_timeout_seconds))
+        self.remote_name = remote_name
         self.store = ArtifactStore(
             self.repo,
             project_id,
@@ -824,6 +826,8 @@ class ArtifactMigrationCoordinator:
     def _remote_preflight(self, registry_record: Mapping[str, Any]) -> dict[str, Any]:
         metadata = registry_record.get("remote")
         assert isinstance(metadata, dict)
+        if self.remote_name is not None:
+            metadata = {"mode": "enabled", "remoteName": self.remote_name}
         mode = str(metadata.get("mode") or "local_only")
         name = metadata.get("remoteName", metadata.get("remote_name"))
         if mode == "local_only" or not name:

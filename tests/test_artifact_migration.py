@@ -121,6 +121,23 @@ class ArtifactMigrationTests(unittest.TestCase):
         self.assertEqual(second.artifact_commit, result.artifact_commit)
         self.assertEqual(second.source_commit, result.source_commit)
 
+    def test_agent_selected_remote_enables_legacy_project_without_editing_registry_first(self):
+        remote = self.root / "selected.git"
+        subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+        self.git(self.repo, "remote", "add", "archive", str(remote))
+        before = self.registry.read_bytes()
+        coordinator = self.coordinator(remote_name="archive")
+        preview = coordinator.preview()
+        self.assertTrue(preview.can_migrate, preview.blockers)
+        self.assertEqual(preview.remote["name"], "archive")
+        self.assertEqual(preview.remote["state"], "ref_absent")
+        self.assertEqual(self.registry.read_bytes(), before)
+        result = coordinator.migrate(confirm_source_cleanup=True, confirm_first_push=True)
+        self.assertEqual(result.remote_result["mode"], "enabled")
+        config = (self.repo / ".orchestrator/config.toml").read_text()
+        self.assertIn('remote_name = "archive"', config)
+        self.assertIn('artifact_lifecycle = "enabled"', config)
+
     def test_preflight_refuses_every_unsafe_legacy_and_active_run_condition_without_repo_mutation(self):
         cases = []
 
