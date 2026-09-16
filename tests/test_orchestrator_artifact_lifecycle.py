@@ -456,6 +456,34 @@ Saved through the daemon-owned typed writer.
         self.assertEqual(result["history"], [])
         self.assertIn("automatic GitHub backup", result["recovery"])
 
+    def test_background_retention_discovers_inactive_projects_and_isolates_failures(self):
+        registry = self.daemon.project_registry_v2_path
+        with patch.object(orchestrator, "prepare_project_retention", return_value={"state": "clean"}) as prepare:
+            self.daemon.sweep_artifact_retention()
+            self.assertEqual(prepare.call_count, 1)
+        document = json.loads(registry.read_text())
+        projects = [self.repo.resolve()]
+        for name in ("newly-added", "newly-created"):
+            repo = self.root / name
+            repo.mkdir()
+            projects.append(repo.resolve())
+            document["projects"].append({
+                "project_id": name, "selected_path": str(repo),
+                "last_resolved_path": str(repo), "availability": "available",
+            })
+        registry.write_text(json.dumps(document))
+
+        def prepare_project(repo, *_args, **_kwargs):
+            if repo == self.repo.resolve():
+                raise OSError("backup unavailable")
+            return {"state": "clean"}
+
+        with patch.object(orchestrator, "prepare_project_retention", side_effect=prepare_project) as prepare:
+            results = self.daemon.sweep_artifact_retention()
+        self.assertCountEqual([call.args[0] for call in prepare.call_args_list], projects)
+        self.assertCountEqual([result["state"] for result in results], ["blocked", "clean", "clean"])
+        self.assertEqual(document["active_project_id"], "daemon-project")
+
     def test_retention_status_blocks_non_github_remote_before_apply(self):
         remote = self.root / "origin.git"
         subprocess.run(

@@ -30,6 +30,18 @@ cohorts are not published. Default `local_only` registration metadata does not
 disable automatic setup once a GitHub remote exists. Failed initial setup and
 incomplete archive transactions are retried automatically.
 
+New repositories do not need a first source commit. If their GitHub remote is
+added later, the next background pass picks it up and applies the same limit.
+Migration preserves the unborn source branch and unrelated staged work. Existing
+canonical boards also acquire the automatic writer without a second legacy import.
+Recovery checks migration and materialization journals before treating a missing
+ticket directory as an empty project. A failed project never stops housekeeping
+for other registered projects, including inactive ones.
+
+Interrupted setup revalidates the recorded fetch and push destinations before
+publishing. Ticket edits made since the migration backup pause source cleanup
+for reconciliation, preserving those edits.
+
 Agents can discover and retrieve old work without restoring ticket files:
 
 ```bash

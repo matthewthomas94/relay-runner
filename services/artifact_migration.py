@@ -33,7 +33,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 try:
-    from services.artifact_retention import ArtifactRetentionManager
+    from services.artifact_retention import ArtifactRetentionManager, _configured_remote_urls
     from services.artifact_store import (
         ARTIFACT_REF,
         ArchiveIndexWrite,
@@ -60,7 +60,7 @@ try:
     )
     from services.tickets import TicketParseError, parse as parse_ticket
 except ModuleNotFoundError:  # Installed direct-script layout.
-    from artifact_retention import ArtifactRetentionManager  # type: ignore[no-redef]
+    from artifact_retention import ArtifactRetentionManager, _configured_remote_urls  # type: ignore[no-redef]
     from artifact_store import (  # type: ignore[no-redef]
         ARTIFACT_REF,
         ArchiveIndexWrite,
@@ -241,8 +241,8 @@ class ArtifactMigrationCoordinator:
         source_head = ""
 
         try:
-            source_head = self._git_text("rev-parse", "--verify", "HEAD")
             source_branch = self._git_text("symbolic-ref", "--quiet", "--short", "HEAD")
+            source_head = self._optional_git_text("rev-parse", "--verify", "HEAD") or ""
             common_directory = self._absolute_git_path(
                 self._git_text("rev-parse", "--path-format=absolute", "--git-common-dir")
             )
@@ -293,7 +293,7 @@ class ArtifactMigrationCoordinator:
         except ArtifactMigrationError as error:
             self._block(blockers, "program_store", str(error), error.recovery)
 
-        if manifest and source_head:
+        if manifest and source_branch:
             local_ref = self._optional_git_text("rev-parse", "--verify", ARTIFACT_REF)
             if local_ref:
                 journal = self._load_journal()
@@ -429,7 +429,7 @@ class ArtifactMigrationCoordinator:
                 )
             self._validate_resume_identity(journal, allow_legacy_materialization=True)
             source_commit: str | None = None
-            cutover_happened = bool(journal.get("source_commit"))
+            cutover_happened = bool(journal.get("source_cutover_complete") or journal.get("source_commit"))
             if cutover_happened:
                 expected_artifact = str(journal.get("artifact_commit") or "")
                 current_artifact = self._optional_git_text("rev-parse", "--verify", ARTIFACT_REF)
@@ -844,6 +844,12 @@ class ArtifactMigrationCoordinator:
                 f"Configured artifact remote {name!r} does not exist.",
                 recovery="Restore that remote or switch the project to local-only before migration.",
             )
+        try:
+            fetch_url, push_url = _configured_remote_urls(self.store, name)
+        except ArtifactStoreError as error:
+            raise ArtifactMigrationBlocked(
+                str(error), recovery="Select one existing archive push destination before migration.",
+            ) from error
         output = self._run_git(
             "ls-remote", "--refs", name, ARTIFACT_REF,
             timeout=self.remote_timeout_seconds,
@@ -867,7 +873,8 @@ class ArtifactMigrationCoordinator:
             "state": state,
             "oid": oid,
             "locator": remotes[name]["locator"],
-            "url_sha256": remotes[name]["url_sha256"],
+            "url_sha256": hashlib.sha256(fetch_url.encode()).hexdigest(),
+            "push_url_sha256": hashlib.sha256(push_url.encode()).hexdigest(),
         }
 
     # ------------------------------------------------------------------
@@ -1013,8 +1020,19 @@ class ArtifactMigrationCoordinator:
 
     def _source_cutover(self, journal: dict[str, Any]) -> dict[str, Any]:
         self._revalidate_unrelated_source(journal)
+        current_manifest = self._directory_manifest(self.repo / ".orchestrator", prefix=".orchestrator")
+        if _file_manifest_digest(current_manifest) != journal["manifest"]["source_tree_sha256"]:
+            self._reconciliation(
+                "Legacy tickets changed after migration preflight.",
+                "Preserve the edits and reconcile them with the recorded archive before resuming.", journal,
+            )
         expected_head = str(journal["source_head_before"])
-        current_head = self._git_text("rev-parse", "--verify", "HEAD")
+        current_head = self._optional_git_text("rev-parse", "--verify", "HEAD") or ""
+        if self._git_text("symbolic-ref", "--quiet", "--short", "HEAD") != journal["source_branch"]:
+            self._reconciliation(
+                "Source branch changed after preflight.",
+                "Return to the recorded source branch before resuming migration.", journal,
+            )
         if current_head != expected_head:
             self._reconciliation(
                 f"Source HEAD changed after preflight: expected {expected_head}, found {current_head}.",
@@ -1024,7 +1042,7 @@ class ArtifactMigrationCoordinator:
         tracked_paths = sorted(
             path for path, meta in journal["manifest"]["files"].items() if meta.get("tracked")
         )
-        if tracked_paths:
+        if tracked_paths and expected_head:
             source_commit = self._commit_source_without_orchestrator(
                 parent=expected_head,
                 branch=str(journal["source_branch"]),
@@ -1033,7 +1051,16 @@ class ArtifactMigrationCoordinator:
             )
         else:
             source_commit = expected_head
+            if tracked_paths:
+                # Newly created repositories can accumulate tickets before a
+                # first source commit. Preserve that unborn branch and every
+                # unrelated staged file; only unstage the backed-up tickets.
+                self._run_git(
+                    "update-index", "-z", "--force-remove", "--stdin",
+                    input_bytes=b"\0".join(path.encode() for path in tracked_paths) + b"\0",
+                )
         journal["source_commit"] = source_commit
+        journal["source_cutover_complete"] = True
         journal["source_cleanup_paths"] = tracked_paths
         journal["stage"] = "source_cutover"
         self._write_journal(journal)
@@ -1150,8 +1177,8 @@ class ArtifactMigrationCoordinator:
         )
         return commit
 
-    def _restore_source_commit(self, journal: Mapping[str, Any]) -> str:
-        parent = self._git_text("rev-parse", "--verify", "HEAD")
+    def _restore_source_commit(self, journal: Mapping[str, Any]) -> str | None:
+        parent = self._optional_git_text("rev-parse", "--verify", "HEAD") or ""
         branch = self._git_text("symbolic-ref", "--quiet", "--short", "HEAD")
         if branch != journal.get("source_branch"):
             self._reconciliation(
@@ -1160,6 +1187,20 @@ class ArtifactMigrationCoordinator:
                 journal,
             )
         backup_files = self._backup_bytes()
+        if not parent:
+            if journal.get("source_head_before"):
+                self._reconciliation(
+                    "The recorded source commit is no longer available.",
+                    "Restore the recorded source branch before rollback.", journal,
+                )
+            for path, metadata in journal["manifest"]["files"].items():
+                if metadata.get("tracked"):
+                    relative = str(PurePosixPath(path).relative_to(".orchestrator"))
+                    oid = self._run_git(
+                        "hash-object", "-w", "--stdin", input_bytes=backup_files[relative],
+                    ).stdout.decode().strip()
+                    self._run_git("update-index", "--add", "--cacheinfo", "100644", oid, path)
+            return None
         with tempfile.TemporaryDirectory(prefix="relay-rollback-index-") as temporary:
             index = Path(temporary) / "index"
             env = self._git_environment({"GIT_INDEX_FILE": str(index)})
@@ -1371,9 +1412,21 @@ class ArtifactMigrationCoordinator:
                 recovery="Select a remote or remain local-only.",
                 report=journal,
             )
+        fetch_url, push_url = _configured_remote_urls(self.store, name)
+        # Older journals recorded only the fetch URL. They can safely resume
+        # when the effective push destination is that same recorded URL.
+        expected_push = remote.get("push_url_sha256") or remote.get("url_sha256")
+        if (
+            hashlib.sha256(fetch_url.encode()).hexdigest() != remote.get("url_sha256")
+            or hashlib.sha256(push_url.encode()).hexdigest() != expected_push
+        ):
+            self._reconciliation(
+                "The archive destination changed after migration preflight.",
+                "Restore the recorded remote destination before resuming publication.", journal,
+            )
         head = self.store.snapshot().commit_id
         result = self._run_git(
-            "push", name, f"{head}:{ARTIFACT_REF}",
+            "push", push_url, f"{head}:{ARTIFACT_REF}",
             timeout=self.remote_timeout_seconds,
             allowed_statuses={0, 1, 128},
         )
@@ -1427,8 +1480,10 @@ class ArtifactMigrationCoordinator:
                     "Reconcile immutable event IDs before resuming.",
                     journal,
                 )
-        if not allow_legacy_materialization and journal.get("source_commit"):
-            current_source = self._git_text("rev-parse", "--verify", "HEAD")
+        if not allow_legacy_materialization and (
+            journal.get("source_cutover_complete") or journal.get("source_commit")
+        ):
+            current_source = self._optional_git_text("rev-parse", "--verify", "HEAD") or ""
             if current_source != journal.get("source_commit"):
                 self._reconciliation(
                     "Source HEAD changed after migration cutover.",
@@ -1440,7 +1495,7 @@ class ArtifactMigrationCoordinator:
         before = journal.get("git_before") or {}
         current = self._git_state(
             source_branch=str(journal["source_branch"]),
-            source_head=self._git_text("rev-parse", "--verify", "HEAD"),
+            source_head=self._optional_git_text("rev-parse", "--verify", "HEAD") or "",
         )
         for field in ("unrelated_index_sha256", "unrelated_status_sha256", "remotes_sha256"):
             if current.get(field) != before.get(field):
@@ -1454,7 +1509,7 @@ class ArtifactMigrationCoordinator:
         before = journal.get("git_before") or {}
         current = self._git_state(
             source_branch=str(journal["source_branch"]),
-            source_head=self._git_text("rev-parse", "--verify", "HEAD"),
+            source_head=self._optional_git_text("rev-parse", "--verify", "HEAD") or "",
         )
         for field in ("unrelated_index_sha256", "unrelated_status_sha256", "remotes_sha256"):
             if current.get(field) != before.get(field):

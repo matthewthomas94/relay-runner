@@ -61,9 +61,7 @@ def prepare_project_retention(
     project_id = record["project_id"]
     root = repo / ".orchestrator"
     config_path = root / "config.toml"
-    if not config_path.exists() and not list(root.glob("*.md")):
-        return {"state": "clean", "ticket_ids": [], "retained": 0}
-    config = tomllib.loads(config_path.read_text())
+    config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
     if config.get("project_id", project_id) != project_id:
         raise ArtifactValidationError("The archive belongs to another registered project.")
     remote = record.get("remote") or {}
@@ -75,6 +73,28 @@ def prepare_project_retention(
     decision = rollout.decision(project_id, project_kind="existing", configured_opt_in=True)
     if not decision.artifact_writes_enabled or not decision.artifact_sync_enabled:
         return {"state": "disabled", "ticket_ids": [], "recovery": decision.reason_code}
+
+    store = ArtifactStore(repo, project_id, state_root, enabled=True)
+    migration = ArtifactMigrationCoordinator(
+        repo, project_id, state_root, registry_path=registry_path,
+        runs_db_path=state_root / "orchestrator/runs.db",
+        graphify_path=state_root / "orchestrator/graphify.db",
+    )
+    journal = json.loads(migration.journal_path.read_text()) if migration.journal_path.exists() else {}
+    if journal.get("stage") == "rolled_back":
+        return {"state": "disabled", "ticket_ids": [], "recovery": "migration_rolled_back"}
+    if journal and journal.get("stage") != "complete":
+        # Resume from the recorded destination and manifest before inspecting a
+        # potentially displaced or partially migrated working-tree projection.
+        destination = (journal.get("remote_preflight") or {}).get("name")
+        if destination:
+            confirm_github_remote(store, destination, exposure_confirmed=True)
+        migration.migrate(confirm_source_cleanup=True, confirm_first_push=True)
+    if store.journal_path.exists():
+        store.recover()
+    if not config_path.exists() and not list(root.glob("*.md")):
+        return {"state": "clean", "ticket_ids": [], "retained": 0}
+    config = tomllib.loads(config_path.read_text())
     if config.get("automatic_retention") is True:
         return None
 
@@ -85,7 +105,6 @@ def prepare_project_retention(
     if terminal_count <= 25:
         return {"state": "clean", "ticket_ids": [], "retained": terminal_count}
 
-    store = ArtifactStore(repo, project_id, state_root, enabled=True)
     selected = config.get("remote_name") or remote.get("remoteName") or remote.get("remote_name")
     names = store._git("remote").stdout.splitlines()
     if not selected and "origin" in names:
@@ -107,13 +126,13 @@ def prepare_project_retention(
             "Completed tickets are waiting for an existing GitHub backup remote."
         )}
     confirm_github_remote(store, selected, exposure_confirmed=True)
-    migration = ArtifactMigrationCoordinator(
-        repo, project_id, state_root, registry_path=registry_path,
-        runs_db_path=state_root / "orchestrator/runs.db",
-        graphify_path=state_root / "orchestrator/graphify.db", remote_name=selected,
-    )
-    journal = json.loads(migration.journal_path.read_text()) if migration.journal_path.exists() else {}
-    if config.get("artifact_lifecycle") != "enabled" or journal.get("stage", "complete") != "complete":
+    if config.get("schema_version") == 2:
+        # An already canonical project needs its writer enabled, not another
+        # legacy import that could conflict with its existing artifact history.
+        if config.get("artifact_lifecycle") != "enabled":
+            _configure(store, {"artifact_lifecycle": "enabled"})
+    else:
+        migration.remote_name = selected
         migration.migrate(confirm_source_cleanup=True, confirm_first_push=True)
     enable_automatic_retention(store, selected)
     return None

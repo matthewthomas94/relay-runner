@@ -18,6 +18,7 @@ from artifact_migration import (  # noqa: E402
     ArtifactMigrationBlocked,
     ArtifactMigrationCoordinator,
     ArtifactMigrationInjectedFailure,
+    ArtifactMigrationReconciliationRequired,
 )
 from artifact_store import ARTIFACT_REF, ArtifactStore  # noqa: E402
 
@@ -225,6 +226,84 @@ class ArtifactMigrationTests(unittest.TestCase):
             self.git(self.repo, "show", "-s", "--format=%B", rollback.source_commit),
         )
         self.assertEqual(self.coordinator().rollback().idempotent, True)
+
+    def test_unborn_project_migration_and_rollback_preserve_source_and_staged_files(self):
+        repo = self.root / "unborn"
+        repo.mkdir()
+        self.git(repo, "init", "--initial-branch=main", "--quiet")
+        shutil.copytree(self.repo / ".orchestrator", repo / ".orchestrator")
+        (repo / "README.md").write_text("New project\n")
+        self.git(repo, "add", ".orchestrator", "README.md")
+        index_before = self.git(repo, "ls-files", "--stage")
+        tree_before = self._tree_bytes(repo / ".orchestrator")
+        self._write_registry(repo)
+        coordinator = self.coordinator(repo)
+
+        migrated = coordinator.migrate(confirm_source_cleanup=True)
+        self.assertEqual(migrated.stage, "complete")
+        self.assertIsNone(self.optional_git(repo, "rev-parse", "--verify", "HEAD"))
+        self.assertEqual(self.git(repo, "ls-files"), "README.md")
+        rollback = coordinator.rollback()
+        self.assertEqual(rollback.stage, "rolled_back")
+        self.assertIsNone(self.optional_git(repo, "rev-parse", "--verify", "HEAD"))
+        self.assertEqual(self.git(repo, "ls-files", "--stage"), index_before)
+        self.assertEqual(self._tree_bytes(repo / ".orchestrator"), tree_before)
+        self.assertEqual((repo / "README.md").read_text(), "New project\n")
+        self.assertEqual(self.git(repo, "rev-parse", ARTIFACT_REF), migrated.artifact_commit)
+        self.assertTrue(coordinator.rollback().idempotent)
+
+    def test_resume_preserves_ticket_edits_made_after_legacy_backup(self):
+        def fail(stage):
+            if stage == "after_artifact_bootstrap":
+                raise RuntimeError("interrupted setup")
+
+        with self.assertRaises(ArtifactMigrationInjectedFailure):
+            self.coordinator(failure_injector=fail).migrate(confirm_source_cleanup=True)
+        ticket = self.repo / ".orchestrator/RR-2.md"
+        ticket.write_text(ticket.read_text() + "\nNew unfinished work must survive.\n")
+        edited = ticket.read_bytes()
+        source = self.git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(ArtifactMigrationReconciliationRequired, "tickets changed"):
+            self.coordinator().migrate(confirm_source_cleanup=True)
+        self.assertEqual(ticket.read_bytes(), edited)
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), source)
+
+    def test_resume_does_not_publish_to_a_changed_push_destination(self):
+        remote = self.root / "original.git"
+        other = self.root / "retargeted.git"
+        for path in (remote, other):
+            subprocess.run(["git", "init", "--bare", "-q", str(path)], check=True)
+        self.git(self.repo, "remote", "add", "origin", str(remote))
+        self._write_registry(self.repo, remote_name="origin", remote_mode="enabled")
+
+        def fail(stage):
+            if stage == "after_artifact_bootstrap":
+                raise RuntimeError("interrupted setup")
+
+        with self.assertRaises(ArtifactMigrationInjectedFailure):
+            self.coordinator(failure_injector=fail).migrate(
+                confirm_source_cleanup=True, confirm_first_push=True,
+            )
+        self.git(self.repo, "remote", "set-url", "--push", "origin", str(other))
+        with self.assertRaisesRegex(ArtifactMigrationReconciliationRequired, "destination changed"):
+            self.coordinator().migrate(confirm_source_cleanup=True, confirm_first_push=True)
+        self.assertIsNone(self.optional_git_dir(other, "rev-parse", ARTIFACT_REF))
+        self.assertTrue((self.repo / ".orchestrator/RR-1.md").exists())
+        self.git(self.repo, "remote", "set-url", "--push", "origin", str(remote))
+        self.assertEqual(self.coordinator().migrate(
+            confirm_source_cleanup=True, confirm_first_push=True,
+        ).stage, "complete")
+
+    def test_preflight_reports_multiple_push_destinations_without_mutation(self):
+        self.git(self.repo, "remote", "add", "origin", str(self.root / "archive.git"))
+        for name in ("first.git", "second.git"):
+            self.git(self.repo, "config", "--add", "remote.origin.pushurl", str(self.root / name))
+        self._write_registry(self.repo, remote_name="origin", remote_mode="enabled")
+        before = self._repository_snapshot(self.repo)
+        preview = self.coordinator().preview()
+        self.assertFalse(preview.can_migrate)
+        self.assertIn("exactly one", str(preview.blockers))
+        self.assertEqual(self._repository_snapshot(self.repo), before)
 
     def test_remote_first_push_is_explicit_normal_and_never_publishes_source(self):
         remote = self.root / "remote.git"

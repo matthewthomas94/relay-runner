@@ -1,5 +1,8 @@
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -8,7 +11,7 @@ from tests import test_artifact_migration as migration_fixtures
 from services.artifact_history_cli import remote_store, show
 from services.artifact_retention import ArchiveRemoteConfirmation, _configured_remote_urls
 from services.artifact_rollout import ArtifactRolloutStore, PROJECT_OPT_IN
-from services.artifact_store import ArtifactStore
+from services.artifact_store import ArtifactMutation, ArtifactStore, ConfigWrite
 from services.automatic_retention import (
     prepare_project_retention, retention_registry_revision, sweep_automatic_retention,
 )
@@ -170,6 +173,73 @@ class ProjectRetentionTests(unittest.TestCase):
         document["active_project_id"] = "added-project"
         f.registry.write_text(json.dumps(document))
         self.assertNotEqual(retention_registry_revision(f.registry), first)
+
+    def test_new_project_without_source_commit_archives_after_a_remote_is_added(self):
+        f = self.fixture
+        self.seed(26)
+        new_repo = f.root / "newly-created"
+        new_repo.mkdir()
+        f.git(new_repo, "init", "--initial-branch=main", "-q")
+        shutil.copytree(f.repo / ".orchestrator", new_repo / ".orchestrator")
+        f.repo = new_repo
+        f._write_registry(new_repo)
+        (new_repo / "README.md").write_text("Uncommitted project work\n")
+        f.git(new_repo, "add", "README.md", ".orchestrator")
+        source_index = f.git(new_repo, "ls-files", "--stage", "--", "README.md")
+        self.assertEqual(self.prepare()["state"], "waiting_for_remote")
+        f.git(new_repo, "remote", "add", "backup", str(self.remote))
+        self.assertIsNone(self.prepare())
+        store = ArtifactStore(new_repo, f.project_id, f.state, enabled=True)
+        self.assertEqual(sweep_automatic_retention(store)["ticket_ids"], ["RR-1"])
+        self.assertEqual(f.git(new_repo, "ls-files", "--stage", "--", "README.md"), source_index)
+        self.assertEqual((new_repo / "README.md").read_text(), "Uncommitted project work\n")
+        self.assertNotEqual(subprocess.run(
+            ["git", "-C", str(new_repo), "rev-parse", "--verify", "HEAD"],
+            capture_output=True,
+        ).returncode, 0)  # Archival must not invent a source commit.
+        with remote_store(new_repo, "backup") as reader:
+            self.assertIn("Legacy evidence", show(reader, "RR-1")["markdown"])
+
+    def test_existing_canonical_store_enables_its_board_writer_automatically(self):
+        f = self.fixture
+        self.seed(26)
+        f.coordinator().migrate(confirm_source_cleanup=True)
+        store = ArtifactStore(f.repo, f.project_id, f.state, enabled=True)
+        snapshot = store.snapshot()
+        config = snapshot.files[".orchestrator/config.toml"].decode().replace(
+            'artifact_lifecycle = "enabled"', 'artifact_lifecycle = "legacy"',
+        )
+        store.mutate(ArtifactMutation(
+            event_id="existing-canonical-store", actor_type="system", device_id="test",
+            expected_base=snapshot.commit_id, operations=(ConfigWrite(config.encode()),),
+        ))
+        self.assertIsNone(self.prepare())
+        self.assertIn('artifact_lifecycle = "enabled"', (f.repo / ".orchestrator/config.toml").read_text())
+        self.assertEqual(sweep_automatic_retention(store)["ticket_ids"], ["RR-1"])
+
+    def test_interrupted_cleanup_recovers_even_when_projection_is_temporarily_absent(self):
+        f = self.fixture
+        self.seed(26)
+        self.prepare()
+        store = ArtifactStore(f.repo, f.project_id, f.state, enabled=True)
+        replace = os.replace
+
+        def interrupt(source, destination):
+            if Path(destination) == store.materialized_path and Path(source).name.startswith(".relay-materialization-"):
+                raise OSError("interrupted projection swap")
+            return replace(source, destination)
+
+        with patch("services.artifact_store.os.replace", side_effect=interrupt):
+            with self.assertRaisesRegex(OSError, "interrupted projection swap"):
+                sweep_automatic_retention(store)
+        self.assertFalse(store.materialized_path.exists())
+        self.assertTrue(store.journal_path.exists())
+        self.assertIsNone(self.prepare())
+        sweep_automatic_retention(store)
+        self.assertEqual(len(list(store.materialized_path.glob("*.md"))), 26)
+        self.assertTrue((store.materialized_path / "RR-2.md").exists())
+        self.assertFalse((store.materialized_path / "RR-1.md").exists())
+        self.assertFalse(store.journal_path.exists())
 
 
 if __name__ == "__main__":
