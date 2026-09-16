@@ -1,0 +1,8 @@
+schema_version = 2
+project_id = "6d23b5b1-6da7-4056-b328-7ea8167388c0"
+prefix = "RR"
+artifact_ref = "refs/heads/relay/artifacts"
+remote_sync = "enabled"
+remote_name = "origin"
+artifact_lifecycle = "enabled"
+next_id = 354
