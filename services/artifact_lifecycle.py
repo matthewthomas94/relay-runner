@@ -64,6 +64,7 @@ TERMINAL_RUN_STATES = {
 LIVE_RUN_STATES = {
     "Claimed",
     "Running",
+    "SpikeResultReady",
     "AwaitingReview",
     "Reviewing",
     "Succeeded",
@@ -510,6 +511,99 @@ class ArtifactLifecycleCoordinator:
         self._release_run_leases(run_id, run_state)
         return result
 
+    def recover_spike_completion(self, run_id: int) -> LifecycleWriteResult | None:
+        """Repair a publication interrupted after the canonical commit, before the ledger."""
+        prior = self._prior_event(f"lifecycle:run:{run_id}:spike")
+        if prior is not None:
+            self.store.recover()
+            self._release_run_leases(run_id, "spike_completed")
+        return prior
+
+    def recover_spike_failure(self, run_id: int) -> str | None:
+        for suffix, state in (("canceled", "Canceled"), ("failed", "Failed")):
+            if self._prior_event(f"lifecycle:run:{run_id}:{suffix}") is not None:
+                self.store.recover()
+                self._release_run_leases(run_id, suffix)
+                return state
+        return None
+
+    def publish_spike_result(
+        self,
+        *,
+        run_id: int,
+        ticket_id: str,
+        provider: str,
+        workspace_path: Path,
+        report: str,
+    ) -> LifecycleWriteResult:
+        """Publish a daemon-validated report without a source commit or reviewer lease."""
+        self._validate_provider(provider)
+        prior = self.recover_spike_completion(run_id)
+        if prior is not None:
+            return prior
+        if self.recover_spike_failure(run_id) is not None:
+            raise ArtifactValidationError("spike run already failed or was canceled")
+        _bounded_text(report, "spike report", 128 * 1024)
+        self._validate_materialized_snapshot(
+            workspace_path=workspace_path,
+            ticket_id=ticket_id,
+            run_id=run_id,
+            provider=provider,
+            start_head=_git_text(workspace_path, "rev-parse", "HEAD"),
+        )
+        lease = self._lease_for_run(run_id, "worker")
+        snapshot = self.store.snapshot()
+        path = f".orchestrator/{ticket_id}.md"
+        content = snapshot.files.get(path)
+        if content is None:
+            raise ArtifactValidationError(f"canonical ticket {ticket_id} is missing")
+        fields, _ = _split_ticket(content)
+        if (
+            fields.get("execution_mode") != "spike"
+            or fields.get("status") != "in_progress"
+            or fields.get("run_id") != str(run_id)
+            or fields.get("artifact_id") != lease.artifact_id
+            or lease.ticket_id != ticket_id
+            or lease.provider != provider
+            or _truthy(fields.get("canceled", "false"))
+        ):
+            raise ArtifactValidationError("canonical spike ticket changed; refusing overwrite")
+        instant = _format_instant(self.now())
+        updated = _rewrite_ticket(content, {
+            "status": "done",
+            "run_id": str(run_id),
+            "run_state": "spike_completed",
+            "run_outcome_at": instant,
+            "activity_at": instant,
+        })
+        # Keep the report before the run log, including on an explicitly retried spike.
+        text = re.sub(
+            r"(?ims)^## Spike report\s*\n.*?(?=^## |\Z)",
+            "", updated.decode("utf-8"),
+        )
+        section = f"## Spike report\n\n{report.strip()}\n\n"
+        log_start = text.find("## Run log")
+        text = (
+            text[:log_start] + section + text[log_start:]
+            if log_start >= 0 else text.rstrip() + "\n\n" + section
+        )
+        updated = _append_run_log(
+            text.encode("utf-8"), run_id,
+            "branchless spike completed; findings persisted by the daemon.",
+        )
+        event_id = f"lifecycle:run:{run_id}:spike"
+        write = self.store.mutate(ArtifactMutation(
+            event_id=event_id,
+            actor_type="system",
+            device_id=self.device_id,
+            provider=provider,
+            expected_base=snapshot.commit_id,
+            operations=(TicketWrite(ticket_id, lease.artifact_id, updated),),
+            summary=f"Record spike findings for {ticket_id} run {run_id}",
+        ))
+        self._release_run_leases(run_id, "spike_completed")
+        return LifecycleWriteResult(event_id, write.commit_id, idempotent=write.idempotent)
+
     def record_merge_conflict(
         self,
         *,
@@ -772,12 +866,19 @@ class ArtifactLifecycleCoordinator:
             clear_verification=True,
         )
 
-    def recover_leases(self, run_state: Callable[[int], str | None]) -> tuple[str, ...]:
+    def recover_leases(
+        self,
+        run_state: Callable[[int], str | None],
+        *,
+        preserve_run_ids: Sequence[int] = (),
+    ) -> tuple[str, ...]:
         released: list[str] = []
         for lease in self.leases.active():
             try:
                 run_id = int(lease.run_id)
             except ValueError:
+                continue
+            if run_id in preserve_run_ids:
                 continue
             state = run_state(run_id)
             if state in TERMINAL_RUN_STATES or state is None:
