@@ -84,10 +84,17 @@ class SpikeExecutionTests(unittest.TestCase):
             self.assertNotIn("raw transcript", ticket["body"].lower())
 
     def test_provider_commands_enforce_equivalent_read_only_spike_contract(self):
+        git_environment = {
+            "PATH": "/direct git/bin:/usr/bin:/bin",
+            "RELAY_SPIKE_GIT": "/direct git/bin/git",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_NO_LAZY_FETCH": "1",
+        }
         codex = orchestrator._agent_command(
             agent_kind="codex",
             agent_bin="codex",
-            run={"execution_mode": "spike", "result_schema_path": "/tmp/schema.json"},
+            run={"execution_mode": "spike", "result_schema_path": "/tmp/schema.json",
+                 "spike_git_environment": git_environment},
         )
         claude = orchestrator._agent_command(
             agent_kind="claude",
@@ -99,10 +106,22 @@ class SpikeExecutionTests(unittest.TestCase):
         self.assertIn("--ignore-user-config", codex)
         self.assertIn("--output-schema", codex)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", codex)
+        self.assertIn('approval_policy="never"', codex)
+        self.assertIn("allow_login_shell=false", codex)
+        self.assertIn("features.shell_snapshot=false", codex)
+        self.assertIn("shell_environment_policy.experimental_use_profile=false", codex)
+        for key, value in git_environment.items():
+            self.assertIn(f"shell_environment_policy.set.{key}={json.dumps(value)}", codex)
+        with self.assertRaisesRegex(RuntimeError, "verified read-only Git environment"):
+            orchestrator._agent_command(
+                agent_kind="codex", agent_bin="codex",
+                run={"execution_mode": "spike", "result_schema_path": "/tmp/schema.json"},
+            )
         self.assertIn("Read,Glob,Grep", claude)
         self.assertIn("--safe-mode", claude)
         self.assertIn("--strict-mcp-config", claude)
         self.assertNotIn("--dangerously-skip-permissions", claude)
+        self.assertNotIn("Bash", ",".join(claude))
 
         prompt = Daemon._build_spike_prompt(
             ticket={"id": "RR-1", "title": "Research", "body": "Evidence only."},
@@ -114,6 +133,16 @@ class SpikeExecutionTests(unittest.TestCase):
         self.assertIn("designated terminal structured result", prompt)
         self.assertIn("daemon validates it and is the sole process allowed", prompt)
         self.assertIn("may not draft or accept canonical tickets", prompt)
+        self.assertIn('"$RELAY_SPIKE_GIT" rev-parse HEAD', prompt)
+        self.assertIn("login=false", prompt)
+        self.assertIn("do not start a login shell", prompt)
+        claude_prompt = Daemon._build_spike_prompt(
+            ticket={"id": "RR-1", "title": "Research", "body": "Evidence only."},
+            repo_path="/repo", workspace_path="/snapshot", attempt=1, run_id=7,
+            agent_kind="claude",
+        )
+        self.assertIn("only Read, Glob, and Grep", claude_prompt)
+        self.assertNotIn("RELAY_SPIKE_GIT", claude_prompt)
 
     def test_spike_workspace_is_detached_branchless_read_only_and_removable(self):
         with tempfile.TemporaryDirectory() as tmp:
