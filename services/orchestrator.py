@@ -4442,8 +4442,13 @@ class Worker:
                 self.store.update(self.run_id, state="Canceled", ended=True, exit_code=rc)
                 self._emit_lifecycle("run-canceled")
             else:
+                failure = (
+                    f"spike provider exited with status {rc}; inspect the local run log before retrying."
+                    if self.run.get("artifact_lifecycle") and self.run.get("execution_mode") == SPIKE_EXECUTION_MODE
+                    else f"exit={rc}; tail={' / '.join(tail)[:500]}"
+                )
                 self.store.update(self.run_id, state="Failed",
-                                  last_error=f"exit={rc}; tail={' / '.join(tail)[:500]}",
+                                  last_error=failure,
                                   ended=True, exit_code=rc)
                 self._emit_lifecycle("run-failed")
         finally:
@@ -4828,6 +4833,7 @@ class Daemon:
         self._orchestrator_action_request_ids: set[str] = set()
         self._workers: dict[int, Worker] = {}
         self._workers_lock = threading.Lock()
+        self._spike_completion_lock = threading.Lock()
         self._review_workers: dict[int, ReviewWorker] = {}
         self._review_workers_lock = threading.Lock()
         self._run_health: dict[int, dict[str, Any]] = {}
@@ -4836,7 +4842,7 @@ class Daemon:
         stalled = self.runs.reconcile_on_startup()
         if stalled:
             print(f"[orchestrator] reconciled {stalled} stalled run(s) on startup", file=sys.stderr)
-            self._recover_stalled_spikes()
+        self._recover_stalled_spikes(artifact_only=not stalled)
         # Seed the runs-index file so the board has something to read before the
         # first transition (reconcile above mutates state directly, bypassing the
         # insert/update write hooks).
@@ -5347,12 +5353,28 @@ class Daemon:
             try:
                 lifecycle = self._artifact_lifecycle(repo_path)
                 if lifecycle is not None:
+                    pending_spikes = []
+                    for lease in lifecycle.leases.active():
+                        try:
+                            run_id = int(lease.run_id)
+                        except ValueError:
+                            continue
+                        run = self.runs.get(run_id)
+                        if (
+                            run and run.get("execution_mode") == SPIKE_EXECUTION_MODE
+                            and run.get("state") in {"Failed", "Canceled"}
+                        ):
+                            # Worker exit can precede the completion callback. Only
+                            # canonical publication may release these spike leases.
+                            pending_spikes.append(int(run["id"]))
+                            self._finish_artifact_spike(run, lifecycle)
+
                     def run_state(run_id: int) -> str | None:
                         run = self.runs.get(run_id)
                         return str(run.get("state")) if run and run.get("state") else None
 
                     lifecycle.recover_leases(
-                        run_state
+                        run_state, preserve_run_ids=pending_spikes,
                     )
                     snapshot = lifecycle.store.snapshot()
                     artifact_config = tomllib.loads(
@@ -6185,6 +6207,7 @@ Investigate the bounded question in ticket {ticket['id']} and return only the st
 - Source repository: {repo_path}
 - Read-only detached snapshot: {workspace_path}
 - Allowed evidence: files and Git history inside the snapshot, plus the refined ticket and dispatcher context below.
+- When present, `.orchestrator/.artifact-snapshot.json`, the assigned ticket, its attachments, and dependency summaries are immutable daemon-provided inputs. Read them without editing them.
 - Forbidden: edits, file creation, Git mutations, network access, desktop/app control, messages, purchases, deletion, or any other external side effect.
 - The designated terminal structured result is the only permitted output. It is not a source or board mutation: the daemon validates it and is the sole process allowed to persist the canonical spike report.
 - You may recommend implementation work, but you may not draft or accept canonical tickets. After the report is committed, the foreground PM may create recoverable drafts and may accept individually reviewed drafts into backlog.
@@ -7204,11 +7227,6 @@ Title: {ticket['title']}
             raise ValueError(f"ticket {ticket_id} could not be read: {e}") from e
         execution_mode = _execution_mode(ticket.get("execution_mode"))
         validate_research_dispatch(ticket, ticket_file.read_text())
-        if artifact_lifecycle is not None and execution_mode == SPIKE_EXECUTION_MODE:
-            raise ValueError(
-                "artifact lifecycle does not yet own branchless spike results; "
-                "drain active runs and use the reversible legacy lifecycle for this spike"
-            )
         if ticket.get("status") == VERIFICATION_BLOCKED_STATUS:
             raise ValueError(
                 f"ticket {ticket_id} is verification blocked; use the explicit resume action "
@@ -7511,14 +7529,27 @@ Title: {ticket['title']}
                 log_path=str(log_path),
                 **sizing,
             )
-            if artifact_lifecycle is not None and execution_mode != SPIKE_EXECUTION_MODE:
+            if artifact_lifecycle is not None:
                 try:
-                    artifact_lifecycle.claim_and_materialize(
-                        ticket_id=ticket_id,
-                        run_id=run_id,
-                        provider=worker_provider,
-                        workspace_path=workspace_path,
-                    )
+                    snapshot_mode = workspace_path.stat().st_mode
+                    try:
+                        # Only the daemon may add artifact inputs, before the worker starts.
+                        if execution_mode == SPIKE_EXECUTION_MODE:
+                            workspace_path.chmod(snapshot_mode | 0o200)
+                        artifact_lifecycle.claim_and_materialize(
+                            ticket_id=ticket_id,
+                            run_id=run_id,
+                            provider=worker_provider,
+                            workspace_path=workspace_path,
+                        )
+                    finally:
+                        if execution_mode == SPIKE_EXECUTION_MODE:
+                            workspace_path.chmod(snapshot_mode)
+                    snapshot_ticket = workspace_path / ".orchestrator" / f"{ticket_id}.md"
+                    ticket = read_ticket(snapshot_ticket)
+                    if ticket["execution_mode"] != execution_mode:
+                        raise ValueError("ticket execution mode changed during dispatch; retry with current inputs")
+                    validate_research_dispatch(ticket, snapshot_ticket.read_text())
                 except Exception as error:  # noqa: BLE001 - publish a bounded terminal outcome.
                     reason = f"artifact lifecycle snapshot failed: {error}"
                     try:
@@ -7531,8 +7562,11 @@ Title: {ticket['title']}
                     except Exception as lifecycle_error:  # noqa: BLE001
                         reason += f"; lifecycle recovery failed: {lifecycle_error}"
                     artifact_lifecycle.cleanup_snapshot(workspace_path)
-                    removed, cleanup_error = remove_worktree(str(repo), workspace_path)
-                    delete_branch(str(repo), branch)
+                    if execution_mode == SPIKE_EXECUTION_MODE:
+                        removed, cleanup_error = remove_spike_workspace(workspace_path)
+                    else:
+                        removed, cleanup_error = remove_worktree(str(repo), workspace_path)
+                        delete_branch(str(repo), branch)
                     if not removed or cleanup_error:
                         reason += f"; {cleanup_error or 'worker worktree cleanup failed'}"
                     self.runs.update(
@@ -7555,12 +7589,13 @@ Title: {ticket['title']}
                 ticket["status"] = "in_progress"
                 ticket["run_id"] = run_id
                 try:
-                    commit_daemon_ticket_update(
-                        repo=repo,
-                        ticket_path=ticket_file,
-                        ticket=ticket,
-                        message=f"chore({ticket_id}): start spike run {run_id}",
-                    )
+                    if artifact_lifecycle is None:
+                        commit_daemon_ticket_update(
+                            repo=repo,
+                            ticket_path=ticket_file,
+                            ticket=ticket,
+                            message=f"chore({ticket_id}): start spike run {run_id}",
+                        )
                 except RuntimeError as e:
                     removed, cleanup_error = remove_spike_workspace(workspace_path)
                     reason = str(e)
@@ -7647,7 +7682,7 @@ Title: {ticket['title']}
                             start_head=start_head,
                         )
                     )
-                    if artifact_lifecycle is not None
+                    if artifact_lifecycle is not None and execution_mode != SPIKE_EXECUTION_MODE
                     else None
                 ),
             )
@@ -7690,6 +7725,30 @@ Title: {ticket['title']}
         recovered: bool = False,
     ) -> None:
         repo = Path(str(run["repo_path"])).expanduser().resolve()
+        lifecycle = self._artifact_lifecycle(str(repo))
+        if lifecycle is not None:
+            if result is not None:
+                lifecycle.publish_spike_result(
+                    run_id=int(run["id"]),
+                    ticket_id=str(run["ticket_id"]),
+                    provider=str(run["provider_key"]),
+                    workspace_path=Path(str(run["workspace_path"])),
+                    report=render_spike_report(
+                        validate_spike_result(result),
+                        run_id=int(run["id"]),
+                        attempt=int(run.get("attempt") or 1),
+                        provider=str(run["provider_key"]),
+                    ),
+                )
+            else:
+                lifecycle.record_failure(
+                    run_id=int(run["id"]),
+                    ticket_id=str(run["ticket_id"]),
+                    provider=str(run["provider_key"]),
+                    reason=incomplete_reason or "Spike did not produce a complete result.",
+                    canceled=run.get("state") == "Canceled",
+                )
+            return
         ticket_path = repo / ".orchestrator" / f"{run['ticket_id']}.md"
         _ensure_ticket_authoring_paths_clean(repo, [ticket_path])
         ticket = read_ticket(ticket_path)
@@ -7749,11 +7808,92 @@ Title: {ticket['title']}
             message=message,
         )
 
-    def _recover_stalled_spikes(self) -> None:
+    def _finish_artifact_spike(
+        self,
+        run: dict[str, Any],
+        lifecycle: ArtifactLifecycleCoordinator,
+        *,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        with self._spike_completion_lock:
+            self._finish_artifact_spike_locked(
+                self.runs.get(int(run["id"])) or run, lifecycle, result=result,
+            )
+
+    def _finish_artifact_spike_locked(
+        self,
+        run: dict[str, Any],
+        lifecycle: ArtifactLifecycleCoordinator,
+        *,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        run_id = int(run["id"])
+        result_ready = run.get("state") == "SpikeResultReady" or (
+            run.get("state") == "Stalled"
+            and run.get("last_error") == "Spike terminal result ready before daemon restart"
+        )
+        try:
+            completed = lifecycle.recover_spike_completion(run_id) is not None
+            failed_state = lifecycle.recover_spike_failure(run_id) if not completed else None
+            reason = str(run.get("last_error") or f"spike ended in {run.get('state')}")
+            if not completed and not failed_state and result_ready:
+                try:
+                    result = (
+                        validate_spike_result(result) if result is not None
+                        else extract_spike_result(Path(str(run.get("log_path") or "")))
+                    )
+                except ValueError as error:
+                    reason = str(error)
+                else:
+                    self._spike_ticket_update(run, result=result)
+                    completed = True
+            if completed:
+                self.runs.update(
+                    run_id, state=SPIKE_COMPLETED_RUN_STATE, last_error="",
+                    ended=not bool(run.get("ended_at")),
+                )
+                if run.get("state") != SPIKE_COMPLETED_RUN_STATE:
+                    self._emit_lifecycle(
+                        "run-succeeded", ticket_id=run.get("ticket_id"), run_id=run_id,
+                        source="orchestrator", message=f"{run.get('ticket_id')} spike findings are ready",
+                        repo_path=run.get("repo_path"), provider_key=run.get("provider_key"),
+                    )
+            else:
+                if not failed_state:
+                    self._spike_ticket_update(run, result=None, incomplete_reason=reason)
+                self.runs.update(
+                    run_id, state=failed_state or ("Canceled" if run.get("state") == "Canceled" else "Failed"),
+                    last_error=reason, ended=not bool(run.get("ended_at")),
+                )
+        except (OSError, RuntimeError, TicketParseError, ValueError) as error:
+            # Keep evidence and leases until canonical publication can be retried.
+            pending = f"spike artifact publication pending; retry reconciliation after resolving: {error}"
+            if result_ready:
+                self.runs.update(run_id, state="SpikeResultReady", last_error=pending)
+            else:
+                # Preserve terminal intent and its original diagnostic durably;
+                # publication trouble is separate from worker execution failure.
+                self.runs.set_activity(run_id, pending)
+            return
+        if str(run.get("activity") or "").startswith("spike artifact publication pending;"):
+            self.runs.set_activity(run_id, "Spike outcome published to canonical artifacts")
+        removed, error = remove_spike_workspace(Path(str(run["workspace_path"])))
+        if not removed or error:
+            self.runs.update(run_id, last_error=error or "spike workspace still exists")
+        if run.get("log_path"):
+            lifecycle.cap_local_log(Path(str(run["log_path"])))
+
+    def _recover_stalled_spikes(self, *, artifact_only: bool = False) -> None:
         for run in self.runs.list(state="Stalled", limit=5000):
             if run.get("execution_mode") != SPIKE_EXECUTION_MODE:
                 continue
             try:
+                lifecycle = self._artifact_lifecycle(str(run["repo_path"]))
+                if lifecycle is not None:
+                    self._finish_artifact_spike(run, lifecycle)
+                    continue
+                if artifact_only:
+                    continue
                 recovered_result = None
                 if run.get("last_error") == "Spike terminal result ready before daemon restart":
                     log_path = Path(str(run.get("log_path") or ""))
@@ -7780,6 +7920,7 @@ Title: {ticket['title']}
                     )
             except (OSError, RuntimeError, TicketParseError, ValueError) as e:
                 self.runs.update(run["id"], last_error=f"{run.get('last_error')}; recovery: {e}")
+                continue
             remove_spike_workspace(Path(str(run.get("workspace_path") or "")))
 
     def _on_worker_complete(self, run_id: int) -> None:
@@ -7790,6 +7931,15 @@ Title: {ticket['title']}
         if not run:
             return
         if run.get("execution_mode") == SPIKE_EXECUTION_MODE:
+            lifecycle = self._artifact_lifecycle(str(run["repo_path"]))
+            if lifecycle is not None:
+                self._finish_artifact_spike(
+                    run, lifecycle, result=worker.spike_result if worker else None,
+                )
+                self._record_queue_drain_after_event(
+                    repo_path=run.get("repo_path"), trigger="spike-completion", drive_reviews=False,
+                )
+                return
             try:
                 if run.get("state") == "SpikeResultReady" and worker and worker.spike_result:
                     self._spike_ticket_update(run, result=worker.spike_result)
@@ -10822,6 +10972,12 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         if run["state"] not in self.runs.ACTIVE_STATES and run["state"] != "Stalled":
             return {"canceled": False, "reason": f"run is in terminal state {run['state']}", "run": run}
 
+        if run.get("execution_mode") == SPIKE_EXECUTION_MODE:
+            lifecycle = self._artifact_lifecycle(str(run["repo_path"]))
+            if lifecycle is not None and lifecycle.recover_spike_completion(run_id) is not None:
+                self._finish_artifact_spike(run, lifecycle)
+                return {"canceled": False, "reason": "spike findings are already published", "run": self.runs.get(run_id)}
+
         with self._workers_lock:
             worker = self._workers.get(run_id)
         if worker:
@@ -10839,16 +10995,26 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             self.runs.update(run_id, state="Canceled",
                              last_error="Canceled (no live worker)", ended=True)
             if run.get("execution_mode") == SPIKE_EXECUTION_MODE:
-                try:
-                    self._spike_ticket_update(
-                        self.runs.get(run_id) or run,
-                        result=None,
-                        incomplete_reason="Canceled by user.",
-                    )
-                except (OSError, RuntimeError, TicketParseError, ValueError) as e:
-                    self.runs.update(run_id, last_error=f"Canceled; ticket reset failed: {e}")
+                if lifecycle is not None:
+                    self._finish_artifact_spike(self.runs.get(run_id) or run, lifecycle)
+                else:
+                    try:
+                        self._spike_ticket_update(
+                            self.runs.get(run_id) or run,
+                            result=None,
+                            incomplete_reason="Canceled by user.",
+                        )
+                    except (OSError, RuntimeError, TicketParseError, ValueError) as e:
+                        self.runs.update(run_id, last_error=f"Canceled; ticket reset failed: {e}")
 
         artifact_lifecycle = self._artifact_lifecycle(str(run.get("repo_path") or ""))
+        if artifact_lifecycle is not None and run.get("execution_mode") == SPIKE_EXECUTION_MODE:
+            current = self.runs.get(run_id) or run
+            return {
+                "canceled": current.get("state") == "Canceled",
+                "run": current,
+                "worktree_removed": not Path(str(run["workspace_path"])).exists(),
+            }
         if artifact_lifecycle is not None:
             current = self.runs.get(run_id) or run
             try:

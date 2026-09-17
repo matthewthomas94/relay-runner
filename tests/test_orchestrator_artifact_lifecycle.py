@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -26,6 +27,7 @@ from services.artifact_store import (  # noqa: E402
     ArchiveIndexWrite,
     ArtifactMutation,
     ArtifactStore,
+    AttachmentWrite,
     ConfigWrite,
     TicketWrite,
 )
@@ -114,6 +116,388 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
         for worker in list(self.daemon._workers.values()):
             worker.cancel()
         self.temporary.cleanup()
+
+    def test_artifact_spike_dispatch_is_branchless_and_materializes_immutable_inputs(self):
+        self.write_ticket("RR-done", status="done")
+        self.write_ticket("RR-spike", execution_mode="spike", depends_on=("RR-done",))
+        self.store.mutate(ArtifactMutation(
+            event_id="spike-input", actor_type="pm", device_id="test-device",
+            expected_base=self.store._head(),
+            operations=(AttachmentWrite("RR-spike", "input.png", "image/png", b"\x89PNG\r\n\x1a\nspike-input"),),
+        ))
+        before = self.git("rev-parse", "HEAD")
+        branches = self.git("branch", "--format=%(refname)")
+        with patch.object(Worker, "start"):
+            run = self.daemon.dispatch(
+                ticket_id="RR-spike", repo_path=str(self.repo),
+                project_scope_token=self.scope_token(),
+            )["run"]
+        workspace = Path(run["workspace_path"])
+        self.addCleanup(orchestrator.remove_spike_workspace, workspace)
+        self.assertEqual(run["branch"], "")
+        self.assertEqual(self.git("rev-parse", "HEAD"), before)
+        self.assertEqual(self.git("branch", "--format=%(refname)"), branches)
+        self.assertEqual(self.git("-C", str(workspace), "branch", "--show-current"), "")
+        self.assertEqual(self.git("-C", str(workspace), "remote"), "")
+        manifest = json.loads((workspace / ".orchestrator/.artifact-snapshot.json").read_text())
+        self.assertEqual(manifest["run_id"], run["id"])
+        self.assertEqual(manifest["source_start_head"], before)
+        self.assertEqual(set(manifest["files"]), {
+            ".orchestrator/RR-spike.md",
+            ".orchestrator/attachments/RR-spike/input.png",
+            ".orchestrator/dependencies/RR-done.json",
+        })
+        self.assertEqual(workspace.stat().st_mode & 0o222, 0)
+        self.assertEqual((workspace / "source.txt").stat().st_mode & 0o222, 0)
+        self.assertEqual((workspace / ".orchestrator/RR-spike.md").stat().st_mode & 0o222, 0)
+        self.assertIn(
+            f"run_id: {run['id']}",
+            self.store.snapshot().files[".orchestrator/RR-spike.md"].decode(),
+        )
+
+    def test_artifact_spike_terminal_reports_share_provider_contract_and_skip_review(self):
+        before = self.git("rev-parse", "HEAD")
+        for provider, conclusion in (
+            ("codex", "No-go: the proposed approach is unsupported."),
+            ("claude", "Further evidence is required before implementation."),
+        ):
+            with self.subTest(provider=provider):
+                ticket_id = f"RR-{provider}"
+                run = self.dispatch_spike(ticket_id, provider=provider)
+                self.write_ticket(f"RR-{provider}-dependent", status="backlog", depends_on=(ticket_id,))
+                result = self.spike_result(conclusion)
+                early = self.spike_event(provider, self.spike_result("Preliminary finding."))
+                final = self.spike_event(provider, result)
+                worker = self.daemon._workers[run["id"]]
+                command = [sys.executable, "-c", f"print({early!r}); print({final!r})"]
+                with patch.object(worker, "_command", return_value=command), \
+                        patch.object(self.daemon, "dispatch_review_worker") as review:
+                    worker._run()
+                    head = self.store._head()
+                    ended_at = self.daemon.runs.get(run["id"])["ended_at"]
+                    self.daemon._on_worker_complete(run["id"])
+                review.assert_not_called()
+                self.assertEqual(self.store._head(), head)
+                self.assertEqual(self.daemon.runs.get(run["id"])["state"], "SpikeCompleted")
+                self.assertEqual(self.daemon.runs.get(run["id"])["ended_at"], ended_at)
+                content = self.store.snapshot().files[f".orchestrator/{ticket_id}.md"]
+                self.assertEqual((self.repo / f".orchestrator/{ticket_id}.md").read_bytes(), content)
+                self.assertIn(conclusion, content.decode())
+                self.assertNotIn("Preliminary finding", content.decode())
+                self.assertIn("status: done", content.decode())
+                self.assertIn(f"run_id: {run['id']}", content.decode())
+                self.assertIn("run_state: spike_completed", content.decode())
+                self.assertEqual(content.decode().count("## Spike report"), 1)
+                self.assertEqual(content.decode().count(f"**Run {run['id']}**"), 1)
+                self.assertFalse(Path(run["workspace_path"]).exists())
+                lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+                self.assertEqual(lifecycle.leases.active(), ())
+                lifecycle.promote_unblocked_dependents()
+                self.assertIn("status: backlog", (self.repo / f".orchestrator/RR-{provider}-dependent.md").read_text())
+        self.assertEqual(self.git("rev-parse", "HEAD"), before)
+
+    def test_artifact_spike_restart_recovers_before_and_after_canonical_publication(self):
+        for published in (False, True):
+            with self.subTest(published=published):
+                run = self.dispatch_spike(f"RR-recovery-{published}")
+                self.ready_spike(run)
+                if published:
+                    self.daemon._spike_ticket_update(run, result=self.spike_result())
+                    # Even if local evidence is gone, canonical publication is authoritative.
+                    orchestrator.remove_spike_workspace(Path(run["workspace_path"]))
+                    Path(run["log_path"]).unlink()
+                self.daemon._workers.pop(run["id"])
+                self.assertEqual(self.daemon.runs.reconcile_on_startup(), 1)
+                self.daemon._artifact_lifecycles.clear()
+                self.daemon._recover_stalled_spikes()
+                head = self.store._head()
+                self.daemon._recover_stalled_spikes()
+                self.daemon._on_worker_complete(run["id"])
+                self.assertEqual(self.store._head(), head)
+                self.assertEqual(self.daemon.runs.get(run["id"])["state"], "SpikeCompleted")
+                content = (self.repo / f".orchestrator/{run['ticket_id']}.md").read_text()
+                self.assertIn("status: done", content)
+                self.assertIn(f"run_id: {run['id']}", content)
+                self.assertEqual(content.count("## Spike report"), 1)
+
+    def test_artifact_spike_concurrent_duplicate_completion_is_idempotent(self):
+        run = self.dispatch_spike("RR-duplicate")
+        self.ready_spike(run)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            deliveries = [executor.submit(self.daemon._on_worker_complete, run["id"]) for _ in range(2)]
+            for delivery in deliveries:
+                delivery.result(timeout=30)
+        self.assertEqual(self.daemon.runs.get(run["id"])["state"], "SpikeCompleted")
+        content = (self.repo / ".orchestrator/RR-duplicate.md").read_text()
+        self.assertEqual(content.count("## Spike report"), 1)
+        self.assertEqual(content.count(f"**Run {run['id']}**"), 1)
+        self.assertIn(f"run_id: {run['id']}", content)
+
+    def test_artifact_spike_concurrent_edit_preserves_evidence_until_reconciliation(self):
+        run = self.dispatch_spike("RR-race")
+        self.ready_spike(run)
+        lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+        mutate = lifecycle.store.mutate
+
+        def concurrent_edit(mutation):
+            if mutation.event_id.endswith(":spike"):
+                self.edit_ticket("RR-race", "concurrent-pm-edit", lambda text: text + "\n## PM note\n\nRetain this decision.\n")
+            return mutate(mutation)
+
+        with patch.object(lifecycle.store, "mutate", side_effect=concurrent_edit):
+            self.daemon._on_worker_complete(run["id"])
+        pending = self.daemon.runs.get(run["id"])
+        self.assertEqual(pending["state"], "SpikeResultReady")
+        self.assertIn("artifact base changed", pending["last_error"])
+        self.assertTrue(Path(run["workspace_path"]).exists())
+        self.assertEqual(len(lifecycle.leases.active()), 1)
+        self.assertNotIn("## Spike report", (self.repo / ".orchestrator/RR-race.md").read_text())
+        self.daemon.runs.reconcile_on_startup()
+        self.daemon._recover_stalled_spikes()
+        self.assertEqual(self.daemon.runs.get(run["id"])["state"], "SpikeCompleted")
+        content = (self.repo / ".orchestrator/RR-race.md").read_text()
+        self.assertIn("Retain this decision.", content)
+        self.assertIn("## Spike report", content)
+
+    def test_artifact_spike_publication_recovers_artifact_writer_interruptions(self):
+        for stage in ("before_commit", "after_ref_update", "during_materialization"):
+            with self.subTest(stage=stage):
+                run = self.dispatch_spike(f"RR-{stage}")
+                self.ready_spike(run)
+                lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+
+                def interrupt(current):
+                    if current == stage:
+                        raise RuntimeError(f"Interrupted {stage}")
+
+                with patch.object(lifecycle.store, "failure_injector", interrupt):
+                    self.daemon._on_worker_complete(run["id"])
+                self.assertEqual(self.daemon.runs.get(run["id"])["state"], "SpikeResultReady")
+                self.assertTrue(Path(run["workspace_path"]).exists())
+                self.daemon.runs.reconcile_on_startup()
+                self.daemon._artifact_lifecycles.clear()
+                self.daemon._recover_stalled_spikes()
+                self.assertEqual(self.daemon.runs.get(run["id"])["state"], "SpikeCompleted")
+                content = self.store.snapshot().files[f".orchestrator/{run['ticket_id']}.md"]
+                self.assertEqual((self.repo / f".orchestrator/{run['ticket_id']}.md").read_bytes(), content)
+                self.assertEqual(content.decode().count("## Spike report"), 1)
+
+    def test_artifact_spike_invalid_terminal_results_and_worker_failures_do_not_complete(self):
+        cases = (
+            ("missing", [], 0, "no structured spike result"),
+            ("malformed", [self.spike_event("codex", self.spike_result()), "{\"type\":\"result\",\"result\":\"invalid\"}"], 0, "not valid JSON"),
+            ("crashed", [self.spike_event("claude", self.spike_result())], 1, "exited with status 1"),
+            ("mutation", [json.dumps({"type": "item.started", "item": {"id": "tool-1", "type": "command_execution", "command": "touch source.txt"}}), self.spike_event("codex", self.spike_result())], 0, "mutating or external command"),
+        )
+        for name, events, exit_code, diagnostic in cases:
+            with self.subTest(case=name):
+                run = self.dispatch_spike(f"RR-{name}")
+                worker = self.daemon._workers[run["id"]]
+                script = f"import sys; print({chr(10).join(events)!r}); sys.exit({exit_code})"
+                with patch.object(worker, "_command", return_value=[sys.executable, "-c", script]):
+                    worker._run()
+                failed = self.daemon.runs.get(run["id"])
+                self.assertEqual(failed["state"], "Failed")
+                self.assertIn(diagnostic, failed["last_error"])
+                content = (self.repo / f".orchestrator/{run['ticket_id']}.md").read_text()
+                self.assertIn("status: backlog", content)
+                self.assertNotIn("## Spike report", content)
+                self.assertNotIn("structured_output", content)
+                self.assertFalse(Path(run["workspace_path"]).exists())
+
+    def test_artifact_spike_failure_publication_recovers_without_a_new_active_run(self):
+        for state in ("Failed", "Canceled"):
+            with self.subTest(state=state):
+                run = self.dispatch_spike(f"RR-interrupted-{state}")
+                self.daemon.runs.update(run["id"], state=state, last_error="Investigation stopped.", ended=True)
+                lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+
+                def interrupt(stage):
+                    if stage == "after_ref_update":
+                        raise RuntimeError("Interrupted failure publication")
+
+                with patch.object(lifecycle.store, "failure_injector", interrupt):
+                    self.daemon._on_worker_complete(run["id"])
+                pending = self.daemon.runs.get(run["id"])
+                self.assertEqual(pending["state"], state)
+                self.assertEqual(pending["last_error"], "Investigation stopped.")
+                self.assertIn("publication pending", pending["activity"])
+                head = self.store._head()
+                self.daemon._workers.pop(run["id"], None)
+                self.assertEqual(self.recover_spikes_after_restart(), 0)
+                self.assertEqual(self.daemon.runs.get(run["id"])["state"], state)
+                self.assertEqual(self.daemon.runs.get(run["id"])["last_error"], "Investigation stopped.")
+                self.assertEqual(self.store._head(), head)
+                content = (self.repo / f".orchestrator/{run['ticket_id']}.md").read_text()
+                self.assertIn("status: backlog", content)
+                self.assertIn(f"run_state: {state.lower()}", content)
+                self.assertNotIn("## Spike report", content)
+                self.assertFalse(Path(run["workspace_path"]).exists())
+
+    def test_artifact_spike_restart_publishes_terminal_worker_outcomes_before_releasing_leases(self):
+        for provider in ("codex", "claude"):
+            for state in ("Failed", "Canceled"):
+                with self.subTest(provider=provider, state=state):
+                    run = self.dispatch_spike(f"RR-terminal-{provider}-{state}", provider=provider)
+                    self.daemon._workers.pop(run["id"])
+                    reason = f"Investigation {state.lower()} before the completion callback."
+                    self.daemon.runs.update(run["id"], state=state, last_error=reason, ended=True)
+                    ended_at = self.daemon.runs.get(run["id"])["ended_at"]
+
+                    with patch.object(self.daemon, "dispatch_review_worker") as review:
+                        self.assertEqual(self.recover_spikes_after_restart(), 0)
+                    review.assert_not_called()
+                    recovered = self.daemon.runs.get(run["id"])
+                    self.assertEqual(recovered["state"], state)
+                    self.assertEqual(recovered["last_error"], reason)
+                    self.assertEqual(recovered["ended_at"], ended_at)
+                    content = self.store.snapshot().files[f".orchestrator/{run['ticket_id']}.md"]
+                    self.assertEqual((self.repo / f".orchestrator/{run['ticket_id']}.md").read_bytes(), content)
+                    self.assertIn(b"status: backlog", content)
+                    self.assertIn(f"run_state: {state.lower()}".encode(), content)
+                    self.assertIn(b"run_id: null", content)
+                    self.assertIn(reason.encode(), content)
+                    self.assertEqual(content.count(f"**Run {run['id']}**".encode()), 1)
+                    self.assertNotIn(b"## Spike report", content)
+                    self.assertFalse(Path(run["workspace_path"]).exists())
+                    lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+                    self.assertEqual(lifecycle.leases.active(), ())
+
+                    head = self.store._head()
+                    self.recover_spikes_after_restart()
+                    self.daemon._on_worker_complete(run["id"])
+                    self.assertEqual(self.store._head(), head)
+                    self.assertEqual(self.daemon.runs.get(run["id"])["last_error"], reason)
+
+    def test_artifact_spike_restart_preserves_unrelated_snapshot_leases(self):
+        run = self.dispatch_spike("RR-terminal-lease")
+        self.daemon._workers.pop(run["id"])
+        self.daemon.runs.update(run["id"], state="Failed", last_error="Investigation stopped.", ended=True)
+        lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+        external_lease = lifecycle.leases.acquire(
+            lease_id="external-reader", ticket_id="RR-1", artifact_id="artifact-RR-1",
+            artifact_head=self.store._head(), run_id="external-reader", role="reviewer",
+            provider="codex",
+        )
+        self.recover_spikes_after_restart()
+        self.assertEqual(lifecycle.leases.active(), (external_lease,))
+        content = self.store.snapshot().files[".orchestrator/RR-terminal-lease.md"]
+        self.assertIn(b"run_state: failed", content)
+        self.assertFalse(Path(run["workspace_path"]).exists())
+
+    def test_artifact_spike_precommit_failure_preserves_terminal_intent_and_diagnostic(self):
+        for provider in ("codex", "claude"):
+            for state in ("Failed", "Canceled"):
+                with self.subTest(provider=provider, state=state):
+                    run = self.dispatch_spike(f"RR-pending-{provider}-{state}", provider=provider)
+                    self.daemon._workers.pop(run["id"])
+                    reason = "Canceled (no live worker)" if state == "Canceled" else "Investigation failed validation."
+                    lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+
+                    def interrupt(stage):
+                        if stage == "before_commit":
+                            raise RuntimeError("Interrupted terminal publication")
+
+                    with patch.object(ArtifactStore, "_inject", side_effect=interrupt):
+                        if state == "Canceled":
+                            self.assertTrue(self.daemon.cancel_run(run["id"])["canceled"])
+                        else:
+                            self.daemon.runs.update(run["id"], state=state, last_error=reason, ended=True)
+                            self.daemon._on_worker_complete(run["id"])
+                        # A second failed recovery must retain the original outcome and lease.
+                        self.assertEqual(self.recover_spikes_after_restart(), 0)
+                    pending = self.daemon.runs.get(run["id"])
+                    self.assertEqual(pending["state"], state)
+                    self.assertEqual(pending["last_error"], reason)
+                    self.assertIn("publication pending", pending["activity"])
+                    self.assertIn("Interrupted terminal publication", pending["activity"])
+                    self.assertEqual(len(lifecycle.leases.active()), 1)
+                    self.assertTrue(Path(run["workspace_path"]).exists())
+                    self.assertTrue(lifecycle._snapshot_proof_path(run["id"]).exists())
+                    content = self.store.snapshot().files[f".orchestrator/{run['ticket_id']}.md"]
+                    self.assertIn(b"status: in_progress", content)
+                    self.assertIn(f"run_id: {run['id']}".encode(), content)
+
+                    self.edit_ticket(
+                        run["ticket_id"], f"pending-note-{run['id']}",
+                        lambda text: text + "\n## PM note\n\nRetain the retry decision.\n",
+                    )
+                    self.assertEqual(self.recover_spikes_after_restart(), 0)
+                    recovered = self.daemon.runs.get(run["id"])
+                    self.assertEqual(recovered["state"], state)
+                    self.assertEqual(recovered["last_error"], reason)
+                    self.assertNotIn("publication pending", recovered["activity"])
+                    content = self.store.snapshot().files[f".orchestrator/{run['ticket_id']}.md"]
+                    self.assertEqual((self.repo / f".orchestrator/{run['ticket_id']}.md").read_bytes(), content)
+                    self.assertIn(b"status: backlog", content)
+                    self.assertIn(f"run_state: {state.lower()}".encode(), content)
+                    self.assertIn(reason.encode(), content)
+                    self.assertIn(b"Retain the retry decision.", content)
+                    self.assertNotIn(b"Interrupted terminal publication", content)
+                    self.assertNotIn(b"## Spike report", content)
+                    self.assertEqual(content.count(f"**Run {run['id']}**".encode()), 1)
+                    self.assertFalse(Path(run["workspace_path"]).exists())
+                    self.assertEqual(lifecycle.leases.active(), ())
+                    head = self.store._head()
+                    self.recover_spikes_after_restart()
+                    self.daemon._on_worker_complete(run["id"])
+                    self.assertEqual(self.store._head(), head)
+                    self.assertEqual(self.daemon.runs.get(run["id"])["last_error"], reason)
+
+    def test_artifact_spike_completion_does_not_overwrite_reassigned_ticket(self):
+        run = self.dispatch_spike("RR-reassigned")
+        self.ready_spike(run)
+        self.edit_ticket("RR-reassigned", "reassign-run", lambda text: text.replace(f"run_id: {run['id']}", "run_id: 900"))
+        head = self.store._head()
+        self.daemon._on_worker_complete(run["id"])
+        self.assertEqual(self.store._head(), head)
+        pending = self.daemon.runs.get(run["id"])
+        self.assertEqual(pending["state"], "SpikeResultReady")
+        self.assertIn("canonical spike ticket changed", pending["last_error"])
+        self.assertNotIn("## Spike report", (self.repo / ".orchestrator/RR-reassigned.md").read_text())
+
+    def test_artifact_spike_snapshot_tampering_cannot_publish_success(self):
+        run = self.dispatch_spike("RR-tamper")
+        self.ready_spike(run)
+        ticket = Path(run["workspace_path"]) / ".orchestrator/RR-tamper.md"
+        ticket.chmod(0o644)
+        ticket.write_text(ticket.read_text() + "\nModified input.\n")
+        self.daemon._on_worker_complete(run["id"])
+        pending = self.daemon.runs.get(run["id"])
+        self.assertEqual(pending["state"], "SpikeResultReady")
+        self.assertIn("immutable worker snapshot file changed", pending["last_error"])
+        self.assertNotIn("## Spike report", (self.repo / ".orchestrator/RR-tamper.md").read_text())
+        self.assertTrue(Path(run["workspace_path"]).exists())
+
+    def test_artifact_spike_required_inputs_scope_and_command_authorization_are_enforced(self):
+        self.write_ticket("RR-inputs", execution_mode="spike")
+        self.edit_ticket("RR-inputs", "require-input", lambda text: text + "\n## Required inputs\n\n- [ ] Local evidence\n")
+        before = self.store._head()
+        with patch.object(Worker, "start") as start:
+            with self.assertRaisesRegex(Exception, "confirmed project scope token"):
+                self.daemon.dispatch(ticket_id="RR-inputs", repo_path=str(self.repo))
+            with self.assertRaisesRegex(ValueError, "Required inputs"):
+                self.daemon.dispatch(ticket_id="RR-inputs", repo_path=str(self.repo), project_scope_token=self.scope_token())
+            with patch.object(orchestrator, "_relay_command_current", return_value=False), \
+                    patch.object(orchestrator, "validate_and_mark_mutation", side_effect=ValueError("outside authorized ticket scope")) as authorize:
+                with self.assertRaisesRegex(ValueError, "authorized ticket scope"):
+                    self.daemon.dispatch(ticket_id="RR-inputs", repo_path=str(self.repo), project_scope_token=self.scope_token(), relay_command_seq=7, relay_command_id="command-7")
+                self.assertEqual(authorize.call_args.args[3]["ticket_id"], "RR-INPUTS")
+            start.assert_not_called()
+        self.assertEqual(self.store._head(), before)
+
+    def test_artifact_spike_cancellation_is_canonical_and_idempotent(self):
+        run = self.dispatch_spike("RR-cancel")
+        self.daemon._workers.pop(run["id"])
+        self.assertTrue(self.daemon.cancel_run(run["id"])["canceled"])
+        head = self.store._head()
+        self.daemon._on_worker_complete(run["id"])
+        self.assertEqual(self.store._head(), head)
+        self.assertEqual(self.daemon.runs.get(run["id"])["state"], "Canceled")
+        content = (self.repo / ".orchestrator/RR-cancel.md").read_text()
+        self.assertIn("status: backlog", content)
+        self.assertIn("run_state: canceled", content)
+        self.assertNotIn("## Spike report", content)
 
     def test_confirmed_dispatch_structured_outcome_and_reviewed_merge_publish_artifact_truth(self):
         with self.assertRaisesRegex(Exception, "confirmed project scope token"):
@@ -703,6 +1087,55 @@ Saved through the daemon-owned typed writer.
         self.assertEqual(skipped["reason"], "dependency_history_unavailable")
         self.assertEqual(skipped["availability"], "needs_network")
         self.assertEqual(skipped["recovery"], dependency["recovery"])
+
+    def recover_spikes_after_restart(self) -> int:
+        reconciled = self.daemon.runs.reconcile_on_startup()
+        self.daemon._artifact_lifecycles.clear()
+        self.daemon._recover_stalled_spikes(artifact_only=not reconciled)
+        self.daemon._recover_artifact_lifecycle_leases()
+        return reconciled
+
+    def dispatch_spike(self, ticket_id: str, *, provider: str = "codex") -> dict:
+        self.write_ticket(ticket_id, execution_mode="spike")
+        with patch.object(Worker, "start"), patch.object(
+            self.daemon, "_effective_worker_agent", return_value=(provider, "/usr/bin/true", {}),
+        ):
+            run = self.daemon.dispatch(
+                ticket_id=ticket_id, repo_path=str(self.repo), project_scope_token=self.scope_token(),
+            )["run"]
+        self.addCleanup(orchestrator.remove_spike_workspace, Path(run["workspace_path"]))
+        return run
+
+    @staticmethod
+    def spike_result(conclusion: str = "Go: the local interface supports this approach.") -> dict:
+        return {
+            "conclusions": [conclusion],
+            "evidence": [{"source": "source.txt:1", "finding": "The snapshot contains the interface."}],
+            "uncertainties": ["Runtime behavior requires separate evidence."],
+            "recommended_next_steps": ["Review the findings before planning implementation."],
+            "mutation_attempts": [],
+        }
+
+    @staticmethod
+    def spike_event(provider: str, result: dict) -> str:
+        if provider == "claude":
+            return json.dumps({"type": "result", "structured_output": result})
+        return json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(result)}})
+
+    def ready_spike(self, run: dict) -> None:
+        result = self.spike_result()
+        Path(run["log_path"]).write_text(self.spike_event(run["provider_key"], result) + "\n")
+        self.daemon._workers[run["id"]].spike_result = result
+        self.daemon.runs.update(run["id"], state="SpikeResultReady", ended=True, exit_code=0)
+
+    def edit_ticket(self, ticket_id: str, event_id: str, transform) -> None:
+        snapshot = self.store.snapshot()
+        content = transform(snapshot.files[f".orchestrator/{ticket_id}.md"].decode()).encode()
+        self.store.mutate(ArtifactMutation(
+            event_id=event_id, actor_type="pm", device_id="test-device",
+            expected_base=snapshot.commit_id,
+            operations=(TicketWrite(ticket_id, f"artifact-{ticket_id}", content),),
+        ))
 
     def scope_token(self) -> str:
         payload = {
