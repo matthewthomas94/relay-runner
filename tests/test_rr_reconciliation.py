@@ -14,7 +14,9 @@ from tickets import TicketParseError, parse, read as read_ticket  # noqa: E402
 
 class RelayRecoveryReconciliationTests(unittest.TestCase):
     def ticket(self, ticket_id: str) -> dict:
-        return read_ticket(ROOT / ".orchestrator" / f"{ticket_id}.md")
+        # Historical reconciliation evidence is a fixed test input. Completed
+        # board tickets may be archived and are absent from clean checkouts.
+        return read_ticket(ROOT / "tests/fixtures/reconciliation" / f"{ticket_id}.md")
 
     def test_rr275_is_done_only_with_preserved_acceptance_evidence(self):
         ticket = self.ticket("RR-275")
