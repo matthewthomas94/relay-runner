@@ -169,7 +169,18 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
                 early = self.spike_event(provider, self.spike_result("Preliminary finding."))
                 final = self.spike_event(provider, result)
                 worker = self.daemon._workers[run["id"]]
-                command = [sys.executable, "-c", f"print({early!r}); print({final!r})"]
+                environment = worker.run.get("spike_git_environment") or {}
+                if provider == "codex":
+                    self.assertIn("RELAY_SPIKE_GIT", environment)
+                    self.assertIn(environment["RELAY_SPIKE_GIT"], worker.prompt)
+                else:
+                    self.assertEqual(environment, {})
+                    self.assertIn("only Read, Glob, and Grep", worker.prompt)
+                command = [sys.executable, "-c", (
+                    f"import os; expected = {environment!r}; "
+                    "assert all(os.environ.get(k) == v for k, v in expected.items()); "
+                    f"print({early!r}); print({final!r})"
+                )]
                 with patch.object(worker, "_command", return_value=command), \
                         patch.object(self.daemon, "dispatch_review_worker") as review:
                     worker._run()
@@ -195,6 +206,39 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
                 lifecycle.promote_unblocked_dependents()
                 self.assertIn("status: backlog", (self.repo / f".orchestrator/RR-{provider}-dependent.md").read_text())
         self.assertEqual(self.git("rev-parse", "HEAD"), before)
+
+    def test_artifact_spike_git_preflight_failure_never_starts_worker(self):
+        self.write_ticket("RR-preflight", execution_mode="spike")
+        before = self.git("rev-parse", "HEAD")
+        with patch.object(Worker, "start") as start, patch.object(
+            orchestrator, "prepare_spike_git_environment",
+            side_effect=RuntimeError("no read-only-compatible Git; repair Command Line Tools and retry"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "spike launch preparation failed.*repair Command Line Tools"):
+                self.daemon.dispatch(
+                    ticket_id="RR-preflight", repo_path=str(self.repo),
+                    project_scope_token=self.scope_token(),
+                )
+        start.assert_not_called()
+        run = self.daemon.runs.list()[0]
+        self.assertEqual(run["state"], "Failed")
+        self.assertEqual(run["branch"], "")
+        self.assertFalse(Path(run["workspace_path"]).exists())
+        self.assertEqual(self.git("rev-parse", "HEAD"), before)
+        ticket = self.store.snapshot().files[".orchestrator/RR-preflight.md"].decode()
+        self.assertIn("status: backlog", ticket)
+        self.assertIn("repair Command Line Tools", ticket)
+        self.assertNotIn("## Spike report", ticket)
+        self.assertEqual(self.daemon._artifact_lifecycle(str(self.repo)).leases.active(), ())
+
+    def test_claude_spike_does_not_require_shell_git_preflight(self):
+        with patch.object(orchestrator, "prepare_spike_git_environment") as preflight:
+            run = self.dispatch_spike("RR-claude-files", provider="claude")
+        preflight.assert_not_called()
+        worker = self.daemon._workers[run["id"]]
+        self.assertIsNone(worker.run["spike_git_environment"])
+        self.assertIn("Read,Glob,Grep", worker._command())
+        self.assertIn("no shell or Git command tool", worker.prompt)
 
     def test_artifact_spike_restart_recovers_before_and_after_canonical_publication(self):
         for published in (False, True):

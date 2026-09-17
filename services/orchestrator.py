@@ -3833,6 +3833,81 @@ def remove_spike_workspace(workspace_path: Path) -> tuple[bool, str | None]:
     return not workspace_path.exists(), None
 
 
+SPIKE_GIT_PROBE_POLICY = (
+    '(version 1) (allow default) (deny file-write*) (deny network*) '
+    '(allow file-write* (literal "/dev/null"))'
+)
+
+
+def _spike_git_candidates() -> list[Path]:
+    candidates = [Path(path) / "git" for path in os.get_exec_path() if path]
+    # Resolve the selected developer toolchain in the daemon, never by running
+    # Apple's /usr/bin/git (an xcrun launcher) inside the research sandbox.
+    try:
+        selected = subprocess.run(
+            ["/usr/bin/xcode-select", "-p"], capture_output=True, text=True, timeout=10,
+        )
+        if selected.returncode == 0 and selected.stdout.strip():
+            candidates.append(Path(selected.stdout.strip()) / "usr/bin/git")
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    candidates.extend(Path(path) for path in (
+        "/Library/Developer/CommandLineTools/usr/bin/git",
+        "/opt/homebrew/bin/git",
+        "/usr/local/bin/git",
+    ))
+    return list(dict.fromkeys(path.resolve() for path in candidates
+                              if path.is_file() and path.resolve() != Path("/usr/bin/git")))
+
+
+def prepare_spike_git_environment(workspace_path: str) -> dict[str, str]:
+    """Verify Git reads before launching a Codex spike, without permitting writes."""
+    if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").is_file():
+        raise RuntimeError("read-only spike Git preflight requires a macOS runner with sandbox-exec")
+    for candidate in _spike_git_candidates():
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            continue
+        git = str(candidate.resolve())
+        environment = {
+            "PATH": str(Path(git).parent) + os.pathsep + os.environ.get("PATH", os.defpath),
+            "RELAY_SPIKE_GIT": git,
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+        # Non-login shells avoid macOS path_helper restoring /usr/bin first.
+        # Verify startup files have not overridden either PATH or the controls.
+        command = (
+            f'test "$(command -v git)" = {shlex.quote(git)} && '
+            f'test "$RELAY_SPIKE_GIT" = {shlex.quote(git)} && '
+            'test "$GIT_OPTIONAL_LOCKS" = 0 && test "$GIT_NO_LAZY_FETCH" = 1 && '
+            'test "$GIT_TERMINAL_PROMPT" = 0 && '
+            'git rev-parse --verify HEAD && git ls-files >/dev/null'
+        )
+        shells = dict.fromkeys(["/bin/sh", "/bin/bash", "/bin/zsh", os.environ.get("SHELL", "/bin/sh")])
+        for shell in shells:
+            try:
+                probe = subprocess.run(
+                    ["/usr/bin/sandbox-exec", "-p", SPIKE_GIT_PROBE_POLICY, shell, "-c", command],
+                    cwd=workspace_path, env={**os.environ, **environment},
+                    capture_output=True, text=True, timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                break
+            # xcrun can print a denied cache write and still return success.
+            if (probe.returncode != 0 or probe.stderr.strip()
+                    or not re.fullmatch(r"[0-9a-f]{40,64}\n?", probe.stdout)):
+                break
+        else:
+            return environment
+    raise RuntimeError(
+        "no read-only-compatible Git toolchain passed HEAD/file-list inspection. "
+        "Install or repair Xcode/Command Line Tools or a standalone Git, and ensure "
+        "non-login shell startup preserves PATH and GIT_OPTIONAL_LOCKS=0/GIT_NO_LAZY_FETCH=1; "
+        "then retry the spike. Apple's /usr/bin/git launcher is not supported."
+    )
+
+
 def _spike_text(value: Any, *, field: str, max_length: int = 600) -> str:
     if not isinstance(value, str):
         raise ValueError(f"spike result {field} must be a string")
@@ -4171,6 +4246,9 @@ def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
         schema_path = str(run.get("result_schema_path") or "").strip()
         if not schema_path:
             raise RuntimeError("spike run is missing its structured result schema")
+        git_environment = run.get("spike_git_environment")
+        if not git_environment:
+            raise RuntimeError("spike run is missing its verified read-only Git environment")
         cmd = [
             agent_bin,
             "exec",
@@ -4180,7 +4258,13 @@ def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
             "--ignore-user-config",
             "--ignore-rules",
             "--output-schema", schema_path,
+            "--config", "approval_policy=\"never\"",
+            "--config", "allow_login_shell=false",
+            "--config", "features.shell_snapshot=false",
+            "--config", "shell_environment_policy.experimental_use_profile=false",
         ]
+        for key, value in git_environment.items():
+            cmd.extend(["--config", f"shell_environment_policy.set.{key}={json.dumps(value)}"])
     else:
         cmd = [
             agent_bin,
@@ -4318,6 +4402,11 @@ class Worker:
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
+                    env=(
+                        {**os.environ, **self.run["spike_git_environment"]}
+                        if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE
+                        and self.run.get("spike_git_environment") else None
+                    ),
                 )
             except FileNotFoundError as e:
                 self.store.update(self.run_id, state="Failed",
@@ -6197,8 +6286,21 @@ class Daemon:
         attempt: int,
         run_id: int,
         caller_context: str | None = None,
+        agent_kind: str = "codex",
+        git_path: str | None = None,
     ) -> str:
         context = caller_context.strip() if caller_context and caller_context.strip() else "None."
+        tool_guidance = (
+            "Claude exposes only Read, Glob, and Grep. There is no shell or Git command tool; "
+            "use available file evidence and report any inaccessible Git history as an uncertainty."
+            if agent_kind == "claude" else
+            f"Codex permits commands only in its read-only sandbox. The daemon verified Git at {git_path or '$RELAY_SPIKE_GIT'}. "
+            'Use "$RELAY_SPIKE_GIT" rev-parse HEAD and "$RELAY_SPIKE_GIT" ls-files for routine inspection. '
+            "PATH also selects this Git, with GIT_OPTIONAL_LOCKS=0 and GIT_NO_LAZY_FETCH=1. "
+            "Use non-login shells (login=false); do not start a login shell, override this environment, "
+            "invoke /usr/bin/git or xcrun, warm caches, install tools, or retry outside the sandbox. "
+            "If prepared reads fail, report the blocker and any denied writes in mutation_attempts."
+        )
         return f"""You are a Relay Runner research-spike worker.
 
 Investigate the bounded question in ticket {ticket['id']} and return only the structured result required by the provider output schema.
@@ -6214,6 +6316,10 @@ Investigate the bounded question in ticket {ticket['id']} and return only the st
 - Do not expose chain-of-thought, raw provider transcript, credentials, or unrelated private data.
 - If you try a forbidden mutation, record it in `mutation_attempts`; the daemon will fail the run visibly.
 - Conclusions must cite concise local evidence and separate uncertainties from recommendations.
+
+## Provider tools
+
+{tool_guidance}
 
 ## Refined ticket
 
@@ -7613,6 +7719,10 @@ Title: {ticket['title']}
                     log_path.parent.mkdir(parents=True, exist_ok=True)
                     result_schema_path = log_path.parent / f"run-{attempt}-result.schema.json"
                     result_schema_path.write_text(json.dumps(SPIKE_RESULT_SCHEMA, indent=2))
+                    spike_git_environment = (
+                        prepare_spike_git_environment(str(workspace_path))
+                        if worker_provider == "codex" else None
+                    )
                     workflow_path = None
                     prompt = self._build_spike_prompt(
                         ticket=ticket,
@@ -7621,6 +7731,8 @@ Title: {ticket['title']}
                         attempt=attempt,
                         run_id=run_id,
                         caller_context=context,
+                        agent_kind=worker_provider,
+                        git_path=(spike_git_environment or {}).get("RELAY_SPIKE_GIT"),
                     )
                 except (OSError, RuntimeError) as e:
                     reason = f"spike launch preparation failed: {e}"
@@ -7664,6 +7776,7 @@ Title: {ticket['title']}
             run["artifact_lifecycle"] = artifact_lifecycle is not None
             if execution_mode == SPIKE_EXECUTION_MODE:
                 run["result_schema_path"] = str(result_schema_path)
+                run["spike_git_environment"] = spike_git_environment
             worker = Worker(
                 run_id=run_id, run=run, prompt=prompt, agent_bin=worker_bin,
                 agent_kind=worker_provider, workflow_path=workflow_path,

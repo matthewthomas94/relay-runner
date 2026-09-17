@@ -48,6 +48,12 @@ The messenger model and sub-agent sizing are selected independently. Shared work
 
 Disable the setting to retain each provider's normal per-tool approval flow. This provider flag is independent of macOS Microphone, Accessibility, Input Monitoring, and Screen Recording permissions.
 
+### Research spikes
+
+Spikes always use restricted tools, independently of the foreground session permission setting. Codex may run commands inside its read-only sandbox. The macOS daemon first verifies a direct Git executable with writes and network denied, then supplies it through `$RELAY_SPIKE_GIT` and PATH with optional locks and lazy fetching disabled. Login shells, shell snapshots, profile environment loading, and approval escalation are disabled for these workers. If no Git candidate passes preflight, the daemon records a repair-and-retry failure before worker execution. Xcode/Command Line Tools Git is supported; Homebrew is optional.
+
+Claude spikes expose only `Read`, `Glob`, and `Grep` in safe mode, with no shell or Git command access and no Git preflight requirement. They report history that cannot be inspected through those tools as an uncertainty. Both providers retain immutable snapshot inputs, strict mutation-attempt rejection, and daemon-only structured report persistence. See [spike execution](orchestrator.md) for the full contract.
+
 ## Session entry points
 
 The supported default is **Start Session** in Workspace. It launches the selected provider inside the embedded terminal, starts the app-owned voice bridge, binds the selected project scope, and keeps the provider's visible terminal output available.
