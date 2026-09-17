@@ -20,6 +20,7 @@ from services.artifact_store import (
     ConfigWrite,
     TicketWrite,
 )
+from services.tickets import parse, scan_repo
 
 
 UTC = timezone.utc
@@ -366,6 +367,8 @@ class ArtifactLifecycleTests(unittest.TestCase):
         self.assertEqual(failed.commit_id, duplicate.commit_id)
         self.assertEqual(self.coordinator.leases.active(), ())
         self.assertIn("status: backlog", self.ticket_text("RR-1"))
+        self.assertIsNone(parse(self.ticket_text("RR-1"))["run_id"])
+        self.assertIn("RR-1", [ticket["id"] for ticket in scan_repo(self.repo)])
 
         retry_tree = self.create_worktree("run-6")
         self.coordinator.claim_and_materialize(
@@ -379,6 +382,8 @@ class ArtifactLifecycleTests(unittest.TestCase):
             retry=True,
         )
         self.assertIn("status: ready", self.ticket_text("RR-1"))
+        self.assertIsNone(parse(self.ticket_text("RR-1"))["run_id"])
+        self.assertIn("RR-1", [ticket["id"] for ticket in scan_repo(self.repo)])
 
         cancel_tree = self.create_worktree("run-7")
         self.coordinator.claim_and_materialize(
@@ -391,6 +396,8 @@ class ArtifactLifecycleTests(unittest.TestCase):
             reason="user canceled",
             canceled=True,
         )
+        self.assertIsNone(parse(self.ticket_text("RR-1"))["run_id"])
+        self.assertIn("RR-1", [ticket["id"] for ticket in scan_repo(self.repo)])
         self.assertEqual(self.coordinator.leases.active(), ())
 
         live_tree = self.create_worktree("run-8")
@@ -507,6 +514,8 @@ class ArtifactLifecycleTests(unittest.TestCase):
             f"artifact_id: artifact-{ticket_id}",
             f"title: {title}",
             f"status: {status}",
+            "priority: medium",
+            "run_id: null",
             "activity_at: 2026-08-04T00:00:00.000000Z",
             f"depends_on: [{', '.join(depends_on)}]",
             f"canceled: {str(canceled).lower()}",

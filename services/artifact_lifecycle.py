@@ -1126,7 +1126,7 @@ class ArtifactLifecycleCoordinator:
         instant = _format_instant(self.now())
         updates: dict[str, str | None] = {
             "status": status,
-            "run_id": None if clear_run_id else str(run_id),
+            "run_id": "null" if clear_run_id else str(run_id),
             "run_state": run_state,
             "run_outcome_at": instant,
             "activity_at": instant,
