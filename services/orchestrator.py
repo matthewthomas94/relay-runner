@@ -4343,7 +4343,7 @@ def _spike_read_only_network_command(command: str) -> bool:
     if shell in {"bash", "sh", "zsh"}:
         command_flag = next(
             (index for index, token in enumerate(tokens[1:], start=1)
-             if token.startswith("-") and "c" in token),
+             if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", token)),
             None,
         )
         if command_flag is None or command_flag + 1 >= len(tokens):
@@ -4436,7 +4436,7 @@ def _spike_invokes_curl(command: str) -> bool:
         if executable in {"bash", "sh", "zsh"}:
             command_flag = next(
                 (index for index, token in enumerate(segment[1:], start=1)
-                 if token.startswith("-") and "c" in token),
+                 if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", token)),
                 None,
             )
             if command_flag is not None and command_flag + 1 < len(segment):

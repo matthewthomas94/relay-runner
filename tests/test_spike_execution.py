@@ -493,6 +493,34 @@ class SpikeExecutionTests(unittest.TestCase):
             self.assertIsNone(dns_worker._spike_violation)
             self.assertIn("read-only public research", dns_worker._research_access_error)
 
+            shell_write_worker = Worker(
+                run_id=run_id, run=store.get(run_id) or {}, prompt="",
+                agent_bin="codex", agent_kind="codex", store=store,
+                log_path=Path(tmp) / "shell-write.log",
+            )
+            shell_write_worker._handle_event(json.dumps({
+                "type": "item.started",
+                "item": {
+                    "id": "shell-write", "type": "command_execution",
+                    "command": (
+                        "bash --rcfile 'curl -q https://example.com' "
+                        "-c 'touch source.txt'"
+                    ),
+                },
+            }), 0)
+            shell_write_worker._handle_event(json.dumps({
+                "type": "item.completed",
+                "item": {
+                    "id": "shell-write", "type": "command_execution", "exit_code": 1,
+                    "aggregated_output": "touch: source.txt: Permission denied",
+                },
+            }), 0)
+            self.assertEqual(
+                shell_write_worker._spike_violation,
+                "spike command was blocked by mutation isolation",
+            )
+            self.assertIsNone(shell_write_worker._research_access_error)
+
             write_worker = Worker(
                 run_id=run_id, run=store.get(run_id) or {}, prompt="",
                 agent_bin="codex", agent_kind="codex", store=store,
