@@ -24,6 +24,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(codexScript.contains("cd '/Users/example/dev workspace'"))
         XCTAssertTrue(codexScript.contains("exec '/usr/local/bin/codex'"))
         XCTAssertTrue(codexScript.contains("model_reasoning_effort=\"xhigh\""))
+        XCTAssertTrue(codexScript.contains("--search"))
 
         var claudeConfig = AppConfig()
         claudeConfig.general.provider = .claude
@@ -44,6 +45,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(claudeScript.contains(
             "exec '/usr/local/bin/claude' --model 'sonnet' --effort 'high' --dangerously-skip-permissions \"/relay-bridge\""
         ))
+        XCTAssertFalse(claudeScript.contains("--tools"))
         XCTAssertFalse(claudeScript.contains("model_reasoning_effort"))
         XCTAssertFalse(claudeScript.contains(" -c "))
     }
@@ -75,6 +77,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
             "printf '%s\\n' \"$RELAY_PROVIDER_SESSION_ID\" > /tmp/voice_provider_session_id"
         ))
         XCTAssertTrue(script.contains("exec '/usr/local/bin/codex'"))
+        XCTAssertTrue(script.contains("--search"))
         XCTAssertTrue(script.contains("--dangerously-bypass-approvals-and-sandbox"))
     }
 
@@ -443,7 +446,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         )
 
         XCTAssertTrue(script.contains(
-            "'/usr/local/bin/codex' --model 'gpt-5.7-sol' -c 'model_reasoning_effort=\"ultra\"' --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
+            "'/usr/local/bin/codex' --model 'gpt-5.7-sol' -c 'model_reasoning_effort=\"ultra\"' --search --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
         ))
     }
 
@@ -465,6 +468,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(script.contains(
             "'/usr/local/bin/claude' --model 'fable' --effort 'max' --dangerously-skip-permissions \"/relay-bridge\""
         ))
+        XCTAssertFalse(script.contains("--tools"))
         XCTAssertFalse(script.contains("model_reasoning_effort"))
     }
 

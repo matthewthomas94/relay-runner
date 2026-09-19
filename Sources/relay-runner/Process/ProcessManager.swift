@@ -1167,6 +1167,7 @@ final class ProcessManager {
             ? (foregroundGateHandle ?? UUID().uuidString.lowercased())
             : nil
         let bypassFlag = Self.bypassFlag(enabled: config.general.bypass_permissions, target: target)
+        let researchAccessFlag = Self.researchAccessFlag(target: target)
         let modelFlag = Self.modelFlag(config.general.model, target: target, resolvedCodexModel: resolvedCodexModel)
         let reasoningEffortFlag = Self.orchestratorEffortFlag(
             config.general.effectiveOrchestratorEffort,
@@ -1190,6 +1191,7 @@ final class ProcessManager {
                 target: target,
                 voiceDelivery: voiceDelivery
             ),
+            researchAccessFlag: researchAccessFlag,
             bypassFlag: bypassFlag,
             appOwnedInstructionFlag: Self.appOwnedInstructionFlag(
                 target: target,
@@ -1470,6 +1472,18 @@ final class ProcessManager {
         }
     }
 
+    private static func researchAccessFlag(target: AgentTarget) -> String {
+        switch target {
+        case .codex:
+            return "--search "
+        case .claude:
+            // Claude exposes WebSearch/WebFetch through its unfiltered default
+            // built-in tool set. Do not add --tools here: foreground sessions
+            // must retain configured Relay MCP tools as well.
+            return ""
+        }
+    }
+
     static let appOwnedRelayInstructions = """
     You are the app-owned foreground Relay orchestrator/PM in Relay Runner integrated terminal.
     Relay Runner has already started the voice bridge and injects each claimed voice turn into this provider prompt; do not invoke relay-bridge or start a polling loop.
@@ -1477,6 +1491,7 @@ final class ProcessManager {
     A turn is voice-originated only when its prompt text exactly matches agent_prompt in /tmp/voice_cmd_claimed.json. For legacy metadata without agent_prompt, require an exact source_text match instead. Otherwise treat it as a normal typed turn and do not use claimed metadata or write messenger trace/reply events. One source turn may arrive as several ordered items; each claimed item has a stable intent_id and exactly one work_disposition: continue_current, run_sidecar, queue_project_work, clarify_priority, replace_current, or control_only. Queue conflicting work by default. A scoped replace_current cancels only its resolved item or ticket; only cancellation_scope=all_work may preempt unrelated accepted work. Sidecars must be bounded, read-only, independently verifiable, resource-safe, silent, and unable to bypass Relay tickets for project mutations.
     For a matching voice item, treat relay_command_seq, relay_command_id, and intent_id as two contracts. Compare the claimed item with /tmp/voice_command_state.json before output. A newer command whose work_disposition is continue_current with authorization_effect preserve and cancellation_scope none does not revoke the claimed item: finish and reply only for the claimed item, and do not act on the newer command. For every other newer command, stop stale work for output, do not answer or act on the newer command, and end this provider turn silently so Relay Runner can atomically claim and inject the ordered next item from the inbox. Ticket edits, dispatches, and orchestrator actions must pass the claimed seq/id and item identity when supported; an older bounded mutation may continue only when Relay Runner registered it and no scoped replacement, redirect, interrupt, or cancellation revoked that item. Acknowledgement, inspection/status, and additive items do not revoke unrelated prior authorizations.
     Resolve each command as non-work/control, direct action, ticket creation/refinement, ticket update, worker dispatch, or clarification. Raw Relay command captures are private metadata and must not appear in visible .orchestrator tickets. Do not implement substantial project work inline unless the user explicitly asks.
+    Public internet research is available by default. Use it only to read public evidence; it does not authorize messages, publishing, uploads of private workspace data, purchases, or unrelated mutations. Pin public-repository evidence to a commit when conclusions depend on source code, and report provider/network failure explicitly instead of claiming the source was assessed.
     Use mcp__relay-actions__* for screen manipulation and mcp__relay-vision__screenshot for screenshots; never use native computer-use fallbacks for those capabilities, and do not call propose_action.
     The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. A Relay-owned completion hook will recover a non-empty final provider message at turn Stop. Do not write reply JSON or reply envelopes to /tmp/voice_in.fifo directly. If an explicit current reply is needed, pipe only the final reply text to `/usr/bin/python3 "$RELAY_REPLY_HELPER"`; that shared helper binds and checks the claimed seq/id and is the sole app-owned __ORCHESTRATOR_REPLY__ encoder. Its accepted reply remains authoritative and deduplicates the later completion hook. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.
     Provider responses, reasoning summaries, tool calls, progress, and final output should remain visible in this terminal.
@@ -1674,12 +1689,13 @@ final class ProcessManager {
         modelFlag: String,
         reasoningEffortFlag: String,
         automaticCompactionFlag: String,
+        researchAccessFlag: String,
         bypassFlag: String,
         appOwnedInstructionFlag: String,
         completionHookFlag: String,
         voiceDelivery: SessionVoiceDelivery
     ) -> String {
-        let prefix = "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(automaticCompactionFlag)\(appOwnedInstructionFlag)\(completionHookFlag)\(bypassFlag)"
+        let prefix = "\(Self.shellQuoted(binary)) \(modelFlag)\(reasoningEffortFlag)\(researchAccessFlag)\(automaticCompactionFlag)\(appOwnedInstructionFlag)\(completionHookFlag)\(bypassFlag)"
             .trimmingCharacters(in: .whitespaces)
         guard voiceDelivery == .agentSkill else {
             return prefix

@@ -103,6 +103,7 @@ class SpikeExecutionTests(unittest.TestCase):
         )
 
         self.assertIn("read-only", codex)
+        self.assertLess(codex.index("--search"), codex.index("exec"))
         self.assertIn("--ignore-user-config", codex)
         self.assertIn("--output-schema", codex)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", codex)
@@ -117,9 +118,10 @@ class SpikeExecutionTests(unittest.TestCase):
                 agent_kind="codex", agent_bin="codex",
                 run={"execution_mode": "spike", "result_schema_path": "/tmp/schema.json"},
             )
-        self.assertIn("Read,Glob,Grep", claude)
+        self.assertIn("Read,Glob,Grep,WebSearch,WebFetch", claude)
         self.assertIn("--safe-mode", claude)
         self.assertIn("--strict-mcp-config", claude)
+        self.assertEqual(claude[claude.index("--mcp-config") + 1], '{"mcpServers":{}}')
         self.assertNotIn("--dangerously-skip-permissions", claude)
         self.assertNotIn("Bash", ",".join(claude))
 
@@ -134,6 +136,9 @@ class SpikeExecutionTests(unittest.TestCase):
         self.assertIn("daemon validates it and is the sole process allowed", prompt)
         self.assertIn("may not draft or accept canonical tickets", prompt)
         self.assertIn('"$RELAY_SPIKE_GIT" rev-parse HEAD', prompt)
+        self.assertIn("native public web-search tool", prompt)
+        self.assertIn("full pinned commit revision", prompt)
+        self.assertIn("research_access.status", prompt)
         self.assertIn("login=false", prompt)
         self.assertIn("do not start a login shell", prompt)
         claude_prompt = Daemon._build_spike_prompt(
@@ -141,8 +146,22 @@ class SpikeExecutionTests(unittest.TestCase):
             repo_path="/repo", workspace_path="/snapshot", attempt=1, run_id=7,
             agent_kind="claude",
         )
-        self.assertIn("only Read, Glob, and Grep", claude_prompt)
+        self.assertIn("Read, Glob, Grep, WebSearch, and WebFetch", claude_prompt)
+        self.assertIn("HTTPS commit/raw-file URLs", claude_prompt)
         self.assertNotIn("RELAY_SPIKE_GIT", claude_prompt)
+
+    def test_implementation_and_review_commands_keep_default_research_tools(self):
+        codex = orchestrator._agent_command(
+            agent_kind="codex", agent_bin="codex", run={"execution_mode": "implementation"}
+        )
+        claude = orchestrator._agent_command(
+            agent_kind="claude", agent_bin="claude", run={"execution_mode": "implementation"}
+        )
+
+        self.assertLess(codex.index("--search"), codex.index("exec"))
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", codex)
+        self.assertNotIn("--tools", claude)
+        self.assertIn("--dangerously-skip-permissions", claude)
 
     def test_spike_workspace_is_detached_branchless_read_only_and_removable(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -323,7 +342,31 @@ class SpikeExecutionTests(unittest.TestCase):
                 "type": "item.started",
                 "item": {"id": "1", "type": "command_execution", "command": "touch source.txt"},
             }), 0)
-            self.assertEqual(worker._spike_violation, "spike attempted a mutating or external command")
+            self.assertEqual(worker._spike_violation, "spike attempted a mutating command")
+
+            worker = Worker(
+                run_id=run_id,
+                run=store.get(run_id) or {},
+                prompt="",
+                agent_bin="claude",
+                agent_kind="claude",
+                store=store,
+                log_path=Path(tmp) / "run.log",
+            )
+            worker._handle_event(json.dumps({
+                "type": "assistant",
+                "message": {"content": [
+                    {"type": "tool_use", "id": "web", "name": "WebFetch", "input": {}},
+                ]},
+            }), 0)
+            self.assertIsNone(worker._spike_violation)
+            worker._handle_event(json.dumps({
+                "type": "assistant",
+                "message": {"content": [
+                    {"type": "tool_use", "id": "write", "name": "Write", "input": {}},
+                ]},
+            }), 0)
+            self.assertEqual(worker._spike_violation, "spike attempted disallowed tool Write")
 
     def test_spike_null_output_does_not_mask_real_mutations(self):
         cases = {
@@ -336,7 +379,13 @@ class SpikeExecutionTests(unittest.TestCase):
             'git show HEAD:README.md > /dev/null/file': True,
             'git show HEAD:README.md >/dev/null; touch result.txt': True,
             'git show HEAD:README.md >/dev/null > result.txt': True,
-            'git show HEAD:README.md >/dev/null; curl https://example.com': True,
+            'git show HEAD:README.md >/dev/null; curl https://example.com': False,
+            'curl -X POST https://example.com': True,
+            'curl -XPOST https://example.com': True,
+            'curl --request=PUT https://example.com': True,
+            'curl --data name=value https://example.com': True,
+            'wget --post-data=name=value https://example.com': True,
+            'wget --method PATCH https://example.com': True,
             'git show HEAD:README.md >/dev/null; git commit -am change': True,
         }
         with tempfile.TemporaryDirectory() as tmp:
@@ -355,6 +404,92 @@ class SpikeExecutionTests(unittest.TestCase):
                     }), 0)
                     self.assertEqual(bool(worker._spike_violation), rejected)
 
+    def test_spike_denied_unknown_write_is_not_mistaken_for_research_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunsStore(Path(tmp) / "runs.db")
+            run_id = store.insert(
+                ticket_id="RR-1", repo_path="/repo", workspace_path="/snapshot",
+                branch="", execution_mode="spike", state="Running",
+            )
+
+            read_worker = Worker(
+                run_id=run_id, run=store.get(run_id) or {}, prompt="",
+                agent_bin="codex", agent_kind="codex", store=store,
+                log_path=Path(tmp) / "read.log",
+            )
+            read_worker._handle_event(json.dumps({
+                "type": "item.started",
+                "item": {
+                    "id": "read", "type": "command_execution",
+                    "command": "curl https://example.com/public-source",
+                },
+            }), 0)
+            read_worker._handle_event(json.dumps({
+                "type": "item.completed",
+                "item": {
+                    "id": "read", "type": "command_execution", "exit_code": 7,
+                    "aggregated_output": "curl: operation not permitted",
+                },
+            }), 0)
+            self.assertIsNone(read_worker._spike_violation)
+            self.assertIn("read-only public research", read_worker._research_access_error)
+
+            write_worker = Worker(
+                run_id=run_id, run=store.get(run_id) or {}, prompt="",
+                agent_bin="codex", agent_kind="codex", store=store,
+                log_path=Path(tmp) / "write.log",
+            )
+            write_worker._handle_event(json.dumps({
+                "type": "item.started",
+                "item": {
+                    "id": "write", "type": "command_execution",
+                    "command": "python3 -c \"open('source.txt', 'w').write('changed')\"",
+                },
+            }), 0)
+            write_worker._handle_event(json.dumps({
+                "type": "item.completed",
+                "item": {
+                    "id": "write", "type": "command_execution", "exit_code": 1,
+                    "aggregated_output": "Permission denied: 'source.txt'",
+                },
+            }), 0)
+            self.assertEqual(
+                write_worker._spike_violation,
+                "spike command was blocked by mutation isolation",
+            )
+
+    def test_spike_provider_access_failure_is_public_and_actionable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunsStore(Path(tmp) / "runs.db")
+            run_id = store.insert(
+                ticket_id="RR-1", repo_path=tmp, workspace_path=tmp,
+                branch="", execution_mode="spike", state="Running",
+            )
+            worker = Worker(
+                run_id=run_id,
+                run=store.get(run_id) or {},
+                prompt="",
+                agent_bin="claude",
+                agent_kind="claude",
+                store=store,
+                log_path=Path(tmp) / "run.log",
+            )
+            event = json.dumps({
+                "type": "system",
+                "subtype": "api_retry",
+                "error_status": 401,
+                "error": "authentication_failed",
+            })
+            command = [sys.executable, "-c", f"import sys; print({event!r}); sys.exit(1)"]
+            with patch.object(worker, "_command", return_value=command):
+                worker._run()
+
+            self.assertEqual(
+                store.get(run_id)["last_error"],
+                "spike research access unavailable: provider authentication failed (HTTP 401); "
+                "re-authenticate the provider and retry",
+            )
+
     def test_schema_and_validator_share_structured_result_limits(self):
         schema = orchestrator.SPIKE_RESULT_SCHEMA["properties"]
         for field in ("conclusions", "evidence", "uncertainties", "recommended_next_steps"):
@@ -365,6 +500,30 @@ class SpikeExecutionTests(unittest.TestCase):
         oversized["conclusions"] = ["x" * 601]
         with self.assertRaisesRegex(ValueError, "conclusions exceeds 600 characters"):
             validate_spike_result(oversized)
+
+        external = self.result()
+        external["research_access"] = {
+            "status": "succeeded",
+            "detail": "Public evidence was retrieved.",
+        }
+        with self.assertRaisesRegex(ValueError, "requires URL evidence"):
+            validate_spike_result(external)
+
+        failed = self.result()
+        failed["research_access"] = {
+            "status": "failed",
+            "detail": "WebSearch was unavailable.",
+        }
+        failed["uncertainties"] = []
+        with self.assertRaisesRegex(ValueError, "recorded as an uncertainty"):
+            validate_spike_result(failed)
+
+        legacy = self.result()
+        del legacy["research_access"]
+        self.assertEqual(
+            validate_spike_result(legacy)["research_access"]["status"],
+            "not_used",
+        )
 
     def test_spike_report_persistence_blocks_dirty_ticket_overlap(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -496,6 +655,10 @@ class SpikeExecutionTests(unittest.TestCase):
             "uncertainties": ["Mounted UI behavior was not observed."],
             "recommended_next_steps": ["Create a separately reviewed implementation ticket."],
             "mutation_attempts": [],
+            "research_access": {
+                "status": "not_used",
+                "detail": "The spike used only immutable local evidence.",
+            },
         }
 
     def make_repo(self, repo: Path) -> None:

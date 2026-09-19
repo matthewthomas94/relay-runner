@@ -175,7 +175,7 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
                     self.assertIn(environment["RELAY_SPIKE_GIT"], worker.prompt)
                 else:
                     self.assertEqual(environment, {})
-                    self.assertIn("only Read, Glob, and Grep", worker.prompt)
+                    self.assertIn("Read, Glob, Grep, WebSearch, and WebFetch", worker.prompt)
                 command = [sys.executable, "-c", (
                     f"import os; expected = {environment!r}; "
                     "assert all(os.environ.get(k) == v for k, v in expected.items()); "
@@ -237,7 +237,7 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
         preflight.assert_not_called()
         worker = self.daemon._workers[run["id"]]
         self.assertIsNone(worker.run["spike_git_environment"])
-        self.assertIn("Read,Glob,Grep", worker._command())
+        self.assertIn("Read,Glob,Grep,WebSearch,WebFetch", worker._command())
         self.assertIn("no shell or Git command tool", worker.prompt)
 
     def test_artifact_spike_restart_recovers_before_and_after_canonical_publication(self):
@@ -331,7 +331,7 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
             ("missing", [], 0, "no structured spike result"),
             ("malformed", [self.spike_event("codex", self.spike_result()), "{\"type\":\"result\",\"result\":\"invalid\"}"], 0, "not valid JSON"),
             ("crashed", [self.spike_event("claude", self.spike_result())], 1, "exited with status 1"),
-            ("mutation", [json.dumps({"type": "item.started", "item": {"id": "tool-1", "type": "command_execution", "command": "touch source.txt"}}), self.spike_event("codex", self.spike_result())], 0, "mutating or external command"),
+            ("mutation", [json.dumps({"type": "item.started", "item": {"id": "tool-1", "type": "command_execution", "command": "touch source.txt"}}), self.spike_event("codex", self.spike_result())], 0, "mutating command"),
         )
         for name, events, exit_code, diagnostic in cases:
             with self.subTest(case=name):
@@ -1158,6 +1158,10 @@ Saved through the daemon-owned typed writer.
             "uncertainties": ["Runtime behavior requires separate evidence."],
             "recommended_next_steps": ["Review the findings before planning implementation."],
             "mutation_attempts": [],
+            "research_access": {
+                "status": "not_used",
+                "detail": "The spike used only immutable local evidence.",
+            },
         }
 
     @staticmethod

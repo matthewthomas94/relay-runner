@@ -37,6 +37,8 @@ The persistent orchestrator may have attached extra context for this ticket. Tre
 
 6. **Implement.** Make the smallest change that satisfies the ticket. Match the project's existing style. Don't add speculative features. Don't refactor adjacent code that isn't broken. (See the global `AGENTS.md`/`CLAUDE.md` Karpathy guidelines for the runtime you're using.)
 
+   **Research access.** Public internet research is available by default. It authorizes only reading public evidence; do not publish, message, purchase, upload private workspace data, or make unrelated mutations. Pin public-repository evidence to a commit, and report provider/network failure explicitly instead of claiming the source was assessed.
+
    **Provider parity.** If the ticket touches provider-facing behavior for Codex or Claude, explicitly consider the equivalent user experience for every supported provider, not only the provider named in the request. Provider-specific commands, flags, auth paths, model names, permissions, and limitations are allowed, but intentional differences must be documented in the ticket, implementation notes, or run log.
 
    **Sizing parity.** Codex effort is rendered as `model_reasoning_effort`; Claude effort is rendered as `--effort`. `low`, `medium`, `high`, and `xhigh` are shared values. Explicit `codex:astra` or `codex:gpt-6-astra` tickets also support `max` and `ultra` when advertised by the configured CLI. Claude-scoped tickets support `max` with provider notes. Do not infer a provider-specific downgrade unless the ticket or dispatcher context explicitly says to.
