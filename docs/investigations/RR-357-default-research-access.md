@@ -13,7 +13,7 @@ Provider web tools return evidence directly to model context, so Relay Runner cr
 
 Structured spike results now declare `research_access` as `not_used`, `succeeded`, or `failed`. Success requires URL evidence. Failure requires a concise access diagnostic and a matching uncertainty, preventing unavailable public evidence from being represented as assessed. Provider-process failures are reduced to privacy-safe actionable diagnostics rather than copied logs.
 
-Sandbox-denial handling remains fail-closed for unknown commands: a denied Python file write, even though it is not named by the command regex, fails the spike as a mutation attempt. The only command-denial exception is a single public HTTPS `curl` GET/HEAD with `-q` or `--disable` as its first option and no compound command, local input, upload, or output option; this prevents implicit curl configuration from adding writes or uploads. A blocked request that satisfies that exact form is reported as research access unavailable instead of being mislabeled as a mutation.
+Sandbox-denial handling remains fail-closed for unknown commands: a denied Python file write, even though it is not named by the command regex, fails the spike as a mutation attempt. The only command-denial exception is a single literal, non-expanded public HTTPS `curl` GET/HEAD with `-q` or `--disable` as its first option and no executable wrapper, compound command, local input, upload, or output option; this prevents implicit curl configuration, shell expansion, or curl URL globbing from adding writes, uploads, or additional requests. A blocked request that satisfies that exact form is reported as research access unavailable instead of being mislabeled as a mutation.
 
 ## Regression evidence
 

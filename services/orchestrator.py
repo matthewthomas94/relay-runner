@@ -4392,7 +4392,11 @@ def _spike_read_only_network_command(command: str) -> bool:
             index += 1
             continue
         return False
-    return len(targets) == 1 and bool(re.match(r"https://", targets[0], re.IGNORECASE))
+    return len(targets) == 1 and bool(re.fullmatch(
+        r"https://[^\s$`*?\[\]{}]+",
+        targets[0],
+        re.IGNORECASE,
+    ))
 
 
 def _spike_invokes_curl(command: str) -> bool:
@@ -4437,14 +4441,20 @@ def _spike_invokes_curl(command: str) -> bool:
         if executable == "curl":
             return True
         if executable in {"command", "env", "exec", "sudo"}:
-            index = 1
-            while index < len(segment) and (
-                segment[index].startswith("-")
-                or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", segment[index])
-            ):
-                index += 1
-            if index < len(segment) and Path(segment[index]).name == "curl":
-                return True
+            for index, token in enumerate(segment[1:], start=1):
+                if Path(token).name == "curl":
+                    return True
+                if executable != "env":
+                    continue
+                split_command = ""
+                if token in {"-S", "--split-string"} and index + 1 < len(segment):
+                    split_command = segment[index + 1]
+                elif token.startswith("--split-string="):
+                    split_command = token.partition("=")[2]
+                elif token.startswith("-S") and token != "-S":
+                    split_command = token[2:]
+                if split_command and _spike_invokes_curl(split_command):
+                    return True
     return False
 
 
@@ -4846,22 +4856,28 @@ class Worker:
                     self.run.get("execution_mode") == SPIKE_EXECUTION_MODE
                     and item.get("type") == "command_execution"
                     and item.get("exit_code") not in (None, 0, "0")
-                    and re.search(
-                        r"operation not permitted|permission denied|read-only|sandbox",
-                        str(item.get("aggregated_output") or item.get("output") or ""),
-                        re.IGNORECASE,
-                    )
                 ):
+                    output = str(item.get("aggregated_output") or item.get("output") or "")
                     read_only_network = (
                         bool(item_id)
                         and str(item_id) in self._spike_read_only_network_items
                     ) or _spike_read_only_network_command(str(item.get("command") or ""))
-                    if read_only_network:
+                    sandbox_denial = re.search(
+                        r"operation not permitted|permission denied|read-only|sandbox",
+                        output,
+                        re.IGNORECASE,
+                    )
+                    network_denial = re.search(
+                        r"curl:\s*\(6\)\s*could not resolve host",
+                        output,
+                        re.IGNORECASE,
+                    )
+                    if read_only_network and (sandbox_denial or network_denial):
                         self._research_access_error = (
                             "read-only public research request was blocked; "
                             "use provider web research or restore network access and retry"
                         )
-                    else:
+                    elif sandbox_denial:
                         self._spike_violation = "spike command was blocked by mutation isolation"
                 if item_id:
                     self._spike_read_only_network_items.discard(str(item_id))
