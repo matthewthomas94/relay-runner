@@ -257,6 +257,22 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(stateMachine.state, .actionGlow(awaitingConfirmation: nil))
     }
 
+    func testStartupGreetingPreviewIsNotReplacedBySessionReady() {
+        let stateMachine = StateMachine()
+
+        stateMachine.handleServiceEvent(
+            source: "tts",
+            newState: "message_waiting",
+            text: "Hello, what would you like to work on?"
+        )
+        stateMachine.showSessionReady()
+
+        XCTAssertEqual(
+            stateMachine.state,
+            .messageWaiting(preview: "Hello, what would you like to work on?")
+        )
+    }
+
     func testBridgeAcknowledgementDuringSentIsDeferredUntilAfterSentWindowPlusPause() {
         var now = Date(timeIntervalSinceReferenceDate: 1_000)
         let stateMachine = StateMachine(now: { now })
