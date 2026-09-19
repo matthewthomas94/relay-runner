@@ -548,6 +548,42 @@ class SpikeExecutionTests(unittest.TestCase):
             "not_used",
         )
 
+    def test_successful_research_accepts_ordinary_url_citations(self):
+        sources = (
+            "https://example.com/evidence",
+            "E3 [upstream evidence](https://example.com/evidence) ",
+            "<https://example.com/evidence>",
+            "Public source: https://example.com/evidence ",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                result = self.result()
+                result["evidence"] = [{"source": source, "finding": "Public evidence."}]
+                result["research_access"] = {
+                    "status": "succeeded",
+                    "detail": "Public evidence was retrieved.",
+                }
+                validated = validate_spike_result(result)
+                self.assertEqual(validated["evidence"][0]["source"], source.strip())
+
+    def test_successful_research_rejects_malformed_or_non_web_references(self):
+        for source in (
+            "E3 local notes only",
+            "https://)",
+            "prefix https://]",
+            "https:///",
+            "file:///tmp/evidence",
+        ):
+            with self.subTest(source=source):
+                result = self.result()
+                result["evidence"] = [{"source": source, "finding": "Not public evidence."}]
+                result["research_access"] = {
+                    "status": "succeeded",
+                    "detail": "Public evidence was retrieved.",
+                }
+                with self.assertRaisesRegex(ValueError, "requires URL evidence"):
+                    validate_spike_result(result)
+
     def test_spike_report_persistence_blocks_dirty_ticket_overlap(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
