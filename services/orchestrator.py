@@ -4321,148 +4321,6 @@ def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
     return cmd
 
 
-def _spike_read_only_network_command(command: str) -> bool:
-    """Return whether command is a config-free curl GET/HEAD with no local writes."""
-    candidate = re.sub(
-        r"(?<!\S)(?:2?>>?)[ \t]*/dev/null(?=$|[\s;&|])",
-        "",
-        str(command or ""),
-    ).strip()
-    # shlex does not evaluate shell expansions and discards quote boundaries.
-    # Fail closed before parsing so an expansion cannot derive curl arguments
-    # from snapshot files or environment values, including through shell -c.
-    if "$" in candidate or "`" in candidate:
-        return False
-    try:
-        tokens = shlex.split(candidate)
-    except ValueError:
-        return False
-    if not tokens:
-        return False
-    shell = Path(tokens[0]).name
-    if shell in {"bash", "sh", "zsh"}:
-        command_flag = next(
-            (index for index, token in enumerate(tokens[1:], start=1)
-             if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", token)),
-            None,
-        )
-        if command_flag is None or command_flag + 1 >= len(tokens):
-            return False
-        candidate = tokens[command_flag + 1].strip()
-        try:
-            tokens = shlex.split(candidate)
-        except ValueError:
-            return False
-    if not tokens or Path(tokens[0]).name != "curl":
-        return False
-    # Keep this exception intentionally narrow. Compound commands and curl
-    # options that read local configuration or write/upload data remain subject
-    # to the generic sandbox-denial violation below.
-    if any(marker in candidate for marker in (";", "|", "<", ">", "&&", "||")):
-        return False
-    # curl reads a user-controlled curlrc unless -q/--disable is its first
-    # option. Requiring a standalone first option also avoids ambiguous short
-    # option clusters when deciding whether a denied command was read-only.
-    if len(tokens) < 3 or tokens[1] not in {"-q", "--disable"}:
-        return False
-    targets: list[str] = []
-    index = 2
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "--":
-            targets.extend(tokens[index + 1:])
-            break
-        if not token.startswith("-"):
-            targets.append(token)
-            index += 1
-            continue
-        if token in {"--fail", "--silent", "--show-error", "--location", "--head", "--compressed"} \
-                or re.fullmatch(r"-[fsSLI]+", token):
-            index += 1
-            continue
-        option, separator, inline_value = token.partition("=")
-        if option in {"-m", "--max-time", "--connect-timeout", "--url", "-X", "--request"}:
-            if separator:
-                value = inline_value
-            elif index + 1 < len(tokens):
-                index += 1
-                value = tokens[index]
-            else:
-                return False
-            if option in {"-X", "--request"}:
-                if value.upper() not in {"GET", "HEAD"}:
-                    return False
-            elif option == "--url":
-                targets.append(value)
-            index += 1
-            continue
-        return False
-    return len(targets) == 1 and bool(re.fullmatch(
-        r"https://[^\s$`*?\[\]{}]+",
-        targets[0],
-        re.IGNORECASE,
-    ))
-
-
-def _spike_invokes_curl(command: str) -> bool:
-    """Return whether a shell command invokes curl, not merely mentions it."""
-    try:
-        lexer = shlex.shlex(str(command or ""), posix=True, punctuation_chars=";&|()<>")
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except ValueError:
-        return False
-
-    segments: list[list[str]] = [[]]
-    for token in tokens:
-        if token and all(character in ";&|()<>" for character in token):
-            segments.append([])
-        else:
-            segments[-1].append(token)
-
-    for segment in segments:
-        if not segment:
-            continue
-        first = 0
-        while first < len(segment) and re.fullmatch(
-            r"[A-Za-z_][A-Za-z0-9_]*=.*", segment[first]
-        ):
-            first += 1
-        if first >= len(segment):
-            continue
-        segment = segment[first:]
-        executable = Path(segment[0]).name
-        if executable in {"bash", "sh", "zsh"}:
-            command_flag = next(
-                (index for index, token in enumerate(segment[1:], start=1)
-                 if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", token)),
-                None,
-            )
-            if command_flag is not None and command_flag + 1 < len(segment):
-                if _spike_invokes_curl(segment[command_flag + 1]):
-                    return True
-            continue
-        if executable == "curl":
-            return True
-        if executable in {"command", "env", "exec", "sudo"}:
-            for index, token in enumerate(segment[1:], start=1):
-                if Path(token).name == "curl":
-                    return True
-                if executable != "env":
-                    continue
-                split_command = ""
-                if token in {"-S", "--split-string"} and index + 1 < len(segment):
-                    split_command = segment[index + 1]
-                elif token.startswith("--split-string="):
-                    split_command = token.partition("=")[2]
-                elif token.startswith("-S") and token != "-S":
-                    split_command = token[2:]
-                if split_command and _spike_invokes_curl(split_command):
-                    return True
-    return False
-
-
 class Worker:
     """One agent subprocess running against a worktree. Owns its own thread."""
 
@@ -4490,7 +4348,6 @@ class Worker:
         self.spike_result: dict[str, Any] | None = None
         self._spike_violation: str | None = None
         self._research_access_error: str | None = None
-        self._spike_read_only_network_items: set[str] = set()
         # Tool-use ids dispatched but not yet resolved by a tool_result. Shared
         # with the heartbeat thread, so guarded by a lock.
         self._inflight: set[str] = set()
@@ -4826,9 +4683,8 @@ class Worker:
                 item_id = item.get("id")
                 if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE:
                     command = str(item.get("command") or "")
-                    read_only_network = _spike_read_only_network_command(command)
-                    if item_id and read_only_network:
-                        self._spike_read_only_network_items.add(str(item_id))
+                    # Diagnostics only: the OS sandbox enforces all command
+                    # writes and networking. Shell text never grants an exception.
                     # Discarding output is not a filesystem mutation. Only
                     # exempt the literal null device, never a path prefix or
                     # the rest of a compound command.
@@ -4837,18 +4693,13 @@ class Worker:
                         "",
                         command,
                     )
-                    if item.get("type") == "command_execution":
-                        unsafe_curl = _spike_invokes_curl(command) and not read_only_network
-                        mutating_command = re.search(
-                            r"(?:^|[;&|]\s*)(?:rm|mv|cp|touch|mkdir|install|open|osascript|chmod|chown|ln|tee)\b|"
-                            r"(?:^|\s)(?:>|>>|2>|2>>)\s*|"
-                            r"\bgit\s+(?:add|apply|branch|checkout|clean|commit|merge|push|rebase|reset|restore|switch|tag|worktree)\b|"
-                            r"\bwget\b[^\n]*(?:--method(?:=|\s+)(?:POST|PUT|PATCH|DELETE)\b|--post-(?:data|file)\b)",
-                            command,
-                            re.IGNORECASE,
-                        )
-                        if unsafe_curl or mutating_command:
-                            self._spike_violation = "spike attempted a mutating command"
+                    if item.get("type") == "command_execution" and re.search(
+                        r"(?:^|[;&|]\s*)(?:rm|mv|cp|touch|mkdir|install|curl|wget|open|osascript|chmod|chown|ln|tee)\b|"
+                        r"(?:^|\s)(?:>|>>|2>|2>>)\s*|"
+                        r"\bgit\s+(?:add|apply|branch|checkout|clean|commit|merge|push|rebase|reset|restore|switch|tag|worktree)\b",
+                        command,
+                    ):
+                        self._spike_violation = "spike attempted a mutating or external command"
                 if item_id:
                     with self._inflight_lock:
                         self._inflight.add(item_id)
@@ -4863,29 +4714,15 @@ class Worker:
                     and item.get("exit_code") not in (None, 0, "0")
                 ):
                     output = str(item.get("aggregated_output") or item.get("output") or "")
-                    read_only_network = (
-                        bool(item_id)
-                        and str(item_id) in self._spike_read_only_network_items
-                    ) or _spike_read_only_network_command(str(item.get("command") or ""))
-                    sandbox_denial = re.search(
-                        r"operation not permitted|permission denied|read-only|sandbox",
+                    # A command denial is never evidence of native web access
+                    # failure, regardless of executable, arguments, or wrappers.
+                    if re.search(
+                        r"operation not permitted|permission denied|read-only|sandbox|"
+                        r"could not resolve host|network is unreachable|network access.*denied",
                         output,
                         re.IGNORECASE,
-                    )
-                    network_denial = re.search(
-                        r"curl:\s*\(6\)\s*could not resolve host",
-                        output,
-                        re.IGNORECASE,
-                    )
-                    if read_only_network and (sandbox_denial or network_denial):
-                        self._research_access_error = (
-                            "read-only public research request was blocked; "
-                            "use provider web research or restore network access and retry"
-                        )
-                    elif sandbox_denial:
-                        self._spike_violation = "spike command was blocked by mutation isolation"
-                if item_id:
-                    self._spike_read_only_network_items.discard(str(item_id))
+                    ):
+                        self._spike_violation = "spike command was blocked by read-only isolation"
                 if item_id:
                     with self._inflight_lock:
                         self._inflight.discard(item_id)
@@ -6530,9 +6367,10 @@ class Daemon:
             f"sandbox. The daemon verified Git at {git_path or '$RELAY_SPIKE_GIT'}. "
             'Use "$RELAY_SPIKE_GIT" rev-parse HEAD and "$RELAY_SPIKE_GIT" ls-files for routine inspection. '
             "PATH also selects this Git, with GIT_OPTIONAL_LOCKS=0 and GIT_NO_LAZY_FETCH=1. "
-            "Prefer the native web tool for public research. A single HTTPS curl GET/HEAD beginning "
-            "with `curl -q` or `curl --disable` is the only shell-network fallback; if the sandbox "
-            "blocks it, report a research-access failure rather than a mutation. Inspect a public "
+            "Use only the native web tool for public research. Shell network access is disabled; "
+            "there is no shell-network fallback. Do not use curl, wget, git fetch/clone, or an "
+            "interpreter to obtain external evidence. If the native web tool is unavailable, "
+            "report a research-access failure. Inspect a public "
             "repository through HTTPS commit/raw-file URLs pinned to a full commit SHA, and cite both "
             "the URL and revision. "
             "Use non-login shells (login=false); do not start a login shell, override this environment, "
@@ -6548,7 +6386,7 @@ Investigate the bounded question in ticket {ticket['id']} and return only the st
 - Read-only detached snapshot: {workspace_path}
 - Allowed evidence: files and Git history inside the snapshot, the refined ticket and dispatcher context below, and public sources retrieved through the provider's read-only web tools.
 - When present, `.orchestrator/.artifact-snapshot.json`, the assigned ticket, its attachments, and dependency summaries are immutable daemon-provided inputs. Read them without editing them.
-- Forbidden: edits, file creation, Git mutations, shell-network writes/uploads, desktop/app control, messages, uploads, purchases, deletion, or any other external side effect. Public research uses the provider web tools described below, with only the narrow Codex HTTPS GET/HEAD fallback they define.
+- Forbidden: edits, file creation, Git mutations, shell networking, desktop/app control, messages, uploads, purchases, deletion, or any other external side effect. Public research uses only the provider web tools described below.
 - The designated terminal structured result is the only permitted output. It is not a source or board mutation: the daemon validates it and is the sole process allowed to persist the canonical spike report.
 - You may recommend implementation work, but you may not draft or accept canonical tickets. After the report is committed, the foreground PM may create recoverable drafts and may accept individually reviewed drafts into backlog.
 - Do not expose chain-of-thought, raw provider transcript, credentials, or unrelated private data.

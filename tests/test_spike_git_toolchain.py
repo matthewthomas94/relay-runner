@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -146,6 +147,30 @@ class SpikeGitToolchainTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Operation not permitted", result.stderr)
+        # Verify the OS boundary itself: arbitrary interpreters and shell
+        # wrappers cannot send data, independently of command-text diagnostics.
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            probe = [sys.executable, "-I", "-c",
+                     f"import socket; socket.create_connection(('127.0.0.1', {port}), timeout=2).close()"]
+            control = subprocess.run(probe, capture_output=True, text=True, timeout=10)
+            self.assertEqual(control.returncode, 0, control.stderr)
+            connection, _ = listener.accept()
+            connection.close()
+            for wrapped in (probe, ["/bin/sh", "-c", 'exec "$@"', "probe", *probe]):
+                with self.subTest(network_command=wrapped):
+                    result = subprocess.run(
+                        [codex, "sandbox", *settings, "--", *wrapped],
+                        cwd=self.repo, env={**os.environ, **env},
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Operation not permitted", result.stderr)
+            listener.settimeout(0.1)
+            with self.assertRaises(TimeoutError):
+                listener.accept()
         self.assertEqual(self.run_git("rev-parse", "HEAD"), before)
         self.assertEqual(self.run_git("status", "--porcelain"), "")
         self.assertEqual((self.repo / ".orchestrator/RR-1.md").read_bytes(), ticket)

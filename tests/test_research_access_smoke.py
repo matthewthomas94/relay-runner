@@ -141,6 +141,18 @@ class ResearchAccessLiveSmokeTests(unittest.TestCase):
             "SpikeResultReady",
             f"{provider} research worker failed: {completed.get('last_error')}",
         )
+        events = []
+        for line in log_path.read_text().splitlines():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        if provider == "codex":
+            self.assertTrue(any(
+                event.get("type") == "item.completed"
+                and event.get("item", {}).get("type") == "web_search"
+                for event in events
+            ), "Codex must retrieve the evidence through its native web tool")
         result = worker.spike_result or {}
         self.assertEqual(result.get("research_access", {}).get("status"), "succeeded")
         evidence = "\n".join(
