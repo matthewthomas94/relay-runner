@@ -4328,6 +4328,11 @@ def _spike_read_only_network_command(command: str) -> bool:
         "",
         str(command or ""),
     ).strip()
+    # shlex does not evaluate shell expansions and discards quote boundaries.
+    # Fail closed before parsing so an expansion cannot derive curl arguments
+    # from snapshot files or environment values, including through shell -c.
+    if "$" in candidate or "`" in candidate:
+        return False
     try:
         tokens = shlex.split(candidate)
     except ValueError:
