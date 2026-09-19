@@ -7,7 +7,9 @@ import os
 import re
 import sqlite3
 import subprocess
+from copy import deepcopy
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import quote
@@ -50,6 +52,22 @@ def ingest_registered_projects(
     The registry, project ticket files, run logs, and run-history database are
     read-only inputs. All writes go through the provided GraphifyCoreStore.
     """
+    with store.transaction():
+        return _ingest_registered_projects(
+            store,
+            registry_path=registry_path,
+            runs_db_path=runs_db_path,
+            index_files=index_files,
+        )
+
+
+def _ingest_registered_projects(
+    store: GraphifyCoreStore,
+    *,
+    registry_path: str | Path,
+    runs_db_path: str | Path | None,
+    index_files: bool,
+) -> dict[str, int]:
     registry = _load_registry(Path(registry_path))
     registry_v2 = registry.get("schema_version") == 2
     active_project_id = (
@@ -642,9 +660,33 @@ def _archive_catalog_tickets(
             raise ValueError("archive catalog confirmed ref is unavailable")
         return []
     confirmed_head = confirmed.stdout.strip()
+    return deepcopy(
+        _archive_catalog_tickets_at_head(
+            str(repo_path.resolve()),
+            confirmed_head,
+            path.exists(),
+        )
+    )
+
+
+@lru_cache(maxsize=64)
+def _archive_catalog_tickets_at_head(
+    repo_path_text: str,
+    confirmed_head: str,
+    materialized_catalog_exists: bool,
+) -> list[dict[str, Any]]:
+    """Verify one immutable archive commit once per daemon lifetime.
+
+    The artifact commit is the cache invalidation token: ticket, status, merge,
+    and retention mutations publish a new ref head. The materialized-catalog
+    bit preserves the existing unavailable-ref failure semantics if a local
+    projection appears without a corresponding catalog in the confirmed ref.
+    Callers receive a deep copy so ingestion cannot mutate the cached proof.
+    """
+    repo_path = Path(repo_path_text)
     catalog = _git(repo_path, "show", f"{confirmed_head}:.orchestrator/archive-index.jsonl")
     if catalog.returncode != 0:
-        if path.exists():
+        if materialized_catalog_exists:
             raise ValueError("confirmed artifact ref has no archive catalog")
         return []
     try:

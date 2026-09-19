@@ -85,6 +85,37 @@ class GraphifyCoreStoreTests(unittest.TestCase):
         self.assertEqual(second["title"], "Example renamed")
         self.assertEqual(second["body"]["active"], True)
 
+    def test_transaction_commits_related_mutations_together(self):
+        store = self.make_store()
+
+        with store.transaction():
+            store.upsert_node(
+                kind=NODE_PROJECT,
+                stable_key="repo:/tmp/transaction",
+                title="Transaction",
+            )
+            store.upsert_node(
+                kind=NODE_TICKET,
+                stable_key="repo:/tmp/transaction:RR-1",
+                title="Batched ticket",
+            )
+
+        self.assertEqual(len(store.nodes()), 2)
+
+    def test_transaction_rolls_back_partial_graph_refresh(self):
+        store = self.make_store()
+
+        with self.assertRaisesRegex(RuntimeError, "injected refresh failure"):
+            with store.transaction():
+                store.upsert_node(
+                    kind=NODE_PROJECT,
+                    stable_key="repo:/tmp/rollback",
+                    title="Rollback",
+                )
+                raise RuntimeError("injected refresh failure")
+
+        self.assertEqual(store.nodes(), [])
+
     def test_edge_upsert_and_neighbor_query_are_idempotent(self):
         store = self.make_store()
         project = store.upsert_node(

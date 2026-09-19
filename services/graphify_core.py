@@ -165,12 +165,17 @@ class GraphifyCoreStore:
             self._memory_conn.row_factory = sqlite3.Row
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._transaction_state = threading.local()
         self._init()
 
     @contextmanager
     def _conn(self):
         with self._lock:
+            transaction_conn = getattr(self._transaction_state, "connection", None)
+            if transaction_conn is not None:
+                yield transaction_conn
+                return
             conn = self._memory_conn
             if conn is None:
                 conn = sqlite3.connect(str(self.path), isolation_level=None)
@@ -181,6 +186,35 @@ class GraphifyCoreStore:
             try:
                 yield conn
             finally:
+                if self._memory_conn is None:
+                    conn.close()
+
+    @contextmanager
+    def transaction(self):
+        """Batch related graph mutations into one atomic SQLite commit."""
+        with self._lock:
+            existing = getattr(self._transaction_state, "connection", None)
+            if existing is not None:
+                yield existing
+                return
+            conn = self._memory_conn
+            if conn is None:
+                conn = sqlite3.connect(str(self.path), isolation_level=None)
+                conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            if self._memory_conn is None:
+                conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("BEGIN")
+            self._transaction_state.connection = conn
+            try:
+                yield conn
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            else:
+                conn.execute("COMMIT")
+            finally:
+                del self._transaction_state.connection
                 if self._memory_conn is None:
                     conn.close()
 
@@ -571,8 +605,10 @@ class GraphifyCoreStore:
         self.upsert_edge(src_id=project_id, dst_id=file_node["id"], kind=EDGE_CONTAINS)
 
         chunk_rows = list(chunks)
+        owns_transaction = getattr(self._transaction_state, "connection", None) is None
         with self._conn() as conn:
-            conn.execute("BEGIN")
+            if owns_transaction:
+                conn.execute("BEGIN")
             try:
                 conn.execute(
                     """
@@ -621,9 +657,11 @@ class GraphifyCoreStore:
                             str(chunk.get("text") or ""),
                         ),
                     )
-                conn.execute("COMMIT")
+                if owns_transaction:
+                    conn.execute("COMMIT")
             except Exception:
-                conn.execute("ROLLBACK")
+                if owns_transaction:
+                    conn.execute("ROLLBACK")
                 raise
         return self.get_file_manifest(project_id=project_id, rel_path=rel_path) or manifest_body
 
@@ -642,7 +680,9 @@ class GraphifyCoreStore:
             stale = [row for row in rows if row["rel_path"] not in seen_rel_paths]
             if not stale:
                 return 0
-            conn.execute("BEGIN")
+            owns_transaction = getattr(self._transaction_state, "connection", None) is None
+            if owns_transaction:
+                conn.execute("BEGIN")
             try:
                 for row in stale:
                     conn.execute("DELETE FROM file_chunks WHERE file_id = ?", (row["id"],))
@@ -650,9 +690,11 @@ class GraphifyCoreStore:
                         "UPDATE file_manifest SET deleted_at = ? WHERE id = ?",
                         (now, row["id"]),
                     )
-                conn.execute("COMMIT")
+                if owns_transaction:
+                    conn.execute("COMMIT")
             except Exception:
-                conn.execute("ROLLBACK")
+                if owns_transaction:
+                    conn.execute("ROLLBACK")
                 raise
         return len(stale)
 

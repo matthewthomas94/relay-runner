@@ -166,6 +166,9 @@ RELAY_COMMAND_AUTHORIZATION_FILE = Path("/tmp/voice_command_authorizations.json"
 VOICE_STATE_SOCK = Path("/tmp/voice_state.sock")
 BRIDGE_CONTROL_SOCK = Path(os.environ.get("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock"))
 DEFAULT_PORT = 7634
+MAX_HTTP_REQUEST_THREADS = 32
+MAX_PROGRAM_REQUEST_THREADS = 8
+PROGRAM_REFRESH_WAIT_SECONDS = 10.0
 ORCHESTRATOR_SESSION_STATES = frozenset({
     "idle",
     "planning",
@@ -4948,6 +4951,67 @@ class ReviewWorker:
 # Daemon (orchestration logic + HTTP server)
 # ---------------------------------------------------------------------------
 
+
+class ProgramRefreshUnavailable(RuntimeError):
+    """A duplicate refresh could not join the request already in flight."""
+
+
+class _SingleFlight:
+    """Run one expensive refresh while concurrent callers share its result."""
+
+    def __init__(self, *, wait_seconds: float = PROGRAM_REFRESH_WAIT_SECONDS):
+        self._condition = threading.Condition()
+        self._running = False
+        self._waiters = 0
+        self._generation = 0
+        self._result: dict[str, int] | None = None
+        self._failure: str | None = None
+        self._wait_seconds = wait_seconds
+
+    def run(self, operation: Callable[[], dict[str, int]]) -> dict[str, int]:
+        with self._condition:
+            if self._running:
+                generation = self._generation
+                self._waiters += 1
+                try:
+                    completed = self._condition.wait_for(
+                        lambda: self._generation != generation,
+                        timeout=self._wait_seconds,
+                    )
+                    if not completed:
+                        raise ProgramRefreshUnavailable(
+                            "Program Workspace refresh is still in progress; retry shortly."
+                        )
+                    if self._failure is not None:
+                        raise ProgramRefreshUnavailable(self._failure)
+                    return dict(self._result or {})
+                finally:
+                    self._waiters -= 1
+                    if self._waiters == 0:
+                        self._condition.notify_all()
+            self._condition.wait_for(lambda: self._waiters == 0)
+            self._running = True
+
+        try:
+            result = operation()
+        except Exception as error:
+            with self._condition:
+                self._failure = str(error) or error.__class__.__name__
+                self._result = None
+                self._running = False
+                self._generation += 1
+                self._condition.notify_all()
+            raise
+
+        with self._condition:
+            self._failure = None
+            self._result = dict(result)
+            self._running = False
+            self._generation += 1
+            self._condition.notify_all()
+        return result
+
+
 class Daemon:
     def __init__(self, cfg: dict, *, continuity_recovery_owners=None):
         self.cfg = cfg
@@ -5008,6 +5072,8 @@ class Daemon:
         self._review_workers_lock = threading.Lock()
         self._run_health: dict[int, dict[str, Any]] = {}
         self._run_health_lock = threading.Lock()
+        self._program_status_refresh = _SingleFlight()
+        self._program_dashboard_refresh = _SingleFlight()
 
         stalled = self.runs.reconcile_on_startup()
         if stalled:
@@ -11071,6 +11137,22 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             "dispatcher_context": _clean_optional_text(action.get("dispatcher_context")),
         }
 
+    def _program_refresh_single_flight(self, name: str) -> _SingleFlight:
+        attribute = f"_program_{name}_refresh"
+        refresh = getattr(self, attribute, None)
+        if refresh is None:
+            refresh = _SingleFlight()
+            setattr(self, attribute, refresh)
+        return refresh
+
+    def _ingest_program_graph(self) -> dict[str, int]:
+        return ingest_registered_projects(
+            GraphifyCoreStore(self.graphify_path),
+            registry_path=self._registered_projects_path(),
+            runs_db_path=self.runs.path,
+            index_files=False,
+        )
+
     def program_status(
         self,
         *,
@@ -11080,11 +11162,8 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
     ) -> dict:
         store = GraphifyCoreStore(self.graphify_path)
         registry_path = self._registered_projects_path()
-        counts = ingest_registered_projects(
-            store,
-            registry_path=registry_path,
-            runs_db_path=self.runs.path,
-            index_files=False,
+        counts = self._program_refresh_single_flight("status").run(
+            self._ingest_program_graph
         )
         if counts["projects"] == 0:
             return {
@@ -11112,18 +11191,15 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         trigger: str | None = None,
         repo_paths: list[str] | None = None,
     ) -> dict:
-        self.sweep_program_ready_tickets(
-            trigger=trigger or "program-board-refresh",
-            repo_paths=repo_paths,
-        )
+        def refresh() -> dict[str, int]:
+            self.sweep_program_ready_tickets(
+                trigger=trigger or "program-board-refresh",
+                repo_paths=repo_paths,
+            )
+            return self._ingest_program_graph()
+
+        self._program_refresh_single_flight("dashboard").run(refresh)
         store = GraphifyCoreStore(self.graphify_path)
-        registry_path = self._registered_projects_path()
-        ingest_registered_projects(
-            store,
-            registry_path=registry_path,
-            runs_db_path=self.runs.path,
-            index_files=False,
-        )
         return build_program_dashboard(
             store,
             provider=provider,
@@ -11809,24 +11885,186 @@ class Handler(BaseHTTPRequestHandler):
             return 422, {"error": str(e)}
         except ValueError as e:
             return 400, {"error": str(e)}
+        except ProgramRefreshUnavailable as e:
+            return 503, {"error": str(e), "retryable": True}
         except RuntimeError as e:
             return 500, {"error": str(e)}
+        except (OSError, sqlite3.Error):
+            return 503, {
+                "error": "The local workspace service could not complete I/O; retry shortly.",
+                "retryable": True,
+            }
+
+    def _write_response(self, status: int, payload: Any) -> None:
+        try:
+            _json_response(self, status, payload)
+        except OSError:
+            # A timed-out URLSession closes its socket while the daemon may
+            # still be finishing the request. socketserver's finally path owns
+            # descriptor cleanup; suppressing the write error avoids a second
+            # traceback and lets that cleanup run immediately.
+            self.close_connection = True
+
+    def _handle_request(self, method: str) -> None:
+        parsed_path = urlparse(self.path).path
+        program_work = parsed_path in {
+            "/v1/program/status",
+            "/v1/program/dashboard",
+            "/v1/ready-sweep",
+            "/v1/program/ready-sweep",
+            "/v1/queue-drain/reconcile",
+        }
+        server = self.server
+        acquired = not program_work or not isinstance(server, BoundedThreadingHTTPServer)
+        if not acquired:
+            acquired = server.begin_program_request()
+            if not acquired:
+                self._write_response(503, {
+                    "error": "Program Workspace is busy refreshing; retry shortly.",
+                    "retryable": True,
+                })
+                return
+        try:
+            status, payload = self._route(method, self.path)
+            self._write_response(status, payload)
+        finally:
+            if program_work and isinstance(server, BoundedThreadingHTTPServer):
+                server.end_program_request()
 
     def do_GET(self) -> None:
-        status, payload = self._route("GET", self.path)
-        _json_response(self, status, payload)
+        self._handle_request("GET")
 
     def do_POST(self) -> None:
-        status, payload = self._route("POST", self.path)
-        _json_response(self, status, payload)
+        self._handle_request("POST")
 
 
-def _bind_port(preferred: int) -> tuple[ThreadingHTTPServer, int]:
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Thread-per-request server with a hard resource ceiling.
+
+    Program refreshes serialize on board authoring and SQLite work. An
+    unbounded ThreadingHTTPServer admitted every duplicate refresh while those
+    locks were busy, so timed-out clients left one handler, thread, and socket
+    behind until the leading refresh completed. Exhausting descriptors then
+    made a later Git subprocess fail while allocating its pipes; that errno 24
+    was a consequence of the retained requests, not the initiating Git fault.
+    """
+
+    daemon_threads = True
+    block_on_close = False
+    request_queue_size = 128
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        request_handler_class: type[BaseHTTPRequestHandler],
+        *,
+        max_request_threads: int = MAX_HTTP_REQUEST_THREADS,
+        max_program_request_threads: int = MAX_PROGRAM_REQUEST_THREADS,
+    ):
+        self.max_request_threads = max(1, int(max_request_threads))
+        self.max_program_request_threads = min(
+            self.max_request_threads,
+            max(1, int(max_program_request_threads)),
+        )
+        self._request_slots = threading.BoundedSemaphore(self.max_request_threads)
+        self._program_request_slots = threading.BoundedSemaphore(
+            self.max_program_request_threads
+        )
+        self._request_count_lock = threading.Lock()
+        self._active_request_count = 0
+        self._peak_request_count = 0
+        self._active_program_request_count = 0
+        self._peak_program_request_count = 0
+        super().__init__(server_address, request_handler_class)
+
+    @property
+    def active_request_count(self) -> int:
+        with self._request_count_lock:
+            return self._active_request_count
+
+    @property
+    def peak_request_count(self) -> int:
+        with self._request_count_lock:
+            return self._peak_request_count
+
+    @property
+    def active_program_request_count(self) -> int:
+        with self._request_count_lock:
+            return self._active_program_request_count
+
+    @property
+    def peak_program_request_count(self) -> int:
+        with self._request_count_lock:
+            return self._peak_program_request_count
+
+    def begin_program_request(self) -> bool:
+        if not self._program_request_slots.acquire(blocking=False):
+            return False
+        with self._request_count_lock:
+            self._active_program_request_count += 1
+            self._peak_program_request_count = max(
+                self._peak_program_request_count,
+                self._active_program_request_count,
+            )
+        return True
+
+    def end_program_request(self) -> None:
+        with self._request_count_lock:
+            self._active_program_request_count -= 1
+        self._program_request_slots.release()
+
+    def process_request(self, request: socket.socket, client_address: Any) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            self._reject_overloaded_request(request)
+            return
+        with self._request_count_lock:
+            self._active_request_count += 1
+            self._peak_request_count = max(
+                self._peak_request_count,
+                self._active_request_count,
+            )
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_finished()
+            self.shutdown_request(request)
+            raise
+
+    def process_request_thread(self, request: socket.socket, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_finished()
+
+    def _request_finished(self) -> None:
+        with self._request_count_lock:
+            self._active_request_count -= 1
+        self._request_slots.release()
+
+    def _reject_overloaded_request(self, request: socket.socket) -> None:
+        body = b'{"error":"The local workspace service is busy; retry shortly.","retryable":true}'
+        response = (
+            b"HTTP/1.1 503 Service Unavailable\r\n"
+            b"Content-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\n".encode("ascii")
+            + b"Connection: close\r\nRetry-After: 1\r\n\r\n"
+            + body
+        )
+        try:
+            request.settimeout(0.25)
+            request.sendall(response)
+        except OSError:
+            pass
+        finally:
+            self.shutdown_request(request)
+
+
+def _bind_port(preferred: int) -> tuple[BoundedThreadingHTTPServer, int]:
     """Bind preferred port; if taken (or preferred=0), pick an ephemeral one. Returns (server, actual_port)."""
     try:
-        srv = ThreadingHTTPServer(("127.0.0.1", preferred), Handler)
+        srv = BoundedThreadingHTTPServer(("127.0.0.1", preferred), Handler)
     except OSError:
-        srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        srv = BoundedThreadingHTTPServer(("127.0.0.1", 0), Handler)
     # server_address is the truth — kernel may have picked any port when preferred=0
     # or when SO_REUSEADDR resolves a benign collision.
     return srv, srv.server_address[1]
