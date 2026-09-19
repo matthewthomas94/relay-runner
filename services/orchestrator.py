@@ -3931,6 +3931,20 @@ def _spike_text(value: Any, *, field: str, max_length: int = 600) -> str:
     return text
 
 
+_HTTP_URL_CANDIDATE = re.compile(r'https?://[^\s<>\[\]{}()"\']*', re.IGNORECASE)
+
+
+def _contains_http_url(value: str) -> bool:
+    for candidate in _HTTP_URL_CANDIDATE.findall(value):
+        try:
+            parsed = urlparse(candidate)
+        except ValueError:
+            continue
+        if parsed.scheme.lower() in {"http", "https"} and parsed.hostname:
+            return True
+    return False
+
+
 def validate_research_dispatch(ticket: dict, contents: str) -> None:
     """Require an explicit research contract and resolve declared prerequisites."""
     frontmatter = contents.split("---", 2)[1]
@@ -4004,7 +4018,7 @@ def validate_spike_result(value: Any) -> dict[str, Any]:
             + "; ".join(result["mutation_attempts"])
         )
     if research_status == "succeeded" and not any(
-        re.match(r"https?://", item["source"], re.IGNORECASE) for item in evidence
+        _contains_http_url(item["source"]) for item in evidence
     ):
         raise ValueError("successful research access requires URL evidence")
     if research_status == "failed" and not result["uncertainties"]:
