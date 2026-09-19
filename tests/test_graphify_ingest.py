@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
@@ -27,6 +28,7 @@ from graphify_core import (  # noqa: E402
     NODE_TICKET,
     GraphifyCoreStore,
 )
+import graphify_ingest  # noqa: E402
 from graphify_ingest import ingest_registered_projects  # noqa: E402
 from program_status import build_program_status  # noqa: E402
 
@@ -499,7 +501,11 @@ class GraphifyIngestTests(unittest.TestCase):
         }))
 
         store = self.make_store()
-        counts = ingest_registered_projects(store, registry_path=registry_path)
+        with patch("graphify_ingest._git", wraps=graphify_ingest._git) as git_mock:
+            counts = ingest_registered_projects(store, registry_path=registry_path)
+            first_git_calls = git_mock.call_count
+            second = ingest_registered_projects(store, registry_path=registry_path)
+            warm_git_calls = git_mock.call_count - first_git_calls
         archived = store.find_node(
             kind=NODE_TICKET,
             stable_key=f"repo:{repo.resolve()}:AH-000",
@@ -516,9 +522,72 @@ class GraphifyIngestTests(unittest.TestCase):
         self.assertIsNotNone(
             store.get_edge(src_id=live["id"], dst_id=archived["id"], kind=EDGE_DEPENDS_ON)
         )
-        second = ingest_registered_projects(store, registry_path=registry_path)
+        self.assertEqual(warm_git_calls, 1)
         self.assertEqual(second["tickets_deleted"], 0)
         self.assertIsNotNone(store.find_node(kind=NODE_TICKET, stable_key=archived["stable_key"]))
+
+    def test_archive_catalog_cache_invalidates_when_confirmed_head_moves(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "archive-cache-invalidation")
+        _install_confirmed_archive(repo, [{
+            "schema_version": 1,
+            "artifact_id": "artifact-CACHE-1",
+            "ticket_id": "CACHE-1",
+            "title": "Cached history",
+            "status": "done",
+            "activity_at": "2026-01-01T00:00:00Z",
+            "state": "archived",
+            "ticket_path": ".orchestrator/CACHE-1.md",
+            "attachments": [],
+        }])
+        registry_path = root / "projects.json"
+        registry_path.write_text(json.dumps({
+            "activeProjectID": str(repo.resolve()),
+            "projects": [{
+                "id": str(repo.resolve()),
+                "repoPath": str(repo.resolve()),
+            }],
+        }))
+
+        ingest_registered_projects(self.make_store(), registry_path=registry_path)
+        _rewrite_confirmed_archive(repo, {"title": "Tampered after cache"})
+
+        with self.assertRaisesRegex(ValueError, "mismatched historical metadata"):
+            ingest_registered_projects(self.make_store(), registry_path=registry_path)
+
+    def test_warm_archive_cache_does_not_hide_live_ticket_lane_changes(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "live-board-invalidation")
+        _install_confirmed_archive(repo, [{
+            "schema_version": 1,
+            "artifact_id": "artifact-ARCHIVE-1",
+            "ticket_id": "ARCHIVE-1",
+            "title": "Archived history",
+            "status": "done",
+            "activity_at": "2026-01-01T00:00:00Z",
+            "state": "archived",
+            "ticket_path": ".orchestrator/ARCHIVE-1.md",
+            "attachments": [],
+        }])
+        registry_path = root / "projects.json"
+        registry_path.write_text(json.dumps({
+            "activeProjectID": str(repo.resolve()),
+            "projects": [{"id": str(repo.resolve()), "repoPath": str(repo.resolve())}],
+        }))
+        store = self.make_store()
+        ingest_registered_projects(store, registry_path=registry_path)
+
+        for status, query in (
+            ("backlog", "backlog_lane"),
+            ("ready", "ready_lane"),
+            ("done", "done_lane"),
+        ):
+            _write_ticket(repo, "LIVE-1", "Live board ticket", status)
+            ingest_registered_projects(store, registry_path=registry_path)
+            lane = build_program_status(store, query=query, limit=0)
+            self.assertIn("LIVE-1", [item["ticket_id"] for item in lane["items"]])
 
     def test_archive_catalog_rejects_invalid_activity_timestamp(self):
         root = Path(tempfile.mkdtemp())
