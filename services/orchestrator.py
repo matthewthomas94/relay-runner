@@ -4322,7 +4322,7 @@ def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
 
 
 def _spike_read_only_network_command(command: str) -> bool:
-    """Return whether command is a single curl GET/HEAD with no local writes."""
+    """Return whether command is a config-free curl GET/HEAD with no local writes."""
     candidate = re.sub(
         r"(?<!\S)(?:2?>>?)[ \t]*/dev/null(?=$|[\s;&|])",
         "",
@@ -4355,8 +4355,13 @@ def _spike_read_only_network_command(command: str) -> bool:
     # to the generic sandbox-denial violation below.
     if any(marker in candidate for marker in (";", "|", "<", ">", "&&", "||")):
         return False
+    # curl reads a user-controlled curlrc unless -q/--disable is its first
+    # option. Requiring a standalone first option also avoids ambiguous short
+    # option clusters when deciding whether a denied command was read-only.
+    if len(tokens) < 3 or tokens[1] not in {"-q", "--disable"}:
+        return False
     targets: list[str] = []
-    index = 1
+    index = 2
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
@@ -4388,6 +4393,59 @@ def _spike_read_only_network_command(command: str) -> bool:
             continue
         return False
     return len(targets) == 1 and bool(re.match(r"https://", targets[0], re.IGNORECASE))
+
+
+def _spike_invokes_curl(command: str) -> bool:
+    """Return whether a shell command invokes curl, not merely mentions it."""
+    try:
+        lexer = shlex.shlex(str(command or ""), posix=True, punctuation_chars=";&|()<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token and all(character in ";&|()<>" for character in token):
+            segments.append([])
+        else:
+            segments[-1].append(token)
+
+    for segment in segments:
+        if not segment:
+            continue
+        first = 0
+        while first < len(segment) and re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*=.*", segment[first]
+        ):
+            first += 1
+        if first >= len(segment):
+            continue
+        segment = segment[first:]
+        executable = Path(segment[0]).name
+        if executable in {"bash", "sh", "zsh"}:
+            command_flag = next(
+                (index for index, token in enumerate(segment[1:], start=1)
+                 if token.startswith("-") and "c" in token),
+                None,
+            )
+            if command_flag is not None and command_flag + 1 < len(segment):
+                if _spike_invokes_curl(segment[command_flag + 1]):
+                    return True
+            continue
+        if executable == "curl":
+            return True
+        if executable in {"command", "env", "exec", "sudo"}:
+            index = 1
+            while index < len(segment) and (
+                segment[index].startswith("-")
+                or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", segment[index])
+            ):
+                index += 1
+            if index < len(segment) and Path(segment[index]).name == "curl":
+                return True
+    return False
 
 
 class Worker:
@@ -4753,7 +4811,8 @@ class Worker:
                 item_id = item.get("id")
                 if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE:
                     command = str(item.get("command") or "")
-                    if item_id and _spike_read_only_network_command(command):
+                    read_only_network = _spike_read_only_network_command(command)
+                    if item_id and read_only_network:
                         self._spike_read_only_network_items.add(str(item_id))
                     # Discarding output is not a filesystem mutation. Only
                     # exempt the literal null device, never a path prefix or
@@ -4763,17 +4822,18 @@ class Worker:
                         "",
                         command,
                     )
-                    if item.get("type") == "command_execution" and re.search(
-                        r"(?:^|[;&|]\s*)(?:rm|mv|cp|touch|mkdir|install|open|osascript|chmod|chown|ln|tee)\b|"
-                        r"(?:^|\s)(?:>|>>|2>|2>>)\s*|"
-                        r"\bgit\s+(?:add|apply|branch|checkout|clean|commit|merge|push|rebase|reset|restore|switch|tag|worktree)\b|"
-                        r"\bcurl\b[^\n]*(?:(?:-X\s*|--request(?:=|\s+))(?:POST|PUT|PATCH|DELETE)\b|"
-                        r"(?:-d|--data(?:-[a-z-]+)?|-[FT]|--form|--upload-file)\b)|"
-                        r"\bwget\b[^\n]*(?:--method(?:=|\s+)(?:POST|PUT|PATCH|DELETE)\b|--post-(?:data|file)\b)",
-                        command,
-                        re.IGNORECASE,
-                    ):
-                        self._spike_violation = "spike attempted a mutating command"
+                    if item.get("type") == "command_execution":
+                        unsafe_curl = _spike_invokes_curl(command) and not read_only_network
+                        mutating_command = re.search(
+                            r"(?:^|[;&|]\s*)(?:rm|mv|cp|touch|mkdir|install|open|osascript|chmod|chown|ln|tee)\b|"
+                            r"(?:^|\s)(?:>|>>|2>|2>>)\s*|"
+                            r"\bgit\s+(?:add|apply|branch|checkout|clean|commit|merge|push|rebase|reset|restore|switch|tag|worktree)\b|"
+                            r"\bwget\b[^\n]*(?:--method(?:=|\s+)(?:POST|PUT|PATCH|DELETE)\b|--post-(?:data|file)\b)",
+                            command,
+                            re.IGNORECASE,
+                        )
+                        if unsafe_curl or mutating_command:
+                            self._spike_violation = "spike attempted a mutating command"
                 if item_id:
                     with self._inflight_lock:
                         self._inflight.add(item_id)
@@ -6449,9 +6509,9 @@ class Daemon:
             f"sandbox. The daemon verified Git at {git_path or '$RELAY_SPIKE_GIT'}. "
             'Use "$RELAY_SPIKE_GIT" rev-parse HEAD and "$RELAY_SPIKE_GIT" ls-files for routine inspection. '
             "PATH also selects this Git, with GIT_OPTIONAL_LOCKS=0 and GIT_NO_LAZY_FETCH=1. "
-            "Prefer the native web tool for public research. A single HTTPS curl GET/HEAD is the only "
-            "shell-network fallback; if the sandbox blocks it, report a research-access failure rather "
-            "than a mutation. Inspect a public "
+            "Prefer the native web tool for public research. A single HTTPS curl GET/HEAD beginning "
+            "with `curl -q` or `curl --disable` is the only shell-network fallback; if the sandbox "
+            "blocks it, report a research-access failure rather than a mutation. Inspect a public "
             "repository through HTTPS commit/raw-file URLs pinned to a full commit SHA, and cite both "
             "the URL and revision. "
             "Use non-login shells (login=false); do not start a login shell, override this environment, "

@@ -48,11 +48,15 @@ The messenger model and sub-agent sizing are selected independently. Shared work
 
 Disable the setting to retain each provider's normal per-tool approval flow. This provider flag is independent of macOS Microphone, Accessibility, Input Monitoring, and Screen Recording permissions.
 
+### Default research access
+
+Foreground sessions and implementation/review workers can research public sources by default. Codex launches with native `--search`; Claude retains its default built-in WebSearch and WebFetch tools. This read access does not authorize publishing, messages, uploads of private workspace data, or unrelated mutations. The messenger and continuity agent remain intentionally tool-free.
+
 ### Research spikes
 
 Spikes always use restricted tools, independently of the foreground session permission setting. Codex may run commands inside its read-only sandbox. The macOS daemon first verifies a direct Git executable with writes and network denied, then supplies it through `$RELAY_SPIKE_GIT` and PATH with optional locks and lazy fetching disabled. Login shells, shell snapshots, profile environment loading, and approval escalation are disabled for these workers. If no Git candidate passes preflight, the daemon records a repair-and-retry failure before worker execution. Xcode/Command Line Tools Git is supported; Homebrew is optional.
 
-Claude spikes expose only `Read`, `Glob`, and `Grep` in safe mode, with no shell or Git command access and no Git preflight requirement. They report history that cannot be inspected through those tools as an uncertainty. Both providers retain immutable snapshot inputs, strict mutation-attempt rejection, and daemon-only structured report persistence. See [spike execution](orchestrator.md) for the full contract.
+Claude spikes expose only `Read`, `Glob`, `Grep`, `WebSearch`, and `WebFetch` in safe mode, with no shell or Git command access and no Git preflight requirement. Codex uses native web search and permits only an explicitly config-disabled (`curl -q` or `curl --disable`) single HTTPS GET/HEAD as a shell fallback. Both providers inspect public repositories through commit/raw-file URLs pinned to a full commit SHA and report unavailable research access explicitly. Immutable snapshot inputs, strict mutation-attempt rejection, and daemon-only structured report persistence remain unchanged. See [spike execution](orchestrator.md) for the full contract.
 
 ## Session entry points
 

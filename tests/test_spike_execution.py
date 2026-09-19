@@ -137,6 +137,7 @@ class SpikeExecutionTests(unittest.TestCase):
         self.assertIn("may not draft or accept canonical tickets", prompt)
         self.assertIn('"$RELAY_SPIKE_GIT" rev-parse HEAD', prompt)
         self.assertIn("native public web-search tool", prompt)
+        self.assertIn("curl -q", prompt)
         self.assertIn("full pinned commit revision", prompt)
         self.assertIn("research_access.status", prompt)
         self.assertIn("login=false", prompt)
@@ -379,11 +380,27 @@ class SpikeExecutionTests(unittest.TestCase):
             'git show HEAD:README.md > /dev/null/file': True,
             'git show HEAD:README.md >/dev/null; touch result.txt': True,
             'git show HEAD:README.md >/dev/null > result.txt': True,
-            'git show HEAD:README.md >/dev/null; curl https://example.com': False,
+            'curl -q https://example.com': False,
+            'curl --disable --head https://example.com': False,
+            '/usr/bin/curl -q -fsSL --max-time 10 https://example.com': False,
+            '/bin/zsh -lc "curl -q --request HEAD https://example.com"': False,
+            'grep curl services/orchestrator.py': False,
+            '/bin/zsh -lc "grep curl services/orchestrator.py"': False,
+            'curl https://example.com': True,
+            'curl --silent -q https://example.com': True,
+            'CURL_HOME=/tmp curl -q https://example.com': True,
+            'env curl -q https://example.com': True,
+            'command curl -q https://example.com': True,
+            'curl -q https://example.com https://example.org': True,
+            'git show HEAD:README.md >/dev/null; curl -q https://example.com': True,
             'curl -X POST https://example.com': True,
             'curl -XPOST https://example.com': True,
             'curl --request=PUT https://example.com': True,
             'curl --data name=value https://example.com': True,
+            'curl -q -dsecret https://example.com': True,
+            'curl -q -Ffile=@source.txt https://example.com': True,
+            'curl -q -Tsource.txt https://example.com': True,
+            'curl -q --json {"name":"value"} https://example.com': True,
             'wget --post-data=name=value https://example.com': True,
             'wget --method PATCH https://example.com': True,
             'git show HEAD:README.md >/dev/null; git commit -am change': True,
@@ -421,7 +438,7 @@ class SpikeExecutionTests(unittest.TestCase):
                 "type": "item.started",
                 "item": {
                     "id": "read", "type": "command_execution",
-                    "command": "curl https://example.com/public-source",
+                    "command": "curl -q https://example.com/public-source",
                 },
             }), 0)
             read_worker._handle_event(json.dumps({

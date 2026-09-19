@@ -125,7 +125,8 @@ Use `spike` for a bounded research question whose output is evidence rather than
 
 - runs in an isolated detached clone made read-only before the provider starts;
 - creates no `relay/<id>` branch and never enters implementation review/merge;
-- limits Codex to its read-only sandbox and Claude to `Read`, `Glob`, and `Grep`, with custom tools, MCP servers, network, desktop control, and external side effects unavailable;
+- gives Codex native web search inside its read-only local-command sandbox and gives Claude `Read`, `Glob`, `Grep`, `WebSearch`, and `WebFetch` in safe mode; public repository evidence uses exact HTTPS URLs pinned to a full commit SHA, while custom tools, MCP servers, desktop control, external writes, and all other side effects remain unavailable;
+- reports provider or network failure as an explicit research-access error rather than claiming unavailable public evidence was assessed;
 - returns structured conclusions, evidence, uncertainties, recommended next steps, and mutation-attempt reporting;
 - is completed by a daemon-owned ticket-only commit that writes a concise `## Spike report` with run provenance and moves the ticket to `done`;
 - returns to `backlog` with the exact cause when canceled, incomplete, or failed, so retry requires renewed user authorization.

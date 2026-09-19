@@ -13,11 +13,11 @@ Provider web tools return evidence directly to model context, so Relay Runner cr
 
 Structured spike results now declare `research_access` as `not_used`, `succeeded`, or `failed`. Success requires URL evidence. Failure requires a concise access diagnostic and a matching uncertainty, preventing unavailable public evidence from being represented as assessed. Provider-process failures are reduced to privacy-safe actionable diagnostics rather than copied logs.
 
-Sandbox-denial handling remains fail-closed for unknown commands: a denied Python file write, even though it is not named by the command regex, fails the spike as a mutation attempt. The only command-denial exception is a single public HTTPS `curl` GET/HEAD with no compound command, local input, upload, or output option; a blocked request is reported as research access unavailable instead of being mislabeled as a mutation.
+Sandbox-denial handling remains fail-closed for unknown commands: a denied Python file write, even though it is not named by the command regex, fails the spike as a mutation attempt. The only command-denial exception is a single public HTTPS `curl` GET/HEAD with `-q` or `--disable` as its first option and no compound command, local input, upload, or output option; this prevents implicit curl configuration from adding writes or uploads. A blocked request that satisfies that exact form is reported as research access unavailable instead of being mislabeled as a mutation.
 
 ## Regression evidence
 
-- 168 focused Python tests passed across spike launch/prompt/result validation, sidecar isolation, Git preflight, provider sizing, Messenger, continuity, implementation launch, and review launch; one existing opt-in sandbox test was skipped.
+- 50 focused Python tests passed across spike launch/prompt/result validation, artifact lifecycle recovery, provider contracts, and the smoke harness; the live smoke was intentionally skipped in that non-live run and executed separately below.
 - All 31 artifact lifecycle recovery/provider-contract tests passed. The retry regression also proves a denied unrecognized Python file write remains a spike violation while a denied read-only HTTPS request becomes an explicit research-access error.
 - 19 `ProcessManagerLaunchTests` passed, covering foreground Codex/Claude launch generation and existing session modes.
 - Generated MCP/CLAUDE instructions are synchronized, and source formatting/diff checks are part of the final worker validation.
@@ -26,7 +26,7 @@ Sandbox-denial handling remains fail-closed for unknown commands: a denied Pytho
 
 `tests/test_research_access_smoke.py` spawns the real `Worker` path against a detached snapshot and asks each provider to inspect `octocat/Hello-World` at commit `7fd1a60b01f91b314f59955a4e4d4e80d8edf11d`. It requires evidence from both the exact commit URL and the raw README URL, then verifies the local source/ticket bytes, repository HEAD, and status are unchanged.
 
-- Codex passed the live smoke in 23.943 seconds without a supplied upstream snapshot.
+- Codex passed the live smoke without a supplied upstream snapshot.
 - Claude launch validation reached the intended safe-mode tool set, but live retrieval is externally blocked because the installed Claude OAuth credential is revoked (HTTP 401). Per the RR-357 user-approved waiver, this is recorded as waived rather than passed and is not a completion blocker. The daemon-facing error is: `spike research access unavailable: provider authentication failed (HTTP 401); re-authenticate the provider and retry`.
 
 Reproduce after Claude re-authentication:
