@@ -345,9 +345,8 @@ final class AppState {
             syncNotchStatusSurface()
         }
     }
-    private var sessionReadyShownForCurrentBridgeSession = false
     /// Session-level contract shared by the bridge and app overlay. Tutorial
-    /// sessions suppress both greeting sources, including after recovery.
+    /// sessions suppress the bridge greeting, including after recovery.
     private var activeSessionSuppressesStartupGreeting = false
     private var bridgeRecoveryInFlight = false {
         didSet { syncNotchStatusSurface() }
@@ -988,7 +987,6 @@ final class AppState {
         bridgeAliveCache = false
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
-        sessionReadyShownForCurrentBridgeSession = false
         activeSessionSuppressesStartupGreeting = false
         sessionStartTime = .distantPast
         wizardShownForCurrentBridgeSession = false
@@ -1019,7 +1017,6 @@ final class AppState {
         projectScopeCoordinator.cancel()
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
-        sessionReadyShownForCurrentBridgeSession = false
         activeSessionSuppressesStartupGreeting = false
         stopOverlay()
         sttEngine?.stop()
@@ -1051,7 +1048,6 @@ final class AppState {
         bridgeAliveCache = false
         bridgeRecoveryInFlight = false
         sessionBridgeSeen = false
-        sessionReadyShownForCurrentBridgeSession = false
         activeSessionSuppressesStartupGreeting = false
         statusText = "Updating"
         sttEngine?.cancelRecording()
@@ -1225,7 +1221,6 @@ final class AppState {
         menuSessionActive = true
         sessionStartTime = Date()
         sessionBridgeSeen = false
-        sessionReadyShownForCurrentBridgeSession = false
         activeSessionSuppressesStartupGreeting = suppressesStartupGreeting
         sessionPromptGate.reset()
         activeSessionLaunchConfig = launchConfig
@@ -1310,7 +1305,6 @@ final class AppState {
                 projectScopeCoordinator.cancel()
                 bridgeAliveCache = false
                 sessionBridgeSeen = false
-                sessionReadyShownForCurrentBridgeSession = false
                 activeSessionSuppressesStartupGreeting = false
                 sessionStartTime = .distantPast
                 statusText = "Ready"
@@ -1807,7 +1801,6 @@ final class AppState {
             activeSessionProjectScopeToken = nil
             projectScopeCoordinator.cancel()
             sessionBridgeSeen = false
-            sessionReadyShownForCurrentBridgeSession = false
             activeSessionSuppressesStartupGreeting = false
             statusText = "Ready"
             return
@@ -1852,7 +1845,6 @@ final class AppState {
             activeSessionProjectScopeToken = nil
             projectScopeCoordinator.cancel()
             sessionBridgeSeen = false
-            sessionReadyShownForCurrentBridgeSession = false
             activeSessionSuppressesStartupGreeting = false
             surfaceBridgeRecoveryFailure(reason: reason)
             return
@@ -1896,7 +1888,6 @@ final class AppState {
         }
 
         if menuSessionActive && alive {
-            surfaceSessionReadyIfNeeded(daemonAlive: daemonAlive, consumerAlive: consumerAlive)
             sessionBridgeSeen = true
         }
 
@@ -1906,46 +1897,6 @@ final class AppState {
             NSLog("[AppState] Relay bridge died, reverting to awareness")
             statusText = "Ready"
         }
-    }
-
-    private func surfaceSessionReadyIfNeeded(daemonAlive: Bool, consumerAlive: Bool) {
-        guard Self.shouldSurfaceSessionReady(
-            menuSessionActive: menuSessionActive,
-            sessionBridgeSeen: sessionBridgeSeen,
-            sessionReadyShownForCurrentBridgeSession: sessionReadyShownForCurrentBridgeSession,
-            bridgeRecoveryInFlight: bridgeRecoveryInFlight,
-            daemonAlive: daemonAlive,
-            consumerAlive: consumerAlive,
-            providerInteractiveReady: activeProviderInteractiveReady,
-            sessionControlsTutorialActive: onboarding.isSessionControlsTutorialActive,
-            suppressesStartupGreeting: activeSessionSuppressesStartupGreeting
-        ) else {
-            return
-        }
-        sessionReadyShownForCurrentBridgeSession = true
-        stateMachine.showSessionReady()
-        syncNotchActivitySurface()
-    }
-
-    static func shouldSurfaceSessionReady(
-        menuSessionActive: Bool,
-        sessionBridgeSeen _: Bool,
-        sessionReadyShownForCurrentBridgeSession: Bool,
-        bridgeRecoveryInFlight: Bool,
-        daemonAlive: Bool,
-        consumerAlive: Bool,
-        providerInteractiveReady: Bool = true,
-        sessionControlsTutorialActive: Bool = false,
-        suppressesStartupGreeting: Bool = false
-    ) -> Bool {
-        menuSessionActive
-            && !sessionReadyShownForCurrentBridgeSession
-            && !bridgeRecoveryInFlight
-            && daemonAlive
-            && consumerAlive
-            && providerInteractiveReady
-            && !sessionControlsTutorialActive
-            && !suppressesStartupGreeting
     }
 
     private var activeProviderInteractiveReady: Bool {
@@ -2090,7 +2041,6 @@ final class AppState {
                     self.activeSessionProjectScopeToken = nil
                     self.projectScopeCoordinator.cancel()
                     self.sessionBridgeSeen = false
-                    self.sessionReadyShownForCurrentBridgeSession = false
                     self.activeSessionSuppressesStartupGreeting = false
                     self.statusText = "Ready"
                     NSLog("[AppState] Voice bridge recovery ignored because session stop was requested")
@@ -2100,7 +2050,6 @@ final class AppState {
                     self.bridgeAliveCache = true
                     self.sessionStartTime = Date()
                     self.sessionBridgeSeen = false
-                    self.sessionReadyShownForCurrentBridgeSession = false
                     self.statusText = "Session"
                     NSLog("[AppState] Voice bridge daemon recovery succeeded")
                 } else {
@@ -2110,7 +2059,6 @@ final class AppState {
                     self.activeSessionProjectScopeToken = nil
                     self.projectScopeCoordinator.cancel()
                     self.sessionBridgeSeen = false
-                    self.sessionReadyShownForCurrentBridgeSession = false
                     self.activeSessionSuppressesStartupGreeting = false
                     self.surfaceBridgeRecoveryFailure(reason: reason)
                     NSLog("[AppState] Voice bridge daemon recovery failed")
