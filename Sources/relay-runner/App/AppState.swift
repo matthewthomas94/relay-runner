@@ -198,6 +198,7 @@ final class AppState {
     @ObservationIgnored private var sleepPreventionMonitoringActive = false
     @ObservationIgnored private var appTerminationObserver: NSObjectProtocol?
     @ObservationIgnored private var meetingNoteCoordinator: MeetingNoteCoordinator?
+    @ObservationIgnored private var meetingNoteCoordinatorNotificationID: UUID?
     @ObservationIgnored private var meetingNoteStartTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
     @ObservationIgnored private var meetingNoteCapsLockTimer: Timer?
     @ObservationIgnored private var meetingNoteTransitionID = 0
@@ -1007,8 +1008,7 @@ final class AppState {
         sttSetupSucceeded = false
         stopMeetingNoteCapsLockPolling()
 
-        let coordinator = meetingNoteCoordinator
-            ?? MeetingNoteCoordinator.live(modelName: config.stt.model)
+        let coordinator = meetingNoteCoordinator ?? makeMeetingNoteCoordinator()
         meetingNoteCoordinator = coordinator
         let task = Task { @MainActor [weak self] () throws -> MeetingNoteCoordinatorSnapshot in
             guard let self else { throw MeetingNoteForegroundTransitionError.teardownTimedOut }
@@ -1093,8 +1093,7 @@ final class AppState {
     }
 
     func interruptedMeetingNotes() async -> [MeetingNoteRecoveryOffer] {
-        let coordinator = meetingNoteCoordinator
-            ?? MeetingNoteCoordinator.live(modelName: config.stt.model)
+        let coordinator = meetingNoteCoordinator ?? makeMeetingNoteCoordinator()
         if meetingNoteCoordinator == nil { meetingNoteCoordinator = coordinator }
         return (try? await coordinator.recoveryOffers()) ?? []
     }
@@ -1104,8 +1103,7 @@ final class AppState {
         sessionID: String,
         resolution: MeetingNoteRecoveryResolution
     ) async throws -> MeetingNoteCoordinatorSnapshot {
-        let coordinator = meetingNoteCoordinator
-            ?? MeetingNoteCoordinator.live(modelName: config.stt.model)
+        let coordinator = meetingNoteCoordinator ?? makeMeetingNoteCoordinator()
         meetingNoteCoordinator = coordinator
         let offer = try await coordinator.recoveryOffers().first { $0.sessionID == sessionID }
         guard let offer,
@@ -1199,6 +1197,26 @@ final class AppState {
         syncNotchActivitySurface()
     }
 
+    private func makeMeetingNoteCoordinator() -> MeetingNoteCoordinator {
+        let notificationID = UUID()
+        meetingNoteCoordinatorNotificationID = notificationID
+        return MeetingNoteCoordinator.live(
+            modelName: config.stt.model,
+            snapshotSink: { [weak self] snapshot in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.meetingNoteCoordinatorNotificationID == notificationID,
+                          self.meetingNoteSnapshot.phase.ownsForeground,
+                          self.meetingNoteSnapshot.project == snapshot.project,
+                          self.meetingNoteSnapshot.noteID == nil
+                            || self.meetingNoteSnapshot.noteID == snapshot.noteID else { return }
+                    self.stopMeetingNoteCapsLockPolling()
+                    self.applyMeetingNoteSnapshot(snapshot)
+                }
+            }
+        )
+    }
+
     private func startMeetingNoteCapsLockPolling() {
         stopMeetingNoteCapsLockPolling()
         guard meetingNoteSnapshot.phase == .recording || meetingNoteSnapshot.phase == .paused else {
@@ -1233,6 +1251,7 @@ final class AppState {
     private func restoreOrdinaryAwarenessAfterNote() {
         stopMeetingNoteCapsLockPolling()
         meetingNoteCoordinator = nil
+        meetingNoteCoordinatorNotificationID = nil
         meetingNoteStartTask = nil
         guard permissions.microphone == .granted, sttEngine == nil else { return }
         startConfiguredSTT(
@@ -1687,6 +1706,7 @@ final class AppState {
                     guard transitionID == self.meetingNoteTransitionID else { return false }
                     self.applyMeetingNoteSnapshot(saved)
                     self.meetingNoteCoordinator = nil
+                    self.meetingNoteCoordinatorNotificationID = nil
                     self.meetingNoteStartTask = nil
                     return self.newSession(
                         workingDirectory: destinationProject,

@@ -103,6 +103,7 @@ enum MeetingNoteCoordinatorError: LocalizedError, Equatable {
     case recoveryNotFound
     case projectIdentityChanged
     case captureUnavailable
+    case captureFailed(String)
     case localSaveFailed(String)
 
     var errorDescription: String? {
@@ -115,6 +116,8 @@ enum MeetingNoteCoordinatorError: LocalizedError, Equatable {
             return "The selected project no longer matches the note's original project."
         case .captureUnavailable:
             return "The note capture runtime is unavailable."
+        case .captureFailed(let message):
+            return message
         case .localSaveFailed(let message):
             return "The note could not be saved locally: \(message)"
         }
@@ -218,11 +221,30 @@ struct OrchestratorMeetingNoteWriter: MeetingNoteArtifactWriting {
 final class MeetingNoteEventBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var events: [MeetingProducerEvent] = []
+    private var latestIssue: MeetingCaptureIssue?
+    private let terminalFailureSink: @Sendable (MeetingCaptureIssue?) -> Void
+
+    init(
+        terminalFailureSink: @escaping @Sendable (MeetingCaptureIssue?) -> Void = { _ in }
+    ) {
+        self.terminalFailureSink = terminalFailureSink
+    }
 
     func append(_ event: MeetingProducerEvent) {
+        var terminalIssue: MeetingCaptureIssue?
+        var producerFailed = false
         lock.lock()
         events.append(event)
+        if case .issue(let issue) = event {
+            latestIssue = issue
+        } else if case .state(.failed) = event {
+            terminalIssue = latestIssue
+            producerFailed = true
+        }
         lock.unlock()
+        if producerFailed {
+            terminalFailureSink(terminalIssue)
+        }
     }
 
     func drain() -> [MeetingProducerEvent] {
@@ -235,6 +257,7 @@ final class MeetingNoteEventBuffer: @unchecked Sendable {
 }
 
 actor MeetingNoteCoordinator {
+    typealias SnapshotSink = @Sendable (MeetingNoteCoordinatorSnapshot) -> Void
     typealias CaptureFactory = @Sendable (
         _ sessionID: String,
         _ acceptedAudioSink: @escaping MeetingTranscriptProducer.AcceptedAudioSink,
@@ -243,6 +266,7 @@ actor MeetingNoteCoordinator {
     ) -> any MeetingNoteCaptureControlling
 
     private struct Runtime {
+        let id: UUID
         let capture: any MeetingNoteCaptureControlling
         let events: MeetingNoteEventBuffer
         let scopeToken: String?
@@ -254,6 +278,7 @@ actor MeetingNoteCoordinator {
     private let policy: MeetingNoteCheckpointPolicy
     private let now: @Sendable () -> String
     private let automaticCheckpointing: Bool
+    private let snapshotSink: SnapshotSink
 
     private var journal: MeetingNoteRecoveryJournal?
     private var runtime: Runtime?
@@ -273,6 +298,7 @@ actor MeetingNoteCoordinator {
         now: @escaping @Sendable () -> String = {
             Date().ISO8601Format(.iso8601)
         },
+        snapshotSink: @escaping SnapshotSink = { _ in },
         captureFactory: @escaping CaptureFactory
     ) {
         self.writer = writer
@@ -280,14 +306,19 @@ actor MeetingNoteCoordinator {
         self.policy = policy
         self.automaticCheckpointing = automaticCheckpointing
         self.now = now
+        self.snapshotSink = snapshotSink
         self.captureFactory = captureFactory
     }
 
-    static func live(modelName: String) -> MeetingNoteCoordinator {
+    static func live(
+        modelName: String,
+        snapshotSink: @escaping SnapshotSink = { _ in }
+    ) -> MeetingNoteCoordinator {
         let store = MeetingNoteRecoveryStore()
         return MeetingNoteCoordinator(
             writer: OrchestratorMeetingNoteWriter(),
-            recoveryStore: store
+            recoveryStore: store,
+            snapshotSink: snapshotSink
         ) { sessionID, acceptedAudioSink, durableCheckpointSink, eventSink in
             let producer = MeetingTranscriptProducer(
                 sessionID: sessionID,
@@ -373,7 +404,16 @@ actor MeetingNoteCoordinator {
             self.journal = journal
             try await recoveryStore.save(journal)
 
-            let events = MeetingNoteEventBuffer()
+            let runtimeID = UUID()
+            let events = MeetingNoteEventBuffer { [weak self] issue in
+                Task {
+                    await self?.handleTerminalProducerFailure(
+                        sessionID: sessionID,
+                        runtimeID: runtimeID,
+                        issue: issue
+                    )
+                }
+            }
             let store = recoveryStore
             let capture = captureFactory(
                 sessionID,
@@ -389,13 +429,16 @@ actor MeetingNoteCoordinator {
                 { events.append($0) }
             )
             runtime = Runtime(
+                id: runtimeID,
                 capture: capture,
                 events: events,
                 scopeToken: projectScopeToken
             )
             try await capture.start(initiallyPaused: initiallyPaused, resume: nil)
             journal.producerCheckpoint = await capture.checkpoint()
-            applyBufferedEvents(to: &journal)
+            if let issue = applyBufferedEvents(to: &journal) {
+                throw captureFailure(issue)
+            }
             phase = initiallyPaused ? .paused : .recording
             journal.phase = phase
             journal.updatedAt = now()
@@ -595,7 +638,16 @@ actor MeetingNoteCoordinator {
                 return snapshot()
             }
 
-            let events = MeetingNoteEventBuffer()
+            let runtimeID = UUID()
+            let events = MeetingNoteEventBuffer { [weak self] issue in
+                Task {
+                    await self?.handleTerminalProducerFailure(
+                        sessionID: sessionID,
+                        runtimeID: runtimeID,
+                        issue: issue
+                    )
+                }
+            }
             let store = recoveryStore
             let capture = captureFactory(
                 sessionID,
@@ -611,6 +663,7 @@ actor MeetingNoteCoordinator {
                 { events.append($0) }
             )
             runtime = Runtime(
+                id: runtimeID,
                 capture: capture,
                 events: events,
                 scopeToken: projectScopeToken
@@ -628,7 +681,9 @@ actor MeetingNoteCoordinator {
                 try await capture.replayAcceptedAudio(audio)
             }
             journal.producerCheckpoint = await capture.checkpoint()
-            applyBufferedEvents(to: &journal)
+            if let issue = applyBufferedEvents(to: &journal) {
+                throw captureFailure(issue)
+            }
             phase = .paused
             journal.phase = .paused
             journal.updatedAt = now()
@@ -695,7 +750,9 @@ actor MeetingNoteCoordinator {
             _ = try await runtime.capture.stop()
             let endedAt = now()
             journal.producerCheckpoint = await runtime.capture.checkpoint()
-            applyBufferedEvents(to: &journal)
+            if let issue = applyBufferedEvents(to: &journal) {
+                throw captureFailure(issue)
+            }
             journal.captureEndedAt = endedAt
             journal.updatedAt = endedAt
             self.journal = journal
@@ -738,7 +795,9 @@ actor MeetingNoteCoordinator {
         }
         if let runtime {
             journal.producerCheckpoint = await runtime.capture.checkpoint()
-            applyBufferedEvents(to: &journal)
+            if let issue = applyBufferedEvents(to: &journal) {
+                throw captureFailure(issue)
+            }
         }
         journal.phase = phase
         journal.updatedAt = now()
@@ -803,19 +862,32 @@ actor MeetingNoteCoordinator {
         }
     }
 
-    private func applyBufferedEvents(to journal: inout MeetingNoteRecoveryJournal) {
-        guard let runtime else { return }
+    private func applyBufferedEvents(
+        to journal: inout MeetingNoteRecoveryJournal
+    ) -> MeetingCaptureIssue? {
+        guard let runtime else { return nil }
         var revisions = Dictionary(
             uniqueKeysWithValues: journal.revisions.map { ($0.segmentID, $0) }
         )
+        var latestIssue: MeetingCaptureIssue?
+        var producerFailed = false
         for event in runtime.events.drain() {
-            guard case .revision(let revision) = event else { continue }
-            if let current = revisions[revision.segmentID] {
-                if current.isFinal || revision.revision <= current.revision { continue }
+            switch event {
+            case .revision(let revision):
+                if let current = revisions[revision.segmentID] {
+                    if current.isFinal || revision.revision <= current.revision { continue }
+                }
+                revisions[revision.segmentID] = revision
+            case .issue(let issue):
+                latestIssue = issue
+            case .state(.failed):
+                producerFailed = true
+            default:
+                continue
             }
-            revisions[revision.segmentID] = revision
         }
         journal.revisions = revisions.values.sorted(by: Self.revisionOrder)
+        return producerFailed ? latestIssue : nil
     }
 
     private func durableSegments(in journal: MeetingNoteRecoveryJournal) -> [RelayProjectNoteSegment] {
@@ -866,7 +938,63 @@ actor MeetingNoteCoordinator {
         journal.lastError = safeMessage(error)
         journal.updatedAt = now()
         self.journal = journal
+        defer { snapshotSink(snapshot()) }
         try await recoveryStore.save(journal)
+    }
+
+    private func handleTerminalProducerFailure(
+        sessionID: String,
+        runtimeID: UUID,
+        issue: MeetingCaptureIssue?
+    ) async {
+        guard phase == .preparing || phase == .recording || phase == .paused,
+              let runtime,
+              runtime.id == runtimeID,
+              var journal,
+              journal.sessionID == sessionID else { return }
+
+        let checkpoint = await runtime.capture.checkpoint()
+        guard phase == .preparing || phase == .recording || phase == .paused,
+              self.runtime?.id == runtimeID,
+              self.journal?.sessionID == sessionID else { return }
+        journal.producerCheckpoint = checkpoint
+        let bufferedIssue = applyBufferedEvents(to: &journal)
+        self.journal = journal
+        let failure = captureFailure(bufferedIssue ?? issue)
+        try? await markInterrupted(failure)
+        if let journal = self.journal {
+            try? await retainPendingAudio(journal)
+        }
+    }
+
+    private func captureFailure(_ issue: MeetingCaptureIssue?) -> MeetingNoteCoordinatorError {
+        guard let issue else {
+            return .captureFailed("Meeting capture stopped unexpectedly. Recovery is available.")
+        }
+        switch issue.code {
+        case .checkpointFailed:
+            let lowercased = issue.message.lowercased()
+            if lowercased.contains("space")
+                || lowercased.contains("volume")
+                || lowercased.contains("disk full") {
+                return .captureFailed("Local recovery storage is full.")
+            }
+            return .captureFailed(
+                "Meeting audio could not be checkpointed. Recovery is available."
+            )
+        case .backpressureExceeded:
+            return .captureFailed(
+                "Meeting capture stopped because local transcription could not keep up. Recovery is available."
+            )
+        case .modelUnavailable:
+            return .captureFailed("The local transcription model became unavailable.")
+        case .permissionDenied:
+            return .captureFailed("Meeting capture lost audio permission.")
+        case .sourceUnavailable, .sourceInterrupted, .formatChanged:
+            return .captureFailed("Meeting capture lost its audio source.")
+        case .transcriptionFailed:
+            return .captureFailed("Local meeting transcription failed. Recovery is available.")
+        }
     }
 
     private func markUndurableStartFailed(
