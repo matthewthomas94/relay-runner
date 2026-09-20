@@ -39,6 +39,7 @@ struct MeetingTimingEpoch: Codable, Equatable, Sendable {
     let epochID: String
     let sourceID: MeetingAudioSourceID
     let sequence: Int
+    let startSample: Int
     let startMilliseconds: Int
     let sampleRate: Int
 
@@ -46,6 +47,7 @@ struct MeetingTimingEpoch: Codable, Equatable, Sendable {
         case epochID = "epoch_id"
         case sourceID = "source_id"
         case sequence
+        case startSample = "start_sample"
         case startMilliseconds = "start_ms"
         case sampleRate = "sample_rate"
     }
@@ -56,6 +58,8 @@ struct MeetingAcceptedAudioDescriptor: Codable, Equatable, Sendable {
     let sourceID: MeetingAudioSourceID
     let timingEpochID: String
     let sequence: Int
+    let startSample: Int
+    let endSample: Int
     let startMilliseconds: Int
     let endMilliseconds: Int
     let sampleRate: Int
@@ -66,11 +70,20 @@ struct MeetingAcceptedAudioDescriptor: Codable, Equatable, Sendable {
         case sourceID = "source_id"
         case timingEpochID = "timing_epoch_id"
         case sequence
+        case startSample = "start_sample"
+        case endSample = "end_sample"
         case startMilliseconds = "start_ms"
         case endMilliseconds = "end_ms"
         case sampleRate = "sample_rate"
         case sampleCount = "sample_count"
     }
+}
+
+/// Samples from every capture adapter use the same host-monotonic timebase.
+/// The timestamp identifies the beginning of the first sample in the frame.
+struct MeetingAudioFrame: Sendable {
+    let samples: [Float]
+    let presentationTimeNanoseconds: UInt64
 }
 
 /// RR-368 persists accepted chunks before this ticket retains them in its
@@ -183,8 +196,12 @@ struct MeetingProducerCheckpoint: Codable, Equatable, Sendable {
     let sessionID: String
     let state: MeetingProducerState
     let timingEpochs: [MeetingTimingEpoch]
+    let timelineOriginNanoseconds: UInt64?
+    let timelineSampleBySource: [MeetingAudioSourceID: Int]
     let nextWindowSequenceByEpoch: [String: Int]
+    let completedWindowSequencesByEpoch: [String: [Int]]
     let emittedRevisionBySegment: [String: Int]
+    let finalRevisionBySegment: [String: Int]
     let pendingAudio: [MeetingAcceptedAudioDescriptor]
     let metrics: MeetingProducerMetrics
 
@@ -192,8 +209,12 @@ struct MeetingProducerCheckpoint: Codable, Equatable, Sendable {
         case state, metrics
         case sessionID = "session_id"
         case timingEpochs = "timing_epochs"
+        case timelineOriginNanoseconds = "timeline_origin_nanoseconds"
+        case timelineSampleBySource = "timeline_sample_by_source"
         case nextWindowSequenceByEpoch = "next_window_sequence_by_epoch"
+        case completedWindowSequencesByEpoch = "completed_window_sequences_by_epoch"
         case emittedRevisionBySegment = "emitted_revision_by_segment"
+        case finalRevisionBySegment = "final_revision_by_segment"
         case pendingAudio = "pending_audio"
     }
 }

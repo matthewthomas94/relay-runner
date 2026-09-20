@@ -50,7 +50,7 @@ enum MeetingAudioCaptureEvent: Equatable, Sendable {
 protocol MeetingAudioCapturing: AnyObject {
     var sourceID: MeetingAudioSourceID { get }
     func start(
-        sampleHandler: @escaping @Sendable ([Float]) -> Void,
+        sampleHandler: @escaping @Sendable (MeetingAudioFrame) -> Void,
         eventHandler: @escaping @Sendable (MeetingAudioCaptureEvent) -> Void
     ) async throws -> MeetingCaptureSourceInfo
     func stop() async
@@ -63,7 +63,7 @@ final class MeetingMicrophoneAudioCapture: MeetingAudioCapturing, @unchecked Sen
     private var lifecycle: AudioCaptureLifecycle?
 
     func start(
-        sampleHandler: @escaping @Sendable ([Float]) -> Void,
+        sampleHandler: @escaping @Sendable (MeetingAudioFrame) -> Void,
         eventHandler: @escaping @Sendable (MeetingAudioCaptureEvent) -> Void
     ) async throws -> MeetingCaptureSourceInfo {
         await stop()
@@ -86,7 +86,14 @@ final class MeetingMicrophoneAudioCapture: MeetingAudioCapturing, @unchecked Sen
             throw MeetingAudioCaptureFailure.permissionDenied(.microphone)
         }
         let lifecycle = AudioCaptureLifecycle(
-            sampleHandler: sampleHandler,
+            sampleHandler: { samples in
+                let duration = UInt64(samples.count) * 1_000_000_000 / 16_000
+                let now = DispatchTime.now().uptimeNanoseconds
+                sampleHandler(MeetingAudioFrame(
+                    samples: samples,
+                    presentationTimeNanoseconds: now > duration ? now - duration : 0
+                ))
+            },
             isRecording: { false }
         )
         lifecycle.onWillReconfigure = { interruption in
@@ -146,12 +153,12 @@ final class MeetingSystemAudioCapture: NSObject, MeetingAudioCapturing, SCStream
     private let outputQueue = DispatchQueue(label: "com.relayrunner.meeting-system-audio")
     private let lock = NSLock()
     private var stream: SCStream?
-    private var sampleHandler: (@Sendable ([Float]) -> Void)?
+    private var sampleHandler: (@Sendable (MeetingAudioFrame) -> Void)?
     private var eventHandler: (@Sendable (MeetingAudioCaptureEvent) -> Void)?
     private var reportedFormatFailure = false
 
     func start(
-        sampleHandler: @escaping @Sendable ([Float]) -> Void,
+        sampleHandler: @escaping @Sendable (MeetingAudioFrame) -> Void,
         eventHandler: @escaping @Sendable (MeetingAudioCaptureEvent) -> Void
     ) async throws -> MeetingCaptureSourceInfo {
         await stop()
@@ -239,7 +246,20 @@ final class MeetingSystemAudioCapture: NSObject, MeetingAudioCapturing, SCStream
         do {
             let samples = try Self.floatSamples(from: sampleBuffer)
             guard !samples.isEmpty else { return }
-            lock.withMeetingCaptureLock { sampleHandler }?(samples)
+            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            let fallbackDuration = UInt64(samples.count) * 1_000_000_000 / 16_000
+            let now = DispatchTime.now().uptimeNanoseconds
+            let fallback = now > fallbackDuration ? now - fallbackDuration : 0
+            let timestamp: UInt64
+            if presentationTime.isNumeric, presentationTime.seconds >= 0 {
+                timestamp = UInt64((presentationTime.seconds * 1_000_000_000).rounded())
+            } else {
+                timestamp = fallback
+            }
+            lock.withMeetingCaptureLock { sampleHandler }?(MeetingAudioFrame(
+                samples: samples,
+                presentationTimeNanoseconds: timestamp
+            ))
         } catch {
             let handler: (@Sendable (MeetingAudioCaptureEvent) -> Void)? = lock.withMeetingCaptureLock {
                 guard !reportedFormatFailure else { return nil }

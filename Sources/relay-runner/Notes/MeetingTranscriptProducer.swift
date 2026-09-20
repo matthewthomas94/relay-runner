@@ -50,6 +50,9 @@ actor MeetingTranscriptProducer {
     private var sourceBuffers: [MeetingAudioSourceID: SourceBuffer] = [:]
     private var sourceStates: [MeetingAudioSourceID: MeetingCaptureSourceState] = [:]
     private var timingEpochs: [MeetingTimingEpoch] = []
+    private var timelineOriginNanoseconds: UInt64?
+    private var nextWindowSequenceByEpoch: [String: Int] = [:]
+    private var completedWindowSequencesByEpoch: [String: Set<Int>] = [:]
     private var emittedRevisionBySegment: [String: Int] = [:]
     private var finalRevisionBySegment: [String: Int] = [:]
     private var queuedJobs: [MeetingTranscriptionRequest] = []
@@ -81,11 +84,13 @@ actor MeetingTranscriptProducer {
 
     func start(
         initiallyPaused: Bool = CapsLockGesture.isCapsLockOn(),
-        resume checkpoint: MeetingProducerCheckpoint? = nil
+        resume checkpoint: MeetingProducerCheckpoint? = nil,
+        timelineOriginNanoseconds: UInt64? = nil
     ) async throws {
         guard state == .idle else { throw MeetingProducerError.invalidState(state) }
         state = .preparing
         emit(.state(.preparing))
+        self.timelineOriginNanoseconds = timelineOriginNanoseconds
 
         if let checkpoint {
             guard checkpoint.sessionID == sessionID else {
@@ -93,12 +98,17 @@ actor MeetingTranscriptProducer {
                 return
             }
             timingEpochs = checkpoint.timingEpochs
+            self.timelineOriginNanoseconds = checkpoint.timelineOriginNanoseconds
+            nextWindowSequenceByEpoch = checkpoint.nextWindowSequenceByEpoch
+            completedWindowSequencesByEpoch = checkpoint.completedWindowSequencesByEpoch.mapValues(Set.init)
             emittedRevisionBySegment = checkpoint.emittedRevisionBySegment
+            finalRevisionBySegment = checkpoint.finalRevisionBySegment
             metrics = checkpoint.metrics
             for source in MeetingAudioSourceID.allCases {
                 var buffer = sourceBuffers[source] ?? SourceBuffer()
-                buffer.timelineSamples = (metrics.acceptedSamplesBySource[source] ?? 0)
+                buffer.timelineSamples = checkpoint.timelineSampleBySource[source] ?? 0
                 buffer.bufferStartTimelineSamples = buffer.timelineSamples
+                buffer.pendingAudio = checkpoint.pendingAudio.filter { $0.sourceID == source }
                 let epochIDs = Set(
                     timingEpochs.filter { $0.sourceID == source }.map(\.epochID)
                 )
@@ -144,34 +154,69 @@ actor MeetingTranscriptProducer {
         guard state == .recording || state == .paused else {
             throw MeetingProducerError.invalidState(state)
         }
-        var replayedSources: Set<MeetingAudioSourceID> = []
-        for chunk in chunks.sorted(by: {
-            if $0.descriptor.startMilliseconds != $1.descriptor.startMilliseconds {
-                return $0.descriptor.startMilliseconds < $1.descriptor.startMilliseconds
-            }
-            return $0.descriptor.sequence < $1.descriptor.sequence
-        }) {
-            replayedSources.insert(chunk.descriptor.sourceID)
-            try appendAcceptedAudio(chunk)
+        let expectedDescriptors = sourceBuffers.values.flatMap(\.pendingAudio)
+        let expected = Dictionary(
+            expectedDescriptors.map { ($0.chunkID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let supplied = Dictionary(
+            chunks.map { ($0.descriptor.chunkID, $0.descriptor) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        guard expected == supplied,
+              expectedDescriptors.count == expected.count,
+              chunks.count == supplied.count
+        else {
+            try failCheckpoint("replay audio does not match the pending checkpoint descriptors")
+            return
         }
-        for source in replayedSources {
+
+        let epochSequence = Dictionary(uniqueKeysWithValues: timingEpochs.map {
+            ($0.epochID, $0.sequence)
+        })
+        let grouped = Dictionary(grouping: chunks) {
+            "\($0.descriptor.sourceID.rawValue)|\($0.descriptor.timingEpochID)"
+        }
+        let orderedGroups = grouped.values.sorted { left, right in
+            guard let lhs = left.first?.descriptor, let rhs = right.first?.descriptor else {
+                return left.count < right.count
+            }
+            if lhs.sourceID != rhs.sourceID {
+                return lhs.sourceID.rawValue < rhs.sourceID.rawValue
+            }
+            return (epochSequence[lhs.timingEpochID] ?? 0) <
+                (epochSequence[rhs.timingEpochID] ?? 0)
+        }
+        for group in orderedGroups {
+            for chunk in group.sorted(by: { $0.descriptor.sequence < $1.descriptor.sequence }) {
+                try appendAcceptedAudio(chunk)
+            }
+            guard let source = group.first?.descriptor.sourceID else { continue }
             try submitAvailableWindows(for: source, allowPartial: false)
             try flushTail(for: source)
-        }
-        await waitUntilIdle()
-        for source in replayedSources {
+            await waitUntilIdle()
             var buffer = sourceBuffers[source] ?? SourceBuffer()
             buffer.epoch = nil
             sourceBuffers[source] = buffer
         }
     }
 
-    func ingest(_ samples: [Float], from source: MeetingAudioSourceID) async throws {
+    func ingest(
+        _ samples: [Float],
+        from source: MeetingAudioSourceID,
+        presentationTimeNanoseconds: UInt64? = nil
+    ) async throws {
         guard state == .recording else { throw MeetingProducerError.invalidState(state) }
         if let terminalError { throw terminalError }
         guard !samples.isEmpty else { return }
 
         var buffer = sourceBuffers[source] ?? SourceBuffer()
+        if buffer.epoch == nil, let presentationTimeNanoseconds {
+            buffer.timelineSamples = max(
+                buffer.timelineSamples,
+                timelineSample(for: presentationTimeNanoseconds)
+            )
+        }
         let epoch = ensureEpoch(for: source, buffer: &buffer)
         let startSample = buffer.timelineSamples
         let endSample = startSample + samples.count
@@ -180,6 +225,8 @@ actor MeetingTranscriptProducer {
             sourceID: source,
             timingEpochID: epoch.epochID,
             sequence: buffer.acceptedChunkSequence,
+            startSample: startSample,
+            endSample: endSample,
             startMilliseconds: milliseconds(forSample: startSample),
             endMilliseconds: milliseconds(forSample: endSample),
             sampleRate: configuration.sampleRate,
@@ -326,20 +373,20 @@ actor MeetingTranscriptProducer {
         let pending = MeetingAudioSourceID.allCases.flatMap {
             sourceBuffers[$0]?.pendingAudio ?? []
         }.sorted { $0.chunkID < $1.chunkID }
-        let cursors = Dictionary(uniqueKeysWithValues: timingEpochs.map { epoch in
-            let source = sourceBuffers[epoch.sourceID] ?? SourceBuffer()
-            let next = windowSequence(
-                forTimelineSample: source.bufferStartTimelineSamples,
-                epoch: epoch
-            )
-            return (epoch.epochID, next)
-        })
         return MeetingProducerCheckpoint(
             sessionID: sessionID,
             state: state,
             timingEpochs: timingEpochs,
-            nextWindowSequenceByEpoch: cursors,
+            timelineOriginNanoseconds: timelineOriginNanoseconds,
+            timelineSampleBySource: Dictionary(uniqueKeysWithValues: MeetingAudioSourceID.allCases.map {
+                ($0, sourceBuffers[$0]?.timelineSamples ?? 0)
+            }),
+            nextWindowSequenceByEpoch: nextWindowSequenceByEpoch,
+            completedWindowSequencesByEpoch: completedWindowSequencesByEpoch.mapValues {
+                $0.sorted()
+            },
             emittedRevisionBySegment: emittedRevisionBySegment,
+            finalRevisionBySegment: finalRevisionBySegment,
             pendingAudio: pending,
             metrics: metrics
         )
@@ -378,6 +425,7 @@ actor MeetingTranscriptProducer {
             epochID: "\(sessionID)-\(source.rawValue)-E\(buffer.nextEpochSequence)",
             sourceID: source,
             sequence: buffer.nextEpochSequence,
+            startSample: buffer.timelineSamples,
             startMilliseconds: milliseconds(forSample: buffer.timelineSamples),
             sampleRate: configuration.sampleRate
         )
@@ -385,6 +433,8 @@ actor MeetingTranscriptProducer {
         buffer.epoch = epoch
         buffer.bufferStartTimelineSamples = buffer.timelineSamples
         buffer.lastPartialSampleCount = 0
+        nextWindowSequenceByEpoch[epoch.epochID] = 0
+        completedWindowSequencesByEpoch[epoch.epochID] = []
         timingEpochs.append(epoch)
         emit(.epoch(epoch))
         return epoch
@@ -401,21 +451,37 @@ actor MeetingTranscriptProducer {
         var buffer = sourceBuffers[descriptor.sourceID] ?? SourceBuffer()
         if buffer.epoch?.epochID != epoch.epochID {
             buffer.epoch = epoch
-            buffer.bufferStartTimelineSamples = samples(forMilliseconds: descriptor.startMilliseconds)
-            buffer.timelineSamples = buffer.bufferStartTimelineSamples
+            let replayStart = epoch.startSample +
+                (nextWindowSequenceByEpoch[epoch.epochID] ?? 0) * configuration.ownedSamples
+            buffer.bufferStartTimelineSamples = replayStart
             buffer.samples.removeAll(keepingCapacity: true)
             buffer.lastPartialSampleCount = 0
         }
-        buffer.samples.append(contentsOf: accepted.samples)
+
+        guard descriptor.endSample - descriptor.startSample == descriptor.sampleCount else {
+            throw MeetingProducerError.checkpointFailed(
+                "replay audio sample offsets do not match the retained sample count"
+            )
+        }
+        let bufferedEnd = buffer.bufferStartTimelineSamples + buffer.samples.count
+        guard descriptor.startSample <= bufferedEnd else {
+            throw MeetingProducerError.checkpointFailed(
+                "replay audio has a gap before the next pending window"
+            )
+        }
+        let acceptedStart = max(descriptor.startSample, bufferedEnd)
+        if descriptor.endSample > acceptedStart {
+            let skippedSamples = acceptedStart - descriptor.startSample
+            buffer.samples.append(contentsOf: accepted.samples.dropFirst(skippedSamples))
+        }
         buffer.timelineSamples = max(
             buffer.timelineSamples,
-            samples(forMilliseconds: descriptor.endMilliseconds)
+            descriptor.endSample
         )
         buffer.acceptedChunkSequence = max(
             buffer.acceptedChunkSequence,
             descriptor.sequence + 1
         )
-        buffer.pendingAudio.append(descriptor)
         sourceBuffers[descriptor.sourceID] = buffer
     }
 
@@ -429,8 +495,9 @@ actor MeetingTranscriptProducer {
             let context = Array(buffer.samples.prefix(configuration.windowSamples))
             let ownedStartSample = buffer.bufferStartTimelineSamples
             let ownedEndSample = ownedStartSample + configuration.ownedSamples
-            try enqueue(
-                request(
+            let sequence = windowSequence(forTimelineSample: ownedStartSample, epoch: epoch)
+            if !isCompletedFinalWindow(epochID: epoch.epochID, sequence: sequence) {
+                try enqueue(request(
                     source: source,
                     epoch: epoch,
                     buffer: &buffer,
@@ -438,8 +505,8 @@ actor MeetingTranscriptProducer {
                     ownedStartSample: ownedStartSample,
                     ownedEndSample: ownedEndSample,
                     isFinal: true
-                )
-            )
+                ))
+            }
             buffer.samples.removeFirst(configuration.ownedSamples)
             buffer.bufferStartTimelineSamples = ownedEndSample
             buffer.lastPartialSampleCount = 0
@@ -473,15 +540,18 @@ actor MeetingTranscriptProducer {
         else { return }
         let start = buffer.bufferStartTimelineSamples
         let end = start + buffer.samples.count
-        try enqueue(request(
-            source: source,
-            epoch: epoch,
-            buffer: &buffer,
-            samples: buffer.samples,
-            ownedStartSample: start,
-            ownedEndSample: end,
-            isFinal: true
-        ))
+        let sequence = windowSequence(forTimelineSample: start, epoch: epoch)
+        if !isCompletedFinalWindow(epochID: epoch.epochID, sequence: sequence) {
+            try enqueue(request(
+                source: source,
+                epoch: epoch,
+                buffer: &buffer,
+                samples: buffer.samples,
+                ownedStartSample: start,
+                ownedEndSample: end,
+                isFinal: true
+            ))
+        }
         buffer.samples.removeAll(keepingCapacity: true)
         buffer.bufferStartTimelineSamples = end
         buffer.lastPartialSampleCount = 0
@@ -578,6 +648,14 @@ actor MeetingTranscriptProducer {
         _ result: MeetingTranscriptionResult,
         for request: MeetingTranscriptionRequest
     ) {
+        if request.isFinal,
+           isCompletedFinalWindow(
+               epochID: request.timingEpochID,
+               sequence: request.windowSequence
+           )
+        {
+            return
+        }
         guard request.revision > (emittedRevisionBySegment[request.segmentID] ?? 0) else {
             return
         }
@@ -594,7 +672,7 @@ actor MeetingTranscriptProducer {
         let text = ownedText(from: result, request: request)
         guard !text.isEmpty else {
             if request.isFinal {
-                discardCheckpointedAudio(through: request.ownedEndMilliseconds, source: request.sourceID)
+                completeFinalWindow(request)
             }
             return
         }
@@ -602,7 +680,7 @@ actor MeetingTranscriptProducer {
         emittedRevisionBySegment[request.segmentID] = request.revision
         if request.isFinal {
             finalRevisionBySegment[request.segmentID] = request.revision
-            discardCheckpointedAudio(through: request.ownedEndMilliseconds, source: request.sourceID)
+            completeFinalWindow(request)
         }
         emit(.revision(MeetingTranscriptSegmentRevision(
             segmentID: request.segmentID,
@@ -635,13 +713,31 @@ actor MeetingTranscriptProducer {
         return clean(tokens.map(\.text).joined())
     }
 
-    private func discardCheckpointedAudio(
-        through endMilliseconds: Int,
-        source: MeetingAudioSourceID
-    ) {
-        guard var buffer = sourceBuffers[source] else { return }
-        buffer.pendingAudio.removeAll { $0.endMilliseconds <= endMilliseconds }
-        sourceBuffers[source] = buffer
+    private func completeFinalWindow(_ request: MeetingTranscriptionRequest) {
+        var completed = completedWindowSequencesByEpoch[request.timingEpochID] ?? []
+        completed.insert(request.windowSequence)
+        var next = nextWindowSequenceByEpoch[request.timingEpochID] ?? 0
+        while completed.remove(next) != nil {
+            next += 1
+        }
+        completedWindowSequencesByEpoch[request.timingEpochID] = completed
+        nextWindowSequenceByEpoch[request.timingEpochID] = next
+
+        guard let epoch = timingEpochs.first(where: {
+            $0.epochID == request.timingEpochID
+        }), var buffer = sourceBuffers[request.sourceID]
+        else { return }
+        let committedThroughSample = epoch.startSample +
+            next * configuration.ownedSamples
+        buffer.pendingAudio.removeAll {
+            $0.timingEpochID == epoch.epochID && $0.endSample <= committedThroughSample
+        }
+        sourceBuffers[request.sourceID] = buffer
+    }
+
+    private func isCompletedFinalWindow(epochID: String, sequence: Int) -> Bool {
+        sequence < (nextWindowSequenceByEpoch[epochID] ?? 0) ||
+            (completedWindowSequencesByEpoch[epochID]?.contains(sequence) ?? false)
     }
 
     private func endEpochsForModeBoundary() {
@@ -655,7 +751,7 @@ actor MeetingTranscriptProducer {
     }
 
     private func segmentID(epoch: MeetingTimingEpoch, ownedStartSample: Int) -> String {
-        let relativeStart = max(0, ownedStartSample - samples(forMilliseconds: epoch.startMilliseconds))
+        let relativeStart = max(0, ownedStartSample - epoch.startSample)
         return "\(epoch.epochID)-S\(relativeStart)"
     }
 
@@ -663,16 +759,21 @@ actor MeetingTranscriptProducer {
         forTimelineSample sample: Int,
         epoch: MeetingTimingEpoch
     ) -> Int {
-        let epochStart = samples(forMilliseconds: epoch.startMilliseconds)
-        return max(0, sample - epochStart) / configuration.ownedSamples
+        return max(0, sample - epoch.startSample) / configuration.ownedSamples
     }
 
     private func milliseconds(forSample sample: Int) -> Int {
         sample * 1_000 / configuration.sampleRate
     }
 
-    private func samples(forMilliseconds milliseconds: Int) -> Int {
-        milliseconds * configuration.sampleRate / 1_000
+    private func timelineSample(for presentationTimeNanoseconds: UInt64) -> Int {
+        guard let origin = timelineOriginNanoseconds else {
+            timelineOriginNanoseconds = presentationTimeNanoseconds
+            return 0
+        }
+        guard presentationTimeNanoseconds >= origin else { return 0 }
+        let elapsed = presentationTimeNanoseconds - origin
+        return Int(elapsed * UInt64(configuration.sampleRate) / 1_000_000_000)
     }
 
     private func clean(_ text: String) -> String {

@@ -351,6 +351,189 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertEqual(boundary.finalSegmentRevisionByID.values.sorted(), [2])
     }
 
+    func testFailedWindowSurvivesLaterSuccessfulFinalAndReplaysWithoutDuplicate() async throws {
+        let accepted = MeetingAcceptedAudioRecorder()
+        let original = MeetingTranscriptProducer(
+            sessionID: "fixture-failed-window",
+            transcriber: FakeMeetingTranscriber { request in
+                if request.isFinal && request.windowSequence == 0 {
+                    throw FixtureTranscriptionError.failedWindow
+                }
+                return MeetingTranscriptionResult(
+                    text: "window \(request.windowSequence)",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) }
+        )
+        try await original.start(initiallyPaused: false)
+        try await original.ingest((0..<16).map(Float.init), from: .microphone)
+        _ = try await original.stop()
+        let checkpoint = await original.checkpoint()
+
+        XCTAssertEqual(checkpoint.nextWindowSequenceByEpoch.values.sorted(), [0])
+        XCTAssertEqual(checkpoint.completedWindowSequencesByEpoch.values.first, [1])
+        XCTAssertEqual(checkpoint.pendingAudio.map(\.chunkID), accepted.audio.map(\.descriptor.chunkID))
+
+        let resumedEvents = MeetingEventRecorder()
+        let resumed = MeetingTranscriptProducer(
+            sessionID: "fixture-failed-window",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: "replayed window \(request.windowSequence)",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            eventSink: { resumedEvents.record($0) }
+        )
+        try await resumed.start(initiallyPaused: false, resume: checkpoint)
+        try await resumed.replayAcceptedAudio(accepted.audio)
+        _ = try await resumed.stop()
+
+        XCTAssertEqual(resumedEvents.revisions.map(\.windowSequence), [0])
+        XCTAssertEqual(resumedEvents.revisions.map(\.text), ["replayed window 0"])
+        let completedCheckpoint = await resumed.checkpoint()
+        XCTAssertTrue(completedCheckpoint.pendingAudio.isEmpty)
+        XCTAssertEqual(completedCheckpoint.nextWindowSequenceByEpoch.values.sorted(), [2])
+    }
+
+    func testCheckpointReplayTrimsChunkCrossingCommittedWindowBoundary() async throws {
+        let accepted = MeetingAcceptedAudioRecorder()
+        let original = MeetingTranscriptProducer(
+            sessionID: "fixture-crossing-chunk",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: request.isFinal ? "final" : "partial",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) }
+        )
+        try await original.start(initiallyPaused: false)
+        try await original.ingest((0..<16).map(Float.init), from: .microphone)
+        await original.waitUntilIdle()
+        let checkpointData = try JSONEncoder().encode(await original.checkpoint())
+        let checkpoint = try JSONDecoder().decode(
+            MeetingProducerCheckpoint.self,
+            from: checkpointData
+        )
+
+        XCTAssertEqual(checkpoint.nextWindowSequenceByEpoch.values.sorted(), [1])
+        XCTAssertEqual(checkpoint.pendingAudio.count, 1)
+        XCTAssertEqual(checkpoint.pendingAudio[0].startSample, 0)
+        XCTAssertEqual(checkpoint.pendingAudio[0].endSample, 16)
+
+        let requests = MeetingRequestRecorder()
+        let resumed = MeetingTranscriptProducer(
+            sessionID: "fixture-crossing-chunk",
+            transcriber: FakeMeetingTranscriber { request in
+                requests.record(request)
+                return MeetingTranscriptionResult(
+                    text: "replayed tail",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration
+        )
+        try await resumed.start(initiallyPaused: false, resume: checkpoint)
+        try await resumed.replayAcceptedAudio(accepted.audio)
+        _ = try await resumed.stop()
+
+        XCTAssertEqual(requests.requests.count, 1)
+        XCTAssertEqual(requests.requests[0].windowSequence, 1)
+        XCTAssertEqual(requests.requests[0].revision, 2)
+        XCTAssertEqual(requests.requests[0].samples, (8..<16).map(Float.init))
+    }
+
+    func testCheckpointReplayPreservesPendingAudioAcrossMultipleEpochs() async throws {
+        let accepted = MeetingAcceptedAudioRecorder()
+        let original = MeetingTranscriptProducer(
+            sessionID: "fixture-multiple-epochs",
+            transcriber: FakeMeetingTranscriber { _ in
+                throw FixtureTranscriptionError.failedWindow
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) }
+        )
+        try await original.start(initiallyPaused: false)
+        try await original.ingest([1, 1, 1], from: .microphone)
+        try await original.pause()
+        try await original.resume()
+        try await original.ingest([2, 2, 2], from: .microphone)
+        try await original.pause()
+        let checkpoint = await original.checkpoint()
+
+        XCTAssertEqual(checkpoint.timingEpochs.count, 2)
+        XCTAssertEqual(checkpoint.pendingAudio.count, 2)
+
+        let resumedEvents = MeetingEventRecorder()
+        let resumed = MeetingTranscriptProducer(
+            sessionID: "fixture-multiple-epochs",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: request.timingEpochID,
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            eventSink: { resumedEvents.record($0) }
+        )
+        try await resumed.start(initiallyPaused: false, resume: checkpoint)
+        try await resumed.replayAcceptedAudio(accepted.audio)
+        _ = try await resumed.stop()
+
+        XCTAssertEqual(resumedEvents.revisions.filter(\.isFinal).count, 2)
+        XCTAssertEqual(Set(resumedEvents.revisions.map(\.timingEpochID)).count, 2)
+        let completedCheckpoint = await resumed.checkpoint()
+        XCTAssertTrue(completedCheckpoint.pendingAudio.isEmpty)
+    }
+
+    func testSharedMonotonicTimelineAlignsDelayedSystemAudio() async throws {
+        let accepted = MeetingAcceptedAudioRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-shared-timeline",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: request.sourceID.rawValue,
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) }
+        )
+        try await producer.start(initiallyPaused: false)
+        try await producer.ingest(
+            [1, 1, 1, 1, 1],
+            from: .microphone,
+            presentationTimeNanoseconds: 10_000_000_000
+        )
+        try await producer.ingest(
+            [2, 2, 2, 2, 2],
+            from: .systemAudio,
+            presentationTimeNanoseconds: 12_000_000_000
+        )
+        _ = try await producer.stop()
+
+        let microphone = try XCTUnwrap(accepted.audio.first {
+            $0.descriptor.sourceID == .microphone
+        })
+        let system = try XCTUnwrap(accepted.audio.first {
+            $0.descriptor.sourceID == .systemAudio
+        })
+        XCTAssertEqual(microphone.descriptor.startMilliseconds, 0)
+        XCTAssertEqual(system.descriptor.startMilliseconds, 2_000)
+        XCTAssertEqual(system.descriptor.startSample, 20)
+    }
+
     func testSyntheticSixtyMinuteDualSourceFixtureRemainsBounded() async throws {
         let configuration = MeetingTranscriptProducer.Configuration(
             sampleRate: 10,
@@ -455,11 +638,11 @@ final class MeetingTranscriptProducerTests: XCTestCase {
 
 private final class FakeMeetingTranscriber: MeetingWindowTranscribing, @unchecked Sendable {
     private let delayNanoseconds: UInt64
-    private let result: @Sendable (MeetingTranscriptionRequest) -> MeetingTranscriptionResult
+    private let result: @Sendable (MeetingTranscriptionRequest) throws -> MeetingTranscriptionResult
 
     init(
         delayNanoseconds: UInt64 = 0,
-        result: @escaping @Sendable (MeetingTranscriptionRequest) -> MeetingTranscriptionResult
+        result: @escaping @Sendable (MeetingTranscriptionRequest) throws -> MeetingTranscriptionResult
     ) {
         self.delayNanoseconds = delayNanoseconds
         self.result = result
@@ -477,7 +660,7 @@ private final class FakeMeetingTranscriber: MeetingWindowTranscribing, @unchecke
         if delayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: delayNanoseconds)
         }
-        return result(request)
+        return try result(request)
     }
 }
 
@@ -503,12 +686,19 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
     }
 
     func start(
-        sampleHandler: @escaping @Sendable ([Float]) -> Void,
+        sampleHandler: @escaping @Sendable (MeetingAudioFrame) -> Void,
         eventHandler: @escaping @Sendable (MeetingAudioCaptureEvent) -> Void
     ) async throws -> MeetingCaptureSourceInfo {
         lock.withTestLock { starts += 1 }
         if let startFailure { throw startFailure }
-        for batch in batches { sampleHandler(batch) }
+        var presentationTime: UInt64 = 1_000_000_000
+        for batch in batches {
+            sampleHandler(MeetingAudioFrame(
+                samples: batch,
+                presentationTimeNanoseconds: presentationTime
+            ))
+            presentationTime += UInt64(batch.count) * 100_000_000
+        }
         return MeetingCaptureSourceInfo(
             sourceID: sourceID,
             routeID: "fixture-\(sourceID.rawValue)",
@@ -576,6 +766,21 @@ private final class MeetingAcceptedAudioRecorder: @unchecked Sendable {
     }
 
     var audio: [MeetingAcceptedAudio] { lock.withTestLock { values } }
+}
+
+private final class MeetingRequestRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [MeetingTranscriptionRequest] = []
+
+    func record(_ request: MeetingTranscriptionRequest) {
+        lock.withTestLock { values.append(request) }
+    }
+
+    var requests: [MeetingTranscriptionRequest] { lock.withTestLock { values } }
+}
+
+private enum FixtureTranscriptionError: Error {
+    case failedWindow
 }
 
 private struct FailingMeetingTranscriber: MeetingWindowTranscribing {

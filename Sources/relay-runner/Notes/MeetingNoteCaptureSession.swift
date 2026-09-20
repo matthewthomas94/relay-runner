@@ -23,7 +23,11 @@ actor MeetingNoteCaptureSession {
         initiallyPaused: Bool = CapsLockGesture.isCapsLockOn(),
         resume checkpoint: MeetingProducerCheckpoint? = nil
     ) async throws {
-        try await producer.start(initiallyPaused: initiallyPaused, resume: checkpoint)
+        try await producer.start(
+            initiallyPaused: initiallyPaused,
+            resume: checkpoint,
+            timelineOriginNanoseconds: DispatchTime.now().uptimeNanoseconds
+        )
         guard !initiallyPaused else { return }
         try await startSources()
     }
@@ -63,8 +67,8 @@ actor MeetingNoteCaptureSession {
         for capture in captures {
             do {
                 _ = try await capture.start(
-                    sampleHandler: { [weak self] samples in
-                        Task { await self?.accept(samples, from: capture.sourceID) }
+                    sampleHandler: { [weak self] frame in
+                        Task { await self?.accept(frame, from: capture.sourceID) }
                     },
                     eventHandler: { [weak self] event in
                         Task { await self?.handle(event, from: capture.sourceID) }
@@ -106,9 +110,13 @@ actor MeetingNoteCaptureSession {
         activeSources.removeAll()
     }
 
-    private func accept(_ samples: [Float], from source: MeetingAudioSourceID) async {
+    private func accept(_ frame: MeetingAudioFrame, from source: MeetingAudioSourceID) async {
         do {
-            try await producer.ingest(samples, from: source)
+            try await producer.ingest(
+                frame.samples,
+                from: source,
+                presentationTimeNanoseconds: frame.presentationTimeNanoseconds
+            )
         } catch let error as MeetingProducerError {
             switch error {
             case .invalidState(let state) where state == .paused || state == .stopping || state == .stopped:

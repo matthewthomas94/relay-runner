@@ -44,9 +44,12 @@ but neither operation starts the other.
 
 Microphone and system audio stay as separate 16 kHz mono sources. They are not
 summed, because a destructive mix loses source provenance and can clip
-overlapping local and remote speech. Each source has its own ordered capture
-chunks and timing epochs on the note timeline. Pause/resume, route recovery,
-and producer restart create new epochs without allocating a new note.
+overlapping local and remote speech. Both adapters timestamp the first sample
+of every frame on the host-monotonic timeline (using ScreenCaptureKit's audio
+PTS when available). A source that begins later therefore begins later in the
+note instead of incorrectly starting at zero. Each source retains its own
+ordered chunks and timing epochs on that shared timeline. Pause/resume, route
+recovery, and producer restart create new epochs without allocating a new note.
 
 The default ASR window is six seconds with one second of right overlap. A
 window owns only its first five seconds; token midpoints in the overlap are
@@ -77,7 +80,7 @@ target set to macOS 14). The deterministic 60-minute case feeds two sources at
 10 synthetic samples per second. Its producer counters reported 7,200 accepted
 chunks, maximum queue depth 2, maximum sampled audio-buffer storage 4,720 bytes,
 fixture processing latency 3 ms, and zero dropped samples. The complete filtered
-suite executed 12 tests in about 0.3 seconds after build. The enclosing build
+suite executed 16 tests in about 0.3 seconds after build. The enclosing build
 and test command reached 642,351,104 bytes maximum RSS, which includes SwiftPM,
 the compiler, linked FluidAudio, and the XCTest host and therefore is not a
 producer-only memory measurement.
@@ -111,13 +114,17 @@ loss, format failure, transcription failure, checkpoint failure, and
 backpressure are typed and preserve already emitted revisions. Source recovery
 starts a new epoch.
 
-`MeetingProducerCheckpoint` records epochs, deterministic window cursors,
-emitted revisions, metrics, and descriptors for unfinished audio. RR-368 owns
-the referenced audio bytes and cleanup. On restart it restores the checkpoint,
-passes only those persisted chunks to `replayAcceptedAudio`, and relies on
-stable IDs/revision cursors to suppress already committed revisions. The audio
-sink failing is a capture failure: the producer does not retain the unpersisted
-chunk or allow the destination foreground mode to start.
+`MeetingProducerCheckpoint` records the shared timeline origin and source
+cursors, epochs, the next contiguous unfinished window per epoch, successful
+windows beyond any earlier failure, final/emitted revision cursors, metrics,
+and descriptors for unfinished audio. RR-368 owns the referenced audio bytes
+and cleanup. On restart it restores the checkpoint and passes exactly those
+persisted chunks to `replayAcceptedAudio`. Replay processes each epoch in order,
+trims a retained chunk that crosses a committed-window boundary, and skips
+already successful windows. A later successful window never releases audio
+needed by an earlier failed window. The audio sink failing is a capture failure:
+the producer does not retain the unpersisted chunk or allow the destination
+foreground mode to start.
 
 ## Offline and licensing boundary
 
