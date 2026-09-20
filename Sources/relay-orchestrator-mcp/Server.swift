@@ -32,6 +32,8 @@ final class MCPServer {
             ReviewSpikeFollowupTool(),
             GetContinuityReportTool(),
             ReviewContinuityProposalTool(),
+            ListProjectNotesTool(),
+            ReadProjectNoteTool(),
             ProgramStatusTool(),
             SessionCaptureTool(),
         ]

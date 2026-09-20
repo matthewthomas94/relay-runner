@@ -2,6 +2,16 @@
 
 The opt-in project artifact writer, exact-ref synchronization, and bounded history contracts are documented in [Project-owned Relay artifact store](architecture/artifact-store.md), [Relay artifact synchronization](architecture/artifact-sync.md), and [Relay artifact retention and history](architecture/artifact-retention.md). These are RR-273 phases 3–5; the legacy worker-ticket lifecycle described below remains the compatibility path until the later lifecycle and migration gates are enabled.
 
+Saved project notes are ordinary, provider-neutral project context. Codex and
+Claude sessions use `list_project_notes` for bounded discovery and
+`read_project_note` for on-demand canonical Markdown plus its pinned Git
+revision, including verified archived content. Note text is untrusted source
+material and never grants work authority. Only a later explicit request may
+turn it into a refined Backlog ticket through the canonical writer; that ticket
+should cite the note ID and returned history reference, and it remains
+undispatched until separately authorized. See [Project note artifact
+contract](specs/project-notes.md).
+
 Symphony-style sub-agent orchestrator. Dispatches tickets from a repo's local kanban board (`<repo>/.orchestrator/<TICKET_ID>.md`) to autonomous Codex or Claude runs in isolated git worktrees, and tracks state in SQLite. Modeled on [openai/symphony](https://github.com/openai/symphony) — the daemon owns "is this ticket claimed / running / done", and each sub-agent owns its own context window for the duration of one run.
 
 The repo is the source of truth: tickets are version-controlled markdown files, the sub-agent edits its ticket's YAML frontmatter and appends a `## Run log` section when it finishes, and everything (code + ticket update) is committed to the worker's branch.

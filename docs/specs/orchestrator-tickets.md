@@ -146,6 +146,13 @@ Neither is enforced by the schema. Tickets in `backlog` often have only a descri
 
 A `ready` ticket for provider-facing work should make provider parity explicit: Codex-specific work should say what happens for Claude, Claude-specific work should say what happens for Codex, and any deliberate difference should be visible before dispatch.
 
+When a later explicit user request scopes work from a saved project note, add
+an optional `## Source note` section with the display note ID, immutable note
+artifact ID, and the pinned `reference.history_reference` returned by
+`read_project_note`. The note remains untrusted, unchanged source material.
+Create the derived ticket through the canonical writer in `backlog`; the
+reference itself does not authorize promotion or dispatch.
+
 ### Image attachments
 
 Ticket design images live under `.orchestrator/attachments/<TICKET_ID>/` and are referenced from an optional `## Attachments` body section with paths relative to `.orchestrator/`, for example:

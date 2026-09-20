@@ -69,6 +69,8 @@ except ModuleNotFoundError:
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
 _PREFIX_RE = re.compile(r"^[A-Za-z0-9]+$")
+NOTE_CATALOG_DEFAULT_LIMIT = 50
+NOTE_CATALOG_MAX_LIMIT = 100
 
 
 class ProjectNoteManager:
@@ -384,14 +386,46 @@ class ProjectNoteManager:
             raise ArtifactValidationError(f"no unique project note matches {identity!r}")
         return self._read_entry(snapshot.commit_id, matches[0], idempotent=True)
 
-    def list(self) -> dict[str, object]:
+    def list(
+        self,
+        *,
+        limit: int = NOTE_CATALOG_DEFAULT_LIMIT,
+        after: str | None = None,
+    ) -> dict[str, object]:
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or not 1 <= limit <= NOTE_CATALOG_MAX_LIMIT
+        ):
+            raise ArtifactValidationError(
+                f"note catalog limit must be between 1 and {NOTE_CATALOG_MAX_LIMIT}"
+            )
         snapshot = self.store.snapshot()
         catalog = _catalog(snapshot.files, self.store.project_id)
-        cards = [_card(entry) for entry in catalog.values()]
+        cards = [
+            _card(
+                entry,
+                reference=self._reference(snapshot.commit_id, entry, verify_history=False),
+            )
+            for entry in catalog.values()
+        ]
         cards.sort(key=lambda card: (validate_note_id(str(card["note_id"]))[1], str(card["artifact_id"])))
+        start = 0
+        if after:
+            matches = [index for index, card in enumerate(cards) if card["note_id"] == after]
+            if len(matches) != 1:
+                raise ArtifactValidationError(f"note catalog cursor does not match this project: {after!r}")
+            start = matches[0] + 1
+        total_count = len(cards)
+        page = cards[start:start + limit]
+        has_more = start + len(page) < total_count
         return {
-            "notes": cards,
+            "notes": page,
             "artifact_commit": snapshot.commit_id,
+            "limit": limit,
+            "has_more": has_more,
+            "next_cursor": page[-1]["note_id"] if has_more and page else None,
+            "total_count": total_count,
             "sync": self._sync_state(snapshot.commit_id),
         }
 
@@ -432,31 +466,10 @@ class ProjectNoteManager:
         idempotent: bool,
     ) -> dict[str, object]:
         note_id = str(entry["note_id"])
-        path = _note_path(note_id)
-        if entry.get("materialized") is True:
-            tree_entry = self.store._tree_entries(head).get(path)
-            if tree_entry is None:
-                current = self.store.snapshot()
-                tree_entry = self.store._tree_entries(current.commit_id).get(path)
-                head = current.commit_id
-            if tree_entry is None:
-                raise ArtifactValidationError(f"materialized note is missing: {note_id}")
-            content = self.store._cat_blob(tree_entry.oid)
-            materialized = True
-        else:
-            source_commit = str(entry.get("source_commit") or "")
-            source_blob = str(entry.get("source_blob") or "")
-            ancestor = self.store._git(
-                "merge-base", "--is-ancestor", source_commit, self.store.artifact_ref,
-                allowed_statuses={0, 1, 128},
-            )
-            if ancestor.returncode != 0:
-                raise ArtifactValidationError("archived note source commit is not reachable")
-            historical = self.store._tree_entries(source_commit).get(path)
-            if historical is None or historical.oid != source_blob:
-                raise ArtifactValidationError("archived note source reference is invalid")
-            content = self.store._cat_blob(source_blob)
-            materialized = False
+        reference = self._reference(head, entry, verify_history=True)
+        head = str(reference["catalog_commit"])
+        content = self.store._cat_blob(str(reference["revision"]))
+        materialized = entry.get("materialized") is True
         document = _parse_document(content)
         if (
             document.identity.note_id != note_id
@@ -469,7 +482,49 @@ class ProjectNoteManager:
             commit_id=head,
             idempotent=idempotent,
             materialized=materialized,
+            reference=reference,
         )
+
+    def _reference(
+        self,
+        head: str,
+        entry: Mapping[str, object],
+        *,
+        verify_history: bool,
+    ) -> dict[str, object]:
+        note_id = str(entry["note_id"])
+        path = _note_path(note_id)
+        if entry.get("materialized") is True:
+            tree_entry = self.store._tree_entries(head).get(path)
+            if tree_entry is None:
+                raise ArtifactValidationError(f"materialized note is missing: {note_id}")
+            source_commit = head
+            source_blob = tree_entry.oid
+            verified = True
+        else:
+            source_commit = str(entry.get("source_commit") or "")
+            source_blob = str(entry.get("source_blob") or "")
+            verified = False
+            if verify_history:
+                ancestor = self.store._git(
+                    "merge-base", "--is-ancestor", source_commit, self.store.artifact_ref,
+                    allowed_statuses={0, 1, 128},
+                )
+                if ancestor.returncode != 0:
+                    raise ArtifactValidationError("archived note source commit is not reachable")
+                historical = self.store._tree_entries(source_commit).get(path)
+                if historical is None or historical.oid != source_blob:
+                    raise ArtifactValidationError("archived note source reference is invalid")
+                verified = True
+        return {
+            "path": path,
+            "artifact_ref": self.store.artifact_ref,
+            "commit": source_commit,
+            "revision": source_blob,
+            "history_reference": f"{source_commit}:{path}",
+            "verified": verified,
+            "catalog_commit": head,
+        }
 
     def _response(
         self,
@@ -478,13 +533,22 @@ class ProjectNoteManager:
         commit_id: str,
         idempotent: bool,
         materialized: bool,
+        reference: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
+        if reference is None:
+            entry = self._catalog_at(commit_id).get(document.identity.artifact_id)
+            if entry is None:
+                raise ArtifactValidationError(
+                    f"note catalog identity is missing: {document.identity.note_id}"
+                )
+            reference = self._reference(commit_id, entry, verify_history=True)
         markdown = render_note_document(document)
         return {
             "note": document.as_dict(),
             "markdown_base64": base64.b64encode(markdown).decode("ascii"),
             "materialized": materialized,
             "artifact_commit": commit_id,
+            "reference": dict(reference),
             "idempotent": idempotent,
             "sync": self._sync_state(commit_id),
         }
@@ -641,7 +705,11 @@ def _entry_for_identity(
     return entry
 
 
-def _card(entry: Mapping[str, object]) -> dict[str, object]:
+def _card(
+    entry: Mapping[str, object],
+    *,
+    reference: Mapping[str, object],
+) -> dict[str, object]:
     return {
         "note_id": entry["note_id"],
         "artifact_id": entry["artifact_id"],
@@ -652,6 +720,7 @@ def _card(entry: Mapping[str, object]) -> dict[str, object]:
         "segment_count": entry["segment_count"],
         "materialized": entry["materialized"],
         "archived_at": entry.get("archived_at"),
+        "reference": dict(reference),
     }
 
 

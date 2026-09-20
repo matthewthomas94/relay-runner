@@ -312,13 +312,20 @@ enum OrchestratorClient {
 
     static func fetchProjectNotes(
         repoPath: String,
-        projectScopeToken: String?
+        projectScopeToken: String?,
+        limit: Int = 50,
+        after: String? = nil
     ) async throws -> RelayProjectNoteListResponse {
-        try await artifactGet(
+        var values = [URLQueryItem(name: "limit", value: String(limit))]
+        if let after, !after.isEmpty {
+            values.append(URLQueryItem(name: "after", value: after))
+        }
+        return try await artifactGet(
             RelayProjectNoteListResponse.self,
             path: "/v1/artifacts/notes",
             repoPath: repoPath,
-            projectScopeToken: projectScopeToken
+            projectScopeToken: projectScopeToken,
+            values: values
         )
     }
 

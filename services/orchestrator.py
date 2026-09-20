@@ -5936,8 +5936,13 @@ class Daemon:
         *,
         repo_path: str,
         project_scope_token: str | None,
+        limit: int = 50,
+        after: str | None = None,
     ) -> dict[str, object]:
-        return self._artifact_note_manager(repo_path, project_scope_token).list()
+        return self._artifact_note_manager(repo_path, project_scope_token).list(
+            limit=limit,
+            after=after,
+        )
 
     def _artifact_retention_components(
         self,
@@ -11515,6 +11520,8 @@ class Handler(BaseHTTPRequestHandler):
                 return 200, self.daemon.artifact_note_list(
                     repo_path=(query.get("repo_path") or [""])[0],
                     project_scope_token=(query.get("project_scope_token") or [None])[0],
+                    limit=int((query.get("limit") or ["50"])[0]),
+                    after=(query.get("after") or [None])[0],
                 )
 
             if (method == "GET" and len(segments) == 4
