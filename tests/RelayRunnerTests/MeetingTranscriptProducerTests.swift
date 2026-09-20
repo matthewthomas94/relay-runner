@@ -346,6 +346,121 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertEqual(system.stopCount, 1)
     }
 
+    func testFramesAfterFailureStayGatedUntilExplicitRecovery() async throws {
+        let events = MeetingEventRecorder()
+        let accepted = MeetingAcceptedAudioRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-post-failure-gate",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: request.samples.map { String(Int($0)) }.joined(),
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) },
+            eventSink: { events.record($0) }
+        )
+        let startReturnGate = MeetingStartReturnGate()
+        let system = FakeMeetingAudioCapture(
+            sourceID: .systemAudio,
+            samples: [],
+            eventOnStart: .failed(.unsupportedFormat(.systemAudio, "fixture format changed")),
+            startReturnGate: startReturnGate
+        )
+        let session = MeetingNoteCaptureSession(producer: producer, captures: [system])
+
+        let startTask = Task { try await session.start(initiallyPaused: false) }
+        try await eventually {
+            events.sourceStates.last { $0.0 == .systemAudio }?.1 == .unavailable
+        }
+        system.emit([[9, 9]])
+        await startReturnGate.open()
+        try await startTask.value
+        XCTAssertEqual(
+            events.sourceStates.last { $0.0 == .systemAudio }?.1,
+            .unavailable
+        )
+
+        system.emitEvent(.recovered(MeetingCaptureSourceInfo(
+            sourceID: .systemAudio,
+            routeID: "fixture-system-recovered",
+            sampleRate: 10,
+            channelCount: 1
+        )))
+        try await eventually {
+            events.sourceStates.last { $0.0 == .systemAudio }?.1 == .capturing
+        }
+        system.emit([[3, 3, 3]])
+        try await eventually {
+            accepted.audio.count == 1
+        }
+
+        let checkpoint = await session.checkpoint()
+        XCTAssertEqual(accepted.audio.map(\.samples), [[3, 3, 3]])
+        XCTAssertEqual(checkpoint.metrics.acceptedSamplesBySource[.systemAudio], 3)
+        XCTAssertFalse(checkpoint.pendingAudio.contains { $0.sampleCount == 2 })
+
+        _ = try await session.stop()
+        XCTAssertEqual(events.revisions.filter(\.isFinal).map(\.text), ["333"])
+        XCTAssertFalse(events.revisions.contains { $0.text.contains("9") })
+    }
+
+    func testFramesAfterInterruptionStayGatedUntilExplicitRecovery() async throws {
+        let events = MeetingEventRecorder()
+        let accepted = MeetingAcceptedAudioRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-post-interruption-gate",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: request.samples.map { String(Int($0)) }.joined(),
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) },
+            eventSink: { events.record($0) }
+        )
+        let microphone = FakeMeetingAudioCapture(sourceID: .microphone, samples: [])
+        let session = MeetingNoteCaptureSession(producer: producer, captures: [microphone])
+
+        try await session.start(initiallyPaused: false)
+        microphone.emit([[1]])
+        try await eventually {
+            accepted.audio.count == 1
+        }
+        microphone.emitEvent(.interrupted("fixture route rebuild"))
+        try await eventually {
+            events.sourceStates.last { $0.0 == .microphone }?.1 == .interrupted
+        }
+        microphone.emit([[2, 2]])
+        microphone.emitEvent(.recovered(MeetingCaptureSourceInfo(
+            sourceID: .microphone,
+            routeID: "fixture-microphone-recovered",
+            sampleRate: 10,
+            channelCount: 1
+        )))
+        try await eventually {
+            events.sourceStates.last { $0.0 == .microphone }?.1 == .capturing
+        }
+        microphone.emit([[3, 3, 3]])
+        try await eventually {
+            accepted.audio.count == 2
+        }
+
+        let checkpoint = await session.checkpoint()
+        XCTAssertEqual(accepted.audio.map(\.samples), [[1], [3, 3, 3]])
+        XCTAssertEqual(checkpoint.metrics.acceptedSamplesBySource[.microphone], 4)
+        XCTAssertFalse(checkpoint.pendingAudio.contains { $0.sampleCount == 2 })
+
+        let boundary = try await session.stop()
+        XCTAssertEqual(boundary.metrics.acceptedChunkCount, 2)
+        XCTAssertEqual(events.revisions.filter(\.isFinal).map(\.text), ["1", "333"])
+        XCTAssertFalse(events.revisions.contains { $0.text.contains("2") })
+    }
+
     func testCaptureIngressCloseIsAtomicWithConcurrentSubmissions() async {
         let submissionCount = 64
         let ingress = MeetingCaptureIngress(maximumPendingItems: submissionCount)
@@ -1082,6 +1197,10 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
                 presentationTimeNanoseconds: callback.1
             ))
         }
+    }
+
+    func emitEvent(_ event: MeetingAudioCaptureEvent) {
+        lock.withTestLock { eventHandler }?(event)
     }
 }
 

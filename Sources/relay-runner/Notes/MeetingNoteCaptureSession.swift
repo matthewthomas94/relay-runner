@@ -11,6 +11,7 @@ actor MeetingNoteCaptureSession {
     private var captureIngress: MeetingCaptureIngress?
     private var captureIngressTask: Task<Void, Never>?
     private var sourceEventGenerations: [MeetingAudioSourceID: UInt64] = [:]
+    private var blockedSources: Set<MeetingAudioSourceID> = []
 
     init(
         producer: MeetingTranscriptProducer,
@@ -93,11 +94,13 @@ actor MeetingNoteCaptureSession {
                     continue
                 }
                 if sourceEventGenerations[sourceID, default: 0] == eventGeneration {
+                    blockedSources.remove(sourceID)
                     await producer.markSourceCapturing(sourceID)
                 }
                 started += 1
             } catch let failure as MeetingAudioCaptureFailure {
                 lastError = failure
+                blockedSources.insert(sourceID)
                 await stopIfStarted(capture)
                 try await producer.sourceBecameUnavailable(
                     failure.sourceID,
@@ -109,6 +112,7 @@ actor MeetingNoteCaptureSession {
                 )
             } catch {
                 lastError = error
+                blockedSources.insert(sourceID)
                 await stopIfStarted(capture)
                 try await producer.sourceBecameUnavailable(
                     sourceID,
@@ -213,6 +217,7 @@ actor MeetingNoteCaptureSession {
         do {
             switch item {
             case .frame(let frame, let source):
+                guard !blockedSources.contains(source) else { return true }
                 try await producer.ingest(
                     frame.samples,
                     from: source,
@@ -222,10 +227,13 @@ actor MeetingNoteCaptureSession {
                 sourceEventGenerations[source, default: 0] &+= 1
                 switch event {
                 case .interrupted(let message):
+                    blockedSources.insert(source)
                     try await producer.sourceWasInterrupted(source, message: message)
                 case .recovered:
+                    blockedSources.remove(source)
                     await producer.markSourceCapturing(source)
                 case .failed(let failure):
+                    blockedSources.insert(source)
                     try await producer.sourceBecameUnavailable(
                         source,
                         denied: {
