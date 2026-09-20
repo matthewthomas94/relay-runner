@@ -139,8 +139,8 @@ actor MeetingNoteCaptureSession {
     private func stopSourcesAndDrainIngress() async {
         let ingress = captureIngress
         let ingressTask = captureIngressTask
-        await stopStartedCaptures()
         ingress?.finish()
+        await stopStartedCaptures()
         await ingressTask?.value
         if let ingress, captureIngress === ingress {
             captureIngress = nil

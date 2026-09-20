@@ -137,34 +137,148 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         }
     }
 
-    func testPauseDrainsFrameEmittedWhileAdapterStops() async throws {
-        let accepted = MeetingAcceptedAudioRecorder()
+    func testPauseClosesIngressBeforeDelayedAdaptersAndDrainsAcceptedTail() async throws {
+        let accepted = BlockingMeetingAcceptedAudioSink(blockAtRecordingCount: 2)
         let events = MeetingEventRecorder()
         let producer = MeetingTranscriptProducer(
             sessionID: "fixture-pause-tail",
-            transcriber: FakeMeetingTranscriber { _ in
-                MeetingTranscriptionResult(text: "pre-pause tail", tokens: [], processingMilliseconds: 1)
+            transcriber: FakeMeetingTranscriber { request in
+                let samples = request.samples.map { String(Int($0)) }.joined()
+                return MeetingTranscriptionResult(
+                    text: "\(request.sourceID.rawValue):\(samples)",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
             },
             configuration: smallConfiguration,
-            acceptedAudioSink: { try await accepted.record($0) },
+            acceptedAudioSink: { await accepted.record($0) },
             eventSink: { events.record($0) }
         )
         let microphone = FakeMeetingAudioCapture(
             sourceID: .microphone,
             samples: [],
-            stopSamples: [[3, 3, 3, 3]]
+            stopSamples: [[9, 9]],
+            stopDelayNanoseconds: 50_000_000
         )
-        let session = MeetingNoteCaptureSession(producer: producer, captures: [microphone])
+        let system = FakeMeetingAudioCapture(
+            sourceID: .systemAudio,
+            samples: [],
+            stopSamples: [[8, 8]],
+            stopDelayNanoseconds: 50_000_000
+        )
+        let session = MeetingNoteCaptureSession(
+            producer: producer,
+            captures: [microphone, system],
+            maximumPendingFrames: 4
+        )
 
         try await session.start(initiallyPaused: false)
-        try await session.pause()
+        microphone.emit([[1, 1]])
+        system.emit([[2, 2]])
+        microphone.emit([[3, 3]])
+        try await eventually {
+            await accepted.recordingCount == 2
+        }
 
-        XCTAssertEqual(accepted.audio.flatMap(\.samples), [3, 3, 3, 3])
-        XCTAssertEqual(events.revisions.filter(\.isFinal).map(\.text), ["pre-pause tail"])
+        let blockedCheckpoint = await session.checkpoint()
+        let blockedAudio = await accepted.audio
+        XCTAssertEqual(blockedCheckpoint.pendingAudio, [blockedAudio[0].descriptor])
+        XCTAssertEqual(blockedAudio[0].samples, [1, 1])
+
+        let pauseTask = Task { try await session.pause() }
+        try await eventually {
+            microphone.stopBeginCount + system.stopBeginCount > 0
+        }
+        await accepted.release()
+        try await pauseTask.value
+
+        let persisted = await accepted.audio
+        XCTAssertEqual(persisted.map(\.descriptor.sourceID), [
+            .microphone,
+            .systemAudio,
+            .microphone,
+        ])
+        XCTAssertEqual(persisted.map(\.samples), [[1, 1], [2, 2], [3, 3]])
+        XCTAssertEqual(events.revisions.filter(\.isFinal).map(\.text).sorted(), [
+            "microphone:1133",
+            "system_audio:22",
+        ])
         XCTAssertEqual(microphone.stopCount, 1)
+        XCTAssertEqual(system.stopCount, 1)
         let boundary = try await session.stop()
         XCTAssertEqual(boundary.metrics.acceptedSamplesBySource[.microphone], 4)
+        XCTAssertEqual(boundary.metrics.acceptedSamplesBySource[.systemAudio], 2)
+        XCTAssertEqual(boundary.metrics.acceptedChunkCount, 3)
+        XCTAssertEqual(boundary.metrics.droppedAudioSampleCount, 0)
         XCTAssertEqual(microphone.stopCount, 1)
+        XCTAssertEqual(system.stopCount, 1)
+    }
+
+    func testStopDrainsInCapacityBurstThroughSlowSinkWithoutReordering() async throws {
+        let accepted = BlockingMeetingAcceptedAudioSink(blockAtRecordingCount: 2)
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-stop-tail",
+            transcriber: FakeMeetingTranscriber { request in
+                let samples = request.samples.map { String(Int($0)) }.joined()
+                return MeetingTranscriptionResult(
+                    text: "\(request.sourceID.rawValue):\(samples)",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { await accepted.record($0) },
+            eventSink: { events.record($0) }
+        )
+        let microphone = FakeMeetingAudioCapture(
+            sourceID: .microphone,
+            samples: [],
+            stopSamples: [[9]],
+            stopDelayNanoseconds: 50_000_000
+        )
+        let system = FakeMeetingAudioCapture(
+            sourceID: .systemAudio,
+            samples: [],
+            stopSamples: [[8]],
+            stopDelayNanoseconds: 50_000_000
+        )
+        let session = MeetingNoteCaptureSession(
+            producer: producer,
+            captures: [microphone, system],
+            maximumPendingFrames: 4
+        )
+
+        try await session.start(initiallyPaused: false)
+        system.emit([[4]])
+        microphone.emit([[5]])
+        system.emit([[6]])
+        try await eventually {
+            await accepted.recordingCount == 2
+        }
+
+        let stopTask = Task { try await session.stop() }
+        try await eventually {
+            microphone.stopBeginCount + system.stopBeginCount > 0
+        }
+        await accepted.release()
+        let boundary = try await stopTask.value
+
+        let persisted = await accepted.audio
+        XCTAssertEqual(persisted.map(\.descriptor.sourceID), [
+            .systemAudio,
+            .microphone,
+            .systemAudio,
+        ])
+        XCTAssertEqual(persisted.map(\.samples), [[4], [5], [6]])
+        XCTAssertEqual(events.revisions.filter(\.isFinal).map(\.text).sorted(), [
+            "microphone:5",
+            "system_audio:46",
+        ])
+        XCTAssertEqual(boundary.metrics.acceptedChunkCount, 3)
+        XCTAssertEqual(boundary.metrics.droppedAudioSampleCount, 0)
+        XCTAssertEqual(microphone.stopCount, 1)
+        XCTAssertEqual(system.stopCount, 1)
     }
 
     func testPostStartCaptureFailureStillStopsAdapterDuringTeardown() async throws {
@@ -769,28 +883,33 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
     let sourceID: MeetingAudioSourceID
     private let batches: [[Float]]
     private let stopBatches: [[Float]]
+    private let stopDelayNanoseconds: UInt64
     private let startFailure: MeetingAudioCaptureFailure?
     private let eventOnStart: MeetingAudioCaptureEvent?
     private let lock = NSLock()
     private var starts = 0
+    private var stopBegins = 0
     private var stops = 0
     private var nextPresentationTime: UInt64 = 1_000_000_000
     private var sampleHandler: (@Sendable (MeetingAudioFrame) -> Void)?
     private var eventHandler: (@Sendable (MeetingAudioCaptureEvent) -> Void)?
 
     var startCount: Int { lock.withTestLock { starts } }
+    var stopBeginCount: Int { lock.withTestLock { stopBegins } }
     var stopCount: Int { lock.withTestLock { stops } }
 
     init(
         sourceID: MeetingAudioSourceID,
         samples: [[Float]],
         stopSamples: [[Float]] = [],
+        stopDelayNanoseconds: UInt64 = 0,
         startFailure: MeetingAudioCaptureFailure? = nil,
         eventOnStart: MeetingAudioCaptureEvent? = nil
     ) {
         self.sourceID = sourceID
         self.batches = samples
         self.stopBatches = stopSamples
+        self.stopDelayNanoseconds = stopDelayNanoseconds
         self.startFailure = startFailure
         self.eventOnStart = eventOnStart
     }
@@ -816,6 +935,10 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
     }
 
     func stop() async {
+        lock.withTestLock { stopBegins += 1 }
+        if stopDelayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: stopDelayNanoseconds)
+        }
         emit(stopBatches)
         lock.withTestLock {
             stops += 1
@@ -896,15 +1019,21 @@ private final class MeetingAcceptedAudioRecorder: @unchecked Sendable {
 }
 
 private actor BlockingMeetingAcceptedAudioSink {
-    private var count = 0
+    private let blockAtRecordingCount: Int
+    private var values: [MeetingAcceptedAudio] = []
     private var continuation: CheckedContinuation<Void, Never>?
     private var released = false
 
-    var recordingCount: Int { count }
+    init(blockAtRecordingCount: Int = 1) {
+        self.blockAtRecordingCount = blockAtRecordingCount
+    }
+
+    var recordingCount: Int { values.count }
+    var audio: [MeetingAcceptedAudio] { values }
 
     func record(_ audio: MeetingAcceptedAudio) async {
-        count += 1
-        guard !released else { return }
+        values.append(audio)
+        guard !released, values.count == blockAtRecordingCount else { return }
         await withCheckedContinuation { continuation in
             self.continuation = continuation
         }

@@ -107,11 +107,12 @@ use, thermal behavior, and real simultaneous paths.
 The capture session reads the actual Caps Lock state by default. Starting while
 Caps Lock is on prepares the local model but starts paused and accepts no audio.
 The exclusive owner calls `pause()` to stop every adapter that successfully
-started, closes the capture ingress, and awaits its single consumer before the
-producer changes state. Frames emitted by an adapter before its `stop()` returns
-are therefore accepted and finalized as the pre-pause tail; later callbacks are
-rejected by the closed ingress. `resume()` creates new timing epochs. Rapid
-duplicate pause/resume calls are idempotent only in their matching state.
+started, but first closes the capture ingress at the pause request boundary.
+Its single consumer drains only frames already accepted before that boundary
+while asynchronous adapter teardown runs; teardown-time and stale callbacks are
+rejected. The producer then finalizes the accepted pre-pause tail. `resume()`
+creates new timing epochs. Rapid duplicate pause/resume calls are idempotent
+only in their matching state.
 
 Stop uses the same adapter-stop and ingress-drain barrier before it drains final
 ASR tails and emits one `MeetingProducerFinalBoundary`. Adapter ownership remains
