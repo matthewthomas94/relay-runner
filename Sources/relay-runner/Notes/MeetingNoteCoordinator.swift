@@ -263,6 +263,7 @@ actor MeetingNoteCoordinator {
     private var checkpointTask: Task<Void, Never>?
     private var stopTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
     private var activeScopeToken: String?
+    private var hasPersistedRecoveryJournal = false
 
     init(
         writer: any MeetingNoteArtifactWriting,
@@ -310,6 +311,9 @@ actor MeetingNoteCoordinator {
         projectScopeToken: String?,
         initiallyPaused: Bool
     ) async throws -> MeetingNoteCoordinatorSnapshot {
+        if phase == .error, runtime == nil, !hasPersistedRecoveryJournal {
+            releaseUndurableStartFailure()
+        }
         guard phase == .idle || phase == .saved else {
             if journal?.project == project { return snapshot() }
             throw MeetingNoteCoordinatorError.foregroundBusy
@@ -318,6 +322,7 @@ actor MeetingNoteCoordinator {
         checkpointTask?.cancel()
         stopTask = nil
         activeScopeToken = projectScopeToken
+        hasPersistedRecoveryJournal = false
         phase = .preparing
         desiredPaused = initiallyPaused
         let timestamp = now()
@@ -351,9 +356,10 @@ actor MeetingNoteCoordinator {
             updatedAt: timestamp
         )
         self.journal = journal
-        try await recoveryStore.save(journal)
 
         do {
+            try await recoveryStore.save(journal)
+            hasPersistedRecoveryJournal = true
             let created = try await writer.create(
                 create,
                 repositoryPath: project.repositoryPath,
@@ -398,7 +404,15 @@ actor MeetingNoteCoordinator {
             startCheckpointLoopIfNeeded()
             return snapshot()
         } catch {
-            try? await markInterrupted(error)
+            if !hasPersistedRecoveryJournal,
+               let _ = try? await recoveryStore.load(sessionID: sessionID) {
+                hasPersistedRecoveryJournal = true
+            }
+            if hasPersistedRecoveryJournal {
+                try? await markInterrupted(error)
+            } else {
+                markUndurableStartFailed(error, journal: journal)
+            }
             throw error
         }
     }
@@ -450,6 +464,10 @@ actor MeetingNoteCoordinator {
 
     func stop() async throws -> MeetingNoteCoordinatorSnapshot {
         if phase == .saved { return snapshot() }
+        if phase == .error, runtime == nil, !hasPersistedRecoveryJournal {
+            releaseUndurableStartFailure()
+            return snapshot()
+        }
         if let stopTask { return try await stopTask.value }
         let task = Task { try await self.performStop() }
         stopTask = task
@@ -488,6 +506,7 @@ actor MeetingNoteCoordinator {
         checkpointTask?.cancel()
         activeScopeToken = projectScopeToken
         runtime = nil
+        hasPersistedRecoveryJournal = true
         phase = .interrupted
         journal.phase = .interrupted
         journal.updatedAt = now()
@@ -552,6 +571,7 @@ actor MeetingNoteCoordinator {
                 runtime = nil
                 activeScopeToken = nil
                 try await recoveryStore.removeSession(sessionID: sessionID)
+                hasPersistedRecoveryJournal = false
                 return snapshot()
             }
 
@@ -571,6 +591,7 @@ actor MeetingNoteCoordinator {
                 runtime = nil
                 activeScopeToken = nil
                 try await recoveryStore.removeSession(sessionID: sessionID)
+                hasPersistedRecoveryJournal = false
                 return snapshot()
             }
 
@@ -679,6 +700,12 @@ actor MeetingNoteCoordinator {
             journal.updatedAt = endedAt
             self.journal = journal
             try await recoveryStore.save(journal)
+            try await retainPendingAudio(journal)
+            guard journal.producerCheckpoint?.pendingAudio.isEmpty == true else {
+                throw MeetingNoteCoordinatorError.localSaveFailed(
+                    "accepted audio remains pending local transcription"
+                )
+            }
             _ = try await publishCheckpoint(
                 reason: .complete,
                 recordingState: .completed,
@@ -690,6 +717,7 @@ actor MeetingNoteCoordinator {
             self.runtime = nil
             activeScopeToken = nil
             try await recoveryStore.removeSession(sessionID: journal.sessionID)
+            hasPersistedRecoveryJournal = false
             return snapshot()
         } catch {
             try? await markInterrupted(error)
@@ -841,6 +869,33 @@ actor MeetingNoteCoordinator {
         try await recoveryStore.save(journal)
     }
 
+    private func markUndurableStartFailed(
+        _ error: Error,
+        journal: MeetingNoteRecoveryJournal
+    ) {
+        checkpointTask?.cancel()
+        checkpointTask = nil
+        runtime = nil
+        activeScopeToken = nil
+        phase = .error
+        var failed = journal
+        failed.phase = .error
+        failed.lastError = safeMessage(error)
+        failed.updatedAt = now()
+        self.journal = failed
+    }
+
+    private func releaseUndurableStartFailure() {
+        checkpointTask?.cancel()
+        checkpointTask = nil
+        stopTask = nil
+        runtime = nil
+        activeScopeToken = nil
+        desiredPaused = false
+        phase = .idle
+        journal = nil
+    }
+
     private func startCheckpointLoopIfNeeded() {
         guard automaticCheckpointing,
               policy.artifactIntervalSeconds > 0,
@@ -879,6 +934,11 @@ actor MeetingNoteCoordinator {
         }
         if let storeError = error as? MeetingNoteRecoveryStoreError {
             return storeError.localizedDescription
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain,
+           nsError.code == CocoaError.fileWriteOutOfSpace.rawValue {
+            return "Local recovery storage is full."
         }
         return String(describing: type(of: error))
     }

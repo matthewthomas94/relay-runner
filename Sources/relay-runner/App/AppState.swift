@@ -978,7 +978,8 @@ final class AppState {
     @discardableResult
     func startNoteTaker(workingDirectory: String? = nil) -> Bool {
         guard allowsAppShellAccess else { return false }
-        guard !meetingNoteSnapshot.phase.ownsForeground else { return true }
+        guard !meetingNoteSnapshot.phase.ownsForeground
+                || meetingNoteSnapshot.phase == .error else { return true }
         guard let context = meetingNoteProjectContext(workingDirectory: workingDirectory) else {
             return false
         }
@@ -1006,7 +1007,8 @@ final class AppState {
         sttSetupSucceeded = false
         stopMeetingNoteCapsLockPolling()
 
-        let coordinator = MeetingNoteCoordinator.live(modelName: config.stt.model)
+        let coordinator = meetingNoteCoordinator
+            ?? MeetingNoteCoordinator.live(modelName: config.stt.model)
         meetingNoteCoordinator = coordinator
         let task = Task { @MainActor [weak self] () throws -> MeetingNoteCoordinatorSnapshot in
             guard let self else { throw MeetingNoteForegroundTransitionError.teardownTimedOut }
@@ -1679,21 +1681,24 @@ final class AppState {
                 if let startTask = self.meetingNoteStartTask {
                     _ = try await startTask.value
                 }
-                let saved = try await coordinator.stop()
-                guard transitionID == self.meetingNoteTransitionID else { return }
-                self.applyMeetingNoteSnapshot(saved)
-                self.meetingNoteCoordinator = nil
-                self.meetingNoteStartTask = nil
-                _ = self.newSession(
-                    workingDirectory: destinationProject,
-                    destination: destination,
-                    allowDuringFirstRun: allowDuringFirstRun,
-                    showsWorkspaceOnLaunch: showsWorkspaceOnLaunch,
-                    suppressesStartupGreeting: suppressesStartupGreeting,
-                    recoveryGeneration: recoveryGeneration,
-                    preservesVoiceBridge: preservesVoiceBridge,
-                    bypassesNoteTransition: true
-                )
+                _ = try await Self.finalizeMeetingNoteBeforeWorkSession(
+                    coordinator: coordinator
+                ) { saved in
+                    guard transitionID == self.meetingNoteTransitionID else { return false }
+                    self.applyMeetingNoteSnapshot(saved)
+                    self.meetingNoteCoordinator = nil
+                    self.meetingNoteStartTask = nil
+                    return self.newSession(
+                        workingDirectory: destinationProject,
+                        destination: destination,
+                        allowDuringFirstRun: allowDuringFirstRun,
+                        showsWorkspaceOnLaunch: showsWorkspaceOnLaunch,
+                        suppressesStartupGreeting: suppressesStartupGreeting,
+                        recoveryGeneration: recoveryGeneration,
+                        preservesVoiceBridge: preservesVoiceBridge,
+                        bypassesNoteTransition: true
+                    )
+                }
             } catch {
                 guard transitionID == self.meetingNoteTransitionID else { return }
                 let snapshot = await coordinator.snapshot()
@@ -1703,6 +1708,15 @@ final class AppState {
             }
         }
         return true
+    }
+
+    @MainActor
+    static func finalizeMeetingNoteBeforeWorkSession(
+        coordinator: MeetingNoteCoordinator,
+        launch: (MeetingNoteCoordinatorSnapshot) -> Bool
+    ) async throws -> Bool {
+        let saved = try await coordinator.stop()
+        return launch(saved)
     }
 
     private func updateSleepPreventionMonitoring() {
