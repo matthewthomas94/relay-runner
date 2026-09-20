@@ -289,7 +289,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(contents.contains("ProgramBoardBackdropStyle.backdropHeight"))
         XCTAssertTrue(contents.contains("ProgramBoardBackdropShape("))
         let modalLayerReferences = contents.components(separatedBy: "ProgramBoardModalLayer").count - 1
-        XCTAssertEqual(modalLayerReferences - 1, 5) // Exclude the generic type declaration.
+        XCTAssertEqual(modalLayerReferences - 1, 6) // Exclude the generic type declaration.
         XCTAssertTrue(contents.contains("ProgramTicketPanelStyle.width"))
         XCTAssertTrue(contents.contains("ProgramTicketPanelStyle.height"))
 
@@ -1201,6 +1201,78 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1"])
         XCTAssertEqual(model.snapshot?.backlogWork.counts.items, 1)
+    }
+
+    func testBacklogMixesTypedNotesAndTicketsAcrossProjectsWithoutAddingALane() throws {
+        let clientPath = "/repo/client-dashboard"
+        let toolsPath = "/repo/tools"
+        let model = ProgramBoardViewModel()
+        model.projectPaths = [clientPath, toolsPath]
+        model.snapshot = try programBoardSnapshot(clientPath: clientPath, toolsPath: toolsPath)
+        model.noteItems = [
+            noteItem(id: "CD-N999", number: 999, projectName: "Client Dashboard", path: clientPath),
+            noteItem(id: "TL-N2", number: 2, projectName: "Tools", path: toolsPath),
+            noteItem(id: "CD-N1000", number: 1000, projectName: "Client Dashboard", path: clientPath),
+        ]
+
+        XCTAssertEqual(ProgramBoardLane.allCases.map(\.title), ["Backlog", "Queued", "In progress", "Done"])
+        XCTAssertEqual(model.noteItemsInBacklog().map(\.card.noteID), ["CD-N1000", "CD-N999", "TL-N2"])
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
+        XCTAssertEqual(model.workItems(in: .backlog).count, 5)
+
+        model.selectProject(path: clientPath)
+        XCTAssertEqual(model.noteItemsInBacklog().map(\.card.noteID), ["CD-N1000", "CD-N999"])
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1"])
+    }
+
+    func testNoteBacklogItemsCannotEnterTicketDropOrDispatchPolicy() throws {
+        let clientPath = "/repo/client-dashboard"
+        let note = noteItem(
+            id: "CD-N1000",
+            number: 1000,
+            projectName: "Client Dashboard",
+            path: clientPath
+        )
+        let ticket = try ticketItem(
+            projectName: "Client Dashboard",
+            path: clientPath,
+            ticketID: "CD-1",
+            title: "Client backlog",
+            status: "backlog"
+        )
+
+        XCTAssertNil(ProgramBoardDropPolicy.request(
+            for: .note(note),
+            sourceLane: .backlog,
+            targetLane: .ready
+        ))
+        XCTAssertEqual(
+            ProgramBoardDropPolicy.request(
+                for: .ticket(ticket),
+                sourceLane: .backlog,
+                targetLane: .ready
+            ),
+            ProgramBoardDropRequest(
+                ticketID: "CD-1",
+                repoPath: clientPath,
+                targetStatus: .ready,
+                shouldDispatch: true
+            )
+        )
+    }
+
+    func testNoteStatusDoesNotClaimSavedBeforeMaterialization() {
+        let item = noteItem(
+            id: "RR-N1",
+            number: 1,
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner",
+            materialized: false,
+            syncState: "pending"
+        )
+
+        XCTAssertEqual(item.recordingLabel, "Saving")
+        XCTAssertEqual(item.syncLabel, "Remote sync pending")
     }
 
     func testProgramBoardTicketDetailResolvesChildTicketFileFromAllProjects() throws {
@@ -2542,6 +2614,46 @@ final class ProgramBoardStatusTests: XCTestCase {
             "done_tickets": done,
             "providers": ["Codex", "Claude"],
         ])
+    }
+
+    private func noteItem(
+        id: String,
+        number: Int,
+        projectName: String,
+        path: String,
+        materialized: Bool = true,
+        syncState: String = "synced"
+    ) -> ProgramBoardNoteItem {
+        let reference = RelayProjectNoteReference(
+            path: ".orchestrator/notes/\(id).md",
+            artifactRef: "refs/heads/relay/artifacts",
+            commit: "commit-\(number)",
+            revision: "revision-\(number)",
+            historyReference: "history-\(number)",
+            verified: true,
+            catalogCommit: "catalog-\(number)"
+        )
+        return ProgramBoardNoteItem(
+            card: RelayProjectNoteCard(
+                noteID: id,
+                artifactID: "artifact-\(number)-\(projectName)",
+                projectID: "project-\(projectName)",
+                createdAt: "2026-09-20T10:00:00Z",
+                updatedAt: "2026-09-20T11:00:00Z",
+                recordingState: .completed,
+                segmentCount: number,
+                materialized: materialized,
+                archivedAt: nil,
+                reference: reference
+            ),
+            projectName: projectName,
+            projectPath: path,
+            sync: RelayProjectNoteSyncState(
+                mode: "sync",
+                state: syncState,
+                recovery: nil
+            )
+        )
     }
 
     private func ticketItem(

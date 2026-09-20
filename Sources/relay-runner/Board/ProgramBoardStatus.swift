@@ -320,6 +320,65 @@ struct ProgramBoardProjectTarget: Equatable, Identifiable {
     var id: String { path }
 }
 
+struct ProgramBoardNoteItem: Equatable, Identifiable {
+    let card: RelayProjectNoteCard
+    let projectName: String
+    let projectPath: String
+    let sync: RelayProjectNoteSyncState
+
+    var id: String { "note|\(projectPath)|\(card.artifactID)" }
+
+    var noteNumber: Int {
+        guard let marker = card.noteID.range(of: "-N", options: .backwards),
+              let value = Int(card.noteID[marker.upperBound...]) else { return .min }
+        return value
+    }
+
+    var recordingLabel: String {
+        switch card.recordingState {
+        case .recording: return "Recording"
+        case .paused: return "Paused"
+        case .completed: return card.materialized ? "Saved locally" : "Saving"
+        }
+    }
+
+    var syncLabel: String {
+        switch sync.state {
+        case "local_only": return "Local only"
+        case "synced": return "Synced"
+        case "pending": return "Remote sync pending"
+        case "conflict": return "Remote sync conflict"
+        default: return "Remote sync unavailable"
+        }
+    }
+}
+
+enum ProgramBoardWorkItem: Equatable, Identifiable {
+    case ticket(ProgramStatusItem)
+    case note(ProgramBoardNoteItem)
+
+    var id: String {
+        switch self {
+        case .ticket(let item): return "ticket|\(item.id)"
+        case .note(let item): return item.id
+        }
+    }
+}
+
+struct ProgramBoardNoteLoadResult: Equatable {
+    let notes: [ProgramBoardNoteItem]
+    let errorMessage: String?
+
+    static let empty = ProgramBoardNoteLoadResult(notes: [], errorMessage: nil)
+}
+
+struct ProgramBoardNoteDetail: Equatable {
+    let item: ProgramBoardNoteItem
+    var markdown: String?
+    var isLoading: Bool
+    var errorMessage: String?
+}
+
 struct ProgramBoardCreateDraft: Equatable {
     let lane: ProgramBoardLane
     let selectedProjectPath: String?
@@ -429,6 +488,15 @@ struct ProgramBoardDeleteResult: Equatable {
 }
 
 enum ProgramBoardDropPolicy {
+    static func request(
+        for item: ProgramBoardWorkItem,
+        sourceLane: ProgramBoardLane,
+        targetLane: ProgramBoardLane
+    ) -> ProgramBoardDropRequest? {
+        guard case .ticket(let ticket) = item else { return nil }
+        return request(for: ticket, sourceLane: sourceLane, targetLane: targetLane)
+    }
+
     static func request(
         for item: ProgramStatusItem,
         sourceLane: ProgramBoardLane,
@@ -1427,6 +1495,18 @@ final class ProgramBoardViewModel {
     var hasActiveSession = false
     var selectedProjectPath: String?
     var selectedTicketDetail: ProgramTicketDetail?
+    var selectedNoteDetail: ProgramBoardNoteDetail?
+    var noteItems: [ProgramBoardNoteItem] = []
+    var noteLoadErrorMessage: String?
+    var noteCaptureSnapshot = MeetingNoteCoordinatorSnapshot(
+        phase: .idle,
+        noteID: nil,
+        project: nil,
+        liveHypothesisCount: 0,
+        durableSegmentCount: 0,
+        syncState: nil,
+        errorMessage: nil
+    )
     var history: WorkspaceHistoryViewModel?
     var spikeFollowupBatch: SpikeFollowupBatch?
     var creating: ProgramBoardCreateDraft?
@@ -1442,6 +1522,7 @@ final class ProgramBoardViewModel {
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
     @ObservationIgnored private var reloadInFlight = false
     @ObservationIgnored private var fetchDashboard: ([String]) async throws -> ProgramDashboardSnapshot
+    @ObservationIgnored private var fetchNotes: ([String]) async -> ProgramBoardNoteLoadResult = { _ in .empty }
     @ObservationIgnored private let diagnostics: RelayDiagnostics
 
     init(fetchDashboard: @escaping ([String]) async throws -> ProgramDashboardSnapshot = { repoPaths in
@@ -1468,6 +1549,7 @@ final class ProgramBoardViewModel {
         errorMessage = nil
         supportBundlePreview = nil
         selectedTicketDetail = nil
+        selectedNoteDetail = nil
         history = nil
         spikeFollowupBatch = nil
         creating = nil
@@ -1486,6 +1568,10 @@ final class ProgramBoardViewModel {
         reloadInFlight = false
     }
 
+    func setNoteFetcher(_ fetchNotes: @escaping ([String]) async -> ProgramBoardNoteLoadResult) {
+        self.fetchNotes = fetchNotes
+    }
+
     func setProjectScope(_ paths: [String], selectedProjectPath: String? = nil) {
         let paths = ProgramBoardProjectPath.deduplicated(paths)
         let selectedProjectPath = selectedProjectPath
@@ -1502,6 +1588,7 @@ final class ProgramBoardViewModel {
         }
         if scopeChanged || selectionChanged {
             selectedTicketDetail = nil
+            selectedNoteDetail = nil
             history = nil
             spikeFollowupBatch = nil
         }
@@ -1521,12 +1608,14 @@ final class ProgramBoardViewModel {
         reloadState = .loading
         errorMessage = nil
         let fetchDashboard = fetchDashboard
+        let fetchNotes = fetchNotes
         let projectPaths = projectPaths
         let task = Task { [weak self] in
             do {
                 let snapshot = try await fetchDashboard(projectPaths)
+                let noteResult = await fetchNotes(projectPaths)
                 guard !Task.isCancelled else { return }
-                await self?.finishReload(snapshot: snapshot, attempt: attempt)
+                await self?.finishReload(snapshot: snapshot, noteResult: noteResult, attempt: attempt)
             } catch {
                 guard !Task.isCancelled else { return }
                 let message = Self.reloadErrorMessage(for: error)
@@ -1544,12 +1633,14 @@ final class ProgramBoardViewModel {
         reloadInFlight = true
         errorMessage = nil
         let fetchDashboard = fetchDashboard
+        let fetchNotes = fetchNotes
         let projectPaths = projectPaths
         let task = Task { [weak self] in
             do {
                 let snapshot = try await fetchDashboard(projectPaths)
+                let noteResult = await fetchNotes(projectPaths)
                 guard !Task.isCancelled else { return }
-                await self?.finishReload(snapshot: snapshot, attempt: attempt)
+                await self?.finishReload(snapshot: snapshot, noteResult: noteResult, attempt: attempt)
             } catch {
                 guard !Task.isCancelled else { return }
                 let message = Self.reloadErrorMessage(for: error)
@@ -1628,6 +1719,9 @@ final class ProgramBoardViewModel {
         if !ProgramBoardProjectPath.matches(selectedTicketDetail?.identity?.projectPath, path) {
             selectedTicketDetail = nil
         }
+        if !ProgramBoardProjectPath.matches(selectedNoteDetail?.item.projectPath, path) {
+            selectedNoteDetail = nil
+        }
         if !ProgramBoardProjectPath.matches(editing?.identity.projectPath, path) {
             editing = nil
             editingErrorMessage = nil
@@ -1638,12 +1732,64 @@ final class ProgramBoardViewModel {
         snapshot?.ticketItems(in: lane, selectedProjectPath: selectedProjectPath) ?? []
     }
 
+    func noteItemsInBacklog() -> [ProgramBoardNoteItem] {
+        let filtered = selectedProjectPath.map { path in
+            noteItems.filter { ProgramBoardProjectPath.matches($0.projectPath, path) }
+        } ?? noteItems
+        return filtered.sorted {
+            if $0.noteNumber != $1.noteNumber { return $0.noteNumber > $1.noteNumber }
+            if $0.card.noteID != $1.card.noteID { return $0.card.noteID > $1.card.noteID }
+            return $0.projectName.localizedStandardCompare($1.projectName) == .orderedAscending
+        }
+    }
+
+    func workItems(in lane: ProgramBoardLane) -> [ProgramBoardWorkItem] {
+        let tickets = ticketItems(in: lane).map(ProgramBoardWorkItem.ticket)
+        guard lane == .backlog else { return tickets }
+        return noteItemsInBacklog().map(ProgramBoardWorkItem.note) + tickets
+    }
+
     func selectTicket(_ item: ProgramStatusItem) {
+        selectedNoteDetail = nil
         selectedTicketDetail = ProgramTicketDetail.load(item: item)
     }
 
     func clearSelectedTicket() {
         selectedTicketDetail = nil
+    }
+
+    func beginNoteDetail(_ item: ProgramBoardNoteItem) {
+        selectedTicketDetail = nil
+        selectedNoteDetail = ProgramBoardNoteDetail(
+            item: item,
+            markdown: nil,
+            isLoading: true,
+            errorMessage: nil
+        )
+    }
+
+    func finishNoteDetail(_ response: RelayProjectNoteResponse, for item: ProgramBoardNoteItem) {
+        guard selectedNoteDetail?.item.id == item.id else { return }
+        selectedNoteDetail = ProgramBoardNoteDetail(
+            item: item,
+            markdown: response.markdown,
+            isLoading: false,
+            errorMessage: response.markdown == nil ? "This note could not be decoded." : nil
+        )
+    }
+
+    func failNoteDetail(_ message: String, for item: ProgramBoardNoteItem) {
+        guard selectedNoteDetail?.item.id == item.id else { return }
+        selectedNoteDetail = ProgramBoardNoteDetail(
+            item: item,
+            markdown: nil,
+            isLoading: false,
+            errorMessage: message
+        )
+    }
+
+    func clearSelectedNote() {
+        selectedNoteDetail = nil
     }
 
     func presentHistory(
@@ -1849,9 +1995,19 @@ final class ProgramBoardViewModel {
     @MainActor
     private func finishReload(
         snapshot: ProgramDashboardSnapshot,
+        noteResult: ProgramBoardNoteLoadResult,
         attempt: (incidentID: String, attempt: Int, correlationID: String)
     ) {
         self.snapshot = snapshot
+        noteItems = noteResult.notes.map { item in
+            ProgramBoardNoteItem(
+                card: item.card,
+                projectName: snapshot.projectName(for: item.projectPath) ?? item.projectName,
+                projectPath: item.projectPath,
+                sync: item.sync
+            )
+        }
+        noteLoadErrorMessage = noteResult.errorMessage
         if let selectedProjectPath, !snapshot.containsProject(path: selectedProjectPath) {
             self.selectedProjectPath = nil
         }
@@ -1867,6 +2023,18 @@ final class ProgramBoardViewModel {
                 self.selectedTicketDetail = ProgramTicketDetail.load(item: refreshedItem)
             } else {
                 self.selectedTicketDetail = nil
+            }
+        }
+        if let selectedNoteDetail {
+            if let refreshed = noteItems.first(where: { $0.id == selectedNoteDetail.item.id }) {
+                self.selectedNoteDetail = ProgramBoardNoteDetail(
+                    item: refreshed,
+                    markdown: selectedNoteDetail.markdown,
+                    isLoading: selectedNoteDetail.isLoading,
+                    errorMessage: selectedNoteDetail.errorMessage
+                )
+            } else {
+                self.selectedNoteDetail = nil
             }
         }
         reloadState = .succeeded

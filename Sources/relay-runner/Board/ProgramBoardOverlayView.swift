@@ -176,6 +176,10 @@ struct ProgramBoardOverlayView: View {
     var onSelectProject: (String) -> Void = { _ in }
     let onStartSession: () -> Void
     let onEndSession: () -> Void
+    var onStartNoteTaker: () -> Void = {}
+    var onStopNoteTaker: () -> Void = {}
+    var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
+    var onNoteClose: () -> Void = {}
     let onCreateStart: (ProgramBoardLane) -> Void
     let onCreateCommit: (ProgramBoardCreateRequest) -> Void
     let onCreateCancel: () -> Void
@@ -204,7 +208,7 @@ struct ProgramBoardOverlayView: View {
             height: min(viewportSize.height, ProgramBoardBackdropStyle.backdropHeight)
         )
         let dotMatrixPresentation = ProgramWorkspaceDotMatrixPresentation.resolve(
-            showsTicketDetail: model.selectedTicketDetail != nil,
+            showsTicketDetail: model.selectedTicketDetail != nil || model.selectedNoteDetail != nil,
             showsCreateTicket: model.creating != nil,
             showsEditTicket: model.editing != nil,
             showsSpikeFollowup: model.spikeFollowupBatch != nil,
@@ -245,13 +249,19 @@ struct ProgramBoardOverlayView: View {
                 Spacer(minLength: 0)
                 ProgramSessionToolbarControl(
                     hasActiveSession: model.hasActiveSession,
+                    noteSnapshot: model.noteCaptureSnapshot,
                     canStartSession: ProgramSessionControlPolicy.canStart(
                         hasActiveSession: model.hasActiveSession,
                         selectedProjectPath: model.selectedSessionProjectPath,
                         requiresConfirmedProject: ProjectRegistryV2Rollout.isEnabled()
                     ),
+                    canStartNoteTaker: ProgramNoteControlPolicy.canStart(
+                        selectedProjectPath: model.selectedSessionProjectPath
+                    ),
                     onStartSession: onStartSession,
-                    onEndSession: onEndSession
+                    onEndSession: onEndSession,
+                    onStartNoteTaker: onStartNoteTaker,
+                    onStopNoteTaker: onStopNoteTaker
                 )
             }
             .padding(.top, ProgramBoardLayout.sessionToolbarTopPadding)
@@ -294,6 +304,7 @@ struct ProgramBoardOverlayView: View {
                         onCreateProject: onCreateProject,
                         onSelectProject: onSelectProject,
                         onCreateStart: onCreateStart,
+                        onNoteOpen: onNoteOpen,
                         onDrop: onDrop
                     )
                     .padding(.top, contentPresentation.workspaceTopPadding)
@@ -348,6 +359,28 @@ struct ProgramBoardOverlayView: View {
                         onEdit: { onEditStart(detail) },
                         onDelete: onDelete,
                         onSpikeFollowup: { onSpikeFollowupStart(detail) },
+                        panelSize: ProgramTicketPanelStyle.detailSize(fitting: detailSurfaceSize)
+                    )
+                }
+                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+            }
+
+            if let detail = model.selectedNoteDetail,
+               model.history == nil,
+               model.creating == nil,
+               model.editing == nil,
+               model.spikeFollowupBatch == nil {
+                ProgramBoardModalLayer(
+                    onDismiss: onNoteClose,
+                    availableHeight: detailSurfaceSize.height
+                ) {
+                    ProgramNoteDetailPanel(
+                        detail: detail,
+                        captureSnapshot: model.noteCaptureSnapshot,
+                        theme: model.theme,
+                        onClose: onNoteClose,
+                        onStop: onStopNoteTaker,
+                        onRetry: { onNoteOpen(detail.item) },
                         panelSize: ProgramTicketPanelStyle.detailSize(fitting: detailSurfaceSize)
                     )
                 }
@@ -442,6 +475,8 @@ struct ProgramBoardOverlayView: View {
             onSpikeFollowupClose()
         } else if model.history != nil {
             onHistoryClose()
+        } else if model.selectedNoteDetail != nil {
+            onNoteClose()
         } else if model.selectedTicketDetail != nil {
             model.clearSelectedTicket()
         }
@@ -931,6 +966,7 @@ private struct ProgramBoardContent: View {
     let onCreateProject: () -> Void
     let onSelectProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
+    var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
@@ -967,6 +1003,7 @@ private struct ProgramBoardContent: View {
                             theme: model.theme,
                             canCreate: !model.projectTargets.isEmpty,
                             onCreate: { onCreateStart(lane) },
+                            onNoteOpen: onNoteOpen,
                             onDrop: onDrop
                         )
                     }
@@ -1417,10 +1454,31 @@ struct ProgramWorkColumnPanel: View {
     let theme: ParticleFieldRenderer.Theme?
     let canCreate: Bool
     let onCreate: () -> Void
+    var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
-    private var items: [ProgramStatusItem] {
-        model.ticketItems(in: lane)
+    init(
+        model: ProgramBoardViewModel,
+        lane: ProgramBoardLane,
+        showsProjectContext: Bool,
+        theme: ParticleFieldRenderer.Theme?,
+        canCreate: Bool,
+        onCreate: @escaping () -> Void,
+        onNoteOpen: @escaping (ProgramBoardNoteItem) -> Void = { _ in },
+        onDrop: @escaping (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
+    ) {
+        self.model = model
+        self.lane = lane
+        self.showsProjectContext = showsProjectContext
+        self.theme = theme
+        self.canCreate = canCreate
+        self.onCreate = onCreate
+        self.onNoteOpen = onNoteOpen
+        self.onDrop = onDrop
+    }
+
+    private var items: [ProgramBoardWorkItem] {
+        model.workItems(in: lane)
     }
 
     private var activeTarget: ProgramBoardDropTarget? {
@@ -1445,10 +1503,17 @@ struct ProgramWorkColumnPanel: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
-                Text("\(laneItems.count)")
+                Text("\(model.ticketItems(in: lane).count)")
                     .font(AppTypography.font(.count))
                     .foregroundStyle(ProgramBoardStyle.secondaryText)
                     .monospacedDigit()
+                    .accessibilityLabel("\(model.ticketItems(in: lane).count) tickets")
+                if lane == .backlog, !model.noteItemsInBacklog().isEmpty {
+                    Text("+\(model.noteItemsInBacklog().count) notes")
+                        .font(AppTypography.font(.caption))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .lineLimit(1)
+                }
                 if canCreate {
                     ProgramIconButton(
                         systemName: "plus",
@@ -1464,22 +1529,40 @@ struct ProgramWorkColumnPanel: View {
             ProgramColumnTicketScrollView(resetID: scrollResetID) {
                 VStack(alignment: .leading, spacing: 0) {
                     ProgramDropIndicator(target: activeTarget)
+                    if lane == .backlog, let noteError = model.noteLoadErrorMessage {
+                        Text(noteError)
+                            .font(AppTypography.font(.supporting))
+                            .foregroundStyle(ProgramBoardStyle.red)
+                            .padding(.horizontal, 10)
+                            .padding(.bottom, 8)
+                    }
                     if laneItems.isEmpty {
                         ProgramColumnEmpty(text: lane.emptyText)
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(laneItems) { item in
-                                DraggableProgramWorkCard(
-                                    model: model,
-                                    item: item,
-                                    lane: lane,
-                                    isFirst: item.id == laneItems.first?.id,
-                                    isLast: item.id == laneItems.last?.id,
-                                    isSelected: model.selectedTicketDetail?.id == item.id,
-                                    showsProjectContext: showsProjectContext,
-                                    onSelect: { model.selectTicket(item) },
-                                    onDrop: onDrop
-                                )
+                                switch item {
+                                case .ticket(let ticket):
+                                    DraggableProgramWorkCard(
+                                        model: model,
+                                        item: ticket,
+                                        lane: lane,
+                                        isFirst: item.id == laneItems.first?.id,
+                                        isLast: item.id == laneItems.last?.id,
+                                        isSelected: model.selectedTicketDetail?.id == ticket.id,
+                                        showsProjectContext: showsProjectContext,
+                                        onSelect: { model.selectTicket(ticket) },
+                                        onDrop: onDrop
+                                    )
+                                case .note(let note):
+                                    ProgramNoteCard(
+                                        item: note,
+                                        captureSnapshot: model.noteCaptureSnapshot,
+                                        showsProjectContext: showsProjectContext,
+                                        isSelected: model.selectedNoteDetail?.item.id == note.id,
+                                        onSelect: { onNoteOpen(note) }
+                                    )
+                                }
                             }
                         }
                     }
@@ -1496,6 +1579,100 @@ struct ProgramWorkColumnPanel: View {
                 )
             }
         )
+    }
+}
+
+private struct ProgramNoteCard: View {
+    let item: ProgramBoardNoteItem
+    let captureSnapshot: MeetingNoteCoordinatorSnapshot
+    let showsProjectContext: Bool
+    let isSelected: Bool
+    let onSelect: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+    @FocusState private var isFocused: Bool
+
+    private var presentation: ProgramBoardInteractionPresentation {
+        ProgramBoardInteractionPresentation.resolve(
+            surface: .ticketCard,
+            isSelected: isSelected,
+            isHovered: isHovered,
+            isFocused: isFocused,
+            reduceMotion: reduceMotion
+        )
+    }
+
+    private var liveStatus: String? {
+        guard captureSnapshot.noteID == item.card.noteID,
+              let project = captureSnapshot.project,
+              ProgramBoardProjectPath.matches(project.repositoryPath, item.projectPath) else { return nil }
+        switch captureSnapshot.phase {
+        case .recording: return "Recording · \(captureSnapshot.durableSegmentCount) saved segments"
+        case .paused: return "Paused · \(captureSnapshot.durableSegmentCount) saved segments"
+        case .stopping: return "Saving locally"
+        case .interrupted: return "Capture interrupted"
+        case .error: return "Save failed"
+        case .saved: return "Saved locally"
+        case .idle, .preparing: return nil
+        }
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Text(item.card.noteID)
+                        .font(AppTypography.font(.metadata))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                    Spacer(minLength: 0)
+                    ProgramInlineBadge(label: "Note")
+                }
+                Text("Meeting transcript")
+                    .font(AppTypography.font(.ticketTitle))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
+                    .lineLimit(2)
+                if showsProjectContext {
+                    Text(item.projectName)
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.secondaryText)
+                        .lineLimit(1)
+                }
+                Text(liveStatus ?? "\(item.recordingLabel)  ·  \(item.syncLabel)")
+                    .font(AppTypography.font(.supporting))
+                    .foregroundStyle(liveStatus == "Save failed" ? ProgramBoardStyle.red : ProgramBoardStyle.mutedText)
+                    .lineLimit(2)
+                Text(Self.displayDate(item.card.updatedAt))
+                    .font(AppTypography.font(.caption))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .lineLimit(1)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                ProgramBoardInteractiveBackground(
+                    shape: .rounded(BoardDarkSurfaceStyle.nestedCardCornerRadius),
+                    presentation: presentation,
+                    disabled: false,
+                    usesCardStyle: true
+                )
+            )
+        }
+        .buttonStyle(.plain)
+        .focusable()
+        .focusEffectDisabled(true)
+        .focused($isFocused)
+        .onHover { isHovered = $0 }
+        .programButtonCursor(enabled: true)
+        .help("Open Markdown transcript for \(item.card.noteID)")
+        .accessibilityLabel("\(item.card.noteID), meeting note, \(liveStatus ?? item.recordingLabel)")
+    }
+
+    fileprivate static func displayDate(_ value: String) -> String {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+        guard let date else { return value }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 }
 
@@ -2164,6 +2341,159 @@ private struct ProgramWorkCard: View {
     private func cleaned(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+private struct ProgramNoteDetailPanel: View {
+    let detail: ProgramBoardNoteDetail
+    let captureSnapshot: MeetingNoteCoordinatorSnapshot
+    let theme: ParticleFieldRenderer.Theme?
+    let onClose: () -> Void
+    let onStop: () -> Void
+    let onRetry: () -> Void
+    var panelSize: CGSize? = nil
+
+    private var isCurrentCapture: Bool {
+        guard captureSnapshot.noteID == detail.item.card.noteID,
+              let project = captureSnapshot.project else { return false }
+        return ProgramBoardProjectPath.matches(project.repositoryPath, detail.item.projectPath)
+    }
+
+    private var showsStop: Bool {
+        isCurrentCapture && captureSnapshot.phase.ownsForeground
+    }
+
+    private var recordingStatus: String {
+        guard isCurrentCapture else { return detail.item.recordingLabel }
+        switch captureSnapshot.phase {
+        case .preparing: return "Preparing recording"
+        case .recording: return "Recording"
+        case .paused: return "Paused"
+        case .stopping: return "Saving locally"
+        case .saved: return "Saved locally"
+        case .interrupted: return "Recording interrupted"
+        case .error: return "Save failed"
+        case .idle: return detail.item.recordingLabel
+        }
+    }
+
+    private var syncStatus: String {
+        switch detail.item.sync.state {
+        case "conflict": return "Remote changes need attention. Your local note is safe."
+        case "pending": return "Saved locally. Remote sync is pending."
+        case "failure": return "Saved locally. Remote sync is temporarily unavailable."
+        default: return detail.item.syncLabel
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(detail.item.card.noteID)
+                            .font(AppTypography.monospacedFont(size: 12, weight: .semibold))
+                            .foregroundStyle(ProgramBoardStyle.secondaryText)
+                        ProgramInlineBadge(label: "Note")
+                    }
+                    Text("Meeting transcript")
+                        .font(AppTypography.font(.screenTitle))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                    Text(detail.item.projectName)
+                        .font(AppTypography.font(.label))
+                        .foregroundStyle(ProgramBoardStyle.secondaryText)
+                    Text(detail.item.projectPath)
+                        .font(AppTypography.monospacedFont(size: 10, weight: .regular))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+                ProgramIconButton(systemName: "xmark", help: "Close note", action: onClose)
+            }
+
+            HStack(alignment: .center, spacing: 8) {
+                if showsStop {
+                    ProgramDetailActionButton(
+                        systemName: "stop.fill",
+                        title: "Stop",
+                        disabled: false,
+                        help: "Stop and save this note"
+                    ) {
+                        onStop()
+                    }
+                }
+                if detail.errorMessage != nil {
+                    ProgramDetailActionButton(
+                        systemName: "arrow.clockwise",
+                        title: "Retry",
+                        disabled: false,
+                        help: "Try opening this note again"
+                    ) {
+                        onRetry()
+                    }
+                }
+            }
+
+            if let errorMessage = captureErrorMessage {
+                ProgramDetailNotice(message: errorMessage)
+            }
+            if let errorMessage = detail.errorMessage {
+                ProgramDetailNotice(message: errorMessage)
+            }
+
+            BoardOverlayScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ProgramDetailMetadata(rows: [
+                        ProgramDetailRow(label: "Recording", value: recordingStatus),
+                        ProgramDetailRow(
+                            label: "Transcript segments",
+                            value: "\(isCurrentCapture ? captureSnapshot.durableSegmentCount : detail.item.card.segmentCount)"
+                        ),
+                        ProgramDetailRow(
+                            label: "Local save",
+                            value: detail.item.card.materialized ? "Saved" : "Pending"
+                        ),
+                        ProgramDetailRow(label: "Remote sync", value: syncStatus),
+                        ProgramDetailRow(
+                            label: "Markdown file",
+                            value: detail.item.card.reference.path
+                        ),
+                        ProgramDetailRow(
+                            label: "Updated",
+                            value: ProgramNoteCard.displayDate(detail.item.card.updatedAt)
+                        ),
+                    ])
+                    if detail.isLoading {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Opening note…")
+                                .font(AppTypography.font(.supporting))
+                                .foregroundStyle(ProgramBoardStyle.mutedText)
+                        }
+                    } else if let markdown = detail.markdown {
+                        ProgramDetailSection(title: "Markdown transcript", text: markdown)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        }
+        .programTicketPanelChrome(theme: theme, size: panelSize)
+    }
+
+    private var captureErrorMessage: String? {
+        guard isCurrentCapture, let message = captureSnapshot.errorMessage else { return nil }
+        let normalized = message.lowercased()
+        if normalized.contains("permission") || normalized.contains("microphone") {
+            return "Microphone or computer-audio access is unavailable. Check permissions, then try again."
+        }
+        if normalized.contains("model") {
+            return "The transcription model could not start. Check the model download, then try again."
+        }
+        if normalized.contains("save") || normalized.contains("disk") {
+            return "This note could not be saved locally. Free space or restore project access, then press Stop again."
+        }
+        return "Recording could not continue. Press Stop to preserve any recoverable transcript."
     }
 }
 
@@ -3628,12 +3958,12 @@ struct ProgramSessionToolbarPresentation: Equatable {
     static func resolve(hasActiveSession: Bool) -> ProgramSessionToolbarPresentation {
         hasActiveSession
             ? ProgramSessionToolbarPresentation(
-                title: "End session",
+                title: "End Session",
                 systemName: "stop.fill",
                 help: "End the active Relay Runner voice session"
             )
             : ProgramSessionToolbarPresentation(
-                title: "Start session",
+                title: "Start Session",
                 systemName: "play.fill",
                 help: "Start a Relay Runner voice session"
             )
@@ -3650,25 +3980,76 @@ enum ProgramSessionControlPolicy {
     }
 }
 
+enum ProgramNoteControlPolicy {
+    static func canStart(selectedProjectPath: String?) -> Bool {
+        selectedProjectPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+}
+
+struct ProgramNoteToolbarPresentation: Equatable {
+    let title: String
+    let systemName: String
+    let help: String
+
+    static func resolve(phase: MeetingNoteCoordinatorPhase) -> ProgramNoteToolbarPresentation {
+        phase.ownsForeground
+            ? ProgramNoteToolbarPresentation(
+                title: "Stop",
+                systemName: "stop.fill",
+                help: "Stop and save the active note"
+            )
+            : ProgramNoteToolbarPresentation(
+                title: "Start Note Taker",
+                systemName: "waveform",
+                help: "Record a note for the selected project"
+            )
+    }
+}
+
 private struct ProgramSessionToolbarControl: View {
     let hasActiveSession: Bool
+    let noteSnapshot: MeetingNoteCoordinatorSnapshot
     let canStartSession: Bool
+    let canStartNoteTaker: Bool
     let onStartSession: () -> Void
     let onEndSession: () -> Void
+    let onStartNoteTaker: () -> Void
+    let onStopNoteTaker: () -> Void
 
     private var presentation: ProgramSessionToolbarPresentation {
         ProgramSessionToolbarPresentation.resolve(hasActiveSession: hasActiveSession)
     }
 
+    private var notePresentation: ProgramSessionToolbarPresentation {
+        let note = ProgramNoteToolbarPresentation.resolve(phase: noteSnapshot.phase)
+        return ProgramSessionToolbarPresentation(
+            title: note.title,
+            systemName: note.systemName,
+            help: note.help
+        )
+    }
+
     var body: some View {
-        ProgramSessionButton(
-            presentation: presentation,
-            isEnabled: hasActiveSession || canStartSession
-        ) {
-            if hasActiveSession {
-                onEndSession()
-            } else {
-                onStartSession()
+        HStack(alignment: .center, spacing: 12) {
+            ProgramSessionButton(
+                presentation: presentation,
+                isEnabled: hasActiveSession || canStartSession
+            ) {
+                if hasActiveSession {
+                    onEndSession()
+                } else {
+                    onStartSession()
+                }
+            }
+            ProgramSessionButton(
+                presentation: notePresentation,
+                isEnabled: noteSnapshot.phase.ownsForeground || canStartNoteTaker
+            ) {
+                if noteSnapshot.phase.ownsForeground {
+                    onStopNoteTaker()
+                } else {
+                    onStartNoteTaker()
+                }
             }
         }
     }

@@ -295,7 +295,7 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(
             ProgramSessionToolbarPresentation.resolve(hasActiveSession: false),
             ProgramSessionToolbarPresentation(
-                title: "Start session",
+                title: "Start Session",
                 systemName: "play.fill",
                 help: "Start a Relay Runner voice session"
             )
@@ -303,11 +303,75 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(
             ProgramSessionToolbarPresentation.resolve(hasActiveSession: true),
             ProgramSessionToolbarPresentation(
-                title: "End session",
+                title: "End Session",
                 systemName: "stop.fill",
                 help: "End the active Relay Runner voice session"
             )
         )
+    }
+
+    func testNoteToolbarRequiresSelectedProjectAndUsesExactActions() {
+        XCTAssertFalse(ProgramNoteControlPolicy.canStart(selectedProjectPath: nil))
+        XCTAssertFalse(ProgramNoteControlPolicy.canStart(selectedProjectPath: "  "))
+        XCTAssertTrue(ProgramNoteControlPolicy.canStart(selectedProjectPath: "/repo/selected"))
+        XCTAssertEqual(
+            ProgramNoteToolbarPresentation.resolve(phase: .idle),
+            ProgramNoteToolbarPresentation(
+                title: "Start Note Taker",
+                systemName: "waveform",
+                help: "Record a note for the selected project"
+            )
+        )
+        XCTAssertEqual(
+            ProgramNoteToolbarPresentation.resolve(phase: .recording),
+            ProgramNoteToolbarPresentation(
+                title: "Stop",
+                systemName: "stop.fill",
+                help: "Stop and save the active note"
+            )
+        )
+        XCTAssertEqual(ProgramNoteToolbarPresentation.resolve(phase: .paused).title, "Stop")
+    }
+
+    func testProjectNoteCatalogUsesSupportedPageSizeAndFollowsManagerCursor() async {
+        var requests: [(limit: Int, after: String?)] = []
+        let firstPageIDs = (1...100).map { "RR-N\($0)" }
+
+        let result = await ProgramBoardOverlayController.fetchProjectNotes(
+            repoPaths: ["/repo/relay-runner"],
+            scopeTokenProvider: { _ in "confirmed-scope" },
+            fetchPage: { repoPath, token, limit, after in
+                XCTAssertEqual(repoPath, "/repo/relay-runner")
+                XCTAssertEqual(token, "confirmed-scope")
+                XCTAssertLessThanOrEqual(limit, 100)
+                requests.append((limit, after))
+                if after == nil {
+                    return Self.noteListResponse(
+                        noteIDs: firstPageIDs,
+                        limit: limit,
+                        hasMore: true,
+                        nextCursor: "RR-N100",
+                        totalCount: 101
+                    )
+                }
+                XCTAssertEqual(after, "RR-N100")
+                return Self.noteListResponse(
+                    noteIDs: ["RR-N101"],
+                    limit: limit,
+                    hasMore: false,
+                    nextCursor: nil,
+                    totalCount: 101
+                )
+            }
+        )
+
+        XCTAssertNil(result.errorMessage)
+        XCTAssertEqual(result.notes.count, 101)
+        XCTAssertEqual(result.notes.first?.card.noteID, "RR-N1")
+        XCTAssertEqual(result.notes.last?.card.noteID, "RR-N101")
+        XCTAssertEqual(requests.map(\.limit), [100, 100])
+        XCTAssertNil(requests[0].after)
+        XCTAssertEqual(requests[1].after, "RR-N100")
     }
 
     func testWorkspaceLatencyMetricRoundsMilliseconds() {
@@ -452,5 +516,46 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertLessThan(action.lowerBound, dispatch.lowerBound)
         XCTAssertTrue(body.contains("model.selectedTicketDetail != nil"))
         XCTAssertTrue(body.contains("model.spikeFollowupBatch != nil"))
+    }
+
+    private static func noteListResponse(
+        noteIDs: [String],
+        limit: Int,
+        hasMore: Bool,
+        nextCursor: String?,
+        totalCount: Int
+    ) -> RelayProjectNoteListResponse {
+        let sync = RelayProjectNoteSyncState(mode: "local", state: "synced", recovery: nil)
+        let notes = noteIDs.map { noteID in
+            RelayProjectNoteCard(
+                noteID: noteID,
+                artifactID: "note-\(noteID)",
+                projectID: "relay-runner",
+                createdAt: "2026-09-20T08:00:00Z",
+                updatedAt: "2026-09-20T08:00:00Z",
+                recordingState: .completed,
+                segmentCount: 1,
+                materialized: true,
+                archivedAt: nil,
+                reference: RelayProjectNoteReference(
+                    path: ".orchestrator/notes/\(noteID).md",
+                    artifactRef: "refs/heads/relay/artifacts",
+                    commit: "abc123",
+                    revision: "def456",
+                    historyReference: "abc123:.orchestrator/notes/\(noteID).md",
+                    verified: true,
+                    catalogCommit: "abc123"
+                )
+            )
+        }
+        return RelayProjectNoteListResponse(
+            notes: notes,
+            artifactCommit: "abc123",
+            limit: limit,
+            hasMore: hasMore,
+            nextCursor: nextCursor,
+            totalCount: totalCount,
+            sync: sync
+        )
     }
 }

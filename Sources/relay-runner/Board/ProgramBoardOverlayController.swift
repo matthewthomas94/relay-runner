@@ -100,7 +100,20 @@ final class ProgramBoardOverlayController {
     private var projectSelectionHandler: ((String) -> Void)?
     private var startSessionHandler: ((String?) -> Void)?
     private var endSessionHandler: (() -> Void)?
+    private var startNoteTakerHandler: ((String) -> Bool)?
+    private var stopNoteTakerHandler: (() -> Void)?
     private var sessionActiveProvider: () -> Bool = { false }
+    private var noteCaptureSnapshotProvider: () -> MeetingNoteCoordinatorSnapshot = {
+        MeetingNoteCoordinatorSnapshot(
+            phase: .idle,
+            noteID: nil,
+            project: nil,
+            liveHypothesisCount: 0,
+            durableSegmentCount: 0,
+            syncState: nil,
+            errorMessage: nil
+        )
+    }
     private var requiresConfirmedProjectProvider: () -> Bool = {
         ProjectRegistryV2Rollout.isEnabled()
     }
@@ -163,8 +176,22 @@ final class ProgramBoardOverlayController {
         self.endSessionHandler = handler
     }
 
+    func setNoteTakerHandlers(
+        start: @escaping (String) -> Bool,
+        stop: @escaping () -> Void
+    ) {
+        startNoteTakerHandler = start
+        stopNoteTakerHandler = stop
+    }
+
     func setSessionActiveProvider(_ provider: @escaping () -> Bool) {
         self.sessionActiveProvider = provider
+    }
+
+    func setNoteCaptureSnapshotProvider(
+        _ provider: @escaping () -> MeetingNoteCoordinatorSnapshot
+    ) {
+        noteCaptureSnapshotProvider = provider
     }
 
     func setRequiresConfirmedProjectProvider(_ provider: @escaping () -> Bool) {
@@ -173,6 +200,9 @@ final class ProgramBoardOverlayController {
 
     func setProjectScopeTokenProvider(_ provider: @escaping (String) -> String?) {
         projectScopeTokenProvider = provider
+        model.setNoteFetcher { repoPaths in
+            await Self.fetchProjectNotes(repoPaths: repoPaths, scopeTokenProvider: provider)
+        }
     }
 
     func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {
@@ -193,6 +223,64 @@ final class ProgramBoardOverlayController {
     ) {
         terminalHasFocusProvider = hasFocus
         terminalFocusHandler = focus
+    }
+
+    static func fetchProjectNotes(
+        repoPaths: [String],
+        scopeTokenProvider: (String) -> String?,
+        fetchPage: (
+            _ repoPath: String,
+            _ projectScopeToken: String?,
+            _ limit: Int,
+            _ after: String?
+        ) async throws -> RelayProjectNoteListResponse = { repoPath, token, limit, after in
+            try await OrchestratorClient.fetchProjectNotes(
+                repoPath: repoPath,
+                projectScopeToken: token,
+                limit: limit,
+                after: after
+            )
+        }
+    ) async -> ProgramBoardNoteLoadResult {
+        let pageSize = 100
+        var notes: [ProgramBoardNoteItem] = []
+        var failures = 0
+        for repoPath in repoPaths {
+            do {
+                let projectName = URL(fileURLWithPath: repoPath).lastPathComponent
+                let scopeToken = scopeTokenProvider(repoPath)
+                var projectNotes: [ProgramBoardNoteItem] = []
+                var after: String?
+                var cursors = Set<String>()
+                while true {
+                    let response = try await fetchPage(repoPath, scopeToken, pageSize, after)
+                    projectNotes.append(contentsOf: response.notes.map { card in
+                        ProgramBoardNoteItem(
+                            card: card,
+                            projectName: projectName,
+                            projectPath: repoPath,
+                            sync: response.sync
+                        )
+                    })
+                    guard response.hasMore else { break }
+                    guard let nextCursor = response.nextCursor,
+                          !nextCursor.isEmpty,
+                          cursors.insert(nextCursor).inserted else {
+                        throw OrchestratorClientError.decodeFailed(
+                            "Project note catalog returned an invalid pagination cursor."
+                        )
+                    }
+                    after = nextCursor
+                }
+                notes.append(contentsOf: projectNotes)
+            } catch {
+                failures += 1
+            }
+        }
+        let errorMessage = failures == 0
+            ? nil
+            : "Notes for \(failures) project\(failures == 1 ? "" : "s") could not be loaded. Try again."
+        return ProgramBoardNoteLoadResult(notes: notes, errorMessage: errorMessage)
     }
 
     static func sessionControlAction(
@@ -304,6 +392,8 @@ final class ProgramBoardOverlayController {
                     action = { [weak self] in self?.cancelCreate() }
                 } else if model.spikeFollowupBatch != nil {
                     action = { [weak self] in self?.model.spikeFollowupBatch = nil }
+                } else if model.selectedNoteDetail != nil {
+                    action = { [weak self] in self?.closeNote() }
                 } else if model.selectedTicketDetail != nil {
                     action = { [weak self] in self?.model.clearSelectedTicket() }
                 } else {
@@ -476,6 +566,7 @@ final class ProgramBoardOverlayController {
         model.prepareForOpening()
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
+        model.noteCaptureSnapshot = noteCaptureSnapshotProvider()
 
         let contentFrame = NSRect(origin: .zero, size: p.frame.size)
         let displayGeometry = screen.map(NotchStatusDisplayGeometry.init(screen:))
@@ -506,6 +597,10 @@ final class ProgramBoardOverlayController {
                 onSelectProject: { [weak self] repoPath in self?.selectProject(repoPath) },
                 onStartSession: { [weak self] in self?.startSession() },
                 onEndSession: { [weak self] in self?.endSession() },
+                onStartNoteTaker: { [weak self] in self?.startNoteTaker() },
+                onStopNoteTaker: { [weak self] in self?.stopNoteTaker() },
+                onNoteOpen: { [weak self] note in self?.openNote(note) },
+                onNoteClose: { [weak self] in self?.closeNote() },
                 onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
                 onCreateCommit: { [weak self] request in self?.commitCreate(request) },
                 onCreateCancel: { [weak self] in self?.cancelCreate() },
@@ -793,6 +888,16 @@ final class ProgramBoardOverlayController {
             if hasActiveSession != self.model.hasActiveSession {
                 self.model.hasActiveSession = hasActiveSession
             }
+            let noteSnapshot = self.noteCaptureSnapshotProvider()
+            if noteSnapshot != self.model.noteCaptureSnapshot {
+                let previous = self.model.noteCaptureSnapshot
+                self.model.noteCaptureSnapshot = noteSnapshot
+                if previous.noteID != noteSnapshot.noteID
+                    || (previous.phase != noteSnapshot.phase
+                        && (noteSnapshot.phase == .saved || noteSnapshot.phase == .error)) {
+                    self.checkForUpdates(inBackground: true)
+                }
+            }
         }
     }
 
@@ -884,6 +989,45 @@ final class ProgramBoardOverlayController {
         guard model.hasActiveSession else { return }
         endSessionHandler?()
         model.hasActiveSession = sessionActiveProvider()
+    }
+
+    private func startNoteTaker() {
+        guard let projectPath = model.selectedSessionProjectPath else { return }
+        _ = startNoteTakerHandler?(projectPath)
+        model.hasActiveSession = sessionActiveProvider()
+        model.noteCaptureSnapshot = noteCaptureSnapshotProvider()
+    }
+
+    private func stopNoteTaker() {
+        guard model.noteCaptureSnapshot.phase.ownsForeground else { return }
+        stopNoteTakerHandler?()
+        model.noteCaptureSnapshot = noteCaptureSnapshotProvider()
+    }
+
+    private func openNote(_ item: ProgramBoardNoteItem) {
+        model.beginNoteDetail(item)
+        updatePanelKeyEligibility()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await OrchestratorClient.fetchProjectNote(
+                    item.card.noteID,
+                    repoPath: item.projectPath,
+                    projectScopeToken: self.projectScopeTokenProvider(item.projectPath)
+                )
+                self.model.finishNoteDetail(response, for: item)
+            } catch {
+                self.model.failNoteDetail(
+                    "This note could not be opened. Check the project connection and try again.",
+                    for: item
+                )
+            }
+        }
+    }
+
+    private func closeNote() {
+        model.clearSelectedNote()
+        updatePanelKeyEligibility()
     }
 
     private func beginCreate(in lane: ProgramBoardLane) {
@@ -1094,6 +1238,7 @@ final class ProgramBoardOverlayController {
             model.creating != nil
                 || model.editing != nil
                 || model.history != nil
+                || model.selectedNoteDetail != nil
                 || workspace.selectedTab.requiresKeyWindow
         )
         if workspace.selectedTab == .terminal {
