@@ -200,6 +200,7 @@ final class AppState {
     @ObservationIgnored private var meetingNoteCoordinator: MeetingNoteCoordinator?
     @ObservationIgnored private var meetingNoteCoordinatorNotificationID: UUID?
     @ObservationIgnored private var meetingNoteStartTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
+    @ObservationIgnored private var meetingNoteRecoveryTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
     @ObservationIgnored private var meetingNoteCapsLockTimer: Timer?
     @ObservationIgnored private var meetingNoteTransitionID = 0
 
@@ -1071,14 +1072,20 @@ final class AppState {
     func stopNoteTaker() {
         guard let coordinator = meetingNoteCoordinator,
               meetingNoteSnapshot.phase.ownsForeground else { return }
+        let pendingStartTask = meetingNoteStartTask
+        let pendingRecoveryTask = meetingNoteRecoveryTask
         meetingNoteTransitionID &+= 1
         let transitionID = meetingNoteTransitionID
         stopMeetingNoteCapsLockPolling()
+        applyMeetingNoteSnapshot(Self.stoppingMeetingNoteSnapshot(from: meetingNoteSnapshot))
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                if let startTask = self.meetingNoteStartTask {
+                if let startTask = pendingStartTask {
                     _ = try await startTask.value
+                }
+                if let recoveryTask = pendingRecoveryTask {
+                    _ = try await recoveryTask.value
                 }
                 let snapshot = try await coordinator.stop()
                 guard transitionID == self.meetingNoteTransitionID else { return }
@@ -1087,6 +1094,7 @@ final class AppState {
             } catch {
                 let snapshot = await coordinator.snapshot()
                 guard transitionID == self.meetingNoteTransitionID else { return }
+                self.meetingNoteRecoveryTask = nil
                 self.applyMeetingNoteSnapshot(snapshot)
             }
         }
@@ -1103,36 +1111,83 @@ final class AppState {
         sessionID: String,
         resolution: MeetingNoteRecoveryResolution
     ) async throws -> MeetingNoteCoordinatorSnapshot {
+        guard meetingNoteRecoveryTask == nil else {
+            throw MeetingNoteCoordinatorError.foregroundBusy
+        }
         let coordinator = meetingNoteCoordinator ?? makeMeetingNoteCoordinator()
         meetingNoteCoordinator = coordinator
-        let offer = try await coordinator.recoveryOffers().first { $0.sessionID == sessionID }
-        guard let offer,
-              let context = meetingNoteProjectContext(
-                workingDirectory: offer.project.repositoryPath
-              ),
-              context.binding.repositoryPath == offer.project.repositoryPath,
-              context.binding.expectedProjectID == offer.project.expectedProjectID else {
-            throw MeetingNoteCoordinatorError.projectIdentityChanged
-        }
-
         meetingNoteTransitionID &+= 1
+        let transitionID = meetingNoteTransitionID
+        stopMeetingNoteCapsLockPolling()
+        let reservedSnapshot = MeetingNoteCoordinatorSnapshot(
+            phase: .preparing,
+            noteID: nil,
+            project: nil,
+            liveHypothesisCount: 0,
+            durableSegmentCount: 0,
+            syncState: nil,
+            errorMessage: nil
+        )
+        applyMeetingNoteSnapshot(reservedSnapshot)
         endSession()
         sttEngine?.stop()
         sttEngine = nil
-        stopMeetingNoteCapsLockPolling()
-        try await waitForWorkSessionTeardownBeforeNote()
-        let snapshot = try await coordinator.resolveRecovery(
-            sessionID: sessionID,
-            projectScopeToken: context.scopeToken,
-            resolution: resolution
-        )
-        applyMeetingNoteSnapshot(snapshot)
-        if snapshot.phase == .paused {
-            startMeetingNoteCapsLockPolling()
-        } else if snapshot.phase == .saved {
-            restoreOrdinaryAwarenessAfterNote()
+
+        let task = Task { @MainActor [weak self] () throws -> MeetingNoteCoordinatorSnapshot in
+            guard let self else {
+                throw MeetingNoteForegroundTransitionError.teardownTimedOut
+            }
+            let offer = try await coordinator.recoveryOffers().first {
+                $0.sessionID == sessionID
+            }
+            guard let offer,
+                  let context = self.meetingNoteProjectContext(
+                    workingDirectory: offer.project.repositoryPath
+                  ),
+                  context.binding.repositoryPath == offer.project.repositoryPath,
+                  context.binding.expectedProjectID == offer.project.expectedProjectID else {
+                throw MeetingNoteCoordinatorError.projectIdentityChanged
+            }
+
+            try await self.waitForWorkSessionTeardownBeforeNote()
+            return try await coordinator.resolveRecovery(
+                sessionID: sessionID,
+                projectScopeToken: context.scopeToken,
+                resolution: resolution
+            )
         }
-        return snapshot
+        meetingNoteRecoveryTask = task
+
+        do {
+            let snapshot = try await task.value
+            guard transitionID == meetingNoteTransitionID else { return snapshot }
+            meetingNoteRecoveryTask = nil
+            applyMeetingNoteSnapshot(snapshot)
+            if snapshot.phase == .paused {
+                startMeetingNoteCapsLockPolling()
+            } else if snapshot.phase == .saved {
+                restoreOrdinaryAwarenessAfterNote()
+            }
+            return snapshot
+        } catch {
+            guard transitionID == meetingNoteTransitionID else { throw error }
+            meetingNoteRecoveryTask = nil
+            let snapshot = await coordinator.snapshot()
+            if snapshot.phase == .idle || snapshot.phase == .saved {
+                applyMeetingNoteSnapshot(MeetingNoteCoordinatorSnapshot(
+                    phase: .error,
+                    noteID: reservedSnapshot.noteID,
+                    project: reservedSnapshot.project,
+                    liveHypothesisCount: reservedSnapshot.liveHypothesisCount,
+                    durableSegmentCount: reservedSnapshot.durableSegmentCount,
+                    syncState: reservedSnapshot.syncState,
+                    errorMessage: error.localizedDescription
+                ))
+            } else {
+                applyMeetingNoteSnapshot(snapshot)
+            }
+            throw error
+        }
     }
 
     func resumeRecoveredMeetingNote() async throws {
@@ -1197,6 +1252,20 @@ final class AppState {
         syncNotchActivitySurface()
     }
 
+    static func stoppingMeetingNoteSnapshot(
+        from snapshot: MeetingNoteCoordinatorSnapshot
+    ) -> MeetingNoteCoordinatorSnapshot {
+        MeetingNoteCoordinatorSnapshot(
+            phase: .stopping,
+            noteID: snapshot.noteID,
+            project: snapshot.project,
+            liveHypothesisCount: snapshot.liveHypothesisCount,
+            durableSegmentCount: snapshot.durableSegmentCount,
+            syncState: snapshot.syncState,
+            errorMessage: nil
+        )
+    }
+
     private func makeMeetingNoteCoordinator() -> MeetingNoteCoordinator {
         let notificationID = UUID()
         meetingNoteCoordinatorNotificationID = notificationID
@@ -1253,6 +1322,7 @@ final class AppState {
         meetingNoteCoordinator = nil
         meetingNoteCoordinatorNotificationID = nil
         meetingNoteStartTask = nil
+        meetingNoteRecoveryTask = nil
         guard permissions.microphone == .granted, sttEngine == nil else { return }
         startConfiguredSTT(
             reason: "note-teardown",
@@ -1680,27 +1750,21 @@ final class AppState {
         // changes cannot redirect the source note or this requested session.
         let destinationProject = (workingDirectory ?? config.general.working_directory)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pendingStartTask = meetingNoteStartTask
+        let pendingRecoveryTask = meetingNoteRecoveryTask
         meetingNoteTransitionID &+= 1
         let transitionID = meetingNoteTransitionID
         stopMeetingNoteCapsLockPolling()
-        meetingNoteSnapshot = MeetingNoteCoordinatorSnapshot(
-            phase: .stopping,
-            noteID: meetingNoteSnapshot.noteID,
-            project: meetingNoteSnapshot.project,
-            liveHypothesisCount: meetingNoteSnapshot.liveHypothesisCount,
-            durableSegmentCount: meetingNoteSnapshot.durableSegmentCount,
-            syncState: meetingNoteSnapshot.syncState,
-            errorMessage: nil
-        )
-        syncNotchActivitySurface()
+        applyMeetingNoteSnapshot(Self.stoppingMeetingNoteSnapshot(from: meetingNoteSnapshot))
 
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                if let startTask = self.meetingNoteStartTask {
+                if let startTask = pendingStartTask {
                     _ = try await startTask.value
                 }
                 _ = try await Self.finalizeMeetingNoteBeforeWorkSession(
+                    pendingRecovery: pendingRecoveryTask,
                     coordinator: coordinator
                 ) { saved in
                     guard transitionID == self.meetingNoteTransitionID else { return false }
@@ -1708,6 +1772,7 @@ final class AppState {
                     self.meetingNoteCoordinator = nil
                     self.meetingNoteCoordinatorNotificationID = nil
                     self.meetingNoteStartTask = nil
+                    self.meetingNoteRecoveryTask = nil
                     return self.newSession(
                         workingDirectory: destinationProject,
                         destination: destination,
@@ -1721,6 +1786,7 @@ final class AppState {
                 }
             } catch {
                 guard transitionID == self.meetingNoteTransitionID else { return }
+                self.meetingNoteRecoveryTask = nil
                 let snapshot = await coordinator.snapshot()
                 self.applyMeetingNoteSnapshot(snapshot)
                 // A failed local save deliberately leaves STT stopped and does
@@ -1732,9 +1798,13 @@ final class AppState {
 
     @MainActor
     static func finalizeMeetingNoteBeforeWorkSession(
+        pendingRecovery: Task<MeetingNoteCoordinatorSnapshot, Error>? = nil,
         coordinator: MeetingNoteCoordinator,
         launch: (MeetingNoteCoordinatorSnapshot) -> Bool
     ) async throws -> Bool {
+        if let pendingRecovery {
+            _ = try await pendingRecovery.value
+        }
         let saved = try await coordinator.stop()
         return launch(saved)
     }

@@ -441,6 +441,111 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(resumedCount, 1)
     }
 
+    @MainActor
+    func testWorkSessionWaitsForPendingRecoveryThenFinalizesLatePausedResult() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        captures.replayRevision = revision(
+            id: "microphone-E0-S0",
+            start: 0,
+            text: "recovered tail",
+            final: true
+        )
+        let sessionID = "pending-recovery-session"
+        let descriptor = audioDescriptor(chunkID: "pending-recovery-chunk")
+        let identity = noteIdentity()
+        let timestamp = "2026-09-21T00:00:00Z"
+        try await store.save(MeetingNoteRecoveryJournal(
+            schemaVersion: MeetingNoteRecoveryJournal.schemaVersion,
+            sessionID: sessionID,
+            project: project,
+            createRequest: RelayProjectNoteCreateRequest(
+                requestID: "note-create-\(sessionID)",
+                createdAt: timestamp,
+                captureStartedAt: timestamp,
+                capturedAt: timestamp,
+                recordingState: .recording,
+                checkpointReason: .checkpoint,
+                segments: [],
+                captureEndedAt: nil,
+                provider: "codex"
+            ),
+            identity: identity,
+            phase: .interrupted,
+            producerCheckpoint: producerCheckpoint(
+                sessionID: sessionID,
+                state: .recording,
+                pendingAudio: [descriptor]
+            ),
+            revisions: [],
+            canonicalSegments: [],
+            pendingUpdate: nil,
+            nextCheckpointSequence: 1,
+            syncState: "local_only",
+            captureEndedAt: nil,
+            lastError: nil,
+            updatedAt: timestamp
+        ))
+        await store.persistAudio(
+            sessionID: sessionID,
+            audio: MeetingAcceptedAudio(descriptor: descriptor, samples: [0.1, 0.2])
+        )
+        await writer.seed(identity: identity, segments: [])
+        await writer.suspendNextUpdate()
+        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
+
+        let recoveryTask = Task {
+            try await coordinator.resolveRecovery(
+                sessionID: sessionID,
+                projectScopeToken: "scope-original",
+                resolution: .recoverPaused
+            )
+        }
+        await writer.waitForSuspendedUpdate()
+        var launchCount = 0
+        var launchedPhase: MeetingNoteCoordinatorPhase?
+        let workTask = Task { @MainActor in
+            try await AppState.finalizeMeetingNoteBeforeWorkSession(
+                pendingRecovery: recoveryTask,
+                coordinator: coordinator
+            ) { snapshot in
+                launchCount += 1
+                launchedPhase = snapshot.phase
+                return true
+            }
+        }
+
+        await Task.yield()
+        let pending = await coordinator.snapshot()
+        XCTAssertEqual(pending.phase, .paused)
+        XCTAssertEqual(launchCount, 0)
+
+        await writer.resumeSuspendedUpdate()
+        let launched = try await workTask.value
+        let recovered = try await recoveryTask.value
+        let final = await coordinator.snapshot()
+        let capture = try XCTUnwrap(captures.latest())
+        let startInitiallyPaused = await capture.startInitiallyPaused
+        let resumeCount = await capture.resumeCount
+        let stopCount = await capture.stopCount
+        let updates = await writer.updates
+        let storeIsEmpty = await store.isEmpty
+
+        XCTAssertTrue(launched)
+        XCTAssertEqual(recovered.phase, .paused)
+        XCTAssertEqual(final.phase, .saved)
+        XCTAssertEqual(launchCount, 1)
+        XCTAssertEqual(launchedPhase, .saved)
+        XCTAssertEqual(startInitiallyPaused, true)
+        XCTAssertEqual(resumeCount, 0)
+        XCTAssertEqual(stopCount, 1)
+        XCTAssertEqual(updates.map(\.update.recordingState), [.paused, .completed])
+        XCTAssertEqual(updates.last?.update.segments.map(\.text), ["recovered tail"])
+        XCTAssertEqual(updates.filter { $0.update.recordingState == .completed }.count, 1)
+        XCTAssertTrue(storeIsEmpty)
+    }
+
     func testRecoveryDoesNotRecreateAlreadyFinalizedCanonicalNote() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()

@@ -64,6 +64,35 @@ final class AppStateLaunchTests: XCTestCase {
         XCTAssertEqual(config.general.working_directory, "/Users/example/dev")
     }
 
+    func testStoppingMeetingNoteSnapshotClearsTakingNotesWithoutLosingIdentity() {
+        let project = MeetingNoteProjectBinding(
+            repositoryPath: "/Users/example/dev/project",
+            expectedProjectID: "project-1",
+            provider: "codex"
+        )
+        let recording = MeetingNoteCoordinatorSnapshot(
+            phase: .recording,
+            noteID: "RR-N12",
+            project: project,
+            liveHypothesisCount: 3,
+            durableSegmentCount: 7,
+            syncState: "pending",
+            errorMessage: "stale"
+        )
+
+        let stopping = AppState.stoppingMeetingNoteSnapshot(from: recording)
+
+        XCTAssertEqual(stopping.phase, .stopping)
+        XCTAssertEqual(stopping.noteID, "RR-N12")
+        XCTAssertEqual(stopping.project, project)
+        XCTAssertEqual(stopping.liveHypothesisCount, 3)
+        XCTAssertEqual(stopping.durableSegmentCount, 7)
+        XCTAssertEqual(stopping.syncState, "pending")
+        XCTAssertNil(stopping.errorMessage)
+        XCTAssertEqual(stopping.notchPresentation?.status, .working)
+        XCTAssertNil(stopping.notchPresentation?.label)
+    }
+
     func testOnboardingTutorialAcceptsOnlyItsIsolatedTTSState() {
         XCTAssertTrue(AppState.shouldHandleServiceEvent(
             source: "tts",
