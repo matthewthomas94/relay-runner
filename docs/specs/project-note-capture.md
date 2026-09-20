@@ -173,3 +173,69 @@ producer. Tests in this ticket use synthetic samples and fake ASR text. They do
 not establish installed permission behavior, device support, transcription
 quality, provider isolation in a signed app, or audible/visible UX; those are
 RR-372 evidence gates.
+
+## Coordinator, checkpoints, and recovery
+
+RR-368 adds one `MeetingNoteCoordinator` actor as the serialized owner of note
+identity, capture control, artifact writes, and recovery. Its public phases are
+`idle`, `preparing`, `recording`, `paused`, `stopping`, `saved`, `interrupted`,
+and `error`; these are presentation/lifecycle states and never ticket statuses.
+The project repository path and optional registered project identity are bound
+before capture starts and are reused for every create, checkpoint, retry, and
+recovery call. A later Workspace selection cannot redirect the note.
+
+Accepted audio uses a write-before-ack rule: the RR-365 producer awaits the
+recovery store before it adds a chunk to its ASR buffer. Consequently the
+maximum accepted-but-unpersisted audio interval is zero milliseconds. Final
+segment revisions target a 15-second canonical Markdown cadence while recording
+and are also published at pause, resume, manual checkpoint, and completion
+boundaries. Daemon/writer latency or outage can extend canonical publication;
+the acknowledged tail remains locally replayable rather than being claimed as
+already canonical.
+Partial hypotheses remain distinguishable from canonical durable segments and
+are not published as final transcript text. The exact pending artifact request
+and its stable request ID are journaled before a writer call, so a process death
+or injected failure retries the same idempotent mutation rather than appending
+the transcript twice.
+
+Transient state lives under Application Support at `Relay Runner/Note
+Recovery`, never under the project or source checkout. Each session has an
+atomic JSON journal and raw Float32 chunk files with opaque encoded names. The
+default per-session audio budget is 256 MiB. At 16 kHz mono Float32 this is a
+hard upper bound of 2,097 seconds (34m57s) with both sources continuously
+retained, or 4,194 seconds (69m54s) with one source; reaching it fails capture
+instead of accepting uncheckpointed speech. After a successful canonical checkpoint,
+audio not named by the producer's pending descriptor cursor is removed.
+Successful completion removes the complete owned recovery directory. Neither
+audio samples nor transcript text are written to diagnostics, provider input,
+or application logs.
+
+On relaunch the coordinator lists incomplete journals without starting FluidAudio,
+a capture adapter, a provider, a messenger, a bridge, or a microphone. Recovery
+first retries any pending idempotent writer mutation and reads the last canonical
+artifact revision from the immutable original project. The user can then:
+
+- replay exactly the descriptor-addressed local audio tail and remain paused;
+- replay that tail and finalize the note; or
+- discard only the incomplete tail and complete the last canonical transcript.
+
+Replay restores producer cursors before loading audio, rejects missing or
+mismatched chunks, and remains paused after the `recover` choice. Resuming a
+microphone requires a later explicit resume action. Already saved canonical
+segments are never deleted by incomplete-tail discard.
+
+`AppState` uses its existing `endSession()` / `resetActiveSessionState()` path
+for work-to-note transitions, stops the ordinary STT key owner, and waits for
+the embedded provider process and bridge to physically release before capture
+starts. Note-to-work snapshots the requested destination, waits for the capture
+stop barrier and completed local artifact write, then launches the requested
+Codex or Claude session. A local writer failure blocks launch and preserves
+recovery. A response whose sync state is `pending` is still a successful local
+save and does not block the switch. Daemon-dispatched workers are not touched.
+
+While note mode owns the foreground, its dedicated actual-state Caps Lock poll
+is the only key route: ON pauses before later audio can enter, OFF resumes the
+same note, and repeated states are idempotent. Ordinary STT routing is restored
+only after successful note teardown. Recorder presentation maps `recording` to
+the expanded orange listening glyph with exactly **Taking notes**, and `paused`
+to the expanded non-animated white-only glyph with exactly **Paused**.

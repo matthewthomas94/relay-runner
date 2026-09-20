@@ -1054,6 +1054,7 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertEqual(NotchSessionStatus.notWorking.glyph, .neutral)
         XCTAssertEqual(NotchSessionStatus.working.glyph, .neutral)
         XCTAssertEqual(NotchSessionStatus.listening.glyph, .listening)
+        XCTAssertEqual(NotchSessionStatus.paused.glyph, .paused)
         XCTAssertEqual(NotchSessionStatus.playing.glyph, .playing)
 
         XCTAssertEqual(NotchStatusGlyph.neutral.dots.count, 4)
@@ -1068,6 +1069,11 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertEqual(NotchStatusGlyph.listening.dots.map(\.x), [14.5, 19.5, 14.5, 9.5, 4.5, 9.5, 9.5, 9.5, 4.5, 14.5, 14.5, 19.5])
         XCTAssertEqual(NotchStatusGlyph.listening.dots.map(\.y), [9.5, 9.5, 4.5, 9.5, 9.5, 4.5, 14.5, 19.5, 14.5, 14.5, 19.5, 14.5])
 
+        XCTAssertEqual(NotchStatusGlyph.paused.dots.count, 12)
+        XCTAssertTrue(NotchStatusGlyph.paused.dots.allSatisfy { $0.color == .white })
+        XCTAssertEqual(NotchStatusGlyph.paused.dots.map(\.x), NotchStatusGlyph.listening.dots.map(\.x))
+        XCTAssertEqual(NotchStatusGlyph.paused.dots.map(\.y), NotchStatusGlyph.listening.dots.map(\.y))
+
         XCTAssertEqual(NotchStatusGlyph.playing.dots.count, 12)
         XCTAssertEqual(NotchStatusGlyph.playing.dots.filter { $0.color == .white }.count, 4)
         XCTAssertEqual(NotchStatusGlyph.playing.dots.filter { $0.color == .blue }.count, 8)
@@ -1079,10 +1085,12 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertFalse(NotchSessionStatus.notWorking.animatesGlyphMotion)
         XCTAssertTrue(NotchSessionStatus.working.animatesGlyphMotion)
         XCTAssertTrue(NotchSessionStatus.listening.animatesGlyphMotion)
+        XCTAssertFalse(NotchSessionStatus.paused.animatesGlyphMotion)
         XCTAssertTrue(NotchSessionStatus.playing.animatesGlyphMotion)
         XCTAssertTrue(NotchSessionStatus.listening.usesGlyphShimmer)
         XCTAssertTrue(NotchSessionStatus.playing.usesGlyphShimmer)
         XCTAssertFalse(NotchSessionStatus.working.usesGlyphShimmer)
+        XCTAssertFalse(NotchSessionStatus.paused.usesGlyphShimmer)
         XCTAssertEqual(NotchStatusGlyphMotion.duration, 0.6, accuracy: 0.0001)
 
         XCTAssertEqual(NotchStatusGlyphMotion.coreRotation(for: .notWorking, phase: 0.6683), 0)

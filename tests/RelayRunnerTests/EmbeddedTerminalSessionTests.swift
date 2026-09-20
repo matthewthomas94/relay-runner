@@ -121,6 +121,22 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
         XCTAssertNotNil(session.hostedView)
     }
 
+    func testEndKeepsPhysicalProcessOwnershipVisibleUntilDelayedTeardownCompletes() throws {
+        let process = FakeEmbeddedTerminalProcess()
+        process.terminateStopsImmediately = false
+        let session = EmbeddedTerminalSession(processFactory: { process })
+        try session.beginPreparing(providerName: "Codex", workingDirectory: "/repo")
+        try session.start(launch())
+
+        session.end()
+
+        XCTAssertEqual(session.phase, .ended)
+        XCTAssertFalse(session.isEmbeddedProcessRunning)
+        XCTAssertTrue(session.hasLiveEmbeddedProcess)
+        process.isRunning = false
+        XCTAssertFalse(session.hasLiveEmbeddedProcess)
+    }
+
     func testStaleExitFromReplacedProcessCannotEndNewSession() throws {
         let first = FakeEmbeddedTerminalProcess()
         let second = FakeEmbeddedTerminalProcess()
@@ -2853,6 +2869,7 @@ private final class FakeEmbeddedTerminalProcess: EmbeddedTerminalProcess {
     var autoReady = true
     var startCount = 0
     var terminateCount = 0
+    var terminateStopsImmediately = true
 
     func start(_ launch: ProcessManager.PreparedSessionLaunch) throws {
         startCount += 1
@@ -2869,7 +2886,9 @@ private final class FakeEmbeddedTerminalProcess: EmbeddedTerminalProcess {
 
     func terminate() {
         terminateCount += 1
-        isRunning = false
+        if terminateStopsImmediately {
+            isRunning = false
+        }
     }
 
     func emitExit(rawStatus: Int32?) {
