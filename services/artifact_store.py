@@ -876,6 +876,10 @@ class ArtifactStore:
             return content
         if path.startswith(".orchestrator/notes/"):
             note_id = PurePosixPath(path).stem
+            if len(content) > NOTE_MAX_BYTES:
+                raise ArtifactValidationError(
+                    f"note {note_id} is {len(content)} bytes; limit is {NOTE_MAX_BYTES}"
+                )
             document = _read_note_document(content, note_id)
             normalized = _prepare_note_markdown(
                 note_id,

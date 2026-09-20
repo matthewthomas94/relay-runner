@@ -12,6 +12,7 @@ from services.artifact_store import (
     ARTIFACT_REF,
     ArtifactMutation,
     ArtifactStore,
+    ArtifactValidationError,
     AttachmentWrite,
     ConfigWrite,
     TicketDelete,
@@ -23,6 +24,7 @@ from services.artifact_sync import (
     ArtifactSyncMode,
     ArtifactSyncState,
 )
+from services.note_contract import NOTE_MAX_BYTES
 from services.project_notes import ProjectNoteManager
 
 
@@ -395,6 +397,26 @@ class ArtifactSyncTests(unittest.TestCase):
             self.run_git(self.remote, "rev-parse", f"{ARTIFACT_REF}:{note_path}"),
             conflicts[note_path].remote_oid,
         )
+
+        local_head = self.device_b.store._head()
+        remote_head = self.run_git(self.remote, "rev-parse", ARTIFACT_REF)
+        oversized = self.device_b.store.snapshot().files[note_path].replace(
+            b"Device B words",
+            b"x" * NOTE_MAX_BYTES,
+        )
+        self.assertGreater(len(oversized), NOTE_MAX_BYTES)
+        decisions = {path: "local" for path in conflicts}
+        decisions[note_path] = oversized
+        with self.assertRaisesRegex(ArtifactValidationError, "limit"):
+            self.engine(self.device_b).resolve_conflict(
+                result.conflict_report,
+                decisions,
+                resolution_event_id="reject-oversized-note",
+                device_id="device-b",
+                provider="claude",
+            )
+        self.assertEqual(self.device_b.store._head(), local_head)
+        self.assertEqual(self.run_git(self.remote, "rev-parse", ARTIFACT_REF), remote_head)
 
     def test_synced_note_archive_remains_readable_after_second_device_recovery(self):
         manager_a = ProjectNoteManager(self.device_a.store, device_id="device-a")
