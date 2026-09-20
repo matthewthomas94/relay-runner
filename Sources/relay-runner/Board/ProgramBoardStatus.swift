@@ -334,12 +334,29 @@ struct ProgramBoardNoteItem: Equatable, Identifiable {
         return value
     }
 
+    var isArchived: Bool {
+        card.archivedAt != nil
+    }
+
     var recordingLabel: String {
+        if isArchived { return "Archived" }
         switch card.recordingState {
         case .recording: return "Recording"
         case .paused: return "Paused"
         case .completed: return card.materialized ? "Saved locally" : "Saving"
         }
+    }
+
+    var localSaveLabel: String {
+        if isArchived { return "Archived in history" }
+        return card.materialized ? "Saved" : "Pending"
+    }
+
+    var openFailureMessage: String {
+        if isArchived {
+            return "This archived note could not be opened from history. Check project access and try again."
+        }
+        return "This note could not be opened. Check the project connection and try again."
     }
 
     var syncLabel: String {

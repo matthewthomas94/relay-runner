@@ -1017,10 +1017,7 @@ final class ProgramBoardOverlayController {
                 )
                 self.model.finishNoteDetail(response, for: item)
             } catch {
-                self.model.failNoteDetail(
-                    "This note could not be opened. Check the project connection and try again.",
-                    for: item
-                )
+                self.model.failNoteDetail(item.openFailureMessage, for: item)
             }
         }
     }

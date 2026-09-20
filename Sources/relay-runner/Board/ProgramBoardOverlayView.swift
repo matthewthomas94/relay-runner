@@ -2452,7 +2452,7 @@ private struct ProgramNoteDetailPanel: View {
                         ),
                         ProgramDetailRow(
                             label: "Local save",
-                            value: detail.item.card.materialized ? "Saved" : "Pending"
+                            value: detail.item.localSaveLabel
                         ),
                         ProgramDetailRow(label: "Remote sync", value: syncStatus),
                         ProgramDetailRow(

@@ -1275,6 +1275,35 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(item.syncLabel, "Remote sync pending")
     }
 
+    func testArchivedNoteUsesHistoryStatusAndRetryableReadFailure() {
+        let item = noteItem(
+            id: "RR-N1",
+            number: 1,
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner",
+            materialized: false,
+            archivedAt: "2026-09-20T09:00:00Z"
+        )
+        let model = ProgramBoardViewModel()
+
+        XCTAssertTrue(item.isArchived)
+        XCTAssertEqual(item.recordingLabel, "Archived")
+        XCTAssertEqual(item.localSaveLabel, "Archived in history")
+        XCTAssertEqual(
+            item.openFailureMessage,
+            "This archived note could not be opened from history. Check project access and try again."
+        )
+
+        model.beginNoteDetail(item)
+        model.failNoteDetail(item.openFailureMessage, for: item)
+        XCTAssertEqual(model.selectedNoteDetail?.errorMessage, item.openFailureMessage)
+        XCTAssertEqual(model.selectedNoteDetail?.isLoading, false)
+
+        model.beginNoteDetail(item)
+        XCTAssertNil(model.selectedNoteDetail?.errorMessage)
+        XCTAssertEqual(model.selectedNoteDetail?.isLoading, true)
+    }
+
     func testProgramBoardTicketDetailResolvesChildTicketFileFromAllProjects() throws {
         let root = try temporaryDirectory()
         let clientRepo = root.appendingPathComponent("client-dashboard", isDirectory: true)
@@ -2622,6 +2651,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         projectName: String,
         path: String,
         materialized: Bool = true,
+        archivedAt: String? = nil,
         syncState: String = "synced"
     ) -> ProgramBoardNoteItem {
         let reference = RelayProjectNoteReference(
@@ -2643,7 +2673,7 @@ final class ProgramBoardStatusTests: XCTestCase {
                 recordingState: .completed,
                 segmentCount: number,
                 materialized: materialized,
-                archivedAt: nil,
+                archivedAt: archivedAt,
                 reference: reference
             ),
             projectName: projectName,

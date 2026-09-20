@@ -374,6 +374,33 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(requests[1].after, "RR-N100")
     }
 
+    func testProjectNoteCatalogPreservesArchivedCardHistoryReference() async throws {
+        let result = await ProgramBoardOverlayController.fetchProjectNotes(
+            repoPaths: ["/repo/relay-runner"],
+            scopeTokenProvider: { _ in "confirmed-scope" },
+            fetchPage: { _, _, limit, _ in
+                Self.noteListResponse(
+                    noteIDs: ["RR-N1"],
+                    limit: limit,
+                    hasMore: false,
+                    nextCursor: nil,
+                    totalCount: 1,
+                    archivedNoteIDs: ["RR-N1"]
+                )
+            }
+        )
+
+        let item = try XCTUnwrap(result.notes.first)
+        XCTAssertFalse(item.card.materialized)
+        XCTAssertEqual(item.card.archivedAt, "2026-09-20T09:00:00Z")
+        XCTAssertEqual(
+            item.card.reference.historyReference,
+            "abc123:.orchestrator/notes/RR-N1.md"
+        )
+        XCTAssertEqual(item.recordingLabel, "Archived")
+        XCTAssertEqual(item.localSaveLabel, "Archived in history")
+    }
+
     func testWorkspaceLatencyMetricRoundsMilliseconds() {
         let metric = WorkspaceLatencyMetric.measure(
             "command_to_first_motion",
@@ -523,7 +550,8 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         limit: Int,
         hasMore: Bool,
         nextCursor: String?,
-        totalCount: Int
+        totalCount: Int,
+        archivedNoteIDs: Set<String> = []
     ) -> RelayProjectNoteListResponse {
         let sync = RelayProjectNoteSyncState(mode: "local", state: "synced", recovery: nil)
         let notes = noteIDs.map { noteID in
@@ -535,8 +563,8 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
                 updatedAt: "2026-09-20T08:00:00Z",
                 recordingState: .completed,
                 segmentCount: 1,
-                materialized: true,
-                archivedAt: nil,
+                materialized: !archivedNoteIDs.contains(noteID),
+                archivedAt: archivedNoteIDs.contains(noteID) ? "2026-09-20T09:00:00Z" : nil,
                 reference: RelayProjectNoteReference(
                     path: ".orchestrator/notes/\(noteID).md",
                     artifactRef: "refs/heads/relay/artifacts",
