@@ -84,14 +84,14 @@ busy, a superseded partial refresh may be skipped with a typed issue; accepted
 audio remains available for the final window. If a final window cannot be
 queued, capture likewise fails instead of silently dropping speech.
 
-On 2026-09-20, `/usr/bin/time -l swift test --filter
+On 2026-09-21, `/usr/bin/time -l swift test --filter
 MeetingTranscriptProducerTests` ran on the dispatch Mac (arm64, the Swift test
 target set to macOS 14). The deterministic 60-minute case feeds two sources at
 10 synthetic samples per second. Its producer counters reported 7,200 accepted
 chunks, maximum queue depth 2, maximum sampled audio-buffer storage 4,720 bytes,
 fixture processing latency 3 ms, and zero dropped samples. The complete filtered
-suite executed 28 tests in about 1.3 seconds after build. The enclosing build
-and test command reached 642,351,104 bytes maximum RSS, which includes SwiftPM,
+suite executed 29 tests in about 1.4 seconds after build. The enclosing build
+and test command reached 121,536,512 bytes maximum RSS, which includes SwiftPM,
 the compiler, linked FluidAudio, and the XCTest host and therefore is not a
 producer-only memory measurement.
 

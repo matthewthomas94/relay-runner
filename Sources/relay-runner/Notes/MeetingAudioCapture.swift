@@ -178,6 +178,68 @@ final class MeetingMicrophoneAudioCapture: MeetingAudioCapturing, @unchecked Sen
     }
 }
 
+final class MeetingSystemAudioCallbackGate: @unchecked Sendable {
+    private struct ActiveCallbacks {
+        let streamID: ObjectIdentifier
+        let sampleHandler: @Sendable (MeetingAudioFrame) -> Void
+        let eventHandler: @Sendable (MeetingAudioCaptureEvent) -> Void
+        var reportedFormatFailure = false
+    }
+
+    private let lock = NSLock()
+    private var active: ActiveCallbacks?
+
+    func activate(
+        stream: AnyObject,
+        sampleHandler: @escaping @Sendable (MeetingAudioFrame) -> Void,
+        eventHandler: @escaping @Sendable (MeetingAudioCaptureEvent) -> Void
+    ) {
+        lock.withMeetingCaptureLock {
+            active = ActiveCallbacks(
+                streamID: ObjectIdentifier(stream),
+                sampleHandler: sampleHandler,
+                eventHandler: eventHandler
+            )
+        }
+    }
+
+    func deactivate(stream: AnyObject) {
+        lock.withMeetingCaptureLock {
+            guard active?.streamID == ObjectIdentifier(stream) else { return }
+            active = nil
+        }
+    }
+
+    func deliver(_ frame: MeetingAudioFrame, from stream: AnyObject) {
+        let handler = lock.withMeetingCaptureLock { () -> (@Sendable (MeetingAudioFrame) -> Void)? in
+            guard active?.streamID == ObjectIdentifier(stream) else { return nil }
+            return active?.sampleHandler
+        }
+        handler?(frame)
+    }
+
+    func deliver(_ event: MeetingAudioCaptureEvent, from stream: AnyObject) {
+        let handler = lock.withMeetingCaptureLock { () -> (@Sendable (MeetingAudioCaptureEvent) -> Void)? in
+            guard active?.streamID == ObjectIdentifier(stream) else { return nil }
+            return active?.eventHandler
+        }
+        handler?(event)
+    }
+
+    func deliverUnsupportedFormat(_ message: String, from stream: AnyObject) {
+        let handler = lock.withMeetingCaptureLock { () -> (@Sendable (MeetingAudioCaptureEvent) -> Void)? in
+            guard var active,
+                  active.streamID == ObjectIdentifier(stream),
+                  !active.reportedFormatFailure
+            else { return nil }
+            active.reportedFormatFailure = true
+            self.active = active
+            return active.eventHandler
+        }
+        handler?(.failed(.unsupportedFormat(.systemAudio, message)))
+    }
+}
+
 /// ScreenCaptureKit is already hosted by Relay Runner's signed app process.
 /// This audio-only stream captures the system mix, excludes Relay Runner's own
 /// playback, and emits 16 kHz mono without producing screenshots or video.
@@ -188,10 +250,8 @@ final class MeetingSystemAudioCapture: NSObject, MeetingAudioCapturing, SCStream
 
     private let outputQueue = DispatchQueue(label: "com.relayrunner.meeting-system-audio")
     private let lock = NSLock()
+    private let callbackGate = MeetingSystemAudioCallbackGate()
     private var stream: SCStream?
-    private var sampleHandler: (@Sendable (MeetingAudioFrame) -> Void)?
-    private var eventHandler: (@Sendable (MeetingAudioCaptureEvent) -> Void)?
-    private var reportedFormatFailure = false
 
     func start(
         sampleHandler: @escaping @Sendable (MeetingAudioFrame) -> Void,
@@ -236,17 +296,21 @@ final class MeetingSystemAudioCapture: NSObject, MeetingAudioCapturing, SCStream
             try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: outputQueue)
             lock.withMeetingCaptureLock {
                 self.stream = stream
-                self.sampleHandler = sampleHandler
-                self.eventHandler = eventHandler
-                self.reportedFormatFailure = false
+                self.callbackGate.activate(
+                    stream: stream,
+                    sampleHandler: sampleHandler,
+                    eventHandler: eventHandler
+                )
             }
             try await stream.startCapture()
         } catch {
             lock.withMeetingCaptureLock {
+                guard self.stream === stream else { return }
+                self.callbackGate.deactivate(stream: stream)
                 self.stream = nil
-                self.sampleHandler = nil
-                self.eventHandler = nil
             }
+            try? stream.removeStreamOutput(self, type: .audio)
+            try? await stream.stopCapture()
             throw MeetingAudioCaptureFailure.startFailed(.systemAudio, error.localizedDescription)
         }
         return MeetingCaptureSourceInfo(
@@ -259,12 +323,10 @@ final class MeetingSystemAudioCapture: NSObject, MeetingAudioCapturing, SCStream
 
     func stop() async {
         let stream = lock.withMeetingCaptureLock { () -> SCStream? in
-            defer {
-                self.stream = nil
-                self.sampleHandler = nil
-                self.eventHandler = nil
-            }
-            return self.stream
+            guard let stream = self.stream else { return nil }
+            callbackGate.deactivate(stream: stream)
+            self.stream = nil
+            return stream
         }
         guard let stream else { return }
         try? stream.removeStreamOutput(self, type: .audio)
@@ -292,26 +354,20 @@ final class MeetingSystemAudioCapture: NSObject, MeetingAudioCapturing, SCStream
             } else {
                 timestamp = fallback
             }
-            lock.withMeetingCaptureLock { sampleHandler }?(MeetingAudioFrame(
+            callbackGate.deliver(MeetingAudioFrame(
                 samples: samples,
                 presentationTimeNanoseconds: timestamp
-            ))
+            ), from: stream)
         } catch {
-            let handler: (@Sendable (MeetingAudioCaptureEvent) -> Void)? = lock.withMeetingCaptureLock {
-                guard !reportedFormatFailure else { return nil }
-                reportedFormatFailure = true
-                return eventHandler
-            }
-            handler?(.failed(.unsupportedFormat(
-                MeetingAudioSourceID.systemAudio,
-                error.localizedDescription
-            )))
+            callbackGate.deliverUnsupportedFormat(error.localizedDescription, from: stream)
         }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        let handler = lock.withMeetingCaptureLock { eventHandler }
-        handler?(.failed(.unavailable(.systemAudio, error.localizedDescription)))
+        callbackGate.deliver(
+            .failed(.unavailable(.systemAudio, error.localizedDescription)),
+            from: stream
+        )
     }
 
     private static func floatSamples(from sampleBuffer: CMSampleBuffer) throws -> [Float] {

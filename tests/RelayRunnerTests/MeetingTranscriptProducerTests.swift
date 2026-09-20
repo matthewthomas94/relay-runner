@@ -3,6 +3,56 @@ import XCTest
 @testable import relay_runner
 
 final class MeetingTranscriptProducerTests: XCTestCase {
+    func testSystemAudioCallbackGateRejectsOldStreamCallbacksAfterRestart() {
+        let gate = MeetingSystemAudioCallbackGate()
+        let oldStream = NSObject()
+        let newStream = NSObject()
+        let oldEvents = MeetingSystemAudioCallbackRecorder()
+        let newEvents = MeetingSystemAudioCallbackRecorder()
+
+        gate.activate(
+            stream: oldStream,
+            sampleHandler: { oldEvents.record($0) },
+            eventHandler: { oldEvents.record($0) }
+        )
+        gate.deliver(
+            MeetingAudioFrame(samples: [10], presentationTimeNanoseconds: 10),
+            from: oldStream
+        )
+        gate.deliver(.interrupted("old stream active"), from: oldStream)
+        gate.activate(
+            stream: newStream,
+            sampleHandler: { newEvents.record($0) },
+            eventHandler: { newEvents.record($0) }
+        )
+
+        gate.deliver(
+            MeetingAudioFrame(samples: [11], presentationTimeNanoseconds: 11),
+            from: oldStream
+        )
+        gate.deliver(
+            .failed(.unavailable(.systemAudio, "stale stream stopped")),
+            from: oldStream
+        )
+        gate.deactivate(stream: oldStream)
+        gate.deliver(
+            MeetingAudioFrame(samples: [22], presentationTimeNanoseconds: 22),
+            from: newStream
+        )
+        gate.deliver(
+            .failed(.unavailable(.systemAudio, "active stream stopped")),
+            from: newStream
+        )
+
+        XCTAssertEqual(oldEvents.frames.map(\.samples), [[10]])
+        XCTAssertEqual(oldEvents.events, [.interrupted("old stream active")])
+        XCTAssertEqual(newEvents.frames.map(\.samples), [[22]])
+        XCTAssertEqual(
+            newEvents.events,
+            [.failed(.unavailable(.systemAudio, "active stream stopped"))]
+        )
+    }
+
     func testFixtureSessionCapturesMicrophoneAndSystemAudioWithoutVoicePipeline() async throws {
         let events = MeetingEventRecorder()
         let transcriber = FakeMeetingTranscriber { request in
@@ -1438,6 +1488,23 @@ private final class MeetingEventRecorder: @unchecked Sendable {
             }
         }
     }
+}
+
+private final class MeetingSystemAudioCallbackRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedFrames: [MeetingAudioFrame] = []
+    private var recordedEvents: [MeetingAudioCaptureEvent] = []
+
+    func record(_ frame: MeetingAudioFrame) {
+        lock.withTestLock { recordedFrames.append(frame) }
+    }
+
+    func record(_ event: MeetingAudioCaptureEvent) {
+        lock.withTestLock { recordedEvents.append(event) }
+    }
+
+    var frames: [MeetingAudioFrame] { lock.withTestLock { recordedFrames } }
+    var events: [MeetingAudioCaptureEvent] { lock.withTestLock { recordedEvents } }
 }
 
 private final class MeetingAcceptedAudioRecorder: @unchecked Sendable {
