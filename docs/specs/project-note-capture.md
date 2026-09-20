@@ -40,6 +40,12 @@ microphone source remains separately labelled. If neither source starts, the
 session start fails. Relay Vision and note capture share the macOS capability,
 but neither operation starts the other.
 
+Unsupported system-audio formats and microphone format/conversion failures keep
+the source visibly `unavailable` and emit the distinct, recoverable
+`format_changed` issue. Ordinary device or stream loss emits
+`source_unavailable`; consumers therefore do not have to infer a format change
+from display text.
+
 ## Channels, timing, and revisions
 
 Microphone and system audio stay as separate 16 kHz mono sources. They are not
@@ -84,7 +90,7 @@ target set to macOS 14). The deterministic 60-minute case feeds two sources at
 10 synthetic samples per second. Its producer counters reported 7,200 accepted
 chunks, maximum queue depth 2, maximum sampled audio-buffer storage 4,720 bytes,
 fixture processing latency 3 ms, and zero dropped samples. The complete filtered
-suite executed 26 tests in about 1.3 seconds after build. The enclosing build
+suite executed 28 tests in about 1.3 seconds after build. The enclosing build
 and test command reached 642,351,104 bytes maximum RSS, which includes SwiftPM,
 the compiler, linked FluidAudio, and the XCTest host and therefore is not a
 producer-only memory measurement.

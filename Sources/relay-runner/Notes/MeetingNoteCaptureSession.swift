@@ -267,14 +267,7 @@ actor MeetingNoteCaptureSession {
                 case .failed(let failure):
                     blockedSources.insert(source)
                     blockStartup(for: source, generation: generation)
-                    try await producer.sourceBecameUnavailable(
-                        source,
-                        denied: {
-                            if case .permissionDenied = failure { return true }
-                            return false
-                        }(),
-                        message: failure.localizedDescription
-                    )
+                    try await report(failure, from: source)
                 }
             case .started(let source, let generation, let startBarrier):
                 defer { startBarrier.complete() }
@@ -297,14 +290,7 @@ actor MeetingNoteCaptureSession {
                 guard sourceCaptureGenerations[source] == generation else { return true }
                 discardStartup(for: source, generation: generation)
                 blockedSources.insert(source)
-                try await producer.sourceBecameUnavailable(
-                    source,
-                    denied: {
-                        if case .permissionDenied = failure { return true }
-                        return false
-                    }(),
-                    message: failure.localizedDescription
-                )
+                try await report(failure, from: source)
             }
             return true
         } catch let error as MeetingProducerError {
@@ -339,6 +325,26 @@ actor MeetingNoteCaptureSession {
     private func discardStartup(for source: MeetingAudioSourceID, generation: UInt64) {
         guard sourceStartups[source]?.generation == generation else { return }
         sourceStartups.removeValue(forKey: source)
+    }
+
+    private func report(
+        _ failure: MeetingAudioCaptureFailure,
+        from source: MeetingAudioSourceID
+    ) async throws {
+        let issueCode: MeetingCaptureIssueCode
+        switch failure {
+        case .permissionDenied:
+            issueCode = .permissionDenied
+        case .unsupportedFormat:
+            issueCode = .formatChanged
+        case .unavailable, .startFailed:
+            issueCode = .sourceUnavailable
+        }
+        try await producer.sourceBecameUnavailable(
+            source,
+            issueCode: issueCode,
+            message: failure.localizedDescription
+        )
     }
 }
 

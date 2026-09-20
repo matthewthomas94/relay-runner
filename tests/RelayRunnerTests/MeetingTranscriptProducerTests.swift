@@ -96,6 +96,45 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertTrue(finalSources.allSatisfy { $0 == .microphone })
     }
 
+    func testUnsupportedSystemAudioFormatAtStartupEmitsTypedIssue() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-system-format-startup",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "unused", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+        let microphone = FakeMeetingAudioCapture(sourceID: .microphone, samples: [])
+        let system = FakeMeetingAudioCapture(
+            sourceID: .systemAudio,
+            samples: [],
+            startFailure: .unsupportedFormat(.systemAudio, "fixture Float32 mismatch")
+        )
+        let session = MeetingNoteCaptureSession(
+            producer: producer,
+            captures: [microphone, system]
+        )
+
+        try await session.start(initiallyPaused: false)
+        try await eventually {
+            events.issues.contains {
+                $0.code == .formatChanged && $0.sourceID == .systemAudio
+            }
+        }
+
+        XCTAssertEqual(
+            events.sourceStates.last { $0.0 == .systemAudio }?.1,
+            .unavailable
+        )
+        XCTAssertFalse(events.issues.contains {
+            $0.code == .sourceUnavailable && $0.sourceID == .systemAudio
+        })
+        _ = try await session.stop()
+        XCTAssertEqual(system.stopCount, 1)
+    }
+
     func testBurstCaptureUsesBoundedIngressAndSurfacesDroppedFrames() async throws {
         let events = MeetingEventRecorder()
         let accepted = BlockingMeetingAcceptedAudioSink()
@@ -307,7 +346,7 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertEqual(system.startCount, 1)
         XCTAssertEqual(system.stopCount, 1)
         XCTAssertTrue(events.issues.contains {
-            $0.code == .sourceUnavailable && $0.sourceID == .systemAudio
+            $0.code == .formatChanged && $0.sourceID == .systemAudio
         })
     }
 
@@ -459,6 +498,51 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertEqual(boundary.metrics.acceptedChunkCount, 2)
         XCTAssertEqual(events.revisions.filter(\.isFinal).map(\.text), ["1", "333"])
         XCTAssertFalse(events.revisions.contains { $0.text.contains("2") })
+    }
+
+    func testMicrophoneConversionRecoveryFailureEmitsTypedIssue() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-microphone-format-recovery",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "unused", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+        let microphone = FakeMeetingAudioCapture(sourceID: .microphone, samples: [])
+        let session = MeetingNoteCaptureSession(producer: producer, captures: [microphone])
+        let failure = MeetingMicrophoneAudioCapture.captureFailure(
+            from: .converterUnavailable(sampleRate: 48_000, channelCount: 2)
+        )
+
+        XCTAssertEqual(
+            failure,
+            .unsupportedFormat(
+                .microphone,
+                "The microphone format cannot be converted to 16 kHz mono (48000.0 Hz, 2 channels)."
+            )
+        )
+        try await session.start(initiallyPaused: false)
+        microphone.emitEvent(.interrupted("fixture conversion-failure rebuild"))
+        try await eventually {
+            events.sourceStates.last { $0.0 == .microphone }?.1 == .interrupted
+        }
+        microphone.emitEvent(.failed(failure))
+        try await eventually {
+            events.issues.contains {
+                $0.code == .formatChanged && $0.sourceID == .microphone
+            }
+        }
+
+        XCTAssertEqual(
+            events.sourceStates.last { $0.0 == .microphone }?.1,
+            .unavailable
+        )
+        XCTAssertFalse(events.issues.contains {
+            $0.code == .sourceUnavailable && $0.sourceID == .microphone
+        })
+        _ = try await session.stop()
     }
 
     func testFreshSuccessfulRestartRetainsFramesEmittedBeforeStartReturns() async throws {

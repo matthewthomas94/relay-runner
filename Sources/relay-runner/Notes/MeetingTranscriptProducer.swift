@@ -350,7 +350,7 @@ actor MeetingTranscriptProducer {
 
     func sourceBecameUnavailable(
         _ source: MeetingAudioSourceID,
-        denied: Bool = false,
+        issueCode: MeetingCaptureIssueCode = .sourceUnavailable,
         message: String
     ) async throws {
         if state == .recording {
@@ -360,10 +360,10 @@ actor MeetingTranscriptProducer {
         var buffer = sourceBuffers[source] ?? SourceBuffer()
         buffer.epoch = nil
         sourceBuffers[source] = buffer
-        sourceStates[source] = denied ? .denied : .unavailable
+        sourceStates[source] = issueCode == .permissionDenied ? .denied : .unavailable
         emit(.source(source, sourceStates[source] ?? .unavailable))
         emitIssue(
-            code: denied ? .permissionDenied : .sourceUnavailable,
+            code: issueCode,
             sourceID: source,
             message: message,
             recoverable: true

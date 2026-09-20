@@ -61,6 +61,7 @@ final class MeetingMicrophoneAudioCapture: MeetingAudioCapturing, @unchecked Sen
 
     private let lock = NSLock()
     private var lifecycle: AudioCaptureLifecycle?
+    private var startupFailure: MeetingAudioCaptureFailure?
 
     func start(
         sampleHandler: @escaping @Sendable (MeetingAudioFrame) -> Void,
@@ -101,35 +102,70 @@ final class MeetingMicrophoneAudioCapture: MeetingAudioCapturing, @unchecked Sen
                 "Microphone route changed (\(interruption.reasons.sorted().joined(separator: ",")))."
             ))
         }
-        lifecycle.onRecovery = { recovery in
+        lifecycle.onRecovery = { [weak self] recovery in
+            guard let self else { return }
             if let error = recovery.error {
-                eventHandler(.failed(.unavailable(.microphone, error.localizedDescription)))
+                let failure = Self.captureFailure(from: error)
+                if recovery.reasons.contains("initial-start") {
+                    self.lock.withMeetingCaptureLock {
+                        self.startupFailure = failure
+                    }
+                } else {
+                    eventHandler(.failed(failure))
+                }
             } else if let route = recovery.route {
                 eventHandler(.recovered(Self.info(route)))
             }
         }
-        lock.withMeetingCaptureLock { self.lifecycle = lifecycle }
+        lock.withMeetingCaptureLock {
+            self.lifecycle = lifecycle
+            self.startupFailure = nil
+        }
+        let route: AudioInputRoute?
         do {
-            guard let route = try lifecycle.start() else {
-                throw MeetingAudioCaptureFailure.unavailable(
-                    .microphone,
-                    "No usable system-default input is connected."
-                )
-            }
-            return Self.info(route)
-        } catch let error as MeetingAudioCaptureFailure {
-            throw error
+            route = try lifecycle.start()
+        } catch let error as AudioCaptureFailure {
+            _ = finishStartup()
+            throw Self.captureFailure(from: error)
         } catch {
+            _ = finishStartup()
             throw MeetingAudioCaptureFailure.startFailed(.microphone, error.localizedDescription)
         }
+        let failure = finishStartup()
+        guard let route else {
+            throw failure ?? MeetingAudioCaptureFailure.unavailable(
+                .microphone,
+                "No usable system-default input is connected."
+            )
+        }
+        return Self.info(route)
     }
 
     func stop() async {
         let lifecycle = lock.withMeetingCaptureLock { () -> AudioCaptureLifecycle? in
-            defer { self.lifecycle = nil }
+            defer {
+                self.lifecycle = nil
+                self.startupFailure = nil
+            }
             return self.lifecycle
         }
         lifecycle?.stop()
+    }
+
+    static func captureFailure(from error: AudioCaptureFailure) -> MeetingAudioCaptureFailure {
+        switch error {
+        case .incompatibleFormat(_, _), .converterUnavailable(_, _):
+            return .unsupportedFormat(.microphone, error.localizedDescription)
+        case .noInput, .coreAudio, .engineStart:
+            return .unavailable(.microphone, error.localizedDescription)
+        }
+    }
+
+    private func finishStartup() -> MeetingAudioCaptureFailure? {
+        lock.withMeetingCaptureLock {
+            defer { startupFailure = nil }
+            return startupFailure
+        }
     }
 
     private static func info(_ route: AudioInputRoute) -> MeetingCaptureSourceInfo {
