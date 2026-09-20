@@ -125,11 +125,32 @@ struct RelayProjectNoteSyncState: Codable, Equatable, Sendable {
     let recovery: String?
 }
 
+/// Content-addressed location for the exact Markdown revision returned by a
+/// read. Archived notes keep the same logical path and pin the historical
+/// commit/blob that was verified before content was served.
+struct RelayProjectNoteReference: Codable, Equatable, Sendable {
+    let path: String
+    let artifactRef: String
+    let commit: String
+    let revision: String
+    let historyReference: String
+    let verified: Bool
+    let catalogCommit: String
+
+    private enum CodingKeys: String, CodingKey {
+        case path, commit, revision, verified
+        case artifactRef = "artifact_ref"
+        case historyReference = "history_reference"
+        case catalogCommit = "catalog_commit"
+    }
+}
+
 struct RelayProjectNoteResponse: Codable, Equatable, Sendable {
     let note: RelayProjectNoteUpdate
     let markdownBase64: String
     let materialized: Bool
     let artifactCommit: String
+    let reference: RelayProjectNoteReference
     let idempotent: Bool
     let sync: RelayProjectNoteSyncState
 
@@ -139,7 +160,7 @@ struct RelayProjectNoteResponse: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case note, materialized, idempotent, sync
+        case note, materialized, reference, idempotent, sync
         case markdownBase64 = "markdown_base64"
         case artifactCommit = "artifact_commit"
     }
@@ -155,11 +176,12 @@ struct RelayProjectNoteCard: Codable, Equatable, Identifiable, Sendable {
     let segmentCount: Int
     let materialized: Bool
     let archivedAt: String?
+    let reference: RelayProjectNoteReference
 
     var id: String { artifactID }
 
     private enum CodingKeys: String, CodingKey {
-        case materialized
+        case materialized, reference
         case noteID = "note_id"
         case artifactID = "artifact_id"
         case projectID = "project_id"
@@ -174,10 +196,17 @@ struct RelayProjectNoteCard: Codable, Equatable, Identifiable, Sendable {
 struct RelayProjectNoteListResponse: Codable, Equatable, Sendable {
     let notes: [RelayProjectNoteCard]
     let artifactCommit: String
+    let limit: Int
+    let hasMore: Bool
+    let nextCursor: String?
+    let totalCount: Int
     let sync: RelayProjectNoteSyncState
 
     private enum CodingKeys: String, CodingKey {
-        case notes, sync
+        case notes, limit, sync
         case artifactCommit = "artifact_commit"
+        case hasMore = "has_more"
+        case nextCursor = "next_cursor"
+        case totalCount = "total_count"
     }
 }

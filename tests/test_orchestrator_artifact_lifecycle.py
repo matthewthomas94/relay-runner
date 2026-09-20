@@ -875,10 +875,17 @@ Saved through the daemon-owned typed writer.
         query = urlencode({
             "repo_path": str(self.repo),
             "project_scope_token": self.scope_token(),
+            "limit": 1,
         })
         status, listed = handler._route("GET", f"/v1/artifacts/notes?{query}")
         self.assertEqual(status, 200)
         self.assertEqual([card["note_id"] for card in listed["notes"]], ["REP-N1"])
+        self.assertEqual(listed["limit"], 1)
+        self.assertFalse(listed["has_more"])
+        self.assertEqual(
+            listed["notes"][0]["reference"]["path"],
+            ".orchestrator/notes/REP-N1.md",
+        )
         self.assertEqual(
             orchestrator.tomllib.loads(
                 self.store.snapshot().files[".orchestrator/config.toml"].decode()

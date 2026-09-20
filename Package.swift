@@ -40,6 +40,7 @@ let package = Package(
             name: "RelayRunnerTests",
             dependencies: [
                 .target(name: "relay-runner"),
+                .target(name: "relay-orchestrator-mcp"),
                 .target(name: "relay-vision-mcp"),
             ],
             path: "tests/RelayRunnerTests"

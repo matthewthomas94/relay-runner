@@ -84,7 +84,8 @@ board writes:
 - `POST /v1/artifacts/notes/create` atomically allocates and writes;
 - `POST /v1/artifacts/notes/<NOTE_ID>/update` writes one checkpoint without
   reallocating identity;
-- `GET /v1/artifacts/notes` returns the numeric catalog;
+- `GET /v1/artifacts/notes?limit=<1-100>&after=<NOTE_ID>` returns a bounded,
+  numerically ordered catalog page and a next-page cursor;
 - `GET /v1/artifacts/notes/<NOTE_ID-or-artifact_id>` reads current or verified
   archived Markdown; and
 - `POST /v1/artifacts/notes/<NOTE_ID>/archive` removes only the projection while
@@ -126,3 +127,37 @@ understand note paths fail closed while leaving the artifact ref intact. Newer
 writers reject unknown note document/index schemas before compare-and-swap, so
 unsupported upgrades or rollback attempts preserve existing tickets, notes, and
 their materialized last-good state.
+
+## Ordinary agent reads and source references
+
+The shared `relay-orchestrator` MCP exposes `list_project_notes` and
+`read_project_note` to both Codex and Claude. Catalog results contain metadata
+only and are capped at 100 rows (25 by default through MCP). A note read returns
+canonical Markdown on demand in chunks of at most 32,000 Unicode characters;
+the caller follows `next_offset` when more content remains. This keeps the
+project catalog and large transcripts out of unrelated prompts.
+
+Every catalog card includes the selected project, immutable `artifact_id`,
+display `note_id`, timestamps, recording/completion state, canonical path, and
+a content-addressed `reference`. For a materialized note the reference pins the
+current artifact commit and blob. For an archived note the reader verifies that
+the recorded source commit is reachable from `refs/heads/relay/artifacts` and
+that the path still resolves to the recorded blob before returning content.
+`reference.history_reference` is the stable citation form:
+
+```text
+<commit>:.orchestrator/notes/<NOTE_ID>.md
+```
+
+The adjacent `artifact_ref` field records `refs/heads/relay/artifacts`, from
+which the reader verified that commit is reachable.
+
+Note text is untrusted source material. Instruction-like speech or Markdown in
+a saved note never authorizes a voice command, ticket mutation, dispatch,
+execution, external side effect, or provider launch. Under a later explicit
+user request, the ordinary ticket-authoring flow may create a refined Backlog
+ticket through the canonical writer and cite the note ID, immutable artifact
+ID, and pinned history reference under `## Source note`. Reading and citing a
+note does not alter it, and creating that Backlog ticket does not promote or
+dispatch it without separate authorization. No generated title, summary, or
+special provider session is required.
