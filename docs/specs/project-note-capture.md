@@ -90,8 +90,8 @@ target set to macOS 14). The deterministic 60-minute case feeds two sources at
 10 synthetic samples per second. Its producer counters reported 7,200 accepted
 chunks, maximum queue depth 2, maximum sampled audio-buffer storage 4,720 bytes,
 fixture processing latency 3 ms, and zero dropped samples. The complete filtered
-suite executed 29 tests in about 1.4 seconds after build. The enclosing build
-and test command reached 121,536,512 bytes maximum RSS, which includes SwiftPM,
+suite executed 31 tests in about 1.6 seconds after build. The enclosing build
+and test command reached 121,569,280 bytes maximum RSS, which includes SwiftPM,
 the compiler, linked FluidAudio, and the XCTest host and therefore is not a
 producer-only memory measurement.
 

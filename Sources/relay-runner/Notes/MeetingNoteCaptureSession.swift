@@ -118,7 +118,7 @@ actor MeetingNoteCaptureSession {
             } catch let failure as MeetingAudioCaptureFailure {
                 lastError = failure
                 ingress.submit(.startFailed(failure, sourceID, generation))
-                await stopIfStarted(capture)
+                await stopAfterFailedStart(capture)
             } catch {
                 lastError = error
                 ingress.submit(.startFailed(
@@ -126,7 +126,7 @@ actor MeetingNoteCaptureSession {
                     sourceID,
                     generation
                 ))
-                await stopIfStarted(capture)
+                await stopAfterFailedStart(capture)
             }
         }
         if started == 0 {
@@ -142,6 +142,11 @@ actor MeetingNoteCaptureSession {
         guard startedCaptures.removeValue(forKey: ObjectIdentifier(capture)) != nil else {
             return
         }
+        await capture.stop()
+    }
+
+    private func stopAfterFailedStart(_ capture: MeetingAudioCapturing) async {
+        startedCaptures.removeValue(forKey: ObjectIdentifier(capture))
         await capture.stop()
     }
 

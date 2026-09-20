@@ -746,6 +746,69 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         _ = try await session.stop()
     }
 
+    func testPauseRestopsAdapterThatAcquiresResourcesThenFailsAfterTeardown() async throws {
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-delayed-start-failure-pause",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "unused", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration
+        )
+        let startSetupGate = MeetingStartReturnGate()
+        let microphone = FakeMeetingAudioCapture(
+            sourceID: .microphone,
+            samples: [],
+            startFailure: .unavailable(.microphone, "fixture late startup failure"),
+            startSetupGate: startSetupGate
+        )
+        let session = MeetingNoteCaptureSession(producer: producer, captures: [microphone])
+
+        let startTask = Task { try await session.start(initiallyPaused: false) }
+        try await eventually {
+            microphone.startCount == 1
+        }
+        try await session.pause()
+        XCTAssertEqual(microphone.stopCount, 1)
+
+        await startSetupGate.open()
+        await XCTAssertThrowsErrorAsync(try await startTask.value)
+
+        XCTAssertEqual(microphone.stopCount, 2)
+        XCTAssertFalse(microphone.isRunning)
+        _ = try await session.stop()
+    }
+
+    func testStopRestopsAdapterThatAcquiresResourcesThenFailsAfterTeardown() async throws {
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-delayed-start-failure-stop",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "unused", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration
+        )
+        let startSetupGate = MeetingStartReturnGate()
+        let microphone = FakeMeetingAudioCapture(
+            sourceID: .microphone,
+            samples: [],
+            startFailure: .unavailable(.microphone, "fixture late startup failure"),
+            startSetupGate: startSetupGate
+        )
+        let session = MeetingNoteCaptureSession(producer: producer, captures: [microphone])
+
+        let startTask = Task { try await session.start(initiallyPaused: false) }
+        try await eventually {
+            microphone.startCount == 1
+        }
+        _ = try await session.stop()
+        XCTAssertEqual(microphone.stopCount, 1)
+
+        await startSetupGate.open()
+        await XCTAssertThrowsErrorAsync(try await startTask.value)
+
+        XCTAssertEqual(microphone.stopCount, 2)
+        XCTAssertFalse(microphone.isRunning)
+    }
+
     func testMissingLocalModelFailsBeforeAnyAudioIsAccepted() async {
         let events = MeetingEventRecorder()
         let producer = MeetingTranscriptProducer(
@@ -1323,6 +1386,7 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
     private let startDelayNanoseconds: UInt64
     private let startFailure: MeetingAudioCaptureFailure?
     private let eventOnStart: MeetingAudioCaptureEvent?
+    private let startSetupGate: MeetingStartReturnGate?
     private let startReturnGate: MeetingStartReturnGate?
     private let gatedStart: Int?
     private let lock = NSLock()
@@ -1347,6 +1411,7 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
         startDelayNanoseconds: UInt64 = 0,
         startFailure: MeetingAudioCaptureFailure? = nil,
         eventOnStart: MeetingAudioCaptureEvent? = nil,
+        startSetupGate: MeetingStartReturnGate? = nil,
         startReturnGate: MeetingStartReturnGate? = nil,
         gatedStart: Int? = nil
     ) {
@@ -1358,6 +1423,7 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
         self.startDelayNanoseconds = startDelayNanoseconds
         self.startFailure = startFailure
         self.eventOnStart = eventOnStart
+        self.startSetupGate = startSetupGate
         self.startReturnGate = startReturnGate
         self.gatedStart = gatedStart
     }
@@ -1372,6 +1438,9 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
         }
         if startDelayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: startDelayNanoseconds)
+        }
+        if let startSetupGate {
+            await startSetupGate.wait()
         }
         lock.withTestLock {
             self.sampleHandler = sampleHandler
