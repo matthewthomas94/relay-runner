@@ -813,6 +813,80 @@ Saved through the daemon-owned typed writer.
         self.assertTrue(retried["idempotent"])
         self.assertIn(".orchestrator/REP-1.md", self.store.snapshot().files)
 
+    def test_project_note_http_contract_is_scoped_provider_neutral_and_separate_from_tickets(self):
+        payload = {
+            "repo_path": str(self.repo),
+            "project_scope_token": self.scope_token(),
+            "request_id": "note-http-create",
+            "created_at": "2026-09-20T08:00:00Z",
+            "capture_started_at": "2026-09-20T08:00:00Z",
+            "captured_at": "2026-09-20T08:00:05Z",
+            "recording_state": "recording",
+            "checkpoint_reason": "checkpoint",
+            "segments": [{
+                "segment_id": "segment-1",
+                "captured_at": "2026-09-20T08:00:05Z",
+                "text": "Provider-neutral meeting words",
+            }],
+            "provider": "codex",
+        }
+        with self.assertRaisesRegex(Exception, "confirmed project scope token"):
+            self.daemon.artifact_note_create(**{
+                **payload,
+                "project_scope_token": None,
+            })
+
+        handler = object.__new__(orchestrator.Handler)
+        handler.daemon = self.daemon
+        with patch.object(orchestrator, "_read_body", return_value=payload):
+            status, created = handler._route("POST", "/v1/artifacts/notes/create")
+        self.assertEqual(status, 201)
+        identity = created["note"]["identity"]
+        self.assertEqual(identity["note_id"], "REP-N1")
+        self.assertEqual(identity["project_id"], "daemon-project")
+        self.assertEqual(created["sync"]["state"], "local_only")
+
+        update = {
+            "identity": identity,
+            "captured_at": "2026-09-20T08:10:00Z",
+            "recording_state": "paused",
+            "checkpoint_reason": "pause",
+            "segments": payload["segments"],
+        }
+        updated = self.daemon.artifact_note_update(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            note_id="REP-N1",
+            request_id="note-http-pause",
+            update=update,
+            provider="claude",
+        )
+        self.assertEqual(updated["note"]["recording_state"], "paused")
+        retry = self.daemon.artifact_note_update(
+            repo_path=str(self.repo),
+            project_scope_token=self.scope_token(),
+            note_id="REP-N1",
+            request_id="note-http-pause",
+            update=update,
+            provider="codex",
+        )
+        self.assertTrue(retry["idempotent"])
+
+        query = urlencode({
+            "repo_path": str(self.repo),
+            "project_scope_token": self.scope_token(),
+        })
+        status, listed = handler._route("GET", f"/v1/artifacts/notes?{query}")
+        self.assertEqual(status, 200)
+        self.assertEqual([card["note_id"] for card in listed["notes"]], ["REP-N1"])
+        self.assertEqual(
+            orchestrator.tomllib.loads(
+                self.store.snapshot().files[".orchestrator/config.toml"].decode()
+            )["next_id"],
+            1,
+        )
+        self.assertEqual([ticket["id"] for ticket in orchestrator.scan_repo(self.repo)], ["RR-1"])
+
     def test_retention_history_and_storage_client_contracts_are_scoped_and_provider_neutral(self):
         token = self.scope_token()
         preview = self.daemon.artifact_retention_preview(

@@ -15,7 +15,7 @@ The repo-root `.orchestrator/` directory is a projection. It is atomically rebui
 One process/thread-safe writer lock exists per immutable project ID. A mutation supplies:
 
 - a provider-neutral actor type, device ID, immutable event ID, optional provider attribution, and optional expected base commit;
-- one or more typed ticket, config, attachment, archive-index, or Program-event operations; and
+- one or more typed ticket, project-note, config, attachment, archive-index, note-index, or Program-event operations; and
 - refined bytes only—never a filesystem catch-all or source path.
 
 The event digest covers every typed field and byte hash. A retry with the same event ID and digest returns the original commit; reuse with different content is rejected. Every successful logical event creates one commit with `Relay-Project-ID`, `Relay-Event-ID`, `Relay-Event-Digest`, `Relay-Device-ID`, and `Relay-Actor-Type` trailers. Optional `Relay-Provider` is attribution only and does not affect authorization or Git behavior.
@@ -30,7 +30,9 @@ The allowlist is exactly:
 
 - `.orchestrator/config.toml`;
 - `.orchestrator/archive-index.jsonl`;
+- `.orchestrator/note-index.jsonl`;
 - `.orchestrator/<ticket-id>.md`;
+- `.orchestrator/notes/<unpadded-prefix-N-number>.md`;
 - `.orchestrator/attachments/<same-ticket-id>/<validated-name>`; and
 - `.orchestrator/program/events/<event-id>.json`.
 
@@ -39,6 +41,13 @@ Traversal, absolute paths, control-character filenames, symlink mode, Gitlink/su
 ## Content and attachment policy
 
 Ticket Markdown is UTF-8, front-matter identified, and limited to 256 KiB. Program events are canonical JSON, project/event identified, and limited to 256 KiB. Explicit raw transcript, raw audio, raw logs/traces, tool output, hidden reasoning, and common credential/private-key fixtures are refused before an object is committed.
+
+Project note Markdown is a separate typed content policy documented in
+[Project note artifact contract](../specs/project-notes.md). It carries immutable
+artifact/project identity and canonical segment metadata, permits meeting
+transcript text, and has an independent 8 MiB limit. The note index preserves
+issued IDs and verified archive source references; it never participates in
+ticket dispatch or ticket retention.
 
 Attachments are structurally owned by their typed ticket ID. Filenames cannot carry another path. Declared MIME, extension, and magic bytes must agree; the local-only baseline accepts PNG, JPEG, GIF, WebP, and PDF. Raw audio, archives, executables, and unknown binaries are rejected. The limits are 10 MiB per attachment and 25 MiB aggregate per ticket. The writer also emits an actionable warning when project attachment bytes exceed its configured warning budget (250 MiB by default). Remote exposure confirmation and LFS policy remain later explicit features.
 

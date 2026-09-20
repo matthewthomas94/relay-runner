@@ -1,3 +1,4 @@
+import base64
 import dataclasses
 import hashlib
 import json
@@ -11,6 +12,7 @@ from services.artifact_store import (
     ARTIFACT_REF,
     ArtifactMutation,
     ArtifactStore,
+    ArtifactValidationError,
     AttachmentWrite,
     ConfigWrite,
     TicketDelete,
@@ -22,6 +24,8 @@ from services.artifact_sync import (
     ArtifactSyncMode,
     ArtifactSyncState,
 )
+from services.note_contract import NOTE_MAX_BYTES
+from services.project_notes import ProjectNoteManager
 
 
 @dataclasses.dataclass
@@ -334,6 +338,126 @@ class ArtifactSyncTests(unittest.TestCase):
             (self.device_b.state / "artifacts/project-sync/sync-state.json").read_text()
         )
         self.assertEqual(state["state"], "clean")
+
+    def test_divergent_offline_note_display_ids_conflict_without_overwriting_either_identity(self):
+        def create(device, request_id, text):
+            return ProjectNoteManager(
+                device.store,
+                device_id=f"device-{device.name}",
+            ).create(
+                request_id=request_id,
+                created_at="2026-09-20T08:00:00Z",
+                capture_started_at="2026-09-20T08:00:00Z",
+                captured_at="2026-09-20T08:00:05Z",
+                recording_state="recording",
+                checkpoint_reason="checkpoint",
+                segments=[{
+                    "segment_id": "segment-1",
+                    "captured_at": "2026-09-20T08:00:05Z",
+                    "text": text,
+                }],
+            )
+
+        local_a = create(self.device_a, "offline-note-a", "Device A words")
+        local_b = create(self.device_b, "offline-note-b", "Device B words")
+        identity_a = local_a["note"]["identity"]
+        identity_b = local_b["note"]["identity"]
+        self.assertEqual(local_a["sync"]["state"], "pending")
+        self.assertEqual(local_b["sync"]["state"], "pending")
+        self.assertEqual(identity_a["note_id"], identity_b["note_id"])
+        self.assertNotEqual(identity_a["artifact_id"], identity_b["artifact_id"])
+        with self.assertRaisesRegex(Exception, "clean synchronized artifact head"):
+            ProjectNoteManager(
+                self.device_a.store,
+                device_id="device-a",
+            ).archive(
+                note_id=identity_a["note_id"],
+                artifact_id=identity_a["artifact_id"],
+                archived_at="2026-09-20T09:00:00Z",
+                request_id="unsafe-offline-archive",
+            )
+
+        self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
+        result = self.engine(self.device_b).sync()
+
+        self.assertEqual(result.state, ArtifactSyncState.CONFLICT)
+        self.assertEqual(
+            ProjectNoteManager(
+                self.device_b.store,
+                device_id="device-b",
+            ).list()["sync"]["state"],
+            "conflict",
+        )
+        conflicts = {conflict.path: conflict for conflict in result.conflict_report.conflicts}
+        note_path = f".orchestrator/notes/{identity_a['note_id']}.md"
+        self.assertEqual(conflicts[note_path].kind, "note_display_id_collision")
+        self.assertIn(b"Device A words", self.device_a.store.snapshot().files[note_path])
+        self.assertIn(b"Device B words", self.device_b.store.snapshot().files[note_path])
+        self.assertEqual(
+            self.run_git(self.remote, "rev-parse", f"{ARTIFACT_REF}:{note_path}"),
+            conflicts[note_path].remote_oid,
+        )
+
+        local_head = self.device_b.store._head()
+        remote_head = self.run_git(self.remote, "rev-parse", ARTIFACT_REF)
+        oversized = self.device_b.store.snapshot().files[note_path].replace(
+            b"Device B words",
+            b"x" * NOTE_MAX_BYTES,
+        )
+        self.assertGreater(len(oversized), NOTE_MAX_BYTES)
+        decisions = {path: "local" for path in conflicts}
+        decisions[note_path] = oversized
+        with self.assertRaisesRegex(ArtifactValidationError, "limit"):
+            self.engine(self.device_b).resolve_conflict(
+                result.conflict_report,
+                decisions,
+                resolution_event_id="reject-oversized-note",
+                device_id="device-b",
+                provider="claude",
+            )
+        self.assertEqual(self.device_b.store._head(), local_head)
+        self.assertEqual(self.run_git(self.remote, "rev-parse", ARTIFACT_REF), remote_head)
+
+    def test_synced_note_archive_remains_readable_after_second_device_recovery(self):
+        manager_a = ProjectNoteManager(self.device_a.store, device_id="device-a")
+        created = manager_a.create(
+            request_id="synced-note",
+            created_at="2026-09-20T08:00:00Z",
+            capture_started_at="2026-09-20T08:00:00Z",
+            captured_at="2026-09-20T08:00:05Z",
+            recording_state="completed",
+            checkpoint_reason="complete",
+            segments=[{
+                "segment_id": "segment-1",
+                "captured_at": "2026-09-20T08:00:05Z",
+                "text": "History survives exact-ref synchronization",
+            }],
+            capture_ended_at="2026-09-20T08:00:05Z",
+        )
+        identity = created["note"]["identity"]
+        self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
+        self.assertEqual(self.engine(self.device_b).sync().state, ArtifactSyncState.CLEAN)
+
+        archived = manager_a.archive(
+            note_id=identity["note_id"],
+            artifact_id=identity["artifact_id"],
+            archived_at="2026-09-20T09:00:00Z",
+            request_id="archive-synced-note",
+        )
+        self.assertFalse(archived["materialized"])
+        self.assertEqual(archived["sync"]["state"], "pending")
+        self.assertEqual(self.engine(self.device_a).sync().state, ArtifactSyncState.CLEAN)
+        self.assertEqual(self.engine(self.device_b).sync().state, ArtifactSyncState.CLEAN)
+
+        recovered = ProjectNoteManager(
+            self.device_b.store,
+            device_id="device-b",
+        ).get(identity["note_id"])
+        self.assertFalse(recovered["materialized"])
+        self.assertIn(
+            b"History survives exact-ref synchronization",
+            base64.b64decode(recovered["markdown_base64"]),
+        )
 
     def test_same_ticket_conflict_has_three_way_evidence_and_explicit_resolution(self):
         base = self.write_ticket(self.device_a, "shared-ticket", "RR-4", "Shared")

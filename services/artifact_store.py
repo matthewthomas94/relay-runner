@@ -27,6 +27,24 @@ try:
     from services.toml_compat import tomllib
 except ModuleNotFoundError:
     from toml_compat import tomllib
+try:
+    from services.note_contract import (
+        NOTE_MAX_BYTES,
+        NoteContractError,
+        decode_note_index,
+        parse_note_document,
+        render_note_document,
+        validate_note_id,
+    )
+except ModuleNotFoundError:
+    from note_contract import (  # type: ignore[no-redef]
+        NOTE_MAX_BYTES,
+        NoteContractError,
+        decode_note_index,
+        parse_note_document,
+        render_note_document,
+        validate_note_id,
+    )
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Iterator, Mapping, Sequence
@@ -67,6 +85,10 @@ _FORBIDDEN_TEXT_MARKERS = (
     re.compile(rb"(?im)^\s*(?:raw_transcript|hidden_reasoning|session_trace|shell_trace)\s*:"),
     re.compile(rb"(?i)<\s*(?:raw[_-]transcript|hidden[_-]reasoning|session[_-]trace)\s*>"),
     re.compile(rb"(?im)^\s*-----BEGIN RAW (?:TRANSCRIPT|SESSION TRACE)-----\s*$"),
+)
+_FORBIDDEN_NOTE_MARKERS = (
+    re.compile(rb"(?im)^\s*(?:hidden_reasoning|session_trace|shell_trace|tool_output|raw_audio)\s*:"),
+    re.compile(rb"(?i)<\s*(?:hidden[_-]reasoning|session[_-]trace|shell[_-]trace|tool[_-]output|raw[_-]audio)\s*>"),
 )
 
 _global_locks_guard = threading.Lock()
@@ -119,6 +141,25 @@ class TicketDelete:
 
 
 @dataclasses.dataclass(frozen=True)
+class NoteWrite:
+    note_id: str
+    artifact_id: str
+    project_id: str
+    markdown: bytes
+
+
+@dataclasses.dataclass(frozen=True)
+class NoteDelete:
+    note_id: str
+    artifact_id: str
+
+
+@dataclasses.dataclass(frozen=True)
+class NoteIndexWrite:
+    content: bytes
+
+
+@dataclasses.dataclass(frozen=True)
 class AttachmentWrite:
     ticket_id: str
     filename: str
@@ -151,6 +192,9 @@ class ProgramEventWrite:
 ArtifactOperation = (
     TicketWrite
     | TicketDelete
+    | NoteWrite
+    | NoteDelete
+    | NoteIndexWrite
     | AttachmentWrite
     | AttachmentDelete
     | ConfigWrite
@@ -484,6 +528,7 @@ class ArtifactStore:
                 )
 
             tree_id = self._git("write-tree", env=env).stdout.strip()
+            self._validate_note_catalog_entries(self._tree_entries(tree_id))
             message = self._commit_message(mutation, digest)
             args = ["commit-tree", tree_id]
             if current_head:
@@ -534,6 +579,50 @@ class ArtifactStore:
                     if existing_path.startswith(attachment_prefix):
                         prepared.append(("delete", existing_path, None))
                         projected_sizes.pop(existing_path, None)
+            elif isinstance(operation, NoteWrite):
+                note_id = _validate_note_id(operation.note_id)
+                artifact_id = _validate_artifact_id(operation.artifact_id)
+                if operation.project_id != self.project_id:
+                    raise ArtifactIdentityError("note project_id does not match the store")
+                content = _prepare_note_markdown(
+                    note_id,
+                    artifact_id,
+                    self.project_id,
+                    operation.markdown,
+                )
+                if len(content) > NOTE_MAX_BYTES:
+                    raise ArtifactValidationError(
+                        f"note {note_id} is {len(content)} bytes; limit is {NOTE_MAX_BYTES}"
+                    )
+                _reject_note_private_runtime(content, note_id)
+                path = f".orchestrator/notes/{note_id}.md"
+                existing = entries.get(path)
+                if existing is not None:
+                    prior = _read_note_document(self._cat_blob(existing.oid), note_id)
+                    if prior.identity.artifact_id != artifact_id:
+                        raise ArtifactIdentityError(
+                            f"note {note_id} already belongs to immutable artifact "
+                            f"{prior.identity.artifact_id!r}"
+                        )
+                _reject_secrets(content, f"note {note_id}")
+                prepared.append(("write", path, content))
+            elif isinstance(operation, NoteDelete):
+                note_id = _validate_note_id(operation.note_id)
+                artifact_id = _validate_artifact_id(operation.artifact_id)
+                path = f".orchestrator/notes/{note_id}.md"
+                existing = entries.get(path)
+                if existing is None:
+                    raise ArtifactValidationError(f"note {note_id} is not materialized")
+                prior = _read_note_document(self._cat_blob(existing.oid), note_id)
+                if prior.identity.artifact_id != artifact_id:
+                    raise ArtifactIdentityError(
+                        f"note {note_id} immutable artifact_id does not match delete request"
+                    )
+                prepared.append(("delete", path, None))
+            elif isinstance(operation, NoteIndexWrite):
+                _validate_note_index(operation.content, self.project_id)
+                _reject_secrets(operation.content, "note index")
+                prepared.append(("write", ".orchestrator/note-index.jsonl", operation.content))
             elif isinstance(operation, AttachmentWrite):
                 ticket_id = _validate_ticket_id(operation.ticket_id)
                 filename = _validate_filename(operation.filename)
@@ -764,6 +853,7 @@ class ArtifactStore:
         self._validate_config(self._cat_blob(config_entry.oid))
         for entry in entries.values():
             self._validate_content_for_path(entry.path, self._cat_blob(entry.oid))
+        self._validate_note_catalog_entries(entries)
         self._write_json_atomic(
             self.history_verification_path,
             {"version": 1, "project_id": self.project_id, "commit_id": head},
@@ -779,6 +869,28 @@ class ArtifactStore:
         if path == ".orchestrator/archive-index.jsonl":
             _validate_archive_index(content)
             _reject_secrets(content, "archive index")
+            return content
+        if path == ".orchestrator/note-index.jsonl":
+            _validate_note_index(content, self.project_id)
+            _reject_secrets(content, "note index")
+            return content
+        if path.startswith(".orchestrator/notes/"):
+            note_id = PurePosixPath(path).stem
+            if len(content) > NOTE_MAX_BYTES:
+                raise ArtifactValidationError(
+                    f"note {note_id} is {len(content)} bytes; limit is {NOTE_MAX_BYTES}"
+                )
+            document = _read_note_document(content, note_id)
+            normalized = _prepare_note_markdown(
+                note_id,
+                document.identity.artifact_id,
+                self.project_id,
+                content,
+            )
+            _reject_secrets(normalized, f"note {note_id}")
+            _reject_note_private_runtime(normalized, note_id)
+            if normalized != content:
+                raise ArtifactValidationError(f"note {note_id} is not in canonical artifact form")
             return content
         if path.startswith(".orchestrator/attachments/"):
             filename = PurePosixPath(path).name
@@ -803,6 +915,65 @@ class ArtifactStore:
             raise ArtifactValidationError(f"ticket {ticket_id} is not in canonical artifact form")
         return content
 
+    def _validate_note_catalog_entries(self, entries: Mapping[str, _TreeEntry]) -> None:
+        self._validate_note_catalog_files({
+            path: self._cat_blob(entry.oid)
+            for path, entry in entries.items()
+            if path == ".orchestrator/note-index.jsonl"
+            or (path.startswith(".orchestrator/notes/") and path.endswith(".md"))
+        })
+
+    def _validate_note_catalog_files(self, files: Mapping[str, bytes]) -> None:
+        index_content = files.get(".orchestrator/note-index.jsonl")
+        note_paths = {
+            path: content
+            for path, content in files.items()
+            if path.startswith(".orchestrator/notes/") and path.endswith(".md")
+        }
+        if index_content is None:
+            if note_paths:
+                raise ArtifactValidationError("note documents require the typed note index")
+            return
+        try:
+            catalog = decode_note_index(
+                index_content, project_id=self.project_id
+            )
+        except NoteContractError as error:
+            raise ArtifactValidationError(str(error)) from error
+        active_paths: set[str] = set()
+        for artifact_id, catalog_entry in catalog.items():
+            path = str(catalog_entry["path"])
+            if catalog_entry["materialized"] is False:
+                if path in note_paths:
+                    raise ArtifactValidationError(
+                        f"archived note remains materialized despite its catalog state: {path}"
+                    )
+                continue
+            active_paths.add(path)
+            content = note_paths.get(path)
+            if content is None:
+                raise ArtifactValidationError(f"active note index entry has no Markdown: {path}")
+            document = _read_note_document(
+                content, str(catalog_entry["note_id"])
+            )
+            if (
+                document.identity.note_id != catalog_entry["note_id"]
+                or document.identity.artifact_id != artifact_id
+                or document.identity.project_id != self.project_id
+                or document.identity.created_at != catalog_entry["created_at"]
+                or document.update.captured_at != catalog_entry["updated_at"]
+                or document.update.recording_state != catalog_entry["recording_state"]
+                or len(document.update.segments) != catalog_entry["segment_count"]
+            ):
+                raise ArtifactIdentityError(
+                    f"note index identity or checkpoint metadata disagrees with {path}"
+                )
+        unindexed = sorted(set(note_paths) - active_paths)
+        if unindexed:
+            raise ArtifactValidationError(
+                f"note documents are missing typed index entries: {', '.join(unindexed)}"
+            )
+
     def _validate_config(self, content: bytes) -> None:
         try:
             document = tomllib.loads(content.decode("utf-8"))
@@ -821,6 +992,13 @@ class ArtifactStore:
             raise ArtifactValidationError("artifact config remote_sync is invalid")
         if document.get("artifact_lifecycle", "legacy") not in {"legacy", "enabled"}:
             raise ArtifactValidationError("artifact config artifact_lifecycle is invalid")
+        next_note_id = document.get("next_note_id")
+        if next_note_id is not None and (
+            not isinstance(next_note_id, int)
+            or isinstance(next_note_id, bool)
+            or next_note_id <= 0
+        ):
+            raise ArtifactValidationError("artifact config next_note_id must be a positive integer")
 
     def _render_initial_config(self) -> bytes:
         prefix = re.sub(r"[^A-Za-z0-9]", "", self.repo_path.name).upper()[:3] or "RR"
@@ -832,6 +1010,7 @@ class ArtifactStore:
             'remote_sync = "local_only"\n'
             'artifact_lifecycle = "legacy"\n'
             "next_id = 1\n"
+            "next_note_id = 1\n"
         ).encode("utf-8")
 
     def _ensure_materialization_consistent(self, head: str) -> None:
@@ -1180,6 +1359,14 @@ def _validate_ticket_id(value: str) -> str:
     return value
 
 
+def _validate_note_id(value: str) -> str:
+    try:
+        validate_note_id(value)
+    except NoteContractError as error:
+        raise ArtifactValidationError(str(error)) from error
+    return value
+
+
 def _validate_artifact_id(value: str) -> str:
     if not _ARTIFACT_ID_RE.fullmatch(value):
         raise ArtifactValidationError(f"invalid immutable artifact ID: {value!r}")
@@ -1219,6 +1406,7 @@ def _validate_allowlisted_path(path: str) -> None:
     if path in {
         ".orchestrator/config.toml",
         ".orchestrator/archive-index.jsonl",
+        ".orchestrator/note-index.jsonl",
     }:
         return
     parts = pure.parts
@@ -1228,6 +1416,13 @@ def _validate_allowlisted_path(path: str) -> None:
     if len(parts) == 4 and parts[:2] == (".orchestrator", "attachments"):
         _validate_ticket_id(parts[2])
         _validate_filename(parts[3])
+        return
+    if (
+        len(parts) == 3
+        and parts[:2] == (".orchestrator", "notes")
+        and parts[2].endswith(".md")
+    ):
+        _validate_note_id(parts[2][:-3])
         return
     if (
         len(parts) == 4
@@ -1286,6 +1481,51 @@ def _prepare_ticket_markdown(ticket_id: str, artifact_id: str, content: bytes) -
     if artifact_index is None:
         lines.insert(id_index + 1, f"artifact_id: {artifact_id}")
     return ("\n".join(lines).rstrip("\n") + "\n").encode("utf-8")
+
+
+def _prepare_note_markdown(
+    note_id: str,
+    artifact_id: str,
+    project_id: str,
+    content: bytes,
+) -> bytes:
+    try:
+        document = parse_note_document(content)
+    except NoteContractError as error:
+        raise ArtifactValidationError(f"note {note_id} is invalid: {error}") from error
+    if document.identity.note_id != note_id:
+        raise ArtifactValidationError(
+            f"note front-matter ID {document.identity.note_id!r} does not match {note_id!r}"
+        )
+    if document.identity.artifact_id != artifact_id:
+        raise ArtifactIdentityError(
+            f"note immutable artifact_id {document.identity.artifact_id!r} "
+            f"does not match {artifact_id!r}"
+        )
+    if document.identity.project_id != project_id:
+        raise ArtifactIdentityError(
+            f"note project_id {document.identity.project_id!r} does not match {project_id!r}"
+        )
+    return render_note_document(document)
+
+
+def _read_note_document(content: bytes, note_id: str):
+    try:
+        return parse_note_document(content)
+    except NoteContractError as error:
+        raise ArtifactValidationError(f"note {note_id} is invalid: {error}") from error
+
+
+def _validate_note_index(content: bytes, project_id: str) -> None:
+    try:
+        entries = decode_note_index(content, project_id=project_id)
+    except NoteContractError as error:
+        raise ArtifactValidationError(str(error)) from error
+    forbidden = _find_forbidden_keys(entries)
+    if forbidden:
+        raise ArtifactValidationError(
+            f"note index contains prohibited Git content: {', '.join(sorted(forbidden))}"
+        )
 
 
 def _ticket_front_matter_value(content: bytes, wanted_key: str) -> str | None:
@@ -1382,6 +1622,13 @@ def _reject_secrets(content: bytes, label: str) -> None:
             )
 
 
+def _reject_note_private_runtime(content: bytes, note_id: str) -> None:
+    if any(pattern.search(content) for pattern in _FORBIDDEN_NOTE_MARKERS):
+        raise ArtifactValidationError(
+            f"note {note_id} contains private provider trace, hidden reasoning, tool output, or raw audio"
+        )
+
+
 def _find_forbidden_keys(value: object) -> set[str]:
     found: set[str] = set()
     if isinstance(value, dict):
@@ -1423,6 +1670,9 @@ __all__ = [
     "AttachmentDelete",
     "AttachmentWrite",
     "ConfigWrite",
+    "NoteDelete",
+    "NoteIndexWrite",
+    "NoteWrite",
     "ProgramEventWrite",
     "TicketDelete",
     "TicketWrite",

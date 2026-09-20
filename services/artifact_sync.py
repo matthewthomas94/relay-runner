@@ -1033,6 +1033,10 @@ class ArtifactSyncEngine:
             return "config_collision"
         if path.startswith(".orchestrator/attachments/"):
             return "attachment_collision"
+        if path.startswith(".orchestrator/notes/") and base_oid is None:
+            return "note_display_id_collision"
+        if path.startswith(".orchestrator/notes/"):
+            return "same_note"
         if path.endswith(".md") and base_oid is None:
             return "display_id_collision"
         if path.endswith(".md"):
@@ -1056,7 +1060,9 @@ class ArtifactSyncEngine:
                     path,
                     env=env,
                 )
-            return self.store._git("write-tree", env=env).stdout.strip()
+            tree_id = self.store._git("write-tree", env=env).stdout.strip()
+            self.store._validate_note_catalog_entries(self.store._tree_entries(tree_id))
+            return tree_id
 
     def _validate_local_commits(self, base: str | None, head: str) -> str | None:
         commits = self._commits_since(base, head)
@@ -1271,6 +1277,7 @@ class ArtifactSyncEngine:
             output = self._quarantine_git_bytes(
                 repository, "ls-tree", "-r", "-z", "--full-tree", line[0]
             )
+            note_files: dict[str, bytes] = {}
             for record in output.split(b"\0"):
                 if not record:
                     continue
@@ -1284,6 +1291,11 @@ class ArtifactSyncEngine:
                     )
                 content = self._quarantine_git_bytes(repository, "cat-file", "blob", oid)
                 self.store._validate_content_for_path(path, content)
+                if path == ".orchestrator/note-index.jsonl" or path.startswith(
+                    ".orchestrator/notes/"
+                ):
+                    note_files[path] = content
+            self.store._validate_note_catalog_files(note_files)
         try:
             config = self._quarantine_git_bytes(
                 repository, "show", f"{head}:.orchestrator/config.toml"

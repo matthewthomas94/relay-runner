@@ -64,6 +64,8 @@ try:
     )
     from services.artifact_store import (
         ArtifactConcurrentUpdate,
+        ArtifactEventCollision,
+        ArtifactIdentityError,
         ArtifactMutation,
         ArtifactStore,
         ArtifactValidationError,
@@ -73,6 +75,7 @@ try:
         _ticket_front_matter_value,
     )
     from services.artifact_sync import ArtifactSyncEngine, ArtifactSyncMode
+    from services.project_notes import ProjectNoteManager
 except ModuleNotFoundError:  # Installed direct-script layout.
     from artifact_lifecycle import ArtifactLifecycleCoordinator  # type: ignore[no-redef]
     from automatic_retention import (
@@ -91,6 +94,8 @@ except ModuleNotFoundError:  # Installed direct-script layout.
     )
     from artifact_store import (  # type: ignore[no-redef]
         ArtifactConcurrentUpdate,
+        ArtifactEventCollision,
+        ArtifactIdentityError,
         ArtifactMutation,
         ArtifactStore,
         ArtifactValidationError,
@@ -100,6 +105,7 @@ except ModuleNotFoundError:  # Installed direct-script layout.
         _ticket_front_matter_value,
     )
     from artifact_sync import ArtifactSyncEngine, ArtifactSyncMode  # type: ignore[no-redef]
+    from project_notes import ProjectNoteManager  # type: ignore[no-redef]
 from command_actions import refined_command_summary, refined_ticket_title, resolve_command_action
 from continuity_incidents import (
     ContinuityIncidentDetector,
@@ -5850,6 +5856,89 @@ class Daemon:
             "idempotent": write.idempotent,
         }
 
+    def artifact_note_create(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        request_id: str,
+        created_at: str,
+        capture_started_at: str,
+        captured_at: str,
+        recording_state: str,
+        checkpoint_reason: str,
+        segments: object,
+        capture_ended_at: str | None = None,
+        provider: str | None = None,
+    ) -> dict[str, object]:
+        manager = self._artifact_note_manager(repo_path, project_scope_token)
+        return manager.create(
+            request_id=request_id,
+            created_at=created_at,
+            capture_started_at=capture_started_at,
+            captured_at=captured_at,
+            recording_state=recording_state,
+            checkpoint_reason=checkpoint_reason,
+            segments=segments,
+            capture_ended_at=capture_ended_at,
+            provider=provider,
+        )
+
+    def artifact_note_update(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        note_id: str,
+        request_id: str,
+        update: object,
+        provider: str | None = None,
+    ) -> dict[str, object]:
+        if not isinstance(update, Mapping):
+            raise ValueError("note update must be an object")
+        identity = update.get("identity")
+        if not isinstance(identity, Mapping) or identity.get("note_id") != note_id:
+            raise ValueError("note update path does not match its immutable identity")
+        manager = self._artifact_note_manager(repo_path, project_scope_token)
+        return manager.update(request_id=request_id, update=update, provider=provider)
+
+    def artifact_note_archive(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        note_id: str,
+        artifact_id: str,
+        archived_at: str,
+        request_id: str,
+        provider: str | None = None,
+    ) -> dict[str, object]:
+        manager = self._artifact_note_manager(repo_path, project_scope_token)
+        return manager.archive(
+            note_id=note_id,
+            artifact_id=artifact_id,
+            archived_at=archived_at,
+            request_id=request_id,
+            provider=provider,
+        )
+
+    def artifact_note_get(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+        identity: str,
+    ) -> dict[str, object]:
+        return self._artifact_note_manager(repo_path, project_scope_token).get(identity)
+
+    def artifact_note_list(
+        self,
+        *,
+        repo_path: str,
+        project_scope_token: str | None,
+    ) -> dict[str, object]:
+        return self._artifact_note_manager(repo_path, project_scope_token).list()
+
     def _artifact_retention_components(
         self,
         repo_path: str,
@@ -6340,6 +6429,12 @@ class Daemon:
             raise ValueError("project is not using the artifact-backed board writer")
         lifecycle.validate_scope(project_scope_token)
         return lifecycle
+
+    def _artifact_note_manager(
+        self, repo_path: str, project_scope_token: str | None
+    ) -> ProjectNoteManager:
+        lifecycle = self._artifact_board_lifecycle(repo_path, project_scope_token)
+        return ProjectNoteManager(lifecycle.store, device_id=self._artifact_device_id)
 
     # -- prompt rendering -------------------------------------------------
 
@@ -11416,6 +11511,20 @@ class Handler(BaseHTTPRequestHandler):
                     query=(query.get("query") or [""])[0],
                 )
 
+            if method == "GET" and segments == ["v1", "artifacts", "notes"]:
+                return 200, self.daemon.artifact_note_list(
+                    repo_path=(query.get("repo_path") or [""])[0],
+                    project_scope_token=(query.get("project_scope_token") or [None])[0],
+                )
+
+            if (method == "GET" and len(segments) == 4
+                    and segments[:3] == ["v1", "artifacts", "notes"]):
+                return 200, self.daemon.artifact_note_get(
+                    repo_path=(query.get("repo_path") or [""])[0],
+                    project_scope_token=(query.get("project_scope_token") or [None])[0],
+                    identity=unquote(segments[3]),
+                )
+
             if (method == "GET" and len(segments) == 4
                     and segments[:3] == ["v1", "artifacts", "history"]):
                 online = str((query.get("online") or ["false"])[0]).lower() in {
@@ -11654,6 +11763,49 @@ class Handler(BaseHTTPRequestHandler):
                     request_id=body.get("request_id"),
                 )
 
+            if method == "POST" and segments == ["v1", "artifacts", "notes", "create"]:
+                body = _read_body(self)
+                return 201, self.daemon.artifact_note_create(
+                    repo_path=body.get("repo_path", ""),
+                    project_scope_token=body.get("project_scope_token"),
+                    request_id=body.get("request_id", ""),
+                    created_at=body.get("created_at", ""),
+                    capture_started_at=body.get("capture_started_at", ""),
+                    captured_at=body.get("captured_at", ""),
+                    recording_state=body.get("recording_state", ""),
+                    checkpoint_reason=body.get("checkpoint_reason", ""),
+                    segments=body.get("segments", []),
+                    capture_ended_at=body.get("capture_ended_at"),
+                    provider=body.get("provider"),
+                )
+
+            if (method == "POST" and len(segments) == 5
+                    and segments[:3] == ["v1", "artifacts", "notes"]
+                    and segments[4] == "update"):
+                body = _read_body(self)
+                return 200, self.daemon.artifact_note_update(
+                    repo_path=body.get("repo_path", ""),
+                    project_scope_token=body.get("project_scope_token"),
+                    note_id=unquote(segments[3]),
+                    request_id=body.get("request_id", ""),
+                    update=body.get("update"),
+                    provider=body.get("provider"),
+                )
+
+            if (method == "POST" and len(segments) == 5
+                    and segments[:3] == ["v1", "artifacts", "notes"]
+                    and segments[4] == "archive"):
+                body = _read_body(self)
+                return 200, self.daemon.artifact_note_archive(
+                    repo_path=body.get("repo_path", ""),
+                    project_scope_token=body.get("project_scope_token"),
+                    note_id=unquote(segments[3]),
+                    artifact_id=body.get("artifact_id", ""),
+                    archived_at=body.get("archived_at", ""),
+                    request_id=body.get("request_id", ""),
+                    provider=body.get("provider"),
+                )
+
             if method == "POST" and segments == ["v1", "artifacts", "tickets", "write"]:
                 body = _read_body(self)
                 return 200, self.daemon.artifact_board_write_ticket(
@@ -11881,6 +12033,8 @@ class Handler(BaseHTTPRequestHandler):
             }
         except ArtifactConcurrentUpdate as e:
             return 409, {"error": str(e), "retryable": True}
+        except (ArtifactEventCollision, ArtifactIdentityError) as e:
+            return 409, {"error": str(e), "retryable": False}
         except ArtifactValidationError as e:
             return 422, {"error": str(e)}
         except ValueError as e:

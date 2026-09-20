@@ -22,7 +22,17 @@ Relay publishes only an already verified direct descendant with the normal refsp
 
 When both artifact histories advanced, Relay replays only commits carrying the same project ID plus complete Relay event/digest/device/actor trailers. Already-published event IDs with the same digest are skipped; a mismatched digest stops. Unowned or malformed local-ahead commits fail closed.
 
-Unrelated path changes replay automatically. Same-ticket, display-ID, config, attachment-name, delete/edit, and event-ID collisions return deterministic base/local/remote blob evidence. Resolution requires a choice for every conflicting path—local, remote, delete, or reviewed canonical bytes—and creates a new ordinary commit descending from the verified remote head. Resolution records the reconciled event IDs and digests so retrying an original event remains idempotent. Unrelated artifact roots require a separately reviewed identity recovery and cannot be resolved through the ordinary path chooser.
+Unrelated path changes replay automatically. Same-ticket, ticket display-ID,
+same-note, note display-ID, config, attachment-name, delete/edit, and event-ID
+collisions return deterministic base/local/remote blob evidence. A note display
+collision is expected when disconnected writers independently allocate the same
+unpadded numeric ID; immutable note artifact IDs distinguish both versions and
+neither is overwritten. Resolution requires a choice for every conflicting
+path—local, remote, delete, or reviewed canonical bytes—and creates a new
+ordinary commit descending from the verified remote head. Resolution records
+the reconciled event IDs and digests so retrying an original event remains
+idempotent. Unrelated artifact roots require a separately reviewed identity
+recovery and cannot be resolved through the ordinary path chooser.
 
 ## Recovery and rollback
 
