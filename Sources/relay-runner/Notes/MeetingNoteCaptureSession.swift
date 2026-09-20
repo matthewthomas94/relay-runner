@@ -20,6 +20,8 @@ actor MeetingNoteCaptureSession {
     private var sourceCaptureGenerations: [MeetingAudioSourceID: UInt64] = [:]
     private var sourceStartups: [MeetingAudioSourceID: SourceStartup] = [:]
     private var blockedSources: Set<MeetingAudioSourceID> = []
+    private var sourceStartInProgress = false
+    private var sourceStartWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         producer: MeetingTranscriptProducer,
@@ -74,6 +76,11 @@ actor MeetingNoteCaptureSession {
 
     private func startSources() async throws {
         guard captureIngress == nil else { return }
+        await waitForSourceStart()
+        guard captureIngress == nil else { return }
+        sourceStartInProgress = true
+        defer { finishSourceStart() }
+
         let ingress = MeetingCaptureIngress(maximumPendingItems: maximumPendingFrames)
         captureIngress = ingress
         captureIngressTask = Task { [weak self] in
@@ -104,13 +111,13 @@ actor MeetingNoteCaptureSession {
                 )
                 guard !ingress.isFinished, startedCaptures[captureID] != nil else {
                     discardStartup(for: sourceID, generation: generation)
-                    await capture.stop()
+                    await stopAfterCompletedStart(capture)
                     continue
                 }
                 let startBarrier = MeetingCaptureStartBarrier()
                 guard ingress.submit(.started(sourceID, generation, startBarrier)) else {
                     discardStartup(for: sourceID, generation: generation)
-                    await stopIfStarted(capture)
+                    await stopAfterCompletedStart(capture)
                     continue
                 }
                 await startBarrier.wait()
@@ -118,7 +125,7 @@ actor MeetingNoteCaptureSession {
             } catch let failure as MeetingAudioCaptureFailure {
                 lastError = failure
                 ingress.submit(.startFailed(failure, sourceID, generation))
-                await stopAfterFailedStart(capture)
+                await stopAfterCompletedStart(capture)
             } catch {
                 lastError = error
                 ingress.submit(.startFailed(
@@ -126,11 +133,11 @@ actor MeetingNoteCaptureSession {
                     sourceID,
                     generation
                 ))
-                await stopAfterFailedStart(capture)
+                await stopAfterCompletedStart(capture)
             }
         }
         if started == 0 {
-            await stopSourcesAndDrainIngress()
+            await stopSourcesAndDrainIngress(waitForSourceStart: false)
             throw lastError ?? MeetingAudioCaptureFailure.unavailable(
                 .microphone,
                 "No meeting audio source could start."
@@ -138,14 +145,7 @@ actor MeetingNoteCaptureSession {
         }
     }
 
-    private func stopIfStarted(_ capture: MeetingAudioCapturing) async {
-        guard startedCaptures.removeValue(forKey: ObjectIdentifier(capture)) != nil else {
-            return
-        }
-        await capture.stop()
-    }
-
-    private func stopAfterFailedStart(_ capture: MeetingAudioCapturing) async {
+    private func stopAfterCompletedStart(_ capture: MeetingAudioCapturing) async {
         startedCaptures.removeValue(forKey: ObjectIdentifier(capture))
         await capture.stop()
     }
@@ -158,10 +158,13 @@ actor MeetingNoteCaptureSession {
         }
     }
 
-    private func stopSourcesAndDrainIngress() async {
+    private func stopSourcesAndDrainIngress(waitForSourceStart: Bool = true) async {
         let ingress = captureIngress
         let ingressTask = captureIngressTask
         ingress?.finish()
+        if waitForSourceStart {
+            await self.waitForSourceStart()
+        }
         await stopStartedCaptures()
         await ingressTask?.value
         if let ingress {
@@ -171,6 +174,27 @@ actor MeetingNoteCaptureSession {
             captureIngress = nil
             captureIngressTask = nil
         }
+    }
+
+    private func waitForSourceStart() async {
+        while sourceStartInProgress {
+            await withCheckedContinuation { continuation in
+                sourceStartWaiters.append(continuation)
+            }
+        }
+    }
+
+    private func finishSourceStart() {
+        sourceStartInProgress = false
+        let waiters = sourceStartWaiters
+        sourceStartWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    func captureIngressIsClosedForTesting() -> Bool {
+        captureIngress?.isFinished ?? true
     }
 
     private func consume(_ ingress: MeetingCaptureIngress) async {

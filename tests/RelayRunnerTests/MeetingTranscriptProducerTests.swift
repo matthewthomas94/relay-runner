@@ -226,6 +226,51 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         }
     }
 
+    func testIngressOverloadStopsAdapterThatAcquiresResourcesAfterTeardown() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-overload-during-start",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "unused", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+        let setupGate = MeetingStartReturnGate()
+        let microphone = DelayedOverloadMeetingAudioCapture(setupGate: setupGate)
+        let session = MeetingNoteCaptureSession(
+            producer: producer,
+            captures: [microphone],
+            maximumPendingFrames: 1
+        )
+
+        let startTask = Task { () -> Bool in
+            do {
+                try await session.start(initiallyPaused: false)
+                return true
+            } catch {
+                return false
+            }
+        }
+        try await eventually {
+            microphone.stopCount == 1
+        }
+        XCTAssertFalse(microphone.isRunning)
+
+        await setupGate.open()
+        let startSucceeded = await startTask.value
+        XCTAssertFalse(startSucceeded)
+        XCTAssertEqual(microphone.stopCount, 2)
+        XCTAssertFalse(microphone.isRunning)
+        XCTAssertTrue(events.issues.contains { $0.code == .backpressureExceeded })
+
+        await XCTAssertThrowsErrorAsync(try await session.stop()) { error in
+            XCTAssertEqual(error as? MeetingProducerError, .backpressureExceeded)
+        }
+        XCTAssertEqual(microphone.stopCount, 2)
+        XCTAssertFalse(microphone.isRunning)
+    }
+
     func testPauseClosesIngressBeforeDelayedAdaptersAndDrainsAcceptedTail() async throws {
         let accepted = BlockingMeetingAcceptedAudioSink(blockAtRecordingCount: 2)
         let events = MeetingEventRecorder()
@@ -719,7 +764,7 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertEqual(drainedCount, acceptedLock.withTestLock { acceptedCount })
     }
 
-    func testPauseRestopsAdapterThatFinishesStartingAfterTeardown() async throws {
+    func testPauseWaitsForAndStopsAdapterThatFinishesStarting() async throws {
         let producer = MeetingTranscriptProducer(
             sessionID: "fixture-delayed-start-teardown",
             transcriber: FakeMeetingTranscriber { _ in
@@ -741,12 +786,12 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         try await session.pause()
         await XCTAssertThrowsErrorAsync(try await startTask.value)
 
-        XCTAssertEqual(microphone.stopCount, 2)
+        XCTAssertEqual(microphone.stopCount, 1)
         XCTAssertFalse(microphone.isRunning)
         _ = try await session.stop()
     }
 
-    func testPauseRestopsAdapterThatAcquiresResourcesThenFailsAfterTeardown() async throws {
+    func testPauseWaitsForAndStopsAdapterThatAcquiresResourcesThenFails() async throws {
         let producer = MeetingTranscriptProducer(
             sessionID: "fixture-delayed-start-failure-pause",
             transcriber: FakeMeetingTranscriber { _ in
@@ -767,18 +812,22 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         try await eventually {
             microphone.startCount == 1
         }
-        try await session.pause()
-        XCTAssertEqual(microphone.stopCount, 1)
+        let pauseTask = Task { try await session.pause() }
+        try await eventually {
+            await session.captureIngressIsClosedForTesting()
+        }
+        XCTAssertEqual(microphone.stopCount, 0)
 
         await startSetupGate.open()
+        try await pauseTask.value
         await XCTAssertThrowsErrorAsync(try await startTask.value)
 
-        XCTAssertEqual(microphone.stopCount, 2)
+        XCTAssertEqual(microphone.stopCount, 1)
         XCTAssertFalse(microphone.isRunning)
         _ = try await session.stop()
     }
 
-    func testStopRestopsAdapterThatAcquiresResourcesThenFailsAfterTeardown() async throws {
+    func testStopWaitsForAndStopsAdapterThatAcquiresResourcesThenFails() async throws {
         let producer = MeetingTranscriptProducer(
             sessionID: "fixture-delayed-start-failure-stop",
             transcriber: FakeMeetingTranscriber { _ in
@@ -799,14 +848,30 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         try await eventually {
             microphone.startCount == 1
         }
-        _ = try await session.stop()
-        XCTAssertEqual(microphone.stopCount, 1)
+        let stopTask = Task { try await session.stop() }
+        try await eventually {
+            await session.captureIngressIsClosedForTesting()
+        }
+        XCTAssertEqual(microphone.stopCount, 0)
 
         await startSetupGate.open()
+        _ = try await stopTask.value
         await XCTAssertThrowsErrorAsync(try await startTask.value)
 
-        XCTAssertEqual(microphone.stopCount, 2)
+        XCTAssertEqual(microphone.stopCount, 1)
         XCTAssertFalse(microphone.isRunning)
+    }
+
+    func testRapidRestartAfterDelayedTypedFailurePreservesNewOwnerAndContent() async throws {
+        try await assertRapidRestartOwnership(after: .typedFailure)
+    }
+
+    func testRapidRestartAfterDelayedOrdinaryFailurePreservesNewOwnerAndContent() async throws {
+        try await assertRapidRestartOwnership(after: .ordinaryFailure)
+    }
+
+    func testRapidRestartAfterDelayedSuccessPreservesNewOwnerAndContent() async throws {
+        try await assertRapidRestartOwnership(after: .success)
     }
 
     func testMissingLocalModelFailsBeforeAnyAudioIsAccepted() async {
@@ -1325,6 +1390,86 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertTrue(events.issues.contains { $0.code == .backpressureExceeded })
     }
 
+    private func assertRapidRestartOwnership(
+        after delayedOutcome: DelayedMeetingStartOutcome
+    ) async throws {
+        let startGate = MeetingStartReturnGate()
+        let accepted = MeetingAcceptedAudioRecorder()
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-rapid-restart-\(delayedOutcome)",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: request.samples.map { String(Int($0)) }.joined(separator: " "),
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) },
+            eventSink: { events.record($0) }
+        )
+        let microphone = AttemptOwnedMeetingAudioCapture(
+            delayedOutcome: delayedOutcome,
+            firstStartGate: startGate
+        )
+        let session = MeetingNoteCaptureSession(
+            producer: producer,
+            captures: [microphone]
+        )
+
+        let firstStart = Task { () -> Bool in
+            do {
+                try await session.start(initiallyPaused: false)
+                return true
+            } catch {
+                return false
+            }
+        }
+        try await eventually {
+            microphone.startCount == 1
+        }
+
+        let pauseTask = Task { try await session.pause() }
+        try await eventually {
+            await session.captureIngressIsClosedForTesting()
+        }
+        XCTAssertEqual(microphone.liveAttempts, [])
+
+        await startGate.open()
+        try await pauseTask.value
+        let firstStartSucceeded = await firstStart.value
+        XCTAssertFalse(firstStartSucceeded)
+        XCTAssertEqual(microphone.liveAttempts, [])
+
+        try await session.resume()
+        try await eventually {
+            accepted.audio.map(\.samples) == [[22]]
+        }
+        XCTAssertEqual(microphone.liveAttempts, [2])
+        XCTAssertEqual(
+            events.sourceStates.last { $0.0 == .microphone }?.1,
+            .capturing
+        )
+
+        microphone.emit([33], from: 2)
+        try await eventually {
+            accepted.audio.map(\.samples) == [[22], [33]]
+        }
+        let checkpoint = await session.checkpoint()
+        XCTAssertEqual(checkpoint.metrics.acceptedSamplesBySource[.microphone], 2)
+        XCTAssertEqual(checkpoint.metrics.droppedAudioSampleCount, 0)
+
+        let boundary = try await session.stop()
+        XCTAssertEqual(microphone.liveAttempts, [])
+        XCTAssertEqual(accepted.audio.map(\.samples), [[22], [33]])
+        XCTAssertFalse(accepted.audio.contains { $0.samples.contains(91) })
+        XCTAssertEqual(boundary.metrics.droppedAudioSampleCount, 0)
+        XCTAssertTrue(events.revisions.contains {
+            $0.isFinal && $0.sourceID == .microphone && $0.text == "22 33"
+        })
+    }
+
     private var smallConfiguration: MeetingTranscriptProducer.Configuration {
         MeetingTranscriptProducer.Configuration(
             sampleRate: 10,
@@ -1346,6 +1491,144 @@ final class MeetingTranscriptProducerTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTFail("Timed out waiting for asynchronous fixture state")
+    }
+}
+
+private enum DelayedMeetingStartOutcome {
+    case success
+    case typedFailure
+    case ordinaryFailure
+}
+
+private enum DelayedMeetingStartError: Error {
+    case failed
+}
+
+private final class AttemptOwnedMeetingAudioCapture: MeetingAudioCapturing, @unchecked Sendable {
+    let sourceID = MeetingAudioSourceID.microphone
+
+    private let delayedOutcome: DelayedMeetingStartOutcome
+    private let firstStartGate: MeetingStartReturnGate
+    private let lock = NSLock()
+    private var starts = 0
+    private var resources: Set<Int> = []
+    private var handlers: [Int: @Sendable (MeetingAudioFrame) -> Void] = [:]
+    private var nextPresentationTime: UInt64 = 1_000_000_000
+
+    init(
+        delayedOutcome: DelayedMeetingStartOutcome,
+        firstStartGate: MeetingStartReturnGate
+    ) {
+        self.delayedOutcome = delayedOutcome
+        self.firstStartGate = firstStartGate
+    }
+
+    var startCount: Int { lock.withTestLock { starts } }
+    var liveAttempts: [Int] { lock.withTestLock { resources.sorted() } }
+
+    func start(
+        sampleHandler: @escaping @Sendable (MeetingAudioFrame) -> Void,
+        eventHandler: @escaping @Sendable (MeetingAudioCaptureEvent) -> Void
+    ) async throws -> MeetingCaptureSourceInfo {
+        let attempt = lock.withTestLock {
+            starts += 1
+            return starts
+        }
+        if attempt == 1 {
+            await firstStartGate.wait()
+        }
+        lock.withTestLock {
+            resources.insert(attempt)
+            handlers[attempt] = sampleHandler
+        }
+
+        if attempt == 1 {
+            emit([91], from: attempt)
+            switch delayedOutcome {
+            case .success:
+                break
+            case .typedFailure:
+                throw MeetingAudioCaptureFailure.startFailed(
+                    .microphone,
+                    "fixture delayed typed failure"
+                )
+            case .ordinaryFailure:
+                throw DelayedMeetingStartError.failed
+            }
+        } else {
+            emit([22], from: attempt)
+        }
+
+        return MeetingCaptureSourceInfo(
+            sourceID: sourceID,
+            routeID: "fixture-attempt-\(attempt)",
+            sampleRate: 10,
+            channelCount: 1
+        )
+    }
+
+    func stop() async {
+        lock.withTestLock {
+            resources.removeAll()
+            handlers.removeAll()
+        }
+    }
+
+    func emit(_ samples: [Float], from attempt: Int) {
+        let callback: ((@Sendable (MeetingAudioFrame) -> Void)?, UInt64) = lock.withTestLock {
+            let presentationTime = nextPresentationTime
+            nextPresentationTime += UInt64(samples.count) * 100_000_000
+            return (handlers[attempt], presentationTime)
+        }
+        callback.0?(MeetingAudioFrame(
+            samples: samples,
+            presentationTimeNanoseconds: callback.1
+        ))
+    }
+}
+
+private final class DelayedOverloadMeetingAudioCapture: MeetingAudioCapturing,
+    @unchecked Sendable
+{
+    let sourceID = MeetingAudioSourceID.microphone
+
+    private let setupGate: MeetingStartReturnGate
+    private let lock = NSLock()
+    private var running = false
+    private var stops = 0
+
+    init(setupGate: MeetingStartReturnGate) {
+        self.setupGate = setupGate
+    }
+
+    var isRunning: Bool { lock.withTestLock { running } }
+    var stopCount: Int { lock.withTestLock { stops } }
+
+    func start(
+        sampleHandler: @escaping @Sendable (MeetingAudioFrame) -> Void,
+        eventHandler: @escaping @Sendable (MeetingAudioCaptureEvent) -> Void
+    ) async throws -> MeetingCaptureSourceInfo {
+        for value: Float in [11, 22] {
+            sampleHandler(MeetingAudioFrame(
+                samples: [value],
+                presentationTimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+            ))
+        }
+        await setupGate.wait()
+        lock.withTestLock { running = true }
+        return MeetingCaptureSourceInfo(
+            sourceID: sourceID,
+            routeID: "fixture-delayed-overload",
+            sampleRate: 10,
+            channelCount: 1
+        )
+    }
+
+    func stop() async {
+        lock.withTestLock {
+            stops += 1
+            running = false
+        }
     }
 }
 

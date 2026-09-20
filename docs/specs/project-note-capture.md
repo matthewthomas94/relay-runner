@@ -90,7 +90,7 @@ target set to macOS 14). The deterministic 60-minute case feeds two sources at
 10 synthetic samples per second. Its producer counters reported 7,200 accepted
 chunks, maximum queue depth 2, maximum sampled audio-buffer storage 4,720 bytes,
 fixture processing latency 3 ms, and zero dropped samples. The complete filtered
-suite executed 31 tests in about 1.6 seconds after build. The enclosing build
+suite executes 35 tests. The enclosing build
 and test command reached 121,569,280 bytes maximum RSS, which includes SwiftPM,
 the compiler, linked FluidAudio, and the XCTest host and therefore is not a
 producer-only memory measurement.
@@ -132,7 +132,11 @@ state. Only an explicit recovery event or a fresh successful start reopens that
 source. Each start receives a capture generation. Frames emitted before that
 start returns are held in a bounded per-source buffer behind an ordered success
 marker; success releases them in order, while interruption or failure discards
-them. Stale generations cannot revive capture, and a failure handled during
+them. Pause and stop wait for the complete in-flight source-start operation,
+including its failure and zero-success cleanup, before a later resume can reuse
+an adapter. Every obsolete attempt is stopped unconditionally after completion,
+even when ingress overload already removed its tracked ownership. Stale
+generations cannot revive capture, and a failure handled during
 `start()` cannot be overwritten as `capturing` when the adapter's start call
 later returns. Model failure,
 permission denial, source loss, format failure, transcription failure,
