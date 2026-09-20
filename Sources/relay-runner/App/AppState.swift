@@ -665,8 +665,25 @@ final class AppState {
         programBoardOverlay.setEndSessionHandler { [weak self] in
             self?.endSession()
         }
+        programBoardOverlay.setNoteTakerHandlers(
+            start: { [weak self] projectPath in
+                self?.startNoteTaker(workingDirectory: projectPath) ?? false
+            },
+            stop: { [weak self] in self?.stopNoteTaker() }
+        )
         programBoardOverlay.setSessionActiveProvider { [weak self] in
             self?.hasActiveSession ?? false
+        }
+        programBoardOverlay.setNoteCaptureSnapshotProvider { [weak self] in
+            self?.meetingNoteSnapshot ?? MeetingNoteCoordinatorSnapshot(
+                phase: .idle,
+                noteID: nil,
+                project: nil,
+                liveHypothesisCount: 0,
+                durableSegmentCount: 0,
+                syncState: nil,
+                errorMessage: nil
+            )
         }
         programBoardOverlay.setBoardRouteResolver { [weak self] in
             self?.workspaceActivitySnapshot.route ?? .unavailable
