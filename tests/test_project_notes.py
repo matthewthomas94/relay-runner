@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 from services.artifact_retention import ArtifactRetentionManager
 from services.artifact_store import (
@@ -166,8 +167,11 @@ class ProjectNoteTests(unittest.TestCase):
             operations=(ConfigWrite(old_config.encode()),),
         ))
 
+        start = Barrier(8)
+
         def create(index):
             manager = ProjectNoteManager(self.store, device_id=f"device-{index}")
+            start.wait()
             return manager.create(
                 request_id=f"concurrent-{index}",
                 created_at=f"2026-09-20T08:00:0{index}Z",
@@ -178,25 +182,25 @@ class ProjectNoteTests(unittest.TestCase):
                 segments=[self.segment(f"segment-{index}", f"text {index}", second=index)],
             )
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(create, range(1, 5)))
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(create, range(1, 9)))
         self.assertEqual(
             sorted(result["note"]["identity"]["note_id"] for result in results),
-            ["PX-N1", "PX-N2", "PX-N3", "PX-N4"],
+            [f"PX-N{number}" for number in range(1, 9)],
         )
 
-        highest = next(result for result in results if result["note"]["identity"]["note_id"] == "PX-N4")
+        highest = next(result for result in results if result["note"]["identity"]["note_id"] == "PX-N8")
         identity = highest["note"]["identity"]
         archived = self.manager.archive(
-            note_id="PX-N4",
+            note_id="PX-N8",
             artifact_id=identity["artifact_id"],
             archived_at="2026-09-20T09:00:00Z",
             request_id="archive-highest",
         )
         self.assertFalse(archived["materialized"])
         self.set_config(next_note_id=1)
-        next_note = self.create("after-archive", second=6)
-        self.assertEqual(next_note["note"]["identity"]["note_id"], "PX-N5")
+        next_note = self.create("after-archive", second=9)
+        self.assertEqual(next_note["note"]["identity"]["note_id"], "PX-N9")
 
     def test_archived_history_is_verified_and_notes_never_enter_ticket_lifecycle(self):
         created = self.create("history", text="A durable meeting decision")

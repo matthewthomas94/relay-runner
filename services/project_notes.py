@@ -112,7 +112,7 @@ class ProjectNoteManager:
             self.store.recover()
             return self._prior_create(event_id, prior[0], request_digest)
 
-        for attempt in range(4):
+        with self.store._writer_lock():
             snapshot = self.store.snapshot()
             config = _config(snapshot.files)
             catalog = _catalog(snapshot.files, self.store.project_id)
@@ -170,30 +170,25 @@ class ProjectNoteManager:
                 "creation_request_sha256": request_digest,
             }
             config_bytes = _set_next_note_id(snapshot.files[".orchestrator/config.toml"], number + 1)
-            try:
-                write = self.store.mutate(ArtifactMutation(
-                    event_id=event_id,
-                    actor_type="user",
-                    device_id=self.device_id,
-                    expected_base=snapshot.commit_id,
-                    provider=provider,
-                    operations=(
-                        ConfigWrite(config_bytes),
-                        NoteWrite(note_id, artifact_id, self.store.project_id, render_note_document(document)),
-                        NoteIndexWrite(encode_note_index(catalog, project_id=self.store.project_id)),
-                    ),
-                    summary=f"Create Relay project note {note_id}",
-                ))
-                return self._response(
-                    document,
-                    commit_id=write.commit_id,
-                    idempotent=write.idempotent,
-                    materialized=True,
-                )
-            except ArtifactConcurrentUpdate:
-                if attempt == 3:
-                    raise
-        raise AssertionError("unreachable")
+            write = self.store.mutate(ArtifactMutation(
+                event_id=event_id,
+                actor_type="user",
+                device_id=self.device_id,
+                expected_base=snapshot.commit_id,
+                provider=provider,
+                operations=(
+                    ConfigWrite(config_bytes),
+                    NoteWrite(note_id, artifact_id, self.store.project_id, render_note_document(document)),
+                    NoteIndexWrite(encode_note_index(catalog, project_id=self.store.project_id)),
+                ),
+                summary=f"Create Relay project note {note_id}",
+            ))
+            return self._response(
+                document,
+                commit_id=write.commit_id,
+                idempotent=write.idempotent,
+                materialized=True,
+            )
 
     def update(
         self,
