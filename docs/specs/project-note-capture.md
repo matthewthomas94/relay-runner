@@ -84,7 +84,7 @@ target set to macOS 14). The deterministic 60-minute case feeds two sources at
 10 synthetic samples per second. Its producer counters reported 7,200 accepted
 chunks, maximum queue depth 2, maximum sampled audio-buffer storage 4,720 bytes,
 fixture processing latency 3 ms, and zero dropped samples. The complete filtered
-suite executed 22 tests in about 0.8 seconds after build. The enclosing build
+suite executed 23 tests in about 0.8 seconds after build. The enclosing build
 and test command reached 642,351,104 bytes maximum RSS, which includes SwiftPM,
 the compiler, linked FluidAudio, and the XCTest host and therefore is not a
 producer-only memory measurement.
@@ -119,7 +119,9 @@ only in their matching state.
 Stop uses the same adapter-stop and ingress-drain barrier before it drains final
 ASR tails and emits one `MeetingProducerFinalBoundary`. Adapter ownership remains
 separate from source availability, so a running adapter that reports a later
-format/source failure is still stopped during teardown. Model failure,
+format/source failure is still stopped during teardown. Per-source event
+generations also prevent a failure handled during `start()` from being
+overwritten as `capturing` when the adapter's start call later returns. Model failure,
 permission denial, source loss, format failure, transcription failure,
 checkpoint failure, and backpressure are typed and preserve already emitted
 revisions. Source recovery starts a new epoch.

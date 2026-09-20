@@ -311,6 +311,41 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         })
     }
 
+    func testFailedEventConsumedBeforeStartReturnsRemainsUnavailable() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-failure-during-start",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "unused", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+        let startReturnGate = MeetingStartReturnGate()
+        let system = FakeMeetingAudioCapture(
+            sourceID: .systemAudio,
+            samples: [],
+            eventOnStart: .failed(.unsupportedFormat(.systemAudio, "fixture format changed")),
+            startReturnGate: startReturnGate
+        )
+        let session = MeetingNoteCaptureSession(producer: producer, captures: [system])
+
+        let startTask = Task { try await session.start(initiallyPaused: false) }
+        try await eventually {
+            events.sourceStates.last { $0.0 == .systemAudio }?.1 == .unavailable
+        }
+        await startReturnGate.open()
+        try await startTask.value
+
+        XCTAssertEqual(
+            events.sourceStates.last { $0.0 == .systemAudio }?.1,
+            .unavailable
+        )
+        _ = try await session.stop()
+        XCTAssertEqual(system.startCount, 1)
+        XCTAssertEqual(system.stopCount, 1)
+    }
+
     func testCaptureIngressCloseIsAtomicWithConcurrentSubmissions() async {
         let submissionCount = 64
         let ingress = MeetingCaptureIngress(maximumPendingItems: submissionCount)
@@ -962,6 +997,7 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
     private let startDelayNanoseconds: UInt64
     private let startFailure: MeetingAudioCaptureFailure?
     private let eventOnStart: MeetingAudioCaptureEvent?
+    private let startReturnGate: MeetingStartReturnGate?
     private let lock = NSLock()
     private var starts = 0
     private var stopBegins = 0
@@ -982,7 +1018,8 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
         stopDelayNanoseconds: UInt64 = 0,
         startDelayNanoseconds: UInt64 = 0,
         startFailure: MeetingAudioCaptureFailure? = nil,
-        eventOnStart: MeetingAudioCaptureEvent? = nil
+        eventOnStart: MeetingAudioCaptureEvent? = nil,
+        startReturnGate: MeetingStartReturnGate? = nil
     ) {
         self.sourceID = sourceID
         self.batches = samples
@@ -991,6 +1028,7 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
         self.startDelayNanoseconds = startDelayNanoseconds
         self.startFailure = startFailure
         self.eventOnStart = eventOnStart
+        self.startReturnGate = startReturnGate
     }
 
     func start(
@@ -1010,6 +1048,7 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
         if let startFailure { throw startFailure }
         emit(batches)
         if let eventOnStart { eventHandler(eventOnStart) }
+        if let startReturnGate { await startReturnGate.wait() }
         return MeetingCaptureSourceInfo(
             sourceID: sourceID,
             routeID: "fixture-\(sourceID.rawValue)",
@@ -1042,6 +1081,28 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
                 samples: batch,
                 presentationTimeNanoseconds: callback.1
             ))
+        }
+    }
+}
+
+private actor MeetingStartReturnGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        for continuation in pending {
+            continuation.resume()
         }
     }
 }

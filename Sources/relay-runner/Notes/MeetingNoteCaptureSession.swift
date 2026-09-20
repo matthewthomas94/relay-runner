@@ -10,6 +10,7 @@ actor MeetingNoteCaptureSession {
     private var startedCaptures: [ObjectIdentifier: MeetingAudioCapturing] = [:]
     private var captureIngress: MeetingCaptureIngress?
     private var captureIngressTask: Task<Void, Never>?
+    private var sourceEventGenerations: [MeetingAudioSourceID: UInt64] = [:]
 
     init(
         producer: MeetingTranscriptProducer,
@@ -76,6 +77,7 @@ actor MeetingNoteCaptureSession {
             guard !ingress.isFinished else { break }
             let sourceID = capture.sourceID
             let captureID = ObjectIdentifier(capture)
+            let eventGeneration = sourceEventGenerations[sourceID, default: 0]
             startedCaptures[captureID] = capture
             do {
                 _ = try await capture.start(
@@ -90,7 +92,9 @@ actor MeetingNoteCaptureSession {
                     await capture.stop()
                     continue
                 }
-                await producer.markSourceCapturing(sourceID)
+                if sourceEventGenerations[sourceID, default: 0] == eventGeneration {
+                    await producer.markSourceCapturing(sourceID)
+                }
                 started += 1
             } catch let failure as MeetingAudioCaptureFailure {
                 lastError = failure
@@ -215,6 +219,7 @@ actor MeetingNoteCaptureSession {
                     presentationTimeNanoseconds: frame.presentationTimeNanoseconds
                 )
             case .event(let event, let source):
+                sourceEventGenerations[source, default: 0] &+= 1
                 switch event {
                 case .interrupted(let message):
                     try await producer.sourceWasInterrupted(source, message: message)
