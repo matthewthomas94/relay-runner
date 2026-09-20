@@ -75,6 +75,9 @@ The shared Swift contracts are in
 segment snapshot per meaningful checkpoint. The recorder owns batching and must
 not call the writer once per partial STT callback. Storage does not start or
 stop Codex, Claude, provider sessions, foreground modes, key routing, or audio.
+The recorder's source, timing, revision, bounded-queue, pause, final-boundary,
+and replay contracts are documented in
+[Project note capture and transcription](project-note-capture.md).
 
 ## API and project scope
 

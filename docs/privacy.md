@@ -7,6 +7,7 @@ Relay Runner keeps speech processing and project coordination on the Mac, while 
 ### Stays local by default
 
 - Raw microphone audio is captured by the app and passed to local Parakeet speech recognition.
+- When the user explicitly starts Note Taker, supported computer/meeting audio is also captured and transcribed locally. Bounded unfinished audio may be retained in app-owned recovery storage until RR-368 commits or discards it; raw audio is never written to project Git artifacts.
 - Kokoro synthesizes response audio locally and writes temporary playback files.
 - Provider session processes, the orchestrator daemon, and the messenger run as local processes.
 - The project registry, permission state, local caches, and run databases live under `~/Library/Application Support/relay-runner/`.
@@ -21,6 +22,7 @@ Relay Runner does not provide a hosted speech, repository, or ticket service.
 - A Relay Vision screenshot is returned to the requesting agent. It can therefore be transmitted to that agent's provider.
 - Relay Actions results, orchestrator summaries, and public worker progress can become provider context.
 - Git content leaves the Mac when the user or an agent explicitly pushes or syncs it.
+- Project-note transcripts are intentional Git-backed project content and can leave the Mac through the project's configured artifact sync. Starting capture does not itself start a provider or send transcript text to one.
 - First-run setup downloads provider tools when missing, Python packages, Kokoro files, and Parakeet models. Sparkle checks the configured GitHub update feed.
 
 OpenAI and Anthropic process data under their own product settings and terms. Relay Runner cannot change provider retention, training, organization, or regional settings.
@@ -32,7 +34,7 @@ OpenAI and Anthropic process data under their own product settings and terms. Re
 | Microphone | Capture speech for local transcription. | Voice input is unavailable; other app surfaces can still open. |
 | Accessibility | Host Relay Actions clicks, typing, keys, scrolling, window automation, and global shortcut observation. | Voice can still use the menu-bar control; Relay Actions and some shortcuts are unavailable. |
 | Input Monitoring | Listen-only fallback for global shortcuts, including non-modifier activation keys and the Workspace hotkey when Accessibility is absent. | Caps Lock and menu controls still provide reduced voice operation; affected global shortcuts are unavailable. |
-| Screen Recording | Capture the selected display when Relay Vision is explicitly invoked. | Relay Vision returns a permission error; voice and Relay Actions do not require screenshot access. |
+| Screen Recording | Capture the selected display when Relay Vision is explicitly invoked, or computer/meeting audio when the user explicitly starts Note Taker. | Relay Vision returns a permission error and Note Taker visibly reports that computer audio is unavailable; microphone capture, ordinary voice, and Relay Actions can continue independently. |
 
 Accessibility and Screen Recording belong to Relay Runner.app because the app hosts the privileged operation. macOS may require the app to relaunch after a grant or revoke. Settings shows the current permission state and recovery routes.
 

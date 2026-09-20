@@ -35,10 +35,10 @@
     <string>14.0</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Relay Runner uses the microphone for speech-to-text.</string>
-    <!-- Screen Recording is only requested when the Relay Actions MCP server
-         takes a screenshot for UAT or dashboard automation. Voice features
-         work without it. The TCC prompt copies this string verbatim. -->
+    <!-- Screen Recording is requested by the app-hosted Relay Vision screenshot
+         path and by an explicitly started Note Taker system-audio stream. Normal
+         voice commands and Relay Actions work without it. -->
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Relay Runner uses Screen Recording only when the optional Relay Vision screenshot tool is invoked. Voice transcription, speech, and Relay Actions work without this permission.</string>
+    <string>Relay Runner uses Screen Recording for optional Relay Vision screenshots and, when you start Note Taker, to capture computer and meeting audio. Normal voice commands and Relay Actions work without this permission.</string>
 </dict>
 </plist>
