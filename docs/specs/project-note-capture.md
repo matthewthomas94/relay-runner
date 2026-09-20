@@ -66,13 +66,17 @@ batches, not every partial callback.
 
 ## Bounded processing and backpressure
 
-The producer retains at most the current window plus overlap per active source,
-plus a configurable bounded transcription queue (eight windows by default).
-Accepted chunks reach the RR-368 sink before entering the ASR buffer. When the
-queue is busy, a superseded partial refresh may be skipped with a typed issue;
-accepted audio remains available for the final window. If a final window cannot
-be queued, capture enters `failed` and surfaces `backpressure_exceeded` instead
-of silently dropping speech.
+Capture callbacks enter one tracked consumer through a 32-item bounded ingress
+(audio frames and rare source events share the bound);
+there is no task allocation per frame. Accepted chunks reach the RR-368 sink
+before entering the ASR buffer. The producer then retains at most the current
+window plus overlap per active source, plus a configurable bounded transcription
+queue (eight windows by default). If capture ingress overflows, dropped frame and
+sample counters are recorded, every started adapter is stopped, and capture
+enters `failed` with `backpressure_exceeded`. When the transcription queue is
+busy, a superseded partial refresh may be skipped with a typed issue; accepted
+audio remains available for the final window. If a final window cannot be
+queued, capture likewise fails instead of silently dropping speech.
 
 On 2026-09-20, `/usr/bin/time -l swift test --filter
 MeetingTranscriptProducerTests` ran on the dispatch Mac (arm64, the Swift test
@@ -80,7 +84,7 @@ target set to macOS 14). The deterministic 60-minute case feeds two sources at
 10 synthetic samples per second. Its producer counters reported 7,200 accepted
 chunks, maximum queue depth 2, maximum sampled audio-buffer storage 4,720 bytes,
 fixture processing latency 3 ms, and zero dropped samples. The complete filtered
-suite executed 16 tests in about 0.3 seconds after build. The enclosing build
+suite executed 19 tests in about 0.3 seconds after build. The enclosing build
 and test command reached 642,351,104 bytes maximum RSS, which includes SwiftPM,
 the compiler, linked FluidAudio, and the XCTest host and therefore is not a
 producer-only memory measurement.
@@ -102,17 +106,20 @@ use, thermal behavior, and real simultaneous paths.
 
 The capture session reads the actual Caps Lock state by default. Starting while
 Caps Lock is on prepares the local model but starts paused and accepts no audio.
-The exclusive owner calls `pause()` to change the producer state gate before it
-stops both callbacks. The producer finalizes the accepted pre-pause tail and
-rejects all later samples until `resume()` creates new timing epochs. Rapid
-duplicate pause/resume calls are idempotent only in their matching state; stale
-callbacks cannot be accepted into a paused producer.
+The exclusive owner calls `pause()` to stop every adapter that successfully
+started, closes the capture ingress, and awaits its single consumer before the
+producer changes state. Frames emitted by an adapter before its `stop()` returns
+are therefore accepted and finalized as the pre-pause tail; later callbacks are
+rejected by the closed ingress. `resume()` creates new timing epochs. Rapid
+duplicate pause/resume calls are idempotent only in their matching state.
 
-Stop first stops both capture adapters, drains accepted final tails, and emits
-one `MeetingProducerFinalBoundary`. Model failure, permission denial, source
-loss, format failure, transcription failure, checkpoint failure, and
-backpressure are typed and preserve already emitted revisions. Source recovery
-starts a new epoch.
+Stop uses the same adapter-stop and ingress-drain barrier before it drains final
+ASR tails and emits one `MeetingProducerFinalBoundary`. Adapter ownership remains
+separate from source availability, so a running adapter that reports a later
+format/source failure is still stopped during teardown. Model failure,
+permission denial, source loss, format failure, transcription failure,
+checkpoint failure, and backpressure are typed and preserve already emitted
+revisions. Source recovery starts a new epoch.
 
 `MeetingProducerCheckpoint` records the shared timeline origin and source
 cursors, epochs, the next contiguous unfinished window per epoch, successful

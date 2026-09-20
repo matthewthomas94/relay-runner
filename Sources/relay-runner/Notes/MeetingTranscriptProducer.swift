@@ -236,6 +236,7 @@ actor MeetingTranscriptProducer {
         do {
             try await acceptedAudioSink(MeetingAcceptedAudio(descriptor: descriptor, samples: samples))
         } catch {
+            metrics.droppedAudioFrameCount += 1
             metrics.droppedAudioSampleCount += samples.count
             let producerError = MeetingProducerError.checkpointFailed(error.localizedDescription)
             terminalError = producerError
@@ -264,8 +265,32 @@ actor MeetingTranscriptProducer {
         await Task.yield()
     }
 
-    /// The state gate changes before this method suspends, so capture owners can
-    /// stop their callbacks afterward without retaining speech from the paused interval.
+    func recordCaptureIngressDrops(
+        droppedFrameCount: Int,
+        droppedEventCount: Int,
+        droppedSamplesBySource: [MeetingAudioSourceID: Int],
+        maximumPendingFrames: Int
+    ) {
+        guard droppedFrameCount > 0 || droppedEventCount > 0 else { return }
+        metrics.droppedAudioFrameCount += droppedFrameCount
+        metrics.droppedAudioSampleCount += droppedSamplesBySource.values.reduce(0, +)
+        guard terminalError == nil else { return }
+
+        let producerError = MeetingProducerError.backpressureExceeded
+        terminalError = producerError
+        state = .failed
+        let affectedSources = droppedSamplesBySource.filter { $0.value > 0 }.map(\.key)
+        emitIssue(
+            code: .backpressureExceeded,
+            sourceID: affectedSources.count == 1 ? affectedSources[0] : nil,
+            message: "Meeting audio exceeded the bounded \(maximumPendingFrames)-item capture ingress; \(droppedFrameCount) frame(s) and \(droppedEventCount) event(s) were not accepted and capture stopped.",
+            recoverable: true
+        )
+        emit(.state(.failed))
+    }
+
+    /// Capture owners stop their adapters and drain accepted ingress before
+    /// calling this method; the state gate also rejects any stale direct ingest.
     func pause() async throws {
         guard state == .recording else {
             if state == .paused { return }

@@ -183,6 +183,7 @@ struct MeetingProducerMetrics: Codable, Equatable, Sendable {
     var processedWindowCount = 0
     var queuedWindowCount = 0
     var maximumQueuedWindowCount = 0
+    var droppedAudioFrameCount = 0
     var droppedAudioSampleCount = 0
     var skippedPartialRevisionCount = 0
     var transcriptionFailureCount = 0
