@@ -120,6 +120,78 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertTrue(storeIsEmpty)
     }
 
+    func testStopDrainsFailedPauseCheckpointBeforePublishingCompletion() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        await writer.failNextUpdate()
+
+        await coordinator.setCapsLock(isOn: true)
+        let failedPause = await coordinator.snapshot()
+        XCTAssertEqual(failedPause.phase, .error)
+
+        let saved = try await coordinator.stop()
+        let attempts = await writer.attemptedRequestIDs
+        let updates = await writer.updates
+        let storeIsEmpty = await store.isEmpty
+
+        XCTAssertEqual(saved.phase, .saved)
+        XCTAssertEqual(attempts.count, 3)
+        XCTAssertEqual(attempts[0], attempts[1])
+        XCTAssertNotEqual(attempts[1], attempts[2])
+        XCTAssertEqual(updates.map(\.update.recordingState), [.paused, .completed])
+        XCTAssertEqual(updates.map(\.update.checkpointReason), [.pause, .complete])
+        XCTAssertNil(updates[0].update.captureEndedAt)
+        XCTAssertNotNil(updates[1].update.captureEndedAt)
+        XCTAssertTrue(storeIsEmpty)
+    }
+
+    func testStopSerializesCompletionAfterInFlightPauseCheckpoint() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        await writer.suspendNextUpdate()
+
+        let pauseTask = Task { await coordinator.setCapsLock(isOn: true) }
+        await writer.waitForSuspendedUpdate()
+        let stopTask = Task { try await coordinator.stop() }
+        for _ in 0..<200 {
+            if await coordinator.snapshot().phase == .stopping { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        let attemptsWhilePauseIsSuspended = await writer.attemptedRequestIDs
+        let stopping = await coordinator.snapshot()
+        XCTAssertEqual(stopping.phase, .stopping)
+        XCTAssertEqual(attemptsWhilePauseIsSuspended.count, 1)
+
+        await writer.resumeSuspendedUpdate()
+        await pauseTask.value
+        let saved = try await stopTask.value
+        let updates = await writer.updates
+        let storeIsEmpty = await store.isEmpty
+
+        XCTAssertEqual(saved.phase, .saved)
+        XCTAssertEqual(updates.map(\.update.recordingState), [.paused, .completed])
+        XCTAssertEqual(updates.map(\.update.checkpointReason), [.pause, .complete])
+        XCTAssertNotEqual(updates[0].requestID, updates[1].requestID)
+        XCTAssertNil(updates[0].update.captureEndedAt)
+        XCTAssertNotNil(updates[1].update.captureEndedAt)
+        XCTAssertTrue(storeIsEmpty)
+    }
+
     func testRemoteSyncFailureDoesNotBlockCompletedLocalSave() async throws {
         let writer = FakeMeetingNoteWriter(syncState: "failure")
         let store = InMemoryMeetingNoteRecoveryStore()
@@ -817,6 +889,9 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
     )
     private var savedSegments: [RelayProjectNoteSegment] = []
     private var shouldFailNextUpdate = false
+    private var shouldSuspendNextUpdate = false
+    private var suspendedUpdate: CheckedContinuation<Void, Never>?
+    private var suspendedUpdateWaiters: [CheckedContinuation<Void, Never>] = []
     private var fetchState: RelayProjectNoteRecordingState = .paused
     private(set) var createCount = 0
     private(set) var updates: [RelayProjectNoteCheckpointRequest] = []
@@ -829,6 +904,23 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
 
     func failNextUpdate() {
         shouldFailNextUpdate = true
+    }
+
+    func suspendNextUpdate() {
+        shouldSuspendNextUpdate = true
+    }
+
+    func waitForSuspendedUpdate() async {
+        if suspendedUpdate != nil { return }
+        await withCheckedContinuation { continuation in
+            suspendedUpdateWaiters.append(continuation)
+        }
+    }
+
+    func resumeSuspendedUpdate() {
+        let continuation = suspendedUpdate
+        suspendedUpdate = nil
+        continuation?.resume()
     }
 
     func seed(identity: RelayProjectNoteIdentity, segments: [RelayProjectNoteSegment]) {
@@ -859,12 +951,21 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
         _ request: RelayProjectNoteCheckpointRequest,
         repositoryPath: String,
         projectScopeToken: String?
-    ) throws -> RelayProjectNoteResponse {
+    ) async throws -> RelayProjectNoteResponse {
         attemptedRequestIDs.append(request.requestID)
         repositories.append(repositoryPath)
         if shouldFailNextUpdate {
             shouldFailNextUpdate = false
             throw FakeMeetingNoteError.injectedSaveFailure
+        }
+        if shouldSuspendNextUpdate {
+            shouldSuspendNextUpdate = false
+            await withCheckedContinuation { continuation in
+                suspendedUpdate = continuation
+                let waiters = suspendedUpdateWaiters
+                suspendedUpdateWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
         }
         updates.append(request)
         savedSegments = request.update.segments

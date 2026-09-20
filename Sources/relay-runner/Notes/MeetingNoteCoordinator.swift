@@ -287,6 +287,8 @@ actor MeetingNoteCoordinator {
     private var pauseReconciliationRunning = false
     private var checkpointTask: Task<Void, Never>?
     private var stopTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
+    private var checkpointPublicationActive = false
+    private var checkpointPublicationWaiters: [CheckedContinuation<Void, Never>] = []
     private var activeScopeToken: String?
     private var hasPersistedRecoveryJournal = false
 
@@ -790,6 +792,10 @@ actor MeetingNoteCoordinator {
         force: Bool,
         segmentsOverride: [RelayProjectNoteSegment]? = nil
     ) async throws -> MeetingNoteCoordinatorSnapshot {
+        await acquireCheckpointPublication()
+        defer { releaseCheckpointPublication() }
+        try Task.checkCancellation()
+
         guard var journal, let identity = journal.identity else {
             throw MeetingNoteCoordinatorError.localSaveFailed("note identity is unavailable")
         }
@@ -804,62 +810,129 @@ actor MeetingNoteCoordinator {
         self.journal = journal
         try await recoveryStore.save(journal)
 
-        let finalSegments = segmentsOverride ?? durableSegments(in: journal)
-        if !force,
-           finalSegments == journal.canonicalSegments,
-           journal.pendingUpdate == nil {
-            try await retainPendingAudio(journal)
-            return snapshot()
-        }
-
-        let request: RelayProjectNoteCheckpointRequest
+        var finalSegments = segmentsOverride ?? durableSegments(in: journal)
         if let pending = journal.pendingUpdate {
-            request = pending
-        } else {
-            let update = RelayProjectNoteUpdate(
-                identity: identity,
-                capturedAt: now(),
+            let satisfiesRequestedBoundary = checkpointMatchesBoundary(
+                pending,
+                matches: identity,
+                reason: reason,
                 recordingState: recordingState,
-                checkpointReason: reason,
                 segments: finalSegments,
                 captureEndedAt: captureEndedAt
             )
-            request = RelayProjectNoteCheckpointRequest(
-                requestID: "note-\(journal.sessionID)-checkpoint-\(journal.nextCheckpointSequence)",
-                update: update,
-                provider: journal.project.provider
-            )
-            journal.pendingUpdate = request
-            journal.updatedAt = now()
-            self.journal = journal
-            try await recoveryStore.save(journal)
+            _ = try await submitCheckpoint(pending, sessionID: journal.sessionID)
+            if satisfiesRequestedBoundary { return snapshot() }
+            guard let current = self.journal, current.identity == identity else {
+                throw MeetingNoteCoordinatorError.localSaveFailed("note identity is unavailable")
+            }
+            journal = current
+            finalSegments = segmentsOverride ?? durableSegments(in: journal)
         }
 
+        if !force, finalSegments == journal.canonicalSegments {
+            try await retainPendingAudio(journal)
+            return snapshot()
+        }
+
+        let update = RelayProjectNoteUpdate(
+            identity: identity,
+            capturedAt: now(),
+            recordingState: recordingState,
+            checkpointReason: reason,
+            segments: finalSegments,
+            captureEndedAt: captureEndedAt
+        )
+        let request = RelayProjectNoteCheckpointRequest(
+            requestID: "note-\(journal.sessionID)-checkpoint-\(journal.nextCheckpointSequence)",
+            update: update,
+            provider: journal.project.provider
+        )
+        journal.pendingUpdate = request
+        journal.updatedAt = now()
+        self.journal = journal
+        try await recoveryStore.save(journal)
+        return try await submitCheckpoint(request, sessionID: journal.sessionID)
+    }
+
+    private func submitCheckpoint(
+        _ request: RelayProjectNoteCheckpointRequest,
+        sessionID: String
+    ) async throws -> MeetingNoteCoordinatorSnapshot {
+        guard let publicationJournal = journal,
+              publicationJournal.sessionID == sessionID else {
+            throw MeetingNoteCoordinatorError.localSaveFailed("note recovery session changed")
+        }
         do {
             let response = try await writer.update(
                 request,
-                repositoryPath: journal.project.repositoryPath,
+                repositoryPath: publicationJournal.project.repositoryPath,
                 projectScopeToken: runtime?.scopeToken ?? activeScopeToken
             )
-            try validateIdentity(response.note.identity, project: journal.project)
-            journal.canonicalSegments = response.note.segments
-            journal.syncState = response.sync.state
-            journal.pendingUpdate = nil
-            journal.nextCheckpointSequence += 1
-            journal.captureEndedAt = response.note.captureEndedAt
-            journal.lastError = nil
-            journal.updatedAt = now()
-            self.journal = journal
-            try await recoveryStore.save(journal)
-            try await retainPendingAudio(journal)
+            guard var current = journal, current.sessionID == sessionID else {
+                throw MeetingNoteCoordinatorError.localSaveFailed("note recovery session changed")
+            }
+            try validateIdentity(response.note.identity, project: current.project)
+            current.canonicalSegments = response.note.segments
+            current.syncState = response.sync.state
+            if current.pendingUpdate?.requestID == request.requestID {
+                current.pendingUpdate = nil
+                current.nextCheckpointSequence += 1
+            }
+            if let captureEndedAt = response.note.captureEndedAt {
+                current.captureEndedAt = captureEndedAt
+            }
+            current.lastError = nil
+            current.updatedAt = now()
+            self.journal = current
+            try await recoveryStore.save(current)
+            try await retainPendingAudio(current)
             return snapshot()
         } catch {
-            journal.lastError = safeMessage(error)
-            journal.updatedAt = now()
-            self.journal = journal
-            try? await recoveryStore.save(journal)
+            if var current = journal, current.sessionID == sessionID {
+                current.lastError = safeMessage(error)
+                current.updatedAt = now()
+                self.journal = current
+                try? await recoveryStore.save(current)
+            }
             throw MeetingNoteCoordinatorError.localSaveFailed(safeMessage(error))
         }
+    }
+
+    private func checkpointMatchesBoundary(
+        _ request: RelayProjectNoteCheckpointRequest,
+        matches identity: RelayProjectNoteIdentity,
+        reason: RelayProjectNoteCheckpointReason,
+        recordingState: RelayProjectNoteRecordingState,
+        segments: [RelayProjectNoteSegment],
+        captureEndedAt: String?
+    ) -> Bool {
+        let captureBoundaryMatches = request.update.captureEndedAt == captureEndedAt
+            || (recordingState == .completed
+                && request.update.captureEndedAt != nil
+                && captureEndedAt != nil)
+        return request.update.identity == identity
+            && request.update.checkpointReason == reason
+            && request.update.recordingState == recordingState
+            && request.update.segments == segments
+            && captureBoundaryMatches
+    }
+
+    private func acquireCheckpointPublication() async {
+        if !checkpointPublicationActive {
+            checkpointPublicationActive = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            checkpointPublicationWaiters.append(continuation)
+        }
+    }
+
+    private func releaseCheckpointPublication() {
+        guard !checkpointPublicationWaiters.isEmpty else {
+            checkpointPublicationActive = false
+            return
+        }
+        checkpointPublicationWaiters.removeFirst().resume()
     }
 
     private func applyBufferedEvents(
