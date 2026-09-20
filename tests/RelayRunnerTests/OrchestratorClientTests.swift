@@ -70,6 +70,79 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertNil(body["force"])
     }
 
+    func testProjectNoteRequestsCarryTypedIdentitySegmentsAndConfirmedScope() throws {
+        let segment = RelayProjectNoteSegment(
+            segmentID: "segment-1",
+            capturedAt: "2026-09-20T08:00:05Z",
+            text: "Meeting words",
+            startMilliseconds: 0,
+            endMilliseconds: 500
+        )
+        let create = RelayProjectNoteCreateRequest(
+            requestID: "create-note-1",
+            createdAt: "2026-09-20T08:00:00Z",
+            captureStartedAt: "2026-09-20T08:00:00Z",
+            capturedAt: "2026-09-20T08:00:05Z",
+            recordingState: .recording,
+            checkpointReason: .checkpoint,
+            segments: [segment],
+            captureEndedAt: nil,
+            provider: "codex"
+        )
+        let createRequest = try XCTUnwrap(OrchestratorClient.projectNoteCreateRequest(
+            create,
+            repoPath: "/repo",
+            projectScopeToken: "confirmed-scope",
+            port: 8123
+        ))
+        XCTAssertEqual(
+            createRequest.url?.absoluteString,
+            "http://127.0.0.1:8123/v1/artifacts/notes/create"
+        )
+        let createBody = try jsonBody(createRequest)
+        XCTAssertEqual(createBody["request_id"] as? String, "create-note-1")
+        XCTAssertEqual(createBody["project_scope_token"] as? String, "confirmed-scope")
+        XCTAssertEqual(
+            ((createBody["segments"] as? [[String: Any]])?.first)?["segment_id"] as? String,
+            "segment-1"
+        )
+
+        let identity = RelayProjectNoteIdentity(
+            noteID: "PX-N1",
+            artifactID: "note-12345678",
+            projectID: "project-1",
+            createdAt: "2026-09-20T08:00:00Z",
+            captureStartedAt: "2026-09-20T08:00:00Z"
+        )
+        let checkpoint = RelayProjectNoteCheckpointRequest(
+            requestID: "pause-note-1",
+            update: RelayProjectNoteUpdate(
+                identity: identity,
+                capturedAt: "2026-09-20T08:10:00Z",
+                recordingState: .paused,
+                checkpointReason: .pause,
+                segments: [segment],
+                captureEndedAt: nil
+            ),
+            provider: "claude"
+        )
+        let updateRequest = try XCTUnwrap(OrchestratorClient.projectNoteUpdateRequest(
+            checkpoint,
+            repoPath: "/repo",
+            projectScopeToken: "confirmed-scope",
+            port: 8123
+        ))
+        XCTAssertEqual(
+            updateRequest.url?.absoluteString,
+            "http://127.0.0.1:8123/v1/artifacts/notes/PX-N1/update"
+        )
+        let updateBody = try jsonBody(updateRequest)
+        let update = try XCTUnwrap(updateBody["update"] as? [String: Any])
+        let encodedIdentity = try XCTUnwrap(update["identity"] as? [String: Any])
+        XCTAssertEqual(encodedIdentity["artifact_id"] as? String, "note-12345678")
+        XCTAssertEqual(update["recording_state"] as? String, "paused")
+    }
+
     func testProgramReadySweepRequestUsesProgramSweepEndpoint() throws {
         let request = try XCTUnwrap(OrchestratorClient.programReadySweepRequest(
             trigger: "program-board-refresh",

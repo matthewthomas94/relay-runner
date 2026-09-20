@@ -238,6 +238,103 @@ enum OrchestratorClient {
         _ = try synchronousPost(path: "/v1/artifacts/attachments/write", payload: payload)
     }
 
+    static func projectNoteCreateRequest(
+        _ noteRequest: RelayProjectNoteCreateRequest,
+        repoPath: String,
+        projectScopeToken: String?,
+        port: Int
+    ) -> URLRequest? {
+        guard let values = encodedObject(noteRequest) else { return nil }
+        var payload = artifactPayload(
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+        for (key, value) in values { payload[key] = value }
+        return postRequest(
+            path: "/v1/artifacts/notes/create",
+            payload: payload,
+            port: port,
+            timeout: artifactMutationTimeout
+        )
+    }
+
+    static func projectNoteUpdateRequest(
+        _ checkpoint: RelayProjectNoteCheckpointRequest,
+        repoPath: String,
+        projectScopeToken: String?,
+        port: Int
+    ) -> URLRequest? {
+        guard let values = encodedObject(checkpoint) else { return nil }
+        var payload = artifactPayload(
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+        for (key, value) in values { payload[key] = value }
+        return postRequest(
+            path: "/v1/artifacts/notes/\(pathComponent(checkpoint.update.identity.noteID))/update",
+            payload: payload,
+            port: port,
+            timeout: artifactMutationTimeout
+        )
+    }
+
+    static func createProjectNote(
+        _ noteRequest: RelayProjectNoteCreateRequest,
+        repoPath: String,
+        projectScopeToken: String?
+    ) async throws -> RelayProjectNoteResponse {
+        guard let request = projectNoteCreateRequest(
+            noteRequest,
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken,
+            port: readPort()
+        ) else {
+            throw OrchestratorClientError.invalidRequest
+        }
+        return try await response(RelayProjectNoteResponse.self, for: request)
+    }
+
+    static func updateProjectNote(
+        _ checkpoint: RelayProjectNoteCheckpointRequest,
+        repoPath: String,
+        projectScopeToken: String?
+    ) async throws -> RelayProjectNoteResponse {
+        guard let request = projectNoteUpdateRequest(
+            checkpoint,
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken,
+            port: readPort()
+        ) else {
+            throw OrchestratorClientError.invalidRequest
+        }
+        return try await response(RelayProjectNoteResponse.self, for: request)
+    }
+
+    static func fetchProjectNotes(
+        repoPath: String,
+        projectScopeToken: String?
+    ) async throws -> RelayProjectNoteListResponse {
+        try await artifactGet(
+            RelayProjectNoteListResponse.self,
+            path: "/v1/artifacts/notes",
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+    }
+
+    static func fetchProjectNote(
+        _ identity: String,
+        repoPath: String,
+        projectScopeToken: String?
+    ) async throws -> RelayProjectNoteResponse {
+        try await artifactGet(
+            RelayProjectNoteResponse.self,
+            path: "/v1/artifacts/notes/\(pathComponent(identity))",
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken
+        )
+    }
+
     static func artifactRequest(
         path: String,
         repoPath: String,
@@ -773,6 +870,15 @@ enum OrchestratorClient {
         ]
         if let projectScopeToken, !projectScopeToken.isEmpty {
             payload["project_scope_token"] = projectScopeToken
+        }
+        return payload
+    }
+
+    private static func encodedObject<Value: Encodable>(_ value: Value) -> [String: Any]? {
+        guard let data = try? JSONEncoder().encode(value),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let payload = object as? [String: Any] else {
+            return nil
         }
         return payload
     }
