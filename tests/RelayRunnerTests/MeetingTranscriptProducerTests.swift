@@ -311,6 +311,81 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         })
     }
 
+    func testCaptureIngressCloseIsAtomicWithConcurrentSubmissions() async {
+        let submissionCount = 64
+        let ingress = MeetingCaptureIngress(maximumPendingItems: submissionCount)
+        let queue = DispatchQueue(
+            label: "MeetingTranscriptProducerTests.capture-boundary",
+            attributes: .concurrent
+        )
+        let gate = DispatchSemaphore(value: 0)
+        let completion = DispatchGroup()
+        let acceptedLock = NSLock()
+        var acceptedCount = 0
+
+        for index in 0..<submissionCount {
+            completion.enter()
+            queue.async {
+                gate.wait()
+                let accepted = ingress.submit(.frame(
+                    MeetingAudioFrame(
+                        samples: [Float(index)],
+                        presentationTimeNanoseconds: UInt64(index)
+                    ),
+                    .microphone
+                ))
+                if accepted {
+                    acceptedLock.withTestLock { acceptedCount += 1 }
+                }
+                completion.leave()
+            }
+        }
+        completion.enter()
+        queue.async {
+            gate.wait()
+            ingress.finish()
+            completion.leave()
+        }
+
+        for _ in 0...submissionCount { gate.signal() }
+        XCTAssertEqual(completion.wait(timeout: .now() + 2), .success)
+        XCTAssertFalse(ingress.submit(.frame(
+            MeetingAudioFrame(samples: [999], presentationTimeNanoseconds: 999),
+            .microphone
+        )))
+
+        var drainedCount = 0
+        for await _ in ingress.stream { drainedCount += 1 }
+        XCTAssertEqual(drainedCount, acceptedLock.withTestLock { acceptedCount })
+    }
+
+    func testPauseRestopsAdapterThatFinishesStartingAfterTeardown() async throws {
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-delayed-start-teardown",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "unused", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration
+        )
+        let microphone = FakeMeetingAudioCapture(
+            sourceID: .microphone,
+            samples: [],
+            startDelayNanoseconds: 100_000_000
+        )
+        let session = MeetingNoteCaptureSession(producer: producer, captures: [microphone])
+
+        let startTask = Task { try await session.start(initiallyPaused: false) }
+        try await eventually {
+            microphone.startCount == 1
+        }
+        try await session.pause()
+        await XCTAssertThrowsErrorAsync(try await startTask.value)
+
+        XCTAssertEqual(microphone.stopCount, 2)
+        XCTAssertFalse(microphone.isRunning)
+        _ = try await session.stop()
+    }
+
     func testMissingLocalModelFailsBeforeAnyAudioIsAccepted() async {
         let events = MeetingEventRecorder()
         let producer = MeetingTranscriptProducer(
@@ -884,6 +959,7 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
     private let batches: [[Float]]
     private let stopBatches: [[Float]]
     private let stopDelayNanoseconds: UInt64
+    private let startDelayNanoseconds: UInt64
     private let startFailure: MeetingAudioCaptureFailure?
     private let eventOnStart: MeetingAudioCaptureEvent?
     private let lock = NSLock()
@@ -897,12 +973,14 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
     var startCount: Int { lock.withTestLock { starts } }
     var stopBeginCount: Int { lock.withTestLock { stopBegins } }
     var stopCount: Int { lock.withTestLock { stops } }
+    var isRunning: Bool { lock.withTestLock { sampleHandler != nil } }
 
     init(
         sourceID: MeetingAudioSourceID,
         samples: [[Float]],
         stopSamples: [[Float]] = [],
         stopDelayNanoseconds: UInt64 = 0,
+        startDelayNanoseconds: UInt64 = 0,
         startFailure: MeetingAudioCaptureFailure? = nil,
         eventOnStart: MeetingAudioCaptureEvent? = nil
     ) {
@@ -910,6 +988,7 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
         self.batches = samples
         self.stopBatches = stopSamples
         self.stopDelayNanoseconds = stopDelayNanoseconds
+        self.startDelayNanoseconds = startDelayNanoseconds
         self.startFailure = startFailure
         self.eventOnStart = eventOnStart
     }
@@ -920,6 +999,11 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
     ) async throws -> MeetingCaptureSourceInfo {
         lock.withTestLock {
             starts += 1
+        }
+        if startDelayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: startDelayNanoseconds)
+        }
+        lock.withTestLock {
             self.sampleHandler = sampleHandler
             self.eventHandler = eventHandler
         }

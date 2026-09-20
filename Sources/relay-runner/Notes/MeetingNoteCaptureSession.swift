@@ -87,7 +87,7 @@ actor MeetingNoteCaptureSession {
                     }
                 )
                 guard !ingress.isFinished, startedCaptures[captureID] != nil else {
-                    await stopIfStarted(capture)
+                    await capture.stop()
                     continue
                 }
                 await producer.markSourceCapturing(sourceID)
@@ -245,7 +245,7 @@ actor MeetingNoteCaptureSession {
     }
 }
 
-private final class MeetingCaptureIngress: @unchecked Sendable {
+final class MeetingCaptureIngress: @unchecked Sendable {
     enum Item: Sendable {
         case frame(MeetingAudioFrame, MeetingAudioSourceID)
         case event(MeetingAudioCaptureEvent, MeetingAudioSourceID)
@@ -298,27 +298,32 @@ private final class MeetingCaptureIngress: @unchecked Sendable {
         continuation = capturedContinuation!
     }
 
-    func submit(_ item: Item) {
+    @discardableResult
+    func submit(_ item: Item) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return false }
+
         switch continuation.yield(item) {
-        case .enqueued, .terminated:
-            break
+        case .enqueued:
+            return true
+        case .terminated:
+            return false
         case .dropped(let dropped):
-            lock.lock()
             droppedItems.record(dropped)
-            lock.unlock()
+            return true
         @unknown default:
-            break
+            return false
         }
     }
 
     func finish() {
         lock.lock()
+        defer { lock.unlock() }
         guard !finished else {
-            lock.unlock()
             return
         }
         finished = true
-        lock.unlock()
         continuation.finish()
     }
 

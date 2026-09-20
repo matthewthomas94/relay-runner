@@ -84,7 +84,7 @@ target set to macOS 14). The deterministic 60-minute case feeds two sources at
 10 synthetic samples per second. Its producer counters reported 7,200 accepted
 chunks, maximum queue depth 2, maximum sampled audio-buffer storage 4,720 bytes,
 fixture processing latency 3 ms, and zero dropped samples. The complete filtered
-suite executed 19 tests in about 0.3 seconds after build. The enclosing build
+suite executed 22 tests in about 0.8 seconds after build. The enclosing build
 and test command reached 642,351,104 bytes maximum RSS, which includes SwiftPM,
 the compiler, linked FluidAudio, and the XCTest host and therefore is not a
 producer-only memory measurement.
@@ -108,6 +108,8 @@ The capture session reads the actual Caps Lock state by default. Starting while
 Caps Lock is on prepares the local model but starts paused and accepts no audio.
 The exclusive owner calls `pause()` to stop every adapter that successfully
 started, but first closes the capture ingress at the pause request boundary.
+Ingress submission and close share one lock-held gate, so no callback can enter
+between marking the boundary closed and terminating its bounded stream.
 Its single consumer drains only frames already accepted before that boundary
 while asynchronous adapter teardown runs; teardown-time and stale callbacks are
 rejected. The producer then finalizes the accepted pre-pause tail. `resume()`
