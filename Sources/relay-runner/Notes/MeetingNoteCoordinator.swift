@@ -289,6 +289,8 @@ actor MeetingNoteCoordinator {
     private var stopTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
     private var checkpointPublicationActive = false
     private var checkpointPublicationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var interruptionTeardownActive = false
+    private var interruptionTeardownWaiters: [CheckedContinuation<Void, Never>] = []
     private var activeScopeToken: String?
     private var hasPersistedRecoveryJournal = false
 
@@ -513,6 +515,16 @@ actor MeetingNoteCoordinator {
             releaseUndurableStartFailure()
             return snapshot()
         }
+        if phase == .error,
+           runtime == nil,
+           hasPersistedRecoveryJournal,
+           let sessionID = journal?.sessionID {
+            return try await resolveRecovery(
+                sessionID: sessionID,
+                projectScopeToken: activeScopeToken,
+                resolution: .finalize
+            )
+        }
         if let stopTask { return try await stopTask.value }
         let task = Task { try await self.performStop() }
         stopTask = task
@@ -548,9 +560,9 @@ actor MeetingNoteCoordinator {
               var journal = try await recoveryStore.load(sessionID: sessionID)
         else { throw MeetingNoteCoordinatorError.recoveryNotFound }
 
+        guard runtime == nil else { throw MeetingNoteCoordinatorError.foregroundBusy }
         checkpointTask?.cancel()
         activeScopeToken = projectScopeToken
-        runtime = nil
         hasPersistedRecoveryJournal = true
         phase = .interrupted
         journal.phase = .interrupted
@@ -1003,16 +1015,61 @@ actor MeetingNoteCoordinator {
     }
 
     private func markInterrupted(_ error: Error) async throws {
+        if interruptionTeardownActive {
+            await withCheckedContinuation { continuation in
+                interruptionTeardownWaiters.append(continuation)
+            }
+            return
+        }
+        interruptionTeardownActive = true
+        defer {
+            interruptionTeardownActive = false
+            let waiters = interruptionTeardownWaiters
+            interruptionTeardownWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+
         checkpointTask?.cancel()
         checkpointTask = nil
-        phase = .error
-        guard var journal else { return }
+        phase = .stopping
+        snapshotSink(snapshot())
+
+        if let activeRuntime = runtime {
+            let checkpoint = await activeRuntime.capture.checkpoint()
+            switch checkpoint.state {
+            case .preparing, .recording, .paused:
+                _ = try? await activeRuntime.capture.stop()
+            case .failed:
+                await activeRuntime.capture.stopCaptureSourcesForInterruption()
+            case .idle, .stopping, .stopped:
+                break
+            }
+
+            if self.runtime?.id == activeRuntime.id {
+                if var current = journal {
+                    current.producerCheckpoint = await activeRuntime.capture.checkpoint()
+                    _ = applyBufferedEvents(to: &current)
+                    self.journal = current
+                }
+                runtime = nil
+            }
+        }
+
+        guard var journal else {
+            phase = .error
+            snapshotSink(snapshot())
+            return
+        }
         journal.phase = .error
         journal.lastError = safeMessage(error)
         journal.updatedAt = now()
         self.journal = journal
-        defer { snapshotSink(snapshot()) }
+        defer {
+            phase = .error
+            snapshotSink(snapshot())
+        }
         try await recoveryStore.save(journal)
+        try await retainPendingAudio(journal)
     }
 
     private func handleTerminalProducerFailure(

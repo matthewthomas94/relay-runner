@@ -152,6 +152,52 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertTrue(storeIsEmpty)
     }
 
+    func testFailedResumeCheckpointStopsCaptureBeforeDiscardingRecovery() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: true
+        )
+        let firstCapture = try XCTUnwrap(captures.latest())
+        await writer.failNextUpdate()
+
+        await coordinator.setCapsLock(isOn: false)
+
+        let failed = await coordinator.snapshot()
+        let offers = try await coordinator.recoveryOffers()
+        let firstStopCount = await firstCapture.stopCount
+        let firstIsRecording = await firstCapture.isRecording
+        XCTAssertEqual(failed.phase, .error)
+        XCTAssertEqual(firstStopCount, 1)
+        XCTAssertFalse(firstIsRecording)
+        XCTAssertEqual(offers.count, 1)
+
+        let recovered = try await coordinator.resolveRecovery(
+            sessionID: try XCTUnwrap(offers.first?.sessionID),
+            projectScopeToken: "scope-original",
+            resolution: .discardIncompleteTail
+        )
+        XCTAssertEqual(recovered.phase, .saved)
+        XCTAssertEqual(captures.count, 1)
+
+        let restarted = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        let secondCapture = try XCTUnwrap(captures.latest())
+        let firstStillRecording = await firstCapture.isRecording
+        let secondIsRecording = await secondCapture.isRecording
+        XCTAssertEqual(restarted.phase, .recording)
+        XCTAssertEqual(captures.count, 2)
+        XCTAssertFalse(firstStillRecording)
+        XCTAssertTrue(secondIsRecording)
+    }
+
     func testStopSerializesCompletionAfterInFlightPauseCheckpoint() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
@@ -1067,6 +1113,12 @@ private final class FakeMeetingNoteCaptureFactory: @unchecked Sendable {
         defer { lock.unlock() }
         return captures.last
     }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return captures.count
+    }
 }
 
 private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
@@ -1083,6 +1135,8 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
     private(set) var replayedChunkIDs: [String] = []
     private var state: MeetingProducerState = .idle
     private var checkpointValue: MeetingProducerCheckpoint?
+
+    var isRecording: Bool { state == .recording }
 
     init(
         sessionID: String,
@@ -1133,6 +1187,16 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
             ),
             metrics: MeetingProducerMetrics()
         )
+    }
+
+    func stopCaptureSourcesForInterruption() {
+        switch state {
+        case .preparing, .recording, .paused, .failed:
+            stopCount += 1
+            state = .stopped
+        case .idle, .stopping, .stopped:
+            return
+        }
     }
 
     func checkpoint() -> MeetingProducerCheckpoint {

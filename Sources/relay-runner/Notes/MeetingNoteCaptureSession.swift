@@ -8,6 +8,7 @@ protocol MeetingNoteCaptureControlling: Sendable {
     func pause() async throws
     func resume() async throws
     func stop() async throws -> MeetingProducerFinalBoundary
+    func stopCaptureSourcesForInterruption() async
     func checkpoint() async -> MeetingProducerCheckpoint
     func replayAcceptedAudio(_ chunks: [MeetingAcceptedAudio]) async throws
 }
@@ -80,6 +81,10 @@ actor MeetingNoteCaptureSession {
     func stop() async throws -> MeetingProducerFinalBoundary {
         await stopSourcesAndDrainIngress()
         return try await producer.stop()
+    }
+
+    func stopCaptureSourcesForInterruption() async {
+        await stopSourcesAndDrainIngress()
     }
 
     func checkpoint() async -> MeetingProducerCheckpoint {
