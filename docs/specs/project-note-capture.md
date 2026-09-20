@@ -84,7 +84,7 @@ target set to macOS 14). The deterministic 60-minute case feeds two sources at
 10 synthetic samples per second. Its producer counters reported 7,200 accepted
 chunks, maximum queue depth 2, maximum sampled audio-buffer storage 4,720 bytes,
 fixture processing latency 3 ms, and zero dropped samples. The complete filtered
-suite executed 25 tests in about 1.2 seconds after build. The enclosing build
+suite executed 26 tests in about 1.3 seconds after build. The enclosing build
 and test command reached 642,351,104 bytes maximum RSS, which includes SwiftPM,
 the compiler, linked FluidAudio, and the XCTest host and therefore is not a
 producer-only memory measurement.
@@ -123,8 +123,11 @@ format/source failure is still stopped during teardown. An interrupted or
 failed source is ingress-gated before its recovery work begins, so stale adapter
 callbacks cannot persist audio, create another epoch, or revive public capture
 state. Only an explicit recovery event or a fresh successful start reopens that
-source. Per-source event generations also prevent a failure handled during
-`start()` from being overwritten as `capturing` when the adapter's start call
+source. Each start receives a capture generation. Frames emitted before that
+start returns are held in a bounded per-source buffer behind an ordered success
+marker; success releases them in order, while interruption or failure discards
+them. Stale generations cannot revive capture, and a failure handled during
+`start()` cannot be overwritten as `capturing` when the adapter's start call
 later returns. Model failure,
 permission denial, source loss, format failure, transcription failure,
 checkpoint failure, and backpressure are typed and preserve already emitted

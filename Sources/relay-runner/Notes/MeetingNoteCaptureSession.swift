@@ -4,13 +4,21 @@ import Foundation
 /// Constructing or starting this actor does not start a provider, messenger,
 /// voice bridge, FIFO writer, command gesture, title model, or summary model.
 actor MeetingNoteCaptureSession {
+    private struct SourceStartup {
+        let generation: UInt64
+        let ingress: MeetingCaptureIngress
+        var bufferedFrames: [MeetingAudioFrame] = []
+        var blockedDuringStart = false
+    }
+
     private let producer: MeetingTranscriptProducer
     private let captures: [MeetingAudioCapturing]
     private let maximumPendingFrames: Int
     private var startedCaptures: [ObjectIdentifier: MeetingAudioCapturing] = [:]
     private var captureIngress: MeetingCaptureIngress?
     private var captureIngressTask: Task<Void, Never>?
-    private var sourceEventGenerations: [MeetingAudioSourceID: UInt64] = [:]
+    private var sourceCaptureGenerations: [MeetingAudioSourceID: UInt64] = [:]
+    private var sourceStartups: [MeetingAudioSourceID: SourceStartup] = [:]
     private var blockedSources: Set<MeetingAudioSourceID> = []
 
     init(
@@ -78,46 +86,47 @@ actor MeetingNoteCaptureSession {
             guard !ingress.isFinished else { break }
             let sourceID = capture.sourceID
             let captureID = ObjectIdentifier(capture)
-            let eventGeneration = sourceEventGenerations[sourceID, default: 0]
+            let generation = sourceCaptureGenerations[sourceID, default: 0] &+ 1
+            sourceCaptureGenerations[sourceID] = generation
+            sourceStartups[sourceID] = SourceStartup(
+                generation: generation,
+                ingress: ingress
+            )
             startedCaptures[captureID] = capture
             do {
                 _ = try await capture.start(
                     sampleHandler: { frame in
-                        ingress.submit(.frame(frame, sourceID))
+                        ingress.submit(.frame(frame, sourceID, generation))
                     },
                     eventHandler: { event in
-                        ingress.submit(.event(event, sourceID))
+                        ingress.submit(.event(event, sourceID, generation))
                     }
                 )
                 guard !ingress.isFinished, startedCaptures[captureID] != nil else {
+                    discardStartup(for: sourceID, generation: generation)
                     await capture.stop()
                     continue
                 }
-                if sourceEventGenerations[sourceID, default: 0] == eventGeneration {
-                    blockedSources.remove(sourceID)
-                    await producer.markSourceCapturing(sourceID)
+                let startBarrier = MeetingCaptureStartBarrier()
+                guard ingress.submit(.started(sourceID, generation, startBarrier)) else {
+                    discardStartup(for: sourceID, generation: generation)
+                    await stopIfStarted(capture)
+                    continue
                 }
+                await startBarrier.wait()
                 started += 1
             } catch let failure as MeetingAudioCaptureFailure {
                 lastError = failure
-                blockedSources.insert(sourceID)
+                ingress.submit(.startFailed(failure, sourceID, generation))
                 await stopIfStarted(capture)
-                try await producer.sourceBecameUnavailable(
-                    failure.sourceID,
-                    denied: {
-                        if case .permissionDenied = failure { return true }
-                        return false
-                    }(),
-                    message: failure.localizedDescription
-                )
             } catch {
                 lastError = error
-                blockedSources.insert(sourceID)
-                await stopIfStarted(capture)
-                try await producer.sourceBecameUnavailable(
+                ingress.submit(.startFailed(
+                    .startFailed(sourceID, error.localizedDescription),
                     sourceID,
-                    message: error.localizedDescription
-                )
+                    generation
+                ))
+                await stopIfStarted(capture)
             }
         }
         if started == 0 {
@@ -150,6 +159,9 @@ actor MeetingNoteCaptureSession {
         ingress?.finish()
         await stopStartedCaptures()
         await ingressTask?.value
+        if let ingress {
+            sourceStartups = sourceStartups.filter { $0.value.ingress !== ingress }
+        }
         if let ingress, captureIngress === ingress {
             captureIngress = nil
             captureIngressTask = nil
@@ -216,24 +228,45 @@ actor MeetingNoteCaptureSession {
     private func consume(_ item: MeetingCaptureIngress.Item) async -> Bool {
         do {
             switch item {
-            case .frame(let frame, let source):
+            case .frame(let frame, let source, let generation):
+                guard sourceCaptureGenerations[source] == generation else { return true }
+                if var startup = sourceStartups[source], startup.generation == generation {
+                    guard !startup.blockedDuringStart else { return true }
+                    guard startup.bufferedFrames.count < maximumPendingFrames else {
+                        await producer.recordCaptureIngressDrops(
+                            droppedFrameCount: 1,
+                            droppedEventCount: 0,
+                            droppedSamplesBySource: [source: frame.samples.count],
+                            maximumPendingFrames: maximumPendingFrames
+                        )
+                        return false
+                    }
+                    startup.bufferedFrames.append(frame)
+                    sourceStartups[source] = startup
+                    return true
+                }
                 guard !blockedSources.contains(source) else { return true }
                 try await producer.ingest(
                     frame.samples,
                     from: source,
                     presentationTimeNanoseconds: frame.presentationTimeNanoseconds
                 )
-            case .event(let event, let source):
-                sourceEventGenerations[source, default: 0] &+= 1
+            case .event(let event, let source, let generation):
+                guard sourceCaptureGenerations[source] == generation else { return true }
                 switch event {
                 case .interrupted(let message):
                     blockedSources.insert(source)
+                    blockStartup(for: source, generation: generation)
                     try await producer.sourceWasInterrupted(source, message: message)
                 case .recovered:
                     blockedSources.remove(source)
-                    await producer.markSourceCapturing(source)
+                    unblockStartup(for: source, generation: generation)
+                    if sourceStartups[source] == nil {
+                        await producer.markSourceCapturing(source)
+                    }
                 case .failed(let failure):
                     blockedSources.insert(source)
+                    blockStartup(for: source, generation: generation)
                     try await producer.sourceBecameUnavailable(
                         source,
                         denied: {
@@ -243,6 +276,35 @@ actor MeetingNoteCaptureSession {
                         message: failure.localizedDescription
                     )
                 }
+            case .started(let source, let generation, let startBarrier):
+                defer { startBarrier.complete() }
+                guard sourceCaptureGenerations[source] == generation,
+                      let startup = sourceStartups[source],
+                      startup.generation == generation
+                else { return true }
+                sourceStartups.removeValue(forKey: source)
+                guard !startup.blockedDuringStart else { return true }
+                blockedSources.remove(source)
+                await producer.markSourceCapturing(source)
+                for frame in startup.bufferedFrames {
+                    try await producer.ingest(
+                        frame.samples,
+                        from: source,
+                        presentationTimeNanoseconds: frame.presentationTimeNanoseconds
+                    )
+                }
+            case .startFailed(let failure, let source, let generation):
+                guard sourceCaptureGenerations[source] == generation else { return true }
+                discardStartup(for: source, generation: generation)
+                blockedSources.insert(source)
+                try await producer.sourceBecameUnavailable(
+                    source,
+                    denied: {
+                        if case .permissionDenied = failure { return true }
+                        return false
+                    }(),
+                    message: failure.localizedDescription
+                )
             }
             return true
         } catch let error as MeetingProducerError {
@@ -256,12 +318,36 @@ actor MeetingNoteCaptureSession {
             return false
         }
     }
+
+    private func blockStartup(for source: MeetingAudioSourceID, generation: UInt64) {
+        guard var startup = sourceStartups[source], startup.generation == generation else {
+            return
+        }
+        startup.bufferedFrames.removeAll()
+        startup.blockedDuringStart = true
+        sourceStartups[source] = startup
+    }
+
+    private func unblockStartup(for source: MeetingAudioSourceID, generation: UInt64) {
+        guard var startup = sourceStartups[source], startup.generation == generation else {
+            return
+        }
+        startup.blockedDuringStart = false
+        sourceStartups[source] = startup
+    }
+
+    private func discardStartup(for source: MeetingAudioSourceID, generation: UInt64) {
+        guard sourceStartups[source]?.generation == generation else { return }
+        sourceStartups.removeValue(forKey: source)
+    }
 }
 
 final class MeetingCaptureIngress: @unchecked Sendable {
     enum Item: Sendable {
-        case frame(MeetingAudioFrame, MeetingAudioSourceID)
-        case event(MeetingAudioCaptureEvent, MeetingAudioSourceID)
+        case frame(MeetingAudioFrame, MeetingAudioSourceID, UInt64)
+        case event(MeetingAudioCaptureEvent, MeetingAudioSourceID, UInt64)
+        case started(MeetingAudioSourceID, UInt64, MeetingCaptureStartBarrier)
+        case startFailed(MeetingAudioCaptureFailure, MeetingAudioSourceID, UInt64)
     }
 
     struct DroppedItems {
@@ -273,11 +359,14 @@ final class MeetingCaptureIngress: @unchecked Sendable {
 
         mutating func record(_ item: Item) {
             switch item {
-            case .frame(let frame, let source):
+            case .frame(let frame, let source, _):
                 frameCount += 1
                 samplesBySource[source, default: 0] += frame.samples.count
-            case .event:
+            case .event, .startFailed:
                 eventCount += 1
+            case .started(_, _, let startBarrier):
+                eventCount += 1
+                startBarrier.complete()
             }
         }
 
@@ -346,5 +435,37 @@ final class MeetingCaptureIngress: @unchecked Sendable {
         let result = droppedItems
         droppedItems = DroppedItems()
         return result
+    }
+}
+
+final class MeetingCaptureStartBarrier: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if completed {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiter = continuation
+                lock.unlock()
+            }
+        }
+    }
+
+    func complete() {
+        lock.lock()
+        guard !completed else {
+            lock.unlock()
+            return
+        }
+        completed = true
+        let waiter = waiter
+        self.waiter = nil
+        lock.unlock()
+        waiter?.resume()
     }
 }
