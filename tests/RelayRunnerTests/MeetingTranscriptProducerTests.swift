@@ -1274,6 +1274,33 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertTrue(completedCheckpoint.pendingAudio.isEmpty)
     }
 
+    func testAcceptedIngestPersistsReplayCursorBeforeReturning() async throws {
+        let audio = MeetingAcceptedAudioRecorder()
+        let checkpoints = MeetingProducerCheckpointRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-durable-ingest-cursor",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(
+                    text: "durable",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await audio.record($0) },
+            durableCheckpointSink: { await checkpoints.record($0) }
+        )
+        try await producer.start(initiallyPaused: false)
+
+        try await producer.ingest([1, 2, 3], from: .microphone)
+
+        let persisted = await checkpoints.values
+        XCTAssertEqual(audio.audio.count, 1)
+        XCTAssertEqual(persisted.count, 1)
+        XCTAssertEqual(persisted[0].metrics.acceptedChunkCount, 1)
+        XCTAssertEqual(persisted[0].pendingAudio.map(\.chunkID), audio.audio.map(\.descriptor.chunkID))
+    }
+
     func testSharedMonotonicTimelineAlignsDelayedSystemAudio() async throws {
         let accepted = MeetingAcceptedAudioRecorder()
         let producer = MeetingTranscriptProducer(
@@ -1895,6 +1922,14 @@ private actor BlockingMeetingAcceptedAudioSink {
         released = true
         continuation?.resume()
         continuation = nil
+    }
+}
+
+private actor MeetingProducerCheckpointRecorder {
+    private(set) var values: [MeetingProducerCheckpoint] = []
+
+    func record(_ checkpoint: MeetingProducerCheckpoint) {
+        values.append(checkpoint)
     }
 }
 

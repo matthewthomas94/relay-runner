@@ -26,6 +26,7 @@ actor MeetingTranscriptProducer {
     }
 
     typealias AcceptedAudioSink = @Sendable (MeetingAcceptedAudio) async throws -> Void
+    typealias DurableCheckpointSink = @Sendable (MeetingProducerCheckpoint) async throws -> Void
     typealias EventSink = @Sendable (MeetingProducerEvent) -> Void
 
     private struct SourceBuffer: Sendable {
@@ -44,6 +45,7 @@ actor MeetingTranscriptProducer {
     private let transcriber: MeetingWindowTranscribing
     private let configuration: Configuration
     private let acceptedAudioSink: AcceptedAudioSink
+    private let durableCheckpointSink: DurableCheckpointSink
     private let eventSink: EventSink
 
     private var state: MeetingProducerState = .idle
@@ -65,6 +67,7 @@ actor MeetingTranscriptProducer {
         transcriber: MeetingWindowTranscribing,
         configuration: Configuration = .default,
         acceptedAudioSink: @escaping AcceptedAudioSink = { _ in },
+        durableCheckpointSink: @escaping DurableCheckpointSink = { _ in },
         eventSink: @escaping EventSink = { _ in }
     ) {
         precondition(configuration.sampleRate > 0)
@@ -75,6 +78,7 @@ actor MeetingTranscriptProducer {
         self.transcriber = transcriber
         self.configuration = configuration
         self.acceptedAudioSink = acceptedAudioSink
+        self.durableCheckpointSink = durableCheckpointSink
         self.eventSink = eventSink
         for source in MeetingAudioSourceID.allCases {
             sourceBuffers[source] = SourceBuffer()
@@ -260,6 +264,22 @@ actor MeetingTranscriptProducer {
         sourceBuffers[source] = buffer
         sourceStates[source] = .capturing
         emit(.source(source, .capturing))
+
+        do {
+            try await durableCheckpointSink(checkpoint())
+        } catch {
+            let producerError = MeetingProducerError.checkpointFailed(error.localizedDescription)
+            terminalError = producerError
+            state = .failed
+            emitIssue(
+                code: .checkpointFailed,
+                sourceID: source,
+                message: producerError.localizedDescription,
+                recoverable: true
+            )
+            emit(.state(.failed))
+            throw producerError
+        }
 
         try submitAvailableWindows(for: source)
         await Task.yield()

@@ -1,5 +1,18 @@
 import Foundation
 
+protocol MeetingNoteCaptureControlling: Sendable {
+    func start(
+        initiallyPaused: Bool,
+        resume checkpoint: MeetingProducerCheckpoint?
+    ) async throws
+    func pause() async throws
+    func resume() async throws
+    func stop() async throws -> MeetingProducerFinalBoundary
+    func stopCaptureSourcesForInterruption() async
+    func checkpoint() async -> MeetingProducerCheckpoint
+    func replayAcceptedAudio(_ chunks: [MeetingAcceptedAudio]) async throws
+}
+
 /// Note-only capture wiring for RR-368's exclusive foreground coordinator.
 /// Constructing or starting this actor does not start a provider, messenger,
 /// voice bridge, FIFO writer, command gesture, title model, or summary model.
@@ -70,8 +83,16 @@ actor MeetingNoteCaptureSession {
         return try await producer.stop()
     }
 
+    func stopCaptureSourcesForInterruption() async {
+        await stopSourcesAndDrainIngress()
+    }
+
     func checkpoint() async -> MeetingProducerCheckpoint {
         await producer.checkpoint()
+    }
+
+    func replayAcceptedAudio(_ chunks: [MeetingAcceptedAudio]) async throws {
+        try await producer.replayAcceptedAudio(chunks)
     }
 
     private func startSources() async throws {
@@ -376,6 +397,8 @@ actor MeetingNoteCaptureSession {
         )
     }
 }
+
+extension MeetingNoteCaptureSession: MeetingNoteCaptureControlling {}
 
 final class MeetingCaptureIngress: @unchecked Sendable {
     enum Item: Sendable {

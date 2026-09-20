@@ -45,6 +45,7 @@ enum NotchSessionStatus: String, Equatable {
     case notWorking = "Not working"
     case working = "Working"
     case listening = "Listening"
+    case paused = "Paused"
     case playing = "Playing"
 
     var glyph: NotchStatusGlyph {
@@ -53,13 +54,15 @@ enum NotchSessionStatus: String, Equatable {
             return .neutral
         case .listening:
             return .listening
+        case .paused:
+            return .paused
         case .playing:
             return .playing
         }
     }
 
     var animatesGlyphMotion: Bool {
-        self != .notWorking
+        self != .notWorking && self != .paused
     }
 
     var usesGlyphShimmer: Bool {
@@ -90,6 +93,7 @@ enum NotchSessionStatus: String, Equatable {
 enum NotchStatusGlyph: Equatable {
     case neutral
     case listening
+    case paused
     case playing
 
     static let artworkSize = CGSize(width: 24, height: 24)
@@ -105,6 +109,8 @@ enum NotchStatusGlyph: Equatable {
             ]
         case .listening:
             return Self.activityDots(accent: .orange)
+        case .paused:
+            return Self.activityDots(accent: .white)
         case .playing:
             return Self.activityDots(accent: .blue)
         }

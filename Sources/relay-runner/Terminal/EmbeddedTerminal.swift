@@ -93,6 +93,9 @@ final class EmbeddedTerminalSession {
     var isEmbeddedProcessRunning: Bool {
         (phase == .starting || phase == .running) && process?.isRunning == true
     }
+    /// Unlike `isEmbeddedProcessRunning`, this remains true after `end()` has
+    /// requested termination but before the child actually releases its PTY.
+    var hasLiveEmbeddedProcess: Bool { process?.isRunning == true }
     var diagnosticEventPath: String? { diagnostics?.eventsURL.path }
 
     func setExitHandler(_ handler: @escaping (Int32?) -> Void) {
