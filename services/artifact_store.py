@@ -436,21 +436,26 @@ class ArtifactStore:
             return head
 
     def snapshot(self, *, provider: str | None = None) -> ArtifactSnapshot:
-        """Return provider-neutral bytes from one immutable artifact head."""
+        """Return provider-neutral bytes from one immutable artifact head.
+
+        Readers do not need the project writer lock: Git publishes a complete
+        object graph before atomically advancing the artifact ref. Capturing
+        the ref once keeps this snapshot coherent while a slow sync validates
+        remote history under the writer lock.
+        """
         del provider  # Provider identity cannot affect artifact contents.
         self._require_enabled()
-        with self._writer_lock():
-            head = self._head()
-            if not head:
-                raise ArtifactValidationError("artifact store is not initialized")
-            self._validate_artifact_head(head)
-            entries = self._tree_entries(head)
-            return ArtifactSnapshot(
-                project_id=self.project_id,
-                commit_id=head,
-                tree_id=self._tree_id(head),
-                files={entry.path: self._cat_blob(entry.oid) for entry in entries.values()},
-            )
+        head = self._head()
+        if not head:
+            raise ArtifactValidationError("artifact store is not initialized")
+        self._validate_artifact_head(head)
+        entries = self._tree_entries(head)
+        return ArtifactSnapshot(
+            project_id=self.project_id,
+            commit_id=head,
+            tree_id=self._tree_id(head),
+            files={entry.path: self._cat_blob(entry.oid) for entry in entries.values()},
+        )
 
     def _commit_mutation(
         self,

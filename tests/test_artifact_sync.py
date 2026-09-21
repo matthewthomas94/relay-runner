@@ -6,7 +6,9 @@ import os
 import subprocess
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 from services.artifact_store import (
     ARTIFACT_REF,
@@ -457,6 +459,60 @@ class ArtifactSyncTests(unittest.TestCase):
         self.assertIn(
             b"History survives exact-ref synchronization",
             base64.b64decode(recovered["markdown_base64"]),
+        )
+
+    def test_note_reads_do_not_wait_for_remote_history_validation(self):
+        manager = ProjectNoteManager(self.device_a.store, device_id="device-a")
+        created = manager.create(
+            request_id="read-during-sync",
+            created_at="2026-09-20T08:00:00Z",
+            capture_started_at="2026-09-20T08:00:00Z",
+            captured_at="2026-09-20T08:00:05Z",
+            recording_state="completed",
+            checkpoint_reason="complete",
+            segments=[{
+                "segment_id": "segment-1",
+                "captured_at": "2026-09-20T08:00:05Z",
+                "text": "Read from one verified canonical revision",
+            }],
+            capture_ended_at="2026-09-20T08:00:05Z",
+        )
+        identity = created["note"]["identity"]
+        canonical_head = created["artifact_commit"]
+        validation_started = Event()
+        release_validation = Event()
+
+        def delay_remote_history_validation(stage):
+            if stage == "before_remote_history_validation":
+                validation_started.set()
+                if not release_validation.wait(timeout=15):
+                    raise RuntimeError("timed out waiting to release remote history validation")
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            sync = pool.submit(
+                self.engine(
+                    self.device_a,
+                    failure_injector=delay_remote_history_validation,
+                ).sync
+            )
+            self.assertTrue(validation_started.wait(timeout=5))
+            listed = pool.submit(manager.list, limit=1)
+            read = pool.submit(manager.get, identity["note_id"])
+            try:
+                catalog = listed.result(timeout=5)
+                note = read.result(timeout=5)
+            finally:
+                release_validation.set()
+            synced = sync.result(timeout=10)
+
+        self.assertEqual(synced.state, ArtifactSyncState.CLEAN)
+        self.assertEqual(catalog["artifact_commit"], canonical_head)
+        self.assertEqual(note["artifact_commit"], canonical_head)
+        self.assertEqual(catalog["notes"][0]["reference"], note["reference"])
+        self.assertTrue(note["reference"]["verified"])
+        self.assertIn(
+            b"Read from one verified canonical revision",
+            base64.b64decode(note["markdown_base64"]),
         )
 
     def test_same_ticket_conflict_has_three_way_evidence_and_explicit_resolution(self):

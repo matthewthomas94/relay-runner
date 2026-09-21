@@ -1260,6 +1260,7 @@ class ArtifactSyncEngine:
             shutil.rmtree(temporary, ignore_errors=True)
 
     def _validate_quarantine(self, repository: Path, head: str) -> None:
+        self._inject("before_remote_history_validation")
         history = [
             line.split()
             for line in self._quarantine_git(
