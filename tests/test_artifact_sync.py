@@ -515,6 +515,128 @@ class ArtifactSyncTests(unittest.TestCase):
             base64.b64decode(note["markdown_base64"]),
         )
 
+    def test_note_create_does_not_wait_for_remote_history_validation(self):
+        manager = ProjectNoteManager(self.device_a.store, device_id="device-a")
+        validation_started = Event()
+        release_validation = Event()
+
+        def delay_remote_history_validation(stage):
+            if stage == "before_remote_history_validation":
+                validation_started.set()
+                if not release_validation.wait(timeout=15):
+                    raise RuntimeError("timed out waiting to release remote history validation")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            sync = pool.submit(
+                self.engine(
+                    self.device_a,
+                    failure_injector=delay_remote_history_validation,
+                ).sync
+            )
+            self.assertTrue(validation_started.wait(timeout=5))
+            create = pool.submit(
+                manager.create,
+                request_id="create-during-history-validation",
+                created_at="2026-09-20T08:10:00Z",
+                capture_started_at="2026-09-20T08:10:00Z",
+                captured_at="2026-09-20T08:10:05Z",
+                recording_state="recording",
+                checkpoint_reason="checkpoint",
+                segments=[{
+                    "segment_id": "segment-create",
+                    "captured_at": "2026-09-20T08:10:05Z",
+                    "text": "Local create is durable before remote validation finishes",
+                }],
+            )
+            try:
+                created = create.result(timeout=5)
+            finally:
+                release_validation.set()
+            synced = sync.result(timeout=10)
+
+        self.assertEqual(created["sync"]["state"], "pending")
+        self.assertEqual(synced.state, ArtifactSyncState.CLEAN)
+        self.assertEqual(synced.local_head, created["artifact_commit"])
+        note_path = f".orchestrator/notes/{created['note']['identity']['note_id']}.md"
+        self.assertIn(
+            "Local create is durable",
+            self.run_git(self.remote, "show", f"{ARTIFACT_REF}:{note_path}"),
+        )
+
+    def test_note_completion_does_not_wait_for_remote_push(self):
+        manager = ProjectNoteManager(self.device_a.store, device_id="device-a")
+        created = manager.create(
+            request_id="create-before-slow-push",
+            created_at="2026-09-20T08:20:00Z",
+            capture_started_at="2026-09-20T08:20:00Z",
+            captured_at="2026-09-20T08:20:05Z",
+            recording_state="recording",
+            checkpoint_reason="checkpoint",
+            segments=[{
+                "segment_id": "segment-push",
+                "captured_at": "2026-09-20T08:20:05Z",
+                "text": "Before completion",
+            }],
+        )
+        push_started = Event()
+        release_push = Event()
+        delayed = False
+
+        def delay_first_push(stage):
+            nonlocal delayed
+            if stage == "before_push" and not delayed:
+                delayed = True
+                push_started.set()
+                if not release_push.wait(timeout=15):
+                    raise RuntimeError("timed out waiting to release remote push")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            sync = pool.submit(
+                self.engine(
+                    self.device_a,
+                    failure_injector=delay_first_push,
+                ).sync
+            )
+            self.assertTrue(push_started.wait(timeout=5))
+            complete = pool.submit(
+                manager.update,
+                request_id="complete-during-slow-push",
+                update={
+                    "identity": created["note"]["identity"],
+                    "captured_at": "2026-09-20T08:20:10Z",
+                    "capture_ended_at": "2026-09-20T08:20:10Z",
+                    "recording_state": "completed",
+                    "checkpoint_reason": "complete",
+                    "segments": [{
+                        "segment_id": "segment-push",
+                        "captured_at": "2026-09-20T08:20:10Z",
+                        "text": "Completed while remote push was pending",
+                    }],
+                },
+            )
+            try:
+                completed = complete.result(timeout=5)
+            finally:
+                release_push.set()
+            synced = sync.result(timeout=15)
+
+        self.assertEqual(completed["sync"]["state"], "pending")
+        self.assertEqual(synced.state, ArtifactSyncState.CLEAN)
+        self.assertEqual(synced.attempts, 2)
+        self.assertEqual(synced.local_head, completed["artifact_commit"])
+        note_path = f".orchestrator/notes/{created['note']['identity']['note_id']}.md"
+        self.assertIn(
+            "Completed while remote push was pending",
+            self.run_git(self.remote, "show", f"{ARTIFACT_REF}:{note_path}"),
+        )
+        log = self.run_git(
+            self.device_a.repo,
+            "log",
+            "--format=%B%x00",
+            ARTIFACT_REF,
+        )
+        self.assertEqual(log.count("Relay-Event-ID: note-update:complete-during-slow-push"), 1)
+
     def test_same_ticket_conflict_has_three_way_evidence_and_explicit_resolution(self):
         base = self.write_ticket(self.device_a, "shared-ticket", "RR-4", "Shared")
         self.engine(self.device_a).sync()

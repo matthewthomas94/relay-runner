@@ -671,14 +671,26 @@ class ArtifactSyncEngine:
         self._validate_configuration(local_head)
         last_result: ArtifactSyncResult | None = None
         for attempt in range(1, self.max_attempts + 1):
-            with self.store._writer_lock():
-                result = self._sync_once(
-                    local_head=self.store._head() or local_head,
-                    publish=publish,
-                    attempt=attempt,
-                    expected_remote_url_sha256=expected_remote_url_sha256,
-                    expected_push_url_sha256=expected_push_url_sha256,
-                )
+            # Fetch and full-history verification are read-only with respect to
+            # the canonical ref, so they must not delay local artifact writes.
+            with self._remote_snapshot(
+                expected_url_sha256=expected_remote_url_sha256
+            ) as remote:
+                if remote.error_state:
+                    with self.store._writer_lock():
+                        result = self._remote_error_result(
+                            remote,
+                            self.store._head() or local_head,
+                            attempts=attempt,
+                        )
+                else:
+                    assert remote.head is not None
+                    result = self._sync_once(
+                        remote_head=remote.head,
+                        publish=publish,
+                        attempt=attempt,
+                        expected_push_url_sha256=expected_push_url_sha256,
+                    )
             last_result = result
             if result.state not in {
                 ArtifactSyncState.RETRYABLE_OFFLINE,
@@ -697,19 +709,16 @@ class ArtifactSyncEngine:
     def _sync_once(
         self,
         *,
-        local_head: str,
+        remote_head: str,
         publish: bool,
         attempt: int,
-        expected_remote_url_sha256: str | None = None,
         expected_push_url_sha256: str | None = None,
     ) -> ArtifactSyncResult:
-        with self._remote_snapshot(
-            expected_url_sha256=expected_remote_url_sha256
-        ) as remote:
-            if remote.error_state:
-                return self._remote_error_result(remote, local_head, attempts=attempt)
-            assert remote.head is not None
-            remote_head = remote.head
+        with self.store._writer_lock():
+            local_head = self.store._head()
+            if not local_head:
+                raise ArtifactValidationError("artifact store is not initialized")
+            self._validate_configuration(local_head)
             observed = self._relationship(local_head, remote_head)
             transitions = [observed]
             if not publish:
@@ -784,13 +793,19 @@ class ArtifactSyncEngine:
                     )
                 candidate = replay
 
-            self._inject("before_push")
-            push_destination = None
-            if expected_push_url_sha256 is not None:
-                push_destination = self._validated_push_destination(
-                    expected_push_url_sha256
-                )
-            push = self._push(candidate, destination=push_destination)
+        # The candidate is immutable. Publish it without the writer lock, then
+        # re-check canonical authority before reporting the synchronization state.
+        self._inject("before_push")
+        push_destination = None
+        if expected_push_url_sha256 is not None:
+            push_destination = self._validated_push_destination(
+                expected_push_url_sha256
+            )
+        push = self._push(candidate, destination=push_destination)
+        with self.store._writer_lock():
+            current_head = self.store._head()
+            if not current_head:
+                raise ArtifactValidationError("artifact store is not initialized")
             if push is not None:
                 state, recovery = push
                 retry_state = ArtifactSyncState.AHEAD if state == ArtifactSyncState.AHEAD else state
@@ -798,10 +813,23 @@ class ArtifactSyncEngine:
                     retry_state,
                     observed,
                     attempt,
-                    self.store._head(),
+                    current_head,
                     remote_head,
                     recovery=recovery,
                     transitions=tuple(transitions + [retry_state]),
+                )
+            if current_head != candidate:
+                return self._finish(
+                    ArtifactSyncState.AHEAD,
+                    observed,
+                    attempt,
+                    current_head,
+                    candidate,
+                    recovery=(
+                        "Local artifacts changed during remote publication; "
+                        "the published revision is durable and retry is bounded."
+                    ),
+                    transitions=tuple(transitions + [ArtifactSyncState.AHEAD]),
                 )
             self.store._materialize(candidate)
             return self._finish(
