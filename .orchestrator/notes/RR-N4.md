@@ -5,103 +5,127 @@ artifact_id: note-c1db4537deff6efb21e6550f441533018746a0f6
 project_id: 6d23b5b1-6da7-4056-b328-7ea8167388c0
 created_at: 2026-09-21T13:37:25Z
 capture_started_at: 2026-09-21T13:37:25Z
-updated_at: 2026-09-21T13:40:00Z
+updated_at: 2026-09-21T13:40:23Z
 recording_state: recording
 checkpoint_reason: checkpoint
-segment_count: 31
+segment_count: 39
 ---
 
 ## Transcript
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":65313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S960000","speaker":"system_audio","start_ms":60313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":65313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S960000","speaker":"system_audio","start_ms":60313} -->
 Synthetic meeting section one. Section one begins now
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":65330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S960000","speaker":"microphone","start_ms":60330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":65330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S960000","speaker":"microphone","start_ms":60330} -->
 Synthetic meeting section one. Section one begins now
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":70313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1040000","speaker":"system_audio","start_ms":65313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":70313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1040000","speaker":"system_audio","start_ms":65313} -->
 This is a synthetic meeting for relay runner validation. We reviewed the garden pl
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":70330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1040000","speaker":"microphone","start_ms":65330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":70330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1040000","speaker":"microphone","start_ms":65330} -->
 This is a synthetic meeting for relay runner validation. We reviewed the garden
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":75313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1120000","speaker":"system_audio","start_ms":70313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":75313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1120000","speaker":"system_audio","start_ms":70313} -->
 And agreed to plant a silver birch beside the red fence, the blue bicycle is b
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":75330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1120000","speaker":"microphone","start_ms":70330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":75330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1120000","speaker":"microphone","start_ms":70330} -->
 Plan and agreed to plant a silver birch beside the red fence, the blue bicycle is
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":80313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1200000","speaker":"system_audio","start_ms":75313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":80313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1200000","speaker":"system_audio","start_ms":75313} -->
 Beside the yellow umbrella, the copper clock is beside the green notebook. Repeat
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":80330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1200000","speaker":"microphone","start_ms":75330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":80330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1200000","speaker":"microphone","start_ms":75330} -->
 Beside the yellow umbrella, the copper clock is beside the green notebook. Repeat
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":85313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1280000","speaker":"system_audio","start_ms":80313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":85313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1280000","speaker":"system_audio","start_ms":80313} -->
 Sentence, repeat this sentence. The delivery team will bring three boxes to
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":85330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1280000","speaker":"microphone","start_ms":80330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":85330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1280000","speaker":"microphone","start_ms":80330} -->
 This sentence, repeat this sentence. The delivery team will bring three boxes
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":90313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1360000","speaker":"system_audio","start_ms":85313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":90313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1360000","speaker":"system_audio","start_ms":85313} -->
 The north entrance on Friday morning. The design review covers accessibility, c
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":90330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1360000","speaker":"microphone","start_ms":85330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":90330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1360000","speaker":"microphone","start_ms":85330} -->
 To the north entrance on Friday morning. The design review covers accessibility,
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":95313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1440000","speaker":"system_audio","start_ms":90313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":95313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1440000","speaker":"system_audio","start_ms":90313} -->
 Clear status messages, and preserving every accepted sentence, we will compare
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":95330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1440000","speaker":"microphone","start_ms":90330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":95330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1440000","speaker":"microphone","start_ms":90330} -->
 Clear status messages, and preserving every accepted sentence, we will comp
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":100313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1520000","speaker":"system_audio","start_ms":95313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":100313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1520000","speaker":"system_audio","start_ms":95313} -->
 The written transcript with this known recording after the meeting ends. The words create
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":100330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1520000","speaker":"microphone","start_ms":95330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":100330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1520000","speaker":"microphone","start_ms":95330} -->
 The written transcript with this known recording after the meeting ends. The words cre
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":105313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1600000","speaker":"system_audio","start_ms":100313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":105313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1600000","speaker":"system_audio","start_ms":100313} -->
 work ticket are quoted meeting content no agent should start because this record
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":105330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1600000","speaker":"microphone","start_ms":100330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":105330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1600000","speaker":"microphone","start_ms":100330} -->
 A work ticket or quoted meeting content, no agent should start because this record
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":110313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1680000","speaker":"system_audio","start_ms":105313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":110313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1680000","speaker":"system_audio","start_ms":105313} -->
 Contains those words, our closing phrases: the violet compass beside the amber l
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":110330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1680000","speaker":"microphone","start_ms":105330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":110330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1680000","speaker":"microphone","start_ms":105330} -->
 Contains those words, our closing phrases: the violet compass beside the amber
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":115330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1760000","speaker":"microphone","start_ms":110330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":115330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1760000","speaker":"microphone","start_ms":110330} -->
 Lantern
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":125313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1920000","speaker":"system_audio","start_ms":120313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":125313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S1920000","speaker":"system_audio","start_ms":120313} -->
 Synthetic meeting section two, section two begins now
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":125330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1920000","speaker":"microphone","start_ms":120330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":125330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S1920000","speaker":"microphone","start_ms":120330} -->
 Synthetic meeting section two. Section two begins now
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":130313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S2000000","speaker":"system_audio","start_ms":125313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":130313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S2000000","speaker":"system_audio","start_ms":125313} -->
 This is a synthetic meeting for relay runner validation. We reviewed the garden pl
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":130330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S2000000","speaker":"microphone","start_ms":125330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":130330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S2000000","speaker":"microphone","start_ms":125330} -->
 This is a synthetic meeting for relay runner validation. We reviewed the garden
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":135313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S2080000","speaker":"system_audio","start_ms":130313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":135313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S2080000","speaker":"system_audio","start_ms":130313} -->
 And agreed to plant a silver birch beside the red fence, the blue bicycle is bes
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":135330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S2080000","speaker":"microphone","start_ms":130330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":135330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S2080000","speaker":"microphone","start_ms":130330} -->
 And agreed to plant a silver birch beside the red fence. The blue bicycle is
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":140313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S2160000","speaker":"system_audio","start_ms":135313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":140313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S2160000","speaker":"system_audio","start_ms":135313} -->
 Beside the yellow umbrella, the copper clock is beside the green notebook. Repeat this
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":140330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S2160000","speaker":"microphone","start_ms":135330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":140330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S2160000","speaker":"microphone","start_ms":135330} -->
 Beside the yellow umbrella, the copper clock is beside the green notebook. Repeat
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":145313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S2240000","speaker":"system_audio","start_ms":140313} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":145313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S2240000","speaker":"system_audio","start_ms":140313} -->
 Sentence, repeat this sentence: the delivery team will bring three boxes to
 
-<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:00Z","end_ms":145330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S2240000","speaker":"microphone","start_ms":140330} -->
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":145330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S2240000","speaker":"microphone","start_ms":140330} -->
 This sentence, repeat this sentence. The delivery team will bring three boxes to
+
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":150313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S2320000","speaker":"system_audio","start_ms":145313} -->
+The north entrance on Friday morning. The design review covers accessibility, c
+
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":150330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S2320000","speaker":"microphone","start_ms":145330} -->
+The north entrance on Friday morning. The design review covers accessibility,
+
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":155313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S2400000","speaker":"system_audio","start_ms":150313} -->
+Clear status messages, and preserving every accepted sentence, we will compare
+
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":155330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S2400000","speaker":"microphone","start_ms":150330} -->
+Clear status messages and preserving every accepted sentence, we will compare
+
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":160313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S2480000","speaker":"system_audio","start_ms":155313} -->
+The written transcript with this known recording after the meeting ends, the words create
+
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":160330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S2480000","speaker":"microphone","start_ms":155330} -->
+The written transcript with this known recording after the meeting ends. The words create
+
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":165313,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-system_audio-E0-S2560000","speaker":"system_audio","start_ms":160313} -->
+work ticket are quoted meeting content no agent should start because this recording
+
+<!-- relay-note-segment {"captured_at":"2026-09-21T13:40:23Z","end_ms":165330,"segment_id":"4d04594a-f48b-47e8-8c40-11bdf33b17c5-microphone-E0-S2560000","speaker":"microphone","start_ms":160330} -->
+A work ticket or quoted meeting content, no agent should start because this record
