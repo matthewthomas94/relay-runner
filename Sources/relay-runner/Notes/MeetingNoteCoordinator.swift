@@ -124,6 +124,25 @@ enum MeetingNoteCoordinatorError: LocalizedError, Equatable {
     }
 }
 
+enum MeetingNoteProjectScopeResolver {
+    static func renewedToken(
+        for project: MeetingNoteProjectBinding,
+        registry: ProjectRegistryV2Service
+    ) throws -> String {
+        guard let expectedProjectID = project.expectedProjectID else {
+            throw MeetingNoteCoordinatorError.projectIdentityChanged
+        }
+        let token = try registry.scopeToken(matching: project.repositoryPath)
+        guard token.projectID == expectedProjectID,
+              ProgramBoardProjectPath.matches(token.repositoryPath, project.repositoryPath),
+              registry.validateScopeToken(token).isValid,
+              let encoded = token.encodedValue else {
+            throw MeetingNoteCoordinatorError.projectIdentityChanged
+        }
+        return encoded
+    }
+}
+
 struct MeetingNoteRecoveryJournal: Codable, Equatable, Sendable {
     static let schemaVersion = 1
 
@@ -258,6 +277,9 @@ final class MeetingNoteEventBuffer: @unchecked Sendable {
 
 actor MeetingNoteCoordinator {
     typealias SnapshotSink = @Sendable (MeetingNoteCoordinatorSnapshot) -> Void
+    typealias ScopeTokenRefresher = @MainActor @Sendable (
+        MeetingNoteProjectBinding
+    ) async throws -> String
     typealias CaptureFactory = @Sendable (
         _ sessionID: String,
         _ acceptedAudioSink: @escaping MeetingTranscriptProducer.AcceptedAudioSink,
@@ -269,7 +291,6 @@ actor MeetingNoteCoordinator {
         let id: UUID
         let capture: any MeetingNoteCaptureControlling
         let events: MeetingNoteEventBuffer
-        let scopeToken: String?
     }
 
     private let writer: any MeetingNoteArtifactWriting
@@ -279,6 +300,7 @@ actor MeetingNoteCoordinator {
     private let now: @Sendable () -> String
     private let automaticCheckpointing: Bool
     private let snapshotSink: SnapshotSink
+    private let scopeTokenRefresher: ScopeTokenRefresher?
 
     private var journal: MeetingNoteRecoveryJournal?
     private var runtime: Runtime?
@@ -303,6 +325,7 @@ actor MeetingNoteCoordinator {
             Date().ISO8601Format(.iso8601)
         },
         snapshotSink: @escaping SnapshotSink = { _ in },
+        scopeTokenRefresher: ScopeTokenRefresher? = nil,
         captureFactory: @escaping CaptureFactory
     ) {
         self.writer = writer
@@ -311,18 +334,21 @@ actor MeetingNoteCoordinator {
         self.automaticCheckpointing = automaticCheckpointing
         self.now = now
         self.snapshotSink = snapshotSink
+        self.scopeTokenRefresher = scopeTokenRefresher
         self.captureFactory = captureFactory
     }
 
     static func live(
         modelName: String,
-        snapshotSink: @escaping SnapshotSink = { _ in }
+        snapshotSink: @escaping SnapshotSink = { _ in },
+        scopeTokenRefresher: ScopeTokenRefresher? = nil
     ) -> MeetingNoteCoordinator {
         let store = MeetingNoteRecoveryStore()
         return MeetingNoteCoordinator(
             writer: OrchestratorMeetingNoteWriter(),
             recoveryStore: store,
-            snapshotSink: snapshotSink
+            snapshotSink: snapshotSink,
+            scopeTokenRefresher: scopeTokenRefresher
         ) { sessionID, acceptedAudioSink, durableCheckpointSink, eventSink in
             let producer = MeetingTranscriptProducer(
                 sessionID: sessionID,
@@ -395,11 +421,13 @@ actor MeetingNoteCoordinator {
         do {
             try await recoveryStore.save(journal)
             hasPersistedRecoveryJournal = true
-            let created = try await writer.create(
-                create,
-                repositoryPath: project.repositoryPath,
-                projectScopeToken: projectScopeToken
-            )
+            let created = try await withScopeRenewal(for: project) { scopeToken in
+                try await self.writer.create(
+                    create,
+                    repositoryPath: project.repositoryPath,
+                    projectScopeToken: scopeToken
+                )
+            }
             try validateIdentity(created.note.identity, project: project)
             journal.identity = created.note.identity
             journal.canonicalSegments = created.note.segments
@@ -435,8 +463,7 @@ actor MeetingNoteCoordinator {
             runtime = Runtime(
                 id: runtimeID,
                 capture: capture,
-                events: events,
-                scopeToken: projectScopeToken
+                events: events
             )
             try await capture.start(initiallyPaused: initiallyPaused, resume: nil)
             journal.producerCheckpoint = await capture.checkpoint()
@@ -573,11 +600,13 @@ actor MeetingNoteCoordinator {
         do {
             var canonicalAlreadyCompleted = false
             if journal.identity == nil {
-                let created = try await writer.create(
-                    journal.createRequest,
-                    repositoryPath: journal.project.repositoryPath,
-                    projectScopeToken: projectScopeToken
-                )
+                let created = try await withScopeRenewal(for: journal.project) { scopeToken in
+                    try await self.writer.create(
+                        journal.createRequest,
+                        repositoryPath: journal.project.repositoryPath,
+                        projectScopeToken: scopeToken
+                    )
+                }
                 try validateIdentity(created.note.identity, project: journal.project)
                 journal.identity = created.note.identity
                 journal.canonicalSegments = created.note.segments
@@ -588,11 +617,13 @@ actor MeetingNoteCoordinator {
             }
 
             if let pending = journal.pendingUpdate {
-                let retried = try await writer.update(
-                    pending,
-                    repositoryPath: journal.project.repositoryPath,
-                    projectScopeToken: projectScopeToken
-                )
+                let retried = try await withScopeRenewal(for: journal.project) { scopeToken in
+                    try await self.writer.update(
+                        pending,
+                        repositoryPath: journal.project.repositoryPath,
+                        projectScopeToken: scopeToken
+                    )
+                }
                 journal.canonicalSegments = retried.note.segments
                 journal.syncState = retried.sync.state
                 journal.captureEndedAt = retried.note.captureEndedAt
@@ -605,11 +636,13 @@ actor MeetingNoteCoordinator {
             }
 
             if let identity = journal.identity {
-                let canonical = try await writer.fetch(
-                    identity.artifactID,
-                    repositoryPath: journal.project.repositoryPath,
-                    projectScopeToken: projectScopeToken
-                )
+                let canonical = try await withScopeRenewal(for: journal.project) { scopeToken in
+                    try await self.writer.fetch(
+                        identity.artifactID,
+                        repositoryPath: journal.project.repositoryPath,
+                        projectScopeToken: scopeToken
+                    )
+                }
                 try validateIdentity(canonical.note.identity, project: journal.project)
                 journal.canonicalSegments = canonical.note.segments
                 journal.syncState = canonical.sync.state
@@ -679,8 +712,7 @@ actor MeetingNoteCoordinator {
             runtime = Runtime(
                 id: runtimeID,
                 capture: capture,
-                events: events,
-                scopeToken: projectScopeToken
+                events: events
             )
             try await capture.start(
                 initiallyPaused: true,
@@ -875,11 +907,13 @@ actor MeetingNoteCoordinator {
             throw MeetingNoteCoordinatorError.localSaveFailed("note recovery session changed")
         }
         do {
-            let response = try await writer.update(
-                request,
-                repositoryPath: publicationJournal.project.repositoryPath,
-                projectScopeToken: runtime?.scopeToken ?? activeScopeToken
-            )
+            let response = try await withScopeRenewal(for: publicationJournal.project) { scopeToken in
+                try await self.writer.update(
+                    request,
+                    repositoryPath: publicationJournal.project.repositoryPath,
+                    projectScopeToken: scopeToken
+                )
+            }
             guard var current = journal, current.sessionID == sessionID else {
                 throw MeetingNoteCoordinatorError.localSaveFailed("note recovery session changed")
             }
@@ -927,6 +961,23 @@ actor MeetingNoteCoordinator {
             && request.update.recordingState == recordingState
             && request.update.segments == segments
             && captureBoundaryMatches
+    }
+
+    /// A registry availability refresh may rotate only the scope proof while
+    /// the note's immutable project binding remains unchanged. Retry exactly
+    /// once, and only for the daemon's explicit stale-scope response.
+    private func withScopeRenewal<Value: Sendable>(
+        for project: MeetingNoteProjectBinding,
+        operation: (String?) async throws -> Value
+    ) async throws -> Value {
+        do {
+            return try await operation(activeScopeToken)
+        } catch let error as OrchestratorClientError where error.isStaleProjectScope {
+            guard let scopeTokenRefresher else { throw error }
+            let refreshed = try await scopeTokenRefresher(project)
+            activeScopeToken = refreshed
+            return try await operation(refreshed)
+        }
     }
 
     private func acquireCheckpointPublication() async {

@@ -180,6 +180,8 @@ struct ProgramBoardOverlayView: View {
     var onStopNoteTaker: () -> Void = {}
     var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
     var onNoteClose: () -> Void = {}
+    var onNoteRecovery: (MeetingNoteRecoveryResolution) -> Void = { _ in }
+    var onResumeRecoveredNote: () -> Void = {}
     let onCreateStart: (ProgramBoardLane) -> Void
     let onCreateCommit: (ProgramBoardCreateRequest) -> Void
     let onCreateCancel: () -> Void
@@ -381,6 +383,11 @@ struct ProgramBoardOverlayView: View {
                         onClose: onNoteClose,
                         onStop: onStopNoteTaker,
                         onRetry: { onNoteOpen(detail.item) },
+                        recoveryOffer: model.selectedNoteRecoveryOffer,
+                        recoveryInFlight: model.noteRecoveryInFlight,
+                        recoveryErrorMessage: model.noteRecoveryErrorMessage,
+                        onRecover: onNoteRecovery,
+                        onResume: onResumeRecoveredNote,
                         panelSize: ProgramTicketPanelStyle.detailSize(fitting: detailSurfaceSize)
                     )
                 }
@@ -2351,6 +2358,11 @@ private struct ProgramNoteDetailPanel: View {
     let onClose: () -> Void
     let onStop: () -> Void
     let onRetry: () -> Void
+    let recoveryOffer: MeetingNoteRecoveryOffer?
+    let recoveryInFlight: Bool
+    let recoveryErrorMessage: String?
+    let onRecover: (MeetingNoteRecoveryResolution) -> Void
+    let onResume: () -> Void
     var panelSize: CGSize? = nil
 
     private var isCurrentCapture: Bool {
@@ -2364,6 +2376,9 @@ private struct ProgramNoteDetailPanel: View {
     }
 
     private var recordingStatus: String {
+        if recoveryOffer != nil, !isCurrentCapture {
+            return "Interrupted — recovery available"
+        }
         guard isCurrentCapture else { return detail.item.recordingLabel }
         switch captureSnapshot.phase {
         case .preparing: return "Preparing recording"
@@ -2423,6 +2438,44 @@ private struct ProgramNoteDetailPanel: View {
                         onStop()
                     }
                 }
+                if recoveryOffer != nil,
+                   isCurrentCapture,
+                   captureSnapshot.phase == .paused {
+                    ProgramDetailActionButton(
+                        systemName: "play.fill",
+                        title: "Resume",
+                        disabled: recoveryInFlight,
+                        help: "Resume microphone capture for this recovered note"
+                    ) {
+                        onResume()
+                    }
+                }
+                if recoveryOffer != nil, !isCurrentCapture {
+                    ProgramDetailActionButton(
+                        systemName: "pause.fill",
+                        title: "Recover paused",
+                        disabled: recoveryInFlight,
+                        help: "Replay the saved local tail and keep capture paused"
+                    ) {
+                        onRecover(.recoverPaused)
+                    }
+                    ProgramDetailActionButton(
+                        systemName: "checkmark",
+                        title: "Finalize",
+                        disabled: recoveryInFlight,
+                        help: "Replay the saved local tail and finish this note"
+                    ) {
+                        onRecover(.finalize)
+                    }
+                    ProgramDetailActionButton(
+                        systemName: "trash",
+                        title: "Discard tail",
+                        disabled: recoveryInFlight,
+                        help: "Finish the note without replaying its incomplete local audio tail"
+                    ) {
+                        onRecover(.discardIncompleteTail)
+                    }
+                }
                 if detail.errorMessage != nil {
                     ProgramDetailActionButton(
                         systemName: "arrow.clockwise",
@@ -2437,6 +2490,14 @@ private struct ProgramNoteDetailPanel: View {
 
             if let errorMessage = captureErrorMessage {
                 ProgramDetailNotice(message: errorMessage)
+            }
+            if recoveryOffer != nil, !isCurrentCapture {
+                ProgramDetailNotice(
+                    message: "Interrupted recording found. Recovery uses the original note and project and stays paused until you choose Resume."
+                )
+            }
+            if let recoveryErrorMessage {
+                ProgramDetailNotice(message: recoveryErrorMessage)
             }
             if let errorMessage = detail.errorMessage {
                 ProgramDetailNotice(message: errorMessage)

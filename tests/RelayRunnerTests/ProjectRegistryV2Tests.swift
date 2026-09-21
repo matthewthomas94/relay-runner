@@ -646,6 +646,53 @@ final class ProjectRegistryV2Tests: XCTestCase {
         }
     }
 
+    func testMeetingNoteScopeRenewalUsesOriginalBindingAndRejectsChangedProject() throws {
+        let root = try makeTempDirectory(named: "meeting-note-scope-renewal")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeService(root: root, projectID: "project-note")
+        let repo = root.appendingPathComponent("source", isDirectory: true)
+        try makeGitRepo(at: repo)
+        let registered = try fixture.service.register(
+            candidate: fixture.service.inspect(selectedURL: repo),
+            displayName: "Meeting Note Project"
+        )
+        let binding = MeetingNoteProjectBinding(
+            repositoryPath: registered.lastResolvedPath,
+            expectedProjectID: registered.projectID,
+            provider: "codex"
+        )
+
+        let encoded = try MeetingNoteProjectScopeResolver.renewedToken(
+            for: binding,
+            registry: fixture.service
+        )
+        let token = try XCTUnwrap(ConfirmedProjectScopeToken(encodedValue: encoded))
+        XCTAssertEqual(token.projectID, registered.projectID)
+        XCTAssertEqual(token.repositoryPath, binding.repositoryPath)
+        XCTAssertTrue(fixture.service.validateScopeToken(token).isValid)
+
+        let changedProject = MeetingNoteProjectBinding(
+            repositoryPath: binding.repositoryPath,
+            expectedProjectID: "another-project",
+            provider: "claude"
+        )
+        XCTAssertThrowsError(try MeetingNoteProjectScopeResolver.renewedToken(
+            for: changedProject,
+            registry: fixture.service
+        )) { error in
+            XCTAssertEqual(error as? MeetingNoteCoordinatorError, .projectIdentityChanged)
+        }
+
+        fixture.grants.resolutions[registered.projectID] = .requiresRegrant(
+            .stale,
+            lastKnownURL: repo
+        )
+        XCTAssertThrowsError(try MeetingNoteProjectScopeResolver.renewedToken(
+            for: binding,
+            registry: fixture.service
+        ))
+    }
+
     func testScopeCoordinatorSeparatesSuggestionsInheritanceRedirectAndCancel() {
         let first = document(projectID: "first").projects[0]
         let second = document(projectID: "second").projects[0]
