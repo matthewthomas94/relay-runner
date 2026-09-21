@@ -671,6 +671,22 @@ final class AppState {
             },
             stop: { [weak self] in self?.stopNoteTaker() }
         )
+        programBoardOverlay.setNoteRecoveryHandlers(
+            offers: { [weak self] in
+                await self?.interruptedMeetingNotes() ?? []
+            },
+            resolve: { [weak self] sessionID, resolution in
+                guard let self else { throw MeetingNoteCoordinatorError.recoveryNotFound }
+                return try await self.resolveInterruptedMeetingNote(
+                    sessionID: sessionID,
+                    resolution: resolution
+                )
+            },
+            resume: { [weak self] in
+                guard let self else { throw MeetingNoteCoordinatorError.recoveryNotFound }
+                return try await self.resumeRecoveredMeetingNote()
+            }
+        )
         programBoardOverlay.setSessionActiveProvider { [weak self] in
             self?.hasActiveSession ?? false
         }
@@ -1207,13 +1223,15 @@ final class AppState {
         }
     }
 
-    func resumeRecoveredMeetingNote() async throws {
+    @discardableResult
+    func resumeRecoveredMeetingNote() async throws -> MeetingNoteCoordinatorSnapshot {
         guard let coordinator = meetingNoteCoordinator else {
             throw MeetingNoteCoordinatorError.captureUnavailable
         }
         let snapshot = try await coordinator.resumeRecoveredCapture()
         applyMeetingNoteSnapshot(snapshot)
         startMeetingNoteCapsLockPolling()
+        return snapshot
     }
 
     private func meetingNoteProjectContext(
@@ -1299,6 +1317,15 @@ final class AppState {
                     self.stopMeetingNoteCapsLockPolling()
                     self.applyMeetingNoteSnapshot(snapshot)
                 }
+            },
+            scopeTokenRefresher: { [weak self] project in
+                guard let self, let registry = self.projectRegistryV2 else {
+                    throw MeetingNoteCoordinatorError.projectIdentityChanged
+                }
+                return try MeetingNoteProjectScopeResolver.renewedToken(
+                    for: project,
+                    registry: registry
+                )
             }
         )
     }

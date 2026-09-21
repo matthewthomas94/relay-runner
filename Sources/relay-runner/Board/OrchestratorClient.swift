@@ -1174,6 +1174,14 @@ enum OrchestratorClientError: Error, LocalizedError, Equatable {
     case daemonRefreshDeferred
     case daemonRefreshFailed(String)
 
+    var isStaleProjectScope: Bool {
+        guard case .badStatus(422, let body) = self,
+              let data = body.data(using: .utf8),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return payload["error"] as? String == "confirmed project scope token is stale"
+    }
+
     var errorDescription: String? {
         switch self {
         case .invalidRequest:

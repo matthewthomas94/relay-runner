@@ -257,6 +257,123 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertTrue(storeIsEmpty)
     }
 
+    func testBenignSameProjectScopeRefreshRenewsOnceAcrossLiveCheckpoints() async throws {
+        let writer = ScopeAwareMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let refreshes = ScopeRefreshRecorder()
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            scopeTokenRefresher: { project in
+                refreshes.record(project)
+                return "scope-refreshed"
+            }
+        )
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        let capture = try XCTUnwrap(captures.latest())
+        await capture.emitRevision(
+            revision(id: "microphone-E0-S0", start: 0, text: "saved once", final: true)
+        )
+        await writer.invalidateOriginalScope()
+
+        let checkpointed = try await coordinator.checkpointNow()
+        XCTAssertEqual(checkpointed.phase, .recording)
+        await coordinator.setCapsLock(isOn: true)
+        let paused = await coordinator.snapshot()
+        XCTAssertEqual(paused.phase, .paused)
+        await coordinator.setCapsLock(isOn: false)
+        let resumed = await coordinator.snapshot()
+        XCTAssertEqual(resumed.phase, .recording)
+        let saved = try await coordinator.stop()
+        XCTAssertEqual(saved.phase, .saved)
+
+        let attempts = await writer.attemptedRequestIDs
+        let tokens = await writer.attemptedScopeTokens
+        let updates = await writer.updates
+        XCTAssertEqual(refreshes.projects, [project])
+        XCTAssertEqual(tokens, [
+            "scope-original",
+            "scope-refreshed",
+            "scope-refreshed",
+            "scope-refreshed",
+            "scope-refreshed",
+        ])
+        XCTAssertEqual(attempts[0], attempts[1], "scope retry must preserve the request ID")
+        XCTAssertEqual(
+            updates.map(\.update.checkpointReason),
+            [.checkpoint, .pause, .resume, .complete]
+        )
+        XCTAssertEqual(
+            updates.map(\.update.recordingState),
+            [.recording, .paused, .recording, .completed]
+        )
+        let savedTexts = await writer.savedSegments.map(\.text)
+        XCTAssertEqual(savedTexts, ["saved once"])
+    }
+
+    func testRecoveryRenewsStaleScopeAndReconcilesLostCommittedResponseExactlyOnce() async throws {
+        let writer = ScopeAwareMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let refreshes = ScopeRefreshRecorder()
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            scopeTokenRefresher: { project in
+                refreshes.record(project)
+                return "scope-refreshed"
+            }
+        )
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        let capture = try XCTUnwrap(captures.latest())
+        await capture.emitRevision(
+            revision(id: "microphone-E0-S0", start: 0, text: "committed tail", final: true)
+        )
+        await writer.loseNextCommittedUpdateResponse()
+
+        do {
+            _ = try await coordinator.stop()
+            XCTFail("expected the committed response to be lost")
+        } catch {
+            let failed = await coordinator.snapshot()
+            XCTAssertEqual(failed.phase, .error)
+        }
+        let offers = try await coordinator.recoveryOffers()
+        let offer = try XCTUnwrap(offers.first)
+        await writer.invalidateOriginalScope()
+
+        let recovered = try await coordinator.resolveRecovery(
+            sessionID: offer.sessionID,
+            projectScopeToken: "scope-original",
+            resolution: .finalize
+        )
+
+        let attempts = await writer.attemptedRequestIDs
+        let tokens = await writer.attemptedScopeTokens
+        XCTAssertEqual(recovered.phase, .saved)
+        XCTAssertEqual(Set(attempts).count, 1, "recovery must reuse the pending request ID")
+        XCTAssertEqual(tokens, ["scope-original", "scope-original", "scope-refreshed"])
+        XCTAssertEqual(refreshes.projects, [project])
+        let committedUpdateCount = await writer.updates.count
+        let recoveredTexts = await writer.savedSegments.map(\.text)
+        let storeIsEmpty = await store.isEmpty
+        XCTAssertEqual(committedUpdateCount, 1, "the committed checkpoint stays exactly once")
+        XCTAssertEqual(recoveredTexts, ["committed tail"])
+        XCTAssertTrue(storeIsEmpty)
+        XCTAssertEqual(captures.count, 1, "completed recovery must not create a second capture owner")
+    }
+
     @MainActor
     func testNoteToWorkBlocksOnFailedFinalASRAndRecoveryWritesTailExactlyOnce() async throws {
         for pauseBeforeSwitch in [false, true] {
@@ -908,15 +1025,17 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
     }
 
     private func makeCoordinator(
-        writer: FakeMeetingNoteWriter,
+        writer: any MeetingNoteArtifactWriting,
         store: InMemoryMeetingNoteRecoveryStore,
-        captures: FakeMeetingNoteCaptureFactory
+        captures: FakeMeetingNoteCaptureFactory,
+        scopeTokenRefresher: MeetingNoteCoordinator.ScopeTokenRefresher? = nil
     ) -> MeetingNoteCoordinator {
         MeetingNoteCoordinator(
             writer: writer,
             recoveryStore: store,
             automaticCheckpointing: false,
-            now: { "2026-09-21T00:00:00Z" }
+            now: { "2026-09-21T00:00:00Z" },
+            scopeTokenRefresher: scopeTokenRefresher
         ) { sessionID, acceptedAudio, _, events in
             captures.make(
                 sessionID: sessionID,
@@ -1179,6 +1298,134 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
     }
 }
 
+private actor ScopeAwareMeetingNoteWriter: MeetingNoteArtifactWriting {
+    private let identity = RelayProjectNoteIdentity(
+        noteID: "RR-N1",
+        artifactID: "note-artifact-1",
+        projectID: "project-1",
+        createdAt: "2026-09-21T00:00:00Z",
+        captureStartedAt: "2026-09-21T00:00:00Z"
+    )
+    private var validScopeToken = "scope-original"
+    private var shouldLoseNextCommittedResponse = false
+    private var committedResponses: [String: RelayProjectNoteResponse] = [:]
+    private(set) var updates: [RelayProjectNoteCheckpointRequest] = []
+    private(set) var attemptedRequestIDs: [String] = []
+    private(set) var attemptedScopeTokens: [String?] = []
+    private(set) var savedSegments: [RelayProjectNoteSegment] = []
+    private var recordingState: RelayProjectNoteRecordingState = .recording
+    private var checkpointReason: RelayProjectNoteCheckpointReason = .checkpoint
+    private var captureEndedAt: String?
+
+    func invalidateOriginalScope() {
+        validScopeToken = "scope-refreshed"
+    }
+
+    func loseNextCommittedUpdateResponse() {
+        shouldLoseNextCommittedResponse = true
+    }
+
+    func create(
+        _ request: RelayProjectNoteCreateRequest,
+        repositoryPath: String,
+        projectScopeToken: String?
+    ) throws -> RelayProjectNoteResponse {
+        try validate(projectScopeToken)
+        recordingState = request.recordingState
+        checkpointReason = request.checkpointReason
+        savedSegments = request.segments
+        captureEndedAt = request.captureEndedAt
+        return response(idempotent: false)
+    }
+
+    func update(
+        _ request: RelayProjectNoteCheckpointRequest,
+        repositoryPath: String,
+        projectScopeToken: String?
+    ) throws -> RelayProjectNoteResponse {
+        attemptedRequestIDs.append(request.requestID)
+        attemptedScopeTokens.append(projectScopeToken)
+        try validate(projectScopeToken)
+        if committedResponses[request.requestID] != nil {
+            return response(idempotent: true)
+        }
+        updates.append(request)
+        savedSegments = request.update.segments
+        recordingState = request.update.recordingState
+        checkpointReason = request.update.checkpointReason
+        captureEndedAt = request.update.captureEndedAt
+        let committed = response(idempotent: false)
+        committedResponses[request.requestID] = committed
+        if shouldLoseNextCommittedResponse {
+            shouldLoseNextCommittedResponse = false
+            throw OrchestratorClientError.timedOut
+        }
+        return committed
+    }
+
+    func fetch(
+        _ noteIdentity: String,
+        repositoryPath: String,
+        projectScopeToken: String?
+    ) throws -> RelayProjectNoteResponse {
+        try validate(projectScopeToken)
+        return response(idempotent: false)
+    }
+
+    private func validate(_ token: String?) throws {
+        guard token == validScopeToken else {
+            throw OrchestratorClientError.badStatus(
+                422,
+                #"{"error":"confirmed project scope token is stale"}"#
+            )
+        }
+    }
+
+    private func response(idempotent: Bool) -> RelayProjectNoteResponse {
+        RelayProjectNoteResponse(
+            note: RelayProjectNoteUpdate(
+                identity: identity,
+                capturedAt: "2026-09-21T00:00:00Z",
+                recordingState: recordingState,
+                checkpointReason: checkpointReason,
+                segments: savedSegments,
+                captureEndedAt: captureEndedAt
+            ),
+            markdownBase64: "",
+            materialized: true,
+            artifactCommit: "artifact-commit",
+            reference: RelayProjectNoteReference(
+                path: ".orchestrator/notes/RR-N1.md",
+                artifactRef: "refs/heads/relay/artifacts",
+                commit: "artifact-commit",
+                revision: "blob",
+                historyReference: "artifact-commit:.orchestrator/notes/RR-N1.md",
+                verified: true,
+                catalogCommit: "artifact-commit"
+            ),
+            idempotent: idempotent,
+            sync: RelayProjectNoteSyncState(mode: "artifact_ref", state: "local_only", recovery: nil)
+        )
+    }
+}
+
+private final class ScopeRefreshRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [MeetingNoteProjectBinding] = []
+
+    var projects: [MeetingNoteProjectBinding] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values
+    }
+
+    func record(_ project: MeetingNoteProjectBinding) {
+        lock.lock()
+        values.append(project)
+        lock.unlock()
+    }
+}
+
 private enum FakeMeetingNoteError: Error, Equatable {
     case injectedSaveFailure
     case injectedCaptureFailure
@@ -1242,6 +1489,10 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
     private var checkpointValue: MeetingProducerCheckpoint?
 
     var isRecording: Bool { state == .recording }
+
+    func emitRevision(_ revision: MeetingTranscriptSegmentRevision) {
+        eventSink(.revision(revision))
+    }
 
     init(
         sessionID: String,

@@ -102,6 +102,11 @@ final class ProgramBoardOverlayController {
     private var endSessionHandler: (() -> Void)?
     private var startNoteTakerHandler: ((String) -> Bool)?
     private var stopNoteTakerHandler: (() -> Void)?
+    private var interruptedNoteProvider: () async -> [MeetingNoteRecoveryOffer] = { [] }
+    private var resolveInterruptedNoteHandler: (
+        (String, MeetingNoteRecoveryResolution) async throws -> MeetingNoteCoordinatorSnapshot
+    )?
+    private var resumeRecoveredNoteHandler: (() async throws -> MeetingNoteCoordinatorSnapshot)?
     private var sessionActiveProvider: () -> Bool = { false }
     private var noteCaptureSnapshotProvider: () -> MeetingNoteCoordinatorSnapshot = {
         MeetingNoteCoordinatorSnapshot(
@@ -182,6 +187,19 @@ final class ProgramBoardOverlayController {
     ) {
         startNoteTakerHandler = start
         stopNoteTakerHandler = stop
+    }
+
+    func setNoteRecoveryHandlers(
+        offers: @escaping () async -> [MeetingNoteRecoveryOffer],
+        resolve: @escaping (
+            String,
+            MeetingNoteRecoveryResolution
+        ) async throws -> MeetingNoteCoordinatorSnapshot,
+        resume: @escaping () async throws -> MeetingNoteCoordinatorSnapshot
+    ) {
+        interruptedNoteProvider = offers
+        resolveInterruptedNoteHandler = resolve
+        resumeRecoveredNoteHandler = resume
     }
 
     func setSessionActiveProvider(_ provider: @escaping () -> Bool) {
@@ -601,6 +619,10 @@ final class ProgramBoardOverlayController {
                 onStopNoteTaker: { [weak self] in self?.stopNoteTaker() },
                 onNoteOpen: { [weak self] note in self?.openNote(note) },
                 onNoteClose: { [weak self] in self?.closeNote() },
+                onNoteRecovery: { [weak self] resolution in
+                    self?.resolveSelectedNoteRecovery(resolution)
+                },
+                onResumeRecoveredNote: { [weak self] in self?.resumeSelectedRecoveredNote() },
                 onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
                 onCreateCommit: { [weak self] request in self?.commitCreate(request) },
                 onCreateCancel: { [weak self] in self?.cancelCreate() },
@@ -1009,6 +1031,8 @@ final class ProgramBoardOverlayController {
         updatePanelKeyEligibility()
         Task { @MainActor [weak self] in
             guard let self else { return }
+            let offers = await self.interruptedNoteProvider()
+            self.model.bindRecoveryOffers(offers, to: item)
             do {
                 let response = try await OrchestratorClient.fetchProjectNote(
                     item.card.noteID,
@@ -1018,6 +1042,41 @@ final class ProgramBoardOverlayController {
                 self.model.finishNoteDetail(response, for: item)
             } catch {
                 self.model.failNoteDetail(item.openFailureMessage, for: item)
+            }
+        }
+    }
+
+    private func resolveSelectedNoteRecovery(_ resolution: MeetingNoteRecoveryResolution) {
+        guard let offer = model.selectedNoteRecoveryOffer,
+              let handler = resolveInterruptedNoteHandler,
+              model.beginNoteRecovery() else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let snapshot = try await handler(offer.sessionID, resolution)
+                self.model.finishNoteRecovery(snapshot: snapshot)
+                if let item = self.model.selectedNoteDetail?.item {
+                    self.openNote(item)
+                }
+            } catch {
+                self.model.failNoteRecovery(
+                    "Recovery could not continue. The original note and local recovery data were left unchanged."
+                )
+            }
+        }
+    }
+
+    private func resumeSelectedRecoveredNote() {
+        guard let handler = resumeRecoveredNoteHandler,
+              model.beginNoteRecovery() else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                self.model.finishNoteRecovery(snapshot: try await handler())
+            } catch {
+                self.model.failNoteRecovery(
+                    "Recording could not resume. The recovered note remains paused."
+                )
             }
         }
     }

@@ -1513,6 +1513,9 @@ final class ProgramBoardViewModel {
     var selectedProjectPath: String?
     var selectedTicketDetail: ProgramTicketDetail?
     var selectedNoteDetail: ProgramBoardNoteDetail?
+    var selectedNoteRecoveryOffer: MeetingNoteRecoveryOffer?
+    var noteRecoveryInFlight = false
+    var noteRecoveryErrorMessage: String?
     var noteItems: [ProgramBoardNoteItem] = []
     var noteLoadErrorMessage: String?
     var noteCaptureSnapshot = MeetingNoteCoordinatorSnapshot(
@@ -1567,6 +1570,9 @@ final class ProgramBoardViewModel {
         supportBundlePreview = nil
         selectedTicketDetail = nil
         selectedNoteDetail = nil
+        selectedNoteRecoveryOffer = nil
+        noteRecoveryInFlight = false
+        noteRecoveryErrorMessage = nil
         history = nil
         spikeFollowupBatch = nil
         creating = nil
@@ -1606,6 +1612,9 @@ final class ProgramBoardViewModel {
         if scopeChanged || selectionChanged {
             selectedTicketDetail = nil
             selectedNoteDetail = nil
+            selectedNoteRecoveryOffer = nil
+            noteRecoveryInFlight = false
+            noteRecoveryErrorMessage = nil
             history = nil
             spikeFollowupBatch = nil
         }
@@ -1738,6 +1747,9 @@ final class ProgramBoardViewModel {
         }
         if !ProgramBoardProjectPath.matches(selectedNoteDetail?.item.projectPath, path) {
             selectedNoteDetail = nil
+            selectedNoteRecoveryOffer = nil
+            noteRecoveryInFlight = false
+            noteRecoveryErrorMessage = nil
         }
         if !ProgramBoardProjectPath.matches(editing?.identity.projectPath, path) {
             editing = nil
@@ -1768,6 +1780,9 @@ final class ProgramBoardViewModel {
 
     func selectTicket(_ item: ProgramStatusItem) {
         selectedNoteDetail = nil
+        selectedNoteRecoveryOffer = nil
+        noteRecoveryInFlight = false
+        noteRecoveryErrorMessage = nil
         selectedTicketDetail = ProgramTicketDetail.load(item: item)
     }
 
@@ -1777,6 +1792,9 @@ final class ProgramBoardViewModel {
 
     func beginNoteDetail(_ item: ProgramBoardNoteItem) {
         selectedTicketDetail = nil
+        selectedNoteRecoveryOffer = nil
+        noteRecoveryInFlight = false
+        noteRecoveryErrorMessage = nil
         selectedNoteDetail = ProgramBoardNoteDetail(
             item: item,
             markdown: nil,
@@ -1805,8 +1823,54 @@ final class ProgramBoardViewModel {
         )
     }
 
+    func bindRecoveryOffers(
+        _ offers: [MeetingNoteRecoveryOffer],
+        to item: ProgramBoardNoteItem
+    ) {
+        guard selectedNoteDetail?.item.id == item.id else { return }
+        selectedNoteRecoveryOffer = Self.recoveryOffer(for: item, in: offers)
+    }
+
+    static func recoveryOffer(
+        for item: ProgramBoardNoteItem,
+        in offers: [MeetingNoteRecoveryOffer]
+    ) -> MeetingNoteRecoveryOffer? {
+        offers.first { offer in
+            offer.noteID == item.card.noteID
+                && offer.project.expectedProjectID == item.card.projectID
+                && ProgramBoardProjectPath.matches(
+                    offer.project.repositoryPath,
+                    item.projectPath
+                )
+        }
+    }
+
+    func beginNoteRecovery() -> Bool {
+        guard selectedNoteRecoveryOffer != nil, !noteRecoveryInFlight else { return false }
+        noteRecoveryInFlight = true
+        noteRecoveryErrorMessage = nil
+        return true
+    }
+
+    func finishNoteRecovery(snapshot: MeetingNoteCoordinatorSnapshot) {
+        noteRecoveryInFlight = false
+        noteRecoveryErrorMessage = nil
+        noteCaptureSnapshot = snapshot
+        if snapshot.phase == .saved {
+            selectedNoteRecoveryOffer = nil
+        }
+    }
+
+    func failNoteRecovery(_ message: String) {
+        noteRecoveryInFlight = false
+        noteRecoveryErrorMessage = message
+    }
+
     func clearSelectedNote() {
         selectedNoteDetail = nil
+        selectedNoteRecoveryOffer = nil
+        noteRecoveryInFlight = false
+        noteRecoveryErrorMessage = nil
     }
 
     func presentHistory(
@@ -2052,6 +2116,9 @@ final class ProgramBoardViewModel {
                 )
             } else {
                 self.selectedNoteDetail = nil
+                selectedNoteRecoveryOffer = nil
+                noteRecoveryInFlight = false
+                noteRecoveryErrorMessage = nil
             }
         }
         reloadState = .succeeded

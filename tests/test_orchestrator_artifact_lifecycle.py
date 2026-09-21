@@ -894,6 +894,88 @@ Saved through the daemon-owned typed writer.
         )
         self.assertEqual([ticket["id"] for ticket in orchestrator.scan_repo(self.repo)], ["RR-1"])
 
+    def test_project_note_http_rejects_registry_refreshed_scope_then_reuses_request_with_fresh_scope(self):
+        handler = object.__new__(orchestrator.Handler)
+        handler.daemon = self.daemon
+        create_payload = {
+            "repo_path": str(self.repo),
+            "project_scope_token": self.scope_token(),
+            "request_id": "note-scope-create",
+            "created_at": "2026-09-20T08:00:00Z",
+            "capture_started_at": "2026-09-20T08:00:00Z",
+            "captured_at": "2026-09-20T08:00:05Z",
+            "recording_state": "recording",
+            "checkpoint_reason": "checkpoint",
+            "segments": [],
+            "provider": "codex",
+        }
+        with patch.object(orchestrator, "_read_body", return_value=create_payload):
+            status, created = handler._route("POST", "/v1/artifacts/notes/create")
+        self.assertEqual(status, 201)
+
+        stale_scope = create_payload["project_scope_token"]
+        registry_path = self.state / "projects" / "registry-v2.json"
+        registry = json.loads(registry_path.read_text())
+        self.registry_updated = "2026-08-04T05:00:01Z"
+        registry["projects"][0]["updated_at"] = self.registry_updated
+        registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+        identity = created["note"]["identity"]
+        update = {
+            "identity": identity,
+            "captured_at": "2026-09-20T08:00:10Z",
+            "recording_state": "paused",
+            "checkpoint_reason": "pause",
+            "segments": [{
+                "segment_id": "segment-1",
+                "captured_at": "2026-09-20T08:00:10Z",
+                "text": "same-project recovery",
+            }],
+        }
+        update_payload = {
+            "repo_path": str(self.repo),
+            "project_scope_token": stale_scope,
+            "request_id": "note-scope-checkpoint-1",
+            "update": update,
+            "provider": "codex",
+        }
+        with patch.object(orchestrator, "_read_body", return_value=update_payload):
+            stale_status, stale = handler._route(
+                "POST", "/v1/artifacts/notes/REP-N1/update"
+            )
+        self.assertEqual(stale_status, 422)
+        self.assertEqual(stale["error"], "confirmed project scope token is stale")
+
+        update_payload["project_scope_token"] = self.scope_token()
+        with patch.object(orchestrator, "_read_body", return_value=update_payload):
+            fresh_status, saved = handler._route(
+                "POST", "/v1/artifacts/notes/REP-N1/update"
+            )
+        with patch.object(orchestrator, "_read_body", return_value=update_payload):
+            retry_status, retry = handler._route(
+                "POST", "/v1/artifacts/notes/REP-N1/update"
+            )
+        self.assertEqual(fresh_status, 200)
+        self.assertEqual(retry_status, 200)
+        self.assertFalse(saved["idempotent"])
+        self.assertTrue(retry["idempotent"])
+        self.assertEqual(saved["note"]["segments"], update["segments"])
+        self.assertEqual(retry["note"], saved["note"])
+
+        changed_identity = dict(identity)
+        changed_identity["project_id"] = "another-project"
+        changed_payload = {
+            **update_payload,
+            "request_id": "note-scope-wrong-project",
+            "update": {**update, "identity": changed_identity},
+        }
+        with patch.object(orchestrator, "_read_body", return_value=changed_payload):
+            changed_status, changed = handler._route(
+                "POST", "/v1/artifacts/notes/REP-N1/update"
+            )
+        self.assertEqual(changed_status, 409)
+        self.assertFalse(changed["retryable"])
+
     def test_retention_history_and_storage_client_contracts_are_scoped_and_provider_neutral(self):
         token = self.scope_token()
         preview = self.daemon.artifact_retention_preview(

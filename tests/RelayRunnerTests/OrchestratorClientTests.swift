@@ -625,6 +625,27 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(message.body, "No active workers or tickets awaiting review.")
     }
 
+    func testStaleProjectScopeRecognitionRequiresExactUnprocessableEntityError() {
+        XCTAssertTrue(
+            OrchestratorClientError.badStatus(
+                422,
+                #"{"error":"confirmed project scope token is stale"}"#
+            ).isStaleProjectScope
+        )
+        XCTAssertFalse(
+            OrchestratorClientError.badStatus(
+                422,
+                #"{"error":"confirmed project scope token repositoryPath mismatch"}"#
+            ).isStaleProjectScope
+        )
+        XCTAssertFalse(
+            OrchestratorClientError.badStatus(
+                409,
+                #"{"error":"confirmed project scope token is stale"}"#
+            ).isStaleProjectScope
+        )
+    }
+
     private func jsonBody(_ request: URLRequest) throws -> [String: Any] {
         let data = try XCTUnwrap(request.httpBody)
         let decoded = try JSONSerialization.jsonObject(with: data)

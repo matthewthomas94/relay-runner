@@ -1304,6 +1304,66 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.selectedNoteDetail?.isLoading, true)
     }
 
+    func testInterruptedRecoveryBindsOnlyToTheOriginalNoteAndProject() {
+        let item = noteItem(
+            id: "RR-N3",
+            number: 3,
+            projectName: "Relay Runner",
+            path: "/repo/relay-runner"
+        )
+        let original = MeetingNoteRecoveryOffer(
+            sessionID: "original-session",
+            noteID: "RR-N3",
+            project: MeetingNoteProjectBinding(
+                repositoryPath: "/repo/relay-runner",
+                expectedProjectID: item.card.projectID,
+                provider: "codex"
+            ),
+            phase: .error,
+            updatedAt: "2026-09-21T00:00:00Z",
+            pendingAudioChunkCount: 1
+        )
+        let wrongProject = MeetingNoteRecoveryOffer(
+            sessionID: "wrong-project",
+            noteID: "RR-N3",
+            project: MeetingNoteProjectBinding(
+                repositoryPath: "/repo/other",
+                expectedProjectID: "another-project",
+                provider: "claude"
+            ),
+            phase: .error,
+            updatedAt: "2026-09-21T00:00:01Z",
+            pendingAudioChunkCount: 1
+        )
+        let wrongNote = MeetingNoteRecoveryOffer(
+            sessionID: "wrong-note",
+            noteID: "RR-N4",
+            project: original.project,
+            phase: .error,
+            updatedAt: "2026-09-21T00:00:02Z",
+            pendingAudioChunkCount: 1
+        )
+        let model = ProgramBoardViewModel()
+
+        model.beginNoteDetail(item)
+        model.bindRecoveryOffers([wrongProject, wrongNote, original], to: item)
+
+        XCTAssertEqual(model.selectedNoteRecoveryOffer, original)
+        XCTAssertTrue(model.beginNoteRecovery())
+        XCTAssertFalse(model.beginNoteRecovery(), "repeated recovery actions must remain serialized")
+        model.finishNoteRecovery(snapshot: MeetingNoteCoordinatorSnapshot(
+            phase: .paused,
+            noteID: "RR-N3",
+            project: original.project,
+            liveHypothesisCount: 0,
+            durableSegmentCount: 1,
+            syncState: "local_only",
+            errorMessage: nil
+        ))
+        XCTAssertEqual(model.noteCaptureSnapshot.phase, .paused)
+        XCTAssertEqual(model.selectedNoteRecoveryOffer, original)
+    }
+
     func testProgramBoardTicketDetailResolvesChildTicketFileFromAllProjects() throws {
         let root = try temporaryDirectory()
         let clientRepo = root.appendingPathComponent("client-dashboard", isDirectory: true)
