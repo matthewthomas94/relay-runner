@@ -938,6 +938,9 @@ actor MeetingNoteCoordinator {
             try await retainPendingAudio(current)
             return snapshot()
         } catch {
+            if Self.isCancellation(error) {
+                throw error
+            }
             if var current = journal, current.sessionID == sessionID {
                 current.lastError = safeMessage(error)
                 current.updatedAt = now()
@@ -1221,6 +1224,8 @@ actor MeetingNoteCoordinator {
                 do {
                     _ = try await self.checkpointNow()
                 } catch {
+                    if Task.isCancelled { return }
+                    if Self.isCancellation(error) { continue }
                     try? await self.markInterrupted(error)
                     return
                 }
@@ -1254,5 +1259,12 @@ actor MeetingNoteCoordinator {
             return "Local recovery storage is full."
         }
         return String(describing: type(of: error))
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain
+            && nsError.code == URLError.cancelled.rawValue
     }
 }

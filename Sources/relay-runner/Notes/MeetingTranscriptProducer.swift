@@ -673,17 +673,22 @@ actor MeetingTranscriptProducer {
         while !queuedJobs.isEmpty {
             let request = queuedJobs.removeFirst()
             metrics.queuedWindowCount = queuedJobs.count
-            do {
-                let result = try await transcriber.transcribe(request)
-                apply(result, for: request)
-            } catch {
-                metrics.transcriptionFailureCount += 1
-                emitIssue(
-                    code: .transcriptionFailed,
-                    sourceID: request.sourceID,
-                    message: "Local transcription failed for a retained audio window: \(error.localizedDescription)",
-                    recoverable: true
-                )
+            let maximumAttempts = request.isFinal ? 2 : 1
+            for attempt in 0..<maximumAttempts {
+                do {
+                    let result = try await transcriber.transcribe(request)
+                    apply(result, for: request)
+                    break
+                } catch {
+                    metrics.transcriptionFailureCount += 1
+                    emitIssue(
+                        code: .transcriptionFailed,
+                        sourceID: request.sourceID,
+                        message: "Local transcription failed for a retained audio window: \(error.localizedDescription)",
+                        recoverable: true
+                    )
+                    if attempt + 1 == maximumAttempts { break }
+                }
             }
         }
         drainTask = nil
@@ -752,8 +757,11 @@ actor MeetingTranscriptProducer {
             request.ownedEndMilliseconds - request.contextStartMilliseconds
         ) / 1_000
         let tokens = result.tokens.filter { token in
-            let midpoint = (token.startSeconds + token.endSeconds) / 2
-            return midpoint >= localOwnedStart && midpoint < localOwnedEnd
+            // Assign a boundary-spanning word to the window that contains its
+            // onset. The window's look-ahead then retains the complete word
+            // without manufacturing text or suppressing a genuine repetition
+            // that begins in the next owned range.
+            token.startSeconds >= localOwnedStart && token.startSeconds < localOwnedEnd
         }
         return clean(tokens.map(\.text).joined())
     }
