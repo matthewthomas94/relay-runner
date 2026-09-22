@@ -975,6 +975,78 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertEqual(finals.map(\.text), ["first", "context second"])
     }
 
+    func testBoundaryOnsetRetainsFinalWordAndGenuineRepeatedSentenceBySource() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-boundary-final-word",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: "unused fallback",
+                    tokens: [
+                        .init(text: "amber ", startSeconds: 0.10, endSeconds: 0.20, confidence: 1),
+                        .init(text: "telescope ", startSeconds: 0.30, endSeconds: 0.45, confidence: 1),
+                        .init(text: "at ", startSeconds: 0.60, endSeconds: 0.70, confidence: 1),
+                        .init(text: "sunset", startSeconds: 0.75, endSeconds: 0.85, confidence: 1),
+                    ],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+
+        try await producer.start(initiallyPaused: false)
+        try await producer.ingest(.init(repeating: 0.4, count: 16), from: .microphone)
+        try await producer.ingest(.init(repeating: 0.5, count: 16), from: .systemAudio)
+        _ = try await producer.stop()
+
+        for source in MeetingAudioSourceID.allCases {
+            let finals = events.revisions.filter { $0.isFinal && $0.sourceID == source }
+            XCTAssertEqual(finals.map(\.text), [
+                "amber telescope at sunset",
+                "amber telescope at sunset",
+            ])
+            XCTAssertEqual(finals.map(\.startMilliseconds), [0, 800])
+            XCTAssertEqual(finals.map(\.endMilliseconds), [800, 1_600])
+            XCTAssertNotEqual(finals[0].segmentID, finals[1].segmentID)
+        }
+    }
+
+    func testStopRetriesTransientFinalWindowBeforeLeavingAcceptedAudioPending() async throws {
+        let accepted = MeetingAcceptedAudioRecorder()
+        let events = MeetingEventRecorder()
+        let attempts = MeetingRequestRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-stop-retry",
+            transcriber: FakeMeetingTranscriber { request in
+                attempts.record(request)
+                if attempts.requests.count == 1 {
+                    throw FixtureTranscriptionError.failedWindow
+                }
+                return MeetingTranscriptionResult(
+                    text: "complete tail",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) },
+            eventSink: { events.record($0) }
+        )
+
+        try await producer.start(initiallyPaused: false)
+        try await producer.ingest([0.2, 0.4], from: .microphone)
+        let boundary = try await producer.stop()
+        let checkpoint = await producer.checkpoint()
+
+        XCTAssertEqual(attempts.requests.count, 2)
+        XCTAssertEqual(attempts.requests[0], attempts.requests[1])
+        XCTAssertEqual(events.revisions.filter(\.isFinal).map(\.text), ["complete tail"])
+        XCTAssertEqual(boundary.metrics.transcriptionFailureCount, 1)
+        XCTAssertTrue(checkpoint.pendingAudio.isEmpty)
+        XCTAssertEqual(accepted.audio.count, 1)
+    }
+
     func testNewerFinalRevisionRejectsDelayedOlderPartial() async throws {
         let events = MeetingEventRecorder()
         let producer = MeetingTranscriptProducer(

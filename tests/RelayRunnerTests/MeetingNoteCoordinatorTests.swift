@@ -77,6 +77,77 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertTrue(storeIsEmpty)
     }
 
+    func testFirstStopRetriesTransientFinalTranscriptionAndClearsRecovery() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = DurableMeetingNoteCaptureFactory(firstCaptureFailureCount: 1)
+        let coordinator = makeDurableCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures
+        )
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+
+        let saved = try await coordinator.stop()
+        let updates = await writer.updates
+        let storeIsEmpty = await store.isEmpty
+        let capture = try XCTUnwrap(captures.firstCapture)
+        let transcriber = try XCTUnwrap(captures.firstTranscriber)
+
+        XCTAssertEqual(saved.phase, .saved)
+        XCTAssertEqual(capture.stopCount, 1)
+        XCTAssertEqual(transcriber.attemptCount, 2)
+        XCTAssertEqual(updates.map(\.update.recordingState), [.completed])
+        XCTAssertEqual(updates.first?.update.segments.map(\.text), ["recovered tail"])
+        XCTAssertTrue(storeIsEmpty)
+    }
+
+    func testStopSupersedesCancelledBackgroundCheckpointWithoutSaveFailure() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let policy = MeetingNoteCheckpointPolicy(
+            artifactIntervalSeconds: 1,
+            maximumUnpersistedAcceptedAudioMilliseconds: 0,
+            recoveryAudioBudgetBytes: MeetingNoteRecoveryStore.defaultAudioBudgetBytes
+        )
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            policy: policy,
+            automaticCheckpointing: true
+        )
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        let capture = try XCTUnwrap(captures.latest())
+        await capture.emitRevision(
+            revision(id: "microphone-E0-S0", start: 0, text: "durable words", final: true)
+        )
+        await writer.suspendNextUpdateUntilCancelled()
+        await writer.waitForCancellableUpdate()
+
+        let saved = try await coordinator.stop()
+        let attempts = await writer.attemptedRequestIDs
+        let updates = await writer.updates
+        let storeIsEmpty = await store.isEmpty
+
+        XCTAssertEqual(saved.phase, .saved)
+        XCTAssertEqual(attempts.count, 3)
+        XCTAssertEqual(attempts[0], attempts[1])
+        XCTAssertNotEqual(attempts[1], attempts[2])
+        XCTAssertEqual(updates.map(\.update.recordingState), [.recording, .completed])
+        XCTAssertEqual(updates.last?.update.segments.map(\.text), ["durable words"])
+        XCTAssertTrue(storeIsEmpty)
+    }
+
     func testFailedFinalSaveKeepsRecoveryAndRetryUsesSameRequestID() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
@@ -1126,13 +1197,16 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         writer: any MeetingNoteArtifactWriting,
         store: InMemoryMeetingNoteRecoveryStore,
         captures: FakeMeetingNoteCaptureFactory,
+        policy: MeetingNoteCheckpointPolicy = .default,
+        automaticCheckpointing: Bool = false,
         snapshotSink: @escaping MeetingNoteCoordinator.SnapshotSink = { _ in },
         scopeTokenRefresher: MeetingNoteCoordinator.ScopeTokenRefresher? = nil
     ) -> MeetingNoteCoordinator {
         MeetingNoteCoordinator(
             writer: writer,
             recoveryStore: store,
-            automaticCheckpointing: false,
+            policy: policy,
+            automaticCheckpointing: automaticCheckpointing,
             now: { "2026-09-21T00:00:00Z" },
             snapshotSink: snapshotSink,
             scopeTokenRefresher: scopeTokenRefresher
@@ -1262,6 +1336,9 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
     private var shouldSuspendNextUpdate = false
     private var suspendedUpdate: CheckedContinuation<Void, Never>?
     private var suspendedUpdateWaiters: [CheckedContinuation<Void, Never>] = []
+    private var shouldSuspendNextUpdateUntilCancelled = false
+    private var cancellableUpdateActive = false
+    private var cancellableUpdateWaiters: [CheckedContinuation<Void, Never>] = []
     private var fetchState: RelayProjectNoteRecordingState = .paused
     private(set) var createCount = 0
     private(set) var updates: [RelayProjectNoteCheckpointRequest] = []
@@ -1284,6 +1361,17 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
         if suspendedUpdate != nil { return }
         await withCheckedContinuation { continuation in
             suspendedUpdateWaiters.append(continuation)
+        }
+    }
+
+    func suspendNextUpdateUntilCancelled() {
+        shouldSuspendNextUpdateUntilCancelled = true
+    }
+
+    func waitForCancellableUpdate() async {
+        if cancellableUpdateActive { return }
+        await withCheckedContinuation { continuation in
+            cancellableUpdateWaiters.append(continuation)
         }
     }
 
@@ -1327,6 +1415,20 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
         if shouldFailNextUpdate {
             shouldFailNextUpdate = false
             throw FakeMeetingNoteError.injectedSaveFailure
+        }
+        if shouldSuspendNextUpdateUntilCancelled {
+            shouldSuspendNextUpdateUntilCancelled = false
+            cancellableUpdateActive = true
+            let waiters = cancellableUpdateWaiters
+            cancellableUpdateWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+            do {
+                try await Task.sleep(for: .seconds(60))
+            } catch {
+                cancellableUpdateActive = false
+                throw URLError(.cancelled)
+            }
+            cancellableUpdateActive = false
         }
         if shouldSuspendNextUpdate {
             shouldSuspendNextUpdate = false
@@ -1722,13 +1824,25 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
 
 private final class DurableMeetingNoteCaptureFactory: @unchecked Sendable {
     private let lock = NSLock()
+    private let firstCaptureFailureCount: Int?
     private var makeCount = 0
     private var captures: [DurableSyntheticAudioCapture] = []
+    private var transcribers: [DurableFinalWindowTranscriber] = []
+
+    init(firstCaptureFailureCount: Int? = nil) {
+        self.firstCaptureFailureCount = firstCaptureFailureCount
+    }
 
     var firstCapture: DurableSyntheticAudioCapture? {
         lock.lock()
         defer { lock.unlock() }
         return captures.first
+    }
+
+    var firstTranscriber: DurableFinalWindowTranscriber? {
+        lock.lock()
+        defer { lock.unlock() }
+        return transcribers.first
     }
 
     func make(
@@ -1739,14 +1853,16 @@ private final class DurableMeetingNoteCaptureFactory: @unchecked Sendable {
     ) -> MeetingNoteCaptureSession {
         lock.lock()
         makeCount += 1
-        let shouldFail = makeCount == 1
+        let failureCount = makeCount == 1 ? firstCaptureFailureCount : 0
         let capture = DurableSyntheticAudioCapture(samples: [0.25, 0.5])
+        let transcriber = DurableFinalWindowTranscriber(failureCount: failureCount)
         captures.append(capture)
+        transcribers.append(transcriber)
         lock.unlock()
 
         let producer = MeetingTranscriptProducer(
             sessionID: sessionID,
-            transcriber: DurableFinalWindowTranscriber(shouldFail: shouldFail),
+            transcriber: transcriber,
             configuration: MeetingTranscriptProducer.Configuration(
                 sampleRate: 10,
                 windowMilliseconds: 1_000,
@@ -1774,7 +1890,7 @@ private final class RuntimeCheckpointFailureCaptureFactory: @unchecked Sendable 
     ) -> MeetingNoteCaptureSession {
         let producer = MeetingTranscriptProducer(
             sessionID: sessionID,
-            transcriber: DurableFinalWindowTranscriber(shouldFail: false),
+            transcriber: DurableFinalWindowTranscriber(failureCount: 0),
             configuration: MeetingTranscriptProducer.Configuration(
                 sampleRate: 10,
                 windowMilliseconds: 1_000,
@@ -1858,8 +1974,20 @@ private final class ControllableMeetingAudioCapture: MeetingAudioCapturing, @unc
     }
 }
 
-private struct DurableFinalWindowTranscriber: MeetingWindowTranscribing {
-    let shouldFail: Bool
+private final class DurableFinalWindowTranscriber: MeetingWindowTranscribing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var remainingFailures: Int?
+    private var attempts = 0
+
+    init(failureCount: Int?) {
+        remainingFailures = failureCount
+    }
+
+    var attemptCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return attempts
+    }
 
     func prepare(
         onState: @escaping @Sendable (MeetingLocalModelState) -> Void
@@ -1870,7 +1998,7 @@ private struct DurableFinalWindowTranscriber: MeetingWindowTranscribing {
     func transcribe(
         _ request: MeetingTranscriptionRequest
     ) async throws -> MeetingTranscriptionResult {
-        if shouldFail {
+        if recordAttemptShouldFail() {
             throw FakeMeetingNoteError.injectedTranscriptionFailure
         }
         return MeetingTranscriptionResult(
@@ -1878,6 +2006,19 @@ private struct DurableFinalWindowTranscriber: MeetingWindowTranscribing {
             tokens: [],
             processingMilliseconds: 1
         )
+    }
+
+    private func recordAttemptShouldFail() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        attempts += 1
+        if let remainingFailures {
+            let shouldFail = remainingFailures > 0
+            self.remainingFailures = max(0, remainingFailures - 1)
+            return shouldFail
+        } else {
+            return true
+        }
     }
 }
 
