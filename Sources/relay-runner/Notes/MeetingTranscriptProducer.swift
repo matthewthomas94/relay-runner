@@ -756,14 +756,22 @@ actor MeetingTranscriptProducer {
         let localOwnedEnd = Double(
             request.ownedEndMilliseconds - request.contextStartMilliseconds
         ) / 1_000
-        let tokens = result.tokens.filter { token in
-            // Assign a boundary-spanning word to the window that contains its
-            // onset. The window's look-ahead then retains the complete word
-            // without manufacturing text or suppressing a genuine repetition
-            // that begins in the next owned range.
-            token.startSeconds >= localOwnedStart && token.startSeconds < localOwnedEnd
+        var words: [(text: String, startSeconds: TimeInterval)] = []
+        for token in result.tokens where !token.text.isEmpty {
+            // FluidAudio timings are subword pieces. A leading space starts a
+            // new word; trailing spaces also occur in fixture transcribers.
+            if words.isEmpty || token.text.first?.isWhitespace == true ||
+                words[words.count - 1].text.last?.isWhitespace == true
+            {
+                words.append((token.text, token.startSeconds))
+            } else {
+                words[words.count - 1].text += token.text
+            }
         }
-        return clean(tokens.map(\.text).joined())
+        // Assign every piece, including punctuation, by its whole word's onset.
+        return clean(words.filter {
+            $0.startSeconds >= localOwnedStart && $0.startSeconds < localOwnedEnd
+        }.map(\.text).joined())
     }
 
     private func completeFinalWindow(_ request: MeetingTranscriptionRequest) {
