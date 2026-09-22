@@ -1012,6 +1012,62 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         }
     }
 
+    func testSubwordSuffixesAndPunctuationFollowWordOnsetAcrossSources() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-subword-boundary",
+            transcriber: FakeMeetingTranscriber { request in
+                let tokens: [MeetingRecognizedToken]
+                if request.windowSequence == 0 {
+                    tokens = [
+                        .init(text: " Repeat", startSeconds: 0.10, endSeconds: 0.20, confidence: 1),
+                        .init(text: " this", startSeconds: 0.30, endSeconds: 0.40, confidence: 1),
+                        .init(text: " sent", startSeconds: 0.75, endSeconds: 0.80, confidence: 1),
+                        .init(text: "ence", startSeconds: 0.82, endSeconds: 0.85, confidence: 1),
+                        .init(text: ".", startSeconds: 0.86, endSeconds: 0.87, confidence: 1),
+                        .init(text: " Repeat", startSeconds: 0.90, endSeconds: 0.95, confidence: 1),
+                    ]
+                } else {
+                    tokens = [
+                        .init(text: " Repeat", startSeconds: 0.00, endSeconds: 0.10, confidence: 1),
+                        .init(text: " this", startSeconds: 0.20, endSeconds: 0.30, confidence: 1),
+                        .init(text: " sentence", startSeconds: 0.40, endSeconds: 0.50, confidence: 1),
+                        .init(text: ".", startSeconds: 0.51, endSeconds: 0.52, confidence: 1),
+                        .init(text: " amber", startSeconds: 0.55, endSeconds: 0.60, confidence: 1),
+                        .init(text: " telescope", startSeconds: 0.62, endSeconds: 0.65, confidence: 1),
+                        .init(text: " at", startSeconds: 0.66, endSeconds: 0.69, confidence: 1),
+                        .init(text: " sun", startSeconds: 0.70, endSeconds: 0.73, confidence: 1),
+                        .init(text: "set", startSeconds: 0.75, endSeconds: 0.77, confidence: 1),
+                        .init(text: ".", startSeconds: 0.78, endSeconds: 0.79, confidence: 1),
+                    ]
+                }
+                return MeetingTranscriptionResult(
+                    text: "unused fallback",
+                    tokens: tokens,
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+
+        try await producer.start(initiallyPaused: false)
+        for source in MeetingAudioSourceID.allCases {
+            try await producer.ingest(.init(repeating: 0.4, count: 16), from: source)
+        }
+        _ = try await producer.stop()
+
+        for source in MeetingAudioSourceID.allCases {
+            let finals = events.revisions.filter { $0.isFinal && $0.sourceID == source }
+            XCTAssertEqual(finals.map(\.text), [
+                "Repeat this sentence.",
+                "Repeat this sentence. amber telescope at sunset.",
+            ])
+            XCTAssertEqual(finals.map(\.startMilliseconds), [0, 800])
+            XCTAssertEqual(finals.map(\.endMilliseconds), [800, 1_600])
+        }
+    }
+
     func testStopRetriesTransientFinalWindowBeforeLeavingAcceptedAudioPending() async throws {
         let accepted = MeetingAcceptedAudioRecorder()
         let events = MeetingEventRecorder()
