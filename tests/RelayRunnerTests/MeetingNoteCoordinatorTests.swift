@@ -238,6 +238,104 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertTrue(storeIsEmpty)
     }
 
+    func testPausePublishesCaptureAcknowledgementBeforeDelayedWriterAndReconcilesRapidResume() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let snapshots = MeetingNoteSnapshotRecorder()
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            snapshotSink: { snapshots.append($0) }
+        )
+        let started = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        let capture = try XCTUnwrap(captures.latest())
+        await capture.suspendNextPause()
+        await writer.suspendNextUpdate()
+
+        let pauseTask = Task { await coordinator.setCapsLock(isOn: true) }
+        await capture.waitForSuspendedPause()
+
+        let stillRecording = await coordinator.snapshot()
+        XCTAssertEqual(stillRecording.phase, .recording)
+        XCTAssertFalse(snapshots.snapshots.contains { $0.phase == .paused })
+
+        await capture.resumeSuspendedPause()
+        await writer.waitForSuspendedUpdate()
+
+        let paused = await coordinator.snapshot()
+        let captureIsRecording = await capture.isRecording
+        let committedWhileDelayed = await writer.updates
+        XCTAssertEqual(paused.phase, .paused)
+        XCTAssertEqual(paused.noteID, started.noteID)
+        XCTAssertFalse(captureIsRecording)
+        XCTAssertTrue(snapshots.snapshots.contains { $0.phase == .paused })
+        XCTAssertTrue(committedWhileDelayed.isEmpty)
+
+        await coordinator.setCapsLock(isOn: false)
+        await writer.resumeSuspendedUpdate()
+        await pauseTask.value
+
+        let resumed = await coordinator.snapshot()
+        let updates = await writer.updates
+        let pauseCount = await capture.pauseCount
+        let resumeCount = await capture.resumeCount
+        XCTAssertEqual(resumed.phase, .recording)
+        XCTAssertEqual(resumed.noteID, started.noteID)
+        XCTAssertEqual(pauseCount, 1)
+        XCTAssertEqual(resumeCount, 1)
+        XCTAssertEqual(
+            updates.map(\.update.checkpointReason),
+            [.pause, .resume]
+        )
+        XCTAssertEqual(
+            snapshots.snapshots.map(\.phase),
+            [.paused, .recording]
+        )
+    }
+
+    func testResumePublishesCaptureAcknowledgementBeforeDelayedWriter() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let snapshots = MeetingNoteSnapshotRecorder()
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            snapshotSink: { snapshots.append($0) }
+        )
+        let started = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: true
+        )
+        let capture = try XCTUnwrap(captures.latest())
+        await writer.suspendNextUpdate()
+
+        let resumeTask = Task { await coordinator.setCapsLock(isOn: false) }
+        await writer.waitForSuspendedUpdate()
+
+        let resumed = await coordinator.snapshot()
+        let captureIsRecording = await capture.isRecording
+        let committedWhileDelayed = await writer.updates
+        XCTAssertEqual(resumed.phase, .recording)
+        XCTAssertEqual(resumed.noteID, started.noteID)
+        XCTAssertTrue(captureIsRecording)
+        XCTAssertTrue(snapshots.snapshots.contains { $0.phase == .recording })
+        XCTAssertTrue(committedWhileDelayed.isEmpty)
+
+        await writer.resumeSuspendedUpdate()
+        await resumeTask.value
+        let updates = await writer.updates
+        XCTAssertEqual(updates.map(\.update.checkpointReason), [.resume])
+    }
+
     func testRemoteSyncFailureDoesNotBlockCompletedLocalSave() async throws {
         let writer = FakeMeetingNoteWriter(syncState: "failure")
         let store = InMemoryMeetingNoteRecoveryStore()
@@ -1028,6 +1126,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         writer: any MeetingNoteArtifactWriting,
         store: InMemoryMeetingNoteRecoveryStore,
         captures: FakeMeetingNoteCaptureFactory,
+        snapshotSink: @escaping MeetingNoteCoordinator.SnapshotSink = { _ in },
         scopeTokenRefresher: MeetingNoteCoordinator.ScopeTokenRefresher? = nil
     ) -> MeetingNoteCoordinator {
         MeetingNoteCoordinator(
@@ -1035,6 +1134,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             recoveryStore: store,
             automaticCheckpointing: false,
             now: { "2026-09-21T00:00:00Z" },
+            snapshotSink: snapshotSink,
             scopeTokenRefresher: scopeTokenRefresher
         ) { sessionID, acceptedAudio, _, events in
             captures.make(
@@ -1485,6 +1585,9 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
     private(set) var resumeCount = 0
     private(set) var stopCount = 0
     private(set) var replayedChunkIDs: [String] = []
+    private var shouldSuspendNextPause = false
+    private var suspendedPause: CheckedContinuation<Void, Never>?
+    private var suspendedPauseWaiters: [CheckedContinuation<Void, Never>] = []
     private var state: MeetingProducerState = .idle
     private var checkpointValue: MeetingProducerCheckpoint?
 
@@ -1519,8 +1622,34 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
         checkpointValue = checkpoint
     }
 
-    func pause() {
+    func suspendNextPause() {
+        shouldSuspendNextPause = true
+    }
+
+    func waitForSuspendedPause() async {
+        if suspendedPause != nil { return }
+        await withCheckedContinuation { continuation in
+            suspendedPauseWaiters.append(continuation)
+        }
+    }
+
+    func resumeSuspendedPause() {
+        let continuation = suspendedPause
+        suspendedPause = nil
+        continuation?.resume()
+    }
+
+    func pause() async {
         guard state == .recording else { return }
+        if shouldSuspendNextPause {
+            shouldSuspendNextPause = false
+            await withCheckedContinuation { continuation in
+                suspendedPause = continuation
+                let waiters = suspendedPauseWaiters
+                suspendedPauseWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
         pauseCount += 1
         state = .paused
     }
