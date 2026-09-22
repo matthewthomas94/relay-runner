@@ -1314,7 +1314,9 @@ final class AppState {
                           self.meetingNoteSnapshot.project == snapshot.project,
                           self.meetingNoteSnapshot.noteID == nil
                             || self.meetingNoteSnapshot.noteID == snapshot.noteID else { return }
-                    self.stopMeetingNoteCapsLockPolling()
+                    if snapshot.phase != .recording && snapshot.phase != .paused {
+                        self.stopMeetingNoteCapsLockPolling()
+                    }
                     self.applyMeetingNoteSnapshot(snapshot)
                 }
             },

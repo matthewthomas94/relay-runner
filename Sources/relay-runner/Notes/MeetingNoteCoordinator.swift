@@ -759,6 +759,8 @@ actor MeetingNoteCoordinator {
         try await runtime.capture.pause()
         phase = .paused
         journal?.phase = .paused
+        // Capture acknowledgement owns the visible state; persistence remains awaited below.
+        snapshotSink(snapshot())
         _ = try await publishCheckpoint(
             reason: .pause,
             recordingState: .paused,
@@ -772,6 +774,8 @@ actor MeetingNoteCoordinator {
         try await runtime.capture.resume()
         phase = .recording
         journal?.phase = .recording
+        // Capture acknowledgement owns the visible state; persistence remains awaited below.
+        snapshotSink(snapshot())
         _ = try await publishCheckpoint(
             reason: .resume,
             recordingState: .recording,
