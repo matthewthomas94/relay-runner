@@ -309,6 +309,8 @@ actor MeetingNoteCoordinator {
     private var pauseReconciliationRunning = false
     private var checkpointTask: Task<Void, Never>?
     private var stopTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
+    private var captureStatePersistenceTail: Task<Void, Error>?
+    private var captureStatePersistenceGeneration = 0
     private var checkpointPublicationActive = false
     private var checkpointPublicationWaiters: [CheckedContinuation<Void, Never>] = []
     private var interruptionTeardownActive = false
@@ -382,6 +384,7 @@ actor MeetingNoteCoordinator {
 
         checkpointTask?.cancel()
         stopTask = nil
+        captureStatePersistenceTail = nil
         activeScopeToken = projectScopeToken
         hasPersistedRecoveryJournal = false
         phase = .preparing
@@ -496,21 +499,61 @@ actor MeetingNoteCoordinator {
             return
         }
         desiredPaused = isOn
-        guard !pauseReconciliationRunning else { return }
-        pauseReconciliationRunning = true
-        defer { pauseReconciliationRunning = false }
-
-        while (phase == .recording && desiredPaused) || (phase == .paused && !desiredPaused) {
+        if !pauseReconciliationRunning {
+            pauseReconciliationRunning = true
             do {
-                if phase == .recording {
-                    try await pauseCapture()
-                } else {
-                    try await resumeCapture()
+                while (phase == .recording && desiredPaused)
+                    || (phase == .paused && !desiredPaused) {
+                    if phase == .recording {
+                        guard try await pauseCapture() else { break }
+                        enqueueCaptureStateCheckpoint(reason: .pause, recordingState: .paused)
+                    } else {
+                        guard try await resumeCapture() else { break }
+                        enqueueCaptureStateCheckpoint(reason: .resume, recordingState: .recording)
+                    }
                 }
             } catch {
+                pauseReconciliationRunning = false
                 try? await markInterrupted(error)
                 return
             }
+            pauseReconciliationRunning = false
+        }
+
+        if let captureStatePersistenceTail {
+            let generation = captureStatePersistenceGeneration
+            do {
+                try await captureStatePersistenceTail.value
+                clearCaptureStatePersistenceTail(ifGeneration: generation)
+            } catch {
+                clearCaptureStatePersistenceTail(ifGeneration: generation)
+                try? await markInterrupted(error)
+            }
+        }
+    }
+
+    private func enqueueCaptureStateCheckpoint(
+        reason: RelayProjectNoteCheckpointReason,
+        recordingState: RelayProjectNoteRecordingState
+    ) {
+        let predecessor = captureStatePersistenceTail
+        captureStatePersistenceGeneration &+= 1
+        captureStatePersistenceTail = Task {
+            if let predecessor {
+                try await predecessor.value
+            }
+            _ = try await publishCheckpoint(
+                reason: reason,
+                recordingState: recordingState,
+                captureEndedAt: nil,
+                force: true
+            )
+        }
+    }
+
+    private func clearCaptureStatePersistenceTail(ifGeneration generation: Int) {
+        if captureStatePersistenceGeneration == generation {
+            captureStatePersistenceTail = nil
         }
     }
 
@@ -519,7 +562,15 @@ actor MeetingNoteCoordinator {
     func resumeRecoveredCapture() async throws -> MeetingNoteCoordinatorSnapshot {
         guard phase == .paused else { throw MeetingNoteCoordinatorError.captureUnavailable }
         desiredPaused = false
-        try await resumeCapture()
+        guard try await resumeCapture() else {
+            throw MeetingNoteCoordinatorError.captureUnavailable
+        }
+        _ = try await publishCheckpoint(
+            reason: .resume,
+            recordingState: .recording,
+            captureEndedAt: nil,
+            force: true
+        )
         return snapshot()
     }
 
@@ -754,34 +805,26 @@ actor MeetingNoteCoordinator {
         }
     }
 
-    private func pauseCapture() async throws {
+    private func pauseCapture() async throws -> Bool {
         guard let runtime else { throw MeetingNoteCoordinatorError.captureUnavailable }
         try await runtime.capture.pause()
+        guard self.runtime?.id == runtime.id, phase == .recording else { return false }
         phase = .paused
         journal?.phase = .paused
-        // Capture acknowledgement owns the visible state; persistence remains awaited below.
+        // Capture acknowledgement owns the visible state; persistence is queued separately.
         snapshotSink(snapshot())
-        _ = try await publishCheckpoint(
-            reason: .pause,
-            recordingState: .paused,
-            captureEndedAt: nil,
-            force: true
-        )
+        return true
     }
 
-    private func resumeCapture() async throws {
+    private func resumeCapture() async throws -> Bool {
         guard let runtime else { throw MeetingNoteCoordinatorError.captureUnavailable }
         try await runtime.capture.resume()
+        guard self.runtime?.id == runtime.id, phase == .paused else { return false }
         phase = .recording
         journal?.phase = .recording
-        // Capture acknowledgement owns the visible state; persistence remains awaited below.
+        // Capture acknowledgement owns the visible state; persistence is queued separately.
         snapshotSink(snapshot())
-        _ = try await publishCheckpoint(
-            reason: .resume,
-            recordingState: .recording,
-            captureEndedAt: nil,
-            force: true
-        )
+        return true
     }
 
     private func performStop() async throws -> MeetingNoteCoordinatorSnapshot {
@@ -797,6 +840,23 @@ actor MeetingNoteCoordinator {
         try await recoveryStore.save(journal)
 
         do {
+            if let captureStatePersistenceTail {
+                let generation = captureStatePersistenceGeneration
+                do {
+                    try await captureStatePersistenceTail.value
+                    clearCaptureStatePersistenceTail(ifGeneration: generation)
+                } catch {
+                    clearCaptureStatePersistenceTail(ifGeneration: generation)
+                    throw error
+                }
+                guard let current = self.journal,
+                      current.sessionID == journal.sessionID else {
+                    throw MeetingNoteCoordinatorError.localSaveFailed(
+                        "note recovery session changed"
+                    )
+                }
+                journal = current
+            }
             _ = try await runtime.capture.stop()
             let endedAt = now()
             journal.producerCheckpoint = await runtime.capture.checkpoint()

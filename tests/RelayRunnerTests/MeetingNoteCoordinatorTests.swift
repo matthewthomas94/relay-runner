@@ -309,7 +309,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertTrue(storeIsEmpty)
     }
 
-    func testPausePublishesCaptureAcknowledgementBeforeDelayedWriterAndReconcilesRapidResume() async throws {
+    func testHeldPauseWriterDoesNotDelaySubsequentResumeAndPauseGates() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
         let captures = FakeMeetingNoteCaptureFactory()
@@ -326,17 +326,9 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             initiallyPaused: false
         )
         let capture = try XCTUnwrap(captures.latest())
-        await capture.suspendNextPause()
         await writer.suspendNextUpdate()
 
         let pauseTask = Task { await coordinator.setCapsLock(isOn: true) }
-        await capture.waitForSuspendedPause()
-
-        let stillRecording = await coordinator.snapshot()
-        XCTAssertEqual(stillRecording.phase, .recording)
-        XCTAssertFalse(snapshots.snapshots.contains { $0.phase == .paused })
-
-        await capture.resumeSuspendedPause()
         await writer.waitForSuspendedUpdate()
 
         let paused = await coordinator.snapshot()
@@ -348,29 +340,85 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertTrue(snapshots.snapshots.contains { $0.phase == .paused })
         XCTAssertTrue(committedWhileDelayed.isEmpty)
 
-        await coordinator.setCapsLock(isOn: false)
+        let resumeTask = Task { await coordinator.setCapsLock(isOn: false) }
+        let resumedPromptly = await waitForCaptureCounts(
+            capture,
+            pauseCount: 1,
+            resumeCount: 1
+        )
+        let pauseAgainTask = Task { await coordinator.setCapsLock(isOn: true) }
+        let repausedPromptly = await waitForCaptureCounts(
+            capture,
+            pauseCount: 2,
+            resumeCount: 1
+        )
+        let finalWhileDelayed = await coordinator.snapshot()
+
         await writer.resumeSuspendedUpdate()
         await pauseTask.value
+        await resumeTask.value
+        await pauseAgainTask.value
 
-        let resumed = await coordinator.snapshot()
+        let final = await coordinator.snapshot()
         let updates = await writer.updates
         let pauseCount = await capture.pauseCount
         let resumeCount = await capture.resumeCount
-        XCTAssertEqual(resumed.phase, .recording)
-        XCTAssertEqual(resumed.noteID, started.noteID)
-        XCTAssertEqual(pauseCount, 1)
+        XCTAssertTrue(resumedPromptly)
+        XCTAssertTrue(repausedPromptly)
+        XCTAssertEqual(finalWhileDelayed.phase, .paused)
+        XCTAssertEqual(final.phase, .paused)
+        XCTAssertEqual(final.noteID, started.noteID)
+        XCTAssertEqual(pauseCount, 2)
         XCTAssertEqual(resumeCount, 1)
         XCTAssertEqual(
             updates.map(\.update.checkpointReason),
-            [.pause, .resume]
+            [.pause, .resume, .pause]
+        )
+        XCTAssertEqual(
+            updates.map(\.update.recordingState),
+            [.paused, .recording, .paused]
         )
         XCTAssertEqual(
             snapshots.snapshots.map(\.phase),
-            [.paused, .recording]
+            [.paused, .recording, .paused]
         )
     }
 
-    func testResumePublishesCaptureAcknowledgementBeforeDelayedWriter() async throws {
+    func testPauseDoesNotPublishBeforeCaptureAcknowledgement() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let snapshots = MeetingNoteSnapshotRecorder()
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            snapshotSink: { snapshots.append($0) }
+        )
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        let capture = try XCTUnwrap(captures.latest())
+        await capture.suspendNextPause()
+
+        let pauseTask = Task { await coordinator.setCapsLock(isOn: true) }
+        await capture.waitForSuspendedPause()
+
+        let beforeAcknowledgement = await coordinator.snapshot()
+        XCTAssertEqual(beforeAcknowledgement.phase, .recording)
+        XCTAssertFalse(snapshots.snapshots.contains { $0.phase == .paused })
+
+        await capture.resumeSuspendedPause()
+        await pauseTask.value
+
+        let paused = await coordinator.snapshot()
+        XCTAssertEqual(paused.phase, .paused)
+        XCTAssertEqual(snapshots.snapshots.map(\.phase), [.paused])
+    }
+
+    func testHeldResumeWriterDoesNotDelaySubsequentPauseGate() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
         let captures = FakeMeetingNoteCaptureFactory()
@@ -401,10 +449,26 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertTrue(snapshots.snapshots.contains { $0.phase == .recording })
         XCTAssertTrue(committedWhileDelayed.isEmpty)
 
+        let pauseTask = Task { await coordinator.setCapsLock(isOn: true) }
+        let pausedPromptly = await waitForCaptureCounts(
+            capture,
+            pauseCount: 1,
+            resumeCount: 1
+        )
+        let pausedWhileDelayed = await coordinator.snapshot()
+
         await writer.resumeSuspendedUpdate()
         await resumeTask.value
+        await pauseTask.value
         let updates = await writer.updates
-        XCTAssertEqual(updates.map(\.update.checkpointReason), [.resume])
+        let final = await coordinator.snapshot()
+        XCTAssertTrue(pausedPromptly)
+        XCTAssertEqual(pausedWhileDelayed.phase, .paused)
+        XCTAssertEqual(final.phase, .paused)
+        XCTAssertEqual(final.noteID, started.noteID)
+        XCTAssertEqual(updates.map(\.update.checkpointReason), [.resume, .pause])
+        XCTAssertEqual(updates.map(\.update.recordingState), [.recording, .paused])
+        XCTAssertEqual(snapshots.snapshots.map(\.phase), [.recording, .paused])
     }
 
     func testRemoteSyncFailureDoesNotBlockCompletedLocalSave() async throws {
@@ -1252,6 +1316,19 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         }
         XCTFail("runtime checkpoint failure did not reach terminal coordinator state")
         return await coordinator.snapshot()
+    }
+
+    private func waitForCaptureCounts(
+        _ capture: FakeMeetingNoteCapture,
+        pauseCount: Int,
+        resumeCount: Int
+    ) async -> Bool {
+        for _ in 0..<200 {
+            let counts = await (capture.pauseCount, capture.resumeCount)
+            if counts == (pauseCount, resumeCount) { return true }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return false
     }
 
     private func revision(
