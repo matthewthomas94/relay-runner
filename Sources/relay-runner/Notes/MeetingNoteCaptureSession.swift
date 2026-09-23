@@ -329,6 +329,8 @@ actor MeetingNoteCaptureSession {
                     blockedSources.insert(source)
                     blockStartup(for: source, generation: generation)
                     try await report(failure, from: source)
+                case .restartRequested:
+                    await restartSystemSource(source, generation: generation)
                 }
             case .started(let source, let generation, let startBarrier):
                 defer { startBarrier.complete() }
@@ -406,6 +408,46 @@ actor MeetingNoteCaptureSession {
             issueCode: issueCode,
             message: failure.localizedDescription
         )
+    }
+
+    private func restartSystemSource(_ source: MeetingAudioSourceID, generation: UInt64) async {
+        guard source == .systemAudio,
+              sourceCaptureGenerations[source] == generation,
+              !sourceStartInProgress,
+              !captureQuiescing,
+              let ingress = captureIngress,
+              !ingress.isFinished,
+              let capture = captures.first(where: { $0.sourceID == source }),
+              startedCaptures[ObjectIdentifier(capture)] != nil else { return }
+
+        sourceStartInProgress = true
+        defer { finishSourceStart() }
+        blockedSources.insert(source)
+        let nextGeneration = generation &+ 1
+        sourceCaptureGenerations[source] = nextGeneration
+        await capture.stop()
+        guard !captureQuiescing, !ingress.isFinished else { return }
+
+        do {
+            _ = try await capture.start(
+                sampleHandler: { frame in
+                    ingress.submit(.frame(frame, source, nextGeneration))
+                },
+                eventHandler: { event in
+                    ingress.submit(.event(event, source, nextGeneration))
+                }
+            )
+            guard !captureQuiescing, !ingress.isFinished else {
+                await capture.stop()
+                return
+            }
+            blockedSources.remove(source)
+            await producer.markSourceCapturing(source)
+        } catch let failure as MeetingAudioCaptureFailure {
+            try? await report(failure, from: source)
+        } catch {
+            try? await report(.startFailed(source, error.localizedDescription), from: source)
+        }
     }
 }
 

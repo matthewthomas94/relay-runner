@@ -1,3 +1,4 @@
+import AppKit
 import AVFAudio
 import CoreGraphics
 import CoreMedia
@@ -45,6 +46,7 @@ enum MeetingAudioCaptureEvent: Equatable, Sendable {
     case interrupted(String)
     case recovered(MeetingCaptureSourceInfo)
     case failed(MeetingAudioCaptureFailure)
+    case restartRequested
 }
 
 protocol MeetingAudioCapturing: AnyObject {
@@ -188,6 +190,7 @@ final class MeetingSystemAudioCallbackGate: @unchecked Sendable {
 
     private let lock = NSLock()
     private var active: ActiveCallbacks?
+    private var displaySleeping = false
 
     func activate(
         stream: AnyObject,
@@ -195,6 +198,7 @@ final class MeetingSystemAudioCallbackGate: @unchecked Sendable {
         eventHandler: @escaping @Sendable (MeetingAudioCaptureEvent) -> Void
     ) {
         lock.withMeetingCaptureLock {
+            displaySleeping = false
             active = ActiveCallbacks(
                 streamID: ObjectIdentifier(stream),
                 sampleHandler: sampleHandler,
@@ -207,7 +211,26 @@ final class MeetingSystemAudioCallbackGate: @unchecked Sendable {
         lock.withMeetingCaptureLock {
             guard active?.streamID == ObjectIdentifier(stream) else { return }
             active = nil
+            displaySleeping = false
         }
+    }
+
+    func displayDidSleep(from stream: AnyObject) {
+        let handler = lock.withMeetingCaptureLock { () -> (@Sendable (MeetingAudioCaptureEvent) -> Void)? in
+            guard active?.streamID == ObjectIdentifier(stream), !displaySleeping else { return nil }
+            displaySleeping = true
+            return active?.eventHandler
+        }
+        handler?(.interrupted("Display slept; computer audio is interrupted."))
+    }
+
+    func displayDidWake(from stream: AnyObject) {
+        let handler = lock.withMeetingCaptureLock { () -> (@Sendable (MeetingAudioCaptureEvent) -> Void)? in
+            guard active?.streamID == ObjectIdentifier(stream), displaySleeping else { return nil }
+            displaySleeping = false
+            return active?.eventHandler
+        }
+        handler?(.restartRequested)
     }
 
     func deliver(_ frame: MeetingAudioFrame, from stream: AnyObject) {
@@ -252,6 +275,7 @@ final class MeetingSystemAudioCapture: NSObject, MeetingAudioCapturing, SCStream
     private let lock = NSLock()
     private let callbackGate = MeetingSystemAudioCallbackGate()
     private var stream: SCStream?
+    private var displayObservers: [NSObjectProtocol] = []
 
     func start(
         sampleHandler: @escaping @Sendable (MeetingAudioFrame) -> Void,
@@ -301,14 +325,34 @@ final class MeetingSystemAudioCapture: NSObject, MeetingAudioCapturing, SCStream
                     sampleHandler: sampleHandler,
                     eventHandler: eventHandler
                 )
+                let notifications = NSWorkspace.shared.notificationCenter
+                for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification] {
+                    displayObservers.append(notifications.addObserver(
+                        forName: name, object: nil, queue: nil
+                    ) { [weak self, weak stream] _ in
+                        guard let self, let stream else { return }
+                        self.callbackGate.displayDidSleep(from: stream)
+                    })
+                }
+                for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
+                    displayObservers.append(notifications.addObserver(
+                        forName: name, object: nil, queue: nil
+                    ) { [weak self, weak stream] _ in
+                        guard let self, let stream else { return }
+                        self.callbackGate.displayDidWake(from: stream)
+                    })
+                }
             }
             try await stream.startCapture()
         } catch {
-            lock.withMeetingCaptureLock {
-                guard self.stream === stream else { return }
+            let observers = lock.withMeetingCaptureLock { () -> [NSObjectProtocol] in
+                guard self.stream === stream else { return [] }
                 self.callbackGate.deactivate(stream: stream)
                 self.stream = nil
+                defer { displayObservers = [] }
+                return displayObservers
             }
+            observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
             try? stream.removeStreamOutput(self, type: .audio)
             try? await stream.stopCapture()
             throw MeetingAudioCaptureFailure.startFailed(.systemAudio, error.localizedDescription)
@@ -322,12 +366,14 @@ final class MeetingSystemAudioCapture: NSObject, MeetingAudioCapturing, SCStream
     }
 
     func stop() async {
-        let stream = lock.withMeetingCaptureLock { () -> SCStream? in
-            guard let stream = self.stream else { return nil }
+        let (stream, observers) = lock.withMeetingCaptureLock { () -> (SCStream?, [NSObjectProtocol]) in
+            guard let stream = self.stream else { return (nil, []) }
             callbackGate.deactivate(stream: stream)
             self.stream = nil
-            return stream
+            defer { displayObservers = [] }
+            return (stream, displayObservers)
         }
+        observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         guard let stream else { return }
         try? stream.removeStreamOutput(self, type: .audio)
         try? await stream.stopCapture()
