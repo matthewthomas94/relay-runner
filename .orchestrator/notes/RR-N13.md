@@ -9,7 +9,7 @@ updated_at: 2026-09-23T14:40:59Z
 recording_state: recording
 checkpoint_reason: checkpoint
 segment_count: 1
-note_metadata: {"origin": "generated", "state": "pending", "source_sha256": "58fe0e7adbf1ab2343daf3c9236a095ccf9960c1f248bece9ba98ade8c2c6561", "error_code": null}
+note_metadata: {"title": "Computer Audio Check", "summary": "Computer audio check using the phrase “The Silver Lighthouse.”", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-23T14:41:22.794674+00:00", "origin": "generated", "state": "ready", "source_sha256": "58fe0e7adbf1ab2343daf3c9236a095ccf9960c1f248bece9ba98ade8c2c6561", "generated_source_sha256": "58fe0e7adbf1ab2343daf3c9236a095ccf9960c1f248bece9ba98ade8c2c6561"}
 ---
 
 ## Transcript
