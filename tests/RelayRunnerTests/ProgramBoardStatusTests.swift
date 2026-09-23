@@ -385,7 +385,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(imageSelector.contains("allowedContentTypes = [.image]"))
         XCTAssertTrue(imageSelector.contains("NSApplication.shared.activate(ignoringOtherApps: true)"))
 
-        let iconStart = try XCTUnwrap(contents.range(of: "private struct ProgramIconButton: View"))
+        let iconStart = try XCTUnwrap(contents.range(of: "struct ProgramIconButton: View"))
         let iconEnd = try XCTUnwrap(
             contents.range(of: "private struct ProgramCardBackground: View", range: iconStart.upperBound..<contents.endIndex)
         )
@@ -1153,7 +1153,7 @@ final class ProgramBoardStatusTests: XCTestCase {
             provider: "Claude/sonnet"
         )
 
-        XCTAssertEqual(codexActive.programCardMetadataParts, ["RR-117", "Relay Runner"])
+        XCTAssertEqual(codexActive.programCardMetadataParts, ["RR-117"])
         XCTAssertEqual(codexActive.programAgentActivityLine, "Reviewing code")
         XCTAssertEqual(claudeActive.programAgentActivityLine, "Running Swift tests")
     }
@@ -1203,7 +1203,17 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.snapshot?.backlogWork.counts.items, 1)
     }
 
-    func testBacklogMixesTypedNotesAndTicketsAcrossProjectsWithoutAddingALane() throws {
+    func testTicketCardUsesCreationDateWithoutFallingBackToModificationDate() throws {
+        let payload = Data(#"{"ticket_id":"RR-378","project":{"name":"Relay Runner","path":"/repo/relay-runner"},"ticket_created_at":1790128800,"ticket_modified_at":1790215200}"#.utf8)
+        let item = try JSONDecoder().decode(ProgramStatusItem.self, from: payload)
+        XCTAssertEqual(item.programCardMetadataParts, ["RR-378", "23 Sep 2026"])
+        XCTAssertEqual(ProgramBoardDate.label(iso8601: "2026-09-23T00:25:27.031298Z"), "23 Sep 2026")
+        XCTAssertNil(ProgramBoardDate.label(iso8601: "invalid"))
+        XCTAssertEqual(ProgramBacklogTab.notes.label(count: 1), "1 Note")
+        XCTAssertEqual(ProgramBacklogTab.tickets.label(count: 2), "2 Tickets")
+    }
+
+    func testBacklogTabsFilterNotesAndTicketsAcrossProjectsWithoutAddingALane() throws {
         let clientPath = "/repo/client-dashboard"
         let toolsPath = "/repo/tools"
         let model = ProgramBoardViewModel()
@@ -1218,10 +1228,17 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(ProgramBoardLane.allCases.map(\.title), ["Backlog", "Queued", "In progress", "Done"])
         XCTAssertEqual(model.noteItemsInBacklog().map(\.card.noteID), ["CD-N1000", "CD-N999", "TL-N2"])
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
-        XCTAssertEqual(model.workItems(in: .backlog).count, 5)
+        XCTAssertEqual(model.workItems(in: .backlog).count, 2)
+        model.backlogTab = .notes
+        XCTAssertEqual(model.workItems(in: .backlog).count, 3)
+        XCTAssertTrue(model.workItems(in: .backlog).allSatisfy { if case .note = $0 { return true }; return false })
+        XCTAssertEqual(model.workItems(in: .ready).count, model.ticketItems(in: .ready).count)
 
         model.selectProject(path: clientPath)
         XCTAssertEqual(model.noteItemsInBacklog().map(\.card.noteID), ["CD-N1000", "CD-N999"])
+        XCTAssertEqual(model.workItems(in: .backlog).count, 2)
+        model.backlogTab = .tickets
+        XCTAssertEqual(model.workItems(in: .backlog).count, 1)
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1"])
     }
 

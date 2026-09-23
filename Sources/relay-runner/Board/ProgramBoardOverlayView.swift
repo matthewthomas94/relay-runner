@@ -1208,15 +1208,12 @@ private struct ProgramProjectsHeader: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
-            Button(action: onHistory) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .frame(width: 28, height: 24)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.white.opacity(isAllSelected ? 0.3 : 0.75))
-            .disabled(isAllSelected)
-            .accessibilityLabel("Open Workspace history")
-            .help(isAllSelected ? "Select one project to open its history" : "Open Workspace history")
+            ProgramIconButton(
+                systemName: "arrow.counterclockwise",
+                help: isAllSelected ? "Select one project to open its history" : "Open Workspace history",
+                isEnabled: !isAllSelected,
+                action: onHistory
+            )
             .padding(.trailing, 8)
             if presentation.usesProjectRegistryV2 {
                 ProgramAddProjectMenu(
@@ -1499,7 +1496,7 @@ struct ProgramWorkColumnPanel: View {
 
     private var scrollResetID: String {
         let scopeID = model.selectedProjectPath ?? "all"
-        return "\(lane.id)-\(scopeID)"
+        return "\(lane.id)-\(scopeID)-\(lane == .backlog ? model.backlogTab.rawValue : "tickets")"
     }
 
     var body: some View {
@@ -1512,15 +1509,13 @@ struct ProgramWorkColumnPanel: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
-                Text("\(model.ticketItems(in: lane).count)")
-                    .font(AppTypography.font(.count))
-                    .foregroundStyle(ProgramBoardStyle.secondaryText)
-                    .monospacedDigit()
-                    .accessibilityLabel("\(model.ticketItems(in: lane).count) tickets")
-                if lane == .backlog, !model.noteItemsInBacklog().isEmpty {
-                    Text("+\(model.noteItemsInBacklog().count) notes")
-                        .font(AppTypography.font(.caption))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                if lane == .backlog {
+                    backlogTabs
+                } else {
+                    Text(ProgramBacklogTab.tickets.label(count: model.ticketItems(in: lane).count))
+                        .font(AppTypography.font(.count))
+                        .foregroundStyle(ProgramBoardStyle.secondaryText)
+                        .monospacedDigit()
                         .lineLimit(1)
                 }
                 if canCreate {
@@ -1538,7 +1533,7 @@ struct ProgramWorkColumnPanel: View {
             ProgramColumnTicketScrollView(resetID: scrollResetID) {
                 VStack(alignment: .leading, spacing: 0) {
                     ProgramDropIndicator(target: activeTarget)
-                    if lane == .backlog, let noteError = model.noteLoadErrorMessage {
+                    if lane == .backlog, model.backlogTab == .notes, let noteError = model.noteLoadErrorMessage {
                         Text(noteError)
                             .font(AppTypography.font(.supporting))
                             .foregroundStyle(ProgramBoardStyle.red)
@@ -1546,7 +1541,7 @@ struct ProgramWorkColumnPanel: View {
                             .padding(.bottom, 8)
                     }
                     if laneItems.isEmpty {
-                        ProgramColumnEmpty(text: lane.emptyText)
+                        ProgramColumnEmpty(text: lane == .backlog && model.backlogTab == .notes ? "No notes" : lane.emptyText)
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(laneItems) { item in
@@ -1566,8 +1561,6 @@ struct ProgramWorkColumnPanel: View {
                                 case .note(let note):
                                     ProgramNoteCard(
                                         item: note,
-                                        captureSnapshot: model.noteCaptureSnapshot,
-                                        showsProjectContext: showsProjectContext,
                                         isSelected: model.selectedNoteDetail?.item.id == note.id,
                                         onSelect: { onNoteOpen(note) }
                                     )
@@ -1589,12 +1582,40 @@ struct ProgramWorkColumnPanel: View {
             }
         )
     }
+
+    private var backlogTabs: some View {
+        HStack(spacing: 0) {
+            ForEach(ProgramBacklogTab.allCases, id: \.self) { tab in
+                let count = tab == .notes ? model.noteItemsInBacklog().count : model.ticketItems(in: .backlog).count
+                Button {
+                    model.backlogTab = tab
+                } label: {
+                    Text(tab.label(count: count))
+                        .font(AppTypography.font(.caption))
+                        .foregroundStyle(model.backlogTab == tab ? ProgramBoardStyle.primaryText : ProgramBoardStyle.mutedText)
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .frame(height: SharedActionButtonMetrics.controlHeight)
+                        .background {
+                            if model.backlogTab == tab {
+                                RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius)
+                                    .fill(BoardDarkSurfaceStyle.cardActiveFill)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .programButtonCursor()
+                .accessibilityLabel("Show \(tab.label(count: count).lowercased())")
+                .accessibilityAddTraits(model.backlogTab == tab ? .isSelected : [])
+            }
+        }
+        .background(BoardDarkSurfaceBackground(cornerRadius: SharedActionButtonMetrics.cornerRadius))
+    }
 }
 
 private struct ProgramNoteCard: View {
     let item: ProgramBoardNoteItem
-    let captureSnapshot: MeetingNoteCoordinatorSnapshot
-    let showsProjectContext: Bool
     let isSelected: Bool
     let onSelect: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1611,61 +1632,24 @@ private struct ProgramNoteCard: View {
         )
     }
 
-    private var liveStatus: String? {
-        guard captureSnapshot.noteID == item.card.noteID,
-              let project = captureSnapshot.project,
-              ProgramBoardProjectPath.matches(project.repositoryPath, item.projectPath) else { return nil }
-        switch captureSnapshot.phase {
-        case .recording: return "Recording · \(captureSnapshot.durableSegmentCount) saved segments"
-        case .paused: return "Paused · \(captureSnapshot.durableSegmentCount) saved segments"
-        case .stopping: return "Saving locally"
-        case .interrupted: return "Capture interrupted"
-        case .error: return "Save failed"
-        case .saved: return "Saved locally"
-        case .idle, .preparing: return nil
-        }
-    }
-
     var body: some View {
         Button(action: onSelect) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Text(item.card.noteID)
                         .font(AppTypography.font(.metadata))
                         .foregroundStyle(ProgramBoardStyle.mutedText)
+                    if let date = ProgramBoardDate.label(iso8601: item.card.createdAt) {
+                        Text(date)
+                            .font(AppTypography.font(.metadata))
+                            .foregroundStyle(ProgramBoardStyle.mutedText)
+                    }
                     Spacer(minLength: 0)
-                    ProgramInlineBadge(label: "Note")
                 }
                 Text(item.title)
                     .font(AppTypography.font(.ticketTitle))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                     .lineLimit(2)
-                if let summary = item.card.metadata?.summary {
-                    Text(summary)
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(ProgramBoardStyle.secondaryText)
-                        .lineLimit(3)
-                }
-                if let status = item.card.metadata?.statusLabel {
-                    Text(status)
-                        .font(AppTypography.font(.caption))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                        .lineLimit(2)
-                }
-                if showsProjectContext {
-                    Text(item.projectName)
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(ProgramBoardStyle.secondaryText)
-                        .lineLimit(1)
-                }
-                Text(liveStatus ?? "\(item.recordingLabel)  ·  \(item.syncLabel)")
-                    .font(AppTypography.font(.supporting))
-                    .foregroundStyle(liveStatus == "Save failed" ? ProgramBoardStyle.red : ProgramBoardStyle.mutedText)
-                    .lineLimit(2)
-                Text(Self.displayDate(item.card.updatedAt))
-                    .font(AppTypography.font(.caption))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .lineLimit(1)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1685,7 +1669,7 @@ private struct ProgramNoteCard: View {
         .onHover { isHovered = $0 }
         .programButtonCursor(enabled: true)
         .help("Open Markdown transcript for \(item.card.noteID)")
-        .accessibilityLabel("\(item.card.noteID), meeting note, \(liveStatus ?? item.recordingLabel)")
+        .accessibilityLabel("\(item.card.noteID), \(ProgramBoardDate.label(iso8601: item.card.createdAt) ?? ""), \(item.title)")
     }
 
     fileprivate static func displayDate(_ value: String) -> String {
@@ -4193,7 +4177,7 @@ private struct ProgramEditCapsuleButton: View {
     }
 }
 
-private struct ProgramWorkspaceActionButton: View {
+struct ProgramWorkspaceActionButton: View {
     let title: String
     let systemName: String?
     var prominence: SharedActionButtonProminence = .secondary
@@ -4238,11 +4222,12 @@ private struct ProgramWorkspaceActionButton: View {
     }
 }
 
-private struct ProgramIconButton: View {
+struct ProgramIconButton: View {
     let systemName: String
     let help: String
     let iconColor: Color
     let size: CGFloat
+    let isEnabled: Bool
     let action: () -> Void
 
     init(
@@ -4250,19 +4235,21 @@ private struct ProgramIconButton: View {
         help: String,
         iconColor: Color = ProgramBoardStyle.primaryText,
         size: CGFloat = 22,
+        isEnabled: Bool = true,
         action: @escaping () -> Void
     ) {
         self.systemName = systemName
         self.help = help
         self.iconColor = iconColor
         self.size = size
+        self.isEnabled = isEnabled
         self.action = action
     }
 
     var body: some View {
         SharedActionButtonChrome(
             prominence: .icon,
-            isEnabled: true,
+            isEnabled: isEnabled,
             accessibilityLabel: help,
             helpText: help,
             palette: SharedActionButtonPalette(
@@ -4278,7 +4265,7 @@ private struct ProgramIconButton: View {
                     .accessibilityHidden(true)
             }
         )
-        .programButtonCursor()
+        .programButtonCursor(enabled: isEnabled)
     }
 }
 

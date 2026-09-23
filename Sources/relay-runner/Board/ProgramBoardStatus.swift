@@ -1036,6 +1036,30 @@ struct ProgramStatusProject: Decodable, Equatable {
     let path: String
 }
 
+enum ProgramBacklogTab: String, CaseIterable {
+    case notes, tickets
+
+    func label(count: Int) -> String {
+        let noun = self == .notes ? "Note" : "Ticket"
+        return "\(count) \(noun)\(count == 1 ? "" : "s")"
+    }
+}
+
+enum ProgramBoardDate {
+    static func label(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_AU")
+        formatter.dateFormat = "dd MMM yyyy"
+        return formatter.string(from: date)
+    }
+
+    static func label(iso8601 value: String) -> String? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return (fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)).map(label)
+    }
+}
+
 struct ProgramStatusItem: Decodable, Equatable, Identifiable {
     let project: ProgramStatusProject?
     let ticketID: String?
@@ -1044,6 +1068,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
     let priority: String?
     let executionMode: String?
     let ticketModifiedAt: Date?
+    let ticketCreatedAt: Date?
     let ticketState: String?
     let runID: String?
     let attempt: String?
@@ -1097,6 +1122,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         priority: String?,
         executionMode: String? = nil,
         ticketModifiedAt: Date? = nil,
+        ticketCreatedAt: Date? = nil,
         ticketState: String? = nil,
         runID: String? = nil,
         attempt: String? = nil,
@@ -1131,6 +1157,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         self.priority = priority
         self.executionMode = executionMode
         self.ticketModifiedAt = ticketModifiedAt
+        self.ticketCreatedAt = ticketCreatedAt
         self.ticketState = ticketState
         self.runID = runID
         self.attempt = attempt
@@ -1185,6 +1212,7 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         case priority
         case executionMode = "execution_mode"
         case ticketModifiedAt = "ticket_modified_at"
+        case ticketCreatedAt = "ticket_created_at"
         case ticketState = "ticket_state"
         case runID = "run_id"
         case attempt
@@ -1222,6 +1250,8 @@ struct ProgramStatusItem: Decodable, Equatable, Identifiable {
         priority = try values.decodeIfPresent(String.self, forKey: .priority)
         executionMode = try values.decodeIfPresent(String.self, forKey: .executionMode)
         ticketModifiedAt = try values.decodeIfPresent(Double.self, forKey: .ticketModifiedAt)
+            .map(Date.init(timeIntervalSince1970:))
+        ticketCreatedAt = try values.decodeIfPresent(Double.self, forKey: .ticketCreatedAt)
             .map(Date.init(timeIntervalSince1970:))
         ticketState = try values.decodeIfPresent(String.self, forKey: .ticketState)
         runID = Self.lossyString(values, forKey: .runID)
@@ -1519,6 +1549,7 @@ final class ProgramBoardViewModel {
     var noteRecoveryInFlight = false
     var noteRecoveryErrorMessage: String?
     var noteItems: [ProgramBoardNoteItem] = []
+    var backlogTab: ProgramBacklogTab = .tickets
     var noteLoadErrorMessage: String?
     var noteCaptureSnapshot = MeetingNoteCoordinatorSnapshot(
         phase: .idle,
@@ -1777,7 +1808,7 @@ final class ProgramBoardViewModel {
     func workItems(in lane: ProgramBoardLane) -> [ProgramBoardWorkItem] {
         let tickets = ticketItems(in: lane).map(ProgramBoardWorkItem.ticket)
         guard lane == .backlog else { return tickets }
-        return noteItemsInBacklog().map(ProgramBoardWorkItem.note) + tickets
+        return backlogTab == .notes ? noteItemsInBacklog().map(ProgramBoardWorkItem.note) : tickets
     }
 
     func selectTicket(_ item: ProgramStatusItem) {
@@ -1897,6 +1928,7 @@ final class ProgramBoardViewModel {
 
     func beginCreate(in lane: ProgramBoardLane) {
         guard !projectTargets.isEmpty else { return }
+        if lane == .backlog { backlogTab = .tickets }
         creating = ProgramBoardCreateDraft(
             lane: lane,
             selectedProjectPath: selectedProjectPath
@@ -2020,6 +2052,7 @@ final class ProgramBoardViewModel {
         cardCenterOffset: CGSize,
         target: ProgramBoardDropTarget?
     ) {
+        backlogTab = .tickets
         dragItemID = item.id
         dragTarget = target
         dragPreview = ProgramBoardDragState(
@@ -2255,8 +2288,8 @@ extension ProgramStatusItem {
     var programCardMetadataParts: [String] {
         [
             cleanedProgramValue(ticketID) ?? "No ticket",
-            cleanedProgramValue(project?.name) ?? "Unknown project",
-        ]
+            ticketCreatedAt.map(ProgramBoardDate.label),
+        ].compactMap { $0 }
     }
 
     var programAgentActivityLine: String? {

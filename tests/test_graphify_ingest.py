@@ -34,6 +34,34 @@ from program_status import build_program_status  # noqa: E402
 
 
 class GraphifyIngestTests(unittest.TestCase):
+    def test_creation_dates_survive_edits_and_artifact_rematerialization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = _make_repo(Path(directory), "creation-dates")
+            _git(repo, "init", "--initial-branch=main", "--quiet")
+            _git(repo, "config", "user.name", "Graphify Tests")
+            _git(repo, "config", "user.email", "graphify@example.invalid")
+
+            def commit(date):
+                _git(repo, "add", ".")
+                with patch.dict(os.environ, {"GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}):
+                    _git(repo, "commit", "--quiet", "-m", "Synthetic history")
+
+            path = _write_ticket(repo, "RR-1", "Original", "backlog")
+            commit("2026-08-12T00:00:00Z")
+            expected = 1786492800.0
+            self.assertEqual(graphify_ingest._ticket_creation_dates(repo)["RR-1"], expected)
+            _write_ticket(repo, "RR-1", "Edited", "in_progress")
+            commit("2026-09-22T00:00:00Z")
+            _git(repo, "checkout", "--orphan", "relay/artifacts", "--quiet")
+            _write_ticket(repo, "RR-2", "Artifact-only", "backlog")
+            commit("2026-09-23T00:00:00Z")
+            _git(repo, "checkout", "main", "--quiet")
+            path.write_text(path.read_text())
+            dates = graphify_ingest._ticket_creation_dates(repo)
+            self.assertEqual(dates["RR-1"], expected)
+            self.assertEqual(dates["RR-2"], 1790121600.0)
+            self.assertNotIn("RR-3", dates)
+
     def make_store(self) -> GraphifyCoreStore:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -522,7 +550,9 @@ class GraphifyIngestTests(unittest.TestCase):
         self.assertIsNotNone(
             store.get_edge(src_id=live["id"], dst_id=archived["id"], kind=EDGE_DEPENDS_ON)
         )
-        self.assertEqual(warm_git_calls, 1)
+        # Only ref checks on a warm refresh; neither catalog nor creation
+        # history is reread per ticket.
+        self.assertEqual(warm_git_calls, 3)
         self.assertEqual(second["tickets_deleted"], 0)
         self.assertIsNotNone(store.find_node(kind=NODE_TICKET, stable_key=archived["stable_key"]))
 

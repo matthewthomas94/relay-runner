@@ -160,6 +160,7 @@ def _ingest_registered_projects(
         ]
         tickets.extend(archived_tickets)
         counts["archived_tickets"] += len(archived_tickets)
+        creation_dates = _ticket_creation_dates(Path(repo_path), artifact_ref=_artifact_ref(record))
         for ticket in tickets:
             ticket_node = store.upsert_node(
                 kind=NODE_TICKET,
@@ -182,6 +183,7 @@ def _ingest_registered_projects(
                     "verification_blocker": ticket.get("verification_blocker"),
                     "verification_resume": ticket.get("verification_resume"),
                     "source_path": str(ticket.get("_path", "")),
+                    "ticket_created_at": creation_dates.get(ticket["id"]),
                     "markdown": ticket["body"],
                     "materialized": not bool(ticket.get("_archived_catalog")),
                     "artifact_id": ticket.get("artifact_id"),
@@ -819,6 +821,32 @@ def _archive_catalog_tickets_at_head(
             "_raw_fields": {},
         })
     return tickets
+
+
+def _ticket_creation_dates(repo_path: Path, *, artifact_ref: str = ARTIFACT_REF) -> dict[str, float]:
+    # Materialization rewrites file timestamps. Use the first recorded addition
+    # across source and artifact history, never the latest edit or restore time.
+    heads = tuple(
+        result.stdout.strip()
+        for ref in ("HEAD", artifact_ref)
+        if (result := _git(repo_path, "rev-parse", "--verify", ref)).returncode == 0
+    )
+    return _ticket_creation_dates_at_heads(str(repo_path), heads) if heads else {}
+
+
+@lru_cache(maxsize=32)
+def _ticket_creation_dates_at_heads(repo_path: str, heads: tuple[str, ...]) -> dict[str, float]:
+    result = _git(Path(repo_path), "log", "--format=created:%ct", "--name-only",
+                  "--diff-filter=A", *heads, "--", ".orchestrator/*.md")
+    dates: dict[str, float] = {}
+    timestamp = None
+    for line in result.stdout.splitlines() if result.returncode == 0 else []:
+        if line.startswith("created:"):
+            timestamp = float(line.removeprefix("created:"))
+        elif timestamp is not None and re.fullmatch(r"\.orchestrator/[^/]+\.md", line):
+            ticket_id = Path(line).stem
+            dates[ticket_id] = min(dates.get(ticket_id, timestamp), timestamp)
+    return dates
 
 
 def _git(repo_path: Path, *arguments: str) -> subprocess.CompletedProcess[str]:

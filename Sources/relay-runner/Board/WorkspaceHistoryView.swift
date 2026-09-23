@@ -4,11 +4,13 @@ struct WorkspaceHistoryView: View {
     @Bindable var model: WorkspaceHistoryViewModel
     let onClose: () -> Void
     var onWorkspaceChanged: () -> Void = {}
+    @State private var hoveredCardID: String?
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(Color.white.opacity(0.12))
+            Rectangle().fill(BoardDarkSurfaceStyle.border).frame(height: 1)
             if let error = model.errorMessage {
                 messageStrip(error, warning: true)
             }
@@ -25,12 +27,8 @@ struct WorkspaceHistoryView: View {
             }
         }
         .frame(width: 940, height: 640)
-        .background(Color(red: 0.055, green: 0.055, blue: 0.065))
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.white.opacity(0.16), lineWidth: 1)
-        )
+        .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+        .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius, style: .continuous))
         .task { await model.refresh() }
     }
 
@@ -38,16 +36,15 @@ struct WorkspaceHistoryView: View {
         HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Workspace History")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(AppTypography.font(.sectionHeading))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
                 Text(model.projectName)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.white.opacity(0.55))
+                    .font(AppTypography.font(.metadata))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
                     .lineLimit(1)
             }
             Spacer()
-            Button("Close", action: onClose)
-                .buttonStyle(.bordered)
+            ProgramIconButton(systemName: "xmark", help: "Close history", action: onClose)
                 .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, 22)
@@ -59,27 +56,38 @@ struct WorkspaceHistoryView: View {
             VStack(spacing: 12) {
                 HStack(spacing: 8) {
                     TextField("Search archived tickets", text: $model.query)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                        .padding(.horizontal, 10)
+                        .frame(height: SharedActionButtonMetrics.controlHeight)
+                        .background(BoardDarkSurfaceBackground(
+                            cornerRadius: SharedActionButtonMetrics.cornerRadius,
+                            fill: BoardDarkSurfaceStyle.cardFill
+                        ))
+                        .overlay {
+                            if searchFocused {
+                                RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius)
+                                    .stroke(ProgramBoardStyle.mutedText.opacity(0.5), lineWidth: 1)
+                            }
+                        }
+                        .focused($searchFocused)
                         .onSubmit { Task { await model.search() } }
                         .accessibilityLabel("Search Workspace history")
-                    Button {
+                    ProgramIconButton(systemName: "magnifyingglass", help: "Search history") {
                         Task { await model.search() }
-                    } label: {
-                        Image(systemName: "magnifyingglass")
                     }
-                    .buttonStyle(.bordered)
-                    .accessibilityLabel("Search history")
                 }
                 Text(WorkspaceHistoryViewModel.policySummary)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.white.opacity(0.55))
+                    .font(AppTypography.font(.metadata))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         if model.cards.isEmpty && !model.isLoading {
                             Text("No archived tickets match this search.")
-                                .font(.system(size: 12))
-                                .foregroundStyle(Color.white.opacity(0.55))
+                                .font(AppTypography.font(.supporting))
+                                .foregroundStyle(ProgramBoardStyle.mutedText)
                                 .padding(.top, 28)
                         }
                         ForEach(model.cards) { card in
@@ -91,7 +99,7 @@ struct WorkspaceHistoryView: View {
             .padding(18)
             .frame(width: 330)
 
-            Divider().overlay(Color.white.opacity(0.12))
+            Rectangle().fill(BoardDarkSurfaceStyle.border).frame(width: 1)
 
             Group {
                 if let card = model.selectedCard {
@@ -100,12 +108,12 @@ struct WorkspaceHistoryView: View {
                     VStack(spacing: 10) {
                         Image(systemName: "clock.arrow.circlepath")
                             .font(.system(size: 28))
-                            .foregroundStyle(Color.white.opacity(0.45))
+                            .foregroundStyle(ProgramBoardStyle.mutedText)
                         Text("Select a historical ticket")
-                            .foregroundStyle(Color.white.opacity(0.7))
+                            .foregroundStyle(ProgramBoardStyle.secondaryText)
                         Text("Search completed work without restoring ticket files.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.white.opacity(0.5))
+                            .font(AppTypography.font(.supporting))
+                            .foregroundStyle(ProgramBoardStyle.mutedText)
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: 390)
                     }
@@ -123,40 +131,38 @@ struct WorkspaceHistoryView: View {
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
                     Text(card.ticketID)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.55))
+                        .font(AppTypography.font(.caption))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
                     Spacer()
                     Text(card.status.capitalized)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.65))
+                        .font(AppTypography.font(.caption))
+                        .foregroundStyle(ProgramBoardStyle.secondaryText)
                 }
                 Text(card.title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white)
+                    .font(AppTypography.font(.ticketTitle))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
                 Text(badge.label)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(badge.isWarning ? Color.orange : Color.white.opacity(0.62))
+                    .font(AppTypography.font(.caption))
+                    .foregroundStyle(badge.isWarning ? ProgramBoardStyle.red : ProgramBoardStyle.mutedText)
                     .lineLimit(2)
                 if card.attachmentCount > 0 {
                     Text("\(card.attachmentCount) attachment\(card.attachmentCount == 1 ? "" : "s")")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.white.opacity(0.48))
+                        .font(AppTypography.font(.caption))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
                 }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(
-                        model.selectedCard?.id == card.id
-                            ? Color.white.opacity(0.13)
-                            : Color.white.opacity(0.06)
-                    )
-            )
+            .background(BoardDarkSurfaceBackground(
+                cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius,
+                fill: model.selectedCard?.id == card.id || hoveredCardID == card.id
+                    ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.cardFill
+            ))
         }
         .buttonStyle(.plain)
+        .onHover { hoveredCardID = $0 ? card.id : nil }
         .accessibilityLabel("\(card.ticketID), \(card.title), \(badge.label)")
     }
 
@@ -169,11 +175,11 @@ struct WorkspaceHistoryView: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(card.ticketID)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.55))
+                        .font(AppTypography.font(.metadata))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
                     Text(model.detail?.card?.title ?? card.title)
-                        .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .font(AppTypography.font(.sectionHeading))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
                 }
                 Spacer()
                 badgeView(badge)
@@ -182,13 +188,16 @@ struct WorkspaceHistoryView: View {
             if let detail = model.detail, detail.availability != "available" {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(detail.recovery ?? unavailableExplanation(detail.availability))
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.orange)
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.red)
                     if detail.availability == "needs_network" {
-                        Button("Fetch verified detail") {
+                        ProgramWorkspaceActionButton(
+                            title: "Fetch verified detail", systemName: "arrow.down",
+                            prominence: .primary, accessibilityLabel: "Fetch verified detail",
+                            help: "Download verified historical detail"
+                        ) {
                             Task { await model.select(card, online: true) }
                         }
-                        .buttonStyle(.borderedProminent)
                     }
                 }
             } else {
@@ -196,8 +205,8 @@ struct WorkspaceHistoryView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         if let markdown = model.detail?.markdown {
                             Text(markdown)
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundStyle(Color.white.opacity(0.78))
+                                .font(AppTypography.monospacedFont(size: 12, weight: .regular))
+                                .foregroundStyle(ProgramBoardStyle.secondaryText)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -206,22 +215,28 @@ struct WorkspaceHistoryView: View {
                     }
                 }
                 HStack {
-                    Button("Restore detail") {
+                    ProgramWorkspaceActionButton(
+                        title: "Restore detail", systemName: nil,
+                        isEnabled: model.detail?.availability == "available",
+                        accessibilityLabel: "Restore detail",
+                        help: "Explicitly rematerialize this terminal ticket and its verified attachments"
+                    ) {
                         Task {
                             await model.restore(reopen: false)
                             onWorkspaceChanged()
                         }
                     }
-                    .buttonStyle(.bordered)
-                    .help("Explicitly rematerialize this terminal ticket and its verified attachments")
-                    Button("Reopen in Backlog") {
+                    ProgramWorkspaceActionButton(
+                        title: "Reopen in Backlog", systemName: nil, prominence: .primary,
+                        isEnabled: model.detail?.availability == "available",
+                        accessibilityLabel: "Reopen in Backlog",
+                        help: "Move this ticket into the uncapped unfinished working set"
+                    ) {
                         Task {
                             await model.restore(reopen: true)
                             onWorkspaceChanged()
                         }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .help("Move this ticket into the uncapped unfinished working set")
                     Spacer()
                 }
                 .disabled(model.detail?.availability != "available")
@@ -236,22 +251,22 @@ struct WorkspaceHistoryView: View {
         if let dependencies = model.dependencies {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Dependencies")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
                 if dependencies.dependencies.isEmpty {
                     Text("No dependencies")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.white.opacity(0.5))
+                        .font(AppTypography.font(.metadata))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
                 }
                 ForEach(dependencies.dependencies) { dependency in
                     HStack(alignment: .firstTextBaseline) {
                         Image(systemName: dependency.satisfied ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(dependency.satisfied ? Color.green : Color.orange)
+                            .foregroundStyle(dependency.satisfied ? ProgramBoardStyle.green : ProgramBoardStyle.red)
                         Text(dependency.ticketID)
                         Text(dependency.availability.replacingOccurrences(of: "_", with: " ").capitalized)
-                            .foregroundStyle(Color.white.opacity(0.5))
+                            .foregroundStyle(ProgramBoardStyle.mutedText)
                     }
-                    .font(.system(size: 11))
+                    .font(AppTypography.font(.metadata))
                     .accessibilityElement(children: .combine)
                 }
             }
@@ -263,8 +278,8 @@ struct WorkspaceHistoryView: View {
         if let attachments = model.detail?.attachments, !attachments.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Attachments")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
                 ForEach(attachments) { attachment in
                     HStack {
                         Image(systemName: "paperclip")
@@ -272,34 +287,34 @@ struct WorkspaceHistoryView: View {
                         Spacer()
                         if let size = attachment.size { Text(formatBytes(size)) }
                     }
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.white.opacity(0.68))
+                    .font(AppTypography.font(.metadata))
+                    .foregroundStyle(ProgramBoardStyle.secondaryText)
                 }
                 Text("Available after verified detail retrieval; viewing does not restore files.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.white.opacity(0.48))
+                    .font(AppTypography.font(.caption))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
             }
         }
     }
 
     private func badgeView(_ badge: WorkspaceHistoryBadge) -> some View {
         Text(badge.label)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(badge.isWarning ? Color.orange : Color.white.opacity(0.72))
+            .font(AppTypography.font(.caption))
+            .foregroundStyle(badge.isWarning ? ProgramBoardStyle.red : ProgramBoardStyle.secondaryText)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
-            .background(Capsule().fill(Color.white.opacity(0.08)))
+            .background(BoardDarkCapsuleBackground())
             .accessibilityLabel("Archive state: \(badge.label)")
     }
 
     private func messageStrip(_ message: String, warning: Bool) -> some View {
         Text(message)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(warning ? Color.orange : Color.green)
+            .font(AppTypography.font(.supporting))
+            .foregroundStyle(warning ? ProgramBoardStyle.red : ProgramBoardStyle.green)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 22)
             .padding(.vertical, 8)
-            .background(Color.white.opacity(0.04))
+            .background(BoardDarkSurfaceStyle.cardFill)
     }
 
     private func unavailableExplanation(_ availability: String) -> String {

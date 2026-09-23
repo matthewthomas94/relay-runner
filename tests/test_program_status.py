@@ -368,6 +368,7 @@ class ProgramStatusTests(unittest.TestCase):
                 "Backlog work",
                 "backlog",
                 source_path=str(ticket_path),
+                created_at=1_600_000_000,
             )
 
             dashboard = build_program_dashboard(store, limit=0, now=2000.0)
@@ -376,6 +377,7 @@ class ProgramStatusTests(unittest.TestCase):
             dashboard["backlog"]["items"][0]["ticket_modified_at"],
             1_700_000_000,
         )
+        self.assertEqual(dashboard["backlog"]["items"][0]["ticket_created_at"], 1_600_000_000)
 
     def test_dashboard_limits_projects_and_lanes_to_requested_repo_paths(self):
         store = self.make_store()
@@ -490,6 +492,7 @@ def _ticket(
     priority: str = "medium",
     depends_on: list[str] | None = None,
     source_path: str | None = None,
+    created_at: float | None = None,
     run_id: int | None = None,
     materialized: bool = True,
 ) -> dict:
@@ -504,6 +507,7 @@ def _ticket(
             "priority": priority,
             "depends_on": depends_on or [],
             "source_path": source_path,
+            "ticket_created_at": created_at,
             "run_id": run_id,
             "materialized": materialized,
         },
