@@ -203,6 +203,9 @@ struct MeetingProducerCheckpoint: Codable, Equatable, Sendable {
     let completedWindowSequencesByEpoch: [String: [Int]]
     let emittedRevisionBySegment: [String: Int]
     let finalRevisionBySegment: [String: Int]
+    /// Text that must survive a crash after final-window completion but before
+    /// the coordinator has published the corresponding segment.
+    var durableRevisions: [MeetingTranscriptSegmentRevision]?
     let pendingAudio: [MeetingAcceptedAudioDescriptor]
     let metrics: MeetingProducerMetrics
 
@@ -216,6 +219,7 @@ struct MeetingProducerCheckpoint: Codable, Equatable, Sendable {
         case completedWindowSequencesByEpoch = "completed_window_sequences_by_epoch"
         case emittedRevisionBySegment = "emitted_revision_by_segment"
         case finalRevisionBySegment = "final_revision_by_segment"
+        case durableRevisions = "durable_revisions"
         case pendingAudio = "pending_audio"
     }
 }

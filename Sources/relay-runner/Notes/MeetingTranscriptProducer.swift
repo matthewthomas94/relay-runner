@@ -57,6 +57,7 @@ actor MeetingTranscriptProducer {
     private var completedWindowSequencesByEpoch: [String: Set<Int>] = [:]
     private var emittedRevisionBySegment: [String: Int] = [:]
     private var finalRevisionBySegment: [String: Int] = [:]
+    private var durableRevisions: [String: MeetingTranscriptSegmentRevision] = [:]
     private var queuedJobs: [MeetingTranscriptionRequest] = []
     private var drainTask: Task<Void, Never>?
     private var metrics = MeetingProducerMetrics()
@@ -107,6 +108,9 @@ actor MeetingTranscriptProducer {
             completedWindowSequencesByEpoch = checkpoint.completedWindowSequencesByEpoch.mapValues(Set.init)
             emittedRevisionBySegment = checkpoint.emittedRevisionBySegment
             finalRevisionBySegment = checkpoint.finalRevisionBySegment
+            durableRevisions = Dictionary(uniqueKeysWithValues:
+                (checkpoint.durableRevisions ?? []).map { ($0.segmentID, $0) }
+            )
             metrics = checkpoint.metrics
             for source in MeetingAudioSourceID.allCases {
                 var buffer = sourceBuffers[source] ?? SourceBuffer()
@@ -432,6 +436,12 @@ actor MeetingTranscriptProducer {
             },
             emittedRevisionBySegment: emittedRevisionBySegment,
             finalRevisionBySegment: finalRevisionBySegment,
+            durableRevisions: durableRevisions.values.sorted {
+                if $0.startMilliseconds != $1.startMilliseconds {
+                    return $0.startMilliseconds < $1.startMilliseconds
+                }
+                return $0.segmentID < $1.segmentID
+            },
             pendingAudio: pending,
             metrics: metrics
         )
@@ -457,8 +467,8 @@ actor MeetingTranscriptProducer {
     func applyTranscriptionResultForTesting(
         _ result: MeetingTranscriptionResult,
         request: MeetingTranscriptionRequest
-    ) {
-        apply(result, for: request)
+    ) async {
+        await apply(result, for: request)
     }
 
     private func ensureEpoch(
@@ -671,13 +681,17 @@ actor MeetingTranscriptProducer {
 
     private func drainJobs() async {
         while !queuedJobs.isEmpty {
+            if terminalError != nil {
+                queuedJobs.removeAll()
+                break
+            }
             let request = queuedJobs.removeFirst()
             metrics.queuedWindowCount = queuedJobs.count
             let maximumAttempts = request.isFinal ? 2 : 1
             for attempt in 0..<maximumAttempts {
                 do {
                     let result = try await transcriber.transcribe(request)
-                    apply(result, for: request)
+                    await apply(result, for: request)
                     break
                 } catch {
                     metrics.transcriptionFailureCount += 1
@@ -697,7 +711,7 @@ actor MeetingTranscriptProducer {
     private func apply(
         _ result: MeetingTranscriptionResult,
         for request: MeetingTranscriptionRequest
-    ) {
+    ) async {
         if request.isFinal,
            isCompletedFinalWindow(
                epochID: request.timingEpochID,
@@ -732,7 +746,7 @@ actor MeetingTranscriptProducer {
             finalRevisionBySegment[request.segmentID] = request.revision
             completeFinalWindow(request)
         }
-        emit(.revision(MeetingTranscriptSegmentRevision(
+        let revision = MeetingTranscriptSegmentRevision(
             segmentID: request.segmentID,
             sourceID: request.sourceID,
             timingEpochID: request.timingEpochID,
@@ -742,7 +756,24 @@ actor MeetingTranscriptProducer {
             endMilliseconds: request.ownedEndMilliseconds,
             text: text,
             isFinal: request.isFinal
-        )))
+        )
+        durableRevisions[revision.segmentID] = revision
+        do {
+            try await durableCheckpointSink(checkpoint())
+        } catch {
+            let producerError = MeetingProducerError.checkpointFailed(error.localizedDescription)
+            terminalError = producerError
+            state = .failed
+            emitIssue(
+                code: .checkpointFailed,
+                sourceID: request.sourceID,
+                message: producerError.localizedDescription,
+                recoverable: true
+            )
+            emit(.state(.failed))
+            return
+        }
+        emit(.revision(revision))
     }
 
     private func ownedText(

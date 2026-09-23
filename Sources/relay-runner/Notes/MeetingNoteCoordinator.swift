@@ -1079,6 +1079,11 @@ actor MeetingNoteCoordinator {
         var revisions = Dictionary(
             uniqueKeysWithValues: journal.revisions.map { ($0.segmentID, $0) }
         )
+        for revision in journal.producerCheckpoint?.durableRevisions ?? [] {
+            if let current = revisions[revision.segmentID],
+               (current.isFinal || revision.revision <= current.revision) { continue }
+            revisions[revision.segmentID] = revision
+        }
         var latestIssue: MeetingCaptureIssue?
         var producerFailed = false
         for event in runtime.events.drain() {

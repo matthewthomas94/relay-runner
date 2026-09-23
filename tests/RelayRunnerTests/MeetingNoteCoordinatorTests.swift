@@ -475,6 +475,142 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertTrue(restored?.producerCheckpoint?.pendingAudio.isEmpty == true)
     }
 
+    func testCrashBeforeEventDrainRecoversFinalTextThroughHeldWriter() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meeting-note-revision-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MeetingNoteRecoveryStore(root: root)
+        let writer = FakeMeetingNoteWriter()
+        let repeated = [
+            revision(id: "microphone-E0-S0", start: 0, text: "Repeat this sentence", final: true),
+            revision(id: "microphone-E0-S10", start: 1_000, text: "Repeat this sentence", final: true),
+            revision(id: "microphone-E0-S20", start: 2_000, text: "quiet harbor sunset", final: true),
+        ]
+        var checkpoint = producerCheckpoint(
+            sessionID: "crash-before-drain",
+            state: .recording,
+            acceptedChunkCount: 3
+        )
+        checkpoint.durableRevisions = repeated
+        let timestamp = "2026-09-21T00:00:00Z"
+        let journal = MeetingNoteRecoveryJournal(
+            schemaVersion: MeetingNoteRecoveryJournal.schemaVersion,
+            sessionID: "crash-before-drain",
+            project: project,
+            createRequest: RelayProjectNoteCreateRequest(
+                requestID: "create-crash-before-drain",
+                createdAt: timestamp,
+                captureStartedAt: timestamp,
+                capturedAt: timestamp,
+                recordingState: .recording,
+                checkpointReason: .checkpoint,
+                segments: [],
+                captureEndedAt: nil,
+                provider: "codex"
+            ),
+            identity: noteIdentity(),
+            phase: .interrupted,
+            producerCheckpoint: checkpoint,
+            revisions: [],
+            canonicalSegments: [],
+            pendingUpdate: nil,
+            nextCheckpointSequence: 1,
+            syncState: "local_only",
+            captureEndedAt: nil,
+            lastError: nil,
+            updatedAt: timestamp
+        )
+        try await store.save(journal)
+        let reloadedStore = MeetingNoteRecoveryStore(root: root)
+        let beforeRecovery = try await reloadedStore.load(sessionID: journal.sessionID)
+        XCTAssertTrue(beforeRecovery?.revisions.isEmpty == true)
+        XCTAssertTrue(beforeRecovery?.producerCheckpoint?.pendingAudio.isEmpty == true)
+
+        let captures = FakeMeetingNoteCaptureFactory()
+        let coordinator = MeetingNoteCoordinator(
+            writer: writer,
+            recoveryStore: reloadedStore,
+            automaticCheckpointing: false,
+            now: { "2026-09-21T00:00:01Z" }
+        ) { sessionID, acceptedAudio, _, events in
+            captures.make(
+                sessionID: sessionID,
+                acceptedAudioSink: acceptedAudio,
+                eventSink: events
+            )
+        }
+        await writer.suspendNextUpdate()
+        let recovery = Task {
+            try await coordinator.resolveRecovery(
+                sessionID: journal.sessionID,
+                projectScopeToken: "scope-original",
+                resolution: .finalize
+            )
+        }
+        await writer.waitForSuspendedUpdate()
+        let held = try await reloadedStore.load(sessionID: journal.sessionID)
+        XCTAssertEqual(held?.pendingUpdate?.update.segments.map(\.text), repeated.map(\.text))
+        XCTAssertEqual(held?.pendingUpdate?.update.segments.map(\.segmentID), repeated.map(\.segmentID))
+        await writer.resumeSuspendedUpdate()
+        let saved = try await recovery.value
+        XCTAssertEqual(saved.phase, .saved)
+        XCTAssertEqual(saved.noteID, "RR-N1")
+        let updates = await writer.updates
+        XCTAssertEqual(updates.count, 1)
+        let removed = try await reloadedStore.load(sessionID: journal.sessionID)
+        XCTAssertNil(removed)
+    }
+
+    func testAcknowledgedRevisionTextLeavesProducerCheckpoint() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meeting-note-ack-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MeetingNoteRecoveryStore(root: root)
+        let final = revision(
+            id: "microphone-E0-S0",
+            start: 0,
+            text: "Repeat this sentence",
+            final: true
+        )
+        var checkpoint = producerCheckpoint(sessionID: "ack-revision", state: .recording)
+        checkpoint.durableRevisions = [final]
+        let timestamp = "2026-09-21T00:00:00Z"
+        var journal = MeetingNoteRecoveryJournal(
+            schemaVersion: MeetingNoteRecoveryJournal.schemaVersion,
+            sessionID: "ack-revision",
+            project: project,
+            createRequest: RelayProjectNoteCreateRequest(
+                requestID: "create-ack-revision",
+                createdAt: timestamp,
+                captureStartedAt: timestamp,
+                capturedAt: timestamp,
+                recordingState: .recording,
+                checkpointReason: .checkpoint,
+                segments: [],
+                captureEndedAt: nil,
+                provider: "codex"
+            ),
+            identity: noteIdentity(),
+            phase: .recording,
+            producerCheckpoint: checkpoint,
+            revisions: [final],
+            canonicalSegments: [],
+            pendingUpdate: nil,
+            nextCheckpointSequence: 1,
+            syncState: "local_only",
+            captureEndedAt: nil,
+            lastError: nil,
+            updatedAt: timestamp
+        )
+        try await store.save(journal)
+        journal.canonicalSegments = [final.projectNoteSegment(capturedAt: timestamp)]
+        try await store.save(journal)
+
+        let acknowledged = try await store.load(sessionID: journal.sessionID)
+        XCTAssertEqual(acknowledged?.revisions, [final])
+        XCTAssertEqual(acknowledged?.producerCheckpoint?.durableRevisions, [])
+    }
+
     func testHeldPauseWriterDoesNotDelaySubsequentResumeAndPauseGates() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
@@ -1559,6 +1695,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             completedWindowSequencesByEpoch: [:],
             emittedRevisionBySegment: [:],
             finalRevisionBySegment: [:],
+            durableRevisions: nil,
             pendingAudio: pendingAudio,
             metrics: metrics
         )
@@ -2051,6 +2188,7 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
             completedWindowSequencesByEpoch: checkpointValue?.completedWindowSequencesByEpoch ?? [:],
             emittedRevisionBySegment: checkpointValue?.emittedRevisionBySegment ?? [:],
             finalRevisionBySegment: checkpointValue?.finalRevisionBySegment ?? [:],
+            durableRevisions: checkpointValue?.durableRevisions,
             pendingAudio: pending,
             metrics: MeetingProducerMetrics()
         )
@@ -2069,6 +2207,7 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
             completedWindowSequencesByEpoch: [:],
             emittedRevisionBySegment: [:],
             finalRevisionBySegment: [:],
+            durableRevisions: nil,
             pendingAudio: [],
             metrics: MeetingProducerMetrics()
         )

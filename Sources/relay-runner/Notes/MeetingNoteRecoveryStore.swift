@@ -88,6 +88,16 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
             // also remove pending descriptors without accepting another chunk.
             value.producerCheckpoint = currentCheckpoint
         }
+        if var checkpoint = value.producerCheckpoint,
+           let revisions = checkpoint.durableRevisions {
+            let acknowledged = Dictionary(
+                uniqueKeysWithValues: value.canonicalSegments.map { ($0.segmentID, $0.text) }
+            )
+            checkpoint.durableRevisions = revisions.filter {
+                acknowledged[$0.segmentID] != $0.text
+            }
+            value.producerCheckpoint = checkpoint
+        }
         let data = try encoder.encode(value)
         try data.write(to: url, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
@@ -104,6 +114,9 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         if current.metrics.processedWindowCount != candidate.metrics.processedWindowCount {
             return current.metrics.processedWindowCount > candidate.metrics.processedWindowCount
         }
+        let currentRevisions = Set((current.durableRevisions ?? []).map(\.segmentID))
+        let candidateRevisions = Set((candidate.durableRevisions ?? []).map(\.segmentID))
+        if currentRevisions.isStrictSuperset(of: candidateRevisions) { return true }
         let currentPending = Set(current.pendingAudio.map(\.chunkID))
         let candidatePending = Set(candidate.pendingAudio.map(\.chunkID))
         return currentPending.isStrictSubset(of: candidatePending)
