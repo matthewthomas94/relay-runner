@@ -5,11 +5,14 @@ artifact_id: note-d9a0c025170e03d074e236031f2ba9ac2e29f995
 project_id: 6d23b5b1-6da7-4056-b328-7ea8167388c0
 created_at: 2026-09-23T13:07:02Z
 capture_started_at: 2026-09-23T13:07:02Z
-updated_at: 2026-09-23T13:09:04Z
+updated_at: 2026-09-23T13:09:13Z
 recording_state: recording
-checkpoint_reason: resume
-segment_count: 0
-note_metadata: {"origin": "generated", "state": "empty", "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+checkpoint_reason: checkpoint
+segment_count: 1
+note_metadata: {"origin": "generated", "state": "pending", "source_sha256": "11e3ee703d370b7b16f1c545b5f6d3c0176105ce935f7a87ca24ed8e490e8b0e", "error_code": null}
 ---
 
 ## Transcript
+
+<!-- relay-note-segment {"captured_at":"2026-09-23T13:09:13Z","end_ms":118674,"segment_id":"60f6fccb-ad7a-4d1f-9d07-c67b2993b729-microphone-E0-S0","speaker":"microphone","start_ms":113674} -->
+Human microphone check, the blue bicycle is beside
