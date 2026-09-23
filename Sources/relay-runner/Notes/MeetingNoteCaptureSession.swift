@@ -36,6 +36,7 @@ actor MeetingNoteCaptureSession {
     private var blockedSources: Set<MeetingAudioSourceID> = []
     private var captureQuiescing = false
     private var sourceStartInProgress = false
+    private var pendingSystemRestartGeneration: UInt64?
     private var sourceStartWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
@@ -218,6 +219,10 @@ actor MeetingNoteCaptureSession {
 
     private func finishSourceStart() {
         sourceStartInProgress = false
+        if let generation = pendingSystemRestartGeneration {
+            pendingSystemRestartGeneration = nil
+            restartSystemSource(.systemAudio, generation: generation)
+        }
         let waiters = sourceStartWaiters
         sourceStartWaiters.removeAll()
         for waiter in waiters {
@@ -330,7 +335,7 @@ actor MeetingNoteCaptureSession {
                     blockStartup(for: source, generation: generation)
                     try await report(failure, from: source)
                 case .restartRequested:
-                    await restartSystemSource(source, generation: generation)
+                    restartSystemSource(source, generation: generation)
                 }
             case .started(let source, let generation, let startBarrier):
                 defer { startBarrier.complete() }
@@ -410,42 +415,73 @@ actor MeetingNoteCaptureSession {
         )
     }
 
-    private func restartSystemSource(_ source: MeetingAudioSourceID, generation: UInt64) async {
+    private func restartSystemSource(_ source: MeetingAudioSourceID, generation: UInt64) {
         guard source == .systemAudio,
               sourceCaptureGenerations[source] == generation,
-              !sourceStartInProgress,
               !captureQuiescing,
               let ingress = captureIngress,
               !ingress.isFinished,
               let capture = captures.first(where: { $0.sourceID == source }),
               startedCaptures[ObjectIdentifier(capture)] != nil else { return }
+        guard !sourceStartInProgress else {
+            pendingSystemRestartGeneration = generation
+            return
+        }
 
         sourceStartInProgress = true
-        defer { finishSourceStart() }
         blockedSources.insert(source)
         let nextGeneration = generation &+ 1
         sourceCaptureGenerations[source] = nextGeneration
+        sourceStartups[source] = SourceStartup(generation: nextGeneration, ingress: ingress)
+        Task {
+            await performSystemSourceRestart(
+                capture,
+                source: source,
+                ingress: ingress,
+                generation: nextGeneration
+            )
+        }
+    }
+
+    private func performSystemSourceRestart(
+        _ capture: MeetingAudioCapturing,
+        source: MeetingAudioSourceID,
+        ingress: MeetingCaptureIngress,
+        generation: UInt64
+    ) async {
+        defer { finishSourceStart() }
         await capture.stop()
-        guard !captureQuiescing, !ingress.isFinished else { return }
+        guard !captureQuiescing, !ingress.isFinished else {
+            discardStartup(for: source, generation: generation)
+            return
+        }
 
         do {
             _ = try await capture.start(
                 sampleHandler: { frame in
-                    ingress.submit(.frame(frame, source, nextGeneration))
+                    ingress.submit(.frame(frame, source, generation))
                 },
                 eventHandler: { event in
-                    ingress.submit(.event(event, source, nextGeneration))
+                    ingress.submit(.event(event, source, generation))
                 }
             )
             guard !captureQuiescing, !ingress.isFinished else {
+                discardStartup(for: source, generation: generation)
                 await capture.stop()
                 return
             }
-            blockedSources.remove(source)
-            await producer.markSourceCapturing(source)
+            let startBarrier = MeetingCaptureStartBarrier()
+            guard ingress.submit(.started(source, generation, startBarrier)) else {
+                discardStartup(for: source, generation: generation)
+                await capture.stop()
+                return
+            }
+            await startBarrier.wait()
         } catch let failure as MeetingAudioCaptureFailure {
+            discardStartup(for: source, generation: generation)
             try? await report(failure, from: source)
         } catch {
+            discardStartup(for: source, generation: generation)
             try? await report(.startFailed(source, error.localizedDescription), from: source)
         }
     }

@@ -101,6 +101,129 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertEqual(boundary.metrics.acceptedChunkCount, 0)
     }
 
+    func testMicrophoneIngressDrainsDuringDelayedSystemWakeRebuild() async throws {
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-wake-microphone-ingress",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "fixture", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration
+        )
+        let restartGate = MeetingStartReturnGate()
+        let microphone = FakeMeetingAudioCapture(sourceID: .microphone, samples: [])
+        let system = FakeMeetingAudioCapture(
+            sourceID: .systemAudio,
+            samples: [],
+            samplesByStart: [2: [[9]]],
+            startReturnGate: restartGate,
+            gatedStart: 2
+        )
+        let session = MeetingNoteCaptureSession(producer: producer, captures: [microphone, system])
+        try await session.start(initiallyPaused: false)
+        system.emitEvent(.interrupted("display sleep"))
+        system.emitEvent(.restartRequested)
+        try await eventually { system.startCount == 2 }
+
+        for _ in 0..<40 {
+            microphone.emit([[1]])
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try await eventually {
+            await producer.currentMetrics().acceptedSamplesBySource[.microphone] == 40
+        }
+        await restartGate.open()
+        try await eventually {
+            await producer.currentMetrics().acceptedSamplesBySource[.systemAudio] == 1
+        }
+        let boundary = try await session.stop()
+        XCTAssertEqual(boundary.metrics.droppedAudioFrameCount, 0)
+        XCTAssertEqual(boundary.metrics.acceptedSamplesBySource[.microphone], 40)
+    }
+
+    func testMicrophoneIngressDrainsWhileSystemInterruptionTranscribes() async throws {
+        let events = MeetingEventRecorder()
+        let transcriptionGate = MeetingStartReturnGate()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-interruption-microphone-ingress",
+            transcriber: FakeMeetingTranscriber(transcriptionGate: transcriptionGate) { _ in
+                MeetingTranscriptionResult(text: "fixture", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: MeetingTranscriptProducer.Configuration(
+                sampleRate: 10,
+                windowMilliseconds: 10_000,
+                overlapMilliseconds: 200,
+                firstPartialMilliseconds: 5_000,
+                partialIntervalMilliseconds: 5_000,
+                maximumQueuedWindows: 32
+            ),
+            eventSink: { events.record($0) }
+        )
+        let microphone = FakeMeetingAudioCapture(sourceID: .microphone, samples: [])
+        let system = FakeMeetingAudioCapture(sourceID: .systemAudio, samples: [])
+        let session = MeetingNoteCaptureSession(producer: producer, captures: [microphone, system])
+        try await session.start(initiallyPaused: false)
+        system.emit([[1]])
+        try await eventually {
+            await producer.currentMetrics().acceptedSamplesBySource[.systemAudio] == 1
+        }
+        system.emitEvent(.interrupted("display sleep"))
+        try await eventually { await transcriptionGate.waitingCount == 1 }
+
+        for _ in 0..<40 {
+            microphone.emit([[1]])
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let acceptedBeforeTranscriptionFinishes = await producer.currentMetrics()
+            .acceptedSamplesBySource[.microphone]
+        await transcriptionGate.open()
+        XCTAssertEqual(acceptedBeforeTranscriptionFinishes, 40)
+        try await eventually {
+            await producer.currentMetrics().acceptedSamplesBySource[.microphone] == 40
+        }
+        XCTAssertEqual(events.sourceStates.last { $0.0 == .systemAudio }?.1, .interrupted)
+        let boundary = try await session.stop()
+        XCTAssertEqual(boundary.metrics.droppedAudioFrameCount, 0)
+        XCTAssertEqual(boundary.metrics.acceptedSamplesBySource[.microphone], 40)
+    }
+
+    func testSecondWakeDuringDelayedSystemRestartIsRetried() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-repeated-display-wake",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "fixture", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+        let restartGate = MeetingStartReturnGate()
+        let system = FakeMeetingAudioCapture(
+            sourceID: .systemAudio,
+            samples: [],
+            samplesByStart: [3: [[9]]],
+            startReturnGate: restartGate,
+            gatedStart: 2
+        )
+        let session = MeetingNoteCaptureSession(producer: producer, captures: [system])
+        try await session.start(initiallyPaused: false)
+        system.emitEvent(.interrupted("first display sleep"))
+        system.emitEvent(.restartRequested)
+        try await eventually { system.startCount == 2 }
+        system.emitEvent(.interrupted("second display sleep"))
+        system.emitEvent(.restartRequested)
+        await restartGate.open()
+
+        try await eventually { system.startCount == 3 }
+        try await eventually {
+            let metrics = await producer.currentMetrics()
+            return events.sourceStates.last { $0.0 == .systemAudio }?.1 == .capturing
+                && metrics.acceptedSamplesBySource[.systemAudio] == 1
+        }
+        let boundary = try await session.stop()
+        XCTAssertEqual(boundary.metrics.droppedAudioFrameCount, 0)
+        XCTAssertEqual(boundary.metrics.acceptedSamplesBySource[.systemAudio], 1)
+    }
+
     func testWakeWithoutDisplayLeavesSystemSourceUnavailableForManualRetry() async throws {
         let events = MeetingEventRecorder()
         let producer = MeetingTranscriptProducer(
@@ -1949,13 +2072,16 @@ private final class DelayedOverloadMeetingAudioCapture: MeetingAudioCapturing,
 
 private final class FakeMeetingTranscriber: MeetingWindowTranscribing, @unchecked Sendable {
     private let delayNanoseconds: UInt64
+    private let transcriptionGate: MeetingStartReturnGate?
     private let result: @Sendable (MeetingTranscriptionRequest) throws -> MeetingTranscriptionResult
 
     init(
         delayNanoseconds: UInt64 = 0,
+        transcriptionGate: MeetingStartReturnGate? = nil,
         result: @escaping @Sendable (MeetingTranscriptionRequest) throws -> MeetingTranscriptionResult
     ) {
         self.delayNanoseconds = delayNanoseconds
+        self.transcriptionGate = transcriptionGate
         self.result = result
     }
 
@@ -1968,6 +2094,9 @@ private final class FakeMeetingTranscriber: MeetingWindowTranscribing, @unchecke
     func transcribe(
         _ request: MeetingTranscriptionRequest
     ) async throws -> MeetingTranscriptionResult {
+        if request.sourceID == .systemAudio, let transcriptionGate {
+            await transcriptionGate.wait()
+        }
         if delayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: delayNanoseconds)
         }
@@ -2098,6 +2227,8 @@ private final class FakeMeetingAudioCapture: MeetingAudioCapturing, @unchecked S
 private actor MeetingStartReturnGate {
     private var isOpen = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var waitingCount: Int { waiters.count }
 
     func wait() async {
         guard !isOpen else { return }
