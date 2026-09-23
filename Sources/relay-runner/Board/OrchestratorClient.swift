@@ -310,6 +310,16 @@ enum OrchestratorClient {
         return try await response(RelayProjectNoteResponse.self, for: request)
     }
 
+    static func retryProjectNoteMetadata(
+        _ noteID: String, repoPath: String, projectScopeToken: String?
+    ) async throws -> RelayProjectNoteResponse {
+        guard let request = artifactRequest(
+            path: "/v1/artifacts/notes/\(pathComponent(noteID))/retry-metadata",
+            repoPath: repoPath, projectScopeToken: projectScopeToken, port: readPort()
+        ) else { throw OrchestratorClientError.invalidRequest }
+        return try await response(RelayProjectNoteResponse.self, for: request)
+    }
+
     static func fetchProjectNotes(
         repoPath: String,
         projectScopeToken: String?,

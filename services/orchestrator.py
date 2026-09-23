@@ -76,6 +76,8 @@ try:
     )
     from services.artifact_sync import ArtifactSyncEngine, ArtifactSyncMode
     from services.project_notes import ProjectNoteManager
+    from services.note_metadata import NoteMetadataGenerator, NoteMetadataQueue
+    from services.note_contract import NoteUpdate, note_source
 except ModuleNotFoundError:  # Installed direct-script layout.
     from artifact_lifecycle import ArtifactLifecycleCoordinator  # type: ignore[no-redef]
     from automatic_retention import (
@@ -106,6 +108,8 @@ except ModuleNotFoundError:  # Installed direct-script layout.
     )
     from artifact_sync import ArtifactSyncEngine, ArtifactSyncMode  # type: ignore[no-redef]
     from project_notes import ProjectNoteManager  # type: ignore[no-redef]
+    from note_metadata import NoteMetadataGenerator, NoteMetadataQueue
+    from note_contract import NoteUpdate, note_source
 from command_actions import refined_command_summary, refined_ticket_title, resolve_command_action
 from continuity_incidents import (
     ContinuityIncidentDetector,
@@ -5099,6 +5103,7 @@ class Daemon:
 
         agent_setting = orch_cfg.get("agent") or cfg.get("general", {}).get("command") or "codex"
         self.config_loader = load_config
+        self.note_metadata = NoteMetadataQueue(NoteMetadataGenerator(lambda: self.config_loader(), _find_agent_bin))
         self.agent_kind = _agent_kind(str(agent_setting))
         self.agent_bin = _find_agent_bin(
             self.agent_kind,
@@ -5872,7 +5877,7 @@ class Daemon:
         provider: str | None = None,
     ) -> dict[str, object]:
         manager = self._artifact_note_manager(repo_path, project_scope_token)
-        return manager.create(
+        result = manager.create(
             request_id=request_id,
             created_at=created_at,
             capture_started_at=capture_started_at,
@@ -5883,6 +5888,8 @@ class Daemon:
             capture_ended_at=capture_ended_at,
             provider=provider,
         )
+        self._schedule_note_metadata(manager, result)
+        return result
 
     def artifact_note_update(
         self,
@@ -5900,7 +5907,37 @@ class Daemon:
         if not isinstance(identity, Mapping) or identity.get("note_id") != note_id:
             raise ValueError("note update path does not match its immutable identity")
         manager = self._artifact_note_manager(repo_path, project_scope_token)
-        return manager.update(request_id=request_id, update=update, provider=provider)
+        result = manager.update(request_id=request_id, update=update, provider=provider)
+        self._schedule_note_metadata(manager, result)
+        return result
+
+    def _schedule_note_metadata(self, manager, result):
+        # Enqueue only after durable publication. Metadata failures never turn a
+        # successful transcript save or Stop into a recording/save failure.
+        queue = getattr(self, "note_metadata", None)
+        if queue is not None:
+            try:
+                queue.schedule(manager, result["note"]["identity"]["artifact_id"])
+            except Exception:
+                pass
+
+    def artifact_note_metadata_retry(self, *, repo_path, project_scope_token, note_id):
+        manager = self._artifact_note_manager(repo_path, project_scope_token)
+        result = manager.get(note_id)
+        if not result["materialized"]:
+            raise ValueError("Archived notes cannot generate metadata")
+        note = result["note"]
+        update = NoteUpdate.from_mapping(note)
+        text, digest = note_source(update)
+        previous = note.get("metadata")
+        if (previous or {}).get("origin") == "manual":
+            raise ValueError("User-authored note metadata is preserved")
+        desired = {**(previous or {}), "origin": "generated", "state": "pending" if text else "empty",
+                   "source_sha256": digest, "error_code": None}
+        manager.publish_metadata(identity=update.identity, source_sha256=digest,
+                                 metadata=desired, expected_metadata=previous)
+        self._schedule_note_metadata(manager, result)
+        return manager.get(note_id)
 
     def artifact_note_archive(
         self,
@@ -11438,6 +11475,9 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         return result
 
     def shutdown(self) -> None:
+        note_metadata = getattr(self, "note_metadata", None)
+        if note_metadata is not None:
+            note_metadata.shutdown()
         continuity_agents = getattr(self, "continuity_agents", None)
         if continuity_agents is not None:
             continuity_agents.shutdown()
@@ -11797,6 +11837,16 @@ class Handler(BaseHTTPRequestHandler):
                     request_id=body.get("request_id", ""),
                     update=body.get("update"),
                     provider=body.get("provider"),
+                )
+
+            if (method == "POST" and len(segments) == 5
+                    and segments[:3] == ["v1", "artifacts", "notes"]
+                    and segments[4] == "retry-metadata"):
+                body = _read_body(self)
+                return 200, self.daemon.artifact_note_metadata_retry(
+                    repo_path=body.get("repo_path", ""),
+                    project_scope_token=body.get("project_scope_token"),
+                    note_id=unquote(segments[3]),
                 )
 
             if (method == "POST" and len(segments) == 5

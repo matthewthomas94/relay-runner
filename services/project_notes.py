@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import re
+import uuid
 from pathlib import PurePosixPath
 from typing import Mapping, Sequence
 
@@ -29,6 +30,9 @@ try:
         NoteIdentity,
         NoteSegment,
         NoteUpdate,
+        metadata_for_update,
+        note_source,
+        validate_note_metadata,
         decode_note_index,
         encode_note_index,
         parse_note_document,
@@ -57,6 +61,9 @@ except ModuleNotFoundError:
         NoteIdentity,
         NoteSegment,
         NoteUpdate,
+        metadata_for_update,
+        note_source,
+        validate_note_metadata,
         decode_note_index,
         encode_note_index,
         parse_note_document,
@@ -152,7 +159,7 @@ class ProjectNoteManager:
                 segments=raw_segments,
                 capture_ended_at=capture_ended_at,
             )
-            document = NoteDocument(identity=identity, update=update)
+            document = NoteDocument(identity=identity, update=update, metadata=metadata_for_update(update))
             path = _note_path(note_id)
             if path in snapshot.files or any(entry["note_id"] == note_id for entry in catalog.values()):
                 raise ArtifactConcurrentUpdate(f"note display ID is already issued: {note_id}")
@@ -170,6 +177,7 @@ class ProjectNoteManager:
                 "creation_event_id": event_id,
                 "last_event_id": event_id,
                 "creation_request_sha256": request_digest,
+                "metadata": document.metadata,
             }
             config_bytes = _set_next_note_id(snapshot.files[".orchestrator/config.toml"], number + 1)
             write = self.store.mutate(ArtifactMutation(
@@ -232,12 +240,14 @@ class ProjectNoteManager:
             current = _parse_document(content)
             if current.identity != desired.identity:
                 raise ArtifactIdentityError("note update cannot change immutable identity or project")
-            document = NoteDocument(identity=current.identity, update=desired)
+            document = NoteDocument(identity=current.identity, update=desired,
+                                    metadata=metadata_for_update(desired, current.metadata))
             updated_entry = dict(entry)
             updated_entry.update({
                 "updated_at": desired.captured_at,
                 "recording_state": desired.recording_state,
                 "segment_count": len(desired.segments),
+                "metadata": document.metadata,
                 "last_event_id": event_id,
             })
             catalog[desired.identity.artifact_id] = updated_entry
@@ -269,6 +279,47 @@ class ProjectNoteManager:
                 if attempt == 3:
                     raise
         raise AssertionError("unreachable")
+
+    def publish_metadata(
+        self, *, identity: NoteIdentity, source_sha256: str,
+        metadata: dict[str, object], expected_metadata: dict[str, object] | None,
+    ) -> bool:
+        """Compare and publish under the same canonical lock as transcript writes.
+
+        A recorder never sends metadata, so stale recorder snapshots cannot erase
+        it. A metadata job never sends segments, so it cannot erase a checkpoint.
+        """
+        metadata = validate_note_metadata(metadata)
+        with self.store._writer_lock():
+            snapshot = self.store.snapshot()
+            catalog = _catalog(snapshot.files, self.store.project_id)
+            entry = catalog.get(identity.artifact_id)
+            if not entry or not entry.get("materialized"):
+                return False
+            content = snapshot.files.get(_note_path(identity.note_id))
+            if content is None:
+                return False
+            current = _parse_document(content)
+            if (current.identity != identity or note_source(current.update)[1] != source_sha256
+                    or current.metadata != expected_metadata
+                    or (current.metadata or {}).get("origin") == "manual"):
+                return False
+            if metadata.get("source_sha256") != source_sha256:
+                raise ArtifactValidationError("metadata digest does not match its source")
+            document = NoteDocument(identity, current.update, metadata)
+            event_id = _event_id("metadata", uuid.uuid4().hex)
+            catalog[identity.artifact_id] = {**entry, "metadata": metadata, "last_event_id": event_id}
+            self.store.mutate(ArtifactMutation(
+                event_id=event_id, actor_type="system", device_id=self.device_id,
+                expected_base=snapshot.commit_id, provider=metadata.get("provider"),
+                operations=(
+                    NoteWrite(identity.note_id, identity.artifact_id, identity.project_id,
+                              render_note_document(document)),
+                    NoteIndexWrite(encode_note_index(catalog, project_id=self.store.project_id)),
+                ),
+                summary=f"Update metadata for Relay project note {identity.note_id}",
+            ))
+            return True
 
     def _require_archive_history_safe(
         self,
@@ -721,6 +772,7 @@ def _card(
         "materialized": entry["materialized"],
         "archived_at": entry.get("archived_at"),
         "reference": dict(reference),
+        "metadata": entry.get("metadata"),
     }
 
 

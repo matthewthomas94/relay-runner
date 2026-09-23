@@ -2705,6 +2705,28 @@ final class ProgramBoardStatusTests: XCTestCase {
         ])
     }
 
+    func testNoteMetadataDecodingPreservesLegacyFallbackAndShowsDerivedContent() throws {
+        let legacy = noteItem(id: "RR-N1", number: 1, projectName: "Relay", path: "/repo/relay")
+        XCTAssertEqual(legacy.title, "Meeting transcript")
+        var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy.card)) as? [String: Any])
+        payload["metadata"] = [
+            "origin": "generated", "state": "ready", "title": "Launch checklist review",
+            "summary": "Documentation needs review before Friday.",
+            "source_sha256": String(repeating: "a", count: 64),
+        ]
+        let card = try JSONDecoder().decode(RelayProjectNoteCard.self, from: JSONSerialization.data(withJSONObject: payload))
+        let item = ProgramBoardNoteItem(card: card, projectName: legacy.projectName,
+                                        projectPath: legacy.projectPath, sync: legacy.sync)
+        XCTAssertEqual(item.title, "Launch checklist review")
+        XCTAssertEqual(item.card.metadata?.summary, "Documentation needs review before Friday.")
+        XCTAssertNil(item.card.metadata?.statusLabel)
+        payload["metadata"] = ["origin": "generated", "state": "failed", "error_code": "input_too_large"]
+        let failed = try JSONDecoder().decode(RelayProjectNoteCard.self, from: JSONSerialization.data(withJSONObject: payload))
+        XCTAssertEqual(failed.metadata?.statusLabel, "This note is too long to summarize. Shorten it and retry.")
+        XCTAssertEqual(failed.noteID, legacy.card.noteID)
+        XCTAssertEqual(failed.recordingState, legacy.card.recordingState)
+    }
+
     private func noteItem(
         id: String,
         number: Int,

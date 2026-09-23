@@ -180,6 +180,7 @@ struct ProgramBoardOverlayView: View {
     var onStopNoteTaker: () -> Void = {}
     var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
     var onNoteClose: () -> Void = {}
+    var onNoteMetadataRetry: (ProgramBoardNoteItem) -> Void = { _ in }
     var onNoteRecovery: (MeetingNoteRecoveryResolution) -> Void = { _ in }
     var onResumeRecoveredNote: () -> Void = {}
     let onCreateStart: (ProgramBoardLane) -> Void
@@ -383,6 +384,7 @@ struct ProgramBoardOverlayView: View {
                         onClose: onNoteClose,
                         onStop: onStopNoteTaker,
                         onRetry: { onNoteOpen(detail.item) },
+                        onMetadataRetry: { onNoteMetadataRetry(detail.item) },
                         recoveryOffer: model.selectedNoteRecoveryOffer,
                         recoveryInFlight: model.noteRecoveryInFlight,
                         recoveryErrorMessage: model.noteRecoveryErrorMessage,
@@ -1634,10 +1636,22 @@ private struct ProgramNoteCard: View {
                     Spacer(minLength: 0)
                     ProgramInlineBadge(label: "Note")
                 }
-                Text("Meeting transcript")
+                Text(item.title)
                     .font(AppTypography.font(.ticketTitle))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                     .lineLimit(2)
+                if let summary = item.card.metadata?.summary {
+                    Text(summary)
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.secondaryText)
+                        .lineLimit(3)
+                }
+                if let status = item.card.metadata?.statusLabel {
+                    Text(status)
+                        .font(AppTypography.font(.caption))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .lineLimit(2)
+                }
                 if showsProjectContext {
                     Text(item.projectName)
                         .font(AppTypography.font(.supporting))
@@ -2358,6 +2372,7 @@ private struct ProgramNoteDetailPanel: View {
     let onClose: () -> Void
     let onStop: () -> Void
     let onRetry: () -> Void
+    let onMetadataRetry: () -> Void
     let recoveryOffer: MeetingNoteRecoveryOffer?
     let recoveryInFlight: Bool
     let recoveryErrorMessage: String?
@@ -2411,7 +2426,7 @@ private struct ProgramNoteDetailPanel: View {
                             .foregroundStyle(ProgramBoardStyle.secondaryText)
                         ProgramInlineBadge(label: "Note")
                     }
-                    Text("Meeting transcript")
+                    Text(detail.item.title)
                         .font(AppTypography.font(.screenTitle))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                     Text(detail.item.projectName)
@@ -2488,6 +2503,20 @@ private struct ProgramNoteDetailPanel: View {
                 }
             }
 
+            if let metadata = detail.item.card.metadata {
+                if let status = metadata.statusLabel {
+                    HStack {
+                        Text(status)
+                            .font(AppTypography.font(.supporting))
+                            .foregroundStyle(ProgramBoardStyle.mutedText)
+                        if !detail.item.isArchived {
+                            Button("Retry summary", action: onMetadataRetry)
+                                .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+
             if let errorMessage = captureErrorMessage {
                 ProgramDetailNotice(message: errorMessage)
             }
@@ -2505,6 +2534,10 @@ private struct ProgramNoteDetailPanel: View {
 
             BoardOverlayScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    if let summary = detail.item.card.metadata?.summary {
+                        ProgramDetailSection(title: "Summary", text: summary)
+                            .textSelection(.enabled)
+                    }
                     ProgramDetailMetadata(rows: [
                         ProgramDetailRow(label: "Recording", value: recordingStatus),
                         ProgramDetailRow(

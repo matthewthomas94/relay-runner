@@ -8,6 +8,7 @@ clients can round-trip stable segment identities and capture timing.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import re
 from datetime import datetime
@@ -209,9 +210,53 @@ class NoteUpdate:
 class NoteDocument:
     identity: NoteIdentity
     update: NoteUpdate
+    metadata: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return self.update.as_dict()
+        return {**self.update.as_dict(), "metadata": self.metadata}
+
+
+def note_source(update: NoteUpdate) -> tuple[str, str]:
+    """Only provider input participates in deduplication, never capture state."""
+    text = "\n\n".join(segment.text for segment in update.segments).strip()
+    return text, hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def validate_note_metadata(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise NoteContractError("note metadata must be an object")
+    if value.get("origin") not in {"generated", "manual"}:
+        raise NoteContractError("note metadata origin is invalid")
+    if value.get("state") not in {"pending", "ready", "failed", "empty"}:
+        raise NoteContractError("note metadata state is invalid")
+    for key in ("source_sha256", "generated_source_sha256"):
+        if value.get(key) is not None and not _DIGEST_RE.fullmatch(str(value[key])):
+            raise NoteContractError("note metadata source digest is invalid")
+    for key, limit in (("title", 240), ("summary", 4000), ("model", 160), ("error_code", 80)):
+        field = value.get(key)
+        if field is not None and (
+            not isinstance(field, str) or not field.strip()
+            or len(field.encode("utf-8")) > limit
+            or any(ord(c) < 32 and c != "\n" for c in field)
+        ):
+            raise NoteContractError(f"note metadata {key} is invalid")
+    if value.get("state") == "ready" and not (value.get("title") and value.get("summary")):
+        raise NoteContractError("ready note metadata requires title and summary")
+    if value.get("provider") not in {None, "codex", "claude"}:
+        raise NoteContractError("note metadata provider is invalid")
+    if value.get("generated_at") is not None:
+        validate_timestamp(value["generated_at"], "note metadata generated_at")
+    return dict(value)
+
+
+def metadata_for_update(update: NoteUpdate, previous: dict[str, object] | None = None) -> dict[str, object]:
+    text, digest = note_source(update)
+    if previous and (previous.get("origin") == "manual" or previous.get("source_sha256") == digest):
+        return dict(previous)
+    if not text:
+        return {"origin": "generated", "state": "empty", "source_sha256": digest}
+    return {**(previous or {}), "origin": "generated", "state": "pending",
+            "source_sha256": digest, "error_code": None}
 
 
 def validate_note_id(value: str) -> tuple[str, int]:
@@ -250,6 +295,8 @@ def render_note_document(document: NoteDocument) -> bytes:
     ]
     if update.capture_ended_at is not None:
         fields.append(f"capture_ended_at: {update.capture_ended_at}")
+    if document.metadata is not None:
+        fields.append("note_metadata: " + json.dumps(validate_note_metadata(document.metadata), ensure_ascii=False))
     fields.extend(["---", "", "## Transcript", ""])
     for segment in update.segments:
         metadata = json.dumps(
@@ -297,7 +344,13 @@ def parse_note_document(content: bytes) -> NoteDocument:
         raw_segments=[segment.as_dict() for segment in segments],
         capture_ended_at=front.get("capture_ended_at"),
     )
-    return NoteDocument(identity=identity, update=update)
+    metadata = None
+    if "note_metadata" in front:
+        try:
+            metadata = validate_note_metadata(json.loads(front["note_metadata"]))
+        except (ValueError, TypeError) as error:
+            raise NoteContractError("invalid note metadata") from error
+    return NoteDocument(identity=identity, update=update, metadata=metadata)
 
 
 def decode_note_index(content: bytes, *, project_id: str) -> dict[str, dict[str, object]]:

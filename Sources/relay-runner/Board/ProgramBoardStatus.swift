@@ -328,6 +328,8 @@ struct ProgramBoardNoteItem: Equatable, Identifiable {
 
     var id: String { "note|\(projectPath)|\(card.artifactID)" }
 
+    var title: String { card.metadata?.title ?? "Meeting transcript" }
+
     var noteNumber: Int {
         guard let marker = card.noteID.range(of: "-N", options: .backwards),
               let value = Int(card.noteID[marker.upperBound...]) else { return .min }

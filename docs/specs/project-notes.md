@@ -62,8 +62,8 @@ segment_count: 1
 Meeting transcript Markdown.
 ```
 
-There is intentionally no generated title or summary. Recording state is one
-of `recording`, `paused`, or `completed`; it is metadata, not a ticket status.
+Titles and summaries are optional derived metadata (see RR-377 below). Recording
+state is one of `recording`, `paused`, or `completed`; it is metadata, not a ticket status.
 Checkpoint reasons are `checkpoint`, `pause`, `resume`, `complete`, or
 `manual`. Segment IDs are unique within the complete checkpoint snapshot.
 Optional millisecond offsets and a speaker label live in the canonical segment
@@ -73,8 +73,9 @@ present exactly when the recording state is `completed`.
 The shared Swift contracts are in
 `Sources/relay-runner/Notes/ProjectNoteContracts.swift`. Storage accepts a full
 segment snapshot per meaningful checkpoint. The recorder owns batching and must
-not call the writer once per partial STT callback. Storage does not start or
-stop Codex, Claude, provider sessions, foreground modes, key routing, or audio.
+not call the writer once per partial STT callback. The canonical storage writer does not start or stop foreground provider sessions,
+foreground modes, key routing, or audio. The daemon schedules isolated metadata
+generation only after durable publication.
 The recorder's source, timing, revision, bounded-queue, pause, final-boundary,
 and replay contracts are documented in
 [Project note capture and transcription](project-note-capture.md).
@@ -164,3 +165,64 @@ ID, and pinned history reference under `## Source note`. Reading and citing a
 note does not alter it, and creating that Backlog ticket does not promote or
 dispatch it without separate authorization. No generated title, summary, or
 special provider session is required.
+
+
+## Automatic titles and summaries (RR-377)
+
+After a successful durable create or checkpoint, the daemon queues a feature-owned
+background job. This includes the final drained Stop checkpoint from
+`MeetingNoteCoordinator`; failed publication never supplies unsaved content.
+Saving and capture do not wait for provider discovery, authentication or inference.
+No foreground Relay session, messenger, terminal, ticket or worker is created.
+
+The optional `note_metadata` JSON object in the Markdown front matter is mirrored
+as `metadata` in note reads and catalog cards. It contains `title`, `summary`,
+`origin`, `state`, `source_sha256`, `generated_source_sha256`, `provider`, `model`,
+`prompt_version`, `generated_at`, and an optional allowlisted `error_code`.
+The source hash covers only the exact joined transcript sent to the provider;
+recording state/timing and metadata changes cannot invalidate it. Prior valid
+metadata survives failures and is visibly pending when newer text is being
+summarized. Empty notes use the existing deterministic label with no summary.
+Legacy documents have no metadata and remain readable without migration.
+
+Metadata publication checks immutable identity, materialization, source hash and
+previous metadata under the canonical writer lock. Transcript checkpoints carry
+no metadata authority: they preserve the latest derived fields and set pending
+only when content changes. Deleted/archived notes and stale results are ignored.
+`origin: manual` is preserved across recorder saves and rejects background writes;
+the existing note UI remains read-only and adds no metadata editor.
+
+One worker serializes provider calls across notes, with at most 128 pending note
+identities and one coalesced follow-up per note. Checkpoints debounce for 2 seconds
+(up to 10 seconds); completed identical content is skipped. A full queue or daemon
+restart leaves durable pending metadata and an explicit retry action rather than
+silently losing the transcript. `POST /v1/artifacts/notes/<NOTE_ID>/retry-metadata`
+requires the same confirmed project scope and uses the latest durable content.
+Metadata-only writes do not enter the generation trigger.
+
+The selected general provider/model and normal binary/auth discovery are used.
+An absolute configured command path is respected. Codex families resolve through
+the existing model catalog. Calls use a private temporary working directory,
+argument arrays and JSON-quoted stdin, never a shell or repository context.
+Codex uses `exec --ephemeral --ignore-user-config --ignore-rules`, schema/final
+output files, disabled project docs, host skills, tools, MCP, plugins, memory,
+hooks and web search. Auth still uses the normal Codex home. Claude uses
+`--print --safe-mode --tools "" --strict-mcp-config --no-session-persistence`
+with an app-owned system prompt and schema; safe mode preserves OAuth/keychain
+access, unlike `--bare`. Claude's `structured_output` envelope is validated
+separately from Codex's final JSON. Provider/schema strings are also validated
+locally (title <=240 UTF-8 bytes, summary <=4000 bytes, meaningful nonempty text).
+The prompt treats all note content as data and forbids invented facts or actions.
+
+Inputs over 96,000 UTF-8 bytes fail visibly without truncation or provider calls.
+Provider duration is bounded to 90 seconds (model discovery has its own 10-second
+bound); stdout is capped at 128,000 bytes. Shutdown cancels the process group.
+General diagnostics receive no note text, provider output or credentials.
+Only the chosen note's necessary text is sent to the configured provider; this
+is separate from on-device capture/STT. Missing CLI/auth, timeout and invalid
+output preserve the last valid metadata and expose Retry summary in the detail.
+
+CLI contracts checked against installed help and official references:
+[Codex noninteractive mode](https://learn.chatgpt.com/docs/non-interactive-mode),
+[Codex configuration](https://learn.chatgpt.com/docs/config-file/config-sample),
+[Claude programmatic usage](https://code.claude.com/docs/en/headless).

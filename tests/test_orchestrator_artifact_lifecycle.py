@@ -10,7 +10,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -111,6 +111,7 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
         ):
             self.daemon = Daemon(config)
         self.daemon.config_loader = lambda: config
+        self.daemon.note_metadata = Mock()
 
     def tearDown(self):
         for worker in list(self.daemon._workers.values()):
@@ -842,6 +843,11 @@ Saved through the daemon-owned typed writer.
             status, created = handler._route("POST", "/v1/artifacts/notes/create")
         self.assertEqual(status, 201)
         identity = created["note"]["identity"]
+        self.daemon.note_metadata.schedule.assert_called_once()
+        self.daemon.note_metadata.schedule.reset_mock()
+        with self.assertRaises(Exception):
+            self.daemon.artifact_note_create(**{**payload, "segments": [{"text": "unsaved"}]})
+        self.daemon.note_metadata.schedule.assert_not_called()
         self.assertEqual(identity["note_id"], "REP-N1")
         self.assertEqual(identity["project_id"], "daemon-project")
         self.assertEqual(created["sync"]["state"], "local_only")
@@ -862,6 +868,11 @@ Saved through the daemon-owned typed writer.
             provider="claude",
         )
         self.assertEqual(updated["note"]["recording_state"], "paused")
+        self.daemon.note_metadata.schedule.assert_called_once()
+        with patch.object(orchestrator, "_read_body", return_value=payload):
+            status, retried_metadata = handler._route("POST", "/v1/artifacts/notes/REP-N1/retry-metadata")
+        self.assertEqual(status, 200)
+        self.assertEqual(retried_metadata["note"]["metadata"]["state"], "pending")
         retry = self.daemon.artifact_note_update(
             repo_path=str(self.repo),
             project_scope_token=self.scope_token(),

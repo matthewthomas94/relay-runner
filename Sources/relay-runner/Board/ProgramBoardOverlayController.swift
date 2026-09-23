@@ -619,6 +619,7 @@ final class ProgramBoardOverlayController {
                 onStopNoteTaker: { [weak self] in self?.stopNoteTaker() },
                 onNoteOpen: { [weak self] note in self?.openNote(note) },
                 onNoteClose: { [weak self] in self?.closeNote() },
+                onNoteMetadataRetry: { [weak self] note in self?.retryNoteMetadata(note) },
                 onNoteRecovery: { [weak self] resolution in
                     self?.resolveSelectedNoteRecovery(resolution)
                 },
@@ -1024,6 +1025,24 @@ final class ProgramBoardOverlayController {
         guard model.noteCaptureSnapshot.phase.ownsForeground else { return }
         stopNoteTakerHandler?()
         model.noteCaptureSnapshot = noteCaptureSnapshotProvider()
+    }
+
+    private func retryNoteMetadata(_ item: ProgramBoardNoteItem) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await OrchestratorClient.retryProjectNoteMetadata(
+                    item.card.noteID, repoPath: item.projectPath,
+                    projectScopeToken: self.projectScopeTokenProvider(item.projectPath)
+                )
+                self.model.finishNoteDetail(response, for: item)
+                self.model.reload()
+            } catch {
+                if self.model.selectedNoteDetail?.item.id == item.id {
+                    self.model.selectedNoteDetail?.errorMessage = "Summary retry unavailable. Your transcript is saved."
+                }
+            }
+        }
     }
 
     private func openNote(_ item: ProgramBoardNoteItem) {

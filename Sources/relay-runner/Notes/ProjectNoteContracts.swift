@@ -68,6 +68,42 @@ enum RelayProjectNoteCheckpointReason: String, Codable, Sendable {
     case manual
 }
 
+struct RelayProjectNoteMetadata: Codable, Equatable, Sendable {
+    let title: String?
+    let summary: String?
+    let origin: String
+    let state: String
+    let sourceSHA256: String?
+    let generatedSourceSHA256: String?
+    let provider: String?
+    let model: String?
+    let generatedAt: String?
+    let errorCode: String?
+
+    var statusLabel: String? {
+        switch state {
+        case "pending": return "Preparing title and summary…"
+        case "failed":
+            switch errorCode {
+            case "input_too_large": return "This note is too long to summarize. Shorten it and retry."
+            case "cli_unavailable": return "Summary unavailable: provider CLI not found."
+            case "timeout": return "Summary timed out. You can retry."
+            case "canceled": return "Summary interrupted. You can retry."
+            default: return "Summary unavailable. Check provider access and retry."
+            }
+        default: return nil
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case title, summary, origin, state, provider, model
+        case sourceSHA256 = "source_sha256"
+        case generatedSourceSHA256 = "generated_source_sha256"
+        case generatedAt = "generated_at"
+        case errorCode = "error_code"
+    }
+}
+
 struct RelayProjectNoteUpdate: Codable, Equatable, Sendable {
     let identity: RelayProjectNoteIdentity
     let capturedAt: String
@@ -75,9 +111,10 @@ struct RelayProjectNoteUpdate: Codable, Equatable, Sendable {
     let checkpointReason: RelayProjectNoteCheckpointReason
     let segments: [RelayProjectNoteSegment]
     let captureEndedAt: String?
+    var metadata: RelayProjectNoteMetadata? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case identity, segments
+        case identity, segments, metadata
         case capturedAt = "captured_at"
         case recordingState = "recording_state"
         case checkpointReason = "checkpoint_reason"
@@ -177,11 +214,12 @@ struct RelayProjectNoteCard: Codable, Equatable, Identifiable, Sendable {
     let materialized: Bool
     let archivedAt: String?
     let reference: RelayProjectNoteReference
+    var metadata: RelayProjectNoteMetadata? = nil
 
     var id: String { artifactID }
 
     private enum CodingKeys: String, CodingKey {
-        case materialized, reference
+        case materialized, reference, metadata
         case noteID = "note_id"
         case artifactID = "artifact_id"
         case projectID = "project_id"
