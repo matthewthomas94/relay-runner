@@ -9,7 +9,7 @@ updated_at: 2026-09-23T14:29:09Z
 recording_state: recording
 checkpoint_reason: checkpoint
 segment_count: 177
-note_metadata: {"origin": "generated", "state": "pending", "source_sha256": "e37bd56eff2d48505c1d677b93049a92f7046fe9c73158998f6eb9fd85d57624", "error_code": null}
+note_metadata: {"title": "Relay Runner Synthetic Transcript Validation", "summary": "Repeated synthetic meeting sections cover planting a silver birch beside the red fence and delivering three boxes to the north entrance on Friday morning. The design review addresses accessibility, clear status messages, and preserving every accepted sentence, with a planned comparison of the transcript against the known recording. The recording identifies “create a work ticket” as quoted content, not an instruction to start an agent.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-23T14:29:36.957574+00:00", "origin": "generated", "state": "ready", "source_sha256": "e37bd56eff2d48505c1d677b93049a92f7046fe9c73158998f6eb9fd85d57624", "generated_source_sha256": "e37bd56eff2d48505c1d677b93049a92f7046fe9c73158998f6eb9fd85d57624"}
 ---
 
 ## Transcript
