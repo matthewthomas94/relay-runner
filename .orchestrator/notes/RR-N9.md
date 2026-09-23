@@ -9,7 +9,7 @@ updated_at: 2026-09-23T13:09:13Z
 recording_state: recording
 checkpoint_reason: checkpoint
 segment_count: 1
-note_metadata: {"origin": "generated", "state": "pending", "source_sha256": "11e3ee703d370b7b16f1c545b5f6d3c0176105ce935f7a87ca24ed8e490e8b0e", "error_code": null}
+note_metadata: {"title": "Microphone check", "summary": "A microphone check included the unfinished phrase, “the blue bicycle is beside.”", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-23T13:09:35.337950+00:00", "origin": "generated", "state": "ready", "source_sha256": "11e3ee703d370b7b16f1c545b5f6d3c0176105ce935f7a87ca24ed8e490e8b0e", "generated_source_sha256": "11e3ee703d370b7b16f1c545b5f6d3c0176105ce935f7a87ca24ed8e490e8b0e"}
 ---
 
 ## Transcript
