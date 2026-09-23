@@ -2570,6 +2570,14 @@ private struct ProgramNoteDetailPanel: View {
                             .textSelection(.enabled)
                     }
                 }
+                .overlay(alignment: .topLeading) {
+                    ProgramTicketDetailTopBoundaryMarker()
+                        .frame(width: 1, height: 1)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    ProgramTicketDetailBottomBoundaryMarker()
+                        .frame(width: 1, height: 1)
+                }
             }
         }
         .programTicketPanelChrome(theme: theme, size: panelSize)
