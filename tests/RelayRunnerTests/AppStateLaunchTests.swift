@@ -90,7 +90,7 @@ final class AppStateLaunchTests: XCTestCase {
         XCTAssertEqual(stopping.syncState, "pending")
         XCTAssertNil(stopping.errorMessage)
         XCTAssertEqual(stopping.notchPresentation?.status, .working)
-        XCTAssertNil(stopping.notchPresentation?.label)
+        XCTAssertEqual(stopping.notchPresentation?.label, "Saving notes")
     }
 
     func testOnboardingTutorialAcceptsOnlyItsIsolatedTTSState() {

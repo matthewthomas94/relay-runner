@@ -45,6 +45,7 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
     private let fileManager: FileManager
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private var audioAwaitingCheckpoint: [String: Set<String>] = [:]
 
     init(
         root: URL = MeetingNoteRecoveryStore.defaultRoot(),
@@ -81,16 +82,31 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
             from: Data(contentsOf: url)
            ),
            let currentCheckpoint = current.producerCheckpoint,
-           currentCheckpoint.metrics.acceptedChunkCount
-            > (journal.producerCheckpoint?.metrics.acceptedChunkCount ?? -1) {
+           shouldPreserveCheckpoint(currentCheckpoint, over: journal.producerCheckpoint) {
             // A capture callback may persist a newer replay cursor while an
-            // artifact writer call is in flight. Never let the older caller
-            // regress that cursor when it records the writer response.
+            // artifact writer call is in flight. A completed final window can
+            // also remove pending descriptors without accepting another chunk.
             value.producerCheckpoint = currentCheckpoint
         }
         let data = try encoder.encode(value)
         try data.write(to: url, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private func shouldPreserveCheckpoint(
+        _ current: MeetingProducerCheckpoint,
+        over candidate: MeetingProducerCheckpoint?
+    ) -> Bool {
+        guard let candidate else { return true }
+        let currentCount = current.metrics.acceptedChunkCount
+        let candidateCount = candidate.metrics.acceptedChunkCount
+        if currentCount != candidateCount { return currentCount > candidateCount }
+        if current.metrics.processedWindowCount != candidate.metrics.processedWindowCount {
+            return current.metrics.processedWindowCount > candidate.metrics.processedWindowCount
+        }
+        let currentPending = Set(current.pendingAudio.map(\.chunkID))
+        let candidatePending = Set(candidate.pendingAudio.map(\.chunkID))
+        return currentPending.isStrictSubset(of: candidatePending)
     }
 
     func load(sessionID: String) throws -> MeetingNoteRecoveryJournal? {
@@ -128,6 +144,7 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
             guard attributes[.size] as? Int == expectedBytes else {
                 throw MeetingNoteRecoveryStoreError.invalidAudio(audio.descriptor.chunkID)
             }
+            audioAwaitingCheckpoint[sessionID, default: []].insert(audio.descriptor.chunkID)
             return
         }
 
@@ -138,6 +155,7 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         let data = audio.samples.withUnsafeBytes { Data($0) }
         try data.write(to: url, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        audioAwaitingCheckpoint[sessionID, default: []].insert(audio.descriptor.chunkID)
     }
 
     func saveProducerCheckpoint(
@@ -150,6 +168,7 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         journal.producerCheckpoint = checkpoint
         journal.updatedAt = Date().ISO8601Format(.iso8601)
         try save(journal)
+        audioAwaitingCheckpoint[sessionID]?.subtract(checkpoint.pendingAudio.map(\.chunkID))
     }
 
     func loadAudio(
@@ -191,7 +210,7 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
     func retainCheckpointAudio(sessionID: String) throws {
         let retained = Set(
             try load(sessionID: sessionID)?.producerCheckpoint?.pendingAudio.map(\.chunkID) ?? []
-        )
+        ).union(audioAwaitingCheckpoint[sessionID] ?? [])
         try retainAudio(sessionID: sessionID, chunkIDs: retained)
     }
 
@@ -199,6 +218,7 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         let directory = try sessionDirectory(sessionID, create: false)
         guard fileManager.fileExists(atPath: directory.path) else { return }
         try fileManager.removeItem(at: directory)
+        audioAwaitingCheckpoint.removeValue(forKey: sessionID)
     }
 
     private func sessionDirectory(_ sessionID: String, create: Bool) throws -> URL {

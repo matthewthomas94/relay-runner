@@ -108,6 +108,40 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         }
     }
 
+    func testStopQuiescenceRejectsLateCallbacksFromBothSources() async throws {
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-stop-quiescence",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "fixture", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration
+        )
+        let microphone = FakeMeetingAudioCapture(
+            sourceID: .microphone,
+            samples: [[Float](repeating: 0.2, count: 10)],
+            stopSamples: [[Float](repeating: 0.4, count: 10)]
+        )
+        let system = FakeMeetingAudioCapture(
+            sourceID: .systemAudio,
+            samples: [[Float](repeating: 0.3, count: 10)],
+            stopSamples: [[Float](repeating: 0.5, count: 10)]
+        )
+        let session = MeetingNoteCaptureSession(producer: producer, captures: [microphone, system])
+        try await session.start(initiallyPaused: false)
+        try await eventually { await producer.currentMetrics().acceptedChunkCount == 2 }
+
+        await session.quiesceCaptureSources()
+        let ingressClosed = await session.captureIngressIsClosedForTesting()
+        XCTAssertTrue(ingressClosed)
+        microphone.emit([[Float](repeating: 0.6, count: 10)])
+        system.emit([[Float](repeating: 0.7, count: 10)])
+        let boundary = try await session.stop()
+
+        XCTAssertEqual(boundary.metrics.acceptedChunkCount, 2)
+        XCTAssertEqual(microphone.stopCount, 1)
+        XCTAssertEqual(system.stopCount, 1)
+    }
+
     func testDeniedSystemAudioIsVisibleWhileMicrophoneCaptureContinues() async throws {
         let events = MeetingEventRecorder()
         let producer = MeetingTranscriptProducer(
