@@ -71,7 +71,11 @@ struct MeetingNoteCoordinatorSnapshot: Equatable, Sendable {
             return (.listening, "Taking notes")
         case .paused:
             return (.paused, "Paused")
-        case .preparing, .stopping, .interrupted, .error:
+        case .stopping:
+            return (.working, "Saving notes")
+        case .error:
+            return (.working, "Note save failed")
+        case .preparing, .interrupted:
             return (.working, nil)
         case .idle, .saved:
             return nil
@@ -837,9 +841,12 @@ actor MeetingNoteCoordinator {
         journal.phase = .stopping
         journal.updatedAt = now()
         self.journal = journal
-        try await recoveryStore.save(journal)
 
         do {
+            // Close both ingress paths before any queued writer or journal I/O
+            // can delay Stop. Accepted callbacks still drain before finalization.
+            await runtime.capture.quiesceCaptureSources()
+            try await recoveryStore.save(journal)
             if let captureStatePersistenceTail {
                 let generation = captureStatePersistenceGeneration
                 do {

@@ -8,6 +8,7 @@ protocol MeetingNoteCaptureControlling: Sendable {
     func pause() async throws
     func resume() async throws
     func stop() async throws -> MeetingProducerFinalBoundary
+    func quiesceCaptureSources() async
     func stopCaptureSourcesForInterruption() async
     func checkpoint() async -> MeetingProducerCheckpoint
     func replayAcceptedAudio(_ chunks: [MeetingAcceptedAudio]) async throws
@@ -33,6 +34,7 @@ actor MeetingNoteCaptureSession {
     private var sourceCaptureGenerations: [MeetingAudioSourceID: UInt64] = [:]
     private var sourceStartups: [MeetingAudioSourceID: SourceStartup] = [:]
     private var blockedSources: Set<MeetingAudioSourceID> = []
+    private var captureQuiescing = false
     private var sourceStartInProgress = false
     private var sourceStartWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -79,11 +81,18 @@ actor MeetingNoteCaptureSession {
     }
 
     func stop() async throws -> MeetingProducerFinalBoundary {
+        captureQuiescing = true
         await stopSourcesAndDrainIngress()
         return try await producer.stop()
     }
 
+    func quiesceCaptureSources() async {
+        captureQuiescing = true
+        await stopSourcesAndDrainIngress()
+    }
+
     func stopCaptureSourcesForInterruption() async {
+        captureQuiescing = true
         await stopSourcesAndDrainIngress()
     }
 
@@ -96,8 +105,10 @@ actor MeetingNoteCaptureSession {
     }
 
     private func startSources() async throws {
+        guard !captureQuiescing else { return }
         guard captureIngress == nil else { return }
         await waitForSourceStart()
+        guard !captureQuiescing else { return }
         guard captureIngress == nil else { return }
         sourceStartInProgress = true
         defer { finishSourceStart() }
