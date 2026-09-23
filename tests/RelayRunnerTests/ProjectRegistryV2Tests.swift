@@ -803,9 +803,38 @@ final class ProjectRegistryV2Tests: XCTestCase {
         )
     }
 
+    func testAvailabilityObservationPreservesScopeUntilAccessChanges() throws {
+        let root = try makeTempDirectory(named: "stable-observation-scope")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let fixture = makeService(root: root, projectID: "stable-scope", now: { timestamp })
+        let repo = root.appendingPathComponent("source", isDirectory: true)
+        try makeGitRepo(at: repo)
+        let project = try fixture.service.register(
+            candidate: fixture.service.inspect(selectedURL: repo), displayName: "Stable Scope"
+        )
+        let token = try fixture.service.scopeToken(matching: repo.path)
+
+        timestamp.addTimeInterval(2)
+        let observed = try fixture.service.refreshAvailability(projectID: project.projectID)
+        XCTAssertEqual(observed.updatedAt, token.registryRecordUpdatedAt)
+        XCTAssertEqual(observed.lastResolvedAt, timestamp)
+        XCTAssertTrue(fixture.service.validateScopeToken(token).isValid)
+        timestamp.addTimeInterval(2)
+        _ = try fixture.service.scopeToken(matching: repo.path)
+        XCTAssertTrue(fixture.service.validateScopeToken(token).isValid)
+
+        fixture.grants.resolutions[project.projectID] = .requiresRegrant(.stale, lastKnownURL: repo)
+        timestamp.addTimeInterval(2)
+        let unavailable = try fixture.service.refreshAvailability(projectID: project.projectID)
+        XCTAssertNotEqual(unavailable.updatedAt, token.registryRecordUpdatedAt)
+        XCTAssertFalse(fixture.service.validateScopeToken(token).isValid)
+    }
+
     private func makeService(
         root: URL,
-        projectID: String
+        projectID: String,
+        now: @escaping () -> Date = { Date(timeIntervalSince1970: 1_700_000_000) }
     ) -> (
         service: ProjectRegistryV2Service,
         store: ProjectRegistryV2Store,
@@ -821,7 +850,7 @@ final class ProjectRegistryV2Tests: XCTestCase {
                 validator: ProjectRegistrationValidator(relayWorktreeRoots: []),
                 accessGrants: grants,
                 appSupportRoot: appSupportRoot,
-                now: { Date(timeIntervalSince1970: 1_700_000_000) },
+                now: now,
                 makeProjectID: { projectID }
             ),
             store,

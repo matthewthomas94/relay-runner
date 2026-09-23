@@ -689,9 +689,15 @@ final class ProjectRegistryV2Service {
             }
         }
 
-        if project.availability != newAvailability || project != document.projects[index] {
-            project.availability = newAvailability
+        project.availability = newAvailability
+        var scopeRecord = project
+        // A successful observation refreshes diagnostics, not project authority.
+        // Keep outstanding scopes valid unless identity, location or access changes.
+        scopeRecord.lastResolvedAt = document.projects[index].lastResolvedAt
+        if scopeRecord != document.projects[index] {
             project.updatedAt = now()
+        }
+        if project != document.projects[index] {
             document.projects[index] = project
             try store.save(document)
         }
