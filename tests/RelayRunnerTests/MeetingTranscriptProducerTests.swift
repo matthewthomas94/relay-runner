@@ -1463,6 +1463,78 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertEqual(persisted[0].pendingAudio.map(\.chunkID), audio.audio.map(\.descriptor.chunkID))
     }
 
+    func testFinalWindowCheckpointCarriesTextBeforeCoordinatorDrainsEvents() async throws {
+        let checkpoints = MeetingProducerCheckpointRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-crash-before-event-drain",
+            transcriber: FakeMeetingTranscriber { request in
+                let phrases = [
+                    "Repeat this sentence",
+                    "Repeat this sentence",
+                    "quiet harbor sunset",
+                ]
+                return MeetingTranscriptionResult(
+                    text: phrases[min(request.windowSequence, phrases.count - 1)],
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            durableCheckpointSink: { await checkpoints.record($0) }
+        )
+        try await producer.start(initiallyPaused: false)
+        for _ in 0..<3 {
+            try await producer.ingest(.init(repeating: 0.25, count: 8), from: .microphone)
+        }
+        _ = try await producer.stop()
+
+        // No event sink was drained. The checkpoint alone must carry every
+        // completed window whose replay cursor is now beyond its audio.
+        let values = await checkpoints.values
+        let persisted = try XCTUnwrap(values.last)
+        XCTAssertTrue(persisted.pendingAudio.isEmpty)
+        XCTAssertEqual(persisted.nextWindowSequenceByEpoch.values.first, 3)
+        XCTAssertEqual(
+            persisted.durableRevisions?.map(\.text),
+            ["Repeat this sentence", "Repeat this sentence", "quiet harbor sunset"]
+        )
+        XCTAssertEqual(persisted.durableRevisions?.map(\.startMilliseconds), [0, 800, 1_600])
+        XCTAssertEqual(Set(persisted.durableRevisions?.map(\.segmentID) ?? []).count, 3)
+    }
+
+    func testFailedRevisionCheckpointLeavesAcceptedAudioReplayable() async throws {
+        let checkpoints = MeetingProducerCheckpointRecorder()
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-revision-write-failure",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(
+                    text: "Repeat this sentence",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            durableCheckpointSink: { checkpoint in
+                if checkpoint.metrics.processedWindowCount > 0 {
+                    throw FixtureTranscriptionError.failedWindow
+                }
+                await checkpoints.record(checkpoint)
+            },
+            eventSink: { events.record($0) }
+        )
+        try await producer.start(initiallyPaused: false)
+        try await producer.ingest(.init(repeating: 0.25, count: 10), from: .microphone)
+        await producer.waitUntilIdle()
+
+        let persisted = await checkpoints.values
+        XCTAssertEqual(persisted.count, 1)
+        XCTAssertEqual(persisted[0].pendingAudio.count, 1)
+        XCTAssertEqual(persisted[0].nextWindowSequenceByEpoch.values.first, 0)
+        XCTAssertTrue(persisted[0].durableRevisions?.isEmpty == true)
+        XCTAssertTrue(events.revisions.isEmpty)
+    }
+
     func testSharedMonotonicTimelineAlignsDelayedSystemAudio() async throws {
         let accepted = MeetingAcceptedAudioRecorder()
         let producer = MeetingTranscriptProducer(
