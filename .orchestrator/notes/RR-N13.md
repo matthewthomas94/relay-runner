@@ -9,7 +9,7 @@ updated_at: 2026-09-23T14:44:29Z
 recording_state: paused
 checkpoint_reason: pause
 segment_count: 3
-note_metadata: {"title": "Computer Audio Check", "summary": "Computer audio check using the phrase “The Silver Lighthouse.”", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-23T14:41:22.794674+00:00", "origin": "generated", "state": "pending", "source_sha256": "4a7087dd527e7224da6ed39e4206b643f93ad045f80004526edc7409bea9e23b", "generated_source_sha256": "58fe0e7adbf1ab2343daf3c9236a095ccf9960c1f248bece9ba98ade8c2c6561", "error_code": null}
+note_metadata: {"title": "Computer Audio Check", "summary": "The audio check included “The Silver Lighthouse.” The final accepted sentence, “amber telescope at sunset,” was repeated twice.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-23T14:44:55.780150+00:00", "origin": "generated", "state": "ready", "source_sha256": "4a7087dd527e7224da6ed39e4206b643f93ad045f80004526edc7409bea9e23b", "generated_source_sha256": "4a7087dd527e7224da6ed39e4206b643f93ad045f80004526edc7409bea9e23b"}
 ---
 
 ## Transcript
