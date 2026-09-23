@@ -10,7 +10,7 @@ recording_state: completed
 checkpoint_reason: complete
 segment_count: 6
 capture_ended_at: 2026-09-23T13:50:33Z
-note_metadata: {"origin": "generated", "state": "pending", "source_sha256": "495cf70ea9c02ad111522adf27431dad6781379ec906d45a19596e936587b97a", "error_code": null}
+note_metadata: {"title": "Computer Audio Check", "summary": "An audio check repeated phrases about a silver lighthouse overlooking a quiet harbor and an amber telescope at sunset.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-23T13:50:56.518173+00:00", "origin": "generated", "state": "ready", "source_sha256": "495cf70ea9c02ad111522adf27431dad6781379ec906d45a19596e936587b97a", "generated_source_sha256": "495cf70ea9c02ad111522adf27431dad6781379ec906d45a19596e936587b97a"}
 ---
 
 ## Transcript
