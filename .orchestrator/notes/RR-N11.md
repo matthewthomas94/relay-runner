@@ -9,7 +9,7 @@ updated_at: 2026-09-23T13:53:57Z
 recording_state: recording
 checkpoint_reason: checkpoint
 segment_count: 6
-note_metadata: {"origin": "generated", "state": "pending", "source_sha256": "a32976e5362bd35224ad3ed27b8090d6c3d94d46b28a7e7bf7de063d81ab0f1e", "error_code": null}
+note_metadata: {"title": "Garden Plan: Silver Birch Planting", "summary": "In a synthetic meeting for Relay Runner validation, participants reviewed the garden plan and agreed to plant a silver birch.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-23T13:54:19.232982+00:00", "origin": "generated", "state": "ready", "source_sha256": "a32976e5362bd35224ad3ed27b8090d6c3d94d46b28a7e7bf7de063d81ab0f1e", "generated_source_sha256": "a32976e5362bd35224ad3ed27b8090d6c3d94d46b28a7e7bf7de063d81ab0f1e"}
 ---
 
 ## Transcript
