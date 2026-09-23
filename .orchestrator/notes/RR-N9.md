@@ -9,7 +9,7 @@ updated_at: 2026-09-23T13:10:34Z
 recording_state: recording
 checkpoint_reason: resume
 segment_count: 8
-note_metadata: {"title": "Microphone and Computer Audio Check", "summary": "The microphone check used a phrase about a blue bicycle beside a red umbrella. The computer audio check repeated “the silver lighthouse.”", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-23T13:10:06.849443+00:00", "origin": "generated", "state": "pending", "source_sha256": "829bdd19641099421ced64e52f8c5b4b08b6902765abc3feb4369fa40a47d1d8", "generated_source_sha256": "a475981867d073eb7fcf2382f44f1d8f1442d99bdee708da7202f75105f5ee9d", "error_code": null}
+note_metadata: {"title": "Microphone and Computer Audio Check", "summary": "The microphone check used a sentence about a blue bicycle beside a red umbrella, while the computer audio check used one about a silver lighthouse overlooking a quiet harbor. The final accepted sentence was “amber telescope at sunset.”", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-23T13:10:38.735804+00:00", "origin": "generated", "state": "ready", "source_sha256": "829bdd19641099421ced64e52f8c5b4b08b6902765abc3feb4369fa40a47d1d8", "generated_source_sha256": "829bdd19641099421ced64e52f8c5b4b08b6902765abc3feb4369fa40a47d1d8"}
 ---
 
 ## Transcript
