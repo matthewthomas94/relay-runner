@@ -9,6 +9,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
+from unittest.mock import patch
 
 from services.artifact_store import (
     ARTIFACT_REF,
@@ -740,6 +741,36 @@ class ArtifactSyncTests(unittest.TestCase):
         self.assertEqual(log.count("Relay-Event-ID: race-b"), 1)
         self.assertIn(".orchestrator/RR-7.md", self.device_b.store.snapshot().files)
         self.assertIn(".orchestrator/RR-8.md", self.device_b.store.snapshot().files)
+
+    def test_history_validation_reuses_unchanged_blobs_but_checks_every_catalog(self):
+        for index in range(8):
+            head = self.write_ticket(self.device_a, f"history-{index}", "RR-1", f"Title {index}")
+        engine = self.engine(self.device_a)
+        with patch.object(engine, "_quarantine_git_bytes", wraps=engine._quarantine_git_bytes) as reads, patch.object(
+            self.device_a.store, "_validate_note_catalog_files",
+            wraps=self.device_a.store._validate_note_catalog_files,
+        ) as catalogs:
+            engine._validate_quarantine(self.device_a.repo, head)
+        blob_reads = [call.args[3] for call in reads.call_args_list if call.args[1:3] == ("cat-file", "blob")]
+        self.assertEqual(len(blob_reads), len(set(blob_reads)))
+        history_count = len(self.run_git(self.device_a.repo, "rev-list", head).splitlines())
+        self.assertEqual(catalogs.call_count, history_count)
+
+    def test_history_validation_does_not_reuse_content_under_a_different_path(self):
+        self.write_ticket(self.device_a, "original-path", "RR-1", "Original")
+        head = self.write_ticket(self.device_a, "next-tree", "RR-2", "Next")
+        engine = self.engine(self.device_a)
+        read = engine._quarantine_git_bytes
+
+        def changed_path(repository, *args):
+            result = read(repository, *args)
+            if args == ("ls-tree", "-r", "-z", "--full-tree", head):
+                result = result.replace(b"\t.orchestrator/RR-1.md\0", b"\t.orchestrator/RR-3.md\0")
+            return result
+
+        with patch.object(engine, "_quarantine_git_bytes", side_effect=changed_path):
+            with self.assertRaises(ArtifactValidationError):
+                engine._validate_quarantine(self.device_a.repo, head)
 
     def test_exact_quarantine_fetch_excludes_source_refs_and_rejects_foreign_artifact(self):
         private_repo = self.root / "private-source"

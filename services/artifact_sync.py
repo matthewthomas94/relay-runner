@@ -1302,11 +1302,16 @@ class ArtifactSyncEngine:
             if len(line) != 2 or line[1] != previous:
                 raise ArtifactValidationError("remote artifact history is not linear")
             previous = line[0]
+        # Reuse only unchanged path/blob pairs from the preceding tree. This
+        # bounds retained content to one tree while still checking every path,
+        # tree shape and note catalog in the fetched history.
+        previous_contents: dict[tuple[str, str], bytes] = {}
         for line in history:
             output = self._quarantine_git_bytes(
                 repository, "ls-tree", "-r", "-z", "--full-tree", line[0]
             )
             note_files: dict[str, bytes] = {}
+            current_contents: dict[tuple[str, str], bytes] = {}
             for record in output.split(b"\0"):
                 if not record:
                     continue
@@ -1318,13 +1323,18 @@ class ArtifactSyncEngine:
                     raise ArtifactValidationError(
                         f"remote artifact contains unsupported {mode} {kind}: {path}"
                     )
-                content = self._quarantine_git_bytes(repository, "cat-file", "blob", oid)
-                self.store._validate_content_for_path(path, content)
+                key = (path, oid)
+                content = previous_contents.get(key)
+                if content is None:
+                    content = self._quarantine_git_bytes(repository, "cat-file", "blob", oid)
+                    self.store._validate_content_for_path(path, content)
+                current_contents[key] = content
                 if path == ".orchestrator/note-index.jsonl" or path.startswith(
                     ".orchestrator/notes/"
                 ):
                     note_files[path] = content
             self.store._validate_note_catalog_files(note_files)
+            previous_contents = current_contents
         try:
             config = self._quarantine_git_bytes(
                 repository, "show", f"{head}:.orchestrator/config.toml"
