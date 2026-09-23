@@ -10,7 +10,7 @@ recording_state: completed
 checkpoint_reason: complete
 segment_count: 2
 capture_ended_at: 2026-09-23T00:24:17.244096+00:00
-note_metadata: {"origin": "generated", "state": "pending", "source_sha256": "223cb05bcaf8f34c439a4091f1032e87ac55206d655506510ce7e1d13938c133", "error_code": null}
+note_metadata: {"title": "RR-377 Launch Checklist Review", "summary": "The team reviewed the launch checklist; documentation needs a final review before Friday, with no owner assigned. The launch remains blocked until the documentation review is complete.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-23T00:24:39.983994+00:00", "origin": "generated", "state": "ready", "source_sha256": "223cb05bcaf8f34c439a4091f1032e87ac55206d655506510ce7e1d13938c133", "generated_source_sha256": "223cb05bcaf8f34c439a4091f1032e87ac55206d655506510ce7e1d13938c133"}
 ---
 
 ## Transcript
