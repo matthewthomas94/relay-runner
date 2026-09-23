@@ -379,7 +379,6 @@ actor MeetingTranscriptProducer {
     ) async throws {
         if state == .recording {
             try flushTail(for: source)
-            await waitUntilIdle()
         }
         var buffer = sourceBuffers[source] ?? SourceBuffer()
         buffer.epoch = nil
@@ -397,7 +396,6 @@ actor MeetingTranscriptProducer {
     func sourceWasInterrupted(_ source: MeetingAudioSourceID, message: String) async throws {
         if state == .recording {
             try flushTail(for: source)
-            await waitUntilIdle()
         }
         var buffer = sourceBuffers[source] ?? SourceBuffer()
         buffer.epoch = nil

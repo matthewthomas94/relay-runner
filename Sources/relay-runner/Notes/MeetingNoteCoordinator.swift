@@ -64,10 +64,26 @@ struct MeetingNoteCoordinatorSnapshot: Equatable, Sendable {
     let durableSegmentCount: Int
     let syncState: String?
     let errorMessage: String?
+    var unhealthySourceIDs: Set<MeetingAudioSourceID> = []
+
+    var captureStatusMessage: String? {
+        guard phase == .recording else { return nil }
+        if unhealthySourceIDs.contains(.microphone), unhealthySourceIDs.contains(.systemAudio) {
+            return "Audio interrupted"
+        }
+        if unhealthySourceIDs.contains(.systemAudio) {
+            return "Computer audio interrupted"
+        }
+        if unhealthySourceIDs.contains(.microphone) {
+            return "Microphone interrupted"
+        }
+        return nil
+    }
 
     var notchPresentation: (status: NotchSessionStatus, label: String?)? {
         switch phase {
         case .recording:
+            if let captureStatusMessage { return (.working, captureStatusMessage) }
             return (.listening, "Taking notes")
         case .paused:
             return (.paused, "Paused")
@@ -245,29 +261,49 @@ final class MeetingNoteEventBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var events: [MeetingProducerEvent] = []
     private var latestIssue: MeetingCaptureIssue?
+    private var sourceStates: [MeetingAudioSourceID: MeetingCaptureSourceState] = [:]
     private let terminalFailureSink: @Sendable (MeetingCaptureIssue?) -> Void
+    private let sourceStateSink: @Sendable () -> Void
 
     init(
-        terminalFailureSink: @escaping @Sendable (MeetingCaptureIssue?) -> Void = { _ in }
+        terminalFailureSink: @escaping @Sendable (MeetingCaptureIssue?) -> Void = { _ in },
+        sourceStateSink: @escaping @Sendable () -> Void = {}
     ) {
         self.terminalFailureSink = terminalFailureSink
+        self.sourceStateSink = sourceStateSink
     }
 
     func append(_ event: MeetingProducerEvent) {
         var terminalIssue: MeetingCaptureIssue?
         var producerFailed = false
+        var sourceChanged = false
         lock.lock()
         events.append(event)
         if case .issue(let issue) = event {
             latestIssue = issue
+        } else if case .source(let source, let state) = event {
+            sourceChanged = sourceStates[source] != state
+            sourceStates[source] = state
         } else if case .state(.failed) = event {
             terminalIssue = latestIssue
             producerFailed = true
         }
         lock.unlock()
+        if sourceChanged { sourceStateSink() }
         if producerFailed {
             terminalFailureSink(terminalIssue)
         }
+    }
+
+    func unhealthySources() -> Set<MeetingAudioSourceID> {
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(sourceStates.compactMap { source, state in
+            switch state {
+            case .unavailable, .denied, .interrupted: source
+            default: nil
+            }
+        })
     }
 
     func drain() -> [MeetingProducerEvent] {
@@ -444,15 +480,7 @@ actor MeetingNoteCoordinator {
             try await recoveryStore.save(journal)
 
             let runtimeID = UUID()
-            let events = MeetingNoteEventBuffer { [weak self] issue in
-                Task {
-                    await self?.handleTerminalProducerFailure(
-                        sessionID: sessionID,
-                        runtimeID: runtimeID,
-                        issue: issue
-                    )
-                }
-            }
+            let events = makeEventBuffer(sessionID: sessionID, runtimeID: runtimeID)
             let store = recoveryStore
             let capture = captureFactory(
                 sessionID,
@@ -741,15 +769,7 @@ actor MeetingNoteCoordinator {
             }
 
             let runtimeID = UUID()
-            let events = MeetingNoteEventBuffer { [weak self] issue in
-                Task {
-                    await self?.handleTerminalProducerFailure(
-                        sessionID: sessionID,
-                        runtimeID: runtimeID,
-                        issue: issue
-                    )
-                }
-            }
+            let events = makeEventBuffer(sessionID: sessionID, runtimeID: runtimeID)
             let store = recoveryStore
             let capture = captureFactory(
                 sessionID,
@@ -1227,6 +1247,30 @@ actor MeetingNoteCoordinator {
         }
     }
 
+    private func makeEventBuffer(sessionID: String, runtimeID: UUID) -> MeetingNoteEventBuffer {
+        MeetingNoteEventBuffer(
+            terminalFailureSink: { [weak self] issue in
+                Task {
+                    await self?.handleTerminalProducerFailure(
+                        sessionID: sessionID,
+                        runtimeID: runtimeID,
+                        issue: issue
+                    )
+                }
+            },
+            sourceStateSink: { [weak self] in
+                Task { await self?.publishSourceState(sessionID: sessionID, runtimeID: runtimeID) }
+            }
+        )
+    }
+
+    private func publishSourceState(sessionID: String, runtimeID: UUID) {
+        guard let runtime, runtime.id == runtimeID,
+              journal?.sessionID == sessionID,
+              phase == .recording else { return }
+        snapshotSink(snapshot())
+    }
+
     private func captureFailure(_ issue: MeetingCaptureIssue?) -> MeetingNoteCoordinatorError {
         guard let issue else {
             return .captureFailed("Meeting capture stopped unexpectedly. Recovery is available.")
@@ -1314,7 +1358,8 @@ actor MeetingNoteCoordinator {
             liveHypothesisCount: live,
             durableSegmentCount: journal?.canonicalSegments.count ?? 0,
             syncState: journal?.syncState,
-            errorMessage: journal?.lastError
+            errorMessage: journal?.lastError,
+            unhealthySourceIDs: runtime?.events.unhealthySources() ?? []
         )
     }
 

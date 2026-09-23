@@ -37,6 +37,58 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         )
     }
 
+    func testInterruptedSystemSourceShowsDegradedNoteStatusUntilRecovery() {
+        let events = MeetingNoteEventBuffer()
+        events.append(.source(.systemAudio, .capturing))
+        XCTAssertTrue(events.unhealthySources().isEmpty)
+        events.append(.source(.systemAudio, .interrupted))
+        var recording = snapshot(phase: .recording)
+        recording.unhealthySourceIDs = events.unhealthySources()
+        XCTAssertEqual(
+            recording.notchPresentation?.label,
+            "Computer audio interrupted"
+        )
+        XCTAssertNotEqual(recording.notchPresentation?.status, .listening)
+        events.append(.source(.systemAudio, .capturing))
+        recording.unhealthySourceIDs = events.unhealthySources()
+        XCTAssertEqual(recording.notchPresentation?.label, "Taking notes")
+    }
+
+    func testSourceInterruptionPublishesDegradedStatusForActiveNote() async throws {
+        let captures = FakeMeetingNoteCaptureFactory()
+        let updates = MeetingNoteSnapshotRecorder()
+        let coordinator = makeCoordinator(
+            writer: FakeMeetingNoteWriter(),
+            store: InMemoryMeetingNoteRecoveryStore(),
+            captures: captures,
+            snapshotSink: { updates.append($0) }
+        )
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        let capture = try XCTUnwrap(captures.latest())
+        await capture.emitSource(.systemAudio, state: .interrupted)
+        for _ in 0..<200 {
+            if updates.snapshots.last?.captureStatusMessage ==
+                "Computer audio interrupted" { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(
+            updates.snapshots.last?.notchPresentation?.label,
+            "Computer audio interrupted"
+        )
+
+        await capture.emitSource(.systemAudio, state: .capturing)
+        for _ in 0..<200 {
+            if updates.snapshots.last?.notchPresentation?.label == "Taking notes" { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(updates.snapshots.last?.notchPresentation?.label, "Taking notes")
+        _ = try await coordinator.stop()
+    }
+
     func testStopDrainsFinalTailPreservesUTF8AndGenuineRepeatedSpeech() async throws {
         let writer = FakeMeetingNoteWriter(syncState: "pending")
         let store = InMemoryMeetingNoteRecoveryStore()
@@ -2078,6 +2130,10 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
 
     func emitRevision(_ revision: MeetingTranscriptSegmentRevision) {
         eventSink(.revision(revision))
+    }
+
+    func emitSource(_ source: MeetingAudioSourceID, state: MeetingCaptureSourceState) {
+        eventSink(.source(source, state))
     }
 
     init(

@@ -2381,7 +2381,11 @@ private struct ProgramNoteDetailPanel: View {
         guard isCurrentCapture else { return detail.item.recordingLabel }
         switch captureSnapshot.phase {
         case .preparing: return "Preparing recording"
-        case .recording: return "Recording"
+        case .recording:
+            if let status = captureSnapshot.captureStatusMessage {
+                return "\(status) — pause and resume to retry"
+            }
+            return "Recording"
         case .paused: return "Paused"
         case .stopping: return "Saving locally"
         case .saved: return "Saved locally"

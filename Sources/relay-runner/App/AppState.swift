@@ -1275,7 +1275,7 @@ final class AppState {
     private func applyMeetingNoteSnapshot(_ snapshot: MeetingNoteCoordinatorSnapshot) {
         meetingNoteSnapshot = snapshot
         statusText = switch snapshot.phase {
-        case .recording: "Taking notes"
+        case .recording: snapshot.captureStatusMessage ?? "Taking notes"
         case .paused: "Notes paused"
         case .preparing: "Preparing notes"
         case .stopping: "Saving notes"
