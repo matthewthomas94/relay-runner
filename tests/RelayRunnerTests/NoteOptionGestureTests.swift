@@ -33,6 +33,59 @@ final class NoteOptionGestureTests: XCTestCase {
         XCTAssertEqual(removed, 2)
     }
 
+    func testWorkspaceSurvivesStopFailureAndRecoveryWhileOptionRemainsGated() {
+        var global: ((NSEvent) -> Void)?
+        var optionToggles = 0
+        var workspaceToggles = 0
+        let gesture = NoteOptionGesture(
+            globalInstaller: { _, handler in global = handler; return NSObject() },
+            localInstaller: { _, _ in NSObject() },
+            remover: { _ in },
+            onToggle: { optionToggles += 1 },
+            onWorkspaceToggle: { workspaceToggles += 1 }
+        )
+
+        sendDoubleTap { global?($0) } // recording
+        XCTAssertEqual(optionToggles, 1)
+        gesture.setOptionEnabled(false) // stopping, then failed save and interrupted recovery
+        sendDoubleTap(startingAt: 2) { global?($0) }
+        sendShiftDoubleTap(startingAt: 3) { global?($0) }
+        sendShiftDoubleTap(startingAt: 4) { global?($0) }
+        XCTAssertEqual(optionToggles, 1)
+        XCTAssertEqual(workspaceToggles, 2)
+
+        gesture.setOptionEnabled(true) // recovered paused note
+        sendDoubleTap(startingAt: 5) { global?($0) }
+        XCTAssertEqual(optionToggles, 2)
+        gesture.stop() // saved note or voice session takeover
+        sendShiftDoubleTap(startingAt: 6) { global?($0) }
+        XCTAssertEqual(workspaceToggles, 2)
+    }
+
+    func testDisablingOptionDiscardsPartialTapWithoutDisablingShift() {
+        var global: ((NSEvent) -> Void)?
+        var optionToggles = 0
+        var workspaceToggles = 0
+        let gesture = NoteOptionGesture(
+            globalInstaller: { _, handler in global = handler; return NSObject() },
+            localInstaller: { _, _ in NSObject() },
+            remover: { _ in },
+            onToggle: { optionToggles += 1 },
+            onWorkspaceToggle: { workspaceToggles += 1 }
+        )
+
+        global?(event(.flagsChanged, [.option], 0))
+        global?(event(.flagsChanged, [], 0.1))
+        gesture.setOptionEnabled(false)
+        gesture.setOptionEnabled(true)
+        global?(event(.flagsChanged, [.option], 0.2))
+        global?(event(.flagsChanged, [], 0.3))
+        XCTAssertEqual(optionToggles, 0)
+        sendShiftDoubleTap { global?($0) }
+        XCTAssertEqual(workspaceToggles, 1)
+        gesture.stop()
+    }
+
     func testShiftDoubleTapAcceptsEitherKeyAndCapsLockWithoutOptionToggle() {
         var shift = NoteShiftDoubleTap()
         XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift, .capsLock], 0, keyCode: 56)))
@@ -101,18 +154,24 @@ final class NoteOptionGestureTests: XCTestCase {
         XCTAssertTrue(recognizer.handle(event(.flagsChanged, [.capsLock], 0.5)))
     }
 
-    private func sendDoubleTap(_ send: (NSEvent) -> Void) {
-        send(event(.flagsChanged, [.option], 1))
-        send(event(.flagsChanged, [], 1.1))
-        send(event(.flagsChanged, [.option], 1.2))
-        send(event(.flagsChanged, [], 1.3))
+    private func sendDoubleTap(
+        startingAt start: TimeInterval = 1,
+        _ send: (NSEvent) -> Void
+    ) {
+        send(event(.flagsChanged, [.option], start))
+        send(event(.flagsChanged, [], start + 0.1))
+        send(event(.flagsChanged, [.option], start + 0.2))
+        send(event(.flagsChanged, [], start + 0.3))
     }
 
-    private func sendShiftDoubleTap(_ send: (NSEvent) -> Void) {
-        send(event(.flagsChanged, [.shift], 1, keyCode: 56))
-        send(event(.flagsChanged, [], 1.1, keyCode: 56))
-        send(event(.flagsChanged, [.shift], 1.2, keyCode: 56))
-        send(event(.flagsChanged, [], 1.3, keyCode: 56))
+    private func sendShiftDoubleTap(
+        startingAt start: TimeInterval = 1,
+        _ send: (NSEvent) -> Void
+    ) {
+        send(event(.flagsChanged, [.shift], start, keyCode: 56))
+        send(event(.flagsChanged, [], start + 0.1, keyCode: 56))
+        send(event(.flagsChanged, [.shift], start + 0.2, keyCode: 56))
+        send(event(.flagsChanged, [], start + 0.3, keyCode: 56))
     }
 
     private func event(
