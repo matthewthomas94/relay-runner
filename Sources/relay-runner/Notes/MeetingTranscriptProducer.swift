@@ -55,6 +55,7 @@ actor MeetingTranscriptProducer {
     private var timelineOriginNanoseconds: UInt64?
     private var nextWindowSequenceByEpoch: [String: Int] = [:]
     private var completedWindowSequencesByEpoch: [String: Set<Int>] = [:]
+    private var completedTailEndSampleByEpoch: [String: [Int: Int]] = [:]
     private var emittedRevisionBySegment: [String: Int] = [:]
     private var finalRevisionBySegment: [String: Int] = [:]
     private var durableRevisions: [String: MeetingTranscriptSegmentRevision] = [:]
@@ -106,6 +107,7 @@ actor MeetingTranscriptProducer {
             self.timelineOriginNanoseconds = checkpoint.timelineOriginNanoseconds
             nextWindowSequenceByEpoch = checkpoint.nextWindowSequenceByEpoch
             completedWindowSequencesByEpoch = checkpoint.completedWindowSequencesByEpoch.mapValues(Set.init)
+            completedTailEndSampleByEpoch = checkpoint.completedTailEndSampleByEpoch ?? [:]
             emittedRevisionBySegment = checkpoint.emittedRevisionBySegment
             finalRevisionBySegment = checkpoint.finalRevisionBySegment
             durableRevisions = Dictionary(uniqueKeysWithValues:
@@ -420,7 +422,7 @@ actor MeetingTranscriptProducer {
         let pending = MeetingAudioSourceID.allCases.flatMap {
             sourceBuffers[$0]?.pendingAudio ?? []
         }.sorted { $0.chunkID < $1.chunkID }
-        return MeetingProducerCheckpoint(
+        var checkpoint = MeetingProducerCheckpoint(
             sessionID: sessionID,
             state: state,
             timingEpochs: timingEpochs,
@@ -443,6 +445,8 @@ actor MeetingTranscriptProducer {
             pendingAudio: pending,
             metrics: metrics
         )
+        checkpoint.completedTailEndSampleByEpoch = completedTailEndSampleByEpoch
+        return checkpoint
     }
 
     func currentMetrics() -> MeetingProducerMetrics {
@@ -632,6 +636,7 @@ actor MeetingTranscriptProducer {
             contextStartMilliseconds: milliseconds(forSample: buffer.bufferStartTimelineSamples),
             ownedStartMilliseconds: milliseconds(forSample: ownedStartSample),
             ownedEndMilliseconds: milliseconds(forSample: ownedEndSample),
+            ownedEndSample: ownedEndSample,
             isFinal: isFinal,
             samples: samples
         )
@@ -731,7 +736,27 @@ actor MeetingTranscriptProducer {
             metrics.maximumProcessingMilliseconds,
             result.processingMilliseconds
         )
-        let text = ownedText(from: result, request: request)
+        let recognizedText = ownedText(from: result, request: request)
+        let previousPartial = durableRevisions[request.segmentID].flatMap {
+            $0.isFinal ? nil : $0
+        }
+        // Keep only words owned by this final window. A partial may hear a
+        // word in the overlap that belongs to the following window.
+        let retainedText: String
+        if let words = previousPartial?.recognizedWords {
+            retainedText = clean(words.filter {
+                $0.startMilliseconds >= Double(request.ownedStartMilliseconds) &&
+                    $0.startMilliseconds < Double(request.ownedEndMilliseconds)
+            }.map(\.text).joined())
+        } else if let previousPartial,
+                  previousPartial.endMilliseconds <= request.ownedEndMilliseconds {
+            retainedText = previousPartial.text
+        } else {
+            retainedText = ""
+        }
+        let retainedPartial = request.isFinal && recognizedText.isEmpty && !retainedText.isEmpty
+            ? previousPartial : nil
+        let text = retainedPartial == nil ? recognizedText : retainedText
         guard !text.isEmpty else {
             if request.isFinal {
                 completeFinalWindow(request)
@@ -750,10 +775,15 @@ actor MeetingTranscriptProducer {
             timingEpochID: request.timingEpochID,
             windowSequence: request.windowSequence,
             revision: request.revision,
-            startMilliseconds: request.ownedStartMilliseconds,
-            endMilliseconds: request.ownedEndMilliseconds,
+            startMilliseconds: retainedPartial?.startMilliseconds ?? request.ownedStartMilliseconds,
+            endMilliseconds: min(
+                retainedPartial?.endMilliseconds ?? request.ownedEndMilliseconds,
+                request.ownedEndMilliseconds
+            ),
             text: text,
-            isFinal: request.isFinal
+            isFinal: request.isFinal,
+            recognizedWords: request.isFinal || result.tokens.isEmpty
+                ? nil : ownedWords(from: result.tokens, request: request)
         )
         durableRevisions[revision.segmentID] = revision
         do {
@@ -779,6 +809,13 @@ actor MeetingTranscriptProducer {
         request: MeetingTranscriptionRequest
     ) -> String {
         guard !result.tokens.isEmpty else { return clean(result.text) }
+        return clean(ownedWords(from: result.tokens, request: request).map(\.text).joined())
+    }
+
+    private func ownedWords(
+        from tokens: [MeetingRecognizedToken],
+        request: MeetingTranscriptionRequest
+    ) -> [MeetingRecognizedWord] {
         let localOwnedStart = Double(
             request.ownedStartMilliseconds - request.contextStartMilliseconds
         ) / 1_000
@@ -786,7 +823,7 @@ actor MeetingTranscriptProducer {
             request.ownedEndMilliseconds - request.contextStartMilliseconds
         ) / 1_000
         var words: [(text: String, startSeconds: TimeInterval)] = []
-        for token in result.tokens where !token.text.isEmpty {
+        for token in tokens where !token.text.isEmpty {
             // FluidAudio timings are subword pieces. A leading space starts a
             // new word; trailing spaces also occur in fixture transcribers.
             if words.isEmpty || token.text.first?.isWhitespace == true ||
@@ -798,9 +835,15 @@ actor MeetingTranscriptProducer {
             }
         }
         // Assign every piece, including punctuation, by its whole word's onset.
-        return clean(words.filter {
+        return words.filter {
             $0.startSeconds >= localOwnedStart && $0.startSeconds < localOwnedEnd
-        }.map(\.text).joined())
+        }.map {
+            MeetingRecognizedWord(
+                text: $0.text,
+                startMilliseconds: Double(request.contextStartMilliseconds) +
+                    $0.startSeconds * 1_000
+            )
+        }
     }
 
     private func completeFinalWindow(_ request: MeetingTranscriptionRequest) {
@@ -817,10 +860,20 @@ actor MeetingTranscriptProducer {
             $0.epochID == request.timingEpochID
         }), var buffer = sourceBuffers[request.sourceID]
         else { return }
+        let nominalEndSample = epoch.startSample +
+            (request.windowSequence + 1) * configuration.ownedSamples
+        if request.ownedEndSample > nominalEndSample {
+            completedTailEndSampleByEpoch[epoch.epochID, default: [:]][request.windowSequence] =
+                request.ownedEndSample
+        }
         let committedThroughSample = epoch.startSample +
             next * configuration.ownedSamples
+        let completedTailEnd = completedTailEndSampleByEpoch[epoch.epochID]?
+            .filter { $0.key < next }.values.max() ?? committedThroughSample
+        let retiredThroughSample = max(committedThroughSample, completedTailEnd)
         buffer.pendingAudio.removeAll {
-            $0.timingEpochID == epoch.epochID && $0.endSample <= committedThroughSample
+            $0.timingEpochID == epoch.epochID &&
+                $0.endSample <= retiredThroughSample
         }
         sourceBuffers[request.sourceID] = buffer
     }
