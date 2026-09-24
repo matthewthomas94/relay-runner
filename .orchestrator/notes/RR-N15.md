@@ -9,7 +9,7 @@ updated_at: 2026-09-24T12:16:23Z
 recording_state: recording
 checkpoint_reason: checkpoint
 segment_count: 7
-note_metadata: {"title": "Microphone check", "summary": "A microphone check used a sentence about a blue bicycle beside a red umbrella, followed by a repeated request to repeat the sentence.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-24T12:15:57.800830+00:00", "origin": "generated", "state": "pending", "source_sha256": "d2104f1a1fa75eedf4a80e0628dccd059c14e74e7fb63fe2b4ccb4985d2f1252", "generated_source_sha256": "388f224be90960ffc8520e70288f66fc731925ada2676857ce1815baab264d3c", "error_code": null}
+note_metadata: {"title": "Microphone and Computer Audio Check", "summary": "The transcript tests human microphone and computer audio using repeated sentences about a blue bicycle, a red umbrella, and a silver lighthouse. The final accepted sentence is “Amber Telescope at sunset.”", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-24T12:16:38.934529+00:00", "origin": "generated", "state": "ready", "source_sha256": "d2104f1a1fa75eedf4a80e0628dccd059c14e74e7fb63fe2b4ccb4985d2f1252", "generated_source_sha256": "d2104f1a1fa75eedf4a80e0628dccd059c14e74e7fb63fe2b4ccb4985d2f1252"}
 ---
 
 ## Transcript
