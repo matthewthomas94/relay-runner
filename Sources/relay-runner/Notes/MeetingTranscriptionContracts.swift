@@ -84,6 +84,17 @@ struct MeetingAcceptedAudioDescriptor: Codable, Equatable, Sendable {
 struct MeetingAudioFrame: Sendable {
     let samples: [Float]
     let presentationTimeNanoseconds: UInt64
+    let captureFrameCount: Int
+
+    init(
+        samples: [Float],
+        presentationTimeNanoseconds: UInt64,
+        captureFrameCount: Int = 1
+    ) {
+        self.samples = samples
+        self.presentationTimeNanoseconds = presentationTimeNanoseconds
+        self.captureFrameCount = captureFrameCount
+    }
 }
 
 /// RR-368 persists accepted chunks before this ticket retains them in its

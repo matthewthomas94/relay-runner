@@ -28,6 +28,7 @@ actor MeetingNoteCaptureSession {
     private let producer: MeetingTranscriptProducer
     private let captures: [MeetingAudioCapturing]
     private let maximumPendingFrames: Int
+    private let minimumBatchSamples: Int
     private var startedCaptures: [ObjectIdentifier: MeetingAudioCapturing] = [:]
     private var captureIngress: MeetingCaptureIngress?
     private var captureIngressTask: Task<Void, Never>?
@@ -45,12 +46,15 @@ actor MeetingNoteCaptureSession {
             MeetingMicrophoneAudioCapture(),
             MeetingSystemAudioCapture(),
         ],
-        maximumPendingFrames: Int = 32
+        maximumPendingFrames: Int = 32,
+        minimumBatchSamples: Int = 0
     ) {
         precondition(maximumPendingFrames > 0)
+        precondition(minimumBatchSamples >= 0)
         self.producer = producer
         self.captures = captures
         self.maximumPendingFrames = maximumPendingFrames
+        self.minimumBatchSamples = minimumBatchSamples
     }
 
     func start(
@@ -114,7 +118,10 @@ actor MeetingNoteCaptureSession {
         sourceStartInProgress = true
         defer { finishSourceStart() }
 
-        let ingress = MeetingCaptureIngress(maximumPendingItems: maximumPendingFrames)
+        let ingress = MeetingCaptureIngress(
+            maximumPendingItems: maximumPendingFrames,
+            minimumBatchSamples: minimumBatchSamples
+        )
         captureIngress = ingress
         captureIngressTask = Task { [weak self] in
             await self?.consume(ingress)
@@ -300,7 +307,7 @@ actor MeetingNoteCaptureSession {
                     guard !startup.blockedDuringStart else { return true }
                     guard startup.bufferedFrames.count < maximumPendingFrames else {
                         await producer.recordCaptureIngressDrops(
-                            droppedFrameCount: 1,
+                            droppedFrameCount: frame.captureFrameCount,
                             droppedEventCount: 0,
                             droppedSamplesBySource: [source: frame.samples.count],
                             maximumPendingFrames: maximumPendingFrames
@@ -490,6 +497,11 @@ actor MeetingNoteCaptureSession {
 extension MeetingNoteCaptureSession: MeetingNoteCaptureControlling {}
 
 final class MeetingCaptureIngress: @unchecked Sendable {
+    private struct BatchKey: Hashable {
+        let source: MeetingAudioSourceID
+        let generation: UInt64
+    }
+
     enum Item: Sendable {
         case frame(MeetingAudioFrame, MeetingAudioSourceID, UInt64)
         case event(MeetingAudioCaptureEvent, MeetingAudioSourceID, UInt64)
@@ -507,7 +519,7 @@ final class MeetingCaptureIngress: @unchecked Sendable {
         mutating func record(_ item: Item) {
             switch item {
             case .frame(let frame, let source, _):
-                frameCount += 1
+                frameCount += frame.captureFrameCount
                 samplesBySource[source, default: 0] += frame.samples.count
             case .event, .startFailed:
                 eventCount += 1
@@ -530,6 +542,8 @@ final class MeetingCaptureIngress: @unchecked Sendable {
 
     private let continuation: AsyncStream<Item>.Continuation
     private let lock = NSLock()
+    private let minimumBatchSamples: Int
+    private var batches: [BatchKey: MeetingAudioFrame] = [:]
     private var droppedItems = DroppedItems()
     private var finished = false
 
@@ -539,7 +553,8 @@ final class MeetingCaptureIngress: @unchecked Sendable {
         return finished
     }
 
-    init(maximumPendingItems: Int) {
+    init(maximumPendingItems: Int, minimumBatchSamples: Int = 0) {
+        self.minimumBatchSamples = minimumBatchSamples
         var capturedContinuation: AsyncStream<Item>.Continuation?
         stream = AsyncStream(bufferingPolicy: .bufferingNewest(maximumPendingItems)) {
             capturedContinuation = $0
@@ -553,6 +568,36 @@ final class MeetingCaptureIngress: @unchecked Sendable {
         defer { lock.unlock() }
         guard !finished else { return false }
 
+        if minimumBatchSamples > 0 {
+            switch item {
+            case .frame(let frame, let source, let generation):
+                let key = BatchKey(source: source, generation: generation)
+                if let previous = batches[key] {
+                    let combined = MeetingAudioFrame(
+                        samples: previous.samples + frame.samples,
+                        presentationTimeNanoseconds: previous.presentationTimeNanoseconds,
+                        captureFrameCount: previous.captureFrameCount + frame.captureFrameCount
+                    )
+                    batches[key] = combined
+                } else {
+                    batches[key] = frame
+                }
+                if let batch = batches[key], batch.samples.count >= minimumBatchSamples {
+                    batches.removeValue(forKey: key)
+                    return yield(.frame(batch, source, generation))
+                }
+                return true
+            case .event(_, let source, let generation),
+                 .started(let source, let generation, _),
+                 .startFailed(_, let source, let generation):
+                flushBatch(for: BatchKey(source: source, generation: generation))
+            }
+        }
+
+        return yield(item)
+    }
+
+    private func yield(_ item: Item) -> Bool {
         switch continuation.yield(item) {
         case .enqueued:
             return true
@@ -566,11 +611,23 @@ final class MeetingCaptureIngress: @unchecked Sendable {
         }
     }
 
+    private func flushBatch(for key: BatchKey) {
+        guard let batch = batches.removeValue(forKey: key) else { return }
+        _ = yield(.frame(batch, key.source, key.generation))
+    }
+
     func finish() {
         lock.lock()
         defer { lock.unlock() }
         guard !finished else {
             return
+        }
+        for key in batches.keys.sorted(by: {
+            $0.source.rawValue == $1.source.rawValue
+                ? $0.generation < $1.generation
+                : $0.source.rawValue < $1.source.rawValue
+        }) {
+            flushBatch(for: key)
         }
         finished = true
         continuation.finish()

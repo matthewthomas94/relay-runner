@@ -46,6 +46,7 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private var audioAwaitingCheckpoint: [String: Set<String>] = [:]
+    private var audioBytesBySession: [String: Int] = [:]
 
     init(
         root: URL = MeetingNoteRecoveryStore.defaultRoot(),
@@ -161,13 +162,19 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
             return
         }
 
-        let usedBytes = try directorySize(directory)
+        let usedBytes = try audioBytesBySession[sessionID] ?? directorySize(directory)
         guard usedBytes + expectedBytes <= audioBudgetBytes else {
             throw MeetingNoteRecoveryStoreError.audioBudgetExceeded(limitBytes: audioBudgetBytes)
         }
         let data = audio.samples.withUnsafeBytes { Data($0) }
-        try data.write(to: url, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        do {
+            try data.write(to: url, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            audioBytesBySession.removeValue(forKey: sessionID)
+            throw error
+        }
+        audioBytesBySession[sessionID] = usedBytes + expectedBytes
         audioAwaitingCheckpoint[sessionID, default: []].insert(audio.descriptor.chunkID)
     }
 
@@ -210,14 +217,18 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
     func retainAudio(sessionID: String, chunkIDs: Set<String>) throws {
         let directory = try audioDirectory(sessionID: sessionID, create: false)
         guard fileManager.fileExists(atPath: directory.path) else { return }
+        var usedBytes = try audioBytesBySession[sessionID] ?? directorySize(directory)
+        audioBytesBySession.removeValue(forKey: sessionID)
         let retainedFilenames = Set(chunkIDs.map(encodedFilename))
         for url in try fileManager.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) where !retainedFilenames.contains(url.lastPathComponent) {
+            usedBytes -= try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
             try fileManager.removeItem(at: url)
         }
+        audioBytesBySession[sessionID] = usedBytes
     }
 
     func retainCheckpointAudio(sessionID: String) throws {
@@ -232,6 +243,7 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         guard fileManager.fileExists(atPath: directory.path) else { return }
         try fileManager.removeItem(at: directory)
         audioAwaitingCheckpoint.removeValue(forKey: sessionID)
+        audioBytesBySession.removeValue(forKey: sessionID)
     }
 
     private func sessionDirectory(_ sessionID: String, create: Bool) throws -> URL {

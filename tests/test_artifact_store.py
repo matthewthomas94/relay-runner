@@ -104,6 +104,23 @@ class ArtifactStoreTests(unittest.TestCase):
         self.assertIn("Relay-Device-ID: device-001", message)
         self.assertIn("Relay-Actor-Type: system", message)
 
+    def test_verified_unchanged_head_does_not_reread_every_artifact_blob(self):
+        head = self.initialize().commit_id
+        with patch.object(self.store, "_cat_blob", side_effect=AssertionError("revalidated blob")):
+            self.store._validate_artifact_head(head)
+
+        # Advancing the ref still requires full validation of its new tree.
+        with patch.object(self.store, "_cat_blob", wraps=self.store._cat_blob) as read_blob:
+            self.store.mutate(self.mutation(
+                "ticket-after-cached-head",
+                TicketWrite(
+                    ticket_id="RR-1",
+                    artifact_id="artifact-0001",
+                    markdown=self.ticket_bytes("RR-1", "Fixture"),
+                ),
+            ))
+            self.assertGreater(read_blob.call_count, 0)
+
     def test_adoption_rejects_source_parent_symlink_and_foreign_identity(self):
         config = (
             'schema_version = 2\nproject_id = "project-001"\n'
@@ -441,6 +458,14 @@ class ArtifactStoreTests(unittest.TestCase):
     def test_serialized_writers_commit_each_event_once(self):
         base = self.initialize().commit_id
         failures = []
+        validated_paths = []
+        validation_lock = threading.Lock()
+        validate = ArtifactStore._validate_content_for_path
+
+        def record_validation(store, path, content):
+            with validation_lock:
+                validated_paths.append(path)
+            return validate(store, path, content)
 
         def write(index):
             try:
@@ -457,16 +482,21 @@ class ArtifactStoreTests(unittest.TestCase):
             except Exception as error:  # pragma: no cover - asserted below.
                 failures.append(error)
 
-        threads = [threading.Thread(target=write, args=(index,)) for index in range(1, 5)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+        with patch.object(ArtifactStore, "_validate_content_for_path", record_validation):
+            threads = [threading.Thread(target=write, args=(index,)) for index in range(1, 5)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
 
         self.assertEqual(failures, [])
         self.assertEqual(self.git("rev-list", "--count", f"{base}..{ARTIFACT_REF}"), "4")
         for index in range(1, 5):
             self.assertTrue((self.repo / f".orchestrator/RR-{index}.md").exists())
+        self.assertCountEqual(
+            validated_paths,
+            [f".orchestrator/RR-{index}.md" for index in range(1, 5)],
+        )
 
     def inject_at(self, expected_stage):
         def inject(stage):

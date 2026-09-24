@@ -509,6 +509,82 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         }
     }
 
+    func testPacedTwoSourceCaptureBatchesJournalWorkWithoutLosingStopTail() async throws {
+        let accepted = BlockingMeetingAcceptedAudioSink()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-paced-journal",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: request.sourceID.rawValue,
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { audio in await accepted.record(audio) }
+        )
+        let microphone = FakeMeetingAudioCapture(sourceID: .microphone, samples: [])
+        let system = FakeMeetingAudioCapture(sourceID: .systemAudio, samples: [])
+        let session = MeetingNoteCaptureSession(
+            producer: producer,
+            captures: [microphone, system],
+            maximumPendingFrames: 16,
+            minimumBatchSamples: 4
+        )
+        try await session.start(initiallyPaused: false)
+
+        for _ in 0..<20 {
+            microphone.emit([[1]])
+            system.emit([[2]])
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        try await eventually { await accepted.recordingCount == 1 }
+        let stop = Task { try await session.stop() }
+        await accepted.release()
+        let boundary = try await stop.value
+
+        XCTAssertEqual(boundary.metrics.acceptedSamplesBySource[.microphone], 20)
+        XCTAssertEqual(boundary.metrics.acceptedSamplesBySource[.systemAudio], 20)
+        XCTAssertEqual(boundary.metrics.droppedAudioFrameCount, 0)
+        XCTAssertEqual(boundary.metrics.droppedAudioSampleCount, 0)
+        XCTAssertEqual(boundary.metrics.acceptedChunkCount, 10)
+        let persisted = await accepted.audio
+        XCTAssertEqual(persisted.count, 10)
+        XCTAssertTrue(persisted.allSatisfy { $0.samples.count == 4 })
+    }
+
+    func testBatchedIngressOverloadCountsEveryOriginalFrame() async throws {
+        let accepted = BlockingMeetingAcceptedAudioSink()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-batched-overload",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "unused", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { audio in await accepted.record(audio) }
+        )
+        let microphone = FakeMeetingAudioCapture(sourceID: .microphone, samples: [])
+        let session = MeetingNoteCaptureSession(
+            producer: producer,
+            captures: [microphone],
+            maximumPendingFrames: 1,
+            minimumBatchSamples: 4
+        )
+        try await session.start(initiallyPaused: false)
+        microphone.emit((0..<4).map { _ in [Float(1)] })
+        try await eventually { await accepted.recordingCount == 1 }
+        microphone.emit((0..<12).map { _ in [Float(2)] })
+        await accepted.release()
+        try await eventually {
+            await producer.currentMetrics().droppedAudioFrameCount == 12
+        }
+        let metrics = await producer.currentMetrics()
+        XCTAssertEqual(metrics.acceptedChunkCount, 1)
+        XCTAssertEqual(metrics.droppedAudioFrameCount, 12)
+        XCTAssertEqual(metrics.droppedAudioSampleCount, 12)
+        XCTAssertEqual(microphone.stopCount, 1)
+    }
+
     func testIngressOverloadStopsAdapterThatAcquiresResourcesAfterTeardown() async throws {
         let events = MeetingEventRecorder()
         let producer = MeetingTranscriptProducer(
