@@ -9,7 +9,7 @@ updated_at: 2026-09-24T12:15:43Z
 recording_state: recording
 checkpoint_reason: checkpoint
 segment_count: 2
-note_metadata: {"origin": "generated", "state": "pending", "source_sha256": "388f224be90960ffc8520e70288f66fc731925ada2676857ce1815baab264d3c", "error_code": null}
+note_metadata: {"title": "Microphone check", "summary": "A microphone check used a sentence about a blue bicycle beside a red umbrella, followed by a repeated request to repeat the sentence.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-24T12:15:57.800830+00:00", "origin": "generated", "state": "ready", "source_sha256": "388f224be90960ffc8520e70288f66fc731925ada2676857ce1815baab264d3c", "generated_source_sha256": "388f224be90960ffc8520e70288f66fc731925ada2676857ce1815baab264d3c"}
 ---
 
 ## Transcript
