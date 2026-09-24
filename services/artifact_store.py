@@ -813,6 +813,12 @@ class ArtifactStore:
         except (OSError, json.JSONDecodeError, AttributeError):
             pass
 
+        # Git object IDs bind the already verified tree and history to this
+        # exact head. Rechecking every ticket and note for an unchanged head
+        # makes ordinary board writes hold the shared writer unnecessarily.
+        if cached_head == head:
+            return
+
         if cached_head:
             history = [
                 line.split()
@@ -844,21 +850,37 @@ class ArtifactStore:
                     )
                 expected_parent = line[0]
 
+        verified_entries = self._tree_entries(cached_head) if cached_head else {}
+        entries = verified_entries
         for line in history:
-            for entry in self._tree_entries(line[0]).values():
+            next_entries = self._tree_entries(line[0])
+            for path, entry in next_entries.items():
+                if entries.get(path) == entry:
+                    continue
                 _validate_allowlisted_path(entry.path)
                 if entry.mode != "100644" or entry.kind != "blob":
                     raise ArtifactValidationError(
                         f"artifact tree contains unsupported {entry.mode} {entry.kind}: {entry.path}"
                     )
-        entries = self._tree_entries(head)
+            entries = next_entries
         config_entry = entries.get(".orchestrator/config.toml")
         if not config_entry:
             raise ArtifactValidationError("artifact tree has no .orchestrator/config.toml")
-        self._validate_config(self._cat_blob(config_entry.oid))
-        for entry in entries.values():
+        changed_paths = {
+            path for path in entries.keys() | verified_entries.keys()
+            if entries.get(path) != verified_entries.get(path)
+        }
+        if ".orchestrator/config.toml" in changed_paths:
+            self._validate_config(self._cat_blob(config_entry.oid))
+        for path in changed_paths & entries.keys():
+            entry = entries[path]
             self._validate_content_for_path(entry.path, self._cat_blob(entry.oid))
-        self._validate_note_catalog_entries(entries)
+        if not cached_head or any(
+            path == ".orchestrator/note-index.jsonl"
+            or path.startswith(".orchestrator/notes/")
+            for path in changed_paths
+        ):
+            self._validate_note_catalog_entries(entries)
         self._write_json_atomic(
             self.history_verification_path,
             {"version": 1, "project_id": self.project_id, "commit_id": head},

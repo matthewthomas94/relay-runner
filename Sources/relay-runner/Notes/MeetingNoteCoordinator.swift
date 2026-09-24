@@ -399,7 +399,12 @@ actor MeetingNoteCoordinator {
                 durableCheckpointSink: durableCheckpointSink,
                 eventSink: eventSink
             )
-            return MeetingNoteCaptureSession(producer: producer)
+            // Persist roughly 100 ms per source instead of rewriting the
+            // recovery journal for every hardware callback.
+            return MeetingNoteCaptureSession(
+                producer: producer,
+                minimumBatchSamples: 1_600
+            )
         }
     }
 
@@ -810,6 +815,20 @@ actor MeetingNoteCoordinator {
                     descriptors: checkpoint.pendingAudio
                 )
                 try await capture.replayAcceptedAudio(audio)
+                // A final window may retire all but its overlap during the
+                // first replay. Drain that smaller retained tail before the
+                // same Stop attempts completion; a later user click must not
+                // be required to replay it.
+                if resolution == .finalize {
+                    let remaining = await capture.checkpoint().pendingAudio
+                    if !remaining.isEmpty && remaining.count < checkpoint.pendingAudio.count {
+                        let tail = try await recoveryStore.loadAudio(
+                            sessionID: sessionID,
+                            descriptors: remaining
+                        )
+                        try await capture.replayAcceptedAudio(tail)
+                    }
+                }
             }
             journal.producerCheckpoint = await capture.checkpoint()
             if let issue = applyBufferedEvents(to: &journal) {
@@ -822,7 +841,7 @@ actor MeetingNoteCoordinator {
             try await recoveryStore.save(journal)
 
             if resolution == .finalize {
-                return try await stop()
+                return try await performStop(allowFailedCaptureRecovery: false)
             }
             _ = try await publishCheckpoint(
                 reason: .pause,
@@ -861,7 +880,9 @@ actor MeetingNoteCoordinator {
         return true
     }
 
-    private func performStop() async throws -> MeetingNoteCoordinatorSnapshot {
+    private func performStop(
+        allowFailedCaptureRecovery: Bool = true
+    ) async throws -> MeetingNoteCoordinatorSnapshot {
         guard let runtime, var journal else {
             throw MeetingNoteCoordinatorError.captureUnavailable
         }
@@ -925,6 +946,16 @@ actor MeetingNoteCoordinator {
             return snapshot()
         } catch {
             try? await markInterrupted(error)
+            if allowFailedCaptureRecovery,
+               error as? MeetingProducerError == .backpressureExceeded,
+               self.runtime == nil,
+               phase == .error {
+                return try await resolveRecovery(
+                    sessionID: journal.sessionID,
+                    projectScopeToken: activeScopeToken,
+                    resolution: .finalize
+                )
+            }
             throw error
         }
     }
