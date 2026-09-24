@@ -54,7 +54,7 @@ actor MeetingNoteCaptureSession {
     }
 
     func start(
-        initiallyPaused: Bool = CapsLockGesture.isCapsLockOn(),
+        initiallyPaused: Bool = false,
         resume checkpoint: MeetingProducerCheckpoint? = nil
     ) async throws {
         try await producer.start(

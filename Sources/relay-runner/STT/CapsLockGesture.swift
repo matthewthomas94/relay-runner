@@ -252,6 +252,7 @@ final class CapsLockGesture {
     }
 
     private func handleModifierMonitorEvent(_ event: NSEvent) {
+        guard !stoppingMonitors else { return }
         switch event.type {
         case .flagsChanged:
             handleModifierEvent(event)
@@ -380,6 +381,7 @@ final class CapsLockGesture {
     }
 
     private func handleKeyEvent(_ event: NSEvent) {
+        guard !stoppingMonitors else { return }
         manualKeyDown = nil
 
         if event.type == .flagsChanged {
@@ -403,7 +405,12 @@ final class CapsLockGesture {
         }
     }
 
+    func stopMonitoring() {
+        stopKeyMonitor()
+    }
+
     private func stopKeyMonitor() {
+        guard !stoppingMonitors else { return }
         stoppingMonitors = true
         globalMonitorRetryWorkItem?.cancel()
         globalMonitorRetryWorkItem = nil

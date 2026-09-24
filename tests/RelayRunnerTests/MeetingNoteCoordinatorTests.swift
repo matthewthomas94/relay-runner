@@ -255,7 +255,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         )
         await writer.failNextUpdate()
 
-        await coordinator.setCapsLock(isOn: true)
+        await coordinator.setPaused(true)
         let failedPause = await coordinator.snapshot()
         XCTAssertEqual(failedPause.phase, .error)
 
@@ -288,7 +288,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         let firstCapture = try XCTUnwrap(captures.latest())
         await writer.failNextUpdate()
 
-        await coordinator.setCapsLock(isOn: false)
+        await coordinator.setPaused(false)
 
         let failed = await coordinator.snapshot()
         let offers = try await coordinator.recoveryOffers()
@@ -333,7 +333,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         )
         await writer.suspendNextUpdate()
 
-        let pauseTask = Task { await coordinator.setCapsLock(isOn: true) }
+        let pauseTask = Task { await coordinator.setPaused(true) }
         await writer.waitForSuspendedUpdate()
         let stopTask = Task { try await coordinator.stop() }
         for _ in 0..<200 {
@@ -375,7 +375,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             initiallyPaused: true
         )
         await writer.suspendNextUpdate()
-        let resumeTask = Task { await coordinator.setCapsLock(isOn: false) }
+        let resumeTask = Task { await coordinator.setPaused(false) }
         await writer.waitForSuspendedUpdate()
         let capture = try XCTUnwrap(captures.latest())
         let recordingBeforeStop = await capture.isRecording
@@ -663,6 +663,40 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(acknowledged?.producerCheckpoint?.durableRevisions, [])
     }
 
+    func testOptionTogglesUseDesiredStateDuringHeldPersistence() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        let capture = try XCTUnwrap(captures.latest())
+        await writer.suspendNextUpdate()
+
+        let first = Task { await coordinator.togglePause() }
+        await writer.waitForSuspendedUpdate()
+        let second = Task { await coordinator.togglePause() }
+        let resumedPromptly = await waitForCaptureCounts(capture, pauseCount: 1, resumeCount: 1)
+        XCTAssertTrue(resumedPromptly)
+        let third = Task { await coordinator.togglePause() }
+        let repausedPromptly = await waitForCaptureCounts(capture, pauseCount: 2, resumeCount: 1)
+        XCTAssertTrue(repausedPromptly)
+        let phase = await coordinator.snapshot().phase
+        XCTAssertEqual(phase, .paused)
+
+        await writer.resumeSuspendedUpdate()
+        await first.value
+        await second.value
+        await third.value
+        let updates = await writer.updates
+        XCTAssertEqual(updates.map(\.update.checkpointReason), [.pause, .resume, .pause])
+        let finalPhase = await coordinator.snapshot().phase
+        XCTAssertEqual(finalPhase, .paused)
+    }
+
     func testHeldPauseWriterDoesNotDelaySubsequentResumeAndPauseGates() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
@@ -682,7 +716,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         let capture = try XCTUnwrap(captures.latest())
         await writer.suspendNextUpdate()
 
-        let pauseTask = Task { await coordinator.setCapsLock(isOn: true) }
+        let pauseTask = Task { await coordinator.setPaused(true) }
         await writer.waitForSuspendedUpdate()
 
         let paused = await coordinator.snapshot()
@@ -694,13 +728,13 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertTrue(snapshots.snapshots.contains { $0.phase == .paused })
         XCTAssertTrue(committedWhileDelayed.isEmpty)
 
-        let resumeTask = Task { await coordinator.setCapsLock(isOn: false) }
+        let resumeTask = Task { await coordinator.setPaused(false) }
         let resumedPromptly = await waitForCaptureCounts(
             capture,
             pauseCount: 1,
             resumeCount: 1
         )
-        let pauseAgainTask = Task { await coordinator.setCapsLock(isOn: true) }
+        let pauseAgainTask = Task { await coordinator.setPaused(true) }
         let repausedPromptly = await waitForCaptureCounts(
             capture,
             pauseCount: 2,
@@ -757,7 +791,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         let capture = try XCTUnwrap(captures.latest())
         await capture.suspendNextPause()
 
-        let pauseTask = Task { await coordinator.setCapsLock(isOn: true) }
+        let pauseTask = Task { await coordinator.setPaused(true) }
         await capture.waitForSuspendedPause()
 
         let beforeAcknowledgement = await coordinator.snapshot()
@@ -791,7 +825,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         let capture = try XCTUnwrap(captures.latest())
         await writer.suspendNextUpdate()
 
-        let resumeTask = Task { await coordinator.setCapsLock(isOn: false) }
+        let resumeTask = Task { await coordinator.setPaused(false) }
         await writer.waitForSuspendedUpdate()
 
         let resumed = await coordinator.snapshot()
@@ -803,7 +837,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertTrue(snapshots.snapshots.contains { $0.phase == .recording })
         XCTAssertTrue(committedWhileDelayed.isEmpty)
 
-        let pauseTask = Task { await coordinator.setCapsLock(isOn: true) }
+        let pauseTask = Task { await coordinator.setPaused(true) }
         let pausedPromptly = await waitForCaptureCounts(
             capture,
             pauseCount: 1,
@@ -871,10 +905,10 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
 
         let checkpointed = try await coordinator.checkpointNow()
         XCTAssertEqual(checkpointed.phase, .recording)
-        await coordinator.setCapsLock(isOn: true)
+        await coordinator.setPaused(true)
         let paused = await coordinator.snapshot()
         XCTAssertEqual(paused.phase, .paused)
-        await coordinator.setCapsLock(isOn: false)
+        await coordinator.setPaused(false)
         let resumed = await coordinator.snapshot()
         XCTAssertEqual(resumed.phase, .recording)
         let saved = try await coordinator.stop()
@@ -979,7 +1013,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             )
             let originalNoteID = try XCTUnwrap(started.noteID)
             if pauseBeforeSwitch {
-                await coordinator.setCapsLock(isOn: true)
+                await coordinator.setPaused(true)
                 let paused = await coordinator.snapshot()
                 XCTAssertEqual(paused.phase, .paused)
             }
@@ -1331,11 +1365,11 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             XCTAssertEqual(error, .foregroundBusy)
         }
 
-        await coordinator.setCapsLock(isOn: true)
-        await coordinator.setCapsLock(isOn: false)
-        await coordinator.setCapsLock(isOn: false)
-        await coordinator.setCapsLock(isOn: true)
-        await coordinator.setCapsLock(isOn: true)
+        await coordinator.setPaused(true)
+        await coordinator.setPaused(false)
+        await coordinator.setPaused(false)
+        await coordinator.setPaused(true)
+        await coordinator.setPaused(true)
         let paused = await coordinator.snapshot()
         let capture = try XCTUnwrap(captures.latest())
         let resumeCount = await capture.resumeCount
