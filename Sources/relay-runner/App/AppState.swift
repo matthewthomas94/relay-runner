@@ -202,6 +202,7 @@ final class AppState {
     @ObservationIgnored private var meetingNoteStartTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
     @ObservationIgnored private var meetingNoteRecoveryTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
     @ObservationIgnored private var meetingNoteOptionGesture: NoteOptionGesture?
+    @ObservationIgnored private var meetingNoteGestureGeneration = 0
     @ObservationIgnored private var meetingNoteTransitionID = 0
 
     var serviceLifecycleMessage: String?
@@ -1338,18 +1339,29 @@ final class AppState {
             return
         }
         let transitionID = meetingNoteTransitionID
-        meetingNoteOptionGesture = NoteOptionGesture { [weak self] in
+        let gestureGeneration = meetingNoteGestureGeneration
+        meetingNoteOptionGesture = NoteOptionGesture(onToggle: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, transitionID == self.meetingNoteTransitionID,
+                      gestureGeneration == self.meetingNoteGestureGeneration,
                       self.meetingNoteSnapshot.phase == .recording
                         || self.meetingNoteSnapshot.phase == .paused,
                       let coordinator = self.meetingNoteCoordinator else { return }
                 await coordinator.togglePause()
             }
-        }
+        }, onWorkspaceToggle: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, transitionID == self.meetingNoteTransitionID,
+                      gestureGeneration == self.meetingNoteGestureGeneration,
+                      self.meetingNoteSnapshot.phase == .recording
+                        || self.meetingNoteSnapshot.phase == .paused else { return }
+                _ = self.toggleBoard(recognizedAt: CACurrentMediaTime())
+            }
+        })
     }
 
     private func stopMeetingNoteOptionGesture() {
+        meetingNoteGestureGeneration &+= 1
         meetingNoteOptionGesture?.stop()
         meetingNoteOptionGesture = nil
     }
@@ -2772,9 +2784,8 @@ final class AppState {
         // Workspace overlay — install Esc dismissal once macOS has granted
         // either global-event permission. Accessibility is the normal setup
         // path; an existing Input Monitoring grant remains compatible. The
-        // double-tap Shift board trigger is
-        // emitted by the STT gesture monitor so it shares the same recovery
-        // path as Option/Control activation gestures.
+        // double-tap Shift board trigger is emitted by the STT gesture monitor
+        // in voice mode and by the note gesture monitor while taking notes.
         if permissions.accessibility == .granted || permissions.inputMonitoring == .granted {
             programBoardOverlay.installGlobalDismissHotkey()
         }
