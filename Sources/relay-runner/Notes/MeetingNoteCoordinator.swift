@@ -526,11 +526,21 @@ actor MeetingNoteCoordinator {
         }
     }
 
-    func setCapsLock(isOn: Bool) async {
+    func togglePause() async {
+        guard phase == .recording || phase == .paused else { return }
+        desiredPaused.toggle()
+        await reconcileDesiredPause()
+    }
+
+    func setPaused(_ isPaused: Bool) async {
         guard phase == .recording || phase == .paused || pauseReconciliationRunning else {
             return
         }
-        desiredPaused = isOn
+        desiredPaused = isPaused
+        await reconcileDesiredPause()
+    }
+
+    private func reconcileDesiredPause() async {
         if !pauseReconciliationRunning {
             pauseReconciliationRunning = true
             do {

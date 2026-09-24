@@ -219,6 +219,7 @@ final class STTEngine: @unchecked Sendable {
     }
 
     func stop() {
+        gesture.stopMonitoring()
         audioBuffer.accepting = false
         captureInterruptionLock.lock()
         captureInterruptionEpoch &+= 1

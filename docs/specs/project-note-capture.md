@@ -110,8 +110,8 @@ use, thermal behavior, and real simultaneous paths.
 
 ## Pause, stop, failure, and replay
 
-The capture session reads the actual Caps Lock state by default. Starting while
-Caps Lock is on prepares the local model but starts paused and accepts no audio.
+A new note starts recording regardless of Caps Lock. A recovered note starts
+paused until the user explicitly resumes it with double-tap Option.
 The exclusive owner calls `pause()` to stop every adapter that successfully
 started, but first closes the capture ingress at the pause request boundary.
 Ingress submission and close share one lock-held gate, so no callback can enter
@@ -233,9 +233,10 @@ Codex or Claude session. A local writer failure blocks launch and preserves
 recovery. A response whose sync state is `pending` is still a successful local
 save and does not block the switch. Daemon-dispatched workers are not touched.
 
-While note mode owns the foreground, its dedicated actual-state Caps Lock poll
-is the only key route: ON pauses before later audio can enter, OFF resumes the
-same note, and repeated states are idempotent. Ordinary STT routing is restored
-only after successful note teardown. Recorder presentation maps `recording` to
+While note mode owns the foreground, a clean double-tap Option toggles pause
+and resume. Single taps, held Option, and Option keyboard shortcuts do not
+toggle. Caps Lock does not control notes. Ordinary STT routing, including Option
+replay and Caps Lock activation, is restored only after successful note teardown.
+Recorder presentation maps `recording` to
 the expanded orange listening glyph with exactly **Taking notes**, and `paused`
 to the expanded non-animated white-only glyph with exactly **Paused**.

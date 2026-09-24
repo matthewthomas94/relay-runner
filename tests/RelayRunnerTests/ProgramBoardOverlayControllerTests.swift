@@ -327,7 +327,7 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             ProgramNoteToolbarPresentation(
                 title: "Stop",
                 systemName: "stop.fill",
-                help: "Stop and save the active note"
+                help: "Double-tap Option to pause or resume; Stop saves the note"
             )
         )
         XCTAssertEqual(ProgramNoteToolbarPresentation.resolve(phase: .paused).title, "Stop")

@@ -88,7 +88,7 @@ actor MeetingTranscriptProducer {
     }
 
     func start(
-        initiallyPaused: Bool = CapsLockGesture.isCapsLockOn(),
+        initiallyPaused: Bool = false,
         resume checkpoint: MeetingProducerCheckpoint? = nil,
         timelineOriginNanoseconds: UInt64? = nil
     ) async throws {

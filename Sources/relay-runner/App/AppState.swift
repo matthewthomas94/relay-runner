@@ -201,7 +201,7 @@ final class AppState {
     @ObservationIgnored private var meetingNoteCoordinatorNotificationID: UUID?
     @ObservationIgnored private var meetingNoteStartTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
     @ObservationIgnored private var meetingNoteRecoveryTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
-    @ObservationIgnored private var meetingNoteCapsLockTimer: Timer?
+    @ObservationIgnored private var meetingNoteOptionGesture: NoteOptionGesture?
     @ObservationIgnored private var meetingNoteTransitionID = 0
 
     var serviceLifecycleMessage: String?
@@ -1040,7 +1040,7 @@ final class AppState {
         sttEngine = nil
         sttSetupStartedAt = nil
         sttSetupSucceeded = false
-        stopMeetingNoteCapsLockPolling()
+        stopMeetingNoteOptionGesture()
 
         let coordinator = meetingNoteCoordinator ?? makeMeetingNoteCoordinator()
         meetingNoteCoordinator = coordinator
@@ -1050,7 +1050,7 @@ final class AppState {
             return try await coordinator.start(
                 project: context.binding,
                 projectScopeToken: context.scopeToken,
-                initiallyPaused: CapsLockGesture.isCapsLockOn()
+                initiallyPaused: false
             )
         }
         meetingNoteStartTask = task
@@ -1061,7 +1061,7 @@ final class AppState {
                     guard let self, transitionID == self.meetingNoteTransitionID else { return }
                     self.meetingNoteStartTask = nil
                     self.applyMeetingNoteSnapshot(snapshot)
-                    self.startMeetingNoteCapsLockPolling()
+                    self.startMeetingNoteOptionGesture()
                 }
             } catch {
                 let currentSnapshot = await coordinator.snapshot()
@@ -1109,7 +1109,7 @@ final class AppState {
         let pendingRecoveryTask = meetingNoteRecoveryTask
         meetingNoteTransitionID &+= 1
         let transitionID = meetingNoteTransitionID
-        stopMeetingNoteCapsLockPolling()
+        stopMeetingNoteOptionGesture()
         applyMeetingNoteSnapshot(Self.stoppingMeetingNoteSnapshot(from: meetingNoteSnapshot))
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1151,7 +1151,7 @@ final class AppState {
         meetingNoteCoordinator = coordinator
         meetingNoteTransitionID &+= 1
         let transitionID = meetingNoteTransitionID
-        stopMeetingNoteCapsLockPolling()
+        stopMeetingNoteOptionGesture()
         let reservedSnapshot = MeetingNoteCoordinatorSnapshot(
             phase: .preparing,
             noteID: nil,
@@ -1197,7 +1197,7 @@ final class AppState {
             meetingNoteRecoveryTask = nil
             applyMeetingNoteSnapshot(snapshot)
             if snapshot.phase == .paused {
-                startMeetingNoteCapsLockPolling()
+                startMeetingNoteOptionGesture()
             } else if snapshot.phase == .saved {
                 restoreOrdinaryAwarenessAfterNote()
             }
@@ -1230,7 +1230,7 @@ final class AppState {
         }
         let snapshot = try await coordinator.resumeRecoveredCapture()
         applyMeetingNoteSnapshot(snapshot)
-        startMeetingNoteCapsLockPolling()
+        startMeetingNoteOptionGesture()
         return snapshot
     }
 
@@ -1315,7 +1315,7 @@ final class AppState {
                           self.meetingNoteSnapshot.noteID == nil
                             || self.meetingNoteSnapshot.noteID == snapshot.noteID else { return }
                     if snapshot.phase != .recording && snapshot.phase != .paused {
-                        self.stopMeetingNoteCapsLockPolling()
+                        self.stopMeetingNoteOptionGesture()
                     }
                     self.applyMeetingNoteSnapshot(snapshot)
                 }
@@ -1332,39 +1332,30 @@ final class AppState {
         )
     }
 
-    private func startMeetingNoteCapsLockPolling() {
-        stopMeetingNoteCapsLockPolling()
+    private func startMeetingNoteOptionGesture() {
+        stopMeetingNoteOptionGesture()
         guard meetingNoteSnapshot.phase == .recording || meetingNoteSnapshot.phase == .paused else {
             return
         }
-        var previous = CapsLockGesture.isCapsLockOn()
-        let timer = Timer(timeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
-            guard let self,
-                  let coordinator = self.meetingNoteCoordinator,
-                  self.meetingNoteSnapshot.phase == .recording
-                    || self.meetingNoteSnapshot.phase == .paused else { return }
-            let current = CapsLockGesture.isCapsLockOn()
-            guard current != previous else { return }
-            previous = current
-            Task { [weak self] in
-                await coordinator.setCapsLock(isOn: current)
-                let snapshot = await coordinator.snapshot()
-                await MainActor.run { [weak self] in
-                    self?.applyMeetingNoteSnapshot(snapshot)
-                }
+        let transitionID = meetingNoteTransitionID
+        meetingNoteOptionGesture = NoteOptionGesture { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, transitionID == self.meetingNoteTransitionID,
+                      self.meetingNoteSnapshot.phase == .recording
+                        || self.meetingNoteSnapshot.phase == .paused,
+                      let coordinator = self.meetingNoteCoordinator else { return }
+                await coordinator.togglePause()
             }
         }
-        RunLoop.main.add(timer, forMode: .common)
-        meetingNoteCapsLockTimer = timer
     }
 
-    private func stopMeetingNoteCapsLockPolling() {
-        meetingNoteCapsLockTimer?.invalidate()
-        meetingNoteCapsLockTimer = nil
+    private func stopMeetingNoteOptionGesture() {
+        meetingNoteOptionGesture?.stop()
+        meetingNoteOptionGesture = nil
     }
 
     private func restoreOrdinaryAwarenessAfterNote() {
-        stopMeetingNoteCapsLockPolling()
+        stopMeetingNoteOptionGesture()
         meetingNoteCoordinator = nil
         meetingNoteCoordinatorNotificationID = nil
         meetingNoteStartTask = nil
@@ -1439,7 +1430,7 @@ final class AppState {
 
     /// Full shutdown (for app quit).
     func stopServices() {
-        stopMeetingNoteCapsLockPolling()
+        stopMeetingNoteOptionGesture()
         guard isRunning else {
             workspaceDiscoveryTask?.cancel()
             workspaceDiscoveryTask = nil
@@ -1800,7 +1791,7 @@ final class AppState {
         let pendingRecoveryTask = meetingNoteRecoveryTask
         meetingNoteTransitionID &+= 1
         let transitionID = meetingNoteTransitionID
-        stopMeetingNoteCapsLockPolling()
+        stopMeetingNoteOptionGesture()
         applyMeetingNoteSnapshot(Self.stoppingMeetingNoteSnapshot(from: meetingNoteSnapshot))
 
         Task { @MainActor [weak self] in

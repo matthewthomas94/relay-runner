@@ -4086,7 +4086,7 @@ struct ProgramNoteToolbarPresentation: Equatable {
             ? ProgramNoteToolbarPresentation(
                 title: "Stop",
                 systemName: "stop.fill",
-                help: "Stop and save the active note"
+                help: "Double-tap Option to pause or resume; Stop saves the note"
             )
             : ProgramNoteToolbarPresentation(
                 title: "Start Note Taker",

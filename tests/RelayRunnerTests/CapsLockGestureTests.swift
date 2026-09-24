@@ -56,6 +56,22 @@ final class CapsLockGestureTests: XCTestCase {
         XCTAssertTrue(diagnostics.contains { $0.contains("monitors stopped count=2") })
     }
 
+    func testStoppedVoiceMonitorCannotReplayAfterNoteModeTakesOwnership() {
+        var global: ((NSEvent) -> Void)?
+        var local: ((NSEvent) -> NSEvent?)?
+        var removals = 0
+        let gesture = CapsLockGesture(
+            globalMonitorInstaller: { _, handler in global = handler; return NSObject() },
+            localMonitorInstaller: { _, handler in local = handler; return NSObject() },
+            monitorRemover: { _ in removals += 1 }
+        )
+        gesture.stopMonitoring()
+        sendDoubleTap(.option, keyCode: 58, to: local)
+        global?(modifierEvent(flags: [.option], keyCode: 58))
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+        XCTAssertEqual(removals, 2)
+    }
+
     func testForegroundModifierDownUpEmitsExactlyOnePlay() {
         var localHandler: ((NSEvent) -> NSEvent?)?
         let gesture = CapsLockGesture(
