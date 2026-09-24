@@ -8,20 +8,69 @@ final class NoteOptionGestureTests: XCTestCase {
         var global: ((NSEvent) -> Void)?
         var removed = 0
         var toggles = 0
+        var workspaceToggles = 0
         let gesture = NoteOptionGesture(
             globalInstaller: { _, handler in global = handler; return NSObject() },
             localInstaller: { _, handler in local = handler; return NSObject() },
             remover: { _ in removed += 1 },
-            onToggle: { toggles += 1 }
+            onToggle: { toggles += 1 },
+            onWorkspaceToggle: { workspaceToggles += 1 }
         )
         sendDoubleTap { _ = local?($0) }
         XCTAssertEqual(toggles, 1)
         sendDoubleTap { global?($0) }
         XCTAssertEqual(toggles, 2)
+        sendShiftDoubleTap { _ = local?($0) }
+        XCTAssertEqual(workspaceToggles, 1)
+        sendShiftDoubleTap { global?($0) }
+        XCTAssertEqual(workspaceToggles, 2)
+        XCTAssertEqual(toggles, 2)
         gesture.stop()
         sendDoubleTap { global?($0) }
+        sendShiftDoubleTap { global?($0) }
         XCTAssertEqual(toggles, 2)
+        XCTAssertEqual(workspaceToggles, 2)
         XCTAssertEqual(removed, 2)
+    }
+
+    func testShiftDoubleTapAcceptsEitherKeyAndCapsLockWithoutOptionToggle() {
+        var shift = NoteShiftDoubleTap()
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift, .capsLock], 0, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.capsLock], 0.05, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift, .capsLock], 0.2, keyCode: 60)))
+        XCTAssertTrue(shift.handle(event(.flagsChanged, [.capsLock], 0.25, keyCode: 60)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift], 0.4, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [], 0.45, keyCode: 56)))
+    }
+
+    func testShiftHoldChordTypingAndStaleTapDoNotToggle() {
+        var shift = NoteShiftDoubleTap()
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift], 0, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [], 0.6, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift], 0.7, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [], 0.75, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift, .option], 0.9, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.option], 0.95, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift], 1.1, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [], 1.15, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift], 1.8, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [], 1.85, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift], 2, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.keyDown, [.shift], 2.05, keyCode: 0)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [], 2.1, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift], 2.2, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [], 2.25, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift], 2.3, keyCode: 56)))
+        XCTAssertTrue(shift.handle(event(.flagsChanged, [], 2.35, keyCode: 56)))
+    }
+
+    func testShiftTapDoesNotCarryAcrossMonitorReset() {
+        var shift = NoteShiftDoubleTap()
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift], 0, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [], 0.05, keyCode: 56)))
+        shift.reset()
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [.shift], 0.2, keyCode: 56)))
+        XCTAssertFalse(shift.handle(event(.flagsChanged, [], 0.25, keyCode: 56)))
     }
 
     func testSingleHoldShortcutAndStaleTapDoNotToggle() {
@@ -57,6 +106,13 @@ final class NoteOptionGestureTests: XCTestCase {
         send(event(.flagsChanged, [], 1.1))
         send(event(.flagsChanged, [.option], 1.2))
         send(event(.flagsChanged, [], 1.3))
+    }
+
+    private func sendShiftDoubleTap(_ send: (NSEvent) -> Void) {
+        send(event(.flagsChanged, [.shift], 1, keyCode: 56))
+        send(event(.flagsChanged, [], 1.1, keyCode: 56))
+        send(event(.flagsChanged, [.shift], 1.2, keyCode: 56))
+        send(event(.flagsChanged, [], 1.3, keyCode: 56))
     }
 
     private func event(
