@@ -5,11 +5,39 @@ artifact_id: note-ee5bd38c69fb7251791669cac8a95b23dd916af9
 project_id: 6d23b5b1-6da7-4056-b328-7ea8167388c0
 created_at: 2026-09-24T11:21:11Z
 capture_started_at: 2026-09-24T11:21:11Z
-updated_at: 2026-09-24T11:24:42Z
-recording_state: recording
-checkpoint_reason: resume
-segment_count: 0
-note_metadata: {"origin": "generated", "state": "empty", "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+updated_at: 2026-09-24T11:29:56Z
+recording_state: completed
+checkpoint_reason: complete
+segment_count: 9
+capture_ended_at: 2026-09-24T11:29:56Z
+note_metadata: {"origin": "generated", "state": "pending", "source_sha256": "6f0c5985cef4b75df0d007ccb5b251c4f85af3686c9732adfd1170793f6a9aac", "error_code": null}
 ---
 
 ## Transcript
+
+<!-- relay-note-segment {"captured_at":"2026-09-24T11:29:56Z","end_ms":203277,"segment_id":"e3091588-cb1d-426c-a5b6-1621ea14eee4-microphone-E2-S0","speaker":"microphone","start_ms":198277} -->
+Human microphone check the blue bicycle is beside
+
+<!-- relay-note-segment {"captured_at":"2026-09-24T11:29:56Z","end_ms":208277,"segment_id":"e3091588-cb1d-426c-a5b6-1621ea14eee4-microphone-E2-S80000","speaker":"microphone","start_ms":203277} -->
+The red umbrella. Repeat this sentence, repeat this sentence.
+
+<!-- relay-note-segment {"captured_at":"2026-09-24T11:29:56Z","end_ms":228273,"segment_id":"e3091588-cb1d-426c-a5b6-1621ea14eee4-system_audio-E2-S400000","speaker":"system_audio","start_ms":223273} -->
+Computer audio check. The silver lighthouse
+
+<!-- relay-note-segment {"captured_at":"2026-09-24T11:29:56Z","end_ms":228277,"segment_id":"e3091588-cb1d-426c-a5b6-1621ea14eee4-microphone-E2-S400000","speaker":"microphone","start_ms":223277} -->
+Computer Audio Chag, the Silver Lighthouse
+
+<!-- relay-note-segment {"captured_at":"2026-09-24T11:29:56Z","end_ms":233273,"segment_id":"e3091588-cb1d-426c-a5b6-1621ea14eee4-system_audio-E2-S480000","speaker":"system_audio","start_ms":228273} -->
+Overlooks the quiet harbor. Repeat this sentence, repeat this sentence, the final
+
+<!-- relay-note-segment {"captured_at":"2026-09-24T11:29:56Z","end_ms":233277,"segment_id":"e3091588-cb1d-426c-a5b6-1621ea14eee4-microphone-E2-S480000","speaker":"microphone","start_ms":228277} -->
+Overlooks the quiet harbor. Repeat this sentence. Repeat this sentence. The final
+
+<!-- relay-note-segment {"captured_at":"2026-09-24T11:29:56Z","end_ms":238273,"segment_id":"e3091588-cb1d-426c-a5b6-1621ea14eee4-system_audio-E2-S560000","speaker":"system_audio","start_ms":233273} -->
+Accepted sentence as Amber Telescope at sunset.
+
+<!-- relay-note-segment {"captured_at":"2026-09-24T11:29:56Z","end_ms":238277,"segment_id":"e3091588-cb1d-426c-a5b6-1621ea14eee4-microphone-E2-S560000","speaker":"microphone","start_ms":233277} -->
+Accepted sentence is amber telescope at sunset.
+
+<!-- relay-note-segment {"captured_at":"2026-09-24T11:29:56Z","end_ms":263277,"segment_id":"e3091588-cb1d-426c-a5b6-1621ea14eee4-microphone-E2-S960000","speaker":"microphone","start_ms":258277} -->
+I just bring it in.
