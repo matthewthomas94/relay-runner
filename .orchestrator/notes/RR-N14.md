@@ -10,7 +10,7 @@ recording_state: completed
 checkpoint_reason: complete
 segment_count: 9
 capture_ended_at: 2026-09-24T11:29:56Z
-note_metadata: {"origin": "generated", "state": "pending", "source_sha256": "6f0c5985cef4b75df0d007ccb5b251c4f85af3686c9732adfd1170793f6a9aac", "error_code": null}
+note_metadata: {"title": "Microphone and Computer Audio Check", "summary": "Microphone and computer audio checks used repeated phrases about a blue bicycle beside a red umbrella and a silver lighthouse overlooking a quiet harbor. The final accepted sentence was “amber telescope at sunset.”", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-24T11:30:17.288339+00:00", "origin": "generated", "state": "ready", "source_sha256": "6f0c5985cef4b75df0d007ccb5b251c4f85af3686c9732adfd1170793f6a9aac", "generated_source_sha256": "6f0c5985cef4b75df0d007ccb5b251c4f85af3686c9732adfd1170793f6a9aac"}
 ---
 
 ## Transcript
