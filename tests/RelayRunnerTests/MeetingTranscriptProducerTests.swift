@@ -1299,6 +1299,181 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertEqual(boundary.metrics.acceptedSamplesBySource[.systemAudio], 10)
     }
 
+    func testSilentTerminalOverlapRetiresAcceptedAudioWithoutInventingText() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-silent-terminal-overlap",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+        try await producer.start(initiallyPaused: false)
+        try await producer.ingest(.init(repeating: 0, count: 9), from: .systemAudio)
+        _ = try await producer.stop()
+
+        let checkpoint = await producer.checkpoint()
+        XCTAssertTrue(checkpoint.pendingAudio.isEmpty)
+        XCTAssertTrue(events.revisions.isEmpty)
+    }
+
+    func testStopRetiresBothSourceTailsPastOwnedBoundaryAcrossEpochs() async throws {
+        let accepted = MeetingAcceptedAudioRecorder()
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-terminal-overlap",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: request.sourceID == .microphone
+                        ? "Repeat this sentence. Repeat this sentence. sunset."
+                        : "system sunset.",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) },
+            eventSink: { events.record($0) }
+        )
+
+        try await producer.start(initiallyPaused: false, timelineOriginNanoseconds: 1_000_000_000)
+        try await producer.ingest([1, 1], from: .microphone, presentationTimeNanoseconds: 1_500_000_000)
+        try await producer.ingest([2, 2], from: .systemAudio, presentationTimeNanoseconds: 1_600_000_000)
+        try await producer.pause()
+        try await producer.resume()
+        try await producer.ingest(.init(repeating: 3, count: 8), from: .microphone)
+        try await producer.ingest([3], from: .microphone)
+        for _ in 0..<3 {
+            try await producer.ingest([4, 4, 4], from: .systemAudio)
+        }
+        let boundary = try await producer.stop()
+        let checkpoint = await producer.checkpoint()
+
+        XCTAssertTrue(checkpoint.pendingAudio.isEmpty)
+        XCTAssertEqual(boundary.metrics.acceptedSamplesBySource[.microphone], 11)
+        XCTAssertEqual(boundary.metrics.acceptedSamplesBySource[.systemAudio], 11)
+        XCTAssertEqual(events.revisions.filter { $0.isFinal && $0.text.contains("sunset") }.count, 4)
+        XCTAssertEqual(Set(events.revisions.filter(\.isFinal).map(\.segmentID)).count, 4)
+        XCTAssertEqual(accepted.audio.count, 7)
+    }
+
+    func testRecoveredStopRetiresTinyTailBeyondOwnedBoundary() async throws {
+        let accepted = MeetingAcceptedAudioRecorder()
+        let original = MeetingTranscriptProducer(
+            sessionID: "fixture-recovered-terminal-overlap",
+            transcriber: FakeMeetingTranscriber { _ in throw FixtureTranscriptionError.failedWindow },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) }
+        )
+        try await original.start(initiallyPaused: false)
+        try await original.ingest(.init(repeating: 1, count: 8), from: .microphone)
+        try await original.ingest([1], from: .microphone)
+        _ = try await original.stop()
+        let failed = await original.checkpoint()
+        XCTAssertEqual(failed.pendingAudio.count, 2)
+        var legacyJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(failed)) as? [String: Any]
+        )
+        legacyJSON.removeValue(forKey: "completed_tail_end_sample_by_epoch")
+        let legacyCheckpoint = try JSONDecoder().decode(
+            MeetingProducerCheckpoint.self,
+            from: JSONSerialization.data(withJSONObject: legacyJSON)
+        )
+
+        let events = MeetingEventRecorder()
+        let recovered = MeetingTranscriptProducer(
+            sessionID: "fixture-recovered-terminal-overlap",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "sunset", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+        try await recovered.start(initiallyPaused: false, resume: legacyCheckpoint)
+        try await recovered.replayAcceptedAudio(accepted.audio)
+        _ = try await recovered.stop()
+
+        let recoveredCheckpoint = await recovered.checkpoint()
+        XCTAssertTrue(recoveredCheckpoint.pendingAudio.isEmpty)
+        XCTAssertEqual(events.revisions.filter(\.isFinal).map(\.text), ["sunset"])
+    }
+
+    func testReplayRetiresCompletedTailOnlyAfterEarlierFailedWindow() async throws {
+        let accepted = MeetingAcceptedAudioRecorder()
+        let original = MeetingTranscriptProducer(
+            sessionID: "fixture-noncontiguous-tail",
+            transcriber: FakeMeetingTranscriber { request in
+                if request.isFinal && request.windowSequence == 0 {
+                    throw FixtureTranscriptionError.failedWindow
+                }
+                return MeetingTranscriptionResult(
+                    text: "sunset",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) }
+        )
+        try await original.start(initiallyPaused: false)
+        try await original.ingest(.init(repeating: 1, count: 17), from: .systemAudio)
+        _ = try await original.stop()
+        let persisted = try JSONDecoder().decode(
+            MeetingProducerCheckpoint.self,
+            from: JSONEncoder().encode(await original.checkpoint())
+        )
+        XCTAssertEqual(persisted.nextWindowSequenceByEpoch.values.first, 0)
+        XCTAssertEqual(persisted.completedWindowSequencesByEpoch.values.first, [1])
+        XCTAssertEqual(persisted.pendingAudio.count, 1)
+
+        let events = MeetingEventRecorder()
+        let recovered = MeetingTranscriptProducer(
+            sessionID: "fixture-noncontiguous-tail",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "first window", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+        try await recovered.start(initiallyPaused: false, resume: persisted)
+        try await recovered.replayAcceptedAudio(accepted.audio)
+        _ = try await recovered.stop()
+        let completed = await recovered.checkpoint()
+
+        XCTAssertTrue(completed.pendingAudio.isEmpty)
+        XCTAssertEqual(completed.nextWindowSequenceByEpoch.values.first, 2)
+        XCTAssertEqual(events.revisions.filter(\.isFinal).map(\.text), ["first window"])
+        XCTAssertEqual(completed.durableRevisions?.filter(\.isFinal).count, 2)
+    }
+
+    func testEmptyFinalKeepsDurablePartialTextAsFinal() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-empty-final-after-partial",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: request.isFinal ? "" : "at sunset.",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+        try await producer.start(initiallyPaused: false)
+        try await producer.ingest(.init(repeating: 1, count: 4), from: .systemAudio)
+        await producer.waitUntilIdle()
+        _ = try await producer.stop()
+
+        XCTAssertEqual(events.revisions.map(\.text), ["at sunset.", "at sunset."])
+        XCTAssertEqual(events.revisions.map(\.isFinal), [false, true])
+        XCTAssertEqual(events.revisions[0].segmentID, events.revisions[1].segmentID)
+        XCTAssertEqual(events.revisions[0].endMilliseconds, events.revisions[1].endMilliseconds)
+        let checkpoint = await producer.checkpoint()
+        XCTAssertTrue(checkpoint.pendingAudio.isEmpty)
+    }
+
     func testOwnedTokenRangesRemoveWindowOverlapWithoutSuppressingLaterSpeech() async throws {
         let events = MeetingEventRecorder()
         let producer = MeetingTranscriptProducer(
@@ -1481,6 +1656,7 @@ final class MeetingTranscriptProducerTests: XCTestCase {
             contextStartMilliseconds: 0,
             ownedStartMilliseconds: 0,
             ownedEndMilliseconds: 800,
+            ownedEndSample: 8,
             isFinal: true,
             samples: .init(repeating: 0.2, count: 10)
         )
@@ -1499,6 +1675,7 @@ final class MeetingTranscriptProducerTests: XCTestCase {
                 contextStartMilliseconds: 0,
                 ownedStartMilliseconds: 0,
                 ownedEndMilliseconds: 400,
+                ownedEndSample: 4,
                 isFinal: false,
                 samples: .init(repeating: 0.2, count: 4)
             )
@@ -2054,6 +2231,110 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertTrue(events.revisions.contains {
             $0.isFinal && $0.sourceID == .microphone && $0.text == "22 33"
         })
+    }
+
+    func testReviewBoundaryEmptyFinalDoesNotDuplicateOverlap() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "review-overlap-boundary",
+            transcriber: FakeMeetingTranscriber { request in
+                let tokens: [MeetingRecognizedToken]
+                if request.windowSequence == 0 && !request.isFinal {
+                    tokens = [.init(text: "single", startSeconds: 0.85, endSeconds: 0.90, confidence: 1)]
+                } else if request.windowSequence == 1 && request.isFinal {
+                    tokens = [.init(text: "single", startSeconds: 0.05, endSeconds: 0.10, confidence: 1)]
+                } else {
+                    tokens = []
+                }
+                return MeetingTranscriptionResult(text: "", tokens: tokens, processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+        try await producer.start(initiallyPaused: false)
+        try await producer.ingest(.init(repeating: 1, count: 9), from: .microphone)
+        await producer.waitUntilIdle()
+        try await producer.ingest([1], from: .microphone)
+        await producer.waitUntilIdle()
+        try await producer.ingest([1], from: .microphone)
+        _ = try await producer.stop()
+        let finals = events.revisions.filter(\.isFinal)
+        XCTAssertEqual(finals.map(\.text), ["single"])
+    }
+
+    func testEmptyFinalRetainsOnlyPartialWordsOwnedByItsWindow() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-mixed-partial-overlap",
+            transcriber: FakeMeetingTranscriber { request in
+                let tokens: [MeetingRecognizedToken]
+                if request.windowSequence == 0 && !request.isFinal {
+                    tokens = [
+                        .init(text: "first ", startSeconds: 0.2, endSeconds: 0.3, confidence: 1),
+                        .init(text: "single", startSeconds: 0.85, endSeconds: 0.9, confidence: 1),
+                    ]
+                } else if request.windowSequence == 1 && request.isFinal {
+                    tokens = [.init(text: "single", startSeconds: 0.05, endSeconds: 0.1, confidence: 1)]
+                } else {
+                    tokens = []
+                }
+                return MeetingTranscriptionResult(text: "", tokens: tokens, processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+        try await producer.start(initiallyPaused: false)
+        try await producer.ingest(.init(repeating: 1, count: 9), from: .microphone)
+        await producer.waitUntilIdle()
+        try await producer.ingest([1], from: .microphone)
+        await producer.waitUntilIdle()
+        try await producer.ingest([1], from: .microphone)
+        _ = try await producer.stop()
+
+        XCTAssertEqual(events.revisions.filter(\.isFinal).map(\.text), ["first", "single"])
+    }
+
+    func testEmptyFinalTailRetainsOverlapWordWhenNoNextWindowExists() async throws {
+        let accepted = MeetingAcceptedAudioRecorder()
+        let original = MeetingTranscriptProducer(
+            sessionID: "fixture-partial-tail-recovery",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: "",
+                    tokens: request.isFinal ? [] : [
+                        .init(text: "first ", startSeconds: 0.2, endSeconds: 0.3, confidence: 1),
+                        .init(text: "single", startSeconds: 0.85, endSeconds: 0.9, confidence: 1),
+                    ],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) }
+        )
+        try await original.start(initiallyPaused: false)
+        try await original.ingest(.init(repeating: 1, count: 9), from: .systemAudio)
+        await original.waitUntilIdle()
+        let checkpoint = try JSONDecoder().decode(
+            MeetingProducerCheckpoint.self,
+            from: JSONEncoder().encode(await original.checkpoint())
+        )
+
+        let events = MeetingEventRecorder()
+        let recovered = MeetingTranscriptProducer(
+            sessionID: "fixture-partial-tail-recovery",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+        try await recovered.start(initiallyPaused: false, resume: checkpoint)
+        try await recovered.replayAcceptedAudio(accepted.audio)
+        _ = try await recovered.stop()
+
+        XCTAssertEqual(events.revisions.filter(\.isFinal).map(\.text), ["first single"])
+        let completed = await recovered.checkpoint()
+        XCTAssertTrue(completed.pendingAudio.isEmpty)
     }
 
     private var smallConfiguration: MeetingTranscriptProducer.Configuration {

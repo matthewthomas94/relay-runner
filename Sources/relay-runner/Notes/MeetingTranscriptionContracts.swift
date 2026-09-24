@@ -111,6 +111,11 @@ struct MeetingRecognizedToken: Equatable, Sendable {
     let confidence: Float
 }
 
+struct MeetingRecognizedWord: Codable, Equatable, Sendable {
+    let text: String
+    let startMilliseconds: Double
+}
+
 struct MeetingTranscriptionRequest: Equatable, Sendable {
     let segmentID: String
     let sourceID: MeetingAudioSourceID
@@ -120,6 +125,7 @@ struct MeetingTranscriptionRequest: Equatable, Sendable {
     let contextStartMilliseconds: Int
     let ownedStartMilliseconds: Int
     let ownedEndMilliseconds: Int
+    let ownedEndSample: Int
     let isFinal: Bool
     let samples: [Float]
 }
@@ -140,6 +146,7 @@ struct MeetingTranscriptSegmentRevision: Codable, Equatable, Sendable {
     let endMilliseconds: Int
     let text: String
     let isFinal: Bool
+    var recognizedWords: [MeetingRecognizedWord]? = nil
 
     private enum CodingKeys: String, CodingKey {
         case segmentID = "segment_id"
@@ -151,6 +158,7 @@ struct MeetingTranscriptSegmentRevision: Codable, Equatable, Sendable {
         case endMilliseconds = "end_ms"
         case text
         case isFinal = "is_final"
+        case recognizedWords = "recognized_words"
     }
 
     func projectNoteSegment(capturedAt: String) -> RelayProjectNoteSegment {
@@ -214,6 +222,9 @@ struct MeetingProducerCheckpoint: Codable, Equatable, Sendable {
     let completedWindowSequencesByEpoch: [String: [Int]]
     let emittedRevisionBySegment: [String: Int]
     let finalRevisionBySegment: [String: Int]
+    /// Exact ends of completed final tails that extend beyond their owned window.
+    /// Optional for recovery journals written before this cursor existed.
+    var completedTailEndSampleByEpoch: [String: [Int: Int]]? = nil
     /// Text that must survive a crash after final-window completion but before
     /// the coordinator has published the corresponding segment.
     var durableRevisions: [MeetingTranscriptSegmentRevision]?
@@ -230,6 +241,7 @@ struct MeetingProducerCheckpoint: Codable, Equatable, Sendable {
         case completedWindowSequencesByEpoch = "completed_window_sequences_by_epoch"
         case emittedRevisionBySegment = "emitted_revision_by_segment"
         case finalRevisionBySegment = "final_revision_by_segment"
+        case completedTailEndSampleByEpoch = "completed_tail_end_sample_by_epoch"
         case durableRevisions = "durable_revisions"
         case pendingAudio = "pending_audio"
     }
