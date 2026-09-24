@@ -132,6 +132,7 @@ final class NoteOptionGesture {
     private var hasGlobalMonitor = false
     private var retry: DispatchWorkItem?
     private var stopped = false
+    private var optionEnabled = true
 
     init(
         globalInstaller: @escaping GlobalInstaller = { NSEvent.addGlobalMonitorForEvents(matching: $0, handler: $1) },
@@ -172,8 +173,14 @@ final class NoteOptionGesture {
 
     private func handle(_ event: NSEvent) {
         guard !stopped else { return }
-        if recognizer.handle(event) { onToggle() }
+        if optionEnabled && recognizer.handle(event) { onToggle() }
         if workspaceRecognizer.handle(event) { onWorkspaceToggle() }
+    }
+
+    func setOptionEnabled(_ enabled: Bool) {
+        guard optionEnabled != enabled else { return }
+        optionEnabled = enabled
+        recognizer.reset()
     }
 
     func stop() {

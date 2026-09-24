@@ -1042,6 +1042,7 @@ final class AppState {
         sttSetupStartedAt = nil
         sttSetupSucceeded = false
         stopMeetingNoteOptionGesture()
+        startMeetingNoteOptionGesture()
 
         let coordinator = meetingNoteCoordinator ?? makeMeetingNoteCoordinator()
         meetingNoteCoordinator = coordinator
@@ -1084,6 +1085,7 @@ final class AppState {
                     guard let self, transitionID == self.meetingNoteTransitionID else { return }
                     self.meetingNoteStartTask = nil
                     self.applyMeetingNoteSnapshot(failureSnapshot)
+                    self.startMeetingNoteOptionGesture()
                 }
             }
         }
@@ -1112,6 +1114,7 @@ final class AppState {
         let transitionID = meetingNoteTransitionID
         stopMeetingNoteOptionGesture()
         applyMeetingNoteSnapshot(Self.stoppingMeetingNoteSnapshot(from: meetingNoteSnapshot))
+        startMeetingNoteOptionGesture()
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -1166,6 +1169,7 @@ final class AppState {
         endSession()
         sttEngine?.stop()
         sttEngine = nil
+        startMeetingNoteOptionGesture()
 
         let task = Task { @MainActor [weak self] () throws -> MeetingNoteCoordinatorSnapshot in
             guard let self else {
@@ -1220,6 +1224,7 @@ final class AppState {
             } else {
                 applyMeetingNoteSnapshot(snapshot)
             }
+            startMeetingNoteOptionGesture()
             throw error
         }
     }
@@ -1275,6 +1280,13 @@ final class AppState {
 
     private func applyMeetingNoteSnapshot(_ snapshot: MeetingNoteCoordinatorSnapshot) {
         meetingNoteSnapshot = snapshot
+        if snapshot.phase.ownsForeground {
+            meetingNoteOptionGesture?.setOptionEnabled(
+                snapshot.phase == .recording || snapshot.phase == .paused
+            )
+        } else {
+            stopMeetingNoteOptionGesture()
+        }
         statusText = switch snapshot.phase {
         case .recording: snapshot.captureStatusMessage ?? "Taking notes"
         case .paused: "Notes paused"
@@ -1315,9 +1327,6 @@ final class AppState {
                           self.meetingNoteSnapshot.project == snapshot.project,
                           self.meetingNoteSnapshot.noteID == nil
                             || self.meetingNoteSnapshot.noteID == snapshot.noteID else { return }
-                    if snapshot.phase != .recording && snapshot.phase != .paused {
-                        self.stopMeetingNoteOptionGesture()
-                    }
                     self.applyMeetingNoteSnapshot(snapshot)
                 }
             },
@@ -1335,12 +1344,12 @@ final class AppState {
 
     private func startMeetingNoteOptionGesture() {
         stopMeetingNoteOptionGesture()
-        guard meetingNoteSnapshot.phase == .recording || meetingNoteSnapshot.phase == .paused else {
+        guard meetingNoteSnapshot.phase.ownsForeground, sttEngine == nil else {
             return
         }
         let transitionID = meetingNoteTransitionID
         let gestureGeneration = meetingNoteGestureGeneration
-        meetingNoteOptionGesture = NoteOptionGesture(onToggle: { [weak self] in
+        let gesture = NoteOptionGesture(onToggle: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, transitionID == self.meetingNoteTransitionID,
                       gestureGeneration == self.meetingNoteGestureGeneration,
@@ -1353,11 +1362,14 @@ final class AppState {
             Task { @MainActor [weak self] in
                 guard let self, transitionID == self.meetingNoteTransitionID,
                       gestureGeneration == self.meetingNoteGestureGeneration,
-                      self.meetingNoteSnapshot.phase == .recording
-                        || self.meetingNoteSnapshot.phase == .paused else { return }
+                      self.meetingNoteSnapshot.phase.ownsForeground else { return }
                 _ = self.toggleBoard(recognizedAt: CACurrentMediaTime())
             }
         })
+        gesture.setOptionEnabled(
+            meetingNoteSnapshot.phase == .recording || meetingNoteSnapshot.phase == .paused
+        )
+        meetingNoteOptionGesture = gesture
     }
 
     private func stopMeetingNoteOptionGesture() {
@@ -1805,6 +1817,7 @@ final class AppState {
         let transitionID = meetingNoteTransitionID
         stopMeetingNoteOptionGesture()
         applyMeetingNoteSnapshot(Self.stoppingMeetingNoteSnapshot(from: meetingNoteSnapshot))
+        startMeetingNoteOptionGesture()
 
         Task { @MainActor [weak self] in
             guard let self else { return }
