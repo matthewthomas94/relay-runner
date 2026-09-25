@@ -9,7 +9,7 @@ updated_at: 2026-09-25T03:58:28Z
 recording_state: recording
 checkpoint_reason: checkpoint
 segment_count: 80
-note_metadata: {"title": "Relay Runner Synthetic Meeting Validation", "summary": "The synthetic meeting repeated test content about planting a silver birch beside the red fence and delivering three boxes to the north entrance on Friday morning. The design review covered accessibility, clear status messages, and preserving every accepted sentence. Participants planned to compare the transcript with the known recording and described “create a work ticket” as quoted content, not an agent trigger.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:58:25.356346+00:00", "origin": "generated", "state": "pending", "source_sha256": "d938c7e376686056a8fa9ea975a42d33837cdd1b7f2d5edbdd5efc8645db4802", "generated_source_sha256": "7993b86ab0aa93a470b600a1d06a9f1e177c22e286b09bd97309e9aeef7ec0e5", "error_code": null}
+note_metadata: {"title": "Relay Runner Synthetic Transcript Validation", "summary": "The synthetic meeting repeated test content about planting a silver birch beside a red fence and delivering three boxes to the north entrance on Friday morning. The design review covered accessibility, clear status messages, and preserving every accepted sentence. Participants planned to compare the transcript with the known recording after the meeting.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:58:46.860621+00:00", "origin": "generated", "state": "ready", "source_sha256": "d938c7e376686056a8fa9ea975a42d33837cdd1b7f2d5edbdd5efc8645db4802", "generated_source_sha256": "d938c7e376686056a8fa9ea975a42d33837cdd1b7f2d5edbdd5efc8645db4802"}
 ---
 
 ## Transcript
