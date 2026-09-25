@@ -9,7 +9,7 @@ updated_at: 2026-09-25T03:48:42Z
 recording_state: paused
 checkpoint_reason: pause
 segment_count: 7
-note_metadata: {"title": "Check it out", "summary": "The speaker invites someone to take a look, without specifying what.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:46:45.371925+00:00", "origin": "generated", "state": "pending", "source_sha256": "45f6bafddbbdef0be571a01559135dc9c277d1542d284602727956f132e2ef3c", "generated_source_sha256": "ea356ec7d7fdd636740aaf245f9c44b1f4de85f939ee484b27d708ce2d862f43", "error_code": null}
+note_metadata: {"title": "Computer Audio Check", "summary": "A computer audio check used repeated phrases about a silver lighthouse overlooking a quiet harbor and an amber telescope at sunset.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:48:56.722845+00:00", "origin": "generated", "state": "ready", "source_sha256": "45f6bafddbbdef0be571a01559135dc9c277d1542d284602727956f132e2ef3c", "generated_source_sha256": "45f6bafddbbdef0be571a01559135dc9c277d1542d284602727956f132e2ef3c"}
 ---
 
 ## Transcript
