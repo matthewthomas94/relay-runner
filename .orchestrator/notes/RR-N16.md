@@ -10,7 +10,7 @@ recording_state: completed
 checkpoint_reason: complete
 segment_count: 14
 capture_ended_at: 2026-09-25T03:45:09Z
-note_metadata: {"title": "Throwback Game Comparisons and Audio Checks", "summary": "The game is compared to older Infamous games and Prototype, with enemies on walls or ceilings highlighted as distinctive. The recording also includes microphone and computer audio checks with repeated test phrases.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:45:11.506218+00:00", "origin": "generated", "state": "pending", "source_sha256": "36d2a1ed607766ca422cd847dea1d1094ea055131ca105cc8a6fa8ea0496f13c", "generated_source_sha256": "e14ca01a2ee599e11446654706cd3c4210f7d34baa5c0f030a95ede727cb162f", "error_code": null}
+note_metadata: {"title": "Throwback game impressions and audio checks", "summary": "The game is compared to older Infamous games and Prototype, with ceiling and wall encounters described as distinctive. The recording also includes microphone and computer audio checks with repeated test phrases.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:45:34.286858+00:00", "origin": "generated", "state": "ready", "source_sha256": "36d2a1ed607766ca422cd847dea1d1094ea055131ca105cc8a6fa8ea0496f13c", "generated_source_sha256": "36d2a1ed607766ca422cd847dea1d1094ea055131ca105cc8a6fa8ea0496f13c"}
 ---
 
 ## Transcript
