@@ -10,7 +10,7 @@ recording_state: completed
 checkpoint_reason: complete
 segment_count: 17
 capture_ended_at: 2026-09-25T03:53:52Z
-note_metadata: {"title": "Display Sleep and Wake Phrases", "summary": "Before display sleep, the phrase describes a silver lighthouse overlooking a quiet harbor; after display wake, an orange lantern shines beside a green window. The final accepted sentence is “Amber Telescope at Sunset.”", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:53:35.226416+00:00", "origin": "generated", "state": "pending", "source_sha256": "45304efbad1dee27b8be2e5f54ca1c9da8b74002b4cb112b49752c82edc0f973", "generated_source_sha256": "5958e13c6503c7342a0a0c11a22e9b39dd9d945ccde671002c3e5bf8a51d56d0", "error_code": null}
+note_metadata: {"title": "Phrases Before Display Sleep and After Wake", "summary": "Before display sleep, the phrase described a silver lighthouse overlooking a quiet harbor; after wake, an orange lantern shining beside a green window. The final accepted sentence was “Amber Telescope at Sunset.”", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:53:55.484819+00:00", "origin": "generated", "state": "ready", "source_sha256": "45304efbad1dee27b8be2e5f54ca1c9da8b74002b4cb112b49752c82edc0f973", "generated_source_sha256": "45304efbad1dee27b8be2e5f54ca1c9da8b74002b4cb112b49752c82edc0f973"}
 ---
 
 ## Transcript
