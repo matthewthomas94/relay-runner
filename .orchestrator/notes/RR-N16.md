@@ -9,7 +9,7 @@ updated_at: 2026-09-25T03:44:53Z
 recording_state: recording
 checkpoint_reason: checkpoint
 segment_count: 12
-note_metadata: {"title": "Throwback Game Comparisons and Unusual Enemy Placement", "summary": "The game is compared to older Infamous games and Prototype for its throwback feel. Enemies appearing on ceilings or walls at 90-degree angles stand out as unique and unlike other games the speaker has played.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:44:48.414946+00:00", "origin": "generated", "state": "pending", "source_sha256": "e14ca01a2ee599e11446654706cd3c4210f7d34baa5c0f030a95ede727cb162f", "generated_source_sha256": "f709ac6919b38513ae600237bf8573323c067095a76cffa8fa59c21a2be7d0b4", "error_code": null}
+note_metadata: {"title": "Throwback Game Comparisons and Audio Checks", "summary": "The game is compared to older Infamous games and Prototype, with enemies on walls or ceilings highlighted as distinctive. The recording also includes microphone and computer audio checks with repeated test phrases.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:45:11.506218+00:00", "origin": "generated", "state": "ready", "source_sha256": "e14ca01a2ee599e11446654706cd3c4210f7d34baa5c0f030a95ede727cb162f", "generated_source_sha256": "e14ca01a2ee599e11446654706cd3c4210f7d34baa5c0f030a95ede727cb162f"}
 ---
 
 ## Transcript
