@@ -9,7 +9,7 @@ updated_at: 2026-09-25T03:44:14Z
 recording_state: recording
 checkpoint_reason: checkpoint
 segment_count: 3
-note_metadata: {"title": "Game comparisons to Infamous and Prototype", "summary": "The game was described as a throwback, with comparisons to the older Infamous games and Prototype.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:43:28.180069+00:00", "origin": "generated", "state": "pending", "source_sha256": "db87e94255384065925c803896de42d8869cfb1c1e92cfad9d67144954c7cdb6", "generated_source_sha256": "8f3a17ab796035c026d23af2bd4558eb965ac9fa52188c0d6f374f9936bc4601", "error_code": null}
+note_metadata: {"title": "Throwback game comparisons", "summary": "The game was described as a throwback, with comparisons to the older Infamous games and Prototype. The transcript ended with a microphone check.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:44:27.557444+00:00", "origin": "generated", "state": "ready", "source_sha256": "db87e94255384065925c803896de42d8869cfb1c1e92cfad9d67144954c7cdb6", "generated_source_sha256": "db87e94255384065925c803896de42d8869cfb1c1e92cfad9d67144954c7cdb6"}
 ---
 
 ## Transcript
