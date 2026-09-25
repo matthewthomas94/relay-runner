@@ -9,7 +9,7 @@ updated_at: 2026-09-25T03:55:10Z
 recording_state: recording
 checkpoint_reason: checkpoint
 segment_count: 6
-note_metadata: {"origin": "generated", "state": "pending", "source_sha256": "84e57e92ed4a95a396d72320a2a257e407ebbb29dae4a6753a66a027835160b4", "error_code": null}
+note_metadata: {"title": "Garden Plan Validation Meeting", "summary": "In a synthetic meeting for Relay Runner validation, participants reviewed the garden plan and agreed to plant a silver birch beside the red fence.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:55:26.387976+00:00", "origin": "generated", "state": "ready", "source_sha256": "84e57e92ed4a95a396d72320a2a257e407ebbb29dae4a6753a66a027835160b4", "generated_source_sha256": "84e57e92ed4a95a396d72320a2a257e407ebbb29dae4a6753a66a027835160b4"}
 ---
 
 ## Transcript
