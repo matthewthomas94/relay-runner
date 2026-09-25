@@ -9,7 +9,7 @@ updated_at: 2026-09-25T03:46:31Z
 recording_state: recording
 checkpoint_reason: checkpoint
 segment_count: 1
-note_metadata: {"origin": "generated", "state": "pending", "source_sha256": "ea356ec7d7fdd636740aaf245f9c44b1f4de85f939ee484b27d708ce2d862f43", "error_code": null}
+note_metadata: {"title": "Check it out", "summary": "The speaker invites someone to take a look, without specifying what.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:46:45.371925+00:00", "origin": "generated", "state": "ready", "source_sha256": "ea356ec7d7fdd636740aaf245f9c44b1f4de85f939ee484b27d708ce2d862f43", "generated_source_sha256": "ea356ec7d7fdd636740aaf245f9c44b1f4de85f939ee484b27d708ce2d862f43"}
 ---
 
 ## Transcript
