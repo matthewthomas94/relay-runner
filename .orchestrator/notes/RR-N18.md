@@ -9,7 +9,7 @@ updated_at: 2026-09-25T03:53:17Z
 recording_state: recording
 checkpoint_reason: checkpoint
 segment_count: 15
-note_metadata: {"title": "Silver lighthouse and quiet harbour", "summary": "A phrase about a silver lighthouse overlooking a quiet harbour before displays sleep was repeated, followed by brief filler remarks.", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:53:14.390365+00:00", "origin": "generated", "state": "pending", "source_sha256": "5958e13c6503c7342a0a0c11a22e9b39dd9d945ccde671002c3e5bf8a51d56d0", "generated_source_sha256": "571588f4ee5b6e3c76df7eac0ad2e21514ede421131d5333e09c3e5402b22c8b", "error_code": null}
+note_metadata: {"title": "Display Sleep and Wake Phrases", "summary": "Before display sleep, the phrase describes a silver lighthouse overlooking a quiet harbor; after display wake, an orange lantern shines beside a green window. The final accepted sentence is “Amber Telescope at Sunset.”", "provider": "codex", "model": "gpt-6-astra", "prompt_version": 1, "generated_at": "2026-09-25T03:53:35.226416+00:00", "origin": "generated", "state": "ready", "source_sha256": "5958e13c6503c7342a0a0c11a22e9b39dd9d945ccde671002c3e5bf8a51d56d0", "generated_source_sha256": "5958e13c6503c7342a0a0c11a22e9b39dd9d945ccde671002c3e5bf8a51d56d0"}
 ---
 
 ## Transcript
