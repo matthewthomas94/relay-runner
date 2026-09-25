@@ -5,7 +5,7 @@ artifact_id: note-ae60072a4337049eb52d682b06587d60476ebc0a
 project_id: 6d23b5b1-6da7-4056-b328-7ea8167388c0
 created_at: 2026-09-25T03:42:49Z
 capture_started_at: 2026-09-25T03:42:49Z
-updated_at: 2026-09-25T03:43:34Z
+updated_at: 2026-09-25T03:43:54Z
 recording_state: paused
 checkpoint_reason: checkpoint
 segment_count: 2
@@ -14,8 +14,8 @@ note_metadata: {"title": "Game comparisons to Infamous and Prototype", "summary"
 
 ## Transcript
 
-<!-- relay-note-segment {"captured_at":"2026-09-25T03:43:34Z","end_ms":4595,"segment_id":"146b83d7-9cb5-4bb3-a5b2-12122d41eb57-microphone-E0-S0","speaker":"microphone","start_ms":344} -->
+<!-- relay-note-segment {"captured_at":"2026-09-25T03:43:54Z","end_ms":4595,"segment_id":"146b83d7-9cb5-4bb3-a5b2-12122d41eb57-microphone-E0-S0","speaker":"microphone","start_ms":344} -->
 You mentioned the game is kinda like a throwback in a lot of ways. Uh the way you're like
 
-<!-- relay-note-segment {"captured_at":"2026-09-25T03:43:34Z","end_ms":13160,"segment_id":"146b83d7-9cb5-4bb3-a5b2-12122d41eb57-microphone-E1-S0","speaker":"microphone","start_ms":9410} -->
+<!-- relay-note-segment {"captured_at":"2026-09-25T03:43:54Z","end_ms":13160,"segment_id":"146b83d7-9cb5-4bb3-a5b2-12122d41eb57-microphone-E1-S0","speaker":"microphone","start_ms":9410} -->
 Infamous, like the old infamous games, uh prototype and
