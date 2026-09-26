@@ -262,7 +262,7 @@ final class ProgramBoardOverlayController {
     ) async -> ProgramBoardNoteLoadResult {
         let pageSize = 100
         var notes: [ProgramBoardNoteItem] = []
-        var failedProjects: [String] = []
+        var failedProjectPaths: [String] = []
         for repoPath in repoPaths {
             do {
                 let projectName = URL(fileURLWithPath: repoPath).lastPathComponent
@@ -292,13 +292,14 @@ final class ProgramBoardOverlayController {
                 }
                 notes.append(contentsOf: projectNotes)
             } catch {
-                failedProjects.append(URL(fileURLWithPath: repoPath).lastPathComponent)
+                failedProjectPaths.append(repoPath)
             }
         }
+        let failedProjects = failedProjectPaths.map { URL(fileURLWithPath: $0).lastPathComponent }
         let errorMessage = failedProjects.isEmpty
             ? nil
             : "Could not load notes for \(failedProjects.joined(separator: ", "))."
-        return ProgramBoardNoteLoadResult(notes: notes, errorMessage: errorMessage)
+        return ProgramBoardNoteLoadResult(notes: notes, errorMessage: errorMessage, failedProjectPaths: failedProjectPaths)
     }
 
     static func sessionControlAction(

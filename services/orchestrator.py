@@ -5980,9 +5980,18 @@ class Daemon:
         limit: int = 50,
         after: str | None = None,
     ) -> dict[str, object]:
-        return self._artifact_note_manager(repo_path, project_scope_token).list(
-            limit=limit,
-            after=after,
+        lifecycle = self._artifact_lifecycle(repo_path)
+        if lifecycle is None:
+            # Legacy projects have no project-note catalog. An empty result is
+            # normal and must not turn another project's notes into a UI error.
+            return {
+                "notes": [], "artifact_commit": "", "limit": limit,
+                "has_more": False, "next_cursor": None, "total_count": 0,
+                "sync": {"mode": "disabled", "state": "unavailable", "recovery": None},
+            }
+        lifecycle.validate_scope(project_scope_token)
+        return ProjectNoteManager(lifecycle.store, device_id=self._artifact_device_id).list(
+            limit=limit, after=after,
         )
 
     def _artifact_retention_components(

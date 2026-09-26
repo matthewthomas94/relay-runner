@@ -1077,6 +1077,16 @@ Saved through the daemon-owned typed writer.
             self.daemon.sweep_artifact_retention()
             self.assertEqual(sweep.call_count, 1)
 
+    def test_legacy_project_notes_are_empty_without_enabling_or_mutating_storage(self):
+        before = self.store._head()
+        with patch.object(self.daemon, "_artifact_lifecycle", return_value=None):
+            result = self.daemon.artifact_note_list(repo_path=str(self.repo), project_scope_token=None)
+        self.assertEqual(result["notes"], [])
+        self.assertFalse(result["has_more"])
+        self.assertEqual(result["total_count"], 0)
+        self.assertEqual(result["sync"]["mode"], "disabled")
+        self.assertEqual(self.store._head(), before)
+
     def test_legacy_history_explains_setup_without_artifact_writer_http_error(self):
         with patch.object(self.daemon, "_artifact_lifecycle", return_value=None):
             result = self.daemon.artifact_history_search(repo_path=str(self.repo), project_scope_token=None)

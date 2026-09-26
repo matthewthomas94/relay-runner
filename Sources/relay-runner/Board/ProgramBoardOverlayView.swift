@@ -1535,24 +1535,6 @@ struct ProgramWorkColumnPanel: View {
             ProgramColumnTicketScrollView(resetID: scrollResetID) {
                 VStack(alignment: .leading, spacing: 0) {
                     ProgramDropIndicator(target: activeTarget)
-                    if lane == .backlog, model.backlogTab == .notes, let noteError = model.noteLoadErrorMessage {
-                        HStack(spacing: 10) {
-                            Text(noteError)
-                                .font(AppTypography.font(.supporting))
-                                .foregroundStyle(ProgramBoardStyle.red)
-                            Spacer(minLength: 0)
-                            ProgramDetailActionButton(
-                                systemName: "arrow.clockwise",
-                                title: model.hasReloadInFlight ? "Retrying…" : "Retry",
-                                disabled: model.hasReloadInFlight,
-                                help: "Reload project notes"
-                            ) {
-                                model.reloadIfIdle(inBackground: false)
-                            }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.bottom, 8)
-                    }
                     if laneItems.isEmpty {
                         ProgramColumnEmpty(text: lane == .backlog && model.backlogTab == .notes ? "No notes" : lane.emptyText)
                     } else {

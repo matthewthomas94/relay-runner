@@ -387,6 +387,7 @@ enum ProgramBoardWorkItem: Equatable, Identifiable {
 struct ProgramBoardNoteLoadResult: Equatable {
     let notes: [ProgramBoardNoteItem]
     let errorMessage: String?
+    var failedProjectPaths: [String] = []
 
     static let empty = ProgramBoardNoteLoadResult(notes: [], errorMessage: nil)
 }
@@ -1669,12 +1670,13 @@ final class ProgramBoardViewModel {
         let fetchDashboard = fetchDashboard
         let fetchNotes = fetchNotes
         let projectPaths = projectPaths
+        let notePaths = selectedProjectPath.map { [$0] } ?? projectPaths
         let task = Task { [weak self] in
             do {
                 let snapshot = try await fetchDashboard(projectPaths)
-                let noteResult = await fetchNotes(projectPaths)
+                let noteResult = await fetchNotes(notePaths)
                 guard !Task.isCancelled else { return }
-                await self?.finishReload(snapshot: snapshot, noteResult: noteResult, attempt: attempt)
+                await self?.finishReload(snapshot: snapshot, noteResult: noteResult, notePaths: notePaths, attempt: attempt)
             } catch {
                 guard !Task.isCancelled else { return }
                 let message = Self.reloadErrorMessage(for: error)
@@ -1694,12 +1696,13 @@ final class ProgramBoardViewModel {
         let fetchDashboard = fetchDashboard
         let fetchNotes = fetchNotes
         let projectPaths = projectPaths
+        let notePaths = selectedProjectPath.map { [$0] } ?? projectPaths
         let task = Task { [weak self] in
             do {
                 let snapshot = try await fetchDashboard(projectPaths)
-                let noteResult = await fetchNotes(projectPaths)
+                let noteResult = await fetchNotes(notePaths)
                 guard !Task.isCancelled else { return }
-                await self?.finishReload(snapshot: snapshot, noteResult: noteResult, attempt: attempt)
+                await self?.finishReload(snapshot: snapshot, noteResult: noteResult, notePaths: notePaths, attempt: attempt)
             } catch {
                 guard !Task.isCancelled else { return }
                 let message = Self.reloadErrorMessage(for: error)
@@ -2112,10 +2115,19 @@ final class ProgramBoardViewModel {
     private func finishReload(
         snapshot: ProgramDashboardSnapshot,
         noteResult: ProgramBoardNoteLoadResult,
+        notePaths: [String],
         attempt: (incidentID: String, attempt: Int, correlationID: String)
     ) {
         self.snapshot = snapshot
-        noteItems = noteResult.notes.map { item in
+        // A failed project keeps its last successful notes until a background
+        // refresh recovers. Refreshing another project must not erase its cache.
+        let retainedNotes = noteItems.filter { item in
+            let requested = notePaths.contains { ProgramBoardProjectPath.matches($0, item.projectPath) }
+            let failed = noteResult.failedProjectPaths.contains { ProgramBoardProjectPath.matches($0, item.projectPath) }
+            let inScope = projectPaths.isEmpty || projectPaths.contains { ProgramBoardProjectPath.matches($0, item.projectPath) }
+            return inScope && (!requested || failed)
+        }
+        noteItems = retainedNotes + noteResult.notes.map { item in
             ProgramBoardNoteItem(
                 card: item.card,
                 projectName: snapshot.projectName(for: item.projectPath) ?? item.projectName,

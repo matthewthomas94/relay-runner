@@ -1293,7 +1293,47 @@ final class ProgramBoardStatusTests: XCTestCase {
     }
 
     @MainActor
-    func testNoteLoadRetryClearsErrorAndRestoresNotes() async {
+    func testNotesLoadOnlySelectedProjectAndKeepOtherProjectCache() async throws {
+        let firstPath = "/repo/client-dashboard"
+        let secondPath = "/repo/tools"
+        let snapshot = try programBoardSnapshot(clientPath: firstPath, toolsPath: secondPath)
+        let first = noteItem(id: "CD-N1", number: 1, projectName: "Client", path: firstPath)
+        let second = noteItem(id: "TL-N1", number: 1, projectName: "Tools", path: secondPath)
+        let model = ProgramBoardViewModel(fetchDashboard: { _ in snapshot })
+        model.projectPaths = [firstPath, secondPath]
+        model.noteItems = [first, second]
+        model.selectProject(path: firstPath)
+        model.setNoteFetcher { paths in
+            XCTAssertEqual(paths, [firstPath])
+            return ProgramBoardNoteLoadResult(notes: [], errorMessage: nil)
+        }
+        await model.refreshInBackground().value
+        XCTAssertEqual(model.noteItems.map(\.id), [second.id], "Successful empty refresh removes only its own project's notes")
+    }
+
+    @MainActor
+    func testFailedProjectPreservesNotesWhileHealthyProjectRefreshesAndLaterRecovers() async throws {
+        let firstPath = "/repo/client-dashboard"
+        let secondPath = "/repo/tools"
+        let snapshot = try programBoardSnapshot(clientPath: firstPath, toolsPath: secondPath)
+        let first = noteItem(id: "CD-N1", number: 1, projectName: "Client", path: firstPath)
+        let second = noteItem(id: "TL-N1", number: 1, projectName: "Tools", path: secondPath)
+        let model = ProgramBoardViewModel(fetchDashboard: { _ in snapshot })
+        model.projectPaths = [firstPath, secondPath]
+        model.noteItems = [first]
+        model.setNoteFetcher { _ in
+            ProgramBoardNoteLoadResult(notes: [second], errorMessage: "Temporary failure", failedProjectPaths: [firstPath])
+        }
+        await model.refreshInBackground().value
+        XCTAssertEqual(Set(model.noteItems.map(\.id)), Set([first.id, second.id]))
+        model.setNoteFetcher { _ in ProgramBoardNoteLoadResult(notes: [second], errorMessage: nil) }
+        await model.refreshInBackground().value
+        XCTAssertEqual(model.noteItems.map(\.id), [second.id])
+        XCTAssertNil(model.noteLoadErrorMessage)
+    }
+
+    @MainActor
+    func testBackgroundNoteRetryClearsErrorAndRestoresNotes() async {
         let item = noteItem(id: "RR-N1", number: 1, projectName: "Relay Runner", path: "/repo/relay-runner")
         let model = ProgramBoardViewModel(fetchDashboard: { _ in .empty() })
         var attempts = 0
@@ -1305,7 +1345,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         }
         await model.reload().value
         XCTAssertNotNil(model.noteLoadErrorMessage)
-        let retry = model.reloadIfIdle(inBackground: false)
+        let retry = model.reloadIfIdle(inBackground: true)
         XCTAssertNotNil(retry)
         XCTAssertTrue(model.hasReloadInFlight)
         XCTAssertNil(model.reloadIfIdle(inBackground: false))
