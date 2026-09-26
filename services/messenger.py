@@ -1299,6 +1299,19 @@ class MessengerRuntime:
                 "PUBLIC WORK DISPOSITION: "
                 f"{disposition.get('route')} — {disposition.get('public_reason')}"
             )
+            for hint in command.get("intent_qualifications", []):
+                if not isinstance(hint, dict) or (
+                    hint.get("command_seq"), hint.get("command_id")
+                ) != command_key:
+                    continue
+                bucket = hint.get("bucket")
+                if bucket in {"task", "action", "discussion"}:
+                    self._context.append(
+                        f"PUBLIC INTENT QUALIFICATION: {bucket}; "
+                        f"unresolved={hint.get('unresolved') is True}; "
+                        f"mixed={hint.get('mixed') is True}. "
+                        "Provisional only; the PM resolves scope and authority. Remain tool-free."
+                    )
         return True
 
     def submit_trace(self, trace: dict) -> bool:

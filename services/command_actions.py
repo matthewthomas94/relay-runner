@@ -17,6 +17,11 @@ import re
 from config import load_config
 from codex_model_catalog import CODEX_FAMILIES, normalize_codex_family
 from intent_arbitration import explicit_cancel_requested
+from intent_qualification import (
+    discussion_only_requested,
+    foreground_action_requested,
+    mixed_bucket_request,
+)
 
 
 CONTROL_COMMANDS = {
@@ -337,6 +342,8 @@ def is_information_query(text: str) -> bool:
     source = (text or "").strip()
     if not source:
         return False
+    if discussion_only_requested(source):
+        return True
     command = _command_clause(source)
     if READ_ONLY_REQUEST_RE.search(source) or READ_ONLY_REQUEST_RE.search(command):
         return True
@@ -414,6 +421,16 @@ def classify_command(text: str) -> CommandAction:
     if explicit_cancel_requested(source):
         return CommandAction(kind="control", source_text=source, reason="cancel")
 
+    # Qualify the complete turn before a positive opening clause can create work.
+    if discussion_only_requested(source):
+        return CommandAction(kind="conversation", source_text=source, reason="discussion_only")
+
+    if is_mixed_query_and_mutation(source):
+        return CommandAction(kind="conversation", source_text=source, reason="mixed_query_and_mutation_clarification")
+
+    if mixed_bucket_request(source):
+        return CommandAction(kind="conversation", source_text=source, reason="mixed_scope_resolution")
+
     if SCREEN_OBSERVATION_RE.search(source):
         return CommandAction(
             kind="direct_action",
@@ -428,6 +445,9 @@ def classify_command(text: str) -> CommandAction:
             reason="desktop_control",
         )
 
+    if foreground_action_requested(source):
+        return CommandAction(kind="direct_action", source_text=source, reason="foreground_operation")
+
     if is_relay_runner_self_explanation(source):
         return CommandAction(
             kind="conversation",
@@ -435,7 +455,8 @@ def classify_command(text: str) -> CommandAction:
             reason="relay_runner_self_explanation",
         )
 
-    if INLINE_RE.search(source):
+    explicit_ticket = bool(re.search(r"\b(?:create|write|draft)\s+(?:a\s+)?ticket\b", source, re.IGNORECASE))
+    if INLINE_RE.search(source) and not explicit_ticket:
         return CommandAction(kind="inline_work", source_text=source)
 
     if PENDING_WORK_RE.search(source):
@@ -581,15 +602,15 @@ def refined_ticket_title(source_text: str) -> str:
 def format_command_for_agent(action: CommandAction, disposition: dict | None = None) -> str:
     if action.kind in {"conversation", "control"}:
         prompt = action.source_text
-        if action.reason == "mixed_query_and_mutation_clarification":
+        if action.reason in {"mixed_query_and_mutation_clarification", "mixed_scope_resolution"}:
             prompt = (
                 f"{prompt}\n\n"
                 "Relay Runner command action:\n"
                 "- action: conversation\n"
                 "- mutation_authorized: false\n"
-                "- Ask one concise clarification before creating, editing, or dispatching any ticket. "
-                "The information query may be answered, but its conditional work clause is not "
-                "durable mutation authority."
+                "- Resolve the original ordered requests and constraints with the PM before any mutation. "
+                "Ask one concise clarification if scope is ambiguous. A conditional work clause is not "
+                "durable mutation authority; do not discard separately authorized work."
             )
         return _append_work_disposition(prompt, disposition)
 

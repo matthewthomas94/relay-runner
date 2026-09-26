@@ -1,0 +1,460 @@
+{
+  "schema_version": 1,
+  "provenance": "Synthetic development fixtures; not held-out or user-derived accuracy.",
+  "cases": [
+    {
+      "id": "open",
+      "text": "Open Chrome",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "everyday"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "polite-open",
+      "text": "Could you open Chrome?",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "polite"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "polite-folder",
+      "text": "Would you please reveal this folder in Finder?",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "polite"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "dev-server",
+      "text": "Spin up a dev server",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "everyday"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "dev-server-polite",
+      "text": "Can you start the development server?",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "polite"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "email-send",
+      "text": "Send an email to Alex",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "external-effect"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "email-write",
+      "text": "Write an email to Alex",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "external-effect"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "email-draft",
+      "text": "Draft an email to Alex but don't send it",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "negation"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "screen",
+      "text": "What's on my screen?",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "observation"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "ticket",
+      "text": "Create a ticket to fix login",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "everyday"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "fix",
+      "text": "Fix login",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "everyday"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "dispatch",
+      "text": "Dispatch RR-400",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "dispatch_ticket",
+      "tags": [
+        "everyday"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "update",
+      "text": "Update RR-400",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "update_ticket",
+      "tags": [
+        "everyday"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "inline",
+      "text": "Fix the login bug inline",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "inline_work",
+      "tags": [
+        "inline"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "spike",
+      "text": "Create a spike to investigate local classification",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "spike"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "track-spike",
+      "text": "Track a spike into the login failure",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "spike"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "backlog",
+      "text": "Create a ticket to fix login; do not dispatch it",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "negation",
+        "backlog"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "backlog-implement",
+      "text": "Create a ticket for login but do not implement it",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "negation",
+        "backlog"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "scoped-limit",
+      "text": "Fix login, but don't change the styling",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "negation",
+        "scoped"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "build-status",
+      "text": "Was there a build for RR-325?",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "inspect_ticket",
+      "tags": [
+        "status"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "discuss",
+      "text": "Discuss whether to fix login",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "discussion"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "research",
+      "text": "Do not create a ticket, just research this",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "negation",
+        "research"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "feasibility",
+      "text": "Can you build this? I only want to discuss feasibility, do not implement it.",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "negation",
+        "correction"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "research-piece",
+      "text": "Build this feature. This is just a research piece before implementation.",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "correction"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "explain",
+      "text": "Explain how to start a dev server",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "discussion"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "architecture",
+      "text": "What is Relay Runner's command classification architecture?",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "discussion"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "status",
+      "text": "Can you tell me whether RR-325 is done?",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "inspect_ticket",
+      "tags": [
+        "status"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "status-stop",
+      "text": "Don't stop the current work; just give me status",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "negation",
+        "continuity"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "no-ticket",
+      "text": "Do not create a ticket",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "negation"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "thanks",
+      "text": "Thanks",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "conversation"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "fragment",
+      "text": "The login",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "fragment"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "assent",
+      "text": "Yes, do that",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "continuation"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "assent-context",
+      "text": "Yes, do that",
+      "context": [
+        {
+          "role": "assistant",
+          "content": "I can create a backlog ticket for the login failure, without dispatching it."
+        }
+      ],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "continuation",
+        "context"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "mixed",
+      "text": "Open Chrome and fix login",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "mixed"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "mixed-query",
+      "text": "What is the status of RR-325, and if it failed, fix it",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "mixed",
+        "conditional"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "control",
+      "text": "__TTS_STOP__",
+      "context": [],
+      "expected_bucket": null,
+      "expected_action_kind": "control",
+      "tags": [
+        "control"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "cancel",
+      "text": "Cancel RR-400",
+      "context": [],
+      "expected_bucket": null,
+      "expected_action_kind": "control",
+      "tags": [
+        "control",
+        "scoped"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "release-question",
+      "text": "Did we ship this?",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "status"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "polite-task",
+      "text": "Could you implement a login retry?",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "polite"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "read-only",
+      "text": "Investigate why the build failed",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "research"
+      ],
+      "split": "development"
+    }
+  ]
+}

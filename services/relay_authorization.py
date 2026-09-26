@@ -145,6 +145,19 @@ def allowed_mutations_for_metadata(metadata: dict[str, Any]) -> list[dict[str, A
     """Return the mutation shapes a published Relay command may start."""
     action = str(metadata.get("action") or "").strip()
     source_text = str(metadata.get("source_text") or "")
+    from intent_qualification import dispatch_forbidden
+
+    if dispatch_forbidden(source_text):
+        # Drafting a ticket is not permission to start its implementation. Keep
+        # the explicit no-dispatch constraint even when metadata says "task".
+        if action in {"create_ticket", "update_ticket"}:
+            return [{
+                "kind": "orchestrator_action",
+                "action_kinds": (["create_ticket"] if action == "create_ticket" else [])
+                + ["edit_ticket", "update_dependencies"],
+                "ticket_id": str(metadata.get("ticket_id") or "*").upper(),
+            }]
+        return []
     ticket_id = str(metadata.get("ticket_id") or "").strip().upper()
     ticket_ids = [match.upper() for match in _TICKET_ID_RE.findall(source_text)]
     if ticket_id and ticket_id not in ticket_ids:
