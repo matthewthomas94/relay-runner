@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import uuid
+from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Mapping, Sequence
 
@@ -86,6 +87,65 @@ class ProjectNoteManager:
     def __init__(self, store: ArtifactStore, *, device_id: str) -> None:
         self.store = store
         self.device_id = device_id
+
+    def import_saved_note(self, source: Mapping[str, object], *, repository_path: str | None = None) -> None:
+        """Copy a legacy note atomically, including archived and recoverable content.
+
+        The durable import event also prevents a deleted global note from being
+        resurrected by the next migration sweep. Source history stays untouched.
+        """
+        original = NoteUpdate.from_mapping(source)
+        event_id = "note-import:" + _digest(original.identity.as_dict())
+        with self.store._writer_lock():
+            prior_import = self.store._find_event(event_id)
+            snapshot = self.store.snapshot()
+            config = _config(snapshot.files)
+            catalog = _catalog(snapshot.files, self.store.project_id)
+            existing = catalog.get(original.identity.artifact_id)
+            source_digest = _digest(source)
+            creation_event_id = event_id
+            if prior_import:
+                # Deletion is final. Completed imports are owned by the global
+                # library; only an unfinished legacy recovery can update a copy.
+                if not existing or existing["recording_state"] == "completed" or existing["creation_request_sha256"] == source_digest:
+                    return
+                event_id = "note-import-update:" + source_digest
+            number = _next_note_number(config, snapshot.files, catalog)
+            note_id = existing["note_id"] if existing else original.identity.note_id
+            if not existing and any(row["note_id"] == note_id for row in catalog.values()):
+                note_id = f"{config['prefix']}-N{number}"
+            number = max(number, validate_note_id(note_id)[1] + 1)
+            identity = replace(original.identity, note_id=note_id, project_id=self.store.project_id)
+            update = replace(original, identity=identity)
+            metadata = source.get("metadata")
+            if metadata is not None:
+                metadata = validate_note_metadata(metadata)
+            document = NoteDocument(identity, update, metadata)
+            catalog[identity.artifact_id] = {
+                "schema_version": NOTE_INDEX_SCHEMA_VERSION,
+                "note_id": note_id, "artifact_id": identity.artifact_id,
+                "project_id": self.store.project_id, "path": _note_path(note_id),
+                "created_at": identity.created_at, "updated_at": update.captured_at,
+                "recording_state": update.recording_state,
+                "segment_count": len(update.segments), "materialized": True,
+                "creation_event_id": creation_event_id, "last_event_id": event_id,
+                "creation_request_sha256": source_digest, "metadata": metadata,
+                "legacy_recovery": {
+                    "repository_path": repository_path,
+                    "project_id": original.identity.project_id,
+                    "note_id": original.identity.note_id,
+                } if repository_path and original.recording_state != "completed" else None,
+            }
+            self.store.mutate(ArtifactMutation(
+                event_id=event_id, actor_type="system", device_id=self.device_id,
+                expected_base=snapshot.commit_id,
+                operations=(
+                    ConfigWrite(_set_next_note_id(snapshot.files[".orchestrator/config.toml"], number)),
+                    NoteWrite(note_id, identity.artifact_id, self.store.project_id, render_note_document(document)),
+                    NoteIndexWrite(encode_note_index(catalog, project_id=self.store.project_id)),
+                ),
+                summary=f"Import saved note {note_id} into global library",
+            ))
 
     def create(
         self,
@@ -800,6 +860,7 @@ def _card(
         "archived_at": entry.get("archived_at"),
         "reference": dict(reference),
         "metadata": entry.get("metadata"),
+        "legacy_recovery": entry.get("legacy_recovery"),
     }
 
 

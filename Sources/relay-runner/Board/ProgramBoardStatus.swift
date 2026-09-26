@@ -1037,15 +1037,6 @@ struct ProgramStatusProject: Decodable, Equatable {
     let path: String
 }
 
-enum ProgramBacklogTab: String, CaseIterable {
-    case notes, tickets
-
-    func label(count: Int) -> String {
-        let noun = self == .notes ? "Note" : "Ticket"
-        return "\(count) \(noun)\(count == 1 ? "" : "s")"
-    }
-}
-
 enum ProgramBoardDate {
     static func label(_ date: Date) -> String {
         let formatter = DateFormatter()
@@ -1550,8 +1541,8 @@ final class ProgramBoardViewModel {
     var noteRecoveryInFlight = false
     var noteRecoveryErrorMessage: String?
     var noteItems: [ProgramBoardNoteItem] = []
-    var backlogTab: ProgramBacklogTab = .tickets
-    var noteLoadErrorMessage: String?
+    var noteQuery = ""
+    var notesLoading = false
     var noteCaptureSnapshot = MeetingNoteCoordinatorSnapshot(
         phase: .idle,
         noteID: nil,
@@ -1645,10 +1636,6 @@ final class ProgramBoardViewModel {
         }
         if scopeChanged || selectionChanged {
             selectedTicketDetail = nil
-            selectedNoteDetail = nil
-            selectedNoteRecoveryOffer = nil
-            noteRecoveryInFlight = false
-            noteRecoveryErrorMessage = nil
             history = nil
             spikeFollowupBatch = nil
         }
@@ -1668,15 +1655,12 @@ final class ProgramBoardViewModel {
         reloadState = .loading
         errorMessage = nil
         let fetchDashboard = fetchDashboard
-        let fetchNotes = fetchNotes
         let projectPaths = projectPaths
-        let notePaths = selectedProjectPath.map { [$0] } ?? projectPaths
         let task = Task { [weak self] in
             do {
                 let snapshot = try await fetchDashboard(projectPaths)
-                let noteResult = await fetchNotes(notePaths)
                 guard !Task.isCancelled else { return }
-                await self?.finishReload(snapshot: snapshot, noteResult: noteResult, notePaths: notePaths, attempt: attempt)
+                await self?.finishReload(snapshot: snapshot, attempt: attempt)
             } catch {
                 guard !Task.isCancelled else { return }
                 let message = Self.reloadErrorMessage(for: error)
@@ -1694,15 +1678,12 @@ final class ProgramBoardViewModel {
         reloadInFlight = true
         errorMessage = nil
         let fetchDashboard = fetchDashboard
-        let fetchNotes = fetchNotes
         let projectPaths = projectPaths
-        let notePaths = selectedProjectPath.map { [$0] } ?? projectPaths
         let task = Task { [weak self] in
             do {
                 let snapshot = try await fetchDashboard(projectPaths)
-                let noteResult = await fetchNotes(notePaths)
                 guard !Task.isCancelled else { return }
-                await self?.finishReload(snapshot: snapshot, noteResult: noteResult, notePaths: notePaths, attempt: attempt)
+                await self?.finishReload(snapshot: snapshot, attempt: attempt)
             } catch {
                 guard !Task.isCancelled else { return }
                 let message = Self.reloadErrorMessage(for: error)
@@ -1781,12 +1762,6 @@ final class ProgramBoardViewModel {
         if !ProgramBoardProjectPath.matches(selectedTicketDetail?.identity?.projectPath, path) {
             selectedTicketDetail = nil
         }
-        if !ProgramBoardProjectPath.matches(selectedNoteDetail?.item.projectPath, path) {
-            selectedNoteDetail = nil
-            selectedNoteRecoveryOffer = nil
-            noteRecoveryInFlight = false
-            noteRecoveryErrorMessage = nil
-        }
         if !ProgramBoardProjectPath.matches(editing?.identity.projectPath, path) {
             editing = nil
             editingErrorMessage = nil
@@ -1797,21 +1772,44 @@ final class ProgramBoardViewModel {
         snapshot?.ticketItems(in: lane, selectedProjectPath: selectedProjectPath) ?? []
     }
 
-    func noteItemsInBacklog() -> [ProgramBoardNoteItem] {
-        let filtered = selectedProjectPath.map { path in
-            noteItems.filter { ProgramBoardProjectPath.matches($0.projectPath, path) }
-        } ?? noteItems
-        return filtered.sorted {
-            if $0.noteNumber != $1.noteNumber { return $0.noteNumber > $1.noteNumber }
-            if $0.card.noteID != $1.card.noteID { return $0.card.noteID > $1.card.noteID }
-            return $0.projectName.localizedStandardCompare($1.projectName) == .orderedAscending
+    var visibleNotes: [ProgramBoardNoteItem] {
+        let query = noteQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return noteItems.filter { item in
+            query.isEmpty || [item.title, item.card.metadata?.summary ?? "", item.card.noteID]
+                .joined(separator: " ").localizedStandardContains(query)
+        }.sorted {
+            if $0.card.createdAt != $1.card.createdAt { return $0.card.createdAt > $1.card.createdAt }
+            return $0.noteNumber > $1.noteNumber
+        }
+    }
+
+    @MainActor
+    func refreshNotes() async {
+        guard !notesLoading else { return }
+        notesLoading = true
+        defer { notesLoading = false }
+        let result = await fetchNotes([GlobalNoteStore.repositoryPath])
+        guard !Task.isCancelled, result.errorMessage == nil else { return }
+        noteItems = result.notes
+        if let selectedNoteDetail {
+            if let refreshed = noteItems.first(where: { $0.id == selectedNoteDetail.item.id }) {
+                self.selectedNoteDetail = ProgramBoardNoteDetail(
+                    item: refreshed,
+                    transcript: selectedNoteDetail.transcript,
+                    isLoading: selectedNoteDetail.isLoading,
+                    errorMessage: selectedNoteDetail.errorMessage
+                )
+            } else {
+                self.selectedNoteDetail = nil
+                selectedNoteRecoveryOffer = nil
+                noteRecoveryInFlight = false
+                noteRecoveryErrorMessage = nil
+            }
         }
     }
 
     func workItems(in lane: ProgramBoardLane) -> [ProgramBoardWorkItem] {
-        let tickets = ticketItems(in: lane).map(ProgramBoardWorkItem.ticket)
-        guard lane == .backlog else { return tickets }
-        return backlogTab == .notes ? noteItemsInBacklog().map(ProgramBoardWorkItem.note) : tickets
+        ticketItems(in: lane).map(ProgramBoardWorkItem.ticket)
     }
 
     func selectTicket(_ item: ProgramStatusItem) {
@@ -1872,11 +1870,11 @@ final class ProgramBoardViewModel {
         in offers: [MeetingNoteRecoveryOffer]
     ) -> MeetingNoteRecoveryOffer? {
         offers.first { offer in
-            offer.noteID == item.card.noteID
-                && offer.project.expectedProjectID == item.card.projectID
+            offer.noteID == (item.card.legacyRecovery?.noteID ?? item.card.noteID)
+                && offer.project.expectedProjectID == (item.card.legacyRecovery?.projectID ?? item.card.projectID)
                 && ProgramBoardProjectPath.matches(
                     offer.project.repositoryPath,
-                    item.projectPath
+                    item.card.legacyRecovery?.repositoryPath ?? item.projectPath
                 )
         }
     }
@@ -1931,7 +1929,6 @@ final class ProgramBoardViewModel {
 
     func beginCreate(in lane: ProgramBoardLane) {
         guard !projectTargets.isEmpty else { return }
-        if lane == .backlog { backlogTab = .tickets }
         creating = ProgramBoardCreateDraft(
             lane: lane,
             selectedProjectPath: selectedProjectPath
@@ -2055,7 +2052,6 @@ final class ProgramBoardViewModel {
         cardCenterOffset: CGSize,
         target: ProgramBoardDropTarget?
     ) {
-        backlogTab = .tickets
         dragItemID = item.id
         dragTarget = target
         dragPreview = ProgramBoardDragState(
@@ -2114,28 +2110,9 @@ final class ProgramBoardViewModel {
     @MainActor
     private func finishReload(
         snapshot: ProgramDashboardSnapshot,
-        noteResult: ProgramBoardNoteLoadResult,
-        notePaths: [String],
         attempt: (incidentID: String, attempt: Int, correlationID: String)
     ) {
         self.snapshot = snapshot
-        // A failed project keeps its last successful notes until a background
-        // refresh recovers. Refreshing another project must not erase its cache.
-        let retainedNotes = noteItems.filter { item in
-            let requested = notePaths.contains { ProgramBoardProjectPath.matches($0, item.projectPath) }
-            let failed = noteResult.failedProjectPaths.contains { ProgramBoardProjectPath.matches($0, item.projectPath) }
-            let inScope = projectPaths.isEmpty || projectPaths.contains { ProgramBoardProjectPath.matches($0, item.projectPath) }
-            return inScope && (!requested || failed)
-        }
-        noteItems = retainedNotes + noteResult.notes.map { item in
-            ProgramBoardNoteItem(
-                card: item.card,
-                projectName: snapshot.projectName(for: item.projectPath) ?? item.projectName,
-                projectPath: item.projectPath,
-                sync: item.sync
-            )
-        }
-        noteLoadErrorMessage = noteResult.errorMessage
         if let selectedProjectPath, !snapshot.containsProject(path: selectedProjectPath) {
             self.selectedProjectPath = nil
         }
@@ -2151,21 +2128,6 @@ final class ProgramBoardViewModel {
                 self.selectedTicketDetail = ProgramTicketDetail.load(item: refreshedItem)
             } else {
                 self.selectedTicketDetail = nil
-            }
-        }
-        if let selectedNoteDetail {
-            if let refreshed = noteItems.first(where: { $0.id == selectedNoteDetail.item.id }) {
-                self.selectedNoteDetail = ProgramBoardNoteDetail(
-                    item: refreshed,
-                    transcript: selectedNoteDetail.transcript,
-                    isLoading: selectedNoteDetail.isLoading,
-                    errorMessage: selectedNoteDetail.errorMessage
-                )
-            } else {
-                self.selectedNoteDetail = nil
-                selectedNoteRecoveryOffer = nil
-                noteRecoveryInFlight = false
-                noteRecoveryErrorMessage = nil
             }
         }
         reloadState = .succeeded

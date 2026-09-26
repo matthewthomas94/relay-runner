@@ -6,6 +6,8 @@ final class ProjectNoteMCPToolTests: XCTestCase {
         let tool = ListProjectNotesTool()
         XCTAssertEqual(tool.name, "list_project_notes")
         XCTAssertTrue(tool.description.contains("read-only"))
+        XCTAssertTrue(tool.description.contains("global library"))
+        XCTAssertEqual(tool.inputSchema["required"] as? [String], [])
         XCTAssertTrue(tool.description.contains("does not create tickets"))
 
         let properties = try XCTUnwrap(tool.inputSchema["properties"] as? [String: Any])
@@ -25,7 +27,7 @@ final class ProjectNoteMCPToolTests: XCTestCase {
         XCTAssertEqual(limit["maximum"] as? Int, 32_000)
         XCTAssertEqual(
             Set(tool.inputSchema["required"] as? [String] ?? []),
-            Set(["repo_path", "identity"])
+            Set(["identity"])
         )
     }
 }

@@ -178,6 +178,7 @@ struct ProgramBoardOverlayView: View {
     let onEndSession: () -> Void
     var onStartNoteTaker: () -> Void = {}
     var onStopNoteTaker: () -> Void = {}
+    var onNotesRefresh: () async -> Void = {}
     var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
     var onNoteClose: () -> Void = {}
     var onNoteDelete: (ProgramBoardNoteItem) -> Void = { _ in }
@@ -206,13 +207,102 @@ struct ProgramBoardOverlayView: View {
         }
     }
 
+    private var notesLibrary: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Notes")
+                    .font(AppTypography.font(.sectionHeading))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
+                Spacer()
+                Text("\(model.noteItems.count) \(model.noteItems.count == 1 ? "note" : "notes")")
+                    .font(AppTypography.font(.metadata))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+            }
+            .padding(.horizontal, 22)
+            .frame(height: 60)
+            Rectangle().fill(BoardDarkSurfaceStyle.border).frame(height: 1)
+            HStack(spacing: 0) {
+                VStack(spacing: 12) {
+                    TextField("Search titles and summaries", text: $model.noteQuery)
+                        .textFieldStyle(.plain)
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                        .padding(.horizontal, 10)
+                        .frame(height: SharedActionButtonMetrics.controlHeight)
+                        .background(BoardDarkSurfaceBackground(
+                            cornerRadius: SharedActionButtonMetrics.cornerRadius,
+                            fill: BoardDarkSurfaceStyle.cardFill
+                        ))
+                        .accessibilityLabel("Search notes")
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            if model.visibleNotes.isEmpty {
+                                Text(model.noteQuery.isEmpty ? "Your notes will appear here." : "No matching notes.")
+                                    .font(AppTypography.font(.supporting))
+                                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                                    .padding(.top, 28)
+                            }
+                            ForEach(model.visibleNotes) { note in
+                                ProgramNoteCard(
+                                    item: note,
+                                    isSelected: model.selectedNoteDetail?.item.id == note.id,
+                                    onSelect: { onNoteOpen(note) }
+                                )
+                            }
+                        }
+                    }
+                }
+                .padding(18)
+                .frame(width: 330)
+                Rectangle().fill(BoardDarkSurfaceStyle.border).frame(width: 1)
+                if let detail = model.selectedNoteDetail {
+                    ProgramNoteDetailPanel(
+                        detail: detail,
+                        captureSnapshot: model.noteCaptureSnapshot,
+                        theme: model.theme,
+                        onClose: onNoteClose,
+                        onStop: onStopNoteTaker,
+                        onRetry: { onNoteOpen(detail.item) },
+                        onMetadataRetry: { onNoteMetadataRetry(detail.item) },
+                        onDelete: { onNoteDelete(detail.item) },
+                        recoveryOffer: model.selectedNoteRecoveryOffer,
+                        recoveryInFlight: model.noteRecoveryInFlight,
+                        recoveryErrorMessage: model.noteRecoveryErrorMessage,
+                        onRecover: onNoteRecovery,
+                        onResume: onResumeRecoveredNote
+                    )
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "note.text")
+                            .font(.system(size: 28))
+                        Text("Select a note")
+                            .font(AppTypography.font(.sectionHeading))
+                        Text("Your transcripts and summaries, all in one place.")
+                            .font(AppTypography.font(.supporting))
+                    }
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        }
+        .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+        .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+        .task {
+            while !Task.isCancelled {
+                await onNotesRefresh()
+                do { try await Task.sleep(for: .seconds(10)) }
+                catch { break }
+            }
+        }
+    }
+
     private func boardContent(viewportSize: CGSize) -> some View {
         let detailSurfaceSize = CGSize(
             width: viewportSize.width,
             height: min(viewportSize.height, ProgramBoardBackdropStyle.backdropHeight)
         )
         let dotMatrixPresentation = ProgramWorkspaceDotMatrixPresentation.resolve(
-            showsTicketDetail: model.selectedTicketDetail != nil || model.selectedNoteDetail != nil,
+            showsTicketDetail: model.selectedTicketDetail != nil,
             showsCreateTicket: model.creating != nil,
             showsEditTicket: model.editing != nil,
             showsSpikeFollowup: model.spikeFollowupBatch != nil,
@@ -295,6 +385,12 @@ struct ProgramBoardOverlayView: View {
                 .frame(maxWidth: .infinity, alignment: .top)
                 .blur(radius: backgroundBlurRadius)
                 .allowsHitTesting(!dotMatrixPresentation.isVisible)
+            } else if workspace.selectedTab == .notes {
+                notesLibrary
+                    .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                    .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                    .padding(.bottom, 20)
+                    .frame(height: min(viewportSize.height, ProgramBoardBackdropStyle.backdropHeight))
             } else if workspace.showsWorkTab {
                 let contentPresentation = boardContentPresentation
                 VStack(spacing: 0) {
@@ -363,35 +459,6 @@ struct ProgramBoardOverlayView: View {
                         onEdit: { onEditStart(detail) },
                         onDelete: onDelete,
                         onSpikeFollowup: { onSpikeFollowupStart(detail) },
-                        panelSize: ProgramTicketPanelStyle.detailSize(fitting: detailSurfaceSize)
-                    )
-                }
-                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
-            }
-
-            if let detail = model.selectedNoteDetail,
-               model.history == nil,
-               model.creating == nil,
-               model.editing == nil,
-               model.spikeFollowupBatch == nil {
-                ProgramBoardModalLayer(
-                    onDismiss: onNoteClose,
-                    availableHeight: detailSurfaceSize.height
-                ) {
-                    ProgramNoteDetailPanel(
-                        detail: detail,
-                        captureSnapshot: model.noteCaptureSnapshot,
-                        theme: model.theme,
-                        onClose: onNoteClose,
-                        onStop: onStopNoteTaker,
-                        onRetry: { onNoteOpen(detail.item) },
-                        onMetadataRetry: { onNoteMetadataRetry(detail.item) },
-                        onDelete: { onNoteDelete(detail.item) },
-                        recoveryOffer: model.selectedNoteRecoveryOffer,
-                        recoveryInFlight: model.noteRecoveryInFlight,
-                        recoveryErrorMessage: model.noteRecoveryErrorMessage,
-                        onRecover: onNoteRecovery,
-                        onResume: onResumeRecoveredNote,
                         panelSize: ProgramTicketPanelStyle.detailSize(fitting: detailSurfaceSize)
                     )
                 }
@@ -1498,7 +1565,7 @@ struct ProgramWorkColumnPanel: View {
 
     private var scrollResetID: String {
         let scopeID = model.selectedProjectPath ?? "all"
-        return "\(lane.id)-\(scopeID)-\(lane == .backlog ? model.backlogTab.rawValue : "tickets")"
+        return "\(lane.id)-\(scopeID)-tickets"
     }
 
     var body: some View {
@@ -1511,10 +1578,8 @@ struct ProgramWorkColumnPanel: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
-                if lane == .backlog {
-                    backlogTabs
-                } else {
-                    Text(ProgramBacklogTab.tickets.label(count: model.ticketItems(in: lane).count))
+                Group {
+                    Text("\(model.ticketItems(in: lane).count) \(model.ticketItems(in: lane).count == 1 ? "Ticket" : "Tickets")")
                         .font(AppTypography.font(.count))
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
                         .monospacedDigit()
@@ -1536,7 +1601,7 @@ struct ProgramWorkColumnPanel: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ProgramDropIndicator(target: activeTarget)
                     if laneItems.isEmpty {
-                        ProgramColumnEmpty(text: lane == .backlog && model.backlogTab == .notes ? "No notes" : lane.emptyText)
+                        ProgramColumnEmpty(text: lane.emptyText)
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(laneItems) { item in
@@ -1576,36 +1641,6 @@ struct ProgramWorkColumnPanel: View {
                 )
             }
         )
-    }
-
-    private var backlogTabs: some View {
-        HStack(spacing: 0) {
-            ForEach(ProgramBacklogTab.allCases, id: \.self) { tab in
-                let count = tab == .notes ? model.noteItemsInBacklog().count : model.ticketItems(in: .backlog).count
-                Button {
-                    model.backlogTab = tab
-                } label: {
-                    Text(tab.label(count: count))
-                        .font(AppTypography.font(.caption))
-                        .foregroundStyle(model.backlogTab == tab ? ProgramBoardStyle.primaryText : ProgramBoardStyle.mutedText)
-                        .lineLimit(1)
-                        .padding(.horizontal, 10)
-                        .frame(height: SharedActionButtonMetrics.controlHeight)
-                        .background {
-                            if model.backlogTab == tab {
-                                RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius)
-                                    .fill(BoardDarkSurfaceStyle.cardActiveFill)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .programButtonCursor()
-                .accessibilityLabel("Show \(tab.label(count: count).lowercased())")
-                .accessibilityAddTraits(model.backlogTab == tab ? .isSelected : [])
-            }
-        }
-        .background(BoardDarkSurfaceBackground(cornerRadius: SharedActionButtonMetrics.cornerRadius))
     }
 }
 
@@ -2353,12 +2388,11 @@ private struct ProgramNoteDetailPanel: View {
     let recoveryErrorMessage: String?
     let onRecover: (MeetingNoteRecoveryResolution) -> Void
     let onResume: () -> Void
-    var panelSize: CGSize? = nil
 
     private var isCurrentCapture: Bool {
-        guard captureSnapshot.noteID == detail.item.card.noteID,
+        guard captureSnapshot.noteID == (detail.item.card.legacyRecovery?.noteID ?? detail.item.card.noteID),
               let project = captureSnapshot.project else { return false }
-        return ProgramBoardProjectPath.matches(project.repositoryPath, detail.item.projectPath)
+        return ProgramBoardProjectPath.matches(project.repositoryPath, detail.item.card.legacyRecovery?.repositoryPath ?? detail.item.projectPath)
     }
 
     private var showsStop: Bool {
@@ -2373,15 +2407,22 @@ private struct ProgramNoteDetailPanel: View {
     }
 
     var body: some View {
+        content.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .alert("Delete this note?", isPresented: $confirmsDelete) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive, action: onDelete)
+        } message: {
+            Text("This removes the note from your library.")
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(detail.item.title)
                         .font(AppTypography.font(.screenTitle))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
-                    Text(detail.item.projectName)
-                        .font(AppTypography.font(.label))
-                        .foregroundStyle(ProgramBoardStyle.secondaryText)
                 }
                 Spacer(minLength: 0)
                 ProgramIconButton(systemName: "xmark", help: "Close note", action: onClose)
@@ -2530,15 +2571,7 @@ private struct ProgramNoteDetailPanel: View {
                 }
             }
         }
-        .programTicketPanelChrome(theme: theme, size: panelSize)
-        .alert("Delete this note?", isPresented: $confirmsDelete) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive, action: onDelete)
-        } message: {
-            Text("This removes the note from the app. Earlier versions remain in project history.")
-        }
     }
-
     private var captureErrorMessage: String? {
         guard isCurrentCapture, let message = captureSnapshot.errorMessage else { return nil }
         let normalized = message.lowercased()
@@ -4040,7 +4073,7 @@ enum ProgramSessionControlPolicy {
 
 enum ProgramNoteControlPolicy {
     static func canStart(selectedProjectPath: String?) -> Bool {
-        selectedProjectPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        true
     }
 }
 
@@ -4059,7 +4092,7 @@ struct ProgramNoteToolbarPresentation: Equatable {
             : ProgramNoteToolbarPresentation(
                 title: "Start Note Taker",
                 systemName: "waveform",
-                help: "Record a note for the selected project"
+                help: "Record a note in your library"
             )
     }
 }

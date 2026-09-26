@@ -191,7 +191,13 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(opening?.reloadsWork, false)
     }
 
-    func testUnavailableRouteWithoutUtilityContentReturnsNil() {
+    func testNotesTabFollowsWorkspaceAndAcceptsSearchFocus() {
+        XCTAssertEqual(WorkspaceViewModel.availableTabs(showsWorkTab: true, showsTerminalTab: true, showsSettingsTab: true), [.work, .notes, .terminal, .systemSettings])
+        XCTAssertEqual(WorkspaceViewModel.availableTabs(showsWorkTab: false, showsTerminalTab: false, showsSettingsTab: false), [.notes])
+        XCTAssertTrue(WorkspaceTab.notes.requiresKeyWindow)
+    }
+
+    func testNotesOpenWithoutProjectOrUtilityContent() {
         let opening = ProgramBoardOverlayController.workspaceOpening(
             route: .unavailable,
             initialTab: .work,
@@ -201,7 +207,8 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             activityProjectPaths: []
         )
 
-        XCTAssertNil(opening)
+        XCTAssertEqual(opening?.initialTab, .notes)
+        XCTAssertEqual(opening?.contentLoadBlocked, false)
     }
 
     func testUtilityWorkspaceUpgradeDecisionAddsWorkWhenRoutingAppears() {
@@ -310,16 +317,16 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         )
     }
 
-    func testNoteToolbarRequiresSelectedProjectAndUsesExactActions() {
-        XCTAssertFalse(ProgramNoteControlPolicy.canStart(selectedProjectPath: nil))
-        XCTAssertFalse(ProgramNoteControlPolicy.canStart(selectedProjectPath: "  "))
+    func testNoteToolbarWorksWithoutProjectAndUsesExactActions() {
+        XCTAssertTrue(ProgramNoteControlPolicy.canStart(selectedProjectPath: nil))
+        XCTAssertTrue(ProgramNoteControlPolicy.canStart(selectedProjectPath: "  "))
         XCTAssertTrue(ProgramNoteControlPolicy.canStart(selectedProjectPath: "/repo/selected"))
         XCTAssertEqual(
             ProgramNoteToolbarPresentation.resolve(phase: .idle),
             ProgramNoteToolbarPresentation(
                 title: "Start Note Taker",
                 systemName: "waveform",
-                help: "Record a note for the selected project"
+                help: "Record a note in your library"
             )
         )
         XCTAssertEqual(

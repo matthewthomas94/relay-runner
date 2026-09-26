@@ -814,6 +814,36 @@ Saved through the daemon-owned typed writer.
         self.assertTrue(retried["idempotent"])
         self.assertIn(".orchestrator/REP-1.md", self.store.snapshot().files)
 
+    def test_global_note_http_contract_needs_no_project_and_preserves_provider_metadata(self):
+        from services.global_notes import GlobalNoteLibrary
+        self.daemon.global_notes = GlobalNoteLibrary(self.state, "global-test", lambda: [])
+        handler = object.__new__(orchestrator.Handler)
+        handler.daemon = self.daemon
+        payload = {
+            "request_id": "global-http", "created_at": "2026-09-20T08:00:00Z",
+            "capture_started_at": "2026-09-20T08:00:00Z", "captured_at": "2026-09-20T08:00:05Z",
+            "recording_state": "completed", "checkpoint_reason": "complete",
+            "capture_ended_at": "2026-09-20T08:00:05Z", "segments": [], "provider": "claude",
+        }
+        with patch.object(orchestrator, "_read_body", return_value=payload):
+            status, created = handler._route("POST", "/v1/artifacts/notes/create")
+        self.assertEqual(status, 201)
+        identity = created["note"]["identity"]
+        self.assertEqual(identity["project_id"], "global-notes")
+        self.daemon.note_metadata.schedule.assert_called_once()
+        status, catalog = handler._route("GET", "/v1/artifacts/notes")
+        self.assertEqual(status, 200)
+        self.assertEqual(catalog["total_count"], 1)
+        status, detail = handler._route("GET", "/v1/artifacts/notes/" + identity["note_id"])
+        self.assertEqual(detail["note"], created["note"])
+        with patch.object(orchestrator, "_read_body", return_value={
+            "artifact_id": identity["artifact_id"], "request_id": "delete-global"
+        }):
+            status, deleted = handler._route("POST", "/v1/artifacts/notes/" + identity["note_id"] + "/delete")
+        self.assertEqual(status, 200)
+        self.assertTrue(deleted["deleted"])
+        self.assertEqual(self.daemon.global_notes.list()["notes"], [])
+
     def test_project_note_http_contract_is_scoped_provider_neutral_and_separate_from_tickets(self):
         payload = {
             "repo_path": str(self.repo),

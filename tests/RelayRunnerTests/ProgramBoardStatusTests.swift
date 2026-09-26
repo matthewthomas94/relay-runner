@@ -289,7 +289,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(contents.contains("ProgramBoardBackdropStyle.backdropHeight"))
         XCTAssertTrue(contents.contains("ProgramBoardBackdropShape("))
         let modalLayerReferences = contents.components(separatedBy: "ProgramBoardModalLayer").count - 1
-        XCTAssertEqual(modalLayerReferences - 1, 6) // Exclude the generic type declaration.
+        XCTAssertEqual(modalLayerReferences - 1, 5) // Exclude the generic type declaration.
         XCTAssertTrue(contents.contains("ProgramTicketPanelStyle.width"))
         XCTAssertTrue(contents.contains("ProgramTicketPanelStyle.height"))
 
@@ -1209,11 +1209,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(item.programCardMetadataParts, ["RR-378", "23 Sep 2026"])
         XCTAssertEqual(ProgramBoardDate.label(iso8601: "2026-09-23T00:25:27.031298Z"), "23 Sep 2026")
         XCTAssertNil(ProgramBoardDate.label(iso8601: "invalid"))
-        XCTAssertEqual(ProgramBacklogTab.notes.label(count: 1), "1 Note")
-        XCTAssertEqual(ProgramBacklogTab.tickets.label(count: 2), "2 Tickets")
     }
 
-    func testBacklogTabsFilterNotesAndTicketsAcrossProjectsWithoutAddingALane() throws {
+    func testGlobalNotesStayVisibleAcrossProjectsAndBacklogContainsOnlyTickets() throws {
         let clientPath = "/repo/client-dashboard"
         let toolsPath = "/repo/tools"
         let model = ProgramBoardViewModel()
@@ -1226,18 +1224,14 @@ final class ProgramBoardStatusTests: XCTestCase {
         ]
 
         XCTAssertEqual(ProgramBoardLane.allCases.map(\.title), ["Backlog", "Queued", "In progress", "Done"])
-        XCTAssertEqual(model.noteItemsInBacklog().map(\.card.noteID), ["CD-N1000", "CD-N999", "TL-N2"])
+        XCTAssertEqual(model.visibleNotes.map(\.card.noteID), ["CD-N1000", "CD-N999", "TL-N2"])
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
         XCTAssertEqual(model.workItems(in: .backlog).count, 2)
-        model.backlogTab = .notes
-        XCTAssertEqual(model.workItems(in: .backlog).count, 3)
-        XCTAssertTrue(model.workItems(in: .backlog).allSatisfy { if case .note = $0 { return true }; return false })
+        XCTAssertTrue(model.workItems(in: .backlog).allSatisfy { if case .ticket = $0 { return true }; return false })
         XCTAssertEqual(model.workItems(in: .ready).count, model.ticketItems(in: .ready).count)
 
         model.selectProject(path: clientPath)
-        XCTAssertEqual(model.noteItemsInBacklog().map(\.card.noteID), ["CD-N1000", "CD-N999"])
-        XCTAssertEqual(model.workItems(in: .backlog).count, 2)
-        model.backlogTab = .tickets
+        XCTAssertEqual(model.visibleNotes.map(\.card.noteID), ["CD-N1000", "CD-N999", "TL-N2"])
         XCTAssertEqual(model.workItems(in: .backlog).count, 1)
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1"])
     }
@@ -1293,66 +1287,40 @@ final class ProgramBoardStatusTests: XCTestCase {
     }
 
     @MainActor
-    func testNotesLoadOnlySelectedProjectAndKeepOtherProjectCache() async throws {
-        let firstPath = "/repo/client-dashboard"
-        let secondPath = "/repo/tools"
-        let snapshot = try programBoardSnapshot(clientPath: firstPath, toolsPath: secondPath)
-        let first = noteItem(id: "CD-N1", number: 1, projectName: "Client", path: firstPath)
-        let second = noteItem(id: "TL-N1", number: 1, projectName: "Tools", path: secondPath)
-        let model = ProgramBoardViewModel(fetchDashboard: { _ in snapshot })
-        model.projectPaths = [firstPath, secondPath]
-        model.noteItems = [first, second]
-        model.selectProject(path: firstPath)
+    func testGlobalNotesRefreshWithoutProjectsAndIgnoreDashboardFailure() async {
+        let item = noteItem(id: "RR-N1", number: 1, projectName: "", path: GlobalNoteStore.repositoryPath)
+        let model = ProgramBoardViewModel(fetchDashboard: { _ in throw NSError(domain: "offline project", code: 1) })
         model.setNoteFetcher { paths in
-            XCTAssertEqual(paths, [firstPath])
-            return ProgramBoardNoteLoadResult(notes: [], errorMessage: nil)
-        }
-        await model.refreshInBackground().value
-        XCTAssertEqual(model.noteItems.map(\.id), [second.id], "Successful empty refresh removes only its own project's notes")
-    }
-
-    @MainActor
-    func testFailedProjectPreservesNotesWhileHealthyProjectRefreshesAndLaterRecovers() async throws {
-        let firstPath = "/repo/client-dashboard"
-        let secondPath = "/repo/tools"
-        let snapshot = try programBoardSnapshot(clientPath: firstPath, toolsPath: secondPath)
-        let first = noteItem(id: "CD-N1", number: 1, projectName: "Client", path: firstPath)
-        let second = noteItem(id: "TL-N1", number: 1, projectName: "Tools", path: secondPath)
-        let model = ProgramBoardViewModel(fetchDashboard: { _ in snapshot })
-        model.projectPaths = [firstPath, secondPath]
-        model.noteItems = [first]
-        model.setNoteFetcher { _ in
-            ProgramBoardNoteLoadResult(notes: [second], errorMessage: "Temporary failure", failedProjectPaths: [firstPath])
-        }
-        await model.refreshInBackground().value
-        XCTAssertEqual(Set(model.noteItems.map(\.id)), Set([first.id, second.id]))
-        model.setNoteFetcher { _ in ProgramBoardNoteLoadResult(notes: [second], errorMessage: nil) }
-        await model.refreshInBackground().value
-        XCTAssertEqual(model.noteItems.map(\.id), [second.id])
-        XCTAssertNil(model.noteLoadErrorMessage)
-    }
-
-    @MainActor
-    func testBackgroundNoteRetryClearsErrorAndRestoresNotes() async {
-        let item = noteItem(id: "RR-N1", number: 1, projectName: "Relay Runner", path: "/repo/relay-runner")
-        let model = ProgramBoardViewModel(fetchDashboard: { _ in .empty() })
-        var attempts = 0
-        model.setNoteFetcher { _ in
-            attempts += 1
-            return attempts == 1
-                ? ProgramBoardNoteLoadResult(notes: [], errorMessage: "Could not load notes for relay-runner.")
-                : ProgramBoardNoteLoadResult(notes: [item], errorMessage: nil)
+            XCTAssertEqual(paths, [GlobalNoteStore.repositoryPath])
+            return ProgramBoardNoteLoadResult(notes: [item], errorMessage: nil)
         }
         await model.reload().value
-        XCTAssertNotNil(model.noteLoadErrorMessage)
-        let retry = model.reloadIfIdle(inBackground: true)
-        XCTAssertNotNil(retry)
-        XCTAssertTrue(model.hasReloadInFlight)
-        XCTAssertNil(model.reloadIfIdle(inBackground: false))
-        await retry?.value
-        XCTAssertNil(model.noteLoadErrorMessage)
-        XCTAssertEqual(model.noteItems.map(\.id), [item.id])
-        XCTAssertFalse(model.hasReloadInFlight)
+        await model.refreshNotes()
+        XCTAssertEqual(model.visibleNotes.map(\.id), [item.id])
+        model.beginNoteDetail(item)
+        model.selectProject(path: "/repo/another")
+        XCTAssertEqual(model.selectedNoteDetail?.item.id, item.id)
+        model.noteQuery = "RR-N1"
+        XCTAssertEqual(model.visibleNotes.count, 1)
+        model.noteQuery = "unmatched"
+        XCTAssertTrue(model.visibleNotes.isEmpty)
+    }
+
+    @MainActor
+    func testGlobalNotesKeepCacheDuringOutageAndRecoverSilently() async {
+        let first = noteItem(id: "RR-N1", number: 1, projectName: "", path: GlobalNoteStore.repositoryPath)
+        let second = noteItem(id: "RR-N2", number: 2, projectName: "", path: GlobalNoteStore.repositoryPath)
+        let model = ProgramBoardViewModel()
+        model.noteItems = [first]
+        model.setNoteFetcher { _ in ProgramBoardNoteLoadResult(notes: [], errorMessage: "Unavailable") }
+        await model.refreshNotes()
+        XCTAssertEqual(model.noteItems.map(\.id), [first.id])
+        model.setNoteFetcher { _ in ProgramBoardNoteLoadResult(notes: [first, second], errorMessage: nil) }
+        await model.refreshNotes()
+        XCTAssertEqual(model.noteItems.map(\.id), [first.id, second.id])
+        model.setNoteFetcher { _ in .empty }
+        await model.refreshNotes()
+        XCTAssertTrue(model.noteItems.isEmpty)
     }
 
     func testNoteDetailUsesStructuredTranscriptWithoutStorageMetadata() {
@@ -1468,6 +1436,16 @@ final class ProgramBoardStatusTests: XCTestCase {
         ))
         XCTAssertEqual(model.noteCaptureSnapshot.phase, .paused)
         XCTAssertEqual(model.selectedNoteRecoveryOffer, original)
+
+        let global = noteItem(id: "RR-N999", number: 999, projectName: "", path: GlobalNoteStore.repositoryPath)
+        var globalCard = global.card
+        globalCard.legacyRecovery = RelayNoteLegacyRecovery(
+            repositoryPath: original.project.repositoryPath,
+            projectID: item.card.projectID,
+            noteID: "RR-N3"
+        )
+        let imported = ProgramBoardNoteItem(card: globalCard, projectName: "", projectPath: global.projectPath, sync: global.sync)
+        XCTAssertEqual(ProgramBoardViewModel.recoveryOffer(for: imported, in: [wrongProject, wrongNote, original]), original)
     }
 
     func testProgramBoardTicketDetailResolvesChildTicketFileFromAllProjects() throws {

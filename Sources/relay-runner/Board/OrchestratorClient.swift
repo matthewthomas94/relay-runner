@@ -246,7 +246,7 @@ enum OrchestratorClient {
     ) -> URLRequest? {
         guard let values = encodedObject(noteRequest) else { return nil }
         var payload = artifactPayload(
-            repoPath: repoPath,
+            repoPath: GlobalNoteStore.requestPath(repoPath),
             projectScopeToken: projectScopeToken
         )
         for (key, value) in values { payload[key] = value }
@@ -266,7 +266,7 @@ enum OrchestratorClient {
     ) -> URLRequest? {
         guard let values = encodedObject(checkpoint) else { return nil }
         var payload = artifactPayload(
-            repoPath: repoPath,
+            repoPath: GlobalNoteStore.requestPath(repoPath),
             projectScopeToken: projectScopeToken
         )
         for (key, value) in values { payload[key] = value }
@@ -285,7 +285,7 @@ enum OrchestratorClient {
     ) async throws -> RelayProjectNoteResponse {
         guard let request = projectNoteCreateRequest(
             noteRequest,
-            repoPath: repoPath,
+            repoPath: GlobalNoteStore.requestPath(repoPath),
             projectScopeToken: projectScopeToken,
             port: readPort()
         ) else {
@@ -301,7 +301,7 @@ enum OrchestratorClient {
     ) async throws -> RelayProjectNoteResponse {
         guard let request = projectNoteUpdateRequest(
             checkpoint,
-            repoPath: repoPath,
+            repoPath: GlobalNoteStore.requestPath(repoPath),
             projectScopeToken: projectScopeToken,
             port: readPort()
         ) else {
@@ -315,7 +315,7 @@ enum OrchestratorClient {
     ) async throws -> RelayProjectNoteResponse {
         guard let request = artifactRequest(
             path: "/v1/artifacts/notes/\(pathComponent(noteID))/retry-metadata",
-            repoPath: repoPath, projectScopeToken: projectScopeToken, port: readPort()
+            repoPath: GlobalNoteStore.requestPath(repoPath), projectScopeToken: projectScopeToken, port: readPort()
         ) else { throw OrchestratorClientError.invalidRequest }
         return try await response(RelayProjectNoteResponse.self, for: request)
     }
@@ -329,7 +329,7 @@ enum OrchestratorClient {
     ) async throws {
         guard let request = artifactRequest(
             path: "/v1/artifacts/notes/\(pathComponent(noteID))/delete",
-            repoPath: repoPath, projectScopeToken: projectScopeToken,
+            repoPath: GlobalNoteStore.requestPath(repoPath), projectScopeToken: projectScopeToken,
             values: ["artifact_id": artifactID, "request_id": UUID().uuidString], port: readPort()
         ) else { throw OrchestratorClientError.invalidRequest }
         _ = try await response(NoteDeleteResponse.self, for: request)
@@ -348,7 +348,7 @@ enum OrchestratorClient {
         return try await artifactGet(
             RelayProjectNoteListResponse.self,
             path: "/v1/artifacts/notes",
-            repoPath: repoPath,
+            repoPath: GlobalNoteStore.requestPath(repoPath),
             projectScopeToken: projectScopeToken,
             values: values
         )
@@ -362,7 +362,7 @@ enum OrchestratorClient {
         try await artifactGet(
             RelayProjectNoteResponse.self,
             path: "/v1/artifacts/notes/\(pathComponent(identity))",
-            repoPath: repoPath,
+            repoPath: GlobalNoteStore.requestPath(repoPath),
             projectScopeToken: projectScopeToken
         )
     }
@@ -375,7 +375,7 @@ enum OrchestratorClient {
         port: Int
     ) -> URLRequest? {
         var payload = artifactPayload(
-            repoPath: repoPath,
+            repoPath: path.hasPrefix("/v1/artifacts/notes") ? GlobalNoteStore.requestPath(repoPath) : repoPath,
             projectScopeToken: projectScopeToken
         )
         for (key, value) in values { payload[key] = value }
@@ -389,7 +389,7 @@ enum OrchestratorClient {
         values: [URLQueryItem] = [],
         port: Int
     ) -> URLRequest? {
-        var query = [URLQueryItem(name: "repo_path", value: repoPath)]
+        var query = [URLQueryItem(name: "repo_path", value: path.hasPrefix("/v1/artifacts/notes") ? GlobalNoteStore.requestPath(repoPath) : repoPath)]
         if let projectScopeToken, !projectScopeToken.isEmpty {
             query.append(URLQueryItem(name: "project_scope_token", value: projectScopeToken))
         }

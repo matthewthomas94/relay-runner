@@ -2,6 +2,7 @@ import SwiftUI
 
 enum WorkspaceTab: String, CaseIterable, Identifiable, Equatable {
     case work
+    case notes
     case terminal
     case systemSettings
 
@@ -10,13 +11,14 @@ enum WorkspaceTab: String, CaseIterable, Identifiable, Equatable {
     var title: String {
         switch self {
         case .work: return "Workspace"
+        case .notes: return "Notes"
         case .terminal: return "Terminal"
         case .systemSettings: return "Settings"
         }
     }
 
     var requiresKeyWindow: Bool {
-        self == .terminal || self == .systemSettings
+        self == .notes || self == .terminal || self == .systemSettings
     }
 
     func allowsEscapeDismissal(terminalHasFocus: Bool) -> Bool {
@@ -72,6 +74,7 @@ final class WorkspaceViewModel {
     ) -> [WorkspaceTab] {
         var tabs: [WorkspaceTab] = []
         if showsWorkTab { tabs.append(.work) }
+        tabs.append(.notes)
         if showsTerminalTab { tabs.append(.terminal) }
         if showsSettingsTab { tabs.append(.systemSettings) }
         return tabs

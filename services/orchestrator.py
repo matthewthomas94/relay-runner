@@ -76,6 +76,7 @@ try:
     )
     from services.artifact_sync import ArtifactSyncEngine, ArtifactSyncMode
     from services.project_notes import ProjectNoteManager
+    from services.global_notes import GlobalNoteLibrary
     from services.note_metadata import NoteMetadataGenerator, NoteMetadataQueue
     from services.note_contract import NoteUpdate, note_source
 except ModuleNotFoundError:  # Installed direct-script layout.
@@ -108,6 +109,7 @@ except ModuleNotFoundError:  # Installed direct-script layout.
     )
     from artifact_sync import ArtifactSyncEngine, ArtifactSyncMode  # type: ignore[no-redef]
     from project_notes import ProjectNoteManager  # type: ignore[no-redef]
+    from global_notes import GlobalNoteLibrary
     from note_metadata import NoteMetadataGenerator, NoteMetadataQueue
     from note_contract import NoteUpdate, note_source
 from command_actions import refined_command_summary, refined_ticket_title, resolve_command_action
@@ -5068,6 +5070,7 @@ class Daemon:
         ).hexdigest()[:24]
         self._artifact_lifecycles: dict[str, ArtifactLifecycleCoordinator] = {}
         self._artifact_lifecycles_lock = threading.Lock()
+        self.global_notes = GlobalNoteLibrary(app_support_root, self._artifact_device_id, self._legacy_note_sources)
 
         # MVP: single concurrency. Held during the dispatch claim → spawn window
         # (release immediately after spawn — the worker runs in its own thread).
@@ -5980,6 +5983,14 @@ class Daemon:
         limit: int = 50,
         after: str | None = None,
     ) -> dict[str, object]:
+        if not repo_path:
+            result = self.global_notes.list(limit=limit, after=after)
+            queue = getattr(self, "note_metadata", None)
+            if queue is not None:
+                for card in result["notes"]:
+                    if card["project_id"] == "global-notes" and (card.get("metadata") or {}).get("state") == "pending":
+                        queue.schedule(self.global_notes.manager, card["artifact_id"])
+            return result
         lifecycle = self._artifact_lifecycle(repo_path)
         if lifecycle is None:
             # Legacy projects have no project-note catalog. An empty result is
@@ -6488,8 +6499,26 @@ class Daemon:
     def _artifact_note_manager(
         self, repo_path: str, project_scope_token: str | None
     ) -> ProjectNoteManager:
+        if not repo_path:
+            return self.global_notes.manager
         lifecycle = self._artifact_board_lifecycle(repo_path, project_scope_token)
         return ProjectNoteManager(lifecycle.store, device_id=self._artifact_device_id)
+
+    def _legacy_note_sources(self):
+        try:
+            document = json.loads(self.project_registry_v2_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        for record in document.get("projects", []):
+            repo_path = str(record.get("last_resolved_path") or "").strip()
+            if not repo_path:
+                continue
+            try:
+                lifecycle = self._artifact_lifecycle(repo_path)
+                if lifecycle is not None:
+                    yield repo_path, ProjectNoteManager(lifecycle.store, device_id=self._artifact_device_id)
+            except Exception:
+                continue
 
     # -- prompt rendering -------------------------------------------------
 

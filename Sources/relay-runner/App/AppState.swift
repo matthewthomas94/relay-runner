@@ -1008,9 +1008,7 @@ final class AppState {
         resetActiveSessionState()
     }
 
-    /// Accepts one immutable project destination, completes the existing work
-    /// session teardown, then starts note-only local capture. RR-367 supplies
-    /// the button; this API owns the foreground transition and capture state.
+    /// Ends the existing work session, then starts project-independent note capture.
     @discardableResult
     func startNoteTaker(workingDirectory: String? = nil) -> Bool {
         guard allowsAppShellAccess else { return false }
@@ -1179,9 +1177,9 @@ final class AppState {
                 $0.sessionID == sessionID
             }
             guard let offer,
-                  let context = self.meetingNoteProjectContext(
-                    workingDirectory: offer.project.repositoryPath
-                  ),
+                  let context = (offer.project.expectedProjectID == "global-notes"
+                    ? self.meetingNoteProjectContext(workingDirectory: nil)
+                    : self.legacyMeetingNoteProjectContext(workingDirectory: offer.project.repositoryPath)),
                   context.binding.repositoryPath == offer.project.repositoryPath,
                   context.binding.expectedProjectID == offer.project.expectedProjectID else {
                 throw MeetingNoteCoordinatorError.projectIdentityChanged
@@ -1241,6 +1239,19 @@ final class AppState {
     }
 
     private func meetingNoteProjectContext(
+        workingDirectory: String?
+    ) -> (binding: MeetingNoteProjectBinding, scopeToken: String?)? {
+        return (
+            MeetingNoteProjectBinding(
+                repositoryPath: GlobalNoteStore.repositoryPath,
+                expectedProjectID: "global-notes",
+                provider: config.general.provider.rawValue
+            ),
+            nil
+        )
+    }
+
+    private func legacyMeetingNoteProjectContext(
         workingDirectory: String?
     ) -> (binding: MeetingNoteProjectBinding, scopeToken: String?)? {
         let requested = (workingDirectory ?? config.general.working_directory)

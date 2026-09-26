@@ -203,6 +203,29 @@ struct RelayProjectNoteResponse: Codable, Equatable, Sendable {
     }
 }
 
+enum GlobalNoteStore {
+    static var repositoryPath: String {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("relay-runner/notes").path
+    }
+
+    static func requestPath(_ path: String) -> String {
+        ProgramBoardProjectPath.matches(path, repositoryPath) ? "" : path
+    }
+}
+
+struct RelayNoteLegacyRecovery: Codable, Equatable, Sendable {
+    let repositoryPath: String
+    let projectID: String
+    let noteID: String
+
+    private enum CodingKeys: String, CodingKey {
+        case repositoryPath = "repository_path"
+        case projectID = "project_id"
+        case noteID = "note_id"
+    }
+}
+
 struct RelayProjectNoteCard: Codable, Equatable, Identifiable, Sendable {
     let noteID: String
     let artifactID: String
@@ -216,10 +239,15 @@ struct RelayProjectNoteCard: Codable, Equatable, Identifiable, Sendable {
     let reference: RelayProjectNoteReference
     var metadata: RelayProjectNoteMetadata? = nil
 
+    var repositoryPath: String? = nil
+    var legacyRecovery: RelayNoteLegacyRecovery? = nil
+
     var id: String { artifactID }
 
     private enum CodingKeys: String, CodingKey {
         case materialized, reference, metadata
+        case repositoryPath = "repository_path"
+        case legacyRecovery = "legacy_recovery"
         case noteID = "note_id"
         case artifactID = "artifact_id"
         case projectID = "project_id"

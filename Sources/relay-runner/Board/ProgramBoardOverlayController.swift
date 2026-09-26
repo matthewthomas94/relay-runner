@@ -218,8 +218,8 @@ final class ProgramBoardOverlayController {
 
     func setProjectScopeTokenProvider(_ provider: @escaping (String) -> String?) {
         projectScopeTokenProvider = provider
-        model.setNoteFetcher { repoPaths in
-            await Self.fetchProjectNotes(repoPaths: repoPaths, scopeTokenProvider: provider)
+        model.setNoteFetcher { _ in
+            await Self.fetchProjectNotes(repoPaths: [GlobalNoteStore.repositoryPath], scopeTokenProvider: { _ in nil })
         }
     }
 
@@ -276,7 +276,7 @@ final class ProgramBoardOverlayController {
                         ProgramBoardNoteItem(
                             card: card,
                             projectName: projectName,
-                            projectPath: repoPath,
+                            projectPath: card.repositoryPath ?? repoPath,
                             sync: response.sync
                         )
                     })
@@ -340,11 +340,10 @@ final class ProgramBoardOverlayController {
             selectedProjectPath = nil
             requestedTab = initialTab
         case .unavailable:
-            guard hasTerminalTab || hasSettingsTab else { return nil }
             showsWorkTab = false
             projectScope = []
             selectedProjectPath = nil
-            requestedTab = initialTab == .work ? .terminal : initialTab
+            requestedTab = initialTab == .work ? (hasTerminalTab ? .terminal : .notes) : initialTab
         }
 
         let normalizedTab = WorkspaceViewModel.normalized(
@@ -353,7 +352,7 @@ final class ProgramBoardOverlayController {
             showsTerminalTab: hasTerminalTab,
             showsSettingsTab: hasSettingsTab
         )
-        let blocksContent = showsWorkTab && !hasCachedSnapshot
+        let blocksContent = normalizedTab == .work && showsWorkTab && !hasCachedSnapshot
         return WorkspaceOpening(
             showsWorkTab: showsWorkTab,
             showsTerminalTab: hasTerminalTab,
@@ -618,6 +617,7 @@ final class ProgramBoardOverlayController {
                 onEndSession: { [weak self] in self?.endSession() },
                 onStartNoteTaker: { [weak self] in self?.startNoteTaker() },
                 onStopNoteTaker: { [weak self] in self?.stopNoteTaker() },
+                onNotesRefresh: { [weak self] in await self?.refreshNotes() },
                 onNoteOpen: { [weak self] note in self?.openNote(note) },
                 onNoteClose: { [weak self] in self?.closeNote() },
                 onNoteDelete: { [weak self] note in self?.deleteNote(note) },
@@ -821,7 +821,7 @@ final class ProgramBoardOverlayController {
         lastSelectedTab = workspace.selectedTab
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
-        contentLoadBlocked = workspace.showsWorkTab && model.snapshot == nil
+        contentLoadBlocked = workspace.selectedTab == .work && workspace.showsWorkTab && model.snapshot == nil
         let container = revealContainer ?? panel.contentView as? BoardRevealContainerView
         if animated, let container {
             container.prepareForOpening(startsLoading: contentLoadBlocked)
@@ -1017,8 +1017,7 @@ final class ProgramBoardOverlayController {
     }
 
     private func startNoteTaker() {
-        guard let projectPath = model.selectedSessionProjectPath else { return }
-        _ = startNoteTakerHandler?(projectPath)
+        _ = startNoteTakerHandler?(GlobalNoteStore.repositoryPath)
         model.hasActiveSession = sessionActiveProvider()
         model.noteCaptureSnapshot = noteCaptureSnapshotProvider()
     }
@@ -1035,10 +1034,10 @@ final class ProgramBoardOverlayController {
             do {
                 let response = try await OrchestratorClient.retryProjectNoteMetadata(
                     item.card.noteID, repoPath: item.projectPath,
-                    projectScopeToken: self.projectScopeTokenProvider(item.projectPath)
+                    projectScopeToken: GlobalNoteStore.requestPath(item.projectPath).isEmpty ? nil : self.projectScopeTokenProvider(item.projectPath)
                 )
                 self.model.finishNoteDetail(response, for: item)
-                self.model.reload()
+                await self.model.refreshNotes()
             } catch {
                 if self.model.selectedNoteDetail?.item.id == item.id {
                     self.model.selectedNoteDetail?.errorMessage = "Summary retry unavailable. Your transcript is saved."
@@ -1055,15 +1054,27 @@ final class ProgramBoardOverlayController {
                 try await OrchestratorClient.deleteProjectNote(
                     item.card.noteID, artifactID: item.card.artifactID,
                     repoPath: item.projectPath,
-                    projectScopeToken: self.projectScopeTokenProvider(item.projectPath)
+                    projectScopeToken: GlobalNoteStore.requestPath(item.projectPath).isEmpty ? nil : self.projectScopeTokenProvider(item.projectPath)
                 )
                 if self.model.selectedNoteDetail?.item.id == item.id { self.closeNote() }
-                self.model.reload()
+                await self.model.refreshNotes()
             } catch {
                 if self.model.selectedNoteDetail?.item.id == item.id {
                     self.model.selectedNoteDetail?.errorMessage = "Could not delete this note. Please try again."
                 }
             }
+        }
+    }
+
+    private func refreshNotes() async {
+        model.noteCaptureSnapshot = noteCaptureSnapshotProvider()
+        await model.refreshNotes()
+        guard let item = model.selectedNoteDetail?.item else { return }
+        if let response = try? await OrchestratorClient.fetchProjectNote(
+            item.card.noteID, repoPath: item.projectPath,
+            projectScopeToken: GlobalNoteStore.requestPath(item.projectPath).isEmpty ? nil : projectScopeTokenProvider(item.projectPath)
+        ) {
+            model.finishNoteDetail(response, for: item)
         }
     }
 
@@ -1078,7 +1089,7 @@ final class ProgramBoardOverlayController {
                 let response = try await OrchestratorClient.fetchProjectNote(
                     item.card.noteID,
                     repoPath: item.projectPath,
-                    projectScopeToken: self.projectScopeTokenProvider(item.projectPath)
+                    projectScopeToken: GlobalNoteStore.requestPath(item.projectPath).isEmpty ? nil : self.projectScopeTokenProvider(item.projectPath)
                 )
                 self.model.finishNoteDetail(response, for: item)
             } catch {

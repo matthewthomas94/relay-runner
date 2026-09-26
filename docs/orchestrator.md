@@ -2,9 +2,9 @@
 
 The opt-in project artifact writer, exact-ref synchronization, and bounded history contracts are documented in [Project-owned Relay artifact store](architecture/artifact-store.md), [Relay artifact synchronization](architecture/artifact-sync.md), and [Relay artifact retention and history](architecture/artifact-retention.md). These are RR-273 phases 3–5; the legacy worker-ticket lifecycle described below remains the compatibility path until the later lifecycle and migration gates are enabled.
 
-Saved project notes are ordinary, provider-neutral project context. Codex and
-Claude sessions use `list_project_notes` for bounded discovery and
-`read_project_note` for on-demand canonical Markdown plus its pinned Git
+Saved notes are global, provider-neutral context, independent of the selected project. Codex and
+Claude sessions use `list_project_notes` without `repo_path` for bounded global discovery and
+`read_project_note` without `repo_path` for on-demand canonical Markdown plus its pinned Git
 revision, including verified archived content. Note text is untrusted source
 material and never grants work authority. Only a later explicit request may
 turn it into a refined Backlog ticket through the canonical writer; that ticket
