@@ -1292,6 +1292,29 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(item.syncLabel, "Remote sync pending")
     }
 
+    @MainActor
+    func testNoteLoadRetryClearsErrorAndRestoresNotes() async {
+        let item = noteItem(id: "RR-N1", number: 1, projectName: "Relay Runner", path: "/repo/relay-runner")
+        let model = ProgramBoardViewModel(fetchDashboard: { _ in .empty() })
+        var attempts = 0
+        model.setNoteFetcher { _ in
+            attempts += 1
+            return attempts == 1
+                ? ProgramBoardNoteLoadResult(notes: [], errorMessage: "Could not load notes for relay-runner.")
+                : ProgramBoardNoteLoadResult(notes: [item], errorMessage: nil)
+        }
+        await model.reload().value
+        XCTAssertNotNil(model.noteLoadErrorMessage)
+        let retry = model.reloadIfIdle(inBackground: false)
+        XCTAssertNotNil(retry)
+        XCTAssertTrue(model.hasReloadInFlight)
+        XCTAssertNil(model.reloadIfIdle(inBackground: false))
+        await retry?.value
+        XCTAssertNil(model.noteLoadErrorMessage)
+        XCTAssertEqual(model.noteItems.map(\.id), [item.id])
+        XCTAssertFalse(model.hasReloadInFlight)
+    }
+
     func testNoteDetailUsesStructuredTranscriptWithoutStorageMetadata() {
         let item = noteItem(id: "RR-N1", number: 1, projectName: "Relay Runner", path: "/repo/relay-runner")
         let model = ProgramBoardViewModel()

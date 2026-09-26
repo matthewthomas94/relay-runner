@@ -1536,11 +1536,22 @@ struct ProgramWorkColumnPanel: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ProgramDropIndicator(target: activeTarget)
                     if lane == .backlog, model.backlogTab == .notes, let noteError = model.noteLoadErrorMessage {
-                        Text(noteError)
-                            .font(AppTypography.font(.supporting))
-                            .foregroundStyle(ProgramBoardStyle.red)
-                            .padding(.horizontal, 10)
-                            .padding(.bottom, 8)
+                        HStack(spacing: 10) {
+                            Text(noteError)
+                                .font(AppTypography.font(.supporting))
+                                .foregroundStyle(ProgramBoardStyle.red)
+                            Spacer(minLength: 0)
+                            ProgramDetailActionButton(
+                                systemName: "arrow.clockwise",
+                                title: model.hasReloadInFlight ? "Retrying…" : "Retry",
+                                disabled: model.hasReloadInFlight,
+                                help: "Reload project notes"
+                            ) {
+                                model.reloadIfIdle(inBackground: false)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 8)
                     }
                     if laneItems.isEmpty {
                         ProgramColumnEmpty(text: lane == .backlog && model.backlogTab == .notes ? "No notes" : lane.emptyText)
@@ -2391,9 +2402,19 @@ private struct ProgramNoteDetailPanel: View {
                 ProgramDetailActionButton(
                     systemName: "trash", title: "Delete",
                     disabled: detail.isLoading || detail.item.card.recordingState != .completed || showsStop || recoveryInFlight,
-                    help: detail.item.card.recordingState == .completed ? "Delete this saved note" : "Stop and save this note before deleting it"
+                    help: detail.item.card.recordingState == .completed ? "Delete this saved note" : "Stop and save this note before deleting it",
+                    destructive: true
                 ) {
                     confirmsDelete = true
+                }
+                ProgramDetailActionButton(
+                    systemName: "doc.on.doc", title: "Copy transcript",
+                    disabled: detail.isLoading || detail.transcript?.isEmpty != false,
+                    help: "Copy the transcript as plain text"
+                ) {
+                    guard let transcript = detail.transcript, !transcript.isEmpty else { return }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(transcript, forType: .string)
                 }
                 if showsStop {
                     ProgramDetailActionButton(

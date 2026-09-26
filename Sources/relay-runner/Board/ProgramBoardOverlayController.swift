@@ -262,7 +262,7 @@ final class ProgramBoardOverlayController {
     ) async -> ProgramBoardNoteLoadResult {
         let pageSize = 100
         var notes: [ProgramBoardNoteItem] = []
-        var failures = 0
+        var failedProjects: [String] = []
         for repoPath in repoPaths {
             do {
                 let projectName = URL(fileURLWithPath: repoPath).lastPathComponent
@@ -292,12 +292,12 @@ final class ProgramBoardOverlayController {
                 }
                 notes.append(contentsOf: projectNotes)
             } catch {
-                failures += 1
+                failedProjects.append(URL(fileURLWithPath: repoPath).lastPathComponent)
             }
         }
-        let errorMessage = failures == 0
+        let errorMessage = failedProjects.isEmpty
             ? nil
-            : "Notes for \(failures) project\(failures == 1 ? "" : "s") could not be loaded. Try again."
+            : "Could not load notes for \(failedProjects.joined(separator: ", "))."
         return ProgramBoardNoteLoadResult(notes: notes, errorMessage: errorMessage)
     }
 

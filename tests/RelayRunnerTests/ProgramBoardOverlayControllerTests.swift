@@ -333,6 +333,25 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(ProgramNoteToolbarPresentation.resolve(phase: .paused).title, "Stop")
     }
 
+    func testNoteCatalogRetryObtainsFreshScopeAndIdentifiesFailedProject() async {
+        var token = "stale-scope"
+        let fetch: (String, String?, Int, String?) async throws -> RelayProjectNoteListResponse = { _, scope, limit, _ in
+            guard scope == "fresh-scope" else { throw OrchestratorClientError.invalidRequest }
+            return Self.noteListResponse(noteIDs: ["RR-N1"], limit: limit,
+                                         hasMore: false, nextCursor: nil, totalCount: 1)
+        }
+        let failed = await ProgramBoardOverlayController.fetchProjectNotes(
+            repoPaths: ["/repo/relay-runner"], scopeTokenProvider: { _ in token }, fetchPage: fetch
+        )
+        XCTAssertEqual(failed.errorMessage, "Could not load notes for relay-runner.")
+        token = "fresh-scope"
+        let recovered = await ProgramBoardOverlayController.fetchProjectNotes(
+            repoPaths: ["/repo/relay-runner"], scopeTokenProvider: { _ in token }, fetchPage: fetch
+        )
+        XCTAssertNil(recovered.errorMessage)
+        XCTAssertEqual(recovered.notes.map { $0.card.noteID }, ["RR-N1"])
+    }
+
     func testProjectNoteCatalogUsesSupportedPageSizeAndFollowsManagerCursor() async {
         var requests: [(limit: Int, after: String?)] = []
         let firstPageIDs = (1...100).map { "RR-N\($0)" }
