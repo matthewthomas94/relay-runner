@@ -2365,6 +2365,13 @@ private struct ProgramNoteDetailPanel: View {
         isCurrentCapture && captureSnapshot.phase.ownsForeground
     }
 
+    private var noteFileURL: URL? {
+        guard detail.item.card.materialized, !detail.item.isArchived else { return nil }
+        let url = URL(fileURLWithPath: detail.item.projectPath)
+            .appendingPathComponent(detail.item.card.reference.path)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
@@ -2397,6 +2404,14 @@ private struct ProgramNoteDetailPanel: View {
                     guard let transcript = detail.transcript, !transcript.isEmpty else { return }
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(transcript, forType: .string)
+                }
+                ProgramDetailActionButton(
+                    systemName: "folder", title: "Reveal",
+                    disabled: noteFileURL == nil,
+                    help: noteFileURL == nil ? "This note has no local file to reveal" : "Reveal transcript in Finder"
+                ) {
+                    guard let url = noteFileURL else { return }
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
                 if showsStop {
                     ProgramDetailActionButton(
