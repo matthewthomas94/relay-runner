@@ -11,9 +11,8 @@ final class SettingsWindowTests: XCTestCase {
         )
     }
 
-    func testSettingsCategorySelectionIncludesHeaderTextNavigationLabelAndIcon() {
+    func testSettingsCategorySelectionIncludesNavigationLabelAndIcon() {
         for category in SettingsCategory.allCases {
-            XCTAssertFalse(category.subtitle.isEmpty)
             XCTAssertEqual(category.navigationLabel, category.title)
             XCTAssertFalse(category.systemImage.isEmpty)
         }
@@ -24,13 +23,6 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(SettingsCategory.category(before: .speechToText), .permissions)
         XCTAssertEqual(SettingsCategory.category(before: .permissions), .permissions)
         XCTAssertEqual(SettingsCategory.category(after: .awareness), .awareness)
-    }
-
-    func testSettingsHeaderPresentationUsesSelectedCategory() {
-        let category = SettingsDetailHeaderPresentation(category: .permissions)
-        XCTAssertEqual(category.title, "Permissions")
-        XCTAssertEqual(category.subtitle, "Access and runtime")
-        XCTAssertNil(category.trailingText)
     }
 
     func testWorkspaceSurfacesUseExplicitFillWidthSizing() {
@@ -197,8 +189,8 @@ final class SettingsWindowTests: XCTestCase {
         let source = root.appendingPathComponent("Sources/relay-runner/Settings/SettingsWindow.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        XCTAssertTrue(contents.contains("SettingsDetailHeader("))
-        XCTAssertTrue(contents.contains("SettingsDetailHeaderPresentation(category: selectedCategory)"))
+        XCTAssertFalse(contents.contains("SettingsDetailHeader("))
+        XCTAssertFalse(contents.contains("SettingsDetailHeaderPresentation"))
         XCTAssertTrue(contents.contains("SettingsActionButton(\n                title: \"Revert\""))
         XCTAssertTrue(contents.contains("draft = appState.config"))
         XCTAssertFalse(contents.contains("OnboardingPresentationState"))

@@ -115,16 +115,6 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         }
     }
 
-    var subtitle: String {
-        switch self {
-        case .permissions: return "Access and runtime"
-        case .speechToText: return "Input model and trigger"
-        case .textToSpeech: return "Voice and playback"
-        case .general: return "Provider and workspace"
-        case .awareness: return "Overlay visibility"
-        }
-    }
-
     var navigationLabel: String { title }
 
     var systemImage: String {
@@ -235,11 +225,6 @@ private struct SettingsContent: View {
                 .frame(width: 1)
 
             VStack(spacing: 0) {
-                SettingsDetailHeader(
-                    presentation: SettingsDetailHeaderPresentation(category: selectedCategory),
-                    style: style
-                )
-                SettingsDivider()
                 ScrollViewReader { proxy in
                     ScrollView(.vertical, showsIndicators: false) {
                         VStack(spacing: 0) {
@@ -391,48 +376,6 @@ struct SettingsFooterPresentation: Equatable {
     var actionTint: Color { hasChanges ? SettingsSurfaceColor.dirtyAccent : SettingsSurfaceColor.mutedText }
 }
 
-struct SettingsDetailHeaderPresentation: Equatable {
-    let title: String
-    let subtitle: String
-    let trailingText: String?
-
-    init(category: SettingsCategory) {
-        self.title = category.title
-        self.subtitle = category.subtitle
-        self.trailingText = nil
-    }
-}
-
-private struct SettingsDetailHeader: View {
-    let presentation: SettingsDetailHeaderPresentation
-    let style: SettingsContentStyle
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(presentation.title)
-                    .font(AppTypography.font(.screenTitle))
-                    .foregroundStyle(SettingsSurfaceColor.primaryText)
-                Text(presentation.subtitle)
-                    .font(AppTypography.font(.settingsDescription))
-                    .foregroundStyle(SettingsSurfaceColor.secondaryText)
-            }
-            Spacer(minLength: 0)
-            if let trailingText = presentation.trailingText {
-                Text(trailingText)
-                    .font(AppTypography.font(.label))
-                    .foregroundStyle(SettingsSurfaceColor.secondaryText)
-                    .padding(.top, 2)
-            }
-        }
-        .padding(.horizontal, 22)
-        .padding(.top, 18)
-        .padding(.bottom, 14)
-        .frame(maxWidth: style.detailMaxWidth, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 private struct SettingsCategorySidebar: View {
     @Binding var selection: SettingsCategory
     let style: SettingsContentStyle
@@ -508,7 +451,7 @@ private struct SettingsCategoryButton: View {
             .frame(maxWidth: .infinity, minHeight: SettingsLayout.sidebarRowHeight, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
-                    .fill(presentation.usesHoverFill ? BoardDarkSurfaceStyle.hoverFill : Color.clear)
+                    .fill(selected ? BoardDarkSurfaceStyle.cardActiveFill : (presentation.usesHoverFill ? BoardDarkSurfaceStyle.hoverFill : Color.clear))
                     .overlay(
                         RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
                             .fill(Color.white.opacity(presentation.fillOverlayOpacity))
@@ -517,7 +460,7 @@ private struct SettingsCategoryButton: View {
             .clipShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
-                    .strokeBorder(Color.white.opacity(presentation.strokeOpacity), lineWidth: 1)
+                    .strokeBorder(selected ? BoardDarkSurfaceStyle.border : Color.white.opacity(presentation.strokeOpacity), lineWidth: 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
         }
