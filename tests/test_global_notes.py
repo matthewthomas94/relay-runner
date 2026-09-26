@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from services.global_notes import GlobalNoteLibrary
 from tests import test_project_notes as fixtures
@@ -98,6 +99,18 @@ class GlobalNoteTests(unittest.TestCase):
         card = self.library.list()['notes'][0]
         self.assertEqual(card['project_id'], 'global-notes')
         self.assertEqual(card['repository_path'], str((self.root / 'notes').resolve()))
+
+    def test_refresh_skips_unchanged_sources_and_restart_skips_completed_imports(self):
+        self.legacy.completed_note()
+        with patch.object(self.legacy.manager, 'get', wraps=self.legacy.manager.get) as reads:
+            self.assertEqual(self.library.list()['total_count'], 1)
+            self.assertEqual(reads.call_count, 1)
+            self.library._last_import = float('-inf')
+            self.assertEqual(self.library.list()['total_count'], 1)
+            self.assertEqual(reads.call_count, 1)
+            restarted = GlobalNoteLibrary(self.root, 'restart', self.library.sources)
+            self.assertEqual(restarted.list()['total_count'], 1)
+            self.assertEqual(reads.call_count, 1)
 
     def test_pagination_is_complete_and_rejects_stale_cursor(self):
         self.library.sources = lambda: []

@@ -25,6 +25,7 @@ class GlobalNoteLibrary:
         self._lock = threading.RLock()
         self._manager = None
         self._last_import = float('-inf')
+        self._source_heads = {}
 
     @property
     def manager(self):
@@ -53,20 +54,31 @@ class GlobalNoteLibrary:
         with self._lock:
             if time.monotonic() - self._last_import < 30:
                 return
-            self._last_import = time.monotonic()
             manager = self.manager
+            completed = {card['artifact_id'] for card in self._all_cards(manager)
+                         if card['recording_state'] == 'completed'}
             for repo_path, source in self.sources():
                 try:
+                    store = getattr(source, 'store', None)
+                    head = store._head() if store is not None else None
+                    if head is not None and self._source_heads.get(repo_path) == head:
+                        continue
                     cards = self._all_cards(source)
+                    imported_all = True
                     for card in cards:
+                        if card['artifact_id'] in completed:
+                            continue
                         try:
                             manager.import_saved_note(source.get(card['artifact_id'])['note'], repository_path=repo_path)
                         except Exception:
                             # One unreadable note cannot hide the other notes.
-                            continue
+                            imported_all = False
+                    if imported_all and head is not None:
+                        self._source_heads[repo_path] = head
                 except Exception:
                     # Global copies remain readable while a source is offline.
                     continue
+            self._last_import = time.monotonic()
 
     @staticmethod
     def _all_cards(manager):
