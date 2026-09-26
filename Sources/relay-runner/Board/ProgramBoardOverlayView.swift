@@ -150,7 +150,7 @@ private enum ProgramTicketPanelStyle {
     static let verticalPadding: CGFloat = 18
     static let compactFieldHeight: CGFloat = 34
     static let createDescriptionHeight: CGFloat = 132
-    static let executionModeDescriptionHeight: CGFloat = 38
+    static let executionModeDescriptionHeight: CGFloat = 24
     static func detailSize(fitting availableSize: CGSize) -> CGSize {
         CGSize(
             width: min(width, max(0, availableSize.width)),
@@ -3428,7 +3428,7 @@ private struct ProgramEditTextArea: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(AppTypography.font(.body))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .foregroundStyle(ProgramBoardStyle.primaryText)
 
             TextEditor(text: $text)
                 .font(AppTypography.font(.field))
@@ -3449,7 +3449,7 @@ private struct ProgramTicketTitleField: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Title")
                 .font(AppTypography.font(.body))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .foregroundStyle(ProgramBoardStyle.primaryText)
 
             TextField("Enter ticket title", text: $text)
                 .font(AppTypography.font(.field))
@@ -3594,28 +3594,28 @@ private struct ProgramTicketCreateModal: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 8) {
-                Text(draft.lane.title)
-                    .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
-                    .foregroundStyle(ProgramBoardStyle.secondaryText)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                ProgramIconButton(systemName: "xmark", help: "Cancel new ticket", action: onCancel)
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: SettingsLayout.sectionSpacing) {
+                HStack(alignment: .center, spacing: 8) {
+                    Text(draft.lane.title)
+                        .font(AppTypography.font(.sectionHeading))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    ProgramIconButton(systemName: "xmark", help: "Cancel new ticket", action: onCancel)
+                }
 
-            VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Project")
                         .font(AppTypography.font(.body))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
                     ProgramTicketProjectPicker(
                         projects: projects,
                         selection: $selectedProjectPath
                     )
 
                     Text(selectedProject?.path ?? "Select project")
-                        .font(AppTypography.monospacedFont(size: 10, weight: .regular))
+                        .font(AppTypography.font(.supporting))
                         .foregroundStyle(ProgramBoardStyle.mutedText)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -3625,19 +3625,23 @@ private struct ProgramTicketCreateModal: View {
 
                 ProgramExecutionModePicker(selection: $executionMode)
 
-                ProgramEditTextArea(
-                    title: "Description",
-                    text: $description,
-                    minHeight: ProgramTicketPanelStyle.createDescriptionHeight,
-                    maxHeight: ProgramTicketPanelStyle.createDescriptionHeight
-                )
+                VStack(alignment: .leading, spacing: 14) {
+                    ProgramEditTextArea(
+                        title: "Description",
+                        text: $description,
+                        minHeight: ProgramTicketPanelStyle.createDescriptionHeight,
+                        maxHeight: ProgramTicketPanelStyle.createDescriptionHeight
+                    )
 
-                ProgramTicketImageSelector(
-                    existingPaths: [],
-                    selectedURLs: $imageURLs,
-                    chooseImages: chooseImages
-                )
+                    ProgramTicketImageSelector(
+                        existingPaths: [],
+                        selectedURLs: $imageURLs,
+                        chooseImages: chooseImages
+                    )
+                }
             }
+
+            Spacer(minLength: 0)
 
             HStack(spacing: 8) {
                 Spacer(minLength: 0)
@@ -3682,18 +3686,19 @@ private struct ProgramExecutionModePicker: View {
     @Binding var selection: Ticket.ExecutionMode
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Execution mode")
                 .font(AppTypography.font(.body))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .foregroundStyle(ProgramBoardStyle.primaryText)
             Text(selection.explanation)
-                .font(AppTypography.font(.label))
+                .font(AppTypography.font(.supporting))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .lineLimit(2)
-                .frame(maxWidth: 360, alignment: .topLeading)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .frame(height: ProgramTicketPanelStyle.executionModeDescriptionHeight, alignment: .topLeading)
-            HStack(spacing: 6) {
-                ForEach(Ticket.ExecutionMode.allCases, id: \.rawValue) { mode in
+            HStack(spacing: 0) {
+                ForEach([Ticket.ExecutionMode.spike, .implementation], id: \.rawValue) { mode in
                     ProgramExecutionModeButton(
                         mode: mode,
                         isSelected: selection == mode,
@@ -3701,8 +3706,12 @@ private struct ProgramExecutionModePicker: View {
                     )
                 }
             }
-            .frame(maxWidth: 360)
+            .frame(width: SettingsLayout.controlMaxWidth)
             .frame(height: SharedActionButtonMetrics.controlHeight)
+            .background(BoardDarkSurfaceBackground(
+                cornerRadius: SharedActionButtonMetrics.cornerRadius,
+                fill: BoardDarkSurfaceStyle.cardFill
+            ))
         }
     }
 }
@@ -3714,8 +3723,6 @@ private struct ProgramExecutionModeButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
     @FocusState private var isFocused: Bool
-
-    private var palette: SharedActionButtonPalette { .settingsSecondary }
 
     private var presentation: SettingsActionPresentation {
         SettingsActionPresentation.resolve(
@@ -3735,18 +3742,16 @@ private struct ProgramExecutionModeButton: View {
         Button(action: action) {
             Text(mode.displayName)
                 .font(AppTypography.font(.action))
-                .foregroundStyle(palette.foreground.opacity(presentation.foregroundOpacity))
+                .foregroundStyle(
+                    (isSelected ? ProgramBoardStyle.primaryText : ProgramBoardStyle.mutedText)
+                        .opacity(presentation.foregroundOpacity)
+                )
                 .frame(maxWidth: .infinity, minHeight: SharedActionButtonMetrics.controlHeight)
                 .background {
-                    ZStack {
-                        if isSelected {
-                            shape.fill(SettingsSurfaceColor.rowFillSelected)
-                        }
-                        SharedActionButtonSurface(
-                            prominence: .secondary,
-                            presentation: presentation,
-                            palette: palette
-                        )
+                    if isSelected {
+                        shape.fill(BoardDarkSurfaceStyle.cardActiveFill)
+                    } else if isHovered || isFocused {
+                        shape.fill(BoardDarkSurfaceStyle.hoverFill)
                     }
                 }
                 .contentShape(shape)
