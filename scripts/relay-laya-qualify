@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Explicit setup, offline evaluation and private warm service for RR-379."""
+
+from __future__ import annotations
+
+import argparse
+from collections import Counter
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import socket
+import statistics
+import subprocess
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "services"))
+from laya_qualification import (  # noqa: E402
+    BUCKETS, CHECKPOINTS, LocalLaya, QUESTIONS, fallback, request_payload,
+)
+
+
+def percentile(values, fraction):
+    return sorted(values)[max(0, __import__("math").ceil(len(values) * fraction) - 1)] if values else None
+
+
+def machine():
+    def read(*args):
+        try:
+            return subprocess.check_output(args, text=True, stderr=subprocess.DEVNULL).strip()
+        except (OSError, subprocess.CalledProcessError):
+            return "unavailable"
+    return {
+        "platform": platform.platform(), "python": platform.python_version(),
+        "chip": read("sysctl", "-n", "machdep.cpu.brand_string"),
+        "memory_bytes": read("sysctl", "-n", "hw.memsize"),
+        "git_commit": read("git", "-C", str(ROOT), "rev-parse", "HEAD"),
+    }
+
+
+def summary(rows, predicted_key):
+    eligible = [row for row in rows if row["expected_bucket"] in BUCKETS]
+    counts = Counter((row["expected_bucket"], row.get(predicted_key) or "abstain") for row in eligible)
+    covered = [row for row in eligible if row.get(predicted_key) in BUCKETS]
+    return {
+        "cases": len(eligible),
+        "correct": sum(row.get(predicted_key) == row["expected_bucket"] for row in eligible),
+        "accuracy": sum(row.get(predicted_key) == row["expected_bucket"] for row in eligible) / len(eligible) if eligible else None,
+        "coverage": len(covered) / len(eligible) if eligible else None,
+        "covered_accuracy": sum(row[predicted_key] == row["expected_bucket"] for row in covered) / len(covered) if covered else None,
+        "false_task_or_action_from_discussion": sum(row["expected_bucket"] == "discussion" and row.get(predicted_key) in {"task", "action"} for row in eligible),
+        "confusion": {bucket: {prediction: counts[bucket, prediction] for prediction in (*BUCKETS, "abstain")} for bucket in BUCKETS},
+    }
+
+
+def setup(args):
+    from huggingface_hub import snapshot_download
+    # This is the only code path permitted to contact the public model host.
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    spec = CHECKPOINTS[args.checkpoint]
+    snapshot_download(spec["repository"], revision=spec["revision"], local_dir=args.model_dir, token=False)
+    model_dir = Path(args.model_dir)
+    with (model_dir / "model.safetensors").open("rb") as handle:
+        digest = hashlib.file_digest(handle, "sha256").hexdigest()
+    if digest != spec["weight_sha256"]:
+        raise ValueError("Downloaded weights do not match pinned checkpoint")
+    print(json.dumps({"model_dir": str(model_dir.resolve()), **spec}, indent=2))
+
+
+def evaluate(args, model):
+    from command_actions import classify_command
+    try:
+        from intent_qualification import qualify_intent
+    except ImportError:
+        qualify_intent = None
+    source = Path(args.corpus).read_bytes()
+    corpus = json.loads(source)
+    cases = corpus["cases"] if isinstance(corpus, dict) else corpus
+    cases = [case for case in cases if args.split == "all" or case.get("split", "development") == args.split]
+    if not cases:
+        raise ValueError("No cases match the requested split")
+    warm = request_payload("Open the browser.", {"relay_command_id": "warmup", "relay_command_seq": 0})
+    cold_start = time.perf_counter()
+    model.qualify(warm)
+    first_inference_ms = (time.perf_counter() - cold_start) * 1000
+    for _ in range(args.warmup):
+        model.qualify(warm)
+    rows, samples, inference_samples = [], [], []
+    for index, case in enumerate(cases, 1):
+        payload = request_payload(case["text"], {"relay_command_id": case["id"], "relay_command_seq": index}, case.get("context"))
+        action = classify_command(case["text"])
+        legacy_map = {"create_ticket": "task", "update_ticket": "task", "dispatch_ticket": "task", "direct_action": "action", "session_operation": "action", "conversation": "discussion", "inspect_ticket": "discussion"}
+        baseline_bucket = legacy_map.get(action.kind)
+        if qualify_intent:
+            baseline_bucket = qualify_intent(case["text"], context=case.get("context", []), action_kind=action.kind, action_reason=action.reason).to_dict()["bucket"]
+        observed = []
+        for _ in range(args.repeats):
+            # Includes payload preparation, tokenization, synchronized inference,
+            # safety formatting and JSON serialization. Excludes IPC and PM time.
+            start = time.perf_counter()
+            output = model.qualify(dict(payload))
+            json.dumps(output)
+            elapsed = (time.perf_counter() - start) * 1000
+            samples.append(elapsed)
+            if output.get("raw_bucket"):
+                inference_samples.append(elapsed)
+            observed.append({"raw_bucket": output.get("raw_bucket"), "elapsed_ms": elapsed})
+        rows.append({
+            **case, "baseline_bucket": baseline_bucket, "baseline_action_kind": action.kind,
+            **output, "measurements": observed,
+        })
+    report = {
+        "schema_version": 1, "experiment": "RR-379", "machine": machine(),
+        "evaluated_source": {"files_sha256": {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in (ROOT / "services/laya_qualification.py", Path(__file__).resolve())}},
+        "model": model.identity, "prompt": QUESTIONS,
+        "prompt_sha256": hashlib.sha256(json.dumps(QUESTIONS, sort_keys=True).encode()).hexdigest(),
+        "corpus_sha256": hashlib.sha256(source).hexdigest(), "split": args.split,
+        "provenance": corpus.get("provenance", "unspecified") if isinstance(corpus, dict) else "unspecified",
+        "repeats": args.repeats, "warmup": args.warmup, "first_inference_ms": first_inference_ms,
+        "timing_boundary": "Offline qualifier incl tokenization, synchronized MLX and JSON result formatting; excludes IPC, STT/TTS, Messenger and PM. Abstentions reported separately.",
+        "warm_all": {"samples": len(samples), "p50_ms": statistics.median(samples), "p95_ms": percentile(samples, .95)},
+        "warm_inference": {"samples": len(inference_samples), "p50_ms": statistics.median(inference_samples) if inference_samples else None, "p95_ms": percentile(inference_samples, .95)},
+        "baseline": summary(rows, "baseline_bucket"), "raw_laya": summary(rows, "raw_bucket"), "guarded_hint": summary(rows, "bucket"),
+        "baseline_type": "deterministic_framework" if qualify_intent else "legacy_action_kind_mapping",
+        "resolved_only": {name: summary([row for row in rows if not row.get("expected_needs_resolution")], key) for name, key in (("baseline", "baseline_bucket"), ("raw_laya", "raw_bucket"), ("guarded_hint", "bucket"))},
+        "unresolved_case_ids": [row["id"] for row in rows if row.get("expected_needs_resolution")],
+        "fallback_reasons": dict(Counter(row["fallback_reason"] for row in rows if row["fallback_reason"])),
+        "fallback_rate": sum(bool(row["fallback_reason"]) for row in rows) / len(rows),
+        "cases": rows,
+        "limitations": ["Synthetic fixture results do not establish real-user accuracy.", "Confidence is uncalibrated for RR.", "No user command was executed.", "Concurrent STT/TTS and physical voice latency are not measured."],
+    }
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+    print(json.dumps({key: value for key, value in report.items() if key not in {"cases", "prompt"}}, indent=2))
+
+
+def serve(args, model):
+    path = Path(args.socket)
+    if path.exists():
+        raise FileExistsError("Socket path already exists; choose a fresh isolated session path")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.parent.stat().st_uid != os.getuid() or path.parent.stat().st_mode & 0o077:
+        raise ValueError("Socket parent must be owned by this user with mode 0700")
+    model.qualify(request_payload("Open the browser.", {"relay_command_id": "warmup", "relay_command_seq": 0}))
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(path))
+        os.chmod(path, 0o600)
+        server.listen(1)
+        print(json.dumps({"ready": True, "socket": str(path), "model": model.identity}), flush=True)
+        try:
+            while True:
+                connection, _ = server.accept()
+                with connection:
+                    connection.settimeout(.1)
+                    started = time.perf_counter()
+                    payload = {}
+                    try:
+                        data = b""
+                        while b"\n" not in data and len(data) <= 32768:
+                            chunk = connection.recv(8192)
+                            if not chunk:
+                                break
+                            data += chunk
+                        if len(data) > 32768:
+                            raise ValueError("Input too large")
+                        payload = json.loads(data.split(b"\n", 1)[0])
+                        if not isinstance(payload, dict):
+                            raise ValueError("Invalid request")
+                        if payload.get("expires_at", 0) <= time.time():
+                            response = fallback(payload, "expired_request", started)
+                        else:
+                            response = model.qualify(payload)
+                        connection.sendall((json.dumps(response) + "\n").encode())
+                    except (OSError, ValueError, TypeError, KeyError):
+                        # A disconnected/expired client cannot interrupt the next turn.
+                        continue
+        finally:
+            path.unlink(missing_ok=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name in ("setup", "evaluate", "serve", "qualify"):
+        sub = commands.add_parser(name)
+        sub.add_argument("--checkpoint", choices=CHECKPOINTS, required=True)
+        sub.add_argument("--model-dir", required=True)
+        if name == "evaluate":
+            sub.add_argument("--corpus", default=str(ROOT / "tests/fixtures/intent_qualification.json"))
+            sub.add_argument("--split", choices=("all", "development", "heldout"), default="heldout")
+            sub.add_argument("--output", required=True)
+            sub.add_argument("--repeats", type=int, default=3)
+            sub.add_argument("--warmup", type=int, default=3)
+        if name == "serve":
+            sub.add_argument("--socket", required=True)
+        if name == "qualify":
+            sub.add_argument("text")
+            sub.add_argument("--context", help="JSON file with ordered role/content dialogue")
+    args = parser.parse_args()
+    if args.command == "setup":
+        setup(args)
+        return
+    if args.command == "evaluate" and (args.repeats < 1 or args.warmup < 0):
+        parser.error("repeats must be positive and warmup nonnegative")
+    model = LocalLaya(args.model_dir, args.checkpoint)
+    if args.command == "evaluate":
+        evaluate(args, model)
+    elif args.command == "serve":
+        serve(args, model)
+    else:
+        context = json.loads(Path(args.context).read_text()) if args.context else []
+        print(json.dumps(model.qualify(request_payload(args.text, {"relay_command_id": "manual-preview", "relay_command_seq": 1}, context)), indent=2))
+
+
+if __name__ == "__main__":
+    main()
