@@ -173,7 +173,12 @@ def serve(args, model):
                         if payload.get("expires_at", 0) <= time.time():
                             response = fallback(payload, "expired_request", started)
                         else:
-                            response = model.qualify(payload)
+                            try:
+                                response = model.qualify(payload)
+                            except Exception:
+                                # Optional third-party inference must not take the
+                                # service or the foreground command path down.
+                                response = fallback(payload, "model_error", started)
                         connection.sendall((json.dumps(response) + "\n").encode())
                     except (OSError, ValueError, TypeError, KeyError):
                         # A disconnected/expired client cannot interrupt the next turn.

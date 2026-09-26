@@ -273,6 +273,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         worker = FakeTTSWorker()
         messenger = FakeMessenger()
         shutdown_event = threading.Event()
+        qualification_events = []
 
         def read_once(_fd, _size):
             shutdown_event.set()
@@ -281,7 +282,15 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         def resolve_after_submit(*_args, **_kwargs):
             self.assertEqual(len(messenger.users), 1)
             self.assertEqual(messenger.users[0][0], "Investigate the speech delay")
+            self.assertEqual(qualification_events, ["laya"])
             return []
+
+        def laya_after_submit(text, command):
+            self.assertEqual(len(messenger.users), 1)
+            self.assertEqual(text, "Investigate the speech delay")
+            self.assertEqual(command["relay_command_id"], "fast-submit")
+            qualification_events.append("laya")
+            return None
 
         with (
             mock.patch.object(voice_bridge.os, "unlink"),
@@ -297,6 +306,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 "received_at": 1.0,
             }),
             mock.patch.object(voice_bridge, "_active_work", return_value=[]),
+            mock.patch.object(voice_bridge, "qualify_with_laya", side_effect=laya_after_submit),
             mock.patch.object(
                 voice_bridge,
                 "_resolve_voice_work_items",

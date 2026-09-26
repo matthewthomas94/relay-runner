@@ -172,7 +172,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 38.369833026081324
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "task",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "create_ticket",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "task"
     },
     {
       "id": "independent-02",
@@ -231,7 +241,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 40.9867080161348
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "task",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "create_ticket",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "task"
     },
     {
       "id": "independent-03",
@@ -290,7 +310,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 39.99829100212082
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-04",
@@ -348,7 +378,17 @@
           "raw_bucket": "task",
           "elapsed_ms": 40.45116703491658
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "task",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "create_ticket",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "task"
     },
     {
       "id": "independent-05",
@@ -407,7 +447,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 42.34837496187538
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "task",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "create_ticket",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "task"
     },
     {
       "id": "independent-06",
@@ -465,7 +515,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 42.18304099049419
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "task",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "create_ticket",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "task"
     },
     {
       "id": "independent-07",
@@ -524,7 +584,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 40.93712504254654
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-08",
@@ -583,7 +653,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 42.0537079917267
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-09",
@@ -642,7 +722,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 42.308916978072375
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "information_query",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-10",
@@ -700,7 +790,17 @@
           "raw_bucket": "task",
           "elapsed_ms": 42.78241697466001
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "task",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "create_ticket",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "task"
     },
     {
       "id": "independent-11",
@@ -759,7 +859,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 42.18549997312948
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-12",
@@ -818,7 +928,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 41.760125022847205
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "information_query",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-13",
@@ -876,7 +996,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 42.562375019770116
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "action",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "desktop_control",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "action"
     },
     {
       "id": "independent-14",
@@ -935,7 +1065,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 41.73704102868214
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": null,
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "cancel",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": null
     },
     {
       "id": "independent-15",
@@ -994,7 +1134,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 41.58516600728035
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "action",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "foreground_operation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "action"
     },
     {
       "id": "independent-16",
@@ -1053,7 +1203,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 40.87945900391787
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-17",
@@ -1111,7 +1271,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 41.51258303318173
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "information_query",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-18",
@@ -1169,7 +1339,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 42.126917047426105
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "action",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "desktop_control",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "action"
     },
     {
       "id": "independent-19",
@@ -1228,7 +1408,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 41.44050000468269
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-20",
@@ -1287,7 +1477,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 41.55508300755173
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "action",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "desktop_control",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "action"
     },
     {
       "id": "independent-21",
@@ -1345,7 +1545,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 40.5595829943195
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-22",
@@ -1403,7 +1613,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 43.445166025776416
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-23",
@@ -1461,7 +1681,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 40.05195799982175
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-24",
@@ -1520,7 +1750,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 42.751665983814746
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "information_query",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-25",
@@ -1579,7 +1819,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 42.94520796975121
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-26",
@@ -1638,7 +1888,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 41.16541700204834
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-27",
@@ -1696,7 +1956,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 39.16108299745247
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "information_query",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-28",
@@ -1755,7 +2025,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 41.38358402997255
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "information_query",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-29",
@@ -1814,7 +2094,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 41.64745903108269
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-30",
@@ -1872,7 +2162,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 41.043334000278264
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "task",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "create_ticket",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "task"
     },
     {
       "id": "independent-31",
@@ -1930,7 +2230,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 39.53395801363513
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "information_query",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-32",
@@ -1989,7 +2299,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 39.47229200275615
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-33",
@@ -2048,7 +2368,17 @@
           "raw_bucket": "task",
           "elapsed_ms": 39.50112499296665
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "conversation",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-34",
@@ -2107,7 +2437,17 @@
           "raw_bucket": "action",
           "elapsed_ms": 40.932999982032925
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": true,
+        "mixed": false,
+        "reason": "context_required",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     },
     {
       "id": "independent-35",
@@ -2166,7 +2506,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 40.81641702214256
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": null,
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "cancel",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": null
     },
     {
       "id": "independent-36",
@@ -2224,7 +2574,17 @@
           "raw_bucket": "discussion",
           "elapsed_ms": 38.356458011548966
         }
-      ]
+      ],
+      "framework_baseline": {
+        "bucket": "discussion",
+        "source": "deterministic",
+        "unresolved": false,
+        "mixed": false,
+        "reason": "discussion_only",
+        "command_id": null,
+        "command_seq": null
+      },
+      "framework_bucket": "discussion"
     }
   ],
   "limitations": [
@@ -2353,10 +2713,72 @@
           "abstain": 6
         }
       }
+    },
+    "framework_baseline": {
+      "cases": 34,
+      "correct": 22,
+      "accuracy": 0.6470588235294118,
+      "coverage": 0.9411764705882353,
+      "covered_accuracy": 0.6875,
+      "false_task_or_action_from_discussion": 1,
+      "confusion": {
+        "task": {
+          "task": 6,
+          "action": 0,
+          "discussion": 4,
+          "abstain": 0
+        },
+        "action": {
+          "task": 0,
+          "action": 4,
+          "discussion": 5,
+          "abstain": 1
+        },
+        "discussion": {
+          "task": 1,
+          "action": 0,
+          "discussion": 12,
+          "abstain": 1
+        }
+      }
     }
   },
   "unresolved_case_ids": [
     "independent-33",
     "independent-34"
-  ]
+  ],
+  "framework_baseline": {
+    "cases": 36,
+    "correct": 24,
+    "accuracy": 0.6666666666666666,
+    "coverage": 0.9444444444444444,
+    "covered_accuracy": 0.7058823529411765,
+    "false_task_or_action_from_discussion": 1,
+    "confusion": {
+      "task": {
+        "task": 6,
+        "action": 0,
+        "discussion": 4,
+        "abstain": 0
+      },
+      "action": {
+        "task": 0,
+        "action": 4,
+        "discussion": 5,
+        "abstain": 1
+      },
+      "discussion": {
+        "task": 1,
+        "action": 0,
+        "discussion": 14,
+        "abstain": 1
+      }
+    }
+  },
+  "framework_baseline_source": {
+    "commit": "5ba51702528e12bf5e19a035c0d97a48a6b71d33",
+    "qualification_sha256": "8b25f0d5eb74c9590a453fda2cc05baf047b74c199c6e25205f34940b20526c2",
+    "classifier_sha256": "de917887e33160778ae37afef7177598973eef81ef5f5531b360590fe19942a5",
+    "note": "Computed after baseline cherry-pick; raw Laya outputs and timing samples preserved without rerunning or tuning."
+  }
 }
