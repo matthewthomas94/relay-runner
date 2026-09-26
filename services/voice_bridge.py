@@ -50,6 +50,7 @@ from intent_qualification import (
     qualify_intent,
     whole_turn_resolution_required,
 )
+from laya_qualification import attach_hint as attach_laya_hint, qualify_for_bridge as qualify_with_laya
 from provider_turn_broker import ProviderTurnBroker
 from relay_authorization import (
     allowed_mutations_for_metadata,
@@ -4286,12 +4287,17 @@ def _run_relay(
                             outcome="foreground_delivery_preserved",
                         )
                         _queue_messenger_degraded(relay_command, tts_worker)
+                # RR-379 branch experiment: Messenger has already started.
+                # Default off; optional warm local service is bounded to 100 ms.
+                # This hint never changes action routing or mutation authority.
+                laya_hint = qualify_with_laya(text, relay_command)
                 resolved_items = _resolve_voice_work_items(
                     text,
                     relay_command,
                     repo_path=Path.cwd(),
                     active_work=_active_work(repo_path=Path.cwd()),
                 )
+                attach_laya_hint(resolved_items, laya_hint)
                 relay_command["voice_work_items"] = [
                     resolved["item"].to_dict() for resolved in resolved_items
                 ]
