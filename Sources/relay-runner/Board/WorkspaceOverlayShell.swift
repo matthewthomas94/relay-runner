@@ -104,7 +104,8 @@ enum TrayIconAsset {
 
 enum WorkspaceNavigationStyle {
     static let controlHeight: CGFloat = BoardSurfaceLayout.navigationHeight
-    static let horizontalPadding: CGFloat = 2
+    static let horizontalPadding: CGFloat = 4
+    static let verticalPadding: CGFloat = horizontalPadding
     static let cornerRadius: CGFloat = 4
     static let iconTextSpacing: CGFloat = 6
     static let iconSize: CGFloat = 10
@@ -212,8 +213,9 @@ struct WorkspaceNavigationButton: View {
                     opacity: foregroundOpacity
                 )
             )
+            .frame(height: WorkspaceNavigationStyle.controlHeight - 2 * WorkspaceNavigationStyle.verticalPadding)
             .padding(.horizontal, WorkspaceNavigationStyle.horizontalPadding)
-            .frame(height: WorkspaceNavigationStyle.controlHeight)
+            .padding(.vertical, WorkspaceNavigationStyle.verticalPadding)
             .background(
                 RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius)
                     .fill(buttonFill)

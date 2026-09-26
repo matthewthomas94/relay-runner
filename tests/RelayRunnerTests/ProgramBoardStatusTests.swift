@@ -132,7 +132,8 @@ final class ProgramBoardStatusTests: XCTestCase {
             WorkspaceNavigationStyle.controlHeight,
             BoardSurfaceLayout.navigationHeight
         )
-        XCTAssertEqual(WorkspaceNavigationStyle.horizontalPadding, 2)
+        XCTAssertEqual(WorkspaceNavigationStyle.horizontalPadding, 4)
+        XCTAssertEqual(WorkspaceNavigationStyle.verticalPadding, WorkspaceNavigationStyle.horizontalPadding)
         XCTAssertEqual(WorkspaceNavigationStyle.cornerRadius, 4)
         XCTAssertEqual(WorkspaceNavigationStyle.iconTextSpacing, 6)
         XCTAssertEqual(WorkspaceNavigationStyle.iconSize, 10)

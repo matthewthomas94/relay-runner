@@ -224,20 +224,12 @@ struct ProgramBoardOverlayView: View {
                     HStack(spacing: 8) {
                         TextField("Search titles and summaries", text: $model.noteQuery)
                             .textFieldStyle(.plain)
-                            .font(AppTypography.font(.supporting))
+                            .font(AppTypography.font(.field))
                             .foregroundStyle(ProgramBoardStyle.primaryText)
+                            .lineLimit(1)
                             .padding(.horizontal, 10)
-                            .frame(height: SharedActionButtonMetrics.controlHeight)
-                            .background(BoardDarkSurfaceBackground(
-                                cornerRadius: SharedActionButtonMetrics.cornerRadius,
-                                fill: BoardDarkSurfaceStyle.cardFill
-                            ))
-                            .overlay {
-                                if notesSearchFocused {
-                                    RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius)
-                                        .stroke(ProgramBoardStyle.mutedText.opacity(0.5), lineWidth: 1)
-                                }
-                            }
+                            .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
+                            .background(ProgramTicketFieldBackground())
                             .focused($notesSearchFocused)
                             .onSubmit { notesSearchFocused = false }
                             .accessibilityLabel("Search notes")

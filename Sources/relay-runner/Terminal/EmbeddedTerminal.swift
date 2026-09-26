@@ -2916,40 +2916,40 @@ struct EmbeddedTerminalTab: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Image(systemName: "terminal")
-                .font(AppTypography.symbolFont(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .font(AppTypography.symbolFont(size: 16, weight: .regular))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(statusTitle)
-                    .font(AppTypography.font(.status))
-                    .foregroundStyle(.primary)
+                    .font(AppTypography.font(.sectionHeading))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
                 Text(displayDirectory)
-                    .font(AppTypography.monospacedFont(size: 10, weight: .regular))
-                    .foregroundStyle(.secondary)
+                    .font(AppTypography.font(.supporting))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             Spacer(minLength: 12)
         }
-        .controlSize(.small)
-        .padding(.horizontal, 14)
-        .frame(height: 52)
+        .padding(.horizontal, 22)
+        .frame(height: 60)
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "terminal.fill")
-                .font(AppTypography.symbolFont(size: 28, weight: .medium))
-                .foregroundStyle(.secondary)
+        VStack(spacing: 10) {
+            Image(systemName: "terminal")
+                .font(AppTypography.symbolFont(size: 28, weight: .regular))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
             Text("Run the Relay session here")
-                .font(AppTypography.font(.screenTitle))
+                .font(AppTypography.font(.sectionHeading))
+                .foregroundStyle(ProgramBoardStyle.secondaryText)
             Text(emptyStateDetail)
-                .font(AppTypography.font(.body))
-                .foregroundStyle(.secondary)
+                .font(AppTypography.font(.supporting))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 440)
+                .frame(maxWidth: 390)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
