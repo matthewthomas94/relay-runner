@@ -19,13 +19,13 @@ enum ProgramBoardLayout {
     static let panelVerticalPadding: CGFloat = 16
     static let headerHorizontalInset: CGFloat = 16
     static let headerLeadingInset: CGFloat = panelHorizontalPadding + headerHorizontalInset
-    static let projectsHeaderHeight: CGFloat = 32
+    static let projectsHeaderHeight: CGFloat = workHeaderHeight
     static let projectActionButtonHeight: CGFloat = SharedActionButtonMetrics.controlHeight
     static let compactControlHeight: CGFloat = 24
     static let newTicketButtonSize: CGFloat = compactControlHeight
     static let workHeaderHeight: CGFloat = 36
     static let overviewSectionSpacing: CGFloat = 12
-    static let projectHeaderToListSpacing: CGFloat = 48
+    static let projectHeaderToListSpacing: CGFloat = 44
     static let workSectionSpacing: CGFloat = 16
     static let dropIndicatorHeight: CGFloat = 3
     static let dropIndicatorBottomPadding: CGFloat = 4
@@ -200,6 +200,7 @@ struct ProgramBoardOverlayView: View {
     let onSpikeFollowupClose: () -> Void
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var notesSearchFocused: Bool
 
     var body: some View {
         GeometryReader { proxy in
@@ -210,30 +211,40 @@ struct ProgramBoardOverlayView: View {
     private var notesLibrary: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Notes")
+                Text("\(model.noteItems.count) \(model.noteItems.count == 1 ? "note" : "notes")")
                     .font(AppTypography.font(.sectionHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                 Spacer()
-                Text("\(model.noteItems.count) \(model.noteItems.count == 1 ? "note" : "notes")")
-                    .font(AppTypography.font(.metadata))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
             }
             .padding(.horizontal, 22)
             .frame(height: 60)
             Rectangle().fill(BoardDarkSurfaceStyle.border).frame(height: 1)
             HStack(spacing: 0) {
                 VStack(spacing: 12) {
-                    TextField("Search titles and summaries", text: $model.noteQuery)
-                        .textFieldStyle(.plain)
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(ProgramBoardStyle.primaryText)
-                        .padding(.horizontal, 10)
-                        .frame(height: SharedActionButtonMetrics.controlHeight)
-                        .background(BoardDarkSurfaceBackground(
-                            cornerRadius: SharedActionButtonMetrics.cornerRadius,
-                            fill: BoardDarkSurfaceStyle.cardFill
-                        ))
-                        .accessibilityLabel("Search notes")
+                    HStack(spacing: 8) {
+                        TextField("Search titles and summaries", text: $model.noteQuery)
+                            .textFieldStyle(.plain)
+                            .font(AppTypography.font(.supporting))
+                            .foregroundStyle(ProgramBoardStyle.primaryText)
+                            .padding(.horizontal, 10)
+                            .frame(height: SharedActionButtonMetrics.controlHeight)
+                            .background(BoardDarkSurfaceBackground(
+                                cornerRadius: SharedActionButtonMetrics.cornerRadius,
+                                fill: BoardDarkSurfaceStyle.cardFill
+                            ))
+                            .overlay {
+                                if notesSearchFocused {
+                                    RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius)
+                                        .stroke(ProgramBoardStyle.mutedText.opacity(0.5), lineWidth: 1)
+                                }
+                            }
+                            .focused($notesSearchFocused)
+                            .onSubmit { notesSearchFocused = false }
+                            .accessibilityLabel("Search notes")
+                        ProgramIconButton(systemName: "magnifyingglass", help: "Search notes") {
+                            notesSearchFocused = true
+                        }
+                    }
                     ScrollView {
                         LazyVStack(spacing: 8) {
                             if model.visibleNotes.isEmpty {
@@ -1060,7 +1071,6 @@ private struct ProgramBoardContent: View {
                         snapshot: snapshot,
                         projectTargets: model.projectTargets,
                         selectedProjectPath: model.selectedProjectPath,
-                        selectedScopeTitle: model.selectedScopeTitle,
                         errorMessage: model.errorMessage,
                         isDiagnosticsExporting: model.isDiagnosticsExporting,
                         theme: model.theme,
@@ -1136,7 +1146,6 @@ private struct ProgramOverviewColumn: View {
     let snapshot: ProgramDashboardSnapshot
     let projectTargets: [ProgramBoardProjectTarget]
     let selectedProjectPath: String?
-    let selectedScopeTitle: String
     let errorMessage: String?
     let isDiagnosticsExporting: Bool
     let theme: ParticleFieldRenderer.Theme?
@@ -1153,7 +1162,6 @@ private struct ProgramOverviewColumn: View {
         VStack(alignment: .leading, spacing: 0) {
             ProgramProjectsHeader(
                 isAllSelected: selectedProjectPath == nil,
-                selectedScopeTitle: selectedScopeTitle,
                 usesProjectRegistryV2: usesProjectRegistryV2,
                 onSelectAll: onSelectAll,
                 onAddExistingProject: onAddExistingProject,
@@ -1204,7 +1212,6 @@ private struct ProgramOverviewColumn: View {
 
 struct ProgramProjectsHeaderPresentation: Equatable {
     let isAllSelected: Bool
-    let selectedScopeTitle: String
     let usesProjectRegistryV2: Bool
 
     var actionTitle: String { usesProjectRegistryV2 ? "Add project" : "Select all" }
@@ -1249,7 +1256,6 @@ struct ProgramSpikeFollowupActionPresentation: Equatable {
 
 private struct ProgramProjectsHeader: View {
     let isAllSelected: Bool
-    let selectedScopeTitle: String
     let usesProjectRegistryV2: Bool
     let onSelectAll: () -> Void
     let onAddExistingProject: () -> Void
@@ -1259,23 +1265,16 @@ private struct ProgramProjectsHeader: View {
     private var presentation: ProgramProjectsHeaderPresentation {
         ProgramProjectsHeaderPresentation(
             isAllSelected: isAllSelected,
-            selectedScopeTitle: selectedScopeTitle,
             usesProjectRegistryV2: usesProjectRegistryV2
         )
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Projects")
-                    .font(AppTypography.font(.programProjectsHeading))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                    .lineLimit(1)
-                Text(presentation.selectedScopeTitle)
-                    .font(AppTypography.font(.metadata))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .lineLimit(1)
-            }
+        HStack(alignment: .center, spacing: 0) {
+            Text("Projects")
+                .font(AppTypography.font(.programProjectsHeading))
+                .foregroundStyle(ProgramBoardStyle.primaryText)
+                .lineLimit(1)
             Spacer(minLength: 0)
             ProgramIconButton(
                 systemName: "arrow.counterclockwise",
@@ -1302,7 +1301,7 @@ private struct ProgramProjectsHeader: View {
             }
         }
         .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
-        .frame(height: ProgramBoardLayout.projectsHeaderHeight, alignment: .top)
+        .frame(height: ProgramBoardLayout.projectsHeaderHeight)
     }
 }
 
@@ -1666,7 +1665,7 @@ private struct ProgramNoteCard: View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    Text(item.card.noteID)
+                    Text(item.code)
                         .font(AppTypography.font(.metadata))
                         .foregroundStyle(ProgramBoardStyle.mutedText)
                     if let date = ProgramBoardDate.label(iso8601: item.card.createdAt) {
@@ -1699,7 +1698,7 @@ private struct ProgramNoteCard: View {
         .onHover { isHovered = $0 }
         .programButtonCursor(enabled: true)
         .help("Open transcript for \(item.title)")
-        .accessibilityLabel("\(item.card.noteID), \(ProgramBoardDate.label(iso8601: item.card.createdAt) ?? ""), \(item.title)")
+        .accessibilityLabel("\(item.code), \(ProgramBoardDate.label(iso8601: item.card.createdAt) ?? ""), \(item.title)")
     }
 
 

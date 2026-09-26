@@ -47,7 +47,9 @@ class GlobalNoteLibrary:
                         operations=(ConfigWrite(config.replace(b'prefix = "NOT"', b'prefix = "RR"')),),
                         summary='Configure global notes',
                     ))
-                self._manager = ProjectNoteManager(store, device_id=self.device_id)
+                manager = ProjectNoteManager(store, device_id=self.device_id)
+                manager.ensure_global_codes()
+                self._manager = manager
             return self._manager
 
     def import_legacy(self):

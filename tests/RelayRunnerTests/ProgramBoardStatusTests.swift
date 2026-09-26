@@ -88,7 +88,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(ProgramBoardLayout.panelVerticalPadding, 16)
         XCTAssertEqual(ProgramBoardLayout.headerHorizontalInset, 16)
         XCTAssertEqual(ProgramBoardLayout.headerLeadingInset, 24)
-        XCTAssertEqual(ProgramBoardLayout.projectsHeaderHeight, 32)
+        XCTAssertEqual(ProgramBoardLayout.projectsHeaderHeight, ProgramBoardLayout.workHeaderHeight)
         XCTAssertEqual(ProgramBoardLayout.projectActionButtonHeight, SharedActionButtonMetrics.controlHeight)
         XCTAssertEqual(ProgramBoardLayout.projectActionButtonHeight, 28)
         XCTAssertEqual(ProgramBoardLayout.compactControlHeight, 24)
@@ -98,7 +98,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
         XCTAssertEqual(ProgramBoardLayout.workHeaderHeight, 36)
         XCTAssertEqual(ProgramBoardLayout.workCardTopOffset, 100)
-        XCTAssertEqual(ProgramBoardLayout.projectHeaderToListSpacing, 48)
+        XCTAssertEqual(ProgramBoardLayout.projectHeaderToListSpacing, 44)
         XCTAssertEqual(ProgramBoardLayout.projectListTopOffset, 96)
         XCTAssertEqual(ProgramBoardLayout.projectCardHeight, 136)
         XCTAssertEqual(ProgramBoardLayout.projectCardSpacing, 8)
@@ -153,25 +153,20 @@ final class ProgramBoardStatusTests: XCTestCase {
     func testProgramProjectsHeaderPresentationUsesAddProjectForRegistryV2() {
         let registryV2 = ProgramProjectsHeaderPresentation(
             isAllSelected: true,
-            selectedScopeTitle: "All projects",
             usesProjectRegistryV2: true
         )
         let legacySelectedProject = ProgramProjectsHeaderPresentation(
             isAllSelected: false,
-            selectedScopeTitle: "mentistic",
             usesProjectRegistryV2: false
         )
         let legacyAllProjects = ProgramProjectsHeaderPresentation(
             isAllSelected: true,
-            selectedScopeTitle: "All projects",
             usesProjectRegistryV2: false
         )
 
         XCTAssertEqual(registryV2.actionTitle, "Add project")
-        XCTAssertEqual(registryV2.selectedScopeTitle, "All projects")
         XCTAssertEqual(registryV2.actionProminence, .secondary)
         XCTAssertEqual(legacySelectedProject.actionTitle, "Select all")
-        XCTAssertEqual(legacySelectedProject.selectedScopeTitle, "mentistic")
         XCTAssertEqual(legacySelectedProject.actionProminence, .secondary)
         XCTAssertEqual(legacyAllProjects.actionProminence, .secondary)
 
@@ -1234,6 +1229,24 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.visibleNotes.map(\.card.noteID), ["CD-N1000", "CD-N999", "TL-N2"])
         XCTAssertEqual(model.workItems(in: .backlog).count, 1)
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1"])
+    }
+
+    func testGlobalCodeDecodesAndSearchesWithoutChangingRecoveryIdentity() throws {
+        let legacy = noteItem(id: "RR-N19", number: 19, projectName: "Relay", path: GlobalNoteStore.repositoryPath)
+        var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy.card)) as? [String: Any])
+        payload["global_code"] = "N27"
+        let card = try JSONDecoder().decode(RelayProjectNoteCard.self, from: JSONSerialization.data(withJSONObject: payload))
+        let item = ProgramBoardNoteItem(card: card, projectName: legacy.projectName,
+                                        projectPath: legacy.projectPath, sync: legacy.sync)
+        XCTAssertEqual(item.code, "N27")
+        XCTAssertEqual(item.noteNumber, 27)
+        XCTAssertEqual(item.card.noteID, "RR-N19")
+        let model = ProgramBoardViewModel()
+        model.noteItems = [item]
+        model.noteQuery = "N27"
+        XCTAssertEqual(model.visibleNotes.map(\.id), [item.id])
+        model.noteQuery = "RR-N19"
+        XCTAssertTrue(model.visibleNotes.isEmpty)
     }
 
     func testNoteBacklogItemsCannotEnterTicketDropOrDispatchPolicy() throws {

@@ -88,6 +88,34 @@ class ProjectNoteManager:
         self.store = store
         self.device_id = device_id
 
+    def ensure_global_codes(self) -> None:
+        """Backfill stable public codes without changing saved/recoverable identities."""
+        with self.store._writer_lock():
+            snapshot = self.store.snapshot()
+            catalog = _catalog(snapshot.files, self.store.project_id)
+            missing = [row for row in catalog.values() if not row.get("global_code")]
+            if not missing:
+                return
+            number = _next_note_number(_config(snapshot.files), snapshot.files, catalog)
+            used = {row["global_code"] for row in catalog.values() if row.get("global_code")}
+            for row in sorted(missing, key=lambda row: (row["created_at"], row["note_id"])):
+                code = f"N{validate_note_id(row['note_id'])[1]}"
+                if code in used:
+                    code = f"N{number}"
+                    number += 1
+                row["global_code"] = code
+                used.add(code)
+            self.store.mutate(ArtifactMutation(
+                event_id="global-note-codes:" + snapshot.commit_id,
+                actor_type="system", device_id=self.device_id,
+                expected_base=snapshot.commit_id,
+                operations=(
+                    ConfigWrite(_set_next_note_id(snapshot.files[".orchestrator/config.toml"], number)),
+                    NoteIndexWrite(encode_note_index(catalog, project_id=self.store.project_id)),
+                ),
+                summary="Assign global note codes",
+            ))
+
     def import_saved_note(self, source: Mapping[str, object], *, repository_path: str | None = None) -> None:
         """Copy a legacy note atomically, including archived and recoverable content.
 
@@ -111,10 +139,11 @@ class ProjectNoteManager:
                     return
                 event_id = "note-import-update:" + source_digest
             number = _next_note_number(config, snapshot.files, catalog)
+            global_code = existing.get("global_code") if existing else f"N{number}"
             note_id = existing["note_id"] if existing else original.identity.note_id
             if not existing and any(row["note_id"] == note_id for row in catalog.values()):
                 note_id = f"{config['prefix']}-N{number}"
-            number = max(number, validate_note_id(note_id)[1] + 1)
+            number = max(number + (0 if existing else 1), validate_note_id(note_id)[1] + 1)
             identity = replace(original.identity, note_id=note_id, project_id=self.store.project_id)
             update = replace(original, identity=identity)
             metadata = source.get("metadata")
@@ -123,6 +152,7 @@ class ProjectNoteManager:
             document = NoteDocument(identity, update, metadata)
             catalog[identity.artifact_id] = {
                 "schema_version": NOTE_INDEX_SCHEMA_VERSION,
+                "global_code": global_code,
                 "note_id": note_id, "artifact_id": identity.artifact_id,
                 "project_id": self.store.project_id, "path": _note_path(note_id),
                 "created_at": identity.created_at, "updated_at": update.captured_at,
@@ -239,6 +269,8 @@ class ProjectNoteManager:
                 "creation_request_sha256": request_digest,
                 "metadata": document.metadata,
             }
+            if self.store.project_id == "global-notes":
+                catalog[artifact_id]["global_code"] = f"N{number}"
             config_bytes = _set_next_note_id(snapshot.files[".orchestrator/config.toml"], number + 1)
             write = self.store.mutate(ArtifactMutation(
                 event_id=event_id,
@@ -518,7 +550,7 @@ class ProjectNoteManager:
         catalog = _catalog(snapshot.files, self.store.project_id)
         matches = [
             entry for artifact_id, entry in catalog.items()
-            if artifact_id == identity or entry.get("note_id") == identity
+            if artifact_id == identity or entry.get("note_id") == identity or entry.get("global_code") == identity
         ]
         if len(matches) != 1:
             raise ArtifactValidationError(f"no unique project note matches {identity!r}")
@@ -861,6 +893,7 @@ def _card(
         "reference": dict(reference),
         "metadata": entry.get("metadata"),
         "legacy_recovery": entry.get("legacy_recovery"),
+        "global_code": entry.get("global_code"),
     }
 
 

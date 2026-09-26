@@ -330,7 +330,10 @@ struct ProgramBoardNoteItem: Equatable, Identifiable {
 
     var title: String { card.metadata?.title ?? "Meeting transcript" }
 
+    var code: String { card.globalCode ?? card.noteID }
+
     var noteNumber: Int {
+        if let code = card.globalCode, let number = Int(code.dropFirst()) { return number }
         guard let marker = card.noteID.range(of: "-N", options: .backwards),
               let value = Int(card.noteID[marker.upperBound...]) else { return .min }
         return value
@@ -1775,7 +1778,7 @@ final class ProgramBoardViewModel {
     var visibleNotes: [ProgramBoardNoteItem] {
         let query = noteQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         return noteItems.filter { item in
-            query.isEmpty || [item.title, item.card.metadata?.summary ?? "", item.card.noteID]
+            query.isEmpty || [item.title, item.card.metadata?.summary ?? "", item.code]
                 .joined(separator: " ").localizedStandardContains(query)
         }.sorted {
             if $0.card.createdAt != $1.card.createdAt { return $0.card.createdAt > $1.card.createdAt }

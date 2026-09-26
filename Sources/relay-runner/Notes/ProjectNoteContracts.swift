@@ -241,6 +241,7 @@ struct RelayProjectNoteCard: Codable, Equatable, Identifiable, Sendable {
 
     var repositoryPath: String? = nil
     var legacyRecovery: RelayNoteLegacyRecovery? = nil
+    var globalCode: String? = nil
 
     var id: String { artifactID }
 
@@ -248,6 +249,7 @@ struct RelayProjectNoteCard: Codable, Equatable, Identifiable, Sendable {
         case materialized, reference, metadata
         case repositoryPath = "repository_path"
         case legacyRecovery = "legacy_recovery"
+        case globalCode = "global_code"
         case noteID = "note_id"
         case artifactID = "artifact_id"
         case projectID = "project_id"

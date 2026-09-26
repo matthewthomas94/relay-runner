@@ -74,6 +74,56 @@ class GlobalNoteTests(unittest.TestCase):
         next_note = self.create_global()['note']['identity']['note_id']
         self.assertNotIn(next_note, {row['note_id'] for row in cards})
 
+    def test_global_codes_survive_cross_project_collisions_restart_and_deletion(self):
+        original = self.legacy.completed_note()['note']
+        other = {**original, 'identity': {**original['identity'], 'note_id': 'OTHER-N1',
+                                         'project_id': 'other', 'artifact_id': 'note-other'}}
+        self.library.manager.import_saved_note(original)
+        self.library.manager.import_saved_note(other)
+        cards = self.library.list()['notes']
+        codes = {card['artifact_id']: card['global_code'] for card in cards}
+        self.assertEqual(set(codes.values()), {'N1', 'N2'})
+        reopened = GlobalNoteLibrary(self.root, 'restarted', self.library.sources)
+        self.assertEqual({c['artifact_id']: c['global_code'] for c in reopened.list()['notes']}, codes)
+        self.assertEqual(reopened.manager.get('N2')['note']['identity']['artifact_id'], 'note-other')
+        removed = next(card for card in cards if card['global_code'] == 'N2')
+        reopened.manager.delete(note_id=removed['note_id'], artifact_id=removed['artifact_id'], request_id='remove')
+        self.create_global('after-delete')
+        self.assertEqual({c['global_code'] for c in self.library.list()['notes']}, {'N1', 'N3'})
+
+    def test_existing_catalog_gets_unique_codes_without_changing_note_content(self):
+        from services.artifact_store import ArtifactMutation, NoteIndexWrite
+        from services.note_contract import decode_note_index, encode_note_index
+
+        original = self.legacy.completed_note()['note']
+        self.library.manager.import_saved_note(original)
+        other = {**original, 'identity': {**original['identity'], 'note_id': 'OTHER-N1',
+                                         'project_id': 'other', 'artifact_id': 'note-other'}}
+        self.library.manager.import_saved_note(other)
+        store = self.library.manager.store
+        snapshot = store.snapshot()
+        catalog = decode_note_index(snapshot.files['.orchestrator/note-index.jsonl'], project_id=store.project_id)
+        for row in catalog.values():
+            del row['global_code']
+        store.mutate(ArtifactMutation(
+            event_id='pre-codes-fixture', actor_type='system', device_id='test',
+            expected_base=snapshot.commit_id,
+            operations=(NoteIndexWrite(encode_note_index(catalog, project_id=store.project_id)),),
+            summary='Simulate existing global catalog',
+        ))
+        before = {key: value for key, value in snapshot.files.items() if key.endswith('.md')}
+        reopened = GlobalNoteLibrary(self.root, 'upgrade', lambda: [])
+        cards = reopened.list()['notes']
+        self.assertEqual(len({c['global_code'] for c in cards}), 2)
+        self.assertTrue(all(c['global_code'].startswith('N') for c in cards))
+        after = reopened.manager.store.snapshot()
+        self.assertEqual({key: value for key, value in after.files.items() if key.endswith('.md')}, before)
+        head = after.commit_id
+        GlobalNoteLibrary(self.root, 'again', lambda: []).list()
+        self.assertEqual(store._head(), head)
+        self.create_global('after-upgrade')
+        self.assertEqual(len({c['global_code'] for c in self.library.list()['notes']}), 3)
+
     def test_unavailable_source_does_not_block_global_notes_and_recovers(self):
         class Unavailable:
             def list(self, **kwargs):

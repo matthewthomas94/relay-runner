@@ -2,6 +2,8 @@
 
 Notes now live in `~/Library/Application Support/relay-runner/notes`, in a dedicated local Git artifact store. They do not require a registered project or inherit a project's remote. The Notes tab beside Workspace presents a searchable list of titles and summaries and an inline transcript detail pane. Backlog contains tickets only. Recording, Copy transcript, Reveal, and Delete work from this global library.
 
+Each note has a stable global `global_code` such as `N19`, shown in the Notes list and accepted by reads. Codes are allocated across the whole library, survive restarts, and are not reused after deletion. Existing notes receive codes automatically; original recording identities and file paths stay intact for recovery compatibility.
+
 Requests to `/v1/artifacts/notes` and its create/read/update/delete/metadata endpoints omit `repo_path` and `project_scope_token` for global storage. Codex and Claude use the same default global route; the existing MCP tool names remain compatible.
 
 The daemon automatically imports notes, including archived and interrupted transcripts, from registered legacy project catalogs. Import preserves text, dates, metadata, and artifact identity, reallocating a display ID only on collision. An atomic import event makes retries safe and prevents reimport after deletion. Original project history is retained as a backup. Unavailable sources retry independently. Interrupted transcripts are readable globally even if their original project disappears. Their recovery links remain attached until finalized, and recovered transcript updates copy into the same global note automatically. No new recordings use a project store.
