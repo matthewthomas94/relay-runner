@@ -1,0 +1,2663 @@
+{
+  "schema_version": 1,
+  "experiment": "RR-379",
+  "machine": {
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "3.13.13",
+    "chip": "Apple M4",
+    "memory_bytes": "25769803776",
+    "git_commit": "5ba51702528e12bf5e19a035c0d97a48a6b71d33"
+  },
+  "evaluated_source": {
+    "files_sha256": {
+      "services/laya_qualification.py": "26351811363a421a09d3c1f9f7c0eba8e8bf0c4515b6eb3ea3a8f2222c866b8f",
+      "scripts/relay-laya-qualify": "703073725d04410a38b5e71c0aedc2c12a363e585823bedfc36952b5c7652ffd"
+    }
+  },
+  "model": {
+    "repository": "aac6fef/laya-mlx",
+    "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+    "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+    "checkpoint": "english",
+    "dtype": "float16",
+    "device": "gpu",
+    "runtime": {
+      "laya-mlx": "0.2.0",
+      "mlx": "0.32.2",
+      "tokenizers": "0.23.2",
+      "numpy": "2.5.3"
+    },
+    "state_token_budget": 419,
+    "load_ms": 559.5943750231527
+  },
+  "prompt": {
+    "intent": {
+      "type": "choice",
+      "instructions": "Classify what the current user wants now. Use prior dialogue only to resolve references. Discussing possible work does not request execution.",
+      "criteria": {
+        "task": "Do project work: implement, fix, create tickets or spikes, delegate workers.",
+        "action": "Perform a bounded operation now: open an app, start a server, send an email.",
+        "discussion": "Discuss, research, explain, ask status or feasibility before doing work."
+      }
+    }
+  },
+  "prompt_sha256": "e82a0c250482bcf0a08be24b6766b48d3f12ee3ae62dae0eff018bce1ad4b7bc",
+  "corpus_sha256": "5286f88d2f375ee02d4e813457c15935a246fe7e1bda618e113712674b68a8ce",
+  "split": "development",
+  "provenance": "Synthetic development fixtures; not held-out or user-derived accuracy.",
+  "repeats": 3,
+  "warmup": 3,
+  "first_inference_ms": 55.90420798398554,
+  "timing_boundary": "Offline qualifier incl tokenization, synchronized MLX and JSON result formatting; excludes IPC, STT/TTS, Messenger and PM. Abstentions reported separately.",
+  "warm_all": {
+    "samples": 120,
+    "p50_ms": 35.095479019219056,
+    "p95_ms": 36.479791975580156
+  },
+  "warm_inference": {
+    "samples": 120,
+    "p50_ms": 35.095479019219056,
+    "p95_ms": 36.479791975580156
+  },
+  "baseline": {
+    "cases": 38,
+    "correct": 38,
+    "accuracy": 1.0,
+    "coverage": 1.0,
+    "covered_accuracy": 1.0,
+    "false_task_or_action_from_discussion": 0,
+    "confusion": {
+      "task": {
+        "task": 11,
+        "action": 0,
+        "discussion": 0,
+        "abstain": 0
+      },
+      "action": {
+        "task": 0,
+        "action": 9,
+        "discussion": 0,
+        "abstain": 0
+      },
+      "discussion": {
+        "task": 0,
+        "action": 0,
+        "discussion": 18,
+        "abstain": 0
+      }
+    }
+  },
+  "raw_laya": {
+    "cases": 38,
+    "correct": 22,
+    "accuracy": 0.5789473684210527,
+    "coverage": 1.0,
+    "covered_accuracy": 0.5789473684210527,
+    "false_task_or_action_from_discussion": 10,
+    "confusion": {
+      "task": {
+        "task": 7,
+        "action": 4,
+        "discussion": 0,
+        "abstain": 0
+      },
+      "action": {
+        "task": 0,
+        "action": 7,
+        "discussion": 2,
+        "abstain": 0
+      },
+      "discussion": {
+        "task": 3,
+        "action": 7,
+        "discussion": 8,
+        "abstain": 0
+      }
+    }
+  },
+  "guarded_hint": {
+    "cases": 38,
+    "correct": 15,
+    "accuracy": 0.39473684210526316,
+    "coverage": 0.6578947368421053,
+    "covered_accuracy": 0.6,
+    "false_task_or_action_from_discussion": 5,
+    "confusion": {
+      "task": {
+        "task": 5,
+        "action": 3,
+        "discussion": 0,
+        "abstain": 3
+      },
+      "action": {
+        "task": 0,
+        "action": 6,
+        "discussion": 2,
+        "abstain": 1
+      },
+      "discussion": {
+        "task": 3,
+        "action": 2,
+        "discussion": 4,
+        "abstain": 9
+      }
+    }
+  },
+  "baseline_type": "deterministic_framework",
+  "resolved_only": {
+    "baseline": {
+      "cases": 38,
+      "correct": 38,
+      "accuracy": 1.0,
+      "coverage": 1.0,
+      "covered_accuracy": 1.0,
+      "false_task_or_action_from_discussion": 0,
+      "confusion": {
+        "task": {
+          "task": 11,
+          "action": 0,
+          "discussion": 0,
+          "abstain": 0
+        },
+        "action": {
+          "task": 0,
+          "action": 9,
+          "discussion": 0,
+          "abstain": 0
+        },
+        "discussion": {
+          "task": 0,
+          "action": 0,
+          "discussion": 18,
+          "abstain": 0
+        }
+      }
+    },
+    "raw_laya": {
+      "cases": 38,
+      "correct": 22,
+      "accuracy": 0.5789473684210527,
+      "coverage": 1.0,
+      "covered_accuracy": 0.5789473684210527,
+      "false_task_or_action_from_discussion": 10,
+      "confusion": {
+        "task": {
+          "task": 7,
+          "action": 4,
+          "discussion": 0,
+          "abstain": 0
+        },
+        "action": {
+          "task": 0,
+          "action": 7,
+          "discussion": 2,
+          "abstain": 0
+        },
+        "discussion": {
+          "task": 3,
+          "action": 7,
+          "discussion": 8,
+          "abstain": 0
+        }
+      }
+    },
+    "guarded_hint": {
+      "cases": 38,
+      "correct": 15,
+      "accuracy": 0.39473684210526316,
+      "coverage": 0.6578947368421053,
+      "covered_accuracy": 0.6,
+      "false_task_or_action_from_discussion": 5,
+      "confusion": {
+        "task": {
+          "task": 5,
+          "action": 3,
+          "discussion": 0,
+          "abstain": 3
+        },
+        "action": {
+          "task": 0,
+          "action": 6,
+          "discussion": 2,
+          "abstain": 1
+        },
+        "discussion": {
+          "task": 3,
+          "action": 2,
+          "discussion": 4,
+          "abstain": 9
+        }
+      }
+    }
+  },
+  "unresolved_case_ids": [],
+  "fallback_reasons": {
+    "negation_or_correction_requires_pm": 9,
+    "unresolved_reference": 3,
+    "context_reference_requires_pm": 1,
+    "mixed_intent_requires_pm": 1
+  },
+  "fallback_rate": 0.35,
+  "cases": [
+    {
+      "id": "open",
+      "text": "Open Chrome",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "everyday"
+      ],
+      "split": "development",
+      "baseline_bucket": "action",
+      "baseline_action_kind": "direct_action",
+      "bucket": "action",
+      "raw_bucket": "action",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "open",
+      "relay_command_seq": 1,
+      "elapsed_ms": 34.15758302435279,
+      "probabilities": {
+        "task": 0.2576,
+        "action": 0.457,
+        "discussion": 0.2854
+      },
+      "confidence": 0.0305,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 98,
+      "state_tokens": 5,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.30587494606152
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.56595801981166
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.176375018432736
+        }
+      ]
+    },
+    {
+      "id": "polite-open",
+      "text": "Could you open Chrome?",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "polite"
+      ],
+      "split": "development",
+      "baseline_bucket": "action",
+      "baseline_action_kind": "direct_action",
+      "bucket": "action",
+      "raw_bucket": "action",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "polite-open",
+      "relay_command_seq": 2,
+      "elapsed_ms": 34.47929100366309,
+      "probabilities": {
+        "task": 0.166,
+        "action": 0.7116,
+        "discussion": 0.1223
+      },
+      "confidence": 0.2743,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 101,
+      "state_tokens": 8,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.642625007312745
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.73966603633016
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.49587500654161
+        }
+      ]
+    },
+    {
+      "id": "polite-folder",
+      "text": "Would you please reveal this folder in Finder?",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "polite"
+      ],
+      "split": "development",
+      "baseline_bucket": "action",
+      "baseline_action_kind": "direct_action",
+      "bucket": "discussion",
+      "raw_bucket": "discussion",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "polite-folder",
+      "relay_command_seq": 3,
+      "elapsed_ms": 34.60887499386445,
+      "probabilities": {
+        "task": 0.1713,
+        "action": 0.3449,
+        "discussion": 0.4837
+      },
+      "confidence": 0.0709,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 106,
+      "state_tokens": 13,
+      "measurements": [
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.60729103628546
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.48008396662772
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.62883300380781
+        }
+      ]
+    },
+    {
+      "id": "dev-server",
+      "text": "Spin up a dev server",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "everyday"
+      ],
+      "split": "development",
+      "baseline_bucket": "action",
+      "baseline_action_kind": "direct_action",
+      "bucket": "action",
+      "raw_bucket": "action",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "dev-server",
+      "relay_command_seq": 4,
+      "elapsed_ms": 35.14337498927489,
+      "probabilities": {
+        "task": 0.2028,
+        "action": 0.765,
+        "discussion": 0.0323
+      },
+      "confidence": 0.4181,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 101,
+      "state_tokens": 8,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.8348340485245
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.83100002631545
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.16833297908306
+        }
+      ]
+    },
+    {
+      "id": "dev-server-polite",
+      "text": "Can you start the development server?",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "polite"
+      ],
+      "split": "development",
+      "baseline_bucket": "action",
+      "baseline_action_kind": "direct_action",
+      "bucket": "action",
+      "raw_bucket": "action",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "dev-server-polite",
+      "relay_command_seq": 5,
+      "elapsed_ms": 36.292499979026616,
+      "probabilities": {
+        "task": 0.1013,
+        "action": 0.8691,
+        "discussion": 0.0296
+      },
+      "confidence": 0.5831,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 103,
+      "state_tokens": 10,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.41333298198879
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.63387499889359
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 36.31458297604695
+        }
+      ]
+    },
+    {
+      "id": "email-send",
+      "text": "Send an email to Alex",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "external-effect"
+      ],
+      "split": "development",
+      "baseline_bucket": "action",
+      "baseline_action_kind": "direct_action",
+      "bucket": "action",
+      "raw_bucket": "action",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "email-send",
+      "relay_command_seq": 6,
+      "elapsed_ms": 34.85537500819191,
+      "probabilities": {
+        "task": 0.1298,
+        "action": 0.8258,
+        "discussion": 0.0444
+      },
+      "confidence": 0.4889,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 101,
+      "state_tokens": 8,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.20995896542445
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.393667010590434
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.876041987445205
+        }
+      ]
+    },
+    {
+      "id": "email-write",
+      "text": "Write an email to Alex",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "external-effect"
+      ],
+      "split": "development",
+      "baseline_bucket": "action",
+      "baseline_action_kind": "direct_action",
+      "bucket": "action",
+      "raw_bucket": "action",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "email-write",
+      "relay_command_seq": 7,
+      "elapsed_ms": 34.72887497628108,
+      "probabilities": {
+        "task": 0.1907,
+        "action": 0.7464,
+        "discussion": 0.0629
+      },
+      "confidence": 0.3553,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 101,
+      "state_tokens": 8,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.96379096759483
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.71929195802659
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.746917022857815
+        }
+      ]
+    },
+    {
+      "id": "email-draft",
+      "text": "Draft an email to Alex but don't send it",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "negation"
+      ],
+      "split": "development",
+      "baseline_bucket": "action",
+      "baseline_action_kind": "direct_action",
+      "bucket": null,
+      "raw_bucket": "action",
+      "fallback_reason": "negation_or_correction_requires_pm",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "email-draft",
+      "relay_command_seq": 8,
+      "elapsed_ms": 34.5313330180943,
+      "probabilities": {
+        "task": 0.249,
+        "action": 0.5621,
+        "discussion": 0.189
+      },
+      "confidence": 0.1035,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 106,
+      "state_tokens": 13,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.84099998604506
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.64929200708866
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.55466701416299
+        }
+      ]
+    },
+    {
+      "id": "screen",
+      "text": "What's on my screen?",
+      "context": [],
+      "expected_bucket": "action",
+      "expected_action_kind": "direct_action",
+      "tags": [
+        "observation"
+      ],
+      "split": "development",
+      "baseline_bucket": "action",
+      "baseline_action_kind": "direct_action",
+      "bucket": "discussion",
+      "raw_bucket": "discussion",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "screen",
+      "relay_command_seq": 9,
+      "elapsed_ms": 34.536374965682626,
+      "probabilities": {
+        "task": 0.1933,
+        "action": 0.228,
+        "discussion": 0.5786
+      },
+      "confidence": 0.1158,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 102,
+      "state_tokens": 9,
+      "measurements": [
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.074584011454135
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.537917003035545
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.55450001638383
+        }
+      ]
+    },
+    {
+      "id": "ticket",
+      "text": "Create a ticket to fix login",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "everyday"
+      ],
+      "split": "development",
+      "baseline_bucket": "task",
+      "baseline_action_kind": "create_ticket",
+      "bucket": "task",
+      "raw_bucket": "task",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "ticket",
+      "relay_command_seq": 10,
+      "elapsed_ms": 35.20258399657905,
+      "probabilities": {
+        "task": 0.5643,
+        "action": 0.3359,
+        "discussion": 0.0997
+      },
+      "confidence": 0.1633,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 102,
+      "state_tokens": 9,
+      "measurements": [
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.82695802813396
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.61066598538309
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.217917000409216
+        }
+      ]
+    },
+    {
+      "id": "fix",
+      "text": "Fix login",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "everyday"
+      ],
+      "split": "development",
+      "baseline_bucket": "task",
+      "baseline_action_kind": "create_ticket",
+      "bucket": "action",
+      "raw_bucket": "action",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "fix",
+      "relay_command_seq": 11,
+      "elapsed_ms": 34.64308299589902,
+      "probabilities": {
+        "task": 0.4607,
+        "action": 0.4612,
+        "discussion": 0.0781
+      },
+      "confidence": 0.1689,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 98,
+      "state_tokens": 5,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.808625001460314
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.569332958199084
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.66508298879489
+        }
+      ]
+    },
+    {
+      "id": "dispatch",
+      "text": "Dispatch RR-400",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "dispatch_ticket",
+      "tags": [
+        "everyday"
+      ],
+      "split": "development",
+      "baseline_bucket": "task",
+      "baseline_action_kind": "dispatch_ticket",
+      "bucket": "action",
+      "raw_bucket": "action",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "dispatch",
+      "relay_command_seq": 12,
+      "elapsed_ms": 34.80654099257663,
+      "probabilities": {
+        "task": 0.2644,
+        "action": 0.6456,
+        "discussion": 0.09
+      },
+      "confidence": 0.2254,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 101,
+      "state_tokens": 8,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.87779101124033
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.17658298369497
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.82712496770546
+        }
+      ]
+    },
+    {
+      "id": "update",
+      "text": "Update RR-400",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "update_ticket",
+      "tags": [
+        "everyday"
+      ],
+      "split": "development",
+      "baseline_bucket": "task",
+      "baseline_action_kind": "update_ticket",
+      "bucket": "action",
+      "raw_bucket": "action",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "update",
+      "relay_command_seq": 13,
+      "elapsed_ms": 34.6836659591645,
+      "probabilities": {
+        "task": 0.382,
+        "action": 0.4495,
+        "discussion": 0.1685
+      },
+      "confidence": 0.0651,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 100,
+      "state_tokens": 7,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.65970797697082
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.56158301560208
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.7018750035204
+        }
+      ]
+    },
+    {
+      "id": "inline",
+      "text": "Fix the login bug inline",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "inline_work",
+      "tags": [
+        "inline"
+      ],
+      "split": "development",
+      "baseline_bucket": "task",
+      "baseline_action_kind": "inline_work",
+      "bucket": "task",
+      "raw_bucket": "task",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "inline",
+      "relay_command_seq": 14,
+      "elapsed_ms": 35.257959039881825,
+      "probabilities": {
+        "task": 0.5686,
+        "action": 0.367,
+        "discussion": 0.0644
+      },
+      "confidence": 0.2122,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 101,
+      "state_tokens": 8,
+      "measurements": [
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.37562502222136
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.64762499788776
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.27400002349168
+        }
+      ]
+    },
+    {
+      "id": "spike",
+      "text": "Create a spike to investigate local classification",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "spike"
+      ],
+      "split": "development",
+      "baseline_bucket": "task",
+      "baseline_action_kind": "create_ticket",
+      "bucket": "task",
+      "raw_bucket": "task",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "spike",
+      "relay_command_seq": 15,
+      "elapsed_ms": 34.63091602316126,
+      "probabilities": {
+        "task": 0.5306,
+        "action": 0.4283,
+        "discussion": 0.0411
+      },
+      "confidence": 0.2439,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 103,
+      "state_tokens": 10,
+      "measurements": [
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.7804999910295
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.5525830052793
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.65254098409787
+        }
+      ]
+    },
+    {
+      "id": "track-spike",
+      "text": "Track a spike into the login failure",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "spike"
+      ],
+      "split": "development",
+      "baseline_bucket": "task",
+      "baseline_action_kind": "create_ticket",
+      "bucket": "task",
+      "raw_bucket": "task",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "track-spike",
+      "relay_command_seq": 16,
+      "elapsed_ms": 34.79975002119318,
+      "probabilities": {
+        "task": 0.4823,
+        "action": 0.2267,
+        "discussion": 0.291
+      },
+      "confidence": 0.0466,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 103,
+      "state_tokens": 10,
+      "measurements": [
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.76374997990206
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.37650004727766
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.81412504334003
+        }
+      ]
+    },
+    {
+      "id": "backlog",
+      "text": "Create a ticket to fix login; do not dispatch it",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "negation",
+        "backlog"
+      ],
+      "split": "development",
+      "baseline_bucket": "task",
+      "baseline_action_kind": "create_ticket",
+      "bucket": null,
+      "raw_bucket": "action",
+      "fallback_reason": "negation_or_correction_requires_pm",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "backlog",
+      "relay_command_seq": 17,
+      "elapsed_ms": 34.4467909890227,
+      "probabilities": {
+        "task": 0.4499,
+        "action": 0.4928,
+        "discussion": 0.0572
+      },
+      "confidence": 0.2064,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 107,
+      "state_tokens": 14,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.45445902273059
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.042209026869386
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.46624998468906
+        }
+      ]
+    },
+    {
+      "id": "backlog-implement",
+      "text": "Create a ticket for login but do not implement it",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "negation",
+        "backlog"
+      ],
+      "split": "development",
+      "baseline_bucket": "task",
+      "baseline_action_kind": "create_ticket",
+      "bucket": null,
+      "raw_bucket": "task",
+      "fallback_reason": "negation_or_correction_requires_pm",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "backlog-implement",
+      "relay_command_seq": 18,
+      "elapsed_ms": 35.072083002887666,
+      "probabilities": {
+        "task": 0.4166,
+        "action": 0.4133,
+        "discussion": 0.1701
+      },
+      "confidence": 0.0613,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 106,
+      "state_tokens": 13,
+      "measurements": [
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.71154102589935
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.77741702226922
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.0896249874495
+        }
+      ]
+    },
+    {
+      "id": "scoped-limit",
+      "text": "Fix login, but don't change the styling",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "negation",
+        "scoped"
+      ],
+      "split": "development",
+      "baseline_bucket": "task",
+      "baseline_action_kind": "create_ticket",
+      "bucket": null,
+      "raw_bucket": "task",
+      "fallback_reason": "negation_or_correction_requires_pm",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "scoped-limit",
+      "relay_command_seq": 19,
+      "elapsed_ms": 35.119041975121945,
+      "probabilities": {
+        "task": 0.4446,
+        "action": 0.4361,
+        "discussion": 0.1193
+      },
+      "confidence": 0.1117,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 105,
+      "state_tokens": 12,
+      "measurements": [
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.12854198925197
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.004999954253435
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.14216601615772
+        }
+      ]
+    },
+    {
+      "id": "build-status",
+      "text": "Was there a build for RR-325?",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "inspect_ticket",
+      "tags": [
+        "status"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "inspect_ticket",
+      "bucket": "discussion",
+      "raw_bucket": "discussion",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "build-status",
+      "relay_command_seq": 20,
+      "elapsed_ms": 34.87237496301532,
+      "probabilities": {
+        "task": 0.2369,
+        "action": 0.1699,
+        "discussion": 0.5932
+      },
+      "confidence": 0.1334,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 105,
+      "state_tokens": 12,
+      "measurements": [
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.09895800380036
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.871542011387646
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.89137499127537
+        }
+      ]
+    },
+    {
+      "id": "discuss",
+      "text": "Discuss whether to fix login",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "discussion"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": "discussion",
+      "raw_bucket": "discussion",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "discuss",
+      "relay_command_seq": 21,
+      "elapsed_ms": 35.2710839943029,
+      "probabilities": {
+        "task": 0.2845,
+        "action": 0.1388,
+        "discussion": 0.5767
+      },
+      "confidence": 0.1361,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 102,
+      "state_tokens": 9,
+      "measurements": [
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.57162500126287
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.62470799079165
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.293125023599714
+        }
+      ]
+    },
+    {
+      "id": "research",
+      "text": "Do not create a ticket, just research this",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "negation",
+        "research"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": null,
+      "raw_bucket": "action",
+      "fallback_reason": "negation_or_correction_requires_pm",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "research",
+      "relay_command_seq": 22,
+      "elapsed_ms": 35.72145901853219,
+      "probabilities": {
+        "task": 0.2959,
+        "action": 0.522,
+        "discussion": 0.1821
+      },
+      "confidence": 0.0808,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 105,
+      "state_tokens": 12,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.44566698838025
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.74704204220325
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.74716602452099
+        }
+      ]
+    },
+    {
+      "id": "feasibility",
+      "text": "Can you build this? I only want to discuss feasibility, do not implement it.",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "negation",
+        "correction"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": null,
+      "raw_bucket": "discussion",
+      "fallback_reason": "negation_or_correction_requires_pm",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "feasibility",
+      "relay_command_seq": 23,
+      "elapsed_ms": 35.554417001549155,
+      "probabilities": {
+        "task": 0.1253,
+        "action": 0.1119,
+        "discussion": 0.7627
+      },
+      "confidence": 0.3519,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 113,
+      "state_tokens": 20,
+      "measurements": [
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 38.376833021175116
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 36.19008301757276
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.57854099199176
+        }
+      ]
+    },
+    {
+      "id": "research-piece",
+      "text": "Build this feature. This is just a research piece before implementation.",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "correction"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": "task",
+      "raw_bucket": "task",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "research-piece",
+      "relay_command_seq": 24,
+      "elapsed_ms": 37.00645797653124,
+      "probabilities": {
+        "task": 0.5267,
+        "action": 0.1946,
+        "discussion": 0.2787
+      },
+      "confidence": 0.0786,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 109,
+      "state_tokens": 16,
+      "measurements": [
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 47.084290999919176
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 36.744499986525625
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 37.025875004474074
+        }
+      ]
+    },
+    {
+      "id": "explain",
+      "text": "Explain how to start a dev server",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "discussion"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": "action",
+      "raw_bucket": "action",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "explain",
+      "relay_command_seq": 25,
+      "elapsed_ms": 35.49208299955353,
+      "probabilities": {
+        "task": 0.389,
+        "action": 0.3938,
+        "discussion": 0.2172
+      },
+      "confidence": 0.0298,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 104,
+      "state_tokens": 11,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 36.955750023480505
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.084249975625426
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.516583011485636
+        }
+      ]
+    },
+    {
+      "id": "architecture",
+      "text": "What is Relay Runner's command classification architecture?",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "discussion"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": "discussion",
+      "raw_bucket": "discussion",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "architecture",
+      "relay_command_seq": 26,
+      "elapsed_ms": 34.81133398599923,
+      "probabilities": {
+        "task": 0.2431,
+        "action": 0.1568,
+        "discussion": 0.6001
+      },
+      "confidence": 0.1437,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 107,
+      "state_tokens": 14,
+      "measurements": [
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.52999999374151
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.10799998184666
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.82795797754079
+        }
+      ]
+    },
+    {
+      "id": "status",
+      "text": "Can you tell me whether RR-325 is done?",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "inspect_ticket",
+      "tags": [
+        "status"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "inspect_ticket",
+      "bucket": "discussion",
+      "raw_bucket": "discussion",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "status",
+      "relay_command_seq": 27,
+      "elapsed_ms": 34.879625018220395,
+      "probabilities": {
+        "task": 0.308,
+        "action": 0.2076,
+        "discussion": 0.4844
+      },
+      "confidence": 0.0532,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 107,
+      "state_tokens": 14,
+      "measurements": [
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.95649999240413
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.6790409530513
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.89633300341666
+        }
+      ]
+    },
+    {
+      "id": "status-stop",
+      "text": "Don't stop the current work; just give me status",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "negation",
+        "continuity"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": null,
+      "raw_bucket": "discussion",
+      "fallback_reason": "negation_or_correction_requires_pm",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "status-stop",
+      "relay_command_seq": 28,
+      "elapsed_ms": 35.34025000408292,
+      "probabilities": {
+        "task": 0.2864,
+        "action": 0.321,
+        "discussion": 0.3926
+      },
+      "confidence": 0.0079,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 107,
+      "state_tokens": 14,
+      "measurements": [
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.96895800344646
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 34.879792015999556
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.35837499657646
+        }
+      ]
+    },
+    {
+      "id": "no-ticket",
+      "text": "Do not create a ticket",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "negation"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": null,
+      "raw_bucket": "action",
+      "fallback_reason": "negation_or_correction_requires_pm",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "no-ticket",
+      "relay_command_seq": 29,
+      "elapsed_ms": 35.098499967716634,
+      "probabilities": {
+        "task": 0.3292,
+        "action": 0.5444,
+        "discussion": 0.1264
+      },
+      "confidence": 0.1278,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 101,
+      "state_tokens": 8,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 36.152167012915015
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.44150001835078
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.113457997795194
+        }
+      ]
+    },
+    {
+      "id": "thanks",
+      "text": "Thanks",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "conversation"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": "task",
+      "raw_bucket": "task",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "thanks",
+      "relay_command_seq": 30,
+      "elapsed_ms": 35.37883399985731,
+      "probabilities": {
+        "task": 0.3498,
+        "action": 0.3111,
+        "discussion": 0.3391
+      },
+      "confidence": 0.0011,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 97,
+      "state_tokens": 4,
+      "measurements": [
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.22229101508856
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.10720800841227
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.4083749698475
+        }
+      ]
+    },
+    {
+      "id": "fragment",
+      "text": "The login",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "fragment"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": "action",
+      "raw_bucket": "action",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "fragment",
+      "relay_command_seq": 31,
+      "elapsed_ms": 35.11400002753362,
+      "probabilities": {
+        "task": 0.329,
+        "action": 0.459,
+        "discussion": 0.212
+      },
+      "confidence": 0.0424,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 98,
+      "state_tokens": 5,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.08683404652402
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.16841697273776
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.13641597237438
+        }
+      ]
+    },
+    {
+      "id": "assent",
+      "text": "Yes, do that",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "continuation"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": null,
+      "raw_bucket": "action",
+      "fallback_reason": "unresolved_reference",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "assent",
+      "relay_command_seq": 32,
+      "elapsed_ms": 34.96995801106095,
+      "probabilities": {
+        "task": 0.2612,
+        "action": 0.5987,
+        "discussion": 0.1401
+      },
+      "confidence": 0.1507,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 100,
+      "state_tokens": 7,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.30775004765019
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.45287501765415
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.985417034476995
+        }
+      ]
+    },
+    {
+      "id": "assent-context",
+      "text": "Yes, do that",
+      "context": [
+        {
+          "role": "assistant",
+          "content": "I can create a backlog ticket for the login failure, without dispatching it."
+        }
+      ],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "continuation",
+        "context"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": null,
+      "raw_bucket": "action",
+      "fallback_reason": "context_reference_requires_pm",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "assent-context",
+      "relay_command_seq": 33,
+      "elapsed_ms": 35.707458038814366,
+      "probabilities": {
+        "task": 0.4398,
+        "action": 0.4808,
+        "discussion": 0.0794
+      },
+      "confidence": 0.1676,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 121,
+      "state_tokens": 28,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 37.599290953949094
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 36.21445898897946
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.729457973502576
+        }
+      ]
+    },
+    {
+      "id": "mixed",
+      "text": "Open Chrome and fix login",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "mixed"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": null,
+      "raw_bucket": "action",
+      "fallback_reason": "mixed_intent_requires_pm",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "mixed",
+      "relay_command_seq": 34,
+      "elapsed_ms": 35.35883402219042,
+      "probabilities": {
+        "task": 0.3547,
+        "action": 0.5723,
+        "discussion": 0.073
+      },
+      "confidence": 0.2007,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 101,
+      "state_tokens": 8,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.64370797155425
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.27541703078896
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.373958002310246
+        }
+      ]
+    },
+    {
+      "id": "mixed-query",
+      "text": "What is the status of RR-325, and if it failed, fix it",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "mixed",
+        "conditional"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": null,
+      "raw_bucket": "discussion",
+      "fallback_reason": "unresolved_reference",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "mixed-query",
+      "relay_command_seq": 35,
+      "elapsed_ms": 35.6314160162583,
+      "probabilities": {
+        "task": 0.2315,
+        "action": 0.1185,
+        "discussion": 0.65
+      },
+      "confidence": 0.2068,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 112,
+      "state_tokens": 19,
+      "measurements": [
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.54929199162871
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.89691600063816
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.65383399836719
+        }
+      ]
+    },
+    {
+      "id": "control",
+      "text": "__TTS_STOP__",
+      "context": [],
+      "expected_bucket": null,
+      "expected_action_kind": "control",
+      "tags": [
+        "control"
+      ],
+      "split": "development",
+      "baseline_bucket": null,
+      "baseline_action_kind": "control",
+      "bucket": "action",
+      "raw_bucket": "action",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "control",
+      "relay_command_seq": 36,
+      "elapsed_ms": 35.0672080530785,
+      "probabilities": {
+        "task": 0.2466,
+        "action": 0.5134,
+        "discussion": 0.24
+      },
+      "confidence": 0.0624,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 102,
+      "state_tokens": 9,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.47570900991559
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.498332988936454
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.09200003463775
+        }
+      ]
+    },
+    {
+      "id": "cancel",
+      "text": "Cancel RR-400",
+      "context": [],
+      "expected_bucket": null,
+      "expected_action_kind": "control",
+      "tags": [
+        "control",
+        "scoped"
+      ],
+      "split": "development",
+      "baseline_bucket": null,
+      "baseline_action_kind": "control",
+      "bucket": null,
+      "raw_bucket": "action",
+      "fallback_reason": "negation_or_correction_requires_pm",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "cancel",
+      "relay_command_seq": 37,
+      "elapsed_ms": 34.90845795022324,
+      "probabilities": {
+        "task": 0.2008,
+        "action": 0.6658,
+        "discussion": 0.1334
+      },
+      "confidence": 0.2154,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 101,
+      "state_tokens": 8,
+      "measurements": [
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.61487497063354
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 35.029124992433935
+        },
+        {
+          "raw_bucket": "action",
+          "elapsed_ms": 34.93187500862405
+        }
+      ]
+    },
+    {
+      "id": "release-question",
+      "text": "Did we ship this?",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "status"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": null,
+      "raw_bucket": "discussion",
+      "fallback_reason": "unresolved_reference",
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "release-question",
+      "relay_command_seq": 38,
+      "elapsed_ms": 35.17279197694734,
+      "probabilities": {
+        "task": 0.0957,
+        "action": 0.104,
+        "discussion": 0.8003
+      },
+      "confidence": 0.419,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 101,
+      "state_tokens": 8,
+      "measurements": [
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.29920900473371
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.60233296593651
+        },
+        {
+          "raw_bucket": "discussion",
+          "elapsed_ms": 35.20083398325369
+        }
+      ]
+    },
+    {
+      "id": "polite-task",
+      "text": "Could you implement a login retry?",
+      "context": [],
+      "expected_bucket": "task",
+      "expected_action_kind": "create_ticket",
+      "tags": [
+        "polite"
+      ],
+      "split": "development",
+      "baseline_bucket": "task",
+      "baseline_action_kind": "create_ticket",
+      "bucket": "task",
+      "raw_bucket": "task",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "polite-task",
+      "relay_command_seq": 39,
+      "elapsed_ms": 35.86612502112985,
+      "probabilities": {
+        "task": 0.4755,
+        "action": 0.3792,
+        "discussion": 0.1453
+      },
+      "confidence": 0.0884,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 103,
+      "state_tokens": 10,
+      "measurements": [
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.50733404699713
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 36.479791975580156
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.89599998667836
+        }
+      ]
+    },
+    {
+      "id": "read-only",
+      "text": "Investigate why the build failed",
+      "context": [],
+      "expected_bucket": "discussion",
+      "expected_action_kind": "conversation",
+      "tags": [
+        "research"
+      ],
+      "split": "development",
+      "baseline_bucket": "discussion",
+      "baseline_action_kind": "conversation",
+      "bucket": "task",
+      "raw_bucket": "task",
+      "fallback_reason": null,
+      "requires_pm": true,
+      "advisory_only": true,
+      "confidence_calibrated": false,
+      "relay_command_id": "read-only",
+      "relay_command_seq": 40,
+      "elapsed_ms": 34.12870899774134,
+      "probabilities": {
+        "task": 0.354,
+        "action": 0.3009,
+        "discussion": 0.345
+      },
+      "confidence": 0.0022,
+      "model": {
+        "repository": "aac6fef/laya-mlx",
+        "revision": "047678560251f28113ee8f5df4be82102c7bf336",
+        "weight_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+        "checkpoint": "english",
+        "dtype": "float16",
+        "device": "gpu",
+        "runtime": {
+          "laya-mlx": "0.2.0",
+          "mlx": "0.32.2",
+          "tokenizers": "0.23.2",
+          "numpy": "2.5.3"
+        },
+        "state_token_budget": 419,
+        "load_ms": 559.5943750231527
+      },
+      "input_tokens": 102,
+      "state_tokens": 9,
+      "measurements": [
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 35.78425000887364
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.98958301497623
+        },
+        {
+          "raw_bucket": "task",
+          "elapsed_ms": 34.14566698484123
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Synthetic fixture results do not establish real-user accuracy.",
+    "Confidence is uncalibrated for RR.",
+    "No user command was executed.",
+    "Concurrent STT/TTS and physical voice latency are not measured."
+  ]
+}

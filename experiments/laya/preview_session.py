@@ -11,6 +11,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services"))
 from command_actions import format_command_for_agent, resolve_command_action
+from intent_qualification import format_qualification_for_agent, qualify_intent
 from laya_qualification import attach_hint, qualify_for_bridge
 
 
@@ -35,8 +36,15 @@ def main():
         seq += 1
         command = {"relay_command_id": "preview-" + uuid.uuid4().hex, "relay_command_seq": seq, "provider": args.provider}
         action = resolve_command_action(text, repo_path=ROOT, relay_command=command)
+        qualification = qualify_intent(
+            text, context=context, action_kind=action.kind, action_reason=action.reason,
+            command_id=command["relay_command_id"], command_seq=seq,
+        )
         hint = qualify_for_bridge(text, command, context)
-        item = {"metadata": {**command, "action": action.kind}, "prompt": format_command_for_agent(action)}
+        item = {
+            "metadata": {**command, "action": action.kind, "intent_qualification": qualification.to_dict()},
+            "prompt": format_command_for_agent(action) + format_qualification_for_agent(qualification),
+        }
         attach_hint([item], hint)
         print(json.dumps({"read_only_preview": True, "source_text": text, **item}, indent=2, ensure_ascii=False))
         if args.text is not None:

@@ -80,6 +80,8 @@ In another terminal in the same checkout:
 ```
 
 Type utterances to see the baseline action, local hint and resulting PM prompt.
+The preview preserves each complete utterance and includes the shared baseline
+`IntentQualification`. It does not normalize or deliver real bridge work items.
 This is a read-only terminal preview, not microphone or provider UAT. Nothing is
 sent to Codex/Claude, the installed app, the daemon, email or the desktop. Use
 `--provider claude` for the equivalent metadata contract, `--text 'Open Chrome'`
@@ -154,9 +156,21 @@ RR-specific training experiment may be justified, using new training data and a
 new untouched holdout. The initial evaluation did not fine-tune, calibrate, tune
 thresholds, or select prompts against the holdout.
 
-Committed raw reports in `results/` preserve the legacy baseline comparison and
-the exact evaluated prompt/source hashes. New framework comparisons are recorded
-separately when the baseline framework is available. Legacy baseline labels are
+On the shared development corpus, English scored 22/38 and multilingual 16/38
+three-way cases; the two control cases are excluded from these bucket-accuracy
+denominators. The deterministic framework matched all 38 development labels.
+These were development fixtures, so the independent results remain the relevant
+comparison for generalisation.
+
+On the same holdout, the new deterministic framework scored 24/36 (66.7%), versus
+23/36 (63.9%) for the legacy action-kind mapping. Both made one false Task/Action
+decision on a Discussion. This modest change also needs more evaluation; none of
+these small-set results establish reliable automatic intent qualification.
+
+Committed raw reports in `results/` preserve both baseline comparisons and the
+exact evaluated prompt/source hashes. The framework comparison was added after
+cherry-picking baseline commit `e20f5179`; the frozen raw Laya outputs and timing
+samples were retained without rerunning or tuning. Legacy baseline labels are
 an explicit mapping from previous action kinds, not an existing shipped three-way
 classifier.
 
@@ -165,6 +179,19 @@ Messenger acknowledgement/PM completion timing, concurrent STT/TTS load, power o
 memory-pressure measurement, and real-user distribution accuracy. All experiment
 services used for the recorded tests were stopped; the installed app and daemon
 were not restarted or modified.
+
+## Regression verification
+
+212 focused tests passed: 13 Laya client/guard/budget tests, 145 existing voice
+bridge tests (including Messenger-before-Laya ordering), 30 command-action tests,
+16 intent-arbitration tests, and eight framework/authority tests. The initial
+voice run exposed a missing bundle manifest entry, which was corrected. One
+duplicate-empty-warning test failed transiently in that run; it passed in
+isolation and in both subsequent complete 145-test voice runs. No failure remains
+in the final focused runs. Python compile checks and `git diff --check` also pass.
+
+The runtime tests use explicit doubles to verify guards and transport; they are
+separate from the recorded real MLX inference and warmed-service measurements.
 
 ## Disable / revert
 

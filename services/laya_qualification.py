@@ -13,6 +13,8 @@ import re
 import socket
 import time
 
+from intent_qualification import IntentQualification
+
 
 BUCKETS = ("task", "action", "discussion")
 QUESTIONS = {
@@ -93,6 +95,16 @@ def fallback(payload: dict, reason: str, started: float) -> dict:
     }
 
 
+def framework_qualification(result: dict) -> dict:
+    """Use the same provider-neutral contract as deterministic qualification."""
+    reason = result.get("fallback_reason")
+    return IntentQualification(
+        bucket=result.get("bucket"), source="laya", unresolved=bool(reason),
+        mixed=reason == "mixed_intent_requires_pm", reason=reason or "local_model_advisory",
+        command_id=result.get("relay_command_id"), command_seq=result.get("relay_command_seq"),
+    ).to_dict()
+
+
 def qualify_for_bridge(text: str, command: dict, context: list[dict] | None = None) -> dict | None:
     """One bounded IPC request, default off; never start a process or download.
 
@@ -164,6 +176,7 @@ def attach_hint(resolved: list[dict], hint: dict | None) -> None:
         if any(hint.get(key) != metadata.get(key) for key in ("relay_command_id", "relay_command_seq")):
             continue
         metadata["laya_qualification"] = hint
+        metadata["laya_intent_qualification"] = framework_qualification(hint)
         if hint.get("bucket") in BUCKETS:
             note = f"Local Laya proposes {hint['bucket']} (uncalibrated advisory hint)."
         else:
