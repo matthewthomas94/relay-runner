@@ -78,7 +78,8 @@ struct GeneralSettingsTab: View {
                         description: Self.workspaceFolderHelpText
                     ) {
                         HStack(spacing: 8) {
-                            TextField(Self.workspaceFolderLabel, text: $config.working_directory, prompt: Text("~ (home)").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
+                            TextField(Self.workspaceFolderLabel, text: $config.working_directory, prompt: Text(""))
+                                .appPlaceholder("~ (home)", when: config.working_directory.isEmpty, inset: 6)
                             SettingsActionButton(
                                 title: "Browse\u{2026}",
                                 systemImage: "folder"

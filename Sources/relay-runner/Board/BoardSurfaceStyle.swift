@@ -25,7 +25,8 @@ enum BoardDarkSurfaceStyle {
     static let cardFill = Color(nsColor: cardFillNSColor)
     static let cardActiveFill = Color(nsColor: cardActiveFillNSColor)
     static let border = Color(nsColor: borderNSColor)
-    static let placeholderText = Color(.sRGB, red: 29 / 255, green: 34 / 255, blue: 40 / 255, opacity: 1)
+    static let placeholderTextNSColor = NSColor(srgbRed: 29 / 255, green: 34 / 255, blue: 40 / 255, alpha: 1)
+    static let placeholderText = Color(nsColor: placeholderTextNSColor)
 
     static let workspaceCornerRadius: CGFloat = 16
     static let columnCornerRadius: CGFloat = 16
@@ -168,5 +169,22 @@ struct ProgramBoardInteractionPresentation: Equatable {
             animationDuration: duration,
             accent: .neutral
         )
+    }
+}
+
+// macOS native text fields ignore foreground colours supplied in SwiftUI prompts.
+// Draw the placeholder separately while retaining the native field's editing behavior.
+extension View {
+    func appPlaceholder(_ title: String, when isEmpty: Bool, inset: CGFloat = 0) -> some View {
+        overlay(alignment: .leading) {
+            if isEmpty {
+                Text(title)
+                    .foregroundStyle(BoardDarkSurfaceStyle.placeholderText)
+                    .lineLimit(1)
+                    .padding(.horizontal, inset)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
     }
 }

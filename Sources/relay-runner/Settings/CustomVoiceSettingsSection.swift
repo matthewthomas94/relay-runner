@@ -19,8 +19,6 @@ struct CustomVoiceSettingsSection: View {
     @State private var error: String?
     @State private var runtimeReady = false
     @State private var deleteTarget: CustomVoiceProfile?
-    @State private var renameTarget: CustomVoiceProfile?
-    @State private var renameName = ""
     @State private var recorder = VoiceSampleRecorder()
 
     private var selected: CustomVoiceProfile? { profiles.first { $0.id == selectedID } }
@@ -92,8 +90,7 @@ struct CustomVoiceSettingsSection: View {
                             } catch { self.error = "The reference or runtime changed. Preview this voice again before selecting it." }
                         }
                         SettingsActionButton(title: "Rename", systemImage: "pencil", isEnabled: audioActionsEnabled) {
-                            renameTarget = profile
-                            renameName = profile.name
+                            rename(profile)
                         }
                         SettingsActionButton(title: "Delete", systemImage: "trash", isEnabled: audioActionsEnabled) {
                             deleteTarget = profile
@@ -181,22 +178,34 @@ struct CustomVoiceSettingsSection: View {
             Button("Delete", role: .destructive) { if let profile = deleteTarget { delete(profile) }; deleteTarget = nil }
             Button("Cancel", role: .cancel) { deleteTarget = nil }
         } message: { Text("This removes the managed reference, not the original recording or your backups. The selected voice will switch to George.") }
-        .alert("Rename voice", isPresented: Binding(get: { renameTarget != nil }, set: { if !$0 { renameTarget = nil } })) {
-            TextField("Name", text: $renameName, prompt: Text("Name").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
-            Button("Save") {
-                do { if let profile = renameTarget { try store.rename(profile.id, name: renameName) }; refresh() }
-                catch { self.error = "Could not rename this voice. Use a name of 1–80 characters." }
-                renameTarget = nil
-            }
-            Button("Cancel", role: .cancel) { renameTarget = nil }
-        }
+    }
+
+    private func rename(_ profile: CustomVoiceProfile) {
+        let field = NSTextField(string: profile.name)
+        field.frame = NSRect(x: 0, y: 0, width: SettingsLayout.controlMaxWidth, height: 24)
+        field.placeholderAttributedString = NSAttributedString(
+            string: "Name",
+            attributes: [.foregroundColor: BoardDarkSurfaceStyle.placeholderTextNSColor]
+        )
+        field.setAccessibilityLabel("Name")
+        let alert = NSAlert()
+        alert.messageText = "Rename voice"
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do { try store.rename(profile.id, name: field.stringValue); refresh() }
+        catch { self.error = "Could not rename this voice. Use a name of 1–80 characters." }
     }
 
     private var draftEditor: some View {
         VStack(spacing: 0) {
             SettingsDivider()
             SettingsControlRow("Voice name") {
-                TextField("Voice name", text: $name, prompt: Text("Voice name").foregroundColor(BoardDarkSurfaceStyle.placeholderText)).textFieldStyle(.roundedBorder)
+                TextField("Voice name", text: $name, prompt: Text(""))
+                    .appPlaceholder("Voice name", when: name.isEmpty, inset: 6)
+                    .textFieldStyle(.roundedBorder)
                     .onChange(of: name) { _, _ in discardStaged() }
             }
 

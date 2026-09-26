@@ -222,7 +222,8 @@ struct ProgramBoardOverlayView: View {
             HStack(spacing: 0) {
                 VStack(spacing: 12) {
                     HStack(spacing: 8) {
-                        TextField("Search titles and summaries", text: $model.noteQuery, prompt: Text("Search titles and summaries").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
+                        TextField("Search titles and summaries", text: $model.noteQuery, prompt: Text(""))
+                            .appPlaceholder("Search titles and summaries", when: model.noteQuery.isEmpty)
                             .textFieldStyle(.plain)
                             .font(AppTypography.font(.field))
                             .foregroundStyle(ProgramBoardStyle.primaryText)
@@ -2974,11 +2975,13 @@ private struct ProgramSpikeFollowupProposalCard: View {
                 Spacer(minLength: 0)
             }
 
-            TextField("Title", text: $title, prompt: Text("Title").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
+            TextField("Title", text: $title, prompt: Text(""))
+                .appPlaceholder("Title", when: title.isEmpty, inset: 6)
                 .font(AppTypography.font(.body))
                 .textFieldStyle(.roundedBorder)
                 .disabled(!isDraft)
-            TextField("Target project path", text: $targetRepoPath, prompt: Text("Target project path").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
+            TextField("Target project path", text: $targetRepoPath, prompt: Text(""))
+                .appPlaceholder("Target project path", when: targetRepoPath.isEmpty, inset: 6)
                 .font(AppTypography.monospacedFont(size: 10, weight: .regular))
                 .textFieldStyle(.roundedBorder)
                 .disabled(!isDraft)
@@ -2994,18 +2997,24 @@ private struct ProgramSpikeFollowupProposalCard: View {
             .disabled(!isDraft)
 
             HStack(spacing: 8) {
-                TextField("Priority", text: $priority, prompt: Text("Priority").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
-                TextField("Dependencies", text: $dependsOn, prompt: Text("Dependencies").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
-                TextField("Worker model", text: $workerModel, prompt: Text("Worker model").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
-                TextField("Effort", text: $workerEffort, prompt: Text("Effort").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
+                TextField("Priority", text: $priority, prompt: Text(""))
+                    .appPlaceholder("Priority", when: priority.isEmpty, inset: 6)
+                TextField("Dependencies", text: $dependsOn, prompt: Text(""))
+                    .appPlaceholder("Dependencies", when: dependsOn.isEmpty, inset: 6)
+                TextField("Worker model", text: $workerModel, prompt: Text(""))
+                    .appPlaceholder("Worker model", when: workerModel.isEmpty, inset: 6)
+                TextField("Effort", text: $workerEffort, prompt: Text(""))
+                    .appPlaceholder("Effort", when: workerEffort.isEmpty, inset: 6)
             }
             .textFieldStyle(.roundedBorder)
             .disabled(!isDraft)
 
-            TextField("Sizing rationale", text: $workerSizingRationale, prompt: Text("Sizing rationale").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
+            TextField("Sizing rationale", text: $workerSizingRationale, prompt: Text(""))
+                .appPlaceholder("Sizing rationale", when: workerSizingRationale.isEmpty, inset: 6)
                 .textFieldStyle(.roundedBorder)
                 .disabled(!isDraft)
-            TextField("Provider notes", text: $workerProviderNotes, prompt: Text("Provider notes").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
+            TextField("Provider notes", text: $workerProviderNotes, prompt: Text(""))
+                .appPlaceholder("Provider notes", when: workerProviderNotes.isEmpty, inset: 6)
                 .textFieldStyle(.roundedBorder)
                 .disabled(!isDraft)
 
@@ -3451,7 +3460,8 @@ private struct ProgramTicketTitleField: View {
                 .font(AppTypography.font(.cardHeading))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
 
-            TextField("Enter ticket title", text: $text, prompt: Text("Enter ticket title").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
+            TextField("Enter ticket title", text: $text, prompt: Text(""))
+                .appPlaceholder("Enter ticket title", when: text.isEmpty)
                 .font(AppTypography.font(.field))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
                 .textFieldStyle(.plain)
