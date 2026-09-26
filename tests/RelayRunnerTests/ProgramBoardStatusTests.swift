@@ -1292,6 +1292,32 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(item.syncLabel, "Remote sync pending")
     }
 
+    func testNoteDetailUsesStructuredTranscriptWithoutStorageMetadata() {
+        let item = noteItem(id: "RR-N1", number: 1, projectName: "Relay Runner", path: "/repo/relay-runner")
+        let model = ProgramBoardViewModel()
+        let response = RelayProjectNoteResponse(
+            note: RelayProjectNoteUpdate(
+                identity: RelayProjectNoteIdentity(
+                    noteID: "RR-N1", artifactID: item.card.artifactID, projectID: item.card.projectID,
+                    createdAt: item.card.createdAt, captureStartedAt: item.card.createdAt
+                ),
+                capturedAt: item.card.updatedAt, recordingState: .completed, checkpointReason: .complete,
+                segments: [
+                    RelayProjectNoteSegment(segmentID: "internal-1", capturedAt: item.card.createdAt, text: "First paragraph."),
+                    RelayProjectNoteSegment(segmentID: "internal-2", capturedAt: item.card.createdAt, text: "Second paragraph.")
+                ],
+                captureEndedAt: item.card.updatedAt
+            ),
+            markdownBase64: Data("---\nprivate: metadata\n---\n<!-- relay-note-segment -->".utf8).base64EncodedString(),
+            materialized: true, artifactCommit: "commit", reference: item.card.reference,
+            idempotent: false, sync: item.sync
+        )
+        model.beginNoteDetail(item)
+        model.finishNoteDetail(response, for: item)
+        XCTAssertEqual(model.selectedNoteDetail?.transcript, "First paragraph.\n\nSecond paragraph.")
+        XCTAssertNil(model.selectedNoteDetail?.errorMessage)
+    }
+
     func testArchivedNoteUsesHistoryStatusAndRetryableReadFailure() {
         let item = noteItem(
             id: "RR-N1",

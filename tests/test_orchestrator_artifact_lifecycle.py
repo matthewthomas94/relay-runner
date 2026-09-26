@@ -905,6 +905,31 @@ Saved through the daemon-owned typed writer.
         )
         self.assertEqual([ticket["id"] for ticket in orchestrator.scan_repo(self.repo)], ["RR-1"])
 
+    def test_project_note_delete_http_requires_scope_and_removes_note(self):
+        created = self.daemon.artifact_note_create(
+            repo_path=str(self.repo), project_scope_token=self.scope_token(), request_id="delete-create",
+            created_at="2026-09-20T08:00:00Z", capture_started_at="2026-09-20T08:00:00Z",
+            captured_at="2026-09-20T08:01:00Z", capture_ended_at="2026-09-20T08:01:00Z",
+            recording_state="completed", checkpoint_reason="complete", segments=[],
+        )
+        identity = created["note"]["identity"]
+        handler = object.__new__(orchestrator.Handler)
+        handler.daemon = self.daemon
+        payload = dict(repo_path=str(self.repo), project_scope_token=None,
+                       artifact_id=identity["artifact_id"], request_id="delete-http")
+        path = f"/v1/artifacts/notes/{identity['note_id']}/delete"
+        with patch.object(orchestrator, "_read_body", return_value=payload):
+            status, failure = handler._route("POST", path)
+        self.assertEqual(status, 422)
+        self.assertIn("confirmed project scope token", failure["error"])
+        payload["project_scope_token"] = self.scope_token()
+        with patch.object(orchestrator, "_read_body", return_value=payload):
+            status, response = handler._route("POST", path)
+        self.assertEqual(status, 200)
+        self.assertTrue(response["deleted"])
+        self.assertEqual(self.daemon.artifact_note_list(
+            repo_path=str(self.repo), project_scope_token=self.scope_token())["notes"], [])
+
     def test_project_note_http_rejects_registry_refreshed_scope_then_reuses_request_with_fresh_scope(self):
         handler = object.__new__(orchestrator.Handler)
         handler.daemon = self.daemon

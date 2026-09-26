@@ -180,6 +180,7 @@ struct ProgramBoardOverlayView: View {
     var onStopNoteTaker: () -> Void = {}
     var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
     var onNoteClose: () -> Void = {}
+    var onNoteDelete: (ProgramBoardNoteItem) -> Void = { _ in }
     var onNoteMetadataRetry: (ProgramBoardNoteItem) -> Void = { _ in }
     var onNoteRecovery: (MeetingNoteRecoveryResolution) -> Void = { _ in }
     var onResumeRecoveredNote: () -> Void = {}
@@ -385,6 +386,7 @@ struct ProgramBoardOverlayView: View {
                         onStop: onStopNoteTaker,
                         onRetry: { onNoteOpen(detail.item) },
                         onMetadataRetry: { onNoteMetadataRetry(detail.item) },
+                        onDelete: { onNoteDelete(detail.item) },
                         recoveryOffer: model.selectedNoteRecoveryOffer,
                         recoveryInFlight: model.noteRecoveryInFlight,
                         recoveryErrorMessage: model.noteRecoveryErrorMessage,
@@ -1668,17 +1670,11 @@ private struct ProgramNoteCard: View {
         .focused($isFocused)
         .onHover { isHovered = $0 }
         .programButtonCursor(enabled: true)
-        .help("Open Markdown transcript for \(item.card.noteID)")
+        .help("Open transcript for \(item.title)")
         .accessibilityLabel("\(item.card.noteID), \(ProgramBoardDate.label(iso8601: item.card.createdAt) ?? ""), \(item.title)")
     }
 
-    fileprivate static func displayDate(_ value: String) -> String {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
-        guard let date else { return value }
-        return date.formatted(date: .abbreviated, time: .shortened)
-    }
+
 }
 
 struct ProgramColumnTicketScrollView<Content: View>: View {
@@ -2357,6 +2353,8 @@ private struct ProgramNoteDetailPanel: View {
     let onStop: () -> Void
     let onRetry: () -> Void
     let onMetadataRetry: () -> Void
+    let onDelete: () -> Void
+    @State private var confirmsDelete = false
     let recoveryOffer: MeetingNoteRecoveryOffer?
     let recoveryInFlight: Bool
     let recoveryErrorMessage: String?
@@ -2374,63 +2372,29 @@ private struct ProgramNoteDetailPanel: View {
         isCurrentCapture && captureSnapshot.phase.ownsForeground
     }
 
-    private var recordingStatus: String {
-        if recoveryOffer != nil, !isCurrentCapture {
-            return "Interrupted — recovery available"
-        }
-        guard isCurrentCapture else { return detail.item.recordingLabel }
-        switch captureSnapshot.phase {
-        case .preparing: return "Preparing recording"
-        case .recording:
-            if let status = captureSnapshot.captureStatusMessage {
-                return "\(status) — pause and resume to retry"
-            }
-            return "Recording"
-        case .paused: return "Paused"
-        case .stopping: return "Saving locally"
-        case .saved: return "Saved locally"
-        case .interrupted: return "Recording interrupted"
-        case .error: return "Save failed"
-        case .idle: return detail.item.recordingLabel
-        }
-    }
-
-    private var syncStatus: String {
-        switch detail.item.sync.state {
-        case "conflict": return "Remote changes need attention. Your local note is safe."
-        case "pending": return "Saved locally. Remote sync is pending."
-        case "failure": return "Saved locally. Remote sync is temporarily unavailable."
-        default: return detail.item.syncLabel
-        }
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(detail.item.card.noteID)
-                            .font(AppTypography.monospacedFont(size: 12, weight: .semibold))
-                            .foregroundStyle(ProgramBoardStyle.secondaryText)
-                        ProgramInlineBadge(label: "Note")
-                    }
                     Text(detail.item.title)
                         .font(AppTypography.font(.screenTitle))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                     Text(detail.item.projectName)
                         .font(AppTypography.font(.label))
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
-                    Text(detail.item.projectPath)
-                        .font(AppTypography.monospacedFont(size: 10, weight: .regular))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
                 }
                 Spacer(minLength: 0)
                 ProgramIconButton(systemName: "xmark", help: "Close note", action: onClose)
             }
 
             HStack(alignment: .center, spacing: 8) {
+                ProgramDetailActionButton(
+                    systemName: "trash", title: "Delete",
+                    disabled: detail.isLoading || detail.item.card.recordingState != .completed || showsStop || recoveryInFlight,
+                    help: detail.item.card.recordingState == .completed ? "Delete this saved note" : "Stop and save this note before deleting it"
+                ) {
+                    confirmsDelete = true
+                }
                 if showsStop {
                     ProgramDetailActionButton(
                         systemName: "stop.fill",
@@ -2526,26 +2490,6 @@ private struct ProgramNoteDetailPanel: View {
                         ProgramDetailSection(title: "Summary", text: summary)
                             .textSelection(.enabled)
                     }
-                    ProgramDetailMetadata(rows: [
-                        ProgramDetailRow(label: "Recording", value: recordingStatus),
-                        ProgramDetailRow(
-                            label: "Transcript segments",
-                            value: "\(isCurrentCapture ? captureSnapshot.durableSegmentCount : detail.item.card.segmentCount)"
-                        ),
-                        ProgramDetailRow(
-                            label: "Local save",
-                            value: detail.item.localSaveLabel
-                        ),
-                        ProgramDetailRow(label: "Remote sync", value: syncStatus),
-                        ProgramDetailRow(
-                            label: "Markdown file",
-                            value: detail.item.card.reference.path
-                        ),
-                        ProgramDetailRow(
-                            label: "Updated",
-                            value: ProgramNoteCard.displayDate(detail.item.card.updatedAt)
-                        ),
-                    ])
                     if detail.isLoading {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
@@ -2553,8 +2497,8 @@ private struct ProgramNoteDetailPanel: View {
                                 .font(AppTypography.font(.supporting))
                                 .foregroundStyle(ProgramBoardStyle.mutedText)
                         }
-                    } else if let markdown = detail.markdown {
-                        ProgramDetailSection(title: "Markdown transcript", text: markdown)
+                    } else if let transcript = detail.transcript {
+                        ProgramDetailSection(title: "Transcript", text: transcript.isEmpty ? "No transcript captured." : transcript)
                             .textSelection(.enabled)
                     }
                 }
@@ -2569,6 +2513,12 @@ private struct ProgramNoteDetailPanel: View {
             }
         }
         .programTicketPanelChrome(theme: theme, size: panelSize)
+        .alert("Delete this note?", isPresented: $confirmsDelete) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive, action: onDelete)
+        } message: {
+            Text("This removes the note from the app. Earlier versions remain in project history.")
+        }
     }
 
     private var captureErrorMessage: String? {

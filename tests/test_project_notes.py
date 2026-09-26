@@ -52,6 +52,45 @@ class ProjectNoteTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def completed_note(self):
+        created = self.create("delete-fixture")
+        update = {**created["note"], "recording_state": "completed",
+                  "checkpoint_reason": "complete", "capture_ended_at": CREATED}
+        return self.manager.update(request_id="complete-delete", update=update)
+
+    def test_delete_removes_note_durably_and_prevents_stale_updates(self):
+        saved = self.completed_note()
+        identity = saved["note"]["identity"]
+        args = dict(note_id=identity["note_id"], artifact_id=identity["artifact_id"], request_id="delete")
+        self.assertTrue(self.manager.delete(**args)["deleted"])
+        head = self.store._head()
+        self.assertTrue(self.manager.delete(**args)["deleted"])
+        self.assertEqual(self.store._head(), head)
+        fresh = ProjectNoteManager(self.store, device_id="reload")
+        self.assertEqual(fresh.list()["notes"], [])
+        self.assertNotIn(f".orchestrator/notes/{identity['note_id']}.md", self.store.snapshot().files)
+        with self.assertRaises(ArtifactValidationError):
+            fresh.get(identity["note_id"])
+        with self.assertRaises((ArtifactIdentityError, ArtifactValidationError)):
+            fresh.update(request_id="late-checkpoint", update=saved["note"])
+
+    def test_delete_rejects_active_note_and_wrong_identity(self):
+        note = self.create("active")["note"]
+        identity = note["identity"]
+        with self.assertRaises(ArtifactValidationError):
+            self.manager.delete(note_id=identity["note_id"], artifact_id=identity["artifact_id"], request_id="active-delete")
+        with self.assertRaises(ArtifactIdentityError):
+            self.manager.delete(note_id=identity["note_id"], artifact_id="wrong-artifact", request_id="wrong-delete")
+        self.assertEqual(len(self.manager.list()["notes"]), 1)
+
+    def test_delete_archived_note_removes_history_catalog_entry(self):
+        note = self.completed_note()["note"]
+        identity = note["identity"]
+        self.manager.archive(note_id=identity["note_id"], artifact_id=identity["artifact_id"],
+                             archived_at=CREATED, request_id="archive-delete")
+        self.manager.delete(note_id=identity["note_id"], artifact_id=identity["artifact_id"], request_id="delete-archived")
+        self.assertEqual(self.manager.list()["notes"], [])
+
     def test_create_uses_independent_unpadded_counter_and_numeric_catalog_order(self):
         first = self.create("first")
         self.assertEqual(first["note"]["identity"]["note_id"], "PX-N1")

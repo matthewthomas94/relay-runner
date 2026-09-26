@@ -393,7 +393,7 @@ struct ProgramBoardNoteLoadResult: Equatable {
 
 struct ProgramBoardNoteDetail: Equatable {
     let item: ProgramBoardNoteItem
-    var markdown: String?
+    var transcript: String?
     var isLoading: Bool
     var errorMessage: String?
 }
@@ -1830,7 +1830,7 @@ final class ProgramBoardViewModel {
         noteRecoveryErrorMessage = nil
         selectedNoteDetail = ProgramBoardNoteDetail(
             item: item,
-            markdown: nil,
+            transcript: nil,
             isLoading: true,
             errorMessage: nil
         )
@@ -1840,9 +1840,9 @@ final class ProgramBoardViewModel {
         guard selectedNoteDetail?.item.id == item.id else { return }
         selectedNoteDetail = ProgramBoardNoteDetail(
             item: item,
-            markdown: response.markdown,
+            transcript: response.note.segments.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n"),
             isLoading: false,
-            errorMessage: response.markdown == nil ? "This note could not be decoded." : nil
+            errorMessage: nil
         )
     }
 
@@ -1850,7 +1850,7 @@ final class ProgramBoardViewModel {
         guard selectedNoteDetail?.item.id == item.id else { return }
         selectedNoteDetail = ProgramBoardNoteDetail(
             item: item,
-            markdown: nil,
+            transcript: nil,
             isLoading: false,
             errorMessage: message
         )
@@ -2145,7 +2145,7 @@ final class ProgramBoardViewModel {
             if let refreshed = noteItems.first(where: { $0.id == selectedNoteDetail.item.id }) {
                 self.selectedNoteDetail = ProgramBoardNoteDetail(
                     item: refreshed,
-                    markdown: selectedNoteDetail.markdown,
+                    transcript: selectedNoteDetail.transcript,
                     isLoading: selectedNoteDetail.isLoading,
                     errorMessage: selectedNoteDetail.errorMessage
                 )

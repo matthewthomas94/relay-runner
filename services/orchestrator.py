@@ -5939,6 +5939,10 @@ class Daemon:
         self._schedule_note_metadata(manager, result)
         return manager.get(note_id)
 
+    def artifact_note_delete(self, *, repo_path, project_scope_token, note_id, artifact_id, request_id):
+        manager = self._artifact_note_manager(repo_path, project_scope_token)
+        return manager.delete(note_id=note_id, artifact_id=artifact_id, request_id=request_id)
+
     def artifact_note_archive(
         self,
         *,
@@ -11861,6 +11865,18 @@ class Handler(BaseHTTPRequestHandler):
                     archived_at=body.get("archived_at", ""),
                     request_id=body.get("request_id", ""),
                     provider=body.get("provider"),
+                )
+
+            if (method == "POST" and len(segments) == 5
+                    and segments[:3] == ["v1", "artifacts", "notes"]
+                    and segments[4] == "delete"):
+                body = _read_body(self)
+                return 200, self.daemon.artifact_note_delete(
+                    repo_path=body.get("repo_path", ""),
+                    project_scope_token=body.get("project_scope_token"),
+                    note_id=unquote(segments[3]),
+                    artifact_id=body.get("artifact_id", ""),
+                    request_id=body.get("request_id", ""),
                 )
 
             if method == "POST" and segments == ["v1", "artifacts", "tickets", "write"]:

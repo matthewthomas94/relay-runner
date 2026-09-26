@@ -320,6 +320,21 @@ enum OrchestratorClient {
         return try await response(RelayProjectNoteResponse.self, for: request)
     }
 
+    private struct NoteDeleteResponse: Decodable {
+        let deleted: Bool
+    }
+
+    static func deleteProjectNote(
+        _ noteID: String, artifactID: String, repoPath: String, projectScopeToken: String?
+    ) async throws {
+        guard let request = artifactRequest(
+            path: "/v1/artifacts/notes/\(pathComponent(noteID))/delete",
+            repoPath: repoPath, projectScopeToken: projectScopeToken,
+            values: ["artifact_id": artifactID, "request_id": UUID().uuidString], port: readPort()
+        ) else { throw OrchestratorClientError.invalidRequest }
+        _ = try await response(NoteDeleteResponse.self, for: request)
+    }
+
     static func fetchProjectNotes(
         repoPath: String,
         projectScopeToken: String?,

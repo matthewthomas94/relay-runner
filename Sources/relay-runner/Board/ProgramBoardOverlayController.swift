@@ -619,6 +619,7 @@ final class ProgramBoardOverlayController {
                 onStopNoteTaker: { [weak self] in self?.stopNoteTaker() },
                 onNoteOpen: { [weak self] note in self?.openNote(note) },
                 onNoteClose: { [weak self] in self?.closeNote() },
+                onNoteDelete: { [weak self] note in self?.deleteNote(note) },
                 onNoteMetadataRetry: { [weak self] note in self?.retryNoteMetadata(note) },
                 onNoteRecovery: { [weak self] resolution in
                     self?.resolveSelectedNoteRecovery(resolution)
@@ -1040,6 +1041,26 @@ final class ProgramBoardOverlayController {
             } catch {
                 if self.model.selectedNoteDetail?.item.id == item.id {
                     self.model.selectedNoteDetail?.errorMessage = "Summary retry unavailable. Your transcript is saved."
+                }
+            }
+        }
+    }
+
+    private func deleteNote(_ item: ProgramBoardNoteItem) {
+        guard item.card.recordingState == .completed else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await OrchestratorClient.deleteProjectNote(
+                    item.card.noteID, artifactID: item.card.artifactID,
+                    repoPath: item.projectPath,
+                    projectScopeToken: self.projectScopeTokenProvider(item.projectPath)
+                )
+                if self.model.selectedNoteDetail?.item.id == item.id { self.closeNote() }
+                self.model.reload()
+            } catch {
+                if self.model.selectedNoteDetail?.item.id == item.id {
+                    self.model.selectedNoteDetail?.errorMessage = "Could not delete this note. Please try again."
                 }
             }
         }

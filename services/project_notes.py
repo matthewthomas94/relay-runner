@@ -344,6 +344,33 @@ class ProjectNoteManager:
                 "source commit remains remotely reachable; sync the project and retry"
             )
 
+    def delete(self, *, note_id: str, artifact_id: str, request_id: str) -> dict[str, object]:
+        """Remove a completed note from the canonical catalog and current tree."""
+        validate_note_id(note_id)
+        event_id = _event_id("delete", request_id)
+        with self.store._writer_lock():
+            snapshot = self.store.snapshot()
+            catalog = _catalog(snapshot.files, self.store.project_id)
+            entry = catalog.get(artifact_id)
+            if entry is None:
+                if any(row["note_id"] == note_id for row in catalog.values()):
+                    raise ArtifactIdentityError("note delete identity does not match the catalog")
+                return {"deleted": True}
+            if entry["note_id"] != note_id:
+                raise ArtifactIdentityError("note delete identity does not match the catalog")
+            if entry["recording_state"] != "completed":
+                raise ArtifactValidationError("Stop and save this note before deleting it")
+            del catalog[artifact_id]
+            operations = [NoteIndexWrite(encode_note_index(catalog, project_id=self.store.project_id))]
+            if entry.get("materialized") is True:
+                operations.append(NoteDelete(note_id, artifact_id))
+            self.store.mutate(ArtifactMutation(
+                event_id=event_id, actor_type="user", device_id=self.device_id,
+                expected_base=snapshot.commit_id, operations=tuple(operations),
+                summary=f"Delete Relay project note {note_id}",
+            ))
+            return {"deleted": True}
+
     def archive(
         self,
         *,
