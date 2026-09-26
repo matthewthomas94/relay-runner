@@ -222,7 +222,7 @@ struct ProgramBoardOverlayView: View {
             HStack(spacing: 0) {
                 VStack(spacing: 12) {
                     HStack(spacing: 8) {
-                        TextField("Search titles and summaries", text: $model.noteQuery)
+                        TextField("Search titles and summaries", text: $model.noteQuery, prompt: Text("Search titles and summaries").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
                             .textFieldStyle(.plain)
                             .font(AppTypography.font(.field))
                             .foregroundStyle(ProgramBoardStyle.primaryText)
@@ -2974,11 +2974,11 @@ private struct ProgramSpikeFollowupProposalCard: View {
                 Spacer(minLength: 0)
             }
 
-            TextField("Title", text: $title)
+            TextField("Title", text: $title, prompt: Text("Title").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
                 .font(AppTypography.font(.body))
                 .textFieldStyle(.roundedBorder)
                 .disabled(!isDraft)
-            TextField("Target project path", text: $targetRepoPath)
+            TextField("Target project path", text: $targetRepoPath, prompt: Text("Target project path").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
                 .font(AppTypography.monospacedFont(size: 10, weight: .regular))
                 .textFieldStyle(.roundedBorder)
                 .disabled(!isDraft)
@@ -2994,18 +2994,18 @@ private struct ProgramSpikeFollowupProposalCard: View {
             .disabled(!isDraft)
 
             HStack(spacing: 8) {
-                TextField("Priority", text: $priority)
-                TextField("Dependencies", text: $dependsOn)
-                TextField("Worker model", text: $workerModel)
-                TextField("Effort", text: $workerEffort)
+                TextField("Priority", text: $priority, prompt: Text("Priority").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
+                TextField("Dependencies", text: $dependsOn, prompt: Text("Dependencies").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
+                TextField("Worker model", text: $workerModel, prompt: Text("Worker model").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
+                TextField("Effort", text: $workerEffort, prompt: Text("Effort").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
             }
             .textFieldStyle(.roundedBorder)
             .disabled(!isDraft)
 
-            TextField("Sizing rationale", text: $workerSizingRationale)
+            TextField("Sizing rationale", text: $workerSizingRationale, prompt: Text("Sizing rationale").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
                 .textFieldStyle(.roundedBorder)
                 .disabled(!isDraft)
-            TextField("Provider notes", text: $workerProviderNotes)
+            TextField("Provider notes", text: $workerProviderNotes, prompt: Text("Provider notes").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
                 .textFieldStyle(.roundedBorder)
                 .disabled(!isDraft)
 
@@ -3427,7 +3427,7 @@ private struct ProgramEditTextArea: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(AppTypography.font(.body))
+                .font(AppTypography.font(.cardHeading))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
 
             TextEditor(text: $text)
@@ -3448,17 +3448,17 @@ private struct ProgramTicketTitleField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Title")
-                .font(AppTypography.font(.body))
+                .font(AppTypography.font(.cardHeading))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
 
-            TextField("Enter ticket title", text: $text)
+            TextField("Enter ticket title", text: $text, prompt: Text("Enter ticket title").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
                 .font(AppTypography.font(.field))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
                 .textFieldStyle(.plain)
                 .focused($isFocused)
                 .lineLimit(1)
                 .padding(.horizontal, 10)
-                .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
+                .frame(width: SettingsLayout.controlMaxWidth, height: ProgramTicketPanelStyle.compactFieldHeight)
                 .background(ProgramTicketFieldBackground())
         }
         .onAppear {
@@ -3607,7 +3607,7 @@ private struct ProgramTicketCreateModal: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Project")
-                        .font(AppTypography.font(.body))
+                        .font(AppTypography.font(.cardHeading))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                     ProgramTicketProjectPicker(
                         projects: projects,
@@ -3688,7 +3688,7 @@ private struct ProgramExecutionModePicker: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Execution mode")
-                .font(AppTypography.font(.body))
+                .font(AppTypography.font(.cardHeading))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
             Text(selection.explanation)
                 .font(AppTypography.font(.supporting))

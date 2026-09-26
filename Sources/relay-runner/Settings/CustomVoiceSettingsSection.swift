@@ -182,7 +182,7 @@ struct CustomVoiceSettingsSection: View {
             Button("Cancel", role: .cancel) { deleteTarget = nil }
         } message: { Text("This removes the managed reference, not the original recording or your backups. The selected voice will switch to George.") }
         .alert("Rename voice", isPresented: Binding(get: { renameTarget != nil }, set: { if !$0 { renameTarget = nil } })) {
-            TextField("Name", text: $renameName)
+            TextField("Name", text: $renameName, prompt: Text("Name").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
             Button("Save") {
                 do { if let profile = renameTarget { try store.rename(profile.id, name: renameName) }; refresh() }
                 catch { self.error = "Could not rename this voice. Use a name of 1–80 characters." }
@@ -196,7 +196,7 @@ struct CustomVoiceSettingsSection: View {
         VStack(spacing: 0) {
             SettingsDivider()
             SettingsControlRow("Voice name") {
-                TextField("Voice name", text: $name).textFieldStyle(.roundedBorder)
+                TextField("Voice name", text: $name, prompt: Text("Voice name").foregroundColor(BoardDarkSurfaceStyle.placeholderText)).textFieldStyle(.roundedBorder)
                     .onChange(of: name) { _, _ in discardStaged() }
             }
 

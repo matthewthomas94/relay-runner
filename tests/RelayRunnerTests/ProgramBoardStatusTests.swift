@@ -319,9 +319,9 @@ final class ProgramBoardStatusTests: XCTestCase {
             contents.range(of: "private struct ProgramTicketProjectPicker: View", range: titleStart.upperBound..<contents.endIndex)
         )
         let titleField = String(contents[titleStart.lowerBound..<titleEnd.lowerBound])
-        XCTAssertTrue(titleField.contains("TextField(\"Enter ticket title\", text: $text)"))
+        XCTAssertTrue(titleField.contains("TextField(\"Enter ticket title\", text: $text,"))
         XCTAssertTrue(titleField.contains(".font(AppTypography.font(.field))"))
-        XCTAssertTrue(titleField.contains(".frame(height: ProgramTicketPanelStyle.compactFieldHeight)"))
+        XCTAssertTrue(titleField.contains(".frame(width: SettingsLayout.controlMaxWidth, height: ProgramTicketPanelStyle.compactFieldHeight)"))
         XCTAssertFalse(titleField.contains(".screenTitle"))
         XCTAssertFalse(titleField.contains("axis: .vertical"))
 

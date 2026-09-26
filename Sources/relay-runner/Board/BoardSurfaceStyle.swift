@@ -25,6 +25,7 @@ enum BoardDarkSurfaceStyle {
     static let cardFill = Color(nsColor: cardFillNSColor)
     static let cardActiveFill = Color(nsColor: cardActiveFillNSColor)
     static let border = Color(nsColor: borderNSColor)
+    static let placeholderText = Color(.sRGB, red: 29 / 255, green: 34 / 255, blue: 40 / 255, opacity: 1)
 
     static let workspaceCornerRadius: CGFloat = 16
     static let columnCornerRadius: CGFloat = 16

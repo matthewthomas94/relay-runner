@@ -55,7 +55,7 @@ struct WorkspaceHistoryView: View {
         HStack(spacing: 0) {
             VStack(spacing: 12) {
                 HStack(spacing: 8) {
-                    TextField("Search archived tickets", text: $model.query)
+                    TextField("Search archived tickets", text: $model.query, prompt: Text("Search archived tickets").foregroundColor(BoardDarkSurfaceStyle.placeholderText))
                         .textFieldStyle(.plain)
                         .font(AppTypography.font(.supporting))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
