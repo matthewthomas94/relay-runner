@@ -25,6 +25,14 @@ class OrchestratorAgentBinaryTests(unittest.TestCase):
             access.assert_called_once_with(CHATGPT_CODEX, os.X_OK)
             which.assert_not_called()
 
+    def test_nested_codex_cli_bundle_layout_is_discovered_without_path(self):
+        for app in ("ChatGPT", "Codex"):
+            candidate = f"/Applications/{app}.app/Contents/Resources/codex-cli/bin/codex"
+            with self.subTest(app=app), \
+                    patch("orchestrator.shutil.which", return_value=None), \
+                    patch("orchestrator.os.access", side_effect=lambda path, _: path == candidate):
+                self.assertEqual(_find_agent_bin("codex"), candidate)
+
     def test_legacy_codex_remains_a_fallback(self):
         with patch("orchestrator.shutil.which", return_value=None), \
                 patch(

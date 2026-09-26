@@ -994,7 +994,9 @@ def _find_agent_bin(agent: str, configured: str = "") -> str:
 
     bundled_candidates = (
         "/Applications/ChatGPT.app/Contents/Resources/codex",
+        "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
         "/Applications/Codex.app/Contents/Resources/codex",
+        "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
     )
     for candidate in bundled_candidates:
         if os.access(candidate, os.X_OK):
