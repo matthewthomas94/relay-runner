@@ -45,6 +45,11 @@ from intent_arbitration import (
     resolve_intent_disposition,
 )
 from intent_inbox import IntentInbox, sync_deliverable_state
+from intent_qualification import (
+    format_qualification_for_agent,
+    qualify_intent,
+    whole_turn_resolution_required,
+)
 from provider_turn_broker import ProviderTurnBroker
 from relay_authorization import (
     allowed_mutations_for_metadata,
@@ -1399,6 +1404,13 @@ def _metadata_for_action(
         "requires_ticket": action.requires_ticket,
         "authorization_relationship": relationship,
     })
+    metadata["intent_qualification"] = qualify_intent(
+        str(getattr(action, "source_text", "")),
+        action_kind=action.kind,
+        action_reason=getattr(action, "reason", None),
+        command_id=relay_command.get("relay_command_id"),
+        command_seq=relay_command.get("relay_command_seq"),
+    ).to_dict()
     if disposition is not None:
         metadata["intent_id"] = disposition.intent_id
         metadata["work_disposition"] = disposition.to_dict()
@@ -1500,7 +1512,7 @@ def _resolve_voice_work_items(
     """Normalize one real turn into provider-neutral ordered item deliveries."""
     relay_command_seq = int(relay_command["relay_command_seq"])
     relay_command_id = str(relay_command["relay_command_id"])
-    if is_mixed_query_and_mutation(source_text):
+    if is_mixed_query_and_mutation(source_text) or whole_turn_resolution_required(source_text):
         items = (
             VoiceWorkItem(
                 intent_id=f"{relay_command_id}:item:1",
@@ -1543,6 +1555,14 @@ def _resolve_voice_work_items(
         )
         metadata = _metadata_for_action(action, item_command, disposition, item)
         prompt = format_command_for_agent(action, disposition.to_dict())
+        if action.kind != "control":
+            prompt += format_qualification_for_agent(qualify_intent(
+                item.source_text,
+                action_kind=action.kind,
+                action_reason=getattr(action, "reason", None),
+                command_id=relay_command_id,
+                command_seq=relay_command_seq,
+            ))
         resolved.append({
             "item": item,
             "action": action,
@@ -4274,6 +4294,10 @@ def _run_relay(
                 )
                 relay_command["voice_work_items"] = [
                     resolved["item"].to_dict() for resolved in resolved_items
+                ]
+                relay_command["intent_qualifications"] = [
+                    resolved["metadata"]["intent_qualification"] for resolved in resolved_items
+                    if isinstance(resolved["metadata"].get("intent_qualification"), dict)
                 ]
                 if resolved_items:
                     relay_command["work_disposition"] = resolved_items[-1][

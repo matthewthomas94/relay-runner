@@ -613,6 +613,27 @@ class MessengerRuntimeTests(unittest.TestCase):
                 finally:
                     runtime.shutdown()
 
+    def test_qualification_context_is_provisional_and_identity_scoped_for_both_providers(self):
+        for provider in ("codex", "claude"):
+            backend = FakeBackend([])
+            backend.config = MessengerConfig(True, provider, provider, "luna" if provider == "codex" else "haiku", "low" if provider == "codex" else "default", "/tmp")
+            runtime = MessengerRuntime(backend, speak=lambda *args: None, is_current=lambda *args: True)
+            command = {"relay_command_seq": 3, "relay_command_id": provider}
+            self.assertTrue(runtime.submit_user("Open Chrome", command))
+            self.assertTrue(runtime.update_user_context({
+                **command,
+                "source_text": "Open Chrome",
+                "work_disposition": {"route": "continue_current", "public_reason": "Foreground action."},
+                "intent_qualifications": [
+                    {"command_seq": 2, "command_id": "old", "bucket": "task"},
+                    {"command_seq": 3, "command_id": provider, "bucket": "action", "unresolved": False, "mixed": False},
+                ],
+            }))
+            context = "\n".join(runtime._context)
+            self.assertIn("PUBLIC INTENT QUALIFICATION: action", context)
+            self.assertNotIn("PUBLIC INTENT QUALIFICATION: task", context)
+            self.assertIn("Provisional only; the PM resolves scope and authority", context)
+
     def test_direct_conversation_answer_suppresses_redundant_foreground_final(self):
         backend = FakeBackend(["__ANSWER__ You're welcome."])
         spoken: list[str] = []
