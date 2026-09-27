@@ -13,17 +13,20 @@ struct TTSSettingsTab: View {
 
     @State private var chimes: [String] = []
     @State private var preview = VoicePreviewController()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         SettingsStack {
             SettingsSection("Standard Voices") {
                 SettingsControlRow("Mode") {
                     Text(config.custom_voice_id == nil ? "Standard" : "Custom")
+                        .relayTextSwap(config.custom_voice_id == nil, alignment: .trailing)
                     if config.custom_voice_id != nil {
                         SettingsActionButton(title: "Use Standard", systemImage: nil) {
                             preview.invalidate()
                             config.custom_voice_id = nil
                         }
+                        .transition(.relayElement)
                     }
                 }
                 SettingsDivider()
@@ -47,18 +50,22 @@ struct TTSSettingsTab: View {
                 }
 
                 if preview.isBusy || preview.error != nil {
-                    SettingsDivider()
-                    SettingsRow {
-                        SettingsInlineStatus(
-                            text: previewStatusText,
-                            semanticColor: preview.error == nil ? .neutralAccent : .error,
-                            reservedWidth: 170
-                        )
-                        Text(preview.error ?? preview.status)
-                            .font(AppTypography.font(.settingsDescription))
-                            .foregroundStyle(preview.error == nil ? SettingsSurfaceColor.secondaryText : SettingsSurfaceColor.error)
-                            .fixedSize(horizontal: false, vertical: true)
+                    VStack(spacing: 0) {
+                        SettingsDivider()
+                        SettingsRow {
+                            SettingsInlineStatus(
+                                text: previewStatusText,
+                                semanticColor: preview.error == nil ? .neutralAccent : .error,
+                                reservedWidth: 170
+                            )
+                            Text(preview.error ?? preview.status)
+                                .font(AppTypography.font(.settingsDescription))
+                                .foregroundStyle(preview.error == nil ? SettingsSurfaceColor.secondaryText : SettingsSurfaceColor.error)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .relayTextSwap(preview.error ?? preview.status)
+                        }
                     }
+                    .transition(.relayElement)
                 }
             }
 
@@ -104,6 +111,8 @@ struct TTSSettingsTab: View {
                 }
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: config.custom_voice_id)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: preview.isBusy || preview.error != nil)
         .onAppear { loadChimes() }
         .onDisappear { preview.stop() }
         .onChange(of: config.voice) { _, _ in preview.invalidate() }

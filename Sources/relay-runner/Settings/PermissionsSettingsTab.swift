@@ -20,6 +20,7 @@ struct PermissionsSettingsTab: View {
     static let onboardingActionTitle = "Redo Onboarding\u{2026}"
 
     @Bindable var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var venvPresent: Bool = false
     @State private var bridgeAlive: Bool = false
@@ -53,6 +54,7 @@ struct PermissionsSettingsTab: View {
                         staleGrantBanner
                     }
                 }
+                .transition(.relayElement)
             }
 
             SettingsSection("Privacy Permissions") {
@@ -72,6 +74,10 @@ struct PermissionsSettingsTab: View {
                 voiceBridgeRow
             }
         }
+        .animation(
+            RelayMotion.change(reduceMotion: reduceMotion),
+            value: Self.visibleResetPermissions(appState.permissions.resetSinceLastRun)
+        )
         .onAppear { refresh() }
         .onReceive(refreshTimer) { _ in refresh() }
     }
@@ -97,6 +103,7 @@ struct PermissionsSettingsTab: View {
                     .font(AppTypography.font(.settingsDescription))
                     .foregroundStyle(SettingsSurfaceColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
+                    .relayTextSwap(names)
             }
             Spacer()
             SettingsActionButton(
@@ -194,6 +201,7 @@ struct PermissionsSettingsTab: View {
                            action: RowAction?) -> some View {
         SettingsRow {
             stateIcon(state)
+                .relaySwap(state)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
@@ -201,6 +209,7 @@ struct PermissionsSettingsTab: View {
                     .font(AppTypography.font(.settingsDescription))
                     .foregroundStyle(SettingsSurfaceColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
+                    .relayTextSwap(detail)
             }
             Spacer()
             if let action {
@@ -210,8 +219,10 @@ struct PermissionsSettingsTab: View {
                     prominence: .secondary,
                     action: action.perform
                 )
+                .transition(.relayElement)
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: action?.title)
     }
 
     @ViewBuilder

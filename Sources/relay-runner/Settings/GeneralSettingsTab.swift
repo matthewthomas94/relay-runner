@@ -17,6 +17,7 @@ struct GeneralSettingsTab: View {
     @State private var skillStatusText: String?
     @State private var skillStatusColor: SettingsSemanticColor = .idle
     @State private var showOverwriteAlert = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         SettingsStack {
@@ -146,6 +147,14 @@ struct GeneralSettingsTab: View {
                 }
             }
         }
+        .animation(
+            RelayMotion.change(reduceMotion: reduceMotion),
+            value: GeneralConfig.accessNote(
+                for: config.model,
+                effort: config.orchestrator_effort,
+                provider: config.provider
+            )
+        )
     }
 
     private var providerSelection: Binding<GeneralConfig.AgentProvider> {
@@ -243,6 +252,7 @@ private struct RegisteredProjectsSettingsView: View {
     @State private var projects: [RegisteredProjectV2] = []
     @State private var statusText: String?
     @State private var projectPendingRemoval: RegisteredProjectV2?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -273,27 +283,37 @@ private struct RegisteredProjectsSettingsView: View {
             }
 
             if projects.isEmpty {
-                SettingsDivider()
-                SettingsRow {
-                    Text("No projects registered. Workspace can remain empty until you add or create one.")
-                        .font(AppTypography.font(.settingsDescription))
-                        .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                VStack(spacing: 0) {
+                    SettingsDivider()
+                    SettingsRow {
+                        Text("No projects registered. Workspace can remain empty until you add or create one.")
+                            .font(AppTypography.font(.settingsDescription))
+                            .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                    }
                 }
+                .transition(.relayElement)
             } else {
                 ForEach(Array(projects.enumerated()), id: \.element.projectID) { index, project in
-                    SettingsDivider()
-                    projectRow(project)
+                    VStack(spacing: 0) {
+                        SettingsDivider()
+                        projectRow(project)
+                    }
+                    .transition(.relayElement)
                 }
             }
 
             if let statusText {
-                SettingsDivider()
-                SettingsRow {
-                    Text(statusText)
-                        .font(AppTypography.font(.settingsDescription))
-                        .foregroundStyle(SettingsSurfaceColor.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack(spacing: 0) {
+                    SettingsDivider()
+                    SettingsRow {
+                        Text(statusText)
+                            .font(AppTypography.font(.settingsDescription))
+                            .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .relayTextSwap(statusText)
+                    }
                 }
+                .transition(.relayElement)
             }
         }
         .onAppear(perform: reload)
@@ -306,12 +326,14 @@ private struct RegisteredProjectsSettingsView: View {
             presenting: projectPendingRemoval
         ) { project in
             Button("Remove", role: .destructive) {
-                do {
-                    try appState.removeRegisteredProject(project.projectID)
-                    statusText = "Removed \(project.displayName). Its repository and artifact history were not changed."
-                    reload()
-                } catch {
-                    statusText = String(describing: error)
+                animated {
+                    do {
+                        try appState.removeRegisteredProject(project.projectID)
+                        statusText = "Removed \(project.displayName). Its repository and artifact history were not changed."
+                        reload()
+                    } catch {
+                        statusText = String(describing: error)
+                    }
                 }
                 projectPendingRemoval = nil
             }
@@ -335,6 +357,7 @@ private struct RegisteredProjectsSettingsView: View {
                             : SettingsSurfaceColor.error
                     )
                     .lineLimit(2)
+                    .relayTextSwap("\(project.availability.settingsLabel) · \(project.lastResolvedPath)")
             }
             Spacer(minLength: 12)
             HStack(spacing: 6) {
@@ -342,13 +365,15 @@ private struct RegisteredProjectsSettingsView: View {
                     title: "Refresh",
                     systemImage: "arrow.clockwise"
                 ) {
-                    do {
-                        _ = try appState.refreshRegisteredProject(project.projectID)
-                        statusText = nil
-                    } catch {
-                        statusText = String(describing: error)
+                    animated {
+                        do {
+                            _ = try appState.refreshRegisteredProject(project.projectID)
+                            statusText = nil
+                        } catch {
+                            statusText = String(describing: error)
+                        }
+                        reload()
                     }
-                    reload()
                 }
                 SettingsActionButton(
                     title: project.availability == .accessRequiresRegrant ? "Regrant" : "Locate",
@@ -369,13 +394,21 @@ private struct RegisteredProjectsSettingsView: View {
     }
 
     private func handle(_ result: Result<RegisteredProjectV2, Error>) {
-        switch result {
-        case .success(let project):
-            statusText = "\(project.displayName) is registered and available."
-        case .failure(let error):
-            statusText = String(describing: error)
+        animated {
+            switch result {
+            case .success(let project):
+                statusText = "\(project.displayName) is registered and available."
+            case .failure(let error):
+                statusText = String(describing: error)
+            }
+            reload()
         }
-        reload()
+    }
+
+    /// Row and status changes from user actions ease in; the first load on
+    /// appear stays instant so the empty placeholder never flashes.
+    private func animated(_ changes: () -> Void) {
+        withAnimation(RelayMotion.change(reduceMotion: reduceMotion), changes)
     }
 
     private func reload() {
