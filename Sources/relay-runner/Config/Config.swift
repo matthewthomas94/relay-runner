@@ -208,15 +208,8 @@ struct GeneralConfig: Codable, Equatable {
             }
         case .claude:
             switch normalizedModel {
-            case "claude-fable-5-1", "fable", "opus":
+            case "claude-fable-5-1", "fable", "opus", "sonnet":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption]
-            case "sonnet":
-                return [
-                    ReasoningEffortOption(label: "Low", value: "low"),
-                    ReasoningEffortOption(label: "Medium", value: "medium"),
-                    ReasoningEffortOption(label: "High", value: "high"),
-                    maxReasoningEffortOption,
-                ]
             case "haiku":
                 return [ReasoningEffortOption(label: "Low", value: "low")]
             default:
@@ -367,8 +360,8 @@ struct GeneralConfig: Codable, Equatable {
             validEfforts = ["default", "low", "medium", "high", "xhigh", "max", "ultra"]
         case .claude:
             switch normalizedModel {
-            case "best", "claude-fable-5-1", "fable", "opus": validEfforts = ["default", "low", "medium", "high", "xhigh", "max"]
-            case "sonnet": validEfforts = ["default", "low", "medium", "high", "max"]
+            case "best", "claude-fable-5-1", "fable", "opus", "sonnet":
+                validEfforts = ["default", "low", "medium", "high", "xhigh", "max"]
             default: validEfforts = ["default"]
             }
         }

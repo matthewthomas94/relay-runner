@@ -486,7 +486,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
 
         var claudeConfig = AppConfig()
         claudeConfig.general.provider = .claude
-        claudeConfig.general.model = "sonnet"
+        claudeConfig.general.model = "haiku"
         claudeConfig.general.orchestrator_effort = "xhigh"
         let claudeScript = ProcessManager.launchScript(
             relayBridge: "/Relay Runner/relay-bridge",
@@ -495,8 +495,8 @@ final class ProcessManagerLaunchTests: XCTestCase {
             config: claudeConfig,
             homeDirectory: home
         )
-        XCTAssertTrue(claudeScript.contains("--model 'sonnet'"))
-        XCTAssertTrue(claudeScript.contains("--effort 'high'"))
+        XCTAssertTrue(claudeScript.contains("--model 'haiku'"))
+        XCTAssertTrue(claudeScript.contains("--effort 'low'"))
     }
 
     func testLaunchScriptRendersEverySupportedSessionModelEffortCombination() {

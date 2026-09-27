@@ -100,7 +100,7 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertNil(claudeMatrix["best"])
         XCTAssertEqual(claudeMatrix["fable"], ["low", "medium", "high", "xhigh", "max"])
         XCTAssertEqual(claudeMatrix["opus"], ["low", "medium", "high", "xhigh", "max"])
-        XCTAssertEqual(claudeMatrix["sonnet"], ["low", "medium", "high", "max"])
+        XCTAssertEqual(claudeMatrix["sonnet"], ["low", "medium", "high", "xhigh", "max"])
         XCTAssertEqual(claudeMatrix["haiku"], ["low"])
         XCTAssertNil(claudeMatrix["default"])
 
@@ -114,7 +114,7 @@ final class GeneralConfigTests: XCTestCase {
         )
         XCTAssertEqual(
             GeneralConfig.normalizedOrchestratorEffort("xhigh", for: .claude, model: "sonnet"),
-            "high"
+            "xhigh"
         )
         XCTAssertEqual(GeneralConfig.normalizedOrchestratorEffort("max", for: .claude, model: "sonnet"), "max")
     }

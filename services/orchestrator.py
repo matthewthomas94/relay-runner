@@ -1143,10 +1143,8 @@ def _normalized_general_model(general: dict[str, Any], agent_kind: str) -> str:
 def _general_effort_options(agent_kind: str, model: str) -> frozenset[str]:
     if agent_kind == "codex":
         return BASE_GENERAL_EFFORTS | frozenset({"max", "ultra"})
-    if model in {"claude-fable-5-1", "fable", "opus"}:
+    if model in {"claude-fable-5-1", "fable", "opus", "sonnet"}:
         return BASE_GENERAL_EFFORTS | frozenset({"max"})
-    if model == "sonnet":
-        return frozenset({"low", "medium", "high", "max"})
     return frozenset({"low"})
 
 

@@ -52,7 +52,8 @@ class AstraFableSupportTests(unittest.TestCase):
         self.assertEqual(CODEX_WORKER_TIER_FAMILIES, {"fast": "luna", "balanced": "sol", "strong": "astra"})
 
     def test_config_and_messenger_preserve_new_selections(self):
-        for provider, model, effort in (("codex", "astra", "ultra"), ("claude", "claude-fable-5-1", "max")):
+        for provider, model, effort in (("codex", "astra", "ultra"), ("claude", "claude-fable-5-1", "max"),
+                                        ("claude", "sonnet", "xhigh")):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / "config.toml"
                 path.write_text(f'[general]\nprovider="{provider}"\nmodel="{model}"\n'

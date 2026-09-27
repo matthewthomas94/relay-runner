@@ -867,10 +867,8 @@ def _valid_general_efforts(provider: str, model: str) -> set[str]:
     base = {"low", "medium", "high", "xhigh"}
     if provider == "codex":
         return base | {"max", "ultra"}
-    if model in {"claude-fable-5-1", "fable", "opus"}:
+    if model in {"claude-fable-5-1", "fable", "opus", "sonnet"}:
         return base | {"max"}
-    if model == "sonnet":
-        return {"low", "medium", "high", "max"}
     return {"low"}
 
 

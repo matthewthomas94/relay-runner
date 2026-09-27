@@ -1413,7 +1413,7 @@ final class ProcessManager {
 
     /// Render the `--model <name>` flag for the launcher script, or empty
     /// string when the user wants the agent's default. Single-quotes the name
-    /// so a TOML-edited custom model id (e.g. `claude-sonnet-4-6`) can't
+    /// so a TOML-edited custom model id (e.g. `claude-sonnet-5`) can't
     /// break shell parsing.
     private static func modelFlag(_ raw: String, target: AgentTarget, resolvedCodexModel: String? = nil) -> String {
         let v = raw.trimmingCharacters(in: .whitespaces).lowercased()

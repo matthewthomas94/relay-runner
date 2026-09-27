@@ -216,7 +216,7 @@ class ConfigTests(unittest.TestCase):
             ("claude", "fable", "xhigh", "fable", "xhigh"),
             ("claude", "opus", "max", "opus", "max"),
             ("claude", "sonnet", "max", "sonnet", "max"),
-            ("claude", "sonnet", "xhigh", "sonnet", "high"),
+            ("claude", "sonnet", "xhigh", "sonnet", "xhigh"),
             ("claude", "haiku", "low", "haiku", "low"),
             ("claude", "default", "low", "opus", "low"),
         ]
