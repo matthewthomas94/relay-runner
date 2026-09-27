@@ -75,7 +75,9 @@ struct NotchContentMotion {
 
     // MARK: Copy
 
+    /// The outgoing label leaves first; its replacement arrives once it has gone.
     mutating func labelChanged(from old: String?, width: CGFloat, to new: String?, now: CFTimeInterval) {
+        var arrival = now
         if let old, !old.isEmpty, width > 0 {
             departingLabels.append(DepartingLabel(
                 text: old,
@@ -86,8 +88,9 @@ struct NotchContentMotion {
             if departingLabels.count > 2 {
                 departingLabels.removeFirst(departingLabels.count - 2)
             }
+            arrival += RelayMotion.replacementDelay
         }
-        labelArrivedAt = new?.isEmpty == false ? now : nil
+        labelArrivedAt = new?.isEmpty == false ? arrival : nil
     }
 
     func arrivalAppearance(now: CFTimeInterval, reduceMotion: Bool) -> LabelAppearance {

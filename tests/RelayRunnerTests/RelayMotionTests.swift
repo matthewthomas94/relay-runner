@@ -74,6 +74,64 @@ final class RelayMotionTests: XCTestCase {
         XCTAssertEqual(RelayLayerMotion.hiddenTranslation(for: child, style: .element).height, expected(1))
     }
 
+    func testReplacementsWaitForTheOutgoingExit() {
+        XCTAssertEqual(RelayMotion.replacementDelay, RelayMotion.exitDuration)
+    }
+
+    @MainActor
+    func testCrossfadeLetsTheOldCopyLeaveBeforeTheNewOneArrives() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(
+            contentRect: NSRect(x: 200, y: 200, width: 160, height: 60),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        defer { window.orderOut(nil) }
+        let label = NSTextField(labelWithString: "Listening")
+        label.frame = NSRect(x: 10, y: 10, width: 120, height: 20)
+        window.contentView?.addSubview(label)
+        window.orderFrontRegardless()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        RelayLayerMotion.crossfade(label) { label.stringValue = "Sending voice" }
+        let snapshot = try XCTUnwrap(window.contentView?.subviews.first { $0 !== label })
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(label.alphaValue, 0, "the new copy waits while the old one leaves")
+
+        RunLoop.main.run(until: Date().addingTimeInterval(
+            RelayMotion.replacementDelay + RelayMotion.enterDuration + 0.3
+        ))
+        XCTAssertEqual(label.alphaValue, 1, accuracy: 0.01)
+        XCTAssertNil(snapshot.superview)
+    }
+
+    @MainActor
+    func testLeavingCancelsAnEntranceStillWaitingForItsDelay() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 200, y: 200, width: 80, height: 40),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        defer { window.orderOut(nil) }
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 40, height: 20))
+        window.contentView?.addSubview(view)
+        window.orderFrontRegardless()
+
+        RelayLayerMotion.animateIn(view, delay: 0.2)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        RelayLayerMotion.animateOut(view)
+        RunLoop.main.run(until: Date().addingTimeInterval(
+            0.2 + RelayMotion.enterDuration + 0.3
+        ))
+
+        XCTAssertEqual(view.alphaValue, 0)
+        XCTAssertTrue(view.isHidden)
+    }
+
     @MainActor
     func testWindowPresentAndDismissRestoreTheRestingFrameAndSurviveAQuickReopen() {
         _ = NSApplication.shared

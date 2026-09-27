@@ -8,7 +8,9 @@ import SwiftUI
 /// a blur and fades in. Anything that disappears sinks back down, blurs and
 /// fades out. Text travels horizontally instead: it arrives from, and leaves
 /// toward, the trailing side. Every movement is eased; exits are quicker than
-/// entrances so dismissals feel responsive.
+/// entrances so dismissals feel responsive. When one thing replaces another,
+/// the outgoing content finishes leaving before its replacement arrives, so
+/// the two never share the screen.
 ///
 /// Reduce Motion keeps the opacity crossfade and drops travel and blur.
 enum RelayMotion {
@@ -18,6 +20,8 @@ enum RelayMotion {
     static let exitDuration: TimeInterval = 0.2
     static let changeDuration: TimeInterval = 0.3
     static let hoverDuration: TimeInterval = 0.15
+    /// How long a replacement waits for the content it replaces to leave.
+    static let replacementDelay: TimeInterval = exitDuration
 
     /// A cubic Bézier easing curve shared by SwiftUI, Core Animation, and
     /// timer-driven AppKit drawing so all three move identically.
@@ -70,6 +74,8 @@ enum RelayMotion {
     static let changeCurve = Curve(x1: 0.25, y1: 1, x2: 0.5, y2: 1)
 
     static var enter: Animation { enterCurve.animation(duration: enterDuration) }
+    /// The entrance for content that replaces something leaving.
+    static var replacingEnter: Animation { enter.delay(replacementDelay) }
     static var exit: Animation { exitCurve.animation(duration: exitDuration) }
     static var change: Animation { changeCurve.animation(duration: changeDuration) }
     static var hover: Animation { .easeOut(duration: hoverDuration) }
@@ -145,10 +151,20 @@ extension AnyTransition {
             removal: AnyTransition(RelayTransition(style: style)).animation(RelayMotion.exit)
         )
     }
+
+    /// For content that takes the place of something leaving, such as either
+    /// branch of an `if`/`else` or a page keyed by selection: it arrives only
+    /// once the outgoing content has finished its exit.
+    static func relayReplacing(_ style: RelayMotion.Style = .element) -> AnyTransition {
+        .asymmetric(
+            insertion: AnyTransition(RelayTransition(style: style)).animation(RelayMotion.replacingEnter),
+            removal: AnyTransition(RelayTransition(style: style)).animation(RelayMotion.exit)
+        )
+    }
 }
 
 /// Re-identifies content whenever `value` changes so the outgoing copy
-/// leaves and the new copy arrives with a Relay transition.
+/// leaves, then the new copy arrives, with a Relay transition.
 private struct RelaySwapModifier<Value: Hashable>: ViewModifier {
     let value: Value
     let style: RelayMotion.Style
@@ -159,14 +175,15 @@ private struct RelaySwapModifier<Value: Hashable>: ViewModifier {
         ZStack(alignment: alignment) {
             content
                 .id(value)
-                .transition(.relay(style))
+                .transition(.relayReplacing(style))
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: value)
     }
 }
 
 extension View {
-    /// Blur-crossfades text when `value` changes, sliding horizontally.
+    /// Swaps text when `value` changes: the old copy slides out, then the
+    /// new copy slides in.
     func relayTextSwap<Value: Hashable>(
         _ value: Value,
         alignment: Alignment = .leading
@@ -174,8 +191,8 @@ extension View {
         modifier(RelaySwapModifier(value: value, style: .text, alignment: alignment))
     }
 
-    /// Blur-crossfades non-text content (icons, glyphs, badges) when `value`
-    /// changes, rising in and sinking out.
+    /// Swaps non-text content (icons, glyphs, badges) when `value` changes:
+    /// the old copy sinks out, then the new copy rises in.
     func relaySwap<Value: Hashable>(
         _ value: Value,
         style: RelayMotion.Style = .element,
@@ -216,6 +233,7 @@ enum RelayLayerMotion {
     private static let blurKeyPath = "filters.\(blurFilterName).inputRadius"
     private static let travelKey = "relayMotionTravel"
     private static let blurKey = "relayMotionBlurRadius"
+    private static let generationKey = "relayMotionGeneration"
 
     static var reduceMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -293,7 +311,7 @@ enum RelayLayerMotion {
     }
 
     /// Replaces a view's content in place: a snapshot of the old content
-    /// leaves while the updated view arrives. Text uses the horizontal style.
+    /// leaves, then the updated view arrives. Text uses the horizontal style.
     static func crossfade(
         _ view: NSView,
         style: RelayMotion.Style = .text,
@@ -319,7 +337,7 @@ enum RelayLayerMotion {
         animateOut(holder, style: style, hidesWhenDone: false) { [weak holder] in
             holder?.removeFromSuperview()
         }
-        animateIn(view, style: style)
+        animateIn(view, style: style, delay: RelayMotion.replacementDelay)
     }
 
     // MARK: Internals
@@ -358,6 +376,10 @@ enum RelayLayerMotion {
         }
 
         let beginTime = delay > 0 ? CACurrentMediaTime() + delay : 0
+        // A later animation on the same view cancels a fade still waiting
+        // for its delay.
+        let generation = ((layer.value(forKey: generationKey) as? Int) ?? 0) + 1
+        layer.setValue(generation, forKey: generationKey)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -396,7 +418,10 @@ enum RelayLayerMotion {
             }
         }
         if delay > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: fade)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak layer] in
+                guard let layer, layer.value(forKey: generationKey) as? Int == generation else { return }
+                fade()
+            }
         } else {
             fade()
         }
