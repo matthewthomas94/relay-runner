@@ -401,7 +401,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
             XCTAssertTrue(claudeScript.contains(
                 "export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=\(ProcessManager.claudeAutoCompactPercentage)"
             ), alias)
-            XCTAssertFalse(claudeScript.contains("autoCompactEnabled"), alias)
+            XCTAssertTrue(claudeScript.contains(#""autoCompactEnabled":true"#), alias)
             XCTAssertTrue(claudeScript.contains("StopFailure"), alias)
             XCTAssertFalse(claudeScript.contains("model_auto_compact_token_limit"), alias)
             XCTAssertFalse(claudeScript.contains("/compact\\r"), alias)

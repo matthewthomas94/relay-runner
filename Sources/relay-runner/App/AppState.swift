@@ -282,6 +282,16 @@ final class AppState {
             shouldDeferPermissionAdvance: { [weak self] kind in
                 self?.permissionSetupCoordinator.shouldDeferAutoAdvance(for: kind) ?? false
             },
+            refreshAgentReadiness: { [weak self] provider, completion in
+                let workingDirectory = WorkspaceFolder.url(
+                    from: self?.config.general.working_directory ?? ""
+                ).path
+                AgentAuth.refreshReadiness(
+                    for: provider,
+                    workingDirectory: workingDirectory,
+                    completion: completion
+                )
+            },
             onOpenExternalWindow: { [weak self] in
                 self?.suspendWorkspaceForExternalWindow()
             },

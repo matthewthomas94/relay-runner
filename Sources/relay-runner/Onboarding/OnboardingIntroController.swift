@@ -74,12 +74,30 @@ protocol OnboardingIntroPresenting: AnyObject {
     func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
                                  fullyRendered: @escaping () -> Void,
                                  signInAction: @escaping () -> Void)
+    func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
+                                 fullyRendered: @escaping () -> Void,
+                                 signInAction: @escaping () -> Void,
+                                 continueWithoutSignInAction: (() -> Void)?)
     func presentWorkspacePrompt(currentPath: String,
                                 continueAction: @escaping () -> Void,
                                 browseAction: @escaping () -> Void)
     func presentTutorial(_ presentation: OnboardingTutorialPresentation,
                          retryAction: @escaping () -> Void)
     func dismiss(completion: @escaping () -> Void)
+}
+
+extension OnboardingIntroPresenting {
+    /// Presenters without a "Continue without sign-in" affordance ignore it.
+    func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
+                                 fullyRendered: @escaping () -> Void,
+                                 signInAction: @escaping () -> Void,
+                                 continueWithoutSignInAction: (() -> Void)?) {
+        presentAgentLoginPrompt(
+            presentation,
+            fullyRendered: fullyRendered,
+            signInAction: signInAction
+        )
+    }
 }
 
 struct OnboardingRuntimePromptPresentation: Equatable {
@@ -697,6 +715,18 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
     func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
                                  fullyRendered: @escaping () -> Void,
                                  signInAction: @escaping () -> Void) {
+        presentAgentLoginPrompt(
+            presentation,
+            fullyRendered: fullyRendered,
+            signInAction: signInAction,
+            continueWithoutSignInAction: nil
+        )
+    }
+
+    func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
+                                 fullyRendered: @escaping () -> Void,
+                                 signInAction: @escaping () -> Void,
+                                 continueWithoutSignInAction: (() -> Void)?) {
         timelineTimer?.invalidate()
         timelineTimer = nil
         removeSkipMonitors()
@@ -707,7 +737,8 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
             presentation,
             transitionFrom: lastPromptText,
             fullyRendered: fullyRendered,
-            signInAction: signInAction
+            signInAction: signInAction,
+            continueWithoutSignInAction: continueWithoutSignInAction
         )
         lastPromptText = prompt
 
@@ -1012,7 +1043,8 @@ final class OnboardingIntroRootView: NSView {
     func showAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
                               transitionFrom: String,
                               fullyRendered: @escaping () -> Void,
-                              signInAction: @escaping () -> Void) {
+                              signInAction: @escaping () -> Void,
+                              continueWithoutSignInAction: (() -> Void)? = nil) {
         runtimeModel = nil
         showPrompt(
             phase: .agentLogin,
@@ -1021,7 +1053,8 @@ final class OnboardingIntroRootView: NSView {
             content: AnyView(
                 OnboardingIntroAgentLoginPromptView(
                     presentation: presentation,
-                    signInAction: signInAction
+                    signInAction: signInAction,
+                    continueWithoutSignInAction: continueWithoutSignInAction
                 )
             ),
             completion: fullyRendered
@@ -1748,8 +1781,12 @@ private struct OnboardingIntroRuntimePromptView: View {
 }
 
 struct OnboardingIntroAgentLoginPromptView: View {
+    static let continueWithoutSignInTitle = "Continue without sign-in"
+    static let continueWithoutSignInNote =
+        "Claude sessions stay unavailable until Relay Runner verifies your Claude subscription."
     let presentation: OnboardingAgentLoginPromptPresentation
     let signInAction: () -> Void
+    var continueWithoutSignInAction: (() -> Void)? = nil
 
     var body: some View {
         OnboardingIntroPromptContentLayout {
@@ -1764,6 +1801,14 @@ struct OnboardingIntroAgentLoginPromptView: View {
                         accessibilityLabel: "Sign in to \(presentation.provider.displayName)",
                         action: signInAction
                     )
+                    if let continueWithoutSignInAction {
+                        Button(Self.continueWithoutSignInTitle, action: continueWithoutSignInAction)
+                            .buttonStyle(.plain)
+                            .font(AppTypography.font(.body))
+                            .foregroundStyle(.white.opacity(0.72))
+                            .help(Self.continueWithoutSignInNote)
+                            .accessibilityHint(Self.continueWithoutSignInNote)
+                    }
                 }
 
                 if let message = presentation.message {

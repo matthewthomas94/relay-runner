@@ -515,6 +515,8 @@ fi
 
 This blocks until the user speaks via Caps Lock. If the voice bridge is killed (e.g. a new session was started), the loop exits. Once a command is read, a background heartbeat refresher is spawned so the app's watchdog doesn't reap the bridge during long Claude processing (multi-tool tasks, builds, agent spawns). The refresher is torn down in Step 3.
 
+The Bash tool stops a command after 2 minutes by default. Run this wait with the longest timeout the tool allows (`timeout: 600000`). If the wait times out before a command arrives, nothing was claimed: run the same Step 1 block again. A timeout is not a stop signal.
+
 ### Step 1.5: Preemption checkpoints
 
 Relay messages are retained in a durable ordered intent inbox. Before starting each new shell command, MCP call, or high-stakes/irreversible action, and again before sending a final reply, check whether another classified Relay intent is waiting:
@@ -968,9 +970,16 @@ CODEX_STOP_MD_EOF
 }
 
 find_claude_bin() {
-    if [ -x "$HOME/.local/bin/claude" ]; then
-        echo "$HOME/.local/bin/claude"
-    elif command -v claude >/dev/null 2>&1; then
+    # Match the app's ClaudeAuth.candidatePaths: the installer symlink, then
+    # Homebrew, which the app's PATH does not include.
+    local candidate
+    for candidate in "$HOME/.local/bin/claude" /opt/homebrew/bin/claude /usr/local/bin/claude; do
+        if [ -x "$candidate" ]; then
+            echo "$candidate"
+            return
+        fi
+    done
+    if command -v claude >/dev/null 2>&1; then
         command -v claude
     else
         echo ""
@@ -1236,7 +1245,12 @@ CLAUDE_CLI_OK=false
 CODEX_CLI_OK=false
 [ -n "$CODEX_BIN" ] && CODEX_CLI_OK=true
 AGENT_CLI_OK=false
-{ $CLAUDE_CLI_OK || $CODEX_CLI_OK; } && AGENT_CLI_OK=true
+if [ "${RELAY_RUNNER_PROVIDER:-}" = claude ]; then
+    # Setup for Claude needs Claude itself; an installed Codex doesn't count.
+    AGENT_CLI_OK=$CLAUDE_CLI_OK
+else
+    { $CLAUDE_CLI_OK || $CODEX_CLI_OK; } && AGENT_CLI_OK=true
+fi
 # Relay voice commands/skills live under ~/.claude/commands for Claude
 # Code and ~/.codex/skills for Codex. They're how the user invokes a
 # voice loop from inside an existing agent session — without them, voice
@@ -1517,11 +1531,16 @@ PYEOF
     fi
 
     if ! $AGENT_CLI_OK; then
-        # If neither Codex nor Claude is present, install Claude Code as a
-        # fallback agent. Codex ships with the desktop app and is not installed
-        # by this script.
-        emit_progress 95 "Installing fallback Claude Code CLI..."
-        echo "[Relay Runner] No Codex or Claude CLI found. Installing Claude Code CLI from claude.ai/install.sh..."
+        # Install Claude Code when Claude is the selected provider, or as a
+        # fallback agent when neither Codex nor Claude is present. Codex ships
+        # with the desktop app and is not installed by this script.
+        if [ "${RELAY_RUNNER_PROVIDER:-}" = claude ]; then
+            emit_progress 95 "Installing Claude Code CLI..."
+            echo "[Relay Runner] Claude Code CLI not found. Installing it from claude.ai/install.sh..."
+        else
+            emit_progress 95 "Installing fallback Claude Code CLI..."
+            echo "[Relay Runner] No Codex or Claude CLI found. Installing Claude Code CLI from claude.ai/install.sh..."
+        fi
         if ! curl -fsSL https://claude.ai/install.sh | bash; then
             echo ''
             echo "[Relay Runner] Claude Code CLI install failed."

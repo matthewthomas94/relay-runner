@@ -255,9 +255,15 @@ PY
 }
 
 find_claude_bin() {
-    if [ -x "$HOME/.local/bin/claude" ]; then
-        echo "$HOME/.local/bin/claude"
-    elif command -v claude >/dev/null 2>&1; then
+    # Match relay-bridge and the app: installer symlink, then Homebrew.
+    local candidate
+    for candidate in "$HOME/.local/bin/claude" /opt/homebrew/bin/claude /usr/local/bin/claude; do
+        if [ -x "$candidate" ]; then
+            echo "$candidate"
+            return
+        fi
+    done
+    if command -v claude >/dev/null 2>&1; then
         command -v claude
     else
         echo ""

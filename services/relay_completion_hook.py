@@ -1322,11 +1322,22 @@ def handle_hook_payload(
     manual_submissions_path: str = TERMINAL_MANUAL_SUBMISSION_FILE,
     write_control: Callable[[dict], bool] = _write_bridge_control,
     write_provider_event: Callable[[dict], bool] = _write_provider_turn_event,
+    session_events_path: str = SESSION_EVENTS_FILE,
     now: float | None = None,
     stderr: TextIO = sys.stderr,
 ) -> bool:
     now = time.time() if now is None else now
     event = _hook_event_name(payload)
+    if event == "SessionStart":
+        # Claude fires SessionStart only after its first-run screens (folder
+        # trust, onboarding, bypass disclaimer); the embedded terminal holds
+        # voice delivery until this stage is recorded.
+        _append_session_event({
+            "outcome": "ready",
+            "stage": "provider_session_start",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        }, path=session_events_path)
+        return False
     if event in {"UserPromptSubmit", "Stop", "StopFailure"} and _foreground_ownership() is None:
         print(
             "[relay_completion_hook] ignored lifecycle event without foreground ownership",

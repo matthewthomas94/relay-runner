@@ -2638,6 +2638,10 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     private var sessionEventPath: String?
     private var readinessScheduled = false
     private var interactiveReady = false
+    /// Claude can open first-run screens (folder trust, onboarding, bypass
+    /// disclaimer) in raw mode, which look like a ready prompt. Its Relay
+    /// SessionStart hook records `provider_session_start` once they are done.
+    private var awaitsProviderSessionStart = false
     private var stableTerminalSince: UInt64?
     private let readinessStabilityInterval: TimeInterval
     private let readinessPollInterval: TimeInterval
@@ -2707,6 +2711,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         interactiveReady = false
         stableTerminalSince = nil
         sessionEventPath = launch.sessionEventPath
+        awaitsProviderSessionStart = launch.target == .claude && launch.voiceDelivery == .appOwned
         localProcess.startProcess(
             executable: launch.executable,
             args: launch.arguments,
@@ -2848,7 +2853,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
               localProcess.running else { return }
 
         let now = DispatchTime.now().uptimeNanoseconds
-        if hasStableInteractiveTerminal {
+        if hasStableInteractiveTerminal && providerSessionStarted {
             let stableSince = stableTerminalSince ?? now
             self.stableTerminalSince = stableSince
             let stableDuration = Double(now - stableSince) / 1_000_000_000
@@ -2869,6 +2874,15 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         DispatchQueue.main.asyncAfter(deadline: .now() + readinessPollInterval) { [weak self] in
             self?.observeInteractiveReadiness()
         }
+    }
+
+    private var providerSessionStarted: Bool {
+        guard awaitsProviderSessionStart else { return true }
+        guard let sessionEventPath,
+              let events = try? String(contentsOfFile: sessionEventPath, encoding: .utf8)
+        else { return false }
+        return events.contains(#""stage": "provider_session_start""#)
+            || events.contains(#""stage":"provider_session_start""#)
     }
 
     private static func terminalEnvironment(correlationID: String) -> [String] {

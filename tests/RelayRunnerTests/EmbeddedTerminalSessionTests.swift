@@ -520,7 +520,11 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
             withIntermediateDirectories: true
         )
         let events = directory.appendingPathComponent("events.jsonl")
-        try #"{"stage":"provider_spawn","outcome":"started"}"#.write(
+        // provider_session_start is Claude's SessionStart hook; Codex ignores it.
+        try """
+        {"stage":"provider_spawn","outcome":"started"}
+        {"stage":"provider_session_start","outcome":"ready"}
+        """.write(
             to: events,
             atomically: true,
             encoding: .utf8
