@@ -12,11 +12,14 @@ Single source of truth lives in `services/instructions/*.md`. This script:
   3. Bakes the compact `claude-code` payloads from
      `services/instructions/compact/` and fails if any exceeds Claude Code's
      2048-character MCP instruction cap.
+  4. Regenerates the relay-workflow and relay-dispatch command/skill bodies
+     that `scripts/relay-bridge` installs for Claude and Codex.
 
 Run it after editing any chunk. It is idempotent. Checked-in generated
 artifacts must match this script's output (a CI/pre-commit check can diff).
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -68,6 +71,30 @@ CLAUDE_MD = [
     "naming",
 ]
 
+# Installed Relay commands: Claude's ~/.claude/commands/<name>.md and Codex's
+# ~/.codex/skills/<name>/SKILL.md share one body. They ship as quoted heredocs
+# in scripts/relay-bridge, keyed here by delimiter.
+COMMANDS = {
+    "relay-workflow": [
+        "commands/relay-workflow",
+        "subscription-only",
+        "orchestration-workflow",
+        "artifact-tickets",
+    ],
+    "relay-dispatch": ["commands/relay-dispatch", "subscription-only"],
+}
+CODEX_DESCRIPTIONS = {
+    "relay-workflow": "Prime Relay Runner orchestrator mode in Codex. Use when relay-orchestrator MCP tools are present, when the user discusses concrete work, mentions tickets/backlog/board, or asks to dispatch/delegate/check an agent run.",
+    "relay-dispatch": "Dispatch a ticket from the current repo's local Relay Runner kanban board to a sub-agent. Use when the user says to work on, hand off, delegate, dispatch, or check an RR-style ticket.",
+}
+COMMAND_HEREDOCS = {
+    "WORKFLOW_MD_EOF": ("relay-workflow", "claude"),
+    "DISPATCH_MD_EOF": ("relay-dispatch", "claude"),
+    "CODEX_WORKFLOW_MD_EOF": ("relay-workflow", "codex"),
+    "CODEX_DISPATCH_MD_EOF": ("relay-dispatch", "codex"),
+}
+COMMAND_INSTALLER = REPO / "scripts" / "relay-bridge"
+
 BEGIN = "<!-- BEGIN GENERATED: relay behavioral rules — edit services/instructions/, not here -->"
 END = "<!-- END GENERATED -->"
 
@@ -114,6 +141,30 @@ def swift_constant(constants: dict, server: str) -> str:
         f"{body}"
         "}\n"
     )
+
+
+def command_file(name: str, provider: str) -> str:
+    body = concat(COMMANDS[name])
+    if provider == "codex":
+        return (
+            f"---\nname: {name}\ndescription: {CODEX_DESCRIPTIONS[name]}\n---\n\n"
+            f"# {name}\n\n{body}"
+        )
+    return body
+
+
+def installer_with_commands(text: str) -> str:
+    for delimiter, (name, provider) in COMMAND_HEREDOCS.items():
+        content = command_file(name, provider)
+        if f"\n{delimiter}\n" in f"\n{content}":
+            sys.exit(f"{name} contains its heredoc delimiter {delimiter}")
+        pattern = re.compile(rf"(<<'{delimiter}'\n).*?(\n{delimiter}\n)", re.S)
+        if not pattern.search(text):
+            sys.exit(f"{COMMAND_INSTALLER.name} is missing the {delimiter} heredoc")
+        text = pattern.sub(
+            lambda m: m.group(1) + content.rstrip("\n") + m.group(2), text, count=1
+        )
+    return text
 
 
 def write_if_changed(path: Path, content: str) -> bool:
@@ -164,6 +215,13 @@ def main() -> None:
                 drifted.append(str(path.relative_to(REPO)))
         elif write_if_changed(path, content):
             print(f"wrote {path.relative_to(REPO)}")
+
+    installer = COMMAND_INSTALLER.read_text()
+    if check:
+        if installer_with_commands(installer) != installer:
+            drifted.append(str(COMMAND_INSTALLER.relative_to(REPO)))
+    elif write_if_changed(COMMAND_INSTALLER, installer_with_commands(installer)):
+        print(f"wrote {COMMAND_INSTALLER.relative_to(REPO)} (command bodies)")
 
     claude_block = concat(CLAUDE_MD).rstrip() + "\n"
     if check:

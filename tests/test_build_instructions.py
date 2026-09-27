@@ -4,6 +4,7 @@ import importlib.util
 import io
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -68,6 +69,23 @@ class BuildInstructionsTests(unittest.TestCase):
         for line in text.splitlines():
             if "API key" in line:
                 self.assertIn("Never suggest adding an API key", line)
+
+    def test_check_fails_when_installed_command_text_drifts(self):
+        installer = self.module.COMMAND_INSTALLER.read_text()
+        stale = installer.replace("## Subscription-only provider access", "## Old heading", 1)
+        self.assertNotEqual(stale, installer)
+        self.assertEqual(self.module.installer_with_commands(stale), installer)
+        with tempfile.TemporaryDirectory(dir=ROOT / "scripts") as temp:
+            copy = Path(temp) / "relay-bridge"
+            copy.write_text(stale)
+            out = io.StringIO()
+            with mock.patch.object(self.module, "COMMAND_INSTALLER", copy), \
+                    mock.patch.object(sys, "argv", ["build-instructions", "--check"]), \
+                    contextlib.redirect_stdout(out), \
+                    self.assertRaises(SystemExit) as raised:
+                self.module.main()
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("relay-bridge", out.getvalue())
 
     def test_claude_block_uses_artifact_writer_like_agents_md(self):
         block = self.module.concat(self.module.CLAUDE_MD)

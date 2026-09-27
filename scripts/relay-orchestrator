@@ -43,25 +43,19 @@ PLIST_LABEL="com.relay.orchestrator"
 PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 LAUNCHCTL_SERVICE="gui/$(id -u)/${PLIST_LABEL}"
 
+# relay-dispatch / relay-workflow command and skill files. relay-bridge
+# installs them (with its edit-preserving refresh); uninstall removes them.
 CMDS_DIR="$HOME/.claude/commands"
 DISPATCH_MD="$CMDS_DIR/relay-dispatch.md"
 WORKFLOW_MD="$CMDS_DIR/relay-workflow.md"
 CODEX_SKILLS_DIR="$HOME/.codex/skills"
 CODEX_DISPATCH_DIR="$CODEX_SKILLS_DIR/relay-dispatch"
 CODEX_WORKFLOW_DIR="$CODEX_SKILLS_DIR/relay-workflow"
-CODEX_DISPATCH_MD="$CODEX_DISPATCH_DIR/SKILL.md"
-CODEX_WORKFLOW_MD="$CODEX_WORKFLOW_DIR/SKILL.md"
-# Legacy slash commands removed at install time so stale prompts don't
-# surface in Claude sessions. relay-link-project.md is from the prior
+# Legacy Relay slash commands: relay-link-project.md is from the prior
 # project-linking flow; relay-orchestrate.md is from before the
-# relay-orchestrate → relay-dispatch rename. Both can contain Linear
-# instructions that previous bundled releases wrote; cleaning them on
-# every install guarantees a re-install scrubs the slate even if the
-# user upgraded mid-rename.
+# relay-orchestrate → relay-dispatch rename.
 LEGACY_LINK_MD="$CMDS_DIR/relay-link-project.md"
 LEGACY_ORCHESTRATE_MD="$CMDS_DIR/relay-orchestrate.md"
-LEGACY_PM_SYNC_MD="$CMDS_DIR/pm-sync.md"
-LEGACY_CODEX_PM_SYNC_DIR="$CODEX_SKILLS_DIR/pm-sync"
 
 # -- Common helpers --
 
@@ -276,259 +270,30 @@ find_codex_bin() {
     fi
 }
 
-find_orchestrator_mcp_bin() {
-    # Bundled (Contents/SharedSupport/scripts → ../../MacOS/relay-orchestrator-mcp).
-    local bundled="$SCRIPT_DIR/../../MacOS/relay-orchestrator-mcp"
-    if [ -x "$bundled" ]; then
-        echo "$(cd "$(dirname "$bundled")" && pwd)/relay-orchestrator-mcp"
-        return
-    fi
-    for cfg in release debug; do
-        local dev="$PROJECT_ROOT/.build/$cfg/relay-orchestrator-mcp"
-        if [ -x "$dev" ]; then
-            echo "$(cd "$(dirname "$dev")" && pwd)/relay-orchestrator-mcp"
-            return
-        fi
-    done
-    echo ""
-}
-
 # -- Subcommands --
 
 install_skills() {
-    local mode="${1:-if-missing}"
-    mkdir -p "$CMDS_DIR"
-    mkdir -p "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR"
-
-    # Always remove the legacy slash commands if present — even on
-    # if-missing installs — so old prompts don't shadow the new ones.
-    rm -f "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD" "$LEGACY_PM_SYNC_MD"
-    rm -rf "$LEGACY_CODEX_PM_SYNC_DIR"
-
-    if [ "$mode" = "force" ] || [ ! -f "$DISPATCH_MD" ]; then
-        cat > "$DISPATCH_MD" <<'DISPATCH_MD_EOF'
-Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. You are acting as the PM frontstage for the user: report the dispatch outcome, while the persistent orchestrator creates an isolated git worktree, renders the workflow prompt, and runs the configured agent autonomously inside it.
-
-## When to use this
-
-The user said something like "work on RR-6" or "have an agent take RR-6". This command picks up the ticket, runs it in an isolated worktree, and returns once the sub-agent finishes (or you can leave it running and check `list_runs` later).
-
-## Steps
-
-1. **Identify the ticket.** Extract the ticket id (e.g. `RR-6`) from the user's message. If multiple are mentioned, dispatch each via separate calls.
-
-2. **Resolve the repo path.** The orchestrator needs an absolute path to the repo whose `.orchestrator/` board owns the ticket — that's the repo the current session is operating in. From the current working directory:
-
-   ```bash
-   git rev-parse --show-toplevel
-   ```
-
-   Confirm `<repo>/.orchestrator/<ticket_id>.md` exists before dispatching.
-
-3. **Dispatch.** Call `mcp__relay-orchestrator__dispatch_ticket(ticket_id="RR-6", repo_path="<absolute path>")`. The tool returns:
-   - `already_active: true` → there's already a run going for this ticket. Tell the user the existing run_id and stop.
-   - `already_active: false` → a fresh run is started; the response includes `run_id`, `state` (Claimed → Running), `workspace_path`, `branch`.
-
-4. **Report briefly.** One sentence: "Started RR-6 in worktree `<path>`, run_id N." Don't wait — the run is async. The user can ask "How's RR-6?" later and you'll call `get_run` / `list_runs`.
-
-## Status checks
-
-When the user asks "what are the agents doing?" / "how's RR-6?":
-- `mcp__relay-orchestrator__list_runs(state="Running")` → all active runs
-- `mcp__relay-orchestrator__get_run(run_id=N)` → details of a specific run, including `state`, `exit_code`, `last_error`, `log_path`
-
-If a run finished, also peek at the worktree (path is in the run record) to see the diff: `git -C <workspace_path> diff <default_branch>...`.
-
-## Cancelling
-
-`mcp__relay-orchestrator__cancel_run(run_id=N)` terminates the worker (SIGTERM, then SIGKILL) and prunes the worktree by default.
-
-## Notes
-
-- The worker runs with the configured agent's permission-bypass flag inside an isolated branch (`relay/<sanitized-id>`); changes are local-only and never pushed automatically.
-- The default workflow template is at `~/Library/Application Support/relay-runner/orchestrator/WORKFLOW.md`. A repo-local `.orchestrator/WORKFLOW.md` overrides the default for that repo; root-level `WORKFLOW.md` files are treated as normal project docs.
-- The worker mutates the ticket file: flips status to `in_progress` on start, then to `done` (or leaves `in_progress` if partial) and appends a `## Run log` section before exiting. Both edits are committed to the worker's branch.
-- For the broader "discuss → write → dispatch → integrate" workflow this command sits inside, see `/relay-workflow`.
-DISPATCH_MD_EOF
-        echo "[relay-orchestrator] wrote $DISPATCH_MD"
-    fi
-
-    if [ "$mode" = "force" ] || [ ! -f "$WORKFLOW_MD" ]; then
-        cat > "$WORKFLOW_MD" <<'WORKFLOW_MD_EOF'
-**MANDATORY orchestrator-mode prime.** Invoke this skill on the FIRST conversational turn of any session where the `mcp__relay-orchestrator__*` tools are registered — the user installed relay-runner specifically so that this is the default operating mode. The Relay Runner loop is foreground orchestrator/PM ticket management → worker execution → orchestrator review/integration. The user should not have to ask for it, mention "dispatch", or invoke any slash command — having relay-runner installed *is* the request to operate this way.
-
-Also re-trigger when the user discusses concrete work to be done ("let's tackle…", "what should we work on", "I need to fix…", "we should add…"), mentions tickets / issues / the backlog / the board, says "dispatch / hand off / delegate / kick off / spin up an agent", references a ticket id like RR-6, or asks "what are the agents doing" / "how's RR-6" / "stop RR-6".
-
-Do NOT trigger when: relay-orchestrator MCP isn't registered, or the user has explicitly said "stay in this session, don't dispatch" / "don't use the orchestrator". A small inline edit the user asks for directly is still fine to do here — the orchestrator workflow says "dispatch when the round-trip pays off", not "always dispatch".
-
-## The role split
-
-You are the foreground orchestrator/PM for the user. You classify live conversation, manage refined ticket prose and user status, and dispatch workers for bounded implementation. Persistent daemon state tracks project sessions and worker dispatch lifecycle, but it is not a separate default ticket-authoring inbox. Each worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
-
-## Command action contract
-
-Every substantive voice or text command that asks for repo/project work must resolve to an explicit action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. Codex and Claude follow the same command-action contract; provider-specific launch commands may differ, but both providers keep the same foreground orchestrator/PM → worker split. Raw Relay command captures are private metadata, not visible ticket prose. Create or edit visible `.orchestrator/` tickets only as PM management work, using refined, user-safe summaries and acceptance criteria instead of transcript dumps. Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline, and make the user-facing response name the action outcome.
-
-Direct computer observation and control requests stay with the foreground PM. Do not create a ticket, dispatch a worker, or send requests such as “what’s on my screen,” “open this folder in Finder,” or “open Chrome” to the Relay daemon. Prefer a deterministic shell or operating-system command when it can fully complete the action. Use Relay Vision only when visible pixels are required and Relay Actions only when simulated interaction remains necessary. The messenger remains tool-free and only acknowledges the request or speaks the PM’s final result.
-
-## Worker sizing
-
-Every ticket promoted to `ready` must include an explicit worker-sizing decision in frontmatter:
-
-- `worker_model`: `fast`, `balanced`, `strong`, or a provider-scoped stable override such as `codex:luna` or `claude:sonnet`.
-- `worker_effort`: `low`, `medium`, `high`, or `xhigh` for provider-neutral tickets. `max` is Claude-only unless a future Codex release verifies support.
-- `worker_sizing_rationale`: one short sentence explaining why that tier and effort match the work.
-- `worker_provider_notes`: `none` only when there are no provider-specific caveats; otherwise name the Codex/Claude difference.
-
-Choose the sizing based on ambiguity, code blast radius, security risk, test/build cost, and expected implementation depth. Codex renders effort through `model_reasoning_effort`; Claude renders effort through `--effort`, and Claude currently supports `max` where Codex does not. Prefer shared model tiers and shared effort values for provider-neutral work.
-
-1. **Acknowledge and clarify.** Talk through what needs to happen. Surface assumptions, push back when something's underspecified, and report the visible action outcome to the user.
-2. **Shape visible management work.** When the discussion settles on a unit of work, create or refine the visible ticket using actionable prose, not raw transcript text. The ticket under `<repo>/.orchestrator/<TICKET_ID>.md` must be refined enough for a cold worker: description, acceptance criteria, dependencies, and worker-sizing fields. Keep raw transcript text private.
-3. **Dispatch.** Before dispatch, verify the ticket has `worker_model`, `worker_effort`, `worker_sizing_rationale`, and `worker_provider_notes`. Move it to `ready` or call `mcp__relay-orchestrator__dispatch_ticket(ticket_id="RR-N", repo_path="<repo absolute path>")`. If the ticket body wouldn't survive cold without this conversation, pass `context="..."` with the relevant background. Multiple parallel dispatches are supported (no concurrency cap), but expect merge conflicts when sub-agents touch overlapping code.
-4. **Review and integrate.** Each sub-agent commits to its `relay/<id>` branch — both the code change and the ticket-file update (status flipped to `done` + a `## Run log` entry). Review those branches, merge them into the working branch in a sensible order, resolve conflicts intentionally, then clean up the worktree + delete the throwaway branch.
-
-## When NOT to dispatch
-
-A small change you can do inline in this session is usually faster than dispatching. Each sub-agent is a fresh configured-agent process with cold-start overhead, its own context window (more tokens against your quota), and zero awareness of what's been discussed here. Dispatch when:
-- The work is large enough that the round-trip pays off.
-- You want an in-repo audit trail (the ticket file + run log) without doing it by hand.
-- You want isolation (an autonomous run that can't disturb the main repo's working copy).
-
-For a one-line typo fix or a doc tweak, just edit and commit in this session.
-
-## Status checks
-
-- `mcp__relay-orchestrator__list_runs(state="Running")` — what's currently dispatched
-- `mcp__relay-orchestrator__get_run(run_id=N)` — details of one run, including `state`, `exit_code`, and `log_path`
-- `git -C <workspace_path> log --oneline <default_branch>..HEAD` from the run record — what the worker actually committed (code + ticket update)
-
-## Boundaries
-
-- Don't push `relay/<id>` branches; integrate first, then delete.
-- Sub-agents are constrained by `services/orchestrator_workflow.md` (or a repo-local `.orchestrator/WORKFLOW.md`) — they may only edit their own ticket file under `.orchestrator/`. Other tickets and the board layout belong to the orchestrator (you).
-
-## On invocation
-
-If the user typed `/relay-workflow` explicitly, give a brief one-line acknowledgement ("orchestrator mode primed — what are we working on?") and continue.
-
-If you're triggering this skill *implicitly* mid-conversation (the user didn't type the command, you matched the description), stay quiet about the skill itself — just internalize the workflow and proceed naturally. The user shouldn't see "I've activated relay-workflow"; they should just notice you offering to write tickets and dispatch when the work is right-sized for it.
-WORKFLOW_MD_EOF
-        echo "[relay-orchestrator] wrote $WORKFLOW_MD"
-    fi
-
-    if [ "$mode" = "force" ] || [ ! -f "$CODEX_DISPATCH_MD" ]; then
-        cat > "$CODEX_DISPATCH_MD" <<'CODEX_DISPATCH_MD_EOF'
----
-name: relay-dispatch
-description: Dispatch a ticket from the current repo's local Relay Runner kanban board to a sub-agent. Use when the user says to work on, hand off, delegate, dispatch, or check an RR-style ticket.
----
-
-# relay-dispatch
-
-Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. You are acting as the PM frontstage for the user: report the dispatch outcome, while the persistent orchestrator creates an isolated git worktree, renders the workflow prompt, and runs the configured agent autonomously inside it.
-
-## Steps
-
-1. Identify the ticket id, such as `RR-6`.
-2. Resolve the repo path with `git rev-parse --show-toplevel`.
-3. Confirm `<repo>/.orchestrator/<ticket_id>.md` exists.
-4. Call `mcp__relay-orchestrator__dispatch_ticket(ticket_id="RR-6", repo_path="<absolute path>")`.
-5. Report briefly: started run id, worktree path, and branch. Do not wait for completion unless the user asks.
-
-## Status
-
-Use `mcp__relay-orchestrator__list_runs` for active runs and `mcp__relay-orchestrator__get_run` for one run. If a run finished, inspect the worktree diff before recommending a merge.
-
-## Boundaries
-
-Workers run in local `relay/<id>` branches. Do not push those branches; integrate them into the working branch after review.
-CODEX_DISPATCH_MD_EOF
-        echo "[relay-orchestrator] wrote $CODEX_DISPATCH_MD"
-    fi
-
-    if [ "$mode" = "force" ] || [ ! -f "$CODEX_WORKFLOW_MD" ]; then
-        cat > "$CODEX_WORKFLOW_MD" <<'CODEX_WORKFLOW_MD_EOF'
----
-name: relay-workflow
-description: Prime Relay Runner orchestrator mode in Codex. Use when relay-orchestrator MCP tools are present, when the user discusses concrete work, mentions tickets/backlog/board, or asks to dispatch/delegate/check an agent run.
----
-
-# relay-workflow
-
-You are the foreground orchestrator/PM for the user. You classify live conversation, manage refined ticket prose and user status, and dispatch workers for bounded implementation. Persistent daemon state tracks project sessions and worker dispatch lifecycle, but it is not a separate default ticket-authoring inbox. Each worker spawned by `dispatch_ticket` is a one-shot sub-agent with no memory of this conversation.
-
-## Command Action Contract
-
-Every substantive voice or text command that asks for repo/project work must resolve to an explicit action before implementation starts: create a ticket, update an existing ticket, dispatch a ready ticket, steer/cancel pending work, or classify the command as a non-work/control action. Each work action must name a ticket id, either newly created under `.orchestrator/` or already present on the board. Codex and Claude follow the same command-action contract; provider-specific launch commands may differ, but both providers keep the same foreground orchestrator/PM → worker split. Raw Relay command captures are private metadata, not visible ticket prose. Create or edit visible `.orchestrator/` tickets only as PM management work, using refined, user-safe summaries and acceptance criteria instead of transcript dumps. Do not perform substantive implementation directly unless the user explicitly asks to keep the work inline, and make the user-facing response name the action outcome.
-
-Direct computer observation and control requests stay with the foreground PM. Do not create a ticket, dispatch a worker, or send requests such as “what’s on my screen,” “open this folder in Finder,” or “open Chrome” to the Relay daemon. Prefer a deterministic shell or operating-system command when it can fully complete the action. Use Relay Vision only when visible pixels are required and Relay Actions only when simulated interaction remains necessary. The messenger remains tool-free and only acknowledges the request or speaks the PM’s final result.
-
-## Worker Sizing
-
-Every ticket promoted to `ready` must include an explicit worker-sizing decision in frontmatter: `worker_model`, `worker_effort`, `worker_sizing_rationale`, and `worker_provider_notes`. Choose it based on ambiguity, code blast radius, security risk, test/build cost, and expected implementation depth.
-
-Use `worker_model: fast|balanced|strong` for provider-neutral tiers, or provider-scoped stable overrides such as `codex:luna` or `claude:sonnet`. Use `worker_effort: low|medium|high|xhigh` for provider-neutral tickets. `max` is Claude-only unless future Codex support is verified. Codex renders effort through `model_reasoning_effort`; Claude renders effort through `--effort`.
-
-## Workflow
-
-1. Acknowledge and clarify the work first. Surface assumptions and ambiguity, and keep the user updated on the visible outcome.
-2. Shape visible ticket content under `.orchestrator/` as PM management work; do not paste raw user transcript. The ticket should include description, acceptance criteria, priority, dependencies, and worker-sizing fields before promotion, and keep raw transcript text private.
-3. Promote refined tickets to `ready` only when they are dispatchable and sized. The board auto-dispatches `ready`; direct MCP dispatch is available for manual runs.
-4. Review and integrate worker branches after completion, resolving conflicts intentionally, then prune worktrees and delete throwaway branches.
-
-Small edits are fine inline. Dispatch when isolation, audit trail, or parallelism pays for the cold start.
-CODEX_WORKFLOW_MD_EOF
-        echo "[relay-orchestrator] wrote $CODEX_WORKFLOW_MD"
+    # The command/skill text and the install policy live in relay-bridge,
+    # generated from services/instructions/ by scripts/build-instructions.
+    if [ "${1:-refresh}" = "force" ]; then
+        "$SCRIPT_DIR/relay-bridge" --install-skills
+    else
+        "$SCRIPT_DIR/relay-bridge" --refresh-skills
     fi
 }
 
 uninstall_skills() {
-    rm -f "$DISPATCH_MD" "$WORKFLOW_MD" "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD" "$LEGACY_PM_SYNC_MD"
-    rm -rf "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR" "$LEGACY_CODEX_PM_SYNC_DIR"
+    rm -f "$DISPATCH_MD" "$WORKFLOW_MD" "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD"
+    rm -rf "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR"
     echo "[relay-orchestrator] removed slash command files."
 }
 
 register_mcp() {
-    local claude_bin
-    claude_bin="$(find_claude_bin)"
-    local codex_bin
-    codex_bin="$(find_codex_bin)"
-    local mcp_bin
-    mcp_bin="$(find_orchestrator_mcp_bin)"
-
-    if [ -z "$mcp_bin" ]; then
-        echo "[relay-orchestrator] relay-orchestrator-mcp binary not found." >&2
-        echo "[relay-orchestrator] Build with: swift build --product relay-orchestrator-mcp" >&2
-        return 0
-    fi
-
-    if [ -n "$claude_bin" ]; then
-        if "$claude_bin" mcp get relay-orchestrator >/dev/null 2>&1; then
-            echo "[relay-orchestrator] Claude MCP server already registered."
-        elif "$claude_bin" mcp add -s user relay-orchestrator -- "$mcp_bin" >/dev/null 2>&1; then
-            echo "[relay-orchestrator] Registered Claude MCP server: relay-orchestrator → $mcp_bin"
-        else
-            echo "[relay-orchestrator] Claude MCP server registration failed (non-fatal)." >&2
-            echo "[relay-orchestrator] Try manually:" >&2
-            echo "    $claude_bin mcp add -s user relay-orchestrator -- $mcp_bin" >&2
-        fi
-    else
-        echo "[relay-orchestrator] claude CLI not found — skipping Claude MCP registration." >&2
-    fi
-
-    if [ -n "$codex_bin" ]; then
-        if "$codex_bin" mcp get relay-orchestrator >/dev/null 2>&1; then
-            echo "[relay-orchestrator] Codex MCP server already registered."
-        elif "$codex_bin" mcp add relay-orchestrator -- "$mcp_bin" >/dev/null 2>&1; then
-            echo "[relay-orchestrator] Registered Codex MCP server: relay-orchestrator → $mcp_bin"
-        else
-            echo "[relay-orchestrator] Codex MCP server registration failed (non-fatal)." >&2
-            echo "[relay-orchestrator] Try manually:" >&2
-            echo "    $codex_bin mcp add relay-orchestrator -- $mcp_bin" >&2
-        fi
-    else
-        echo "[relay-orchestrator] codex CLI not found — skipping Codex MCP registration." >&2
-    fi
+    # relay-bridge compares each agent's effective registration with this
+    # app's binary, repairs a stale Relay-owned entry at its scope, and
+    # reports a project-owned conflict instead of claiming a fix.
+    "$SCRIPT_DIR/relay-bridge" --register-mcp \
+        relay-orchestrator relay-orchestrator-mcp "relay-orchestrator"
 }
 
 unregister_mcp() {
@@ -758,7 +523,7 @@ cmd_install() {
         return 1
     fi
     emit_progress 85 "Installing Relay skills..."
-    install_skills if-missing
+    install_skills refresh
     emit_progress 88 "Registering provider tools..."
     register_mcp
     emit_progress 92 "Installing background service..."
