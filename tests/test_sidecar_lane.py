@@ -141,6 +141,9 @@ class SidecarLaneTests(unittest.TestCase):
         self.assertIn("--safe-mode", claude_command)
         self.assertIn("--no-chrome", claude_command)
         self.assertIn("dontAsk", claude_command)
+        self.assertEqual(
+            claude_command[claude_command.index("--allowedTools") + 1], "WebSearch,WebFetch"
+        )
         self.assertNotIn("Bash", claude_command)
 
     def test_provider_executor_shuts_down_its_one_shot_backend(self):

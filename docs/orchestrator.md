@@ -63,7 +63,7 @@ The daemon:
 1. Validates `<repo>/.orchestrator/MA-6.md` exists.
 2. Adds a git worktree at `~/Library/Application Support/relay-runner/workspaces/ma-6/` on branch `relay/ma-6`, branched off the repo's default branch (resolved via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `main`).
 3. Renders the workflow prompt (default at `services/orchestrator_workflow.md`, override per-repo at `<repo>/.orchestrator/WORKFLOW.md`).
-4. Spawns the configured agent in that worktree, piping the prompt as stdin. New configs default to `codex --search exec --json --dangerously-bypass-approvals-and-sandbox`; Claude remains available via `[orchestrator].agent = "claude"` and uses its default built-in tool set, including WebSearch/WebFetch.
+4. Spawns the configured agent in that worktree, piping the prompt as stdin. Workers use the provider selected in General settings (`[general].provider`): Codex runs `codex --search exec --json --dangerously-bypass-approvals-and-sandbox`, and Claude uses its default built-in tool set, including WebSearch/WebFetch. `[orchestrator].agent` is an optional explicit override. A missing worker CLI no longer stops the daemon; dispatch reports it instead.
 5. Returns a `run_id` immediately — the worker continues in the background.
 
 The worker reads the ticket file, flips its status to `in_progress`, implements the change, commits the code with a conventional commit referencing the ticket, then flips the ticket's status to `done` (or leaves it `in_progress` if partial) and appends a `## Run log` section before exiting. Both edits land on the worker's branch.

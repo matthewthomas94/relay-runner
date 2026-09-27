@@ -89,6 +89,7 @@ class ClaudeSidecarBackend(ClaudeMessengerBackend):
             "--include-partial-messages",
             "--model", self.config.model,
             "--tools", "WebSearch,WebFetch",
+            "--allowedTools", "WebSearch,WebFetch",
             "--permission-mode", "dontAsk",
             "--safe-mode",
             "--no-chrome",

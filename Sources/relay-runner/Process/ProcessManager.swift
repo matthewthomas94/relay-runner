@@ -1389,7 +1389,8 @@ final class ProcessManager {
         isExecutable: (String) -> Bool = FileManager.default.isExecutableFile(atPath:)
     ) -> String {
         let trimmed = command.trimmingCharacters(in: .whitespaces)
-        if !trimmed.isEmpty && trimmed.hasPrefix("/") {
+        if !trimmed.isEmpty && trimmed.hasPrefix("/")
+            && GeneralConfig.inferProvider(from: trimmed).rawValue == target.providerMetadataValue {
             return trimmed
         }
         switch target {

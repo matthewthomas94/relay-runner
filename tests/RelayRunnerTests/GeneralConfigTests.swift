@@ -215,6 +215,24 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(config.orchestrator_effort, "xhigh")
     }
 
+    func testSelectingProviderDropsTheOtherProvidersAbsoluteCommand() {
+        let codexPath = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        var config = GeneralConfig()
+        config.provider = .codex
+        config.command = codexPath
+
+        config.selectProvider(.claude)
+        XCTAssertEqual(config.command, "claude")
+
+        config.command = "/opt/homebrew/bin/claude"
+        config.selectProvider(.codex)
+        XCTAssertEqual(config.command, "codex")
+
+        config.command = codexPath
+        config.selectProvider(.codex)
+        XCTAssertEqual(config.command, codexPath)
+    }
+
     func testOrchestratorDefaultsAndLegacyValuesBecomeExplicit() {
         XCTAssertEqual(GeneralConfig().model, "sol")
         XCTAssertEqual(GeneralConfig().orchestrator_effort, "xhigh")

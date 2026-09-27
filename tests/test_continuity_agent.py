@@ -144,6 +144,33 @@ class ContinuityAgentTests(unittest.TestCase):
             self.assertNotIn(private, serialized)
         self.assertEqual(cleaned["incident_id"], payload["incident_id"])
 
+    def test_child_environment_passes_only_the_launched_providers_auth(self):
+        parent = {
+            "HOME": "/Users/test",
+            "PATH": "/usr/bin",
+            "ANTHROPIC_API_KEY": "anthropic-key",
+            "CLAUDE_CODE_OAUTH_TOKEN": "setup-token",
+            "CLAUDE_CONFIG_DIR": "/Users/test/.claude-work",
+            "OPENAI_API_KEY": "openai-key",
+            "CODEX_HOME": "/Users/test/.codex-work",
+            "GH_TOKEN": "secret",
+            "VOICE_FIFO": "/private/voice",
+        }
+
+        claude = continuity_agent_environment("p", "inc", 1, parent=parent, provider="claude")
+        codex = continuity_agent_environment("p", "inc", 1, parent=parent, provider="codex")
+
+        self.assertEqual(claude["ANTHROPIC_API_KEY"], "anthropic-key")
+        self.assertEqual(claude["CLAUDE_CODE_OAUTH_TOKEN"], "setup-token")
+        self.assertEqual(claude["CLAUDE_CONFIG_DIR"], "/Users/test/.claude-work")
+        self.assertNotIn("OPENAI_API_KEY", claude)
+        self.assertEqual(codex["OPENAI_API_KEY"], "openai-key")
+        self.assertEqual(codex["CODEX_HOME"], "/Users/test/.codex-work")
+        self.assertNotIn("ANTHROPIC_API_KEY", codex)
+        for environment in (claude, codex):
+            self.assertNotIn("GH_TOKEN", environment)
+            self.assertNotIn("VOICE_FIFO", environment)
+
     def test_child_environment_has_identity_but_no_foreground_or_secret_authority(self):
         environment = continuity_agent_environment(
             "continuity-process",

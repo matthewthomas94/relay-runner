@@ -168,6 +168,83 @@ class OrchestratorDispatchTests(unittest.TestCase):
         self.assertIn("xhigh", command)
         self.assertNotIn("model_reasoning_effort=xhigh", command)
 
+    def test_review_on_other_provider_re_resolves_launch_sizing(self):
+        worker = object.__new__(ReviewWorker)
+        worker.agent_kind = "claude"
+        worker.agent_bin = "claude"
+        worker.run = {
+            "provider_key": "codex",
+            "model_alias": "sol",
+            "worker_model": "strong",
+            "worker_effort": "high",
+            "worker_provider_notes": "none",
+        }
+
+        command = ReviewWorker._command(worker)
+
+        self.assertEqual(command[command.index("--model") + 1], "opus")
+        self.assertEqual(command[command.index("--effort") + 1], "high")
+        self.assertNotIn("sol", command)
+
+    def test_review_drops_sizing_the_other_provider_cannot_launch(self):
+        worker = object.__new__(ReviewWorker)
+        worker.agent_kind = "claude"
+        worker.agent_bin = "claude"
+        worker.run = {
+            "provider_key": "codex",
+            "model_alias": "astra",
+            "worker_model": "codex:astra",
+            "worker_effort": "ultra",
+            "worker_provider_notes": "Astra only",
+        }
+
+        command = ReviewWorker._command(worker)
+
+        self.assertNotIn("--model", command)
+        self.assertNotIn("--effort", command)
+
+    def test_claude_failure_reason_leads_with_terminal_result_error(self):
+        startup = json.dumps({"type": "system", "subtype": "init", "tools": ["x" * 400]})
+        result = json.dumps({
+            "type": "result", "subtype": "success", "is_error": True,
+            "api_error_status": 401,
+            "result": "Failed to authenticate. API Error: 401 OAuth access token is invalid.",
+        })
+
+        reason = orchestrator._failure_tail("claude", 1, [startup, result])
+
+        self.assertTrue(reason.startswith("exit=1; claude result error (HTTP 401): Failed to authenticate."))
+        self.assertLessEqual(len(reason), 500)
+        self.assertEqual(
+            orchestrator._failure_tail("codex", 1, ["a", "b"]),
+            "exit=1; tail=a / b",
+        )
+
+    def test_worker_provider_follows_general_provider_from_loaded_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            daemon = self.make_daemon(Path(tmp), provider="codex")
+            daemon.cfg = {"general": {"provider": "claude"}, "orchestrator": {"agent": ""}}
+            daemon.config_loader = lambda: {"general": {"provider": "claude"}}
+
+            with patch("orchestrator._find_agent_bin", return_value="/bin/claude") as find_agent:
+                kind, agent_bin, _general = daemon._effective_worker_agent()
+
+        self.assertEqual((kind, agent_bin), ("claude", "/bin/claude"))
+        find_agent.assert_called_once_with("claude")
+
+    def test_worker_binary_missing_at_startup_resolves_at_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            daemon = self.make_daemon(Path(tmp), provider="claude")
+            daemon.agent_bin = ""
+            daemon.cfg = {"general": {"provider": "claude"}, "orchestrator": {"agent": ""}}
+            daemon.config_loader = lambda: {"general": {"provider": "claude"}}
+
+            with patch("orchestrator._find_agent_bin", return_value="/bin/claude") as find_agent:
+                self.assertEqual(daemon._effective_worker_agent()[1], "/bin/claude")
+                self.assertEqual(daemon._effective_worker_agent()[1], "/bin/claude")
+
+        find_agent.assert_called_once_with("claude", "")
+
     def test_claude_worker_omits_default_model_and_effort_sentinels(self):
         worker = object.__new__(Worker)
         worker.agent_kind = "claude"

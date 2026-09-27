@@ -627,6 +627,28 @@ final class ProcessManagerLaunchTests: XCTestCase {
         )
     }
 
+    func testAbsoluteCommandIsUsedOnlyForTheProviderItTargets() {
+        let codexPath = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        let claudePath = "/opt/homebrew/bin/claude"
+
+        XCTAssertEqual(
+            ProcessManager.resolveAgentBinary(codexPath, target: .codex, isExecutable: { _ in false }),
+            codexPath
+        )
+        XCTAssertEqual(
+            ProcessManager.resolveAgentBinary(claudePath, target: .claude, isExecutable: { _ in false }),
+            claudePath
+        )
+        XCTAssertEqual(
+            ProcessManager.resolveAgentBinary(codexPath, target: .claude, isExecutable: { _ in false }),
+            "claude"
+        )
+        XCTAssertEqual(
+            ProcessManager.resolveAgentBinary(claudePath, target: .codex, isExecutable: { _ in false }),
+            "codex"
+        )
+    }
+
     func testOnboardingUsesTheSameCurrentThenLegacyCodexBundleOrder() {
         XCTAssertEqual(
             VenvInstaller.codexCLIPaths,

@@ -43,6 +43,30 @@ _CHILD_ENVIRONMENT_ALLOWLIST = frozenset({
     "SHELL",
     "TMPDIR",
 })
+# Each provider CLI may authenticate from its own environment (API key, setup
+# token, custom config directory, cloud-provider routing). Only the launched
+# provider's names are passed, and only to that provider's CLI process.
+_PROVIDER_AUTH_ENVIRONMENT = {
+    "codex": frozenset({"CODEX_HOME", "OPENAI_API_KEY"}),
+    "claude": frozenset({
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "AWS_REGION",
+        "AWS_PROFILE",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "CLOUD_ML_REGION",
+        "ANTHROPIC_VERTEX_PROJECT_ID",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    }),
+}
 _INCIDENT_FIELDS = (
     "schema_version",
     "incident_id",
@@ -136,12 +160,18 @@ def continuity_agent_environment(
     recovery_generation: str,
     *,
     parent: Mapping[str, str] | None = None,
+    provider: str | None = None,
 ) -> dict[str, str]:
-    """Build a child environment without foreground authority or secret values."""
+    """Build a child environment without foreground authority.
+
+    Secret values are excluded except the named provider's own CLI
+    authentication variables, which that provider needs to sign in.
+    """
     parent_environment = os.environ if parent is None else parent
+    allowed = _CHILD_ENVIRONMENT_ALLOWLIST | _PROVIDER_AUTH_ENVIRONMENT.get(provider or "", frozenset())
     environment = {
         key: parent_environment[key]
-        for key in _CHILD_ENVIRONMENT_ALLOWLIST
+        for key in allowed
         if key in parent_environment
     }
     environment.update({
@@ -359,6 +389,7 @@ class CodexContinuityBackend(CodexMessengerBackend):
             process_identity,
             incident_id,
             recovery_generation,
+            provider="codex",
         )
 
     def thread_start_params(self) -> dict:
@@ -395,6 +426,7 @@ class ClaudeContinuityBackend(ClaudeMessengerBackend):
             process_identity,
             incident_id,
             recovery_generation,
+            provider="claude",
         )
 
     def spawn_command(self) -> list[str]:
