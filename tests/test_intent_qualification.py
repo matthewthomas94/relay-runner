@@ -98,6 +98,41 @@ class IntentQualificationTests(unittest.TestCase):
                 "intent_qualification": {"bucket": bucket},
             }), [])
 
+    def test_spoken_ticket_priority_update_keeps_authorization_bounded(self):
+        for provider in ("codex", "claude"):
+            for ticket in ("RR-382", "RR382", "RR 382"):
+                with self.subTest(provider=provider, ticket=ticket):
+                    text = f"Set ticket {ticket} to low priority, keep it in the backlog, do not dispatch it."
+                    resolved = _resolve_voice_work_items(
+                        text,
+                        {"relay_command_seq": 12, "relay_command_id": "priority", "provider": provider},
+                        repo_path="/tmp/example",
+                    )
+                    self.assertEqual(len(resolved), 1)
+                    item = resolved[0]
+                    self.assertEqual(item["action"].kind, "update_ticket")
+                    self.assertEqual(item["action"].ticket_id, "RR-382")
+                    self.assertEqual(item["metadata"]["intent_qualification"]["bucket"], "task")
+                    self.assertIn(text, item["prompt"])
+                    allowed = allowed_mutations_for_metadata(item["metadata"])
+                    self.assertIn({"kind": "orchestrator_command", "action_kinds": ["record"]}, allowed)
+                    self.assertFalse(any("dispatch_ticket" in rule.get("action_kinds", []) for rule in allowed))
+
+    def test_spoken_ticket_references_and_questions_do_not_authorize_updates(self):
+        for text in (
+            "What priority is ticket RR382?",
+            "Should we set ticket RR 382 to low priority?",
+            "Do not set ticket RR382 to low priority.",
+            "Set ticket RR382 to low priority? I only want to discuss it.",
+        ):
+            with self.subTest(text=text):
+                item = _resolve_voice_work_items(
+                    text, {"relay_command_seq": 13, "relay_command_id": "query"},
+                    repo_path="/tmp/example",
+                )[0]
+                self.assertEqual(item["metadata"]["intent_qualification"]["bucket"], "discussion")
+                self.assertEqual(allowed_mutations_for_metadata(item["metadata"]), [])
+
     def test_control_path_is_separate(self):
         for text in ("__TTS_STOP__", "Cancel RR-400"):
             self.assertIsNone(qualify_intent(text).bucket)

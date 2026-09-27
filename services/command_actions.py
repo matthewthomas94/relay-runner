@@ -33,6 +33,7 @@ CONTROL_COMMANDS = {
 }
 
 TICKET_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
+SPOKEN_RELAY_TICKET_ID_RE = re.compile(r"\bRR\s*(\d+)\b", re.IGNORECASE)
 INSPECT_RE = re.compile(
     r"\b(status|state|how'?s|how\s+is|what'?s|what\s+is|show|summarize|check)\b",
     re.IGNORECASE,
@@ -112,6 +113,7 @@ LEADING_TARGET_CONTEXT_RE = re.compile(
 _MUTATION_VERB = (
     r"(?:add|build|change|clean\s+up|create|debug|delete|design|fix|implement|"
     r"install|make|merge|migrate|refactor|remove|repair|ship|test|wire|write|"
+    r"set(?=\s+(?:ticket\s+)?(?:[A-Za-z][A-Za-z0-9]*-\d+|RR\s*\d+)\b)|"
     r"update(?!\s+(?:me|us)\b)|run(?!\s+(?:me|us)\s+through\b))"
 )
 EXPLICIT_MUTATION_REQUEST_RE = re.compile(
@@ -773,7 +775,11 @@ def _relay_prompt_lines(action: CommandAction) -> str:
 
 def _extract_ticket_id(text: str) -> str | None:
     match = TICKET_ID_RE.search(text or "")
-    return match.group(1).upper() if match else None
+    if match:
+        return match.group(1).upper()
+    # Voice transcription can omit the separator in Relay ticket identifiers.
+    match = SPOKEN_RELAY_TICKET_ID_RE.search(text or "")
+    return f"RR-{match.group(1)}" if match else None
 
 
 def _read_ticket_config(config_text: str) -> tuple[str, int]:

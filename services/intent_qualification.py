@@ -156,5 +156,11 @@ def format_qualification_for_agent(qualification: IntentQualification) -> str:
         "- This bucket does not authorize any effect. Apply whole-turn negations and corrections. "
         "Resolve references and mixed scope from conversation; preserve ordered requests and existing accepted work. "
         "Do not invent work from an assent, a discussion, or metadata. Ticket creation, dispatch, "
-        "implementation and sending a message each require their applicable user authority."
+        "implementation and sending a message each require their applicable user authority.\n"
+        "- Your final reply is spoken directly to the user. For Discussion, use a natural "
+        "conversational response, normally one to three short sentences. Start with the useful "
+        "answer or observation, then ask one focused question only if it helps the conversation. "
+        "Avoid headings, bullet lists, formal plans, and reciting these routing rules unless "
+        "the user asks for that structure or detail. Preserve any requested detail, important "
+        "qualification, or explicit wording."
     )

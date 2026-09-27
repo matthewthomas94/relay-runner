@@ -27,6 +27,20 @@ results so these guards cannot conceal model errors. They are conservative
 heuristics, not comprehensive semantic protections. The observed errors show why
 the hint cannot become execution authority.
 
+Installed retesting on 27 September recovered the queued Backlog ticket without
+dispatch, kept Discussion free of work, and opened Calculator. The user reported
+that Calculator felt faster; this is subjective evidence, not a controlled
+latency comparison. Laya took 83 ms for Discussion and 91 ms for Calculator.
+An existing-ticket priority update also succeeded, but the baseline missed
+"Set ticket RR382" and the PM corrected it. The shared command parser now accepts
+that update phrasing and Relay IDs transcribed without a hyphen, with regressions
+for Codex and Claude that keep questions, negations, and no-dispatch limits intact.
+
+The longer Discussion response was the PM's final text spoken directly. The
+shared voice prompt now asks for a short conversational answer by default, with
+structure and detail when requested. This adds no model call; spoken quality
+still requires installed human retesting.
+
 No model download or runtime import occurs on ordinary startup or a voice command.
 An absent service returns immediately; one absolute client deadline covers
 connect, send and receive, capped at 100 ms. Stale response identities are dropped.
