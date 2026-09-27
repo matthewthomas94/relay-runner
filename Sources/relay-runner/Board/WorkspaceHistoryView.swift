@@ -99,11 +99,13 @@ struct WorkspaceHistoryView: View {
                                 .font(AppTypography.font(.supporting))
                                 .foregroundStyle(ProgramBoardStyle.mutedText)
                                 .padding(.top, 28)
-                                .transition(.relayText)
+                                .transition(.relayReplacing(.text))
                         }
                         ForEach(model.cards) { card in
                             historyCard(card)
-                                .transition(.relayElement)
+                                // Results after an empty search wait for the
+                                // empty-state line to leave their place.
+                                .transition(.relayReplacing(.element))
                         }
                     }
                 }
@@ -118,7 +120,7 @@ struct WorkspaceHistoryView: View {
                 if let card = model.selectedCard {
                     historyDetail(card)
                         .id(card.id)
-                        .transition(.relaySurface)
+                        .transition(.relayReplacing(.surface))
                 } else {
                     VStack(spacing: 10) {
                         Image(systemName: "clock.arrow.circlepath")
@@ -133,7 +135,7 @@ struct WorkspaceHistoryView: View {
                             .frame(maxWidth: 390)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transition(.relaySurface)
+                    .transition(.relayReplacing(.surface))
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.selectedCard?.id)
@@ -226,7 +228,7 @@ struct WorkspaceHistoryView: View {
                             .transition(.relayElement)
                         }
                     }
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
                 } else {
                     VStack(alignment: .leading, spacing: 14) {
                         ScrollView {
@@ -270,7 +272,7 @@ struct WorkspaceHistoryView: View {
                         }
                         .disabled(model.detail?.availability != "available")
                     }
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.detail)
@@ -291,7 +293,7 @@ struct WorkspaceHistoryView: View {
                     Text("No dependencies")
                         .font(AppTypography.font(.metadata))
                         .foregroundStyle(ProgramBoardStyle.mutedText)
-                        .transition(.relayText)
+                        .transition(.relayReplacing(.text))
                 }
                 ForEach(dependencies.dependencies) { dependency in
                     HStack(alignment: .firstTextBaseline) {

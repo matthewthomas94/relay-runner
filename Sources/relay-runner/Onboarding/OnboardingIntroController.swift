@@ -1352,6 +1352,7 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
     private var transitionQueue: OnboardingPromptTransitionQueue
     private var pendingCompletion: (() -> Void)?
     private var controlsVisible = false
+    private var controlsLeaving = false
 
     override var isFlipped: Bool { true }
 
@@ -1528,15 +1529,19 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
 
     private func showControls() {
         guard !controlsVisible else {
+            // A delayed reveal is already waiting on the outgoing controls.
+            guard !controlsLeaving else { return }
             hostingView.isHidden = false
             hostingView.alphaValue = 1
             return
         }
         controlsVisible = true
+        // Wait for the previous step's controls to finish leaving first.
         RelayLayerMotion.animateIn(
             hostingView,
             style: .element,
-            duration: OnboardingFlowMotion.controlsRevealDuration
+            duration: OnboardingFlowMotion.controlsRevealDuration,
+            delay: controlsLeaving ? RelayMotion.replacementDelay : 0
         ) { [weak self] in
             guard let self, self.controlsVisible else { return }
             removeRelayMotionBlur(from: self.hostingView)
@@ -1554,10 +1559,12 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
         holder.wantsLayer = true
         addSubview(holder, positioned: .above, relativeTo: hostingView)
         controlsVisible = false
+        controlsLeaving = true
         hostingView.alphaValue = 0
         hostingView.isHidden = true
-        RelayLayerMotion.animateOut(holder, style: .element, hidesWhenDone: false) { [weak holder] in
+        RelayLayerMotion.animateOut(holder, style: .element, hidesWhenDone: false) { [weak self, weak holder] in
             holder?.removeFromSuperview()
+            self?.controlsLeaving = false
         }
     }
 }
@@ -1702,10 +1709,10 @@ struct OnboardingRuntimeProgressView: View {
                 ongoingActivityIndicator
             }
             .frame(maxWidth: 360)
-            .transition(.relayElement)
+            .transition(.relayReplacing(.element))
         } else {
             ongoingActivityIndicator
-                .transition(.relayElement)
+                .transition(.relayReplacing(.element))
         }
     }
 
@@ -1750,20 +1757,23 @@ private struct OnboardingIntroRuntimePromptView: View {
         .accessibilityElement(children: .contain)
     }
 
+    private var runningProgress: Double? {
+        if case .running(_, let progress) = presentation.status { return progress }
+        return nil
+    }
+
     private var runtimeStatus: some View {
         ZStack {
             switch presentation.status {
-            case .idle:
-                OnboardingRuntimeProgressView(progress: nil, reduceMotion: reduceMotion)
-                    .transition(.relayElement)
-            case .running(_, let progress):
-                OnboardingRuntimeProgressView(progress: progress, reduceMotion: reduceMotion)
-                    .transition(.relayElement)
+            case .idle, .running:
+                // One branch, so starting the install keeps the same spinner.
+                OnboardingRuntimeProgressView(progress: runningProgress, reduceMotion: reduceMotion)
+                    .transition(.relayReplacing(.element))
             case .succeeded:
                 Image(systemName: "checkmark.circle.fill")
                     .font(AppTypography.symbolFont(size: 20, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.82))
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
                     .accessibilityLabel("Setup complete")
             case .failed(let errorMessage):
                 Text(errorMessage)
@@ -1773,7 +1783,7 @@ private struct OnboardingIntroRuntimePromptView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
                     .relayTextSwap(errorMessage, alignment: .center)
-                    .transition(.relayText)
+                    .transition(.relayReplacing(.text))
             }
         }
         .frame(minHeight: 24)
@@ -1809,7 +1819,7 @@ struct OnboardingIntroAgentLoginPromptView: View {
                         Text("Signed in.")
                             .font(AppTypography.font(.body))
                             .foregroundStyle(.white.opacity(0.72))
-                            .transition(.relayText)
+                            .transition(.relayReplacing(.text))
                     } else {
                         VStack(spacing: 24) {
                             OnboardingIntroWhiteActionButton(
@@ -1826,7 +1836,7 @@ struct OnboardingIntroAgentLoginPromptView: View {
                                     .accessibilityHint(Self.continueWithoutSignInNote)
                             }
                         }
-                        .transition(.relayElement)
+                        .transition(.relayReplacing(.element))
                     }
                 }
 

@@ -158,7 +158,8 @@ final class BoardRevealTransitionTests: XCTestCase {
         XCTAssertEqual(hasRelayBlurFilter(contentLayer), !reduceMotion, "Content sharpens as it arrives")
         let rise = try XCTUnwrap(yOffsetAnimation())
         XCTAssertEqual(rise.to, 0)
-        waitForAnimations(BoardRevealTransitionTiming.contentRevealDuration + 0.25)
+        // The content waits for the loading label to finish leaving.
+        waitForAnimations(RelayMotion.replacementDelay + BoardRevealTransitionTiming.contentRevealDuration + 0.25)
 
         let restingCenter = contentCenter()
         XCTAssertEqual(contentContainer.alphaValue, 1, accuracy: 0.01)

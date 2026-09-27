@@ -31,6 +31,36 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(views.documentView.frame.maxY - views.hostingView.frame.maxY, 0)
     }
 
+    func testRowsAboveGrowingContentStayStillWhileItAnimatesIn() throws {
+        let model = ScrollGrowthModel()
+        let host = NSHostingView(rootView: BoardOverlayScrollView {
+            ScrollGrowthFixture(model: model)
+        })
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+
+        let marker = try XCTUnwrap(findGrowthMarker(in: host))
+        let resting = marker.convert(marker.bounds, to: nil).minY
+        model.expanded = true
+
+        // Laying the taller content out at the old height first made SwiftUI
+        // animate unchanged rows in from below once the host grew.
+        var drift: CGFloat = 0
+        for _ in 0..<24 {
+            RunLoop.main.run(until: Date().addingTimeInterval(1.0 / 60.0))
+            drift = max(drift, abs(marker.convert(marker.bounds, to: nil).minY - resting))
+        }
+        XCTAssertEqual(drift, 0, accuracy: 0.5)
+    }
+
     func testTallContentExpandsDocumentForScrollingWithReachableEdges() throws {
         let container = BoardOverlayScrollContainer(rootView: AnyView(Rectangle().frame(height: 520)))
 
@@ -1775,6 +1805,18 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         )
     }
 
+    private func findGrowthMarker(in view: NSView) -> ScrollGrowthMarkerView? {
+        if let marker = view as? ScrollGrowthMarkerView {
+            return marker
+        }
+        for subview in view.subviews {
+            if let match = findGrowthMarker(in: subview) {
+                return match
+            }
+        }
+        return nil
+    }
+
     private func findFirstCardMarker(in view: NSView) -> ProgramLaneFirstCardMarkerView? {
         if let marker = view as? ProgramLaneFirstCardMarkerView {
             return marker
@@ -2358,4 +2400,35 @@ private struct ProgramLaneFirstCardMarker: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: ProgramLaneFirstCardMarkerView, context: Context) {}
+}
+
+private final class ScrollGrowthModel: ObservableObject {
+    @Published var expanded = false
+}
+
+private struct ScrollGrowthFixture: View {
+    @ObservedObject var model: ScrollGrowthModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ScrollGrowthMarker()
+                .frame(width: 20, height: 20)
+            if model.expanded {
+                Rectangle()
+                    .frame(height: 900)
+                    .transition(.relayElement)
+            }
+        }
+        .animation(RelayMotion.change, value: model.expanded)
+    }
+}
+
+private final class ScrollGrowthMarkerView: NSView {}
+
+private struct ScrollGrowthMarker: NSViewRepresentable {
+    func makeNSView(context: Context) -> ScrollGrowthMarkerView {
+        ScrollGrowthMarkerView()
+    }
+
+    func updateNSView(_ nsView: ScrollGrowthMarkerView, context: Context) {}
 }

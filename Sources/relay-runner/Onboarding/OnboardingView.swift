@@ -302,20 +302,20 @@ struct OnboardingView: View {
             ZStack {
                 permissionView(for: kind)
                     .id(step)
-                    .transition(.relaySurface)
+                    .transition(.relayReplacing(.surface))
             }
-            .transition(.relaySurface)
+            .transition(.relayReplacing(.surface))
         } else {
             SettingsStack {
                 SettingsSection {
                     ZStack(alignment: .topLeading) {
                         content
                             .id(step)
-                            .transition(.relaySurface)
+                            .transition(.relayReplacing(.surface))
                     }
                 }
             }
-            .transition(.relaySurface)
+            .transition(.relayReplacing(.surface))
         }
     }
 
@@ -869,15 +869,15 @@ struct OnboardingView: View {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
                 .font(AppTypography.symbolFont(size: 17, weight: .semibold))
-                .transition(.relayElement)
+                .transition(.relayReplacing(.element))
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
                 .font(AppTypography.font(.screenTitle))
-                .transition(.relayElement)
+                .transition(.relayReplacing(.element))
         case .idle, .running:
             ProgressView().controlSize(.small)
-                .transition(.relayElement)
+                .transition(.relayReplacing(.element))
         }
     }
 
@@ -891,7 +891,7 @@ struct OnboardingView: View {
                     .font(AppTypography.font(.body))
                     .foregroundStyle(.secondary)
             }
-            .transition(.relayElement)
+            .transition(.relayReplacing(.element))
         case .running(let message, let progress):
             VStack(alignment: .leading, spacing: 8) {
                 // Determinate bar once relay-bridge has emitted at least
@@ -904,10 +904,10 @@ struct OnboardingView: View {
                         ProgressView(value: progress, total: 1.0)
                             .progressViewStyle(.linear)
                             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: progress)
-                            .transition(.relayElement)
+                            .transition(.relayReplacing(.element))
                     } else {
                         ProgressView().controlSize(.small)
-                            .transition(.relayElement)
+                            .transition(.relayReplacing(.element))
                     }
                 }
                 // Streamed installer output updates in place.
@@ -918,12 +918,12 @@ struct OnboardingView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: progress == nil)
-            .transition(.relayElement)
+            .transition(.relayReplacing(.element))
         case .succeeded:
             Text("Done — Python environment ready.")
                 .font(AppTypography.font(.body))
                 .foregroundStyle(.green)
-                .transition(.relayText)
+                .transition(.relayReplacing(.text))
         case .failed(let message):
             VStack(alignment: .leading, spacing: 8) {
                 Text("Setup failed.")
@@ -945,7 +945,7 @@ struct OnboardingView: View {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(Color.orange.opacity(0.35))
             )
-            .transition(.relayElement)
+            .transition(.relayReplacing(.element))
         }
     }
 
@@ -957,12 +957,12 @@ struct OnboardingView: View {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                             .font(AppTypography.symbolFont(size: 17, weight: .semibold))
-                            .transition(.relayElement)
+                            .transition(.relayReplacing(.element))
                     } else {
                         Image(systemName: "circle")
                             .foregroundStyle(.secondary)
                             .font(AppTypography.font(.screenTitle))
-                            .transition(.relayElement)
+                            .transition(.relayReplacing(.element))
                     }
                 }
                 Text("Sign in to your agent")
@@ -973,7 +973,7 @@ struct OnboardingView: View {
                     Text("Signed in — you're ready to go.")
                         .font(AppTypography.font(.body))
                         .foregroundStyle(.green)
-                        .transition(.relayText)
+                        .transition(.relayReplacing(.text))
                 } else {
                     Text("Click the button below. A Terminal window will open and prompt you to sign in. This window will update automatically when you're done.")
                         .font(AppTypography.font(.body))
@@ -985,7 +985,7 @@ struct OnboardingView: View {
                             RoundedRectangle(cornerRadius: 6)
                                 .stroke(Color.secondary.opacity(0.25))
                         )
-                        .transition(.relayElement)
+                        .transition(.relayReplacing(.element))
                 }
             }
         }
@@ -1033,14 +1033,14 @@ struct OnboardingView: View {
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .relayTextSwap(detailPhase, alignment: .center)
-                        .transition(.relayText)
+                        .transition(.relayReplacing(.text))
                 } else if !voiceReady {
                     Text(readiness.detail)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .relayTextSwap(readiness.detail, alignment: .center)
-                        .transition(.relayText)
+                        .transition(.relayReplacing(.text))
                 } else {
                     VStack(spacing: 16) {
                         if showsWorkingDirectoryPicker {
@@ -1076,7 +1076,7 @@ struct OnboardingView: View {
                             .font(AppTypography.font(.caption))
                             .foregroundStyle(.secondary)
                     }
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
                 }
             }
             Spacer(minLength: 4)
@@ -1869,17 +1869,17 @@ struct OnboardingView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .font(AppTypography.symbolFont(size: 17, weight: .semibold))
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
             case .denied, .notDetermined:
                 Image(systemName: "circle")
                     .foregroundStyle(.secondary)
                     .font(AppTypography.font(.screenTitle))
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
             case .restricted:
                 Image(systemName: "lock.fill")
                     .foregroundStyle(.orange)
                     .font(AppTypography.symbolFont(size: 17, weight: .semibold))
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
             }
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: status)
@@ -2057,6 +2057,7 @@ struct OnboardingPermissionPromptView: View {
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .minimumScaleFactor(0.72)
+                .relayTextSwap(presentation.prompt, alignment: .center)
                 .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
                 .accessibilityAddTraits(.isHeader)
 

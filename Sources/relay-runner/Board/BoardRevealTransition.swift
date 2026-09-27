@@ -296,25 +296,44 @@ final class BoardRevealContainerView: NSView {
         contentContainerView.isHidden = false
         contentContainerView.alphaValue = 0
         setContentYOffset(hiddenContentYOffset)
+        // The Workspace takes the loading label's place only once it has left.
+        let delay = revealView.loadingLabelExitRemaining
         animateContentYOffset(
             from: hiddenContentYOffset,
             to: 0,
             duration: BoardRevealTransitionTiming.contentRevealDuration,
-            timing: Self.revealTiming
+            timing: Self.revealTiming,
+            delay: delay
         )
         let blurGeneration = animateContentBlur(
             from: hiddenContentBlurRadius,
             to: 0,
             duration: BoardRevealTransitionTiming.contentRevealDuration,
-            timing: Self.revealTiming
+            timing: Self.revealTiming,
+            delay: delay
         )
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = BoardRevealTransitionTiming.contentRevealDuration
-            context.timingFunction = Self.revealTiming
-            contentContainerView.animator().alphaValue = 1
-        } completionHandler: { [weak self] in
-            self?.removeContentBlur(ifCurrent: blurGeneration)
-            completion?()
+        let fade: () -> Void = { [weak self] in
+            guard let self else { return }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = BoardRevealTransitionTiming.contentRevealDuration
+                context.timingFunction = Self.revealTiming
+                self.contentContainerView.animator().alphaValue = 1
+            } completionHandler: { [weak self] in
+                self?.removeContentBlur(ifCurrent: blurGeneration)
+                completion?()
+            }
+        }
+        guard delay > 0 else {
+            fade()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            // A hide that starts during the wait supersedes this reveal.
+            guard let self, blurGeneration == self.contentBlurGeneration else {
+                completion?()
+                return
+            }
+            fade()
         }
     }
 
@@ -356,7 +375,8 @@ final class BoardRevealContainerView: NSView {
         from: CGFloat,
         to: CGFloat,
         duration: CFTimeInterval,
-        timing: CAMediaTimingFunction
+        timing: CAMediaTimingFunction,
+        delay: CFTimeInterval = 0
     ) {
         let animation = CABasicAnimation(keyPath: "transform.translation.y")
         animation.fromValue = from
@@ -364,6 +384,10 @@ final class BoardRevealContainerView: NSView {
         animation.duration = duration
         animation.timingFunction = timing
         animation.fillMode = .forwards
+        if delay > 0 {
+            animation.beginTime = CACurrentMediaTime() + delay
+            animation.fillMode = .both
+        }
         animation.isRemovedOnCompletion = false
         contentContainerView.layer?.add(animation, forKey: "boardRevealContentYOffset")
         setContentYOffset(to)
@@ -376,7 +400,8 @@ final class BoardRevealContainerView: NSView {
         from: CGFloat,
         to: CGFloat,
         duration: CFTimeInterval,
-        timing: CAMediaTimingFunction
+        timing: CAMediaTimingFunction,
+        delay: CFTimeInterval = 0
     ) -> Int {
         contentBlurGeneration += 1
         guard !reduceMotion else { return contentBlurGeneration }
@@ -391,6 +416,10 @@ final class BoardRevealContainerView: NSView {
         animation.toValue = to
         animation.duration = duration
         animation.timingFunction = timing
+        if delay > 0 {
+            animation.beginTime = CACurrentMediaTime() + delay
+            animation.fillMode = .backwards
+        }
         layer.add(animation, forKey: Self.contentBlurAnimationKey)
         return contentBlurGeneration
     }
@@ -429,10 +458,16 @@ private final class BoardRevealSurfaceView: NSView {
     private var surfaceFrame: CGRect
     private var loading = false
     private var loadingLabelVisible = false
+    private var loadingLabelExitEndsAt: CFTimeInterval = 0
     private var animationTimer: Timer?
     private var animationCompletion: (() -> Void)?
 
     override var isFlipped: Bool { true }
+
+    /// How long the loading label still needs to finish leaving.
+    var loadingLabelExitRemaining: TimeInterval {
+        max(0, loadingLabelExitEndsAt - CACurrentMediaTime())
+    }
 
     init(frame: NSRect, plan: BoardRevealTransitionPlan) {
         self.plan = plan
@@ -608,8 +643,10 @@ private final class BoardRevealSurfaceView: NSView {
             ? (visible ? RelayMotion.enterDuration : RelayMotion.exitDuration)
             : 0
         if visible {
+            loadingLabelExitEndsAt = 0
             RelayLayerMotion.animateIn(loadingLabel, style: .text, duration: duration)
         } else {
+            loadingLabelExitEndsAt = CACurrentMediaTime() + duration
             RelayLayerMotion.animateOut(loadingLabel, style: .text, duration: duration)
         }
     }

@@ -722,7 +722,7 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertTrue(leaveWorking.shouldAnimatePlacement)
     }
 
-    func testLabelChangesCrossfadeHorizontallyThroughABlur() {
+    func testLabelChangesSwapHorizontallyThroughABlurOneAtATime() {
         var motion = NotchContentMotion()
         motion.labelChanged(from: nil, width: 0, to: "Listening", now: 10)
         XCTAssertTrue(motion.departingLabels.isEmpty)
@@ -751,7 +751,24 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertGreaterThan(midway.blur, 0)
         XCTAssertTrue(motion.isAnimating(now: 11.1))
 
-        let settled = 11 + RelayMotion.enterDuration + 0.001
+        // The replacement waits until the outgoing label has gone.
+        XCTAssertEqual(
+            motion.arrivalAppearance(now: 11 + RelayMotion.exitDuration / 2, reduceMotion: false).alpha,
+            0
+        )
+        XCTAssertEqual(
+            motion.departureAppearance(of: departing, now: 11 + RelayMotion.replacementDelay, reduceMotion: false).alpha,
+            0,
+            accuracy: 0.001
+        )
+        let arrivingAfterExit = motion.arrivalAppearance(
+            now: 11 + RelayMotion.replacementDelay + RelayMotion.enterDuration / 2,
+            reduceMotion: false
+        )
+        XCTAssertGreaterThan(arrivingAfterExit.alpha, 0)
+
+        let settled = 11 + RelayMotion.replacementDelay + RelayMotion.enterDuration + 0.001
+        XCTAssertEqual(motion.arrivalAppearance(now: settled, reduceMotion: false), .resting)
         motion.prune(now: settled)
         XCTAssertTrue(motion.departingLabels.isEmpty)
         XCTAssertFalse(motion.isAnimating(now: settled))
@@ -760,7 +777,8 @@ final class NotchStatusPlacementTests: XCTestCase {
     func testReducedMotionLabelTransitionsOnlyFade() {
         var motion = NotchContentMotion()
         motion.labelChanged(from: "Listening", width: 80, to: "Playing", now: 0)
-        let arriving = motion.arrivalAppearance(now: 0.1, reduceMotion: true)
+        XCTAssertEqual(motion.arrivalAppearance(now: 0.1, reduceMotion: true).alpha, 0)
+        let arriving = motion.arrivalAppearance(now: RelayMotion.replacementDelay + 0.1, reduceMotion: true)
         XCTAssertGreaterThan(arriving.alpha, 0)
         XCTAssertEqual(arriving.offset, 0)
         XCTAssertEqual(arriving.blur, 0)
