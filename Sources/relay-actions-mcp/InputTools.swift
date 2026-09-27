@@ -11,14 +11,19 @@ import Foundation
 
 struct ClickTool: MCPTool {
     let name = "click"
-    let description = """
+    // Claude sessions get the text without the retired `propose_action` step;
+    // other clients keep the released description byte for byte.
+    let claudeDescription = """
         Post a mouse click at the given pixel coordinates. x/y are in the SAME pixel \
         space as the most recent `screenshot` tool output — read the coordinate directly \
         off the screenshot image and pass it through. `button` defaults to 'left'. \
-        `modifiers` is an optional array of any of: 'cmd', 'shift', 'option', 'control'. \
-        Call `propose_action` first for any state-changing click so the user can confirm \
-        the action accurately.
+        `modifiers` is an optional array of any of: 'cmd', 'shift', 'option', 'control'.
         """
+    var description: String {
+        claudeDescription
+            + " Call `propose_action` first for any state-changing click so the user can confirm"
+            + " the action accurately."
+    }
 
     var inputSchema: [String: Any] {
         [

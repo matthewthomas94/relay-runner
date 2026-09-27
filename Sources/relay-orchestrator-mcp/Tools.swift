@@ -977,6 +977,27 @@ struct SessionCaptureTool: MCPTool {
     }
 }
 
+// MARK: - get_relay_instructions
+
+// Claude Code truncates `initialize` instructions at 2048 characters, so
+// `claude-code` clients get a compact summary and fetch the full rules here.
+// Read-only; the server advertises it to `claude-code` clients only.
+struct GetRelayInstructionsTool: MCPTool {
+    let name = "get_relay_instructions"
+    let description = """
+        Return the full Relay Runner orchestrator rules (read-only). The initialize instructions are \
+        a compact summary; read these before ticket, dispatch, review, spike, or voice-turn work.
+        """
+
+    var inputSchema: [String: Any] {
+        ["type": "object", "properties": [String: Any]()]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        [["type": "text", "text": Instructions.claudeFull]]
+    }
+}
+
 // MARK: - URL escaping
 
 private func urlEscape(_ s: String) -> String {

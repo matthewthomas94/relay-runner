@@ -90,10 +90,10 @@ final class MCPServer {
         }
     }
 
-    private func dispatch(method: String, params: [String: Any]) async throws -> Any {
+    func dispatch(method: String, params: [String: Any]) async throws -> Any {
         switch method {
         case "initialize":
-            return [
+            var result: [String: Any] = [
                 "protocolVersion": protocolVersion,
                 "capabilities": [
                     "tools": [String: Any](),
@@ -103,10 +103,22 @@ final class MCPServer {
                     "version": serverVersion,
                 ],
             ]
+            // Only `claude-code` gets the look-at-screen rule (generated from
+            // services/instructions/compact/); other clients keep the released
+            // response with no instructions.
+            let clientInfo = params["clientInfo"] as? [String: Any]
+            if clientInfo?["name"] as? String == "claude-code" {
+                result["instructions"] = Instructions.claudeCompact
+            }
+            return result
 
         case "notifications/initialized", "notifications/cancelled":
             // Notifications — no response. Returning anything is harmless because the caller
             // checks `isNotification` before sending.
+            return [String: Any]()
+
+        case "ping":
+            // MCP spec: ping is answered with an empty result.
             return [String: Any]()
 
         case "tools/list":
