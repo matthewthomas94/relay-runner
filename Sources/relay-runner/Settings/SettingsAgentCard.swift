@@ -73,10 +73,12 @@ struct SettingsAgentCard: View {
                     .foregroundStyle(SettingsSurfaceColor.primaryText)
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
+                    .relayTextSwap(presentation.name, alignment: .center)
                 Text(presentation.subtitle)
                     .font(AppTypography.font(.settingsDescription, size: 12))
                     .foregroundStyle(SettingsSurfaceColor.secondaryText)
                     .multilineTextAlignment(.center)
+                    .relayTextSwap(presentation.subtitle, alignment: .center)
             }
             .padding(.horizontal, 24)
             .padding(.top, 61)
@@ -115,6 +117,7 @@ final class SettingsAgentParticleHostView: NSView {
     private var windowObservation: NSObjectProtocol?
     private var theme: ParticleFieldRenderer.Theme = .idle
     private var reduceMotion = false
+    private(set) var showsField = false
 
     init() {
         super.init(frame: .zero)
@@ -173,6 +176,20 @@ final class SettingsAgentParticleHostView: NSView {
             && window?.isMiniaturized == false
             && !isHiddenOrHasHiddenAncestor
         renderer.transition(to: visible ? theme : nil, reduceMotion: reduceMotion)
+        guard visible != showsField else { return }
+        showsField = visible
+        if visible { revealField() }
+    }
+
+    /// The orb rises into the card as it sharpens. Its blur filter is only
+    /// attached for the entrance because the field redraws every frame.
+    private func revealField() {
+        RelayLayerMotion.animateIn(self, style: .surface) { [weak self] in
+            guard let layer = self?.layer, self?.showsField == true else { return }
+            layer.filters = layer.filters?.filter {
+                ($0 as? CIFilter)?.name != RelayLayerMotion.blurFilterName
+            }
+        }
     }
 
     var isAnimationRunning: Bool { renderer.isAnimationRunning }
