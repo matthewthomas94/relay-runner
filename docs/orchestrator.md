@@ -246,7 +246,7 @@ Artifact defaults and legacy offers remain behind the [signed installed verifica
 ```bash
 codex mcp list | grep relay-orchestrator
 ```
-Re-run if absent: `scripts/relay-orchestrator --install`. For Claude, use `claude mcp list`.
+Re-run if absent: `scripts/relay-orchestrator --install`. For Claude, use `claude mcp list`. Setup repairs a Relay-registered entry that points at an old app path, but it only reports a project `.mcp.json` or `.codex/config.toml` entry that overrides the registration; edit or remove that project entry yourself.
 
 **Tools error with "Orchestrator daemon is not reachable".** The daemon isn't running. Check:
 ```bash
@@ -256,12 +256,11 @@ tail /tmp/relay_orchestrator.err
 ```
 Restart with `scripts/relay-orchestrator --start`.
 
-**Installed skills still show older foreground-session guidance.** Re-generate the installed command and skill files from the repo sources:
+**Installed skills still show older foreground-session guidance.** Every Start Session refreshes the installed command and skill files that are still exactly what Relay installed, and keeps files you edited (Relay records each installed file's hash in `~/Library/Application Support/relay-runner/installed-commands.sha256`). To overwrite edited files with the current repo sources:
 ```bash
 scripts/relay-bridge --install-skills
-scripts/relay-orchestrator --install-skills
 ```
-If you're validating the bundled app instead of the repo checkout, rebuild or reinstall the app first so the bundled scripts match the updated source.
+`scripts/relay-bridge --refresh-skills` runs the edit-preserving refresh by hand. If you're validating the bundled app instead of the repo checkout, rebuild or reinstall the app first so the bundled scripts match the updated source.
 
 **Worker hangs.** Cancel and inspect:
 ```

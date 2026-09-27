@@ -126,7 +126,7 @@ struct GeneralSettingsTab: View {
                 SettingsRow {
                     SettingsRowLabel(
                         "Relay Skills",
-                        description: "Adds relay-bridge and relay-stop support to Codex and Claude Code"
+                        description: "Adds relay-bridge, relay-stop, relay-workflow, and relay-dispatch to Codex and Claude Code"
                     )
                     Spacer()
                     SettingsInlineStatus(
@@ -149,7 +149,7 @@ struct GeneralSettingsTab: View {
                     Button("Overwrite", role: .destructive) { doInstallSkill() }
                     Button("Cancel", role: .cancel) { }
                 } message: {
-                    Text("This will replace the installed Relay Runner voice command/skill files with the default versions.")
+                    Text("This will replace the installed Relay Runner command/skill files, including any you edited, with the default versions.")
                 }
             }
         }

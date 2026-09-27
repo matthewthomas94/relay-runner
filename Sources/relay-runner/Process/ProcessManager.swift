@@ -1046,12 +1046,12 @@ final class ProcessManager {
         // Relay startup is delivered as the prompt arg; if its command/skill
         // file is missing or stale, the agent would treat the string as literal
         // user input or follow obsolete instructions. The skill content lives in
-        // the relay-bridge bash script as the source of truth, so we
-        // unconditionally reinstall on every launch — cheap (single file
-        // write, ~10ms) and ensures the user always runs against the
-        // shipped version of the skill text. Onboarding already gave consent.
+        // the relay-bridge bash script as the source of truth, so every launch
+        // refreshes it — cheap, and after an app upgrade it brings unmodified
+        // Relay-installed files to the shipped version. Files the user edited
+        // are kept; Settings → Reinstall is the explicit overwrite.
         NSLog("[ProcessManager] Refreshing Relay skill files before launch.")
-        installSkill()
+        installSkill(force: false)
 
         let launcher = "/tmp/voice_bridge_launch.command"
         let providerSessionID = voiceDelivery == .appOwned
@@ -1914,32 +1914,38 @@ final class ProcessManager {
             && fm.fileExists(atPath: Self.codexStopSkillPath.path)
     }
 
-    /// Force-install the relay-bridge and relay-stop command/skill files by
-    /// shelling out to `relay-bridge --install-skills`. The content itself
-    /// lives in the bash script (single source of truth — the
+    /// Install the Relay command/skill files (relay-bridge, relay-stop,
+    /// relay-workflow, relay-dispatch) by shelling out to relay-bridge. The
+    /// content itself lives in the bash script (single source of truth — the
     /// onboarding bootstrap and this Settings action both read from the
-    /// same place). Always overwrites — Settings shows an explicit
-    /// confirmation alert before this is reached.
+    /// same place). `force` overwrites — Settings shows an explicit
+    /// confirmation alert before this is reached. Otherwise only missing
+    /// files and unmodified Relay installs are written; user edits are kept.
     @discardableResult
-    func installSkill() -> Bool {
+    func installSkill(force: Bool = true) -> Bool {
+        let flag = Self.skillInstallArgument(force: force)
         let proc = Process()
         proc.executableURL = bundledRelayBridge
-        proc.arguments = ["--install-skills"]
+        proc.arguments = [flag]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         do {
             try proc.run()
             proc.waitUntilExit()
             if proc.terminationStatus == 0 {
-                NSLog("[ProcessManager] Installed relay skills via \(bundledRelayBridge.path)")
+                NSLog("[ProcessManager] Installed relay skills via \(bundledRelayBridge.path) \(flag)")
                 return true
             }
-            NSLog("[ProcessManager] relay-bridge --install-skills exited with code \(proc.terminationStatus)")
+            NSLog("[ProcessManager] relay-bridge \(flag) exited with code \(proc.terminationStatus)")
             return false
         } catch {
-            NSLog("[ProcessManager] Failed to launch relay-bridge --install-skills: \(error)")
+            NSLog("[ProcessManager] Failed to launch relay-bridge \(flag): \(error)")
             return false
         }
+    }
+
+    static func skillInstallArgument(force: Bool) -> String {
+        force ? "--install-skills" : "--refresh-skills"
     }
 
     // MARK: - Voice preview

@@ -676,6 +676,11 @@ final class ProcessManagerLaunchTests: XCTestCase {
         }
     }
 
+    func testLaunchRefreshKeepsSkillEditsWhileSettingsReinstallOverwrites() {
+        XCTAssertEqual(ProcessManager.skillInstallArgument(force: false), "--refresh-skills")
+        XCTAssertEqual(ProcessManager.skillInstallArgument(force: true), "--install-skills")
+    }
+
     func testCodexBinaryResolutionPrefersCurrentChatGPTAppThenLegacyCodexApp() {
         let chatGPT = "/Applications/ChatGPT.app/Contents/Resources/codex"
         let legacy = "/Applications/Codex.app/Contents/Resources/codex"

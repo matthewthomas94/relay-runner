@@ -449,6 +449,9 @@ chmod +x "$venv/python"
                 scripts / "relay-bridge",
                 """#!/bin/bash
 set -e
+# Skill refresh and MCP registration are delegated here too; only the
+# nested venv bootstrap reports progress.
+[ "${1:-}" = "--venv-only" ] || exit 0
 max_percent="${RELAY_PROGRESS_MAX_PERCENT:-100}"
 echo "RELAY_PROGRESS:$((100 * max_percent / 100)):Nested runtime ready." >&2
 venv="$HOME/Library/Application Support/relay-runner/services/.venv/bin"
