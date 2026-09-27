@@ -39,8 +39,12 @@ struct BoardOverlayScrollView<Content: View>: NSViewRepresentable {
     }
 
     private var scrollContent: some View {
+        // Pin content to the top at any host height. The host briefly lays
+        // out grown content at its previous height; centred there, rows that
+        // never moved would animate in from below once the host catches up.
         content
             .padding(contentInsets)
+            .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
     }
 }
 
