@@ -6,9 +6,9 @@ Relay Runner supports Codex and Claude Code as equivalent session providers. The
 
 | | Codex | Claude Code |
 | --- | --- | --- |
-| Executable discovery | Bundled Codex executable in ChatGPT.app or Codex.app, followed by configured command resolution. | Configured command or `~/.local/bin/claude`. Onboarding can run Claude's official installer when neither supported CLI is present. |
-| Authentication check | Presence of `~/.codex/auth.json`. | Onboarding checks the `Claude Code-credentials` login-keychain item; every Claude launch then runs the [subscription-only gate](#subscription-only-authentication). |
-| Manual sign-in | `codex login` | `claude /login` |
+| Executable discovery | Bundled Codex executable in ChatGPT.app or Codex.app, followed by configured command resolution. | Configured command, then `~/.local/bin/claude`, `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`, the npm global prefix, and `claude` on the PATH your shell profile sets. Setup runs Claude's official installer when Claude is selected and missing, or when neither supported CLI is present. |
+| Authentication check | Presence of `~/.codex/auth.json`. | Onboarding, Settings and every launch use the [subscription-only gate](#subscription-only-authentication). A keychain login or `loggedIn` status alone is not enough. Setup can finish without sign-in; Claude sessions stay unavailable until the gate passes. |
+| Manual sign-in | `codex login` | `claude auth login` with your Claude.ai subscription account |
 | Relay install | Relay skills and the Relay Actions, Relay Vision, and orchestrator MCP helpers are registered for the available CLI. | Same. |
 
 Relay Runner does not read provider credential values. It checks the local presence needed to avoid launching directly into an authentication failure.

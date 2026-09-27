@@ -109,7 +109,7 @@ Relay Runner attributes Accessibility and Screen Recording to **Relay Runner.app
 
 | | Codex | Claude Code |
 | --- | --- | --- |
-| Authentication | `codex login`; Relay Runner detects the local Codex auth file. | `claude /login`; Relay Runner detects the Claude Code keychain entry. |
+| Authentication | `codex login`; Relay Runner detects the local Codex auth file. | `claude auth login` with your Claude.ai subscription account; Relay Runner verifies that sessions will use that subscription, not an API key. |
 | Session launch | The selected stable model family resolves through the installed Codex catalog. Effort is passed as `model_reasoning_effort`. | The selected stable model alias and supported effort are passed with `--model` and `--effort`. |
 | Permission bypass | Optional `--dangerously-bypass-approvals-and-sandbox`. | Optional `--dangerously-skip-permissions`. |
 | Voice and tools | Same onboarding, project scope, Relay skills, local speech, Workspace, Relay Actions, Relay Vision, tickets, and worker lifecycle. | Same. |

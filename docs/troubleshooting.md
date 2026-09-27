@@ -3,7 +3,7 @@
 ## Start Session cannot find Codex or Claude
 
 - Confirm `codex --version` or `claude --version` works in a normal terminal.
-- Complete `codex login` or `claude /login` for the selected provider.
+- Complete `codex login` or `claude auth login` for the selected provider. For Claude, use your Claude.ai subscription account; **Settings → General** shows whether Relay Runner can verify it.
 - In **Settings → General**, reinstall Relay Skills.
 - If Codex family resolution fails, select a family visible to the installed Codex account; Relay Runner does not silently downgrade it.
 - If a Claude model is unavailable, confirm the account supports that alias and effort level.

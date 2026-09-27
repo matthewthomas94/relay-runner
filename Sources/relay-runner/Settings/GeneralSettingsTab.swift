@@ -17,11 +17,18 @@ struct GeneralSettingsTab: View {
     @State private var skillStatusText: String?
     @State private var skillStatusColor: SettingsSemanticColor = .idle
     @State private var showOverwriteAlert = false
+    @State private var claudeReadiness: ProcessManager.ClaudeSubscriptionCheck?
 
     var body: some View {
         SettingsStack {
             SettingsSection("Agent") {
-                SettingsControlRow("LLM Provider") {
+                SettingsControlRow(
+                    "LLM Provider",
+                    description: Self.providerReadinessDescription(
+                        provider: config.provider,
+                        claudeReadiness: claudeReadiness
+                    )
+                ) {
                     Picker("LLM Provider", selection: providerSelection) {
                         ForEach(GeneralConfig.AgentProvider.allCases) { provider in
                             Text(provider.displayName).tag(provider)
@@ -144,6 +151,36 @@ struct GeneralSettingsTab: View {
                 } message: {
                     Text("This will replace the installed Relay Runner voice command/skill files with the default versions.")
                 }
+            }
+        }
+        .task(id: config.provider) { await refreshProviderReadiness() }
+    }
+
+    /// Claude must be installed and verified on the user's subscription before
+    /// a session can start, so choosing it shows that readiness here rather
+    /// than as a failed session later. Codex shows nothing.
+    static func providerReadinessDescription(
+        provider: GeneralConfig.AgentProvider,
+        claudeReadiness: ProcessManager.ClaudeSubscriptionCheck?
+    ) -> String? {
+        guard provider == .claude else { return nil }
+        switch claudeReadiness {
+        case nil:
+            return "Checking your Claude subscription\u{2026}"
+        case .verified:
+            return "Using your Claude subscription."
+        case .unavailable(let message):
+            return message
+        }
+    }
+
+    private func refreshProviderReadiness() async {
+        claudeReadiness = nil
+        guard config.provider == .claude else { return }
+        let workingDirectory = WorkspaceFolder.url(from: config.working_directory).path
+        claudeReadiness = await withCheckedContinuation { continuation in
+            ClaudeSubscriptionMonitor.shared.refresh(workingDirectory: workingDirectory) {
+                continuation.resume(returning: $0)
             }
         }
     }
