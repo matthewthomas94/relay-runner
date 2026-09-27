@@ -73,4 +73,42 @@ final class RelayMotionTests: XCTestCase {
         flipped.addSubview(child)
         XCTAssertEqual(RelayLayerMotion.hiddenTranslation(for: child, style: .element).height, expected(1))
     }
+
+    @MainActor
+    func testWindowPresentAndDismissRestoreTheRestingFrameAndSurviveAQuickReopen() {
+        _ = NSApplication.shared
+        let window = NSWindow(
+            contentRect: NSRect(x: 200, y: 200, width: 120, height: 80),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        defer { window.orderOut(nil) }
+        let resting = window.frame
+
+        RelayWindowMotion.present(window, makeKey: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(RelayMotion.enterDuration + 0.25))
+        XCTAssertTrue(window.isVisible)
+        XCTAssertEqual(window.alphaValue, 1, accuracy: 0.01)
+        XCTAssertEqual(window.frame, resting)
+
+        var dismissed = false
+        RelayWindowMotion.dismiss(window) { dismissed = true }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        RelayWindowMotion.present(window, makeKey: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(RelayMotion.enterDuration + 0.3))
+
+        XCTAssertTrue(window.isVisible, "a re-presented window must not be ordered out by the stale dismissal")
+        XCTAssertFalse(dismissed)
+        XCTAssertEqual(window.alphaValue, 1, accuracy: 0.01)
+        XCTAssertEqual(window.frame.origin.y, resting.origin.y, accuracy: 0.5)
+
+        RelayWindowMotion.dismiss(window) { dismissed = true }
+        RunLoop.main.run(until: Date().addingTimeInterval(RelayMotion.exitDuration + 0.3))
+        XCTAssertTrue(dismissed)
+        XCTAssertFalse(window.isVisible)
+        XCTAssertEqual(window.frame, resting, "the window rests where it was for next time")
+        XCTAssertEqual(window.alphaValue, 1)
+    }
 }

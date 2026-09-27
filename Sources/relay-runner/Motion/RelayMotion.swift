@@ -416,6 +416,19 @@ enum RelayLayerMotion {
 
 /// Window-level presentation for app panels and windows.
 enum RelayWindowMotion {
+    /// Bumped by every present/dismiss so a dismissal that is overtaken by a
+    /// re-presentation never orders the window out afterwards.
+    private static var generations: [ObjectIdentifier: Int] = [:]
+    /// Where a window rests while it is lowered for its exit.
+    private static var restingFrames: [ObjectIdentifier: NSRect] = [:]
+
+    private static func nextGeneration(for window: NSWindow) -> Int {
+        let id = ObjectIdentifier(window)
+        let generation = (generations[id] ?? 0) + 1
+        generations[id] = generation
+        return generation
+    }
+
     /// Orders a window in by fading it up, raising it a few points, and
     /// sharpening its content.
     static func present(
@@ -424,7 +437,8 @@ enum RelayWindowMotion {
         style: RelayMotion.Style = .surface,
         completion: (() -> Void)? = nil
     ) {
-        let target = window.frame
+        _ = nextGeneration(for: window)
+        let target = restingFrames.removeValue(forKey: ObjectIdentifier(window)) ?? window.frame
         let reduceMotion = RelayLayerMotion.reduceMotion
         let alreadyVisible = window.isVisible && window.alphaValue > 0.99
         guard !alreadyVisible else {
@@ -469,7 +483,10 @@ enum RelayWindowMotion {
             completion?()
             return
         }
-        let resting = window.frame
+        let id = ObjectIdentifier(window)
+        let generation = nextGeneration(for: window)
+        let resting = restingFrames[id] ?? window.frame
+        restingFrames[id] = resting
         let reduceMotion = RelayLayerMotion.reduceMotion
         if let content = window.contentView, !reduceMotion {
             RelayLayerMotion.prepare(content)
@@ -484,6 +501,8 @@ enum RelayWindowMotion {
                 window.animator().setFrame(resting.offsetBy(dx: 0, dy: -style.distance), display: true)
             }
         } completionHandler: {
+            guard generations[id] == generation else { return }
+            restingFrames[id] = nil
             window.orderOut(nil)
             window.setFrame(resting, display: false)
             window.alphaValue = 1
