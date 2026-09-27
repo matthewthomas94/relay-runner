@@ -415,7 +415,7 @@ final class ProgramBoardOverlayController {
                 } else if model.selectedTicketDetail != nil {
                     action = { [weak self] in self?.model.clearSelectedTicket() }
                 } else {
-                    action = { [weak self] in self?.hide() }
+                    return
                 }
                 DispatchQueue.main.async(execute: action)
             }

@@ -12,6 +12,16 @@ enum ProgramBoardBackdropStyle {
     static var backdropHeight: CGFloat {
         BoardSurfaceLayout.columnTopPadding + BoardSurfaceLayout.columnHeight + bottomPadding
     }
+
+    static func contains(_ point: CGPoint, viewportSize: CGSize) -> Bool {
+        let rect = CGRect(
+            origin: .zero,
+            size: CGSize(width: viewportSize.width, height: min(viewportSize.height, backdropHeight))
+        )
+        return ProgramBoardBackdropShape(cornerRadius: bottomCornerRadius)
+            .path(in: rect)
+            .contains(point)
+    }
 }
 
 enum ProgramBoardLayout {
@@ -325,13 +335,13 @@ struct ProgramBoardOverlayView: View {
 
             Color.clear
                 .contentShape(Rectangle())
-                .onTapGesture {
+                .gesture(SpatialTapGesture().onEnded { value in
                     if dotMatrixPresentation.isVisible {
                         dismissActiveModal()
-                    } else {
+                    } else if !ProgramBoardBackdropStyle.contains(value.location, viewportSize: viewportSize) {
                         onDismiss()
                     }
-                }
+                })
 
             WorkspaceMenuBarStrip(
                 workspace: workspace,

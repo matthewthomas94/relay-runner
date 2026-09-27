@@ -83,6 +83,16 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
     }
 
+    func testWorkspaceDismissesOnlyOutsideItsRoundedBackdrop() {
+        let viewport = CGSize(width: 1200, height: 900)
+        let bottom = ProgramBoardBackdropStyle.backdropHeight
+
+        XCTAssertTrue(ProgramBoardBackdropStyle.contains(CGPoint(x: 600, y: 500), viewportSize: viewport))
+        XCTAssertTrue(ProgramBoardBackdropStyle.contains(CGPoint(x: 600, y: bottom - 1), viewportSize: viewport))
+        XCTAssertFalse(ProgramBoardBackdropStyle.contains(CGPoint(x: 600, y: bottom + 1), viewportSize: viewport))
+        XCTAssertFalse(ProgramBoardBackdropStyle.contains(CGPoint(x: 1, y: bottom - 1), viewportSize: viewport))
+    }
+
     func testProgramBoardLayoutUsesCompactHeaderControls() {
         XCTAssertEqual(ProgramBoardLayout.panelHorizontalPadding, 8)
         XCTAssertEqual(ProgramBoardLayout.panelVerticalPadding, 16)
