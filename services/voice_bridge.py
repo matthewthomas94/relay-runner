@@ -4069,6 +4069,22 @@ def _handle_provider_turn_event_control(
             observed_at=payload.get("observed_at"),
         )
         return True
+    if event == "provider_turn_cancelled":
+        # Claude runs no Stop hook for an interrupted turn. The terminal names
+        # the exact turn it interrupted once the PTY is idle again.
+        if provider_turn_broker is None:
+            return PROVIDER_TURN_BROKER_MODE == "legacy"
+        event_id = str(payload.get("event_id") or "").strip()
+        release_reason = str(payload.get("release_reason") or "")
+        if not event_id or release_reason != "provider_interrupted":
+            return False
+        return provider_turn_broker.transition(
+            payload,
+            to_state="cancelled",
+            event_type="provider_interrupted",
+            release_reason=release_reason,
+            event_id=event_id,
+        )
     if event != "provider_terminated":
         return False
     if provider_turn_broker is None:

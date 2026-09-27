@@ -1349,8 +1349,10 @@ def handle_hook_payload(
                 stderr=stderr,
             )
         if event in {"Stop", "StopFailure"}:
-            if payload.get("stop_hook_active"):
-                return False
+            # stop_hook_active marks a continuation after another Stop hook
+            # blocked. This hook never blocks, so there is no loop to break:
+            # a turn still active here completes with this, its real final.
+            # A turn an earlier Stop already completed is a duplicate below.
             return _complete_turn(
                 payload,
                 state_path=state_path,
