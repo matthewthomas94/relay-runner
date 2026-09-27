@@ -957,6 +957,7 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
     private var interactiveHostingView: NSHostingView<PermissionCompanionCard>?
     private var demoPanel: NSPanel?
     private var demoView: PermissionCompanionDemoView?
+    private var interactiveFrame: CGRect?
     private var pollTimer: Timer?
     private var idleTimer: Timer?
     private var activeRequest: PermissionSetupRequest?
@@ -989,10 +990,18 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
         pollTimer = nil
         idleTimer?.invalidate()
         idleTimer = nil
-        interactivePanel?.close()
-        demoPanel?.close()
+        if let interactivePanel {
+            interactivePanel.ignoresMouseEvents = true
+            RelayWindowMotion.dismiss(interactivePanel) {
+                interactivePanel.close()
+            }
+        }
+        if let demoPanel {
+            Self.retireDemoPanel(demoPanel)
+        }
         interactivePanel = nil
         interactiveHostingView = nil
+        interactiveFrame = nil
         demoPanel = nil
         demoView = nil
         activeRequest = nil
@@ -1009,7 +1018,9 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
         pollTimer = nil
         idleTimer?.invalidate()
         idleTimer = nil
-        demoPanel?.close()
+        if let demoPanel {
+            Self.retireDemoPanel(demoPanel)
+        }
         demoPanel = nil
         demoView = nil
         isRealDragActive = false
@@ -1030,11 +1041,17 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
             onReveal: {},
             onOpenSettings: {}
         )
-        let hostingView = NSHostingView(rootView: root)
-        panel.contentView = hostingView
-        interactiveHostingView = hostingView
+        // Updating the mounted card in place lets its content swap to the
+        // granted state with the shared transition.
+        if let hostingView = interactiveHostingView, panel.contentView === hostingView {
+            hostingView.rootView = root
+        } else {
+            let hostingView = NSHostingView(rootView: root)
+            panel.contentView = hostingView
+            interactiveHostingView = hostingView
+        }
         if !panel.isVisible {
-            panel.orderFrontRegardless()
+            RelayWindowMotion.present(panel, makeKey: false)
         }
     }
 
@@ -1133,7 +1150,8 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
             panel.contentView = hostingView
             interactiveHostingView = hostingView
         }
-        panel.setFrame(frame, display: true)
+        let presentsInteractivePanel = !panel.isVisible
+        placeInteractivePanel(panel, at: frame)
         interactivePanel = panel
 
         let demo = demoPanel ?? makeDemoPanel(frame: visibleFrame)
@@ -1162,13 +1180,58 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
         if demo.contentView !== view {
             demo.contentView = view
         }
+        if presentsInteractivePanel {
+            RelayWindowMotion.present(panel, makeKey: false)
+        }
+        let revealsDemoPanel = !demo.isVisible
+        if revealsDemoPanel {
+            demo.alphaValue = 0
+        }
         PermissionCompanionPanelOrdering.apply(
             interactivePanel: panel,
             demoPanel: demo,
             isRealDragActive: isRealDragActive
         )
+        if revealsDemoPanel, demo.isVisible {
+            Self.fade(demo, in: true)
+        }
         demoView = view
         demoPanel = demo
+    }
+
+    /// Positions the card, easing any move once it is on screen. A direct
+    /// frame change would be overridden by an entrance that is still running.
+    private func placeInteractivePanel(_ panel: NSPanel, at frame: CGRect) {
+        defer { interactiveFrame = frame }
+        guard panel.isVisible, !RelayLayerMotion.reduceMotion else {
+            panel.setFrame(frame, display: true)
+            return
+        }
+        guard frame != interactiveFrame else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = RelayMotion.changeDuration
+            context.timingFunction = RelayMotion.changeCurve.mediaTimingFunction
+            panel.animator().setFrame(frame, display: true)
+        }
+    }
+
+    /// The demo overlay spans the whole visible frame, so it only fades,
+    /// like a backdrop, instead of travelling or blurring.
+    private static func fade(_ panel: NSPanel, in fadingIn: Bool, completion: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = fadingIn ? RelayMotion.enterDuration : RelayMotion.exitDuration
+            context.timingFunction = (fadingIn ? RelayMotion.enterCurve : RelayMotion.exitCurve)
+                .mediaTimingFunction
+            panel.animator().alphaValue = fadingIn ? 1 : 0
+        } completionHandler: {
+            completion?()
+        }
+    }
+
+    private static func retireDemoPanel(_ panel: NSPanel) {
+        fade(panel, in: false) {
+            panel.close()
+        }
     }
 
     private func makeInteractivePanel() -> NSPanel {
@@ -1249,7 +1312,12 @@ final class PermissionSetupCompanionController: PermissionSetupCompanionControll
             idleTimer?.invalidate()
             idleTimer = nil
             interactionModel.beginRealDrag()
-            demoPanel?.orderOut(nil)
+            if let demoPanel {
+                // Polling orders the demo back in, faded up, once the drag ends.
+                Self.fade(demoPanel, in: false) { [weak demoPanel] in
+                    demoPanel?.orderOut(nil)
+                }
+            }
             timerID = nil
         } else {
             timerID = interactionModel.endRealDrag()
@@ -1283,6 +1351,7 @@ private struct PermissionCompanionCard: View {
 
     var body: some View {
         content
+        .relaySwap(isGranted)
         .padding(.top, 11)
         .padding(.bottom, 9)
         .frame(

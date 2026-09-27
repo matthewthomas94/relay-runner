@@ -2,6 +2,7 @@ import SwiftUI
 
 struct STTSettingsTab: View {
     @Binding var config: SttConfig
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         SettingsStack {
@@ -23,6 +24,7 @@ struct STTSettingsTab: View {
                         Text(Self.inputDeviceDisplayName(config.input_device))
                             .font(AppTypography.font(.body))
                             .foregroundStyle(SettingsSurfaceColor.primaryText)
+                            .relayTextSwap(Self.inputDeviceDisplayName(config.input_device), alignment: .trailing)
                         Text("Read-only")
                             .font(AppTypography.font(.settingsDescription))
                             .foregroundStyle(SettingsSurfaceColor.mutedText)
@@ -39,14 +41,17 @@ struct STTSettingsTab: View {
                         SettingsControlRow("Push-to-talk Key") {
                             KeyCaptureView(label: "Push-to-talk Key", showsLabel: false, value: $config.push_to_talk_key)
                         }
+                        .transition(.relayElement)
                     }
 
                     if config.input_mode == "caps_lock_toggle" {
                         SettingsControlRow("Activation Key") {
                             KeyCaptureView(label: "Activation Key", showsLabel: false, value: $config.activation_key)
                         }
+                        .transition(.relayElement)
                     }
                 }
+                .transition(.relayElement)
             }
 
             SettingsSection("Voice Activity") {
@@ -59,6 +64,7 @@ struct STTSettingsTab: View {
                 }
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: config.input_mode)
     }
 
     static func inputDeviceDisplayName(_ device: String) -> String {

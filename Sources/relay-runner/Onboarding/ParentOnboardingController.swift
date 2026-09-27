@@ -14,6 +14,7 @@ final class ParentOnboardingController {
     /// pings while the window is already open for that parent (the MCP server
     /// fires one on every spawn).
     private var visibleParent: String?
+    private let windowDelegate = ParentOnboardingWindowDelegate()
 
     /// Show the wizard for `parent` if it isn't already visible. No-op if a
     /// window for the same parent is already up. If a window for a *different*
@@ -21,7 +22,7 @@ final class ParentOnboardingController {
     /// in a different terminal, that's the more relevant prompt).
     func show(parent: String) {
         if let existing = windowController?.window, visibleParent == parent {
-            existing.makeKeyAndOrderFront(nil)
+            RelayWindowMotion.present(existing)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
@@ -45,7 +46,9 @@ final class ParentOnboardingController {
         window.setContentSize(NSSize(width: 560, height: 700))
         window.center()
         window.isReleasedWhenClosed = false
-        window.delegate = nil
+        window.delegate = windowDelegate
+        // RelayWindowMotion owns the entrance; skip AppKit's document zoom.
+        window.animationBehavior = .none
 
         // Menu-bar apps default to .accessory. Elevate so the window can take
         // focus and be reached via Cmd-Tab; OnboardingController does the same
@@ -56,14 +59,18 @@ final class ParentOnboardingController {
         let wc = NSWindowController(window: window)
         windowController = wc
         visibleParent = parent
-        wc.showWindow(nil)
+        RelayWindowMotion.present(window)
     }
 
     /// Close the wizard and drop activation policy back to .accessory so the
     /// menu-bar app stops claiming the dock / Cmd-Tab slot. Safe to call
     /// when no window is visible.
     func close() {
-        windowController?.close()
+        if let controller = windowController, let window = controller.window {
+            RelayWindowMotion.dismiss(window) {
+                controller.close()
+            }
+        }
         windowController = nil
         visibleParent = nil
         // Don't downgrade if the main onboarding window is up — it'd hide
@@ -71,5 +78,16 @@ final class ParentOnboardingController {
         // we leave activation policy alone and let OnboardingController
         // restore it when its own flow finishes. Worst case: app stays
         // .regular until the user quits.
+    }
+}
+
+/// Lets the title-bar close button play the same eased dismissal as the
+/// wizard's own button instead of vanishing.
+private final class ParentOnboardingWindowDelegate: NSObject, NSWindowDelegate {
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        RelayWindowMotion.dismiss(sender) {
+            sender.close()
+        }
+        return false
     }
 }

@@ -120,6 +120,7 @@ enum WorkspaceNavigationStyle {
 struct WorkspaceMenuBarStrip: View {
     @Bindable var workspace: WorkspaceViewModel
     let hasActiveSession: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -129,6 +130,7 @@ struct WorkspaceMenuBarStrip: View {
                     width: BoardSurfaceLayout.navigationHeight,
                     height: BoardSurfaceLayout.navigationHeight
                 )
+                .relaySwap(hasActiveSession)
                 .accessibilityLabel(hasActiveSession ? "Relay Runner session active" : "Relay Runner session inactive")
 
             ForEach(workspace.availableTabs) { tab in
@@ -137,9 +139,11 @@ struct WorkspaceMenuBarStrip: View {
                     selected: workspace.selectedTab == tab,
                     action: { workspace.select(tab) }
                 )
+                .transition(.relayElement)
             }
         }
         .frame(height: BoardSurfaceLayout.navigationHeight)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.availableTabs)
         .onTapGesture { }
     }
 }
@@ -169,6 +173,7 @@ struct WorkspaceNavigationButton: View {
     let action: () -> Void
     @State private var isHovered = false
     @FocusState private var isFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
         title: String,
@@ -199,11 +204,15 @@ struct WorkspaceNavigationButton: View {
                             width: WorkspaceNavigationStyle.iconSize,
                             height: WorkspaceNavigationStyle.iconSize
                         )
+                        .relaySwap(systemName)
                 }
+                // Start ↔ End session and note-taker titles swap in place.
                 Text(title)
                     .font(AppTypography.font(.menuTab))
                     .lineLimit(1)
+                    .relayTextSwap(title)
             }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: title)
             .foregroundStyle(
                 Color(
                     .sRGB,
@@ -223,6 +232,9 @@ struct WorkspaceNavigationButton: View {
             .contentShape(
                 RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius)
             )
+            .animation(RelayMotion.hover, value: isHovered)
+            .animation(RelayMotion.hover, value: isFocused)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selected)
         }
         .buttonStyle(.plain)
         .focusable()

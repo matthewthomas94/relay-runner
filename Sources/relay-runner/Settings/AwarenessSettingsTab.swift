@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AwarenessSettingsTab: View {
     @Binding var config: AwarenessConfig
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         SettingsStack {
@@ -32,6 +33,7 @@ struct AwarenessSettingsTab: View {
                             .monospacedDigit()
                             .frame(width: 40, alignment: .trailing)
                     }
+                    .animation(RelayMotion.change(reduceMotion: reduceMotion), value: config.screen_glow)
                 }
             }
         }

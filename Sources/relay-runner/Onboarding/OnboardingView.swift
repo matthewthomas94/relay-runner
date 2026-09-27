@@ -139,6 +139,7 @@ struct OnboardingView: View {
     @State private var autoAdvancedPermissionKinds: Set<PermissionKind> = []
     @State private var activePermissionSetupKind: PermissionKind?
     @State private var setupReadinessRefresh = Date.distantPast
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(permissions: PermissionsManager,
          simplified: Bool,
@@ -285,16 +286,42 @@ struct OnboardingView: View {
     }
 
     var body: some View {
-        Group {
-            if let kind = step.kind {
+        // Outgoing and incoming steps overlap while they transition so the
+        // host doesn't stack them and jump.
+        ZStack(alignment: .top) {
+            stepSurface
+        }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: step)
+    }
+
+    @ViewBuilder
+    private var stepPages: some View {
+        if let kind = step.kind {
+            // Re-identify inside a stable wrapper so the appear/disappear
+            // handlers in `stepLifecycle` don't re-fire between permission steps.
+            ZStack {
                 permissionView(for: kind)
-            } else {
-                SettingsStack {
-                    SettingsSection {
+                    .id(step)
+                    .transition(.relaySurface)
+            }
+            .transition(.relaySurface)
+        } else {
+            SettingsStack {
+                SettingsSection {
+                    ZStack(alignment: .topLeading) {
                         content
+                            .id(step)
+                            .transition(.relaySurface)
                     }
                 }
             }
+            .transition(.relaySurface)
+        }
+    }
+
+    private var stepLifecycle: some View {
+        Group {
+            stepPages
         }
         .onAppear {
             publishPresentation()
@@ -339,6 +366,11 @@ struct OnboardingView: View {
             persistResume()
             publishPresentation()
         }
+    }
+
+    // Split from `stepLifecycle` so the modifier chain type-checks in time.
+    private var stepSurface: some View {
+        stepLifecycle
         .onChange(of: permissions.microphone) { _, new in
             syncSurfaceVisibility()
             autoAdvance(for: .microphone, status: new)
@@ -458,6 +490,7 @@ struct OnboardingView: View {
             setupPlanView
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selectedAgentProvider)
     }
 
     private var setupPlanView: some View {
@@ -474,10 +507,12 @@ struct OnboardingView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.title)
                             .font(AppTypography.font(.body))
+                            .relayTextSwap(item.title)
                         Text(item.detail)
                             .font(AppTypography.font(.caption))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                            .relayTextSwap(item.detail)
                     }
                 }
             }
@@ -493,7 +528,12 @@ struct OnboardingView: View {
     }
 
     private var modelPicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let accessNote = GeneralConfig.accessNote(
+            for: selectedModel,
+            effort: selectedCodexReasoningEffort,
+            provider: selectedAgentProvider
+        )
+        return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Model")
                     .font(AppTypography.font(.cardHeading))
@@ -506,15 +546,13 @@ struct OnboardingView: View {
                 .labelsHidden()
                 .frame(width: 180)
             }
-            if let note = GeneralConfig.accessNote(
-                for: selectedModel,
-                effort: selectedCodexReasoningEffort,
-                provider: selectedAgentProvider
-            ) {
+            if let note = accessNote {
                 Text(note)
                     .font(AppTypography.font(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .relayTextSwap(note)
+                    .transition(.relayText)
             }
         }
         .padding(12)
@@ -525,6 +563,7 @@ struct OnboardingView: View {
             RoundedRectangle(cornerRadius: 6)
                 .stroke(Color.secondary.opacity(0.25))
         )
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: accessNote)
     }
 
     private var reasoningEffortPicker: some View {
@@ -560,6 +599,7 @@ struct OnboardingView: View {
                 Image(systemName: selectedAgentProvider == provider ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(selectedAgentProvider == provider ? Color.accentColor : Color.secondary)
                     .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+                    .relaySwap(selectedAgentProvider == provider)
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
@@ -804,14 +844,22 @@ struct OnboardingView: View {
     private var pythonSetupView: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
-                pythonStatusBadge
+                ZStack {
+                    pythonStatusBadge
+                }
                 Text("Python environment")
                     .font(AppTypography.font(.screenTitle))
             }
 
-            pythonStatusDetail
+            ZStack(alignment: .topLeading) {
+                pythonStatusDetail
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(
+            RelayMotion.change(reduceMotion: reduceMotion),
+            value: Self.pythonStatusPhase(for: venvInstaller.status)
+        )
     }
 
     @ViewBuilder
@@ -821,12 +869,15 @@ struct OnboardingView: View {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
                 .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+                .transition(.relayElement)
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
                 .font(AppTypography.font(.screenTitle))
+                .transition(.relayElement)
         case .idle, .running:
             ProgressView().controlSize(.small)
+                .transition(.relayElement)
         }
     }
 
@@ -840,6 +891,7 @@ struct OnboardingView: View {
                     .font(AppTypography.font(.body))
                     .foregroundStyle(.secondary)
             }
+            .transition(.relayElement)
         case .running(let message, let progress):
             VStack(alignment: .leading, spacing: 8) {
                 // Determinate bar once relay-bridge has emitted at least
@@ -847,23 +899,31 @@ struct OnboardingView: View {
                 // so the very first moments of "Starting setup…" still
                 // signal activity. `.animation` smooths the per-package
                 // ticks so the bar doesn't visibly jump.
-                if let progress {
-                    ProgressView(value: progress, total: 1.0)
-                        .progressViewStyle(.linear)
-                        .animation(.easeOut(duration: 0.25), value: progress)
-                } else {
-                    ProgressView().controlSize(.small)
+                ZStack(alignment: .leading) {
+                    if let progress {
+                        ProgressView(value: progress, total: 1.0)
+                            .progressViewStyle(.linear)
+                            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: progress)
+                            .transition(.relayElement)
+                    } else {
+                        ProgressView().controlSize(.small)
+                            .transition(.relayElement)
+                    }
                 }
+                // Streamed installer output updates in place.
                 Text(message)
                     .font(AppTypography.font(.body))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: progress == nil)
+            .transition(.relayElement)
         case .succeeded:
             Text("Done — Python environment ready.")
                 .font(AppTypography.font(.body))
                 .foregroundStyle(.green)
+                .transition(.relayText)
         case .failed(let message):
             VStack(alignment: .leading, spacing: 8) {
                 Text("Setup failed.")
@@ -885,42 +945,52 @@ struct OnboardingView: View {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(Color.orange.opacity(0.35))
             )
+            .transition(.relayElement)
         }
     }
 
     private var agentLoginView: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
-                if agentSignedIn {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .font(AppTypography.symbolFont(size: 17, weight: .semibold))
-                } else {
-                    Image(systemName: "circle")
-                        .foregroundStyle(.secondary)
-                        .font(AppTypography.font(.screenTitle))
+                ZStack {
+                    if agentSignedIn {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+                            .transition(.relayElement)
+                    } else {
+                        Image(systemName: "circle")
+                            .foregroundStyle(.secondary)
+                            .font(AppTypography.font(.screenTitle))
+                            .transition(.relayElement)
+                    }
                 }
                 Text("Sign in to your agent")
                     .font(AppTypography.font(.screenTitle))
             }
-            if agentSignedIn {
-                Text("Signed in — you're ready to go.")
-                    .font(AppTypography.font(.body))
-                    .foregroundStyle(.green)
-            } else {
-                Text("Click the button below. A Terminal window will open and prompt you to sign in. This window will update automatically when you're done.")
-                    .font(AppTypography.font(.body))
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.secondary.opacity(0.25))
-                    )
+            ZStack(alignment: .topLeading) {
+                if agentSignedIn {
+                    Text("Signed in — you're ready to go.")
+                        .font(AppTypography.font(.body))
+                        .foregroundStyle(.green)
+                        .transition(.relayText)
+                } else {
+                    Text("Click the button below. A Terminal window will open and prompt you to sign in. This window will update automatically when you're done.")
+                        .font(AppTypography.font(.body))
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.secondary.opacity(0.25))
+                        )
+                        .transition(.relayElement)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: agentSignedIn)
     }
 
     private var readyView: some View {
@@ -928,68 +998,91 @@ struct OnboardingView: View {
         let runtimeReadiness = setupStatus()
         let readiness = currentReadiness
         let voiceReady = readiness.voiceReady
+        let detailPhase = Self.readyDetailPhase(setupStatus: runtimeReadiness, voiceReady: voiceReady)
+        let title = readyTitle(runtimeReadiness: runtimeReadiness, readiness: readiness)
+        let statusSymbol: String? = runtimeReadiness.isPreparing
+            ? nil
+            : runtimeReadiness.needsSetupAction
+                ? "exclamationmark.triangle.fill"
+                : readinessIcon(for: readiness.mode)
         return VStack(spacing: 16) {
             Spacer(minLength: 4)
-            if runtimeReadiness.isPreparing {
-                ProgressView()
-                    .controlSize(.large)
-            } else if runtimeReadiness.needsSetupAction {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(AppTypography.symbolFont(size: 44))
-                    .foregroundStyle(.orange)
-            } else {
-                Image(systemName: readinessIcon(for: readiness.mode))
-                    .font(AppTypography.symbolFont(size: 44))
-                    .foregroundStyle(readinessColor(for: readiness.mode))
+            ZStack {
+                if runtimeReadiness.isPreparing {
+                    ProgressView()
+                        .controlSize(.large)
+                } else if runtimeReadiness.needsSetupAction {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(AppTypography.symbolFont(size: 44))
+                        .foregroundStyle(.orange)
+                } else {
+                    Image(systemName: readinessIcon(for: readiness.mode))
+                        .font(AppTypography.symbolFont(size: 44))
+                        .foregroundStyle(readinessColor(for: readiness.mode))
+                }
             }
-            Text(readyTitle(runtimeReadiness: runtimeReadiness, readiness: readiness))
+            .relaySwap(statusSymbol)
+            Text(title)
                 .font(AppTypography.font(.appTitle))
-            if !runtimeReadiness.isReady {
-                Text(runtimeReadiness.statusDetail)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if !voiceReady {
-                Text(readiness.detail)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                if showsWorkingDirectoryPicker {
-                    workingDirectoryPicker
+                .relayTextSwap(title, alignment: .center)
+            ZStack(alignment: .top) {
+                if !runtimeReadiness.isReady {
+                    // Preparing progress updates in place; a failure swaps in.
+                    Text(runtimeReadiness.statusDetail)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .relayTextSwap(detailPhase, alignment: .center)
+                        .transition(.relayText)
+                } else if !voiceReady {
+                    Text(readiness.detail)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .relayTextSwap(readiness.detail, alignment: .center)
+                        .transition(.relayText)
+                } else {
+                    VStack(spacing: 16) {
+                        if showsWorkingDirectoryPicker {
+                            workingDirectoryPicker
+                        }
+                        Text(readiness.detail)
+                            .font(AppTypography.font(.body))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .relayTextSwap(readiness.detail, alignment: .center)
+                        Text("Two ways to start a voice session:")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(spacing: 8) {
+                            sessionMethodRow(
+                                icon: "menubar.rectangle",
+                                title: "From the menu bar",
+                                detail: "Click the Relay Runner icon, then choose \u{201C}Start Session\u{2026}\u{201D}. Workspace opens to an embedded terminal with the configured agent already listening."
+                            )
+                            sessionMethodRow(
+                                icon: "terminal",
+                                title: "From an Agent",
+                                detail: "Run Codex or Claude in any terminal and start the relay-bridge skill or command. Install Relay Skills from Settings \u{2192} General if needed."
+                            )
+                        }
+                        Text("Already running Codex, Claude Code, or a terminal? Restart it to load the Relay Runner skill or command.")
+                            .font(AppTypography.font(.caption))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("Tap Caps Lock to start and stop recording in either mode.")
+                            .font(AppTypography.font(.caption))
+                            .foregroundStyle(.secondary)
+                    }
+                    .transition(.relayElement)
                 }
-                Text(readiness.detail)
-                    .font(AppTypography.font(.body))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("Two ways to start a voice session:")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                VStack(spacing: 8) {
-                    sessionMethodRow(
-                        icon: "menubar.rectangle",
-                        title: "From the menu bar",
-                        detail: "Click the Relay Runner icon, then choose \u{201C}Start Session\u{2026}\u{201D}. Workspace opens to an embedded terminal with the configured agent already listening."
-                    )
-                    sessionMethodRow(
-                        icon: "terminal",
-                        title: "From an Agent",
-                        detail: "Run Codex or Claude in any terminal and start the relay-bridge skill or command. Install Relay Skills from Settings \u{2192} General if needed."
-                    )
-                }
-                Text("Already running Codex, Claude Code, or a terminal? Restart it to load the Relay Runner skill or command.")
-                    .font(AppTypography.font(.caption))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("Tap Caps Lock to start and stop recording in either mode.")
-                    .font(AppTypography.font(.caption))
-                    .foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)
         }
         .frame(maxWidth: .infinity)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: detailPhase)
     }
 
     private func readyTitle(runtimeReadiness: SetupRuntimeReadiness,
@@ -1019,6 +1112,7 @@ struct OnboardingView: View {
                     Text("(required)")
                         .font(AppTypography.font(.caption))
                         .foregroundStyle(.orange)
+                        .transition(.relayText)
                 }
             }
             Text(Self.workspaceFolderHelpText)
@@ -1033,6 +1127,7 @@ struct OnboardingView: View {
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .foregroundStyle(hasConfirmedWorkingDirectory ? .primary : .secondary)
+                    .relayTextSwap(workingDirectoryDisplay)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -1056,6 +1151,7 @@ struct OnboardingView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: hasConfirmedWorkingDirectory)
     }
 
     /// Human-readable label for the path field. "(none chosen)" when
@@ -1159,6 +1255,49 @@ struct OnboardingView: View {
         voiceReady: Bool
     ) -> Bool {
         setupStatus.isReady && voiceReady
+    }
+
+    // MARK: - Motion
+
+    /// Coarse installer phase that decides when setup content swaps. Streamed
+    /// progress lines stay within `.running` so they update in place.
+    enum PythonStatusPhase: Hashable {
+        case idle
+        case running
+        case succeeded
+        case failed
+    }
+
+    static func pythonStatusPhase(for status: VenvInstaller.Status) -> PythonStatusPhase {
+        switch status {
+        case .idle: return .idle
+        case .running: return .running
+        case .succeeded: return .succeeded
+        case .failed: return .failed
+        }
+    }
+
+    /// Which body the Ready step shows. Changes swap with a Relay transition;
+    /// streamed model-loading messages stay within `.runtimePreparing`.
+    enum ReadyDetailPhase: Hashable {
+        case runtimePreparing
+        case runtimeNeedsAction
+        case voiceBlocked
+        case ready
+    }
+
+    static func readyDetailPhase(
+        setupStatus: SetupRuntimeReadiness,
+        voiceReady: Bool
+    ) -> ReadyDetailPhase {
+        switch setupStatus {
+        case .preparing:
+            return .runtimePreparing
+        case .notStarted, .failed:
+            return .runtimeNeedsAction
+        case .ready:
+            return voiceReady ? .ready : .voiceBlocked
+        }
     }
 
     private func publishPresentation() {
@@ -1723,22 +1862,27 @@ struct OnboardingView: View {
 
     // MARK: - Helpers
 
-    @ViewBuilder
     private func statusBadge(for status: PermissionStatus) -> some View {
-        switch status {
-        case .granted:
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
-        case .denied, .notDetermined:
-            Image(systemName: "circle")
-                .foregroundStyle(.secondary)
-                .font(AppTypography.font(.screenTitle))
-        case .restricted:
-            Image(systemName: "lock.fill")
-                .foregroundStyle(.orange)
-                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+        ZStack {
+            switch status {
+            case .granted:
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+                    .transition(.relayElement)
+            case .denied, .notDetermined:
+                Image(systemName: "circle")
+                    .foregroundStyle(.secondary)
+                    .font(AppTypography.font(.screenTitle))
+                    .transition(.relayElement)
+            case .restricted:
+                Image(systemName: "lock.fill")
+                    .foregroundStyle(.orange)
+                    .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+                    .transition(.relayElement)
+            }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: status)
     }
 
     static func initialStep(simplified: Bool,
@@ -1903,6 +2047,7 @@ struct OnboardingView: View {
 struct OnboardingPermissionPromptView: View {
     let presentation: OnboardingPermissionPromptPresentation
     let action: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 54) {
@@ -1930,10 +2075,12 @@ struct OnboardingPermissionPromptView: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+                    .transition(.relayText)
             }
         }
         .frame(maxWidth: .infinity)
         .frame(minHeight: OnboardingPermissionTreatment.promptMinHeight)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: presentation)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(presentation.prompt)
     }

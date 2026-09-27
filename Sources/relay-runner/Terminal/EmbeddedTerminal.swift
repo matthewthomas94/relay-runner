@@ -2847,61 +2847,84 @@ struct EmbeddedTerminalTab: View {
     let recoverDelivery: () -> Void
     @State private var confirmsRecovery = false
     @State private var confirmedInboxBlocker: InboxRecoveryBlocker?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
-            if let blocker = session.inboxRecoveryBlocker, session.isEmbeddedProcessRunning {
-                HStack {
-                    Text(session.deliveryRecoveryMessage ?? "Message \(blocker.command_seq) has an uncertain outcome and is blocking the queue. Skip it to continue; check its outcome before repeating it.")
-                        .font(AppTypography.font(.status))
-                    Button("Skip uncertain message") { confirmedInboxBlocker = blocker }
-                }
-                .padding(14)
-                .background(Color.orange.opacity(0.12))
-                .confirmationDialog("Skip the uncertain message?", isPresented: Binding(
-                    get: { confirmedInboxBlocker != nil },
-                    set: { if !$0 { confirmedInboxBlocker = nil } }
-                )) {
-                    Button("Skip message", role: .destructive) {
-                        if let expected = confirmedInboxBlocker { session.skipUncertainMessage(expected) }
-                        confirmedInboxBlocker = nil
+            // Banners animate inside their own stack so the terminal below is
+            // resized once instead of on every frame of the transition.
+            VStack(spacing: 0) {
+                if let blocker = session.inboxRecoveryBlocker, session.isEmbeddedProcessRunning {
+                    let message = session.deliveryRecoveryMessage ?? "Message \(blocker.command_seq) has an uncertain outcome and is blocking the queue. Skip it to continue; check its outcome before repeating it."
+                    HStack {
+                        Text(message)
+                            .font(AppTypography.font(.status))
+                            .relayTextSwap(message)
+                        Button("Skip uncertain message") { confirmedInboxBlocker = blocker }
                     }
-                } message: {
-                    Text("This skips only message \(confirmedInboxBlocker?.command_seq ?? blocker.command_seq). It does not undo any work already performed. Later messages and worker runs are preserved; the uncertain message is not replayed and the session is not restarted.")
+                    .padding(14)
+                    .background(Color.orange.opacity(0.12))
+                    .confirmationDialog("Skip the uncertain message?", isPresented: Binding(
+                        get: { confirmedInboxBlocker != nil },
+                        set: { if !$0 { confirmedInboxBlocker = nil } }
+                    )) {
+                        Button("Skip message", role: .destructive) {
+                            if let expected = confirmedInboxBlocker { session.skipUncertainMessage(expected) }
+                            confirmedInboxBlocker = nil
+                        }
+                    } message: {
+                        Text("This skips only message \(confirmedInboxBlocker?.command_seq ?? blocker.command_seq). It does not undo any work already performed. Later messages and worker runs are preserved; the uncertain message is not replayed and the session is not restarted.")
+                    }
+                    .transition(.relayElement)
                 }
-            }
-            if session.deliveryBlocked {
-                HStack {
-                    Text(session.deliveryRecoveryMessage ?? "Session delivery blocked. The last message was not acknowledged; later messages remain queued. Restart skips the uncertain message—check its outcome before repeating it.")
+                if session.deliveryBlocked {
+                    let message = session.deliveryRecoveryMessage ?? "Session delivery blocked. The last message was not acknowledged; later messages remain queued. Restart skips the uncertain message—check its outcome before repeating it."
+                    HStack {
+                        Text(message)
+                            .font(AppTypography.font(.status))
+                            .relayTextSwap(message)
+                        Button("Restart session") { confirmsRecovery = true }
+                    }
+                    .padding(14)
+                    .background(Color.orange.opacity(0.12))
+                    .confirmationDialog("Restart the blocked session?", isPresented: $confirmsRecovery) {
+                        Button("Restart session", role: .destructive, action: recoverDelivery)
+                    } message: {
+                        Text("This ends the foreground agent. Worker runs and queued messages are preserved. The uncertain message will not be automatically repeated.")
+                    }
+                    .transition(.relayElement)
+                }
+                if case .failed(let message) = session.phase {
+                    Text(message)
                         .font(AppTypography.font(.status))
-                    Button("Restart session") { confirmsRecovery = true }
-                }
-                .padding(14)
-                .background(Color.orange.opacity(0.12))
-                .confirmationDialog("Restart the blocked session?", isPresented: $confirmsRecovery) {
-                    Button("Restart session", role: .destructive, action: recoverDelivery)
-                } message: {
-                    Text("This ends the foreground agent. Worker runs and queued messages are preserved. The uncertain message will not be automatically repeated.")
+                        .foregroundStyle(Color.red.opacity(0.88))
+                        .relayTextSwap(message)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.red.opacity(0.08))
+                        .transition(.relayElement)
                 }
             }
-            if case .failed(let message) = session.phase {
-                Text(message)
-                    .font(AppTypography.font(.status))
-                    .foregroundStyle(Color.red.opacity(0.88))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(Color.red.opacity(0.08))
-            }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: visibleBanners)
             Divider().overlay(BoardDarkSurfaceStyle.border)
 
-            if session.hostedView != nil {
-                EmbeddedTerminalRepresentable(session: session)
-                    .id(session.presentationRevision)
-                    .background(Color(nsColor: BoardDarkSurfaceStyle.panelFillNSColor))
-            } else {
-                emptyState
+            ZStack {
+                // The terminal itself never animates; only the empty state
+                // above it transitions.
+                if session.hostedView != nil {
+                    EmbeddedTerminalRepresentable(session: session)
+                        .id(session.presentationRevision)
+                        .background(Color(nsColor: BoardDarkSurfaceStyle.panelFillNSColor))
+                }
+                ZStack {
+                    if session.hostedView == nil {
+                        emptyState
+                            .transition(.relaySurface)
+                    }
+                }
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: session.hostedView == nil)
             }
         }
         .frame(maxWidth: WorkspaceSurfaceSizing.terminalMaxWidth, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight)
@@ -2925,11 +2948,13 @@ struct EmbeddedTerminalTab: View {
                 Text(statusTitle)
                     .font(AppTypography.font(.sectionHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
+                    .relayTextSwap(statusTitleSwapKey)
                 Text(displayDirectory)
                     .font(AppTypography.font(.supporting))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .relayTextSwap(displayDirectory)
             }
             Spacer(minLength: 12)
         }
@@ -2950,9 +2975,26 @@ struct EmbeddedTerminalTab: View {
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 390)
+                .relayTextSwap(emptyStateDetail, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
+    }
+
+    private var visibleBanners: [Bool] {
+        let failed: Bool
+        if case .failed = session.phase { failed = true } else { failed = false }
+        return [
+            session.inboxRecoveryBlocker != nil && session.isEmbeddedProcessRunning,
+            session.deliveryBlocked,
+            failed,
+        ]
+    }
+
+    /// A running session's title is set by the agent and can change rapidly,
+    /// so it updates in place; every other title change crossfades.
+    private var statusTitleSwapKey: String {
+        session.phase == .running ? "running" : statusTitle
     }
 
     private var statusTitle: String {

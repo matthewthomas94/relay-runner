@@ -360,6 +360,27 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         XCTAssertTrue(eventView.hitTest(editAreaPoint) === eventView)
     }
 
+    func testLaneMarksRemovedCardsAsLeavingSoTheyStopTakingHits() {
+        let container = BoardOverlayScrollContainer(rootView: AnyView(EmptyView()))
+        let liveCard = ProgramWorkCardDragEventView()
+        liveCard.workItemID = "live"
+        let removedCard = ProgramWorkCardDragEventView()
+        removedCard.workItemID = "removed"
+        let marker = ProgramLaneLiveCardsView()
+        for view in [liveCard, removedCard, marker] {
+            view.frame = CGRect(x: 0, y: 0, width: 220, height: 120)
+            container.addSubview(view)
+        }
+
+        marker.update(liveItemIDs: ["live"])
+
+        XCTAssertFalse(liveCard.isLeaving)
+        XCTAssertTrue(removedCard.isLeaving)
+        XCTAssertTrue(liveCard.hitTest(CGPoint(x: 110, y: 60)) === liveCard)
+        XCTAssertNil(removedCard.hitTest(CGPoint(x: 110, y: 60)))
+        XCTAssertNil(marker.hitTest(CGPoint(x: 110, y: 60)))
+    }
+
     func testCardDragLayerKeepsHoverAcrossTrackingReplacementAndClearsOnIdentityAndDetachment() {
         let eventView = ProgramWorkCardDragEventView()
         let window = NSWindow(

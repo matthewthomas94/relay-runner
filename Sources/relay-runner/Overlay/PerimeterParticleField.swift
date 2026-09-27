@@ -136,15 +136,18 @@ final class PerimeterParticleField {
         particleLayer.removeAnimation(forKey: "pulse")
 
         guard active else {
-            // Smooth fade out over 0.18s — matches PerimeterPanel's crossfade.
+            // Blur and fade away, easing out of view.
             let fade = CABasicAnimation(keyPath: "opacity")
             fade.fromValue = particleLayer.presentation()?.opacity ?? particleLayer.opacity
             fade.toValue = 0.0
-            fade.duration = 0.18
+            fade.duration = RelayMotion.exitDuration
+            fade.timingFunction = RelayMotion.exitCurve.mediaTimingFunction
             fade.fillMode = .forwards
             fade.isRemovedOnCompletion = false
             particleLayer.opacity = 0.0
             particleLayer.add(fade, forKey: "fadeOut")
+            animateFocus(from: 0, to: Self.transitionBlurRadius, duration: RelayMotion.exitDuration,
+                         curve: RelayMotion.exitCurve)
             return
         }
 
@@ -165,16 +168,47 @@ final class PerimeterParticleField {
             particleLayer.add(pulse, forKey: "pulse")
         } else {
             // Steady "ActionGlow active, no decision needed" state.
-            // Fade in if we were hidden.
+            // Fade in and come into focus if we were hidden.
+            let fromOpacity = particleLayer.presentation()?.opacity ?? particleLayer.opacity
             let fade = CABasicAnimation(keyPath: "opacity")
-            fade.fromValue = particleLayer.presentation()?.opacity ?? particleLayer.opacity
+            fade.fromValue = fromOpacity
             fade.toValue = 0.75
-            fade.duration = 0.25
+            fade.duration = RelayMotion.enterDuration
+            fade.timingFunction = RelayMotion.enterCurve.mediaTimingFunction
             fade.fillMode = .forwards
             fade.isRemovedOnCompletion = false
             particleLayer.opacity = 0.75
             particleLayer.add(fade, forKey: "fadeIn")
+            if fromOpacity < 0.05 {
+                animateFocus(from: Self.transitionBlurRadius, to: 0, duration: RelayMotion.enterDuration,
+                             curve: RelayMotion.enterCurve)
+            }
         }
+    }
+
+    private static let transitionBlurRadius: CGFloat = 8
+
+    /// Blurs the field only while it enters or leaves; at rest it carries
+    /// no filter so the per-frame bitmap stays cheap to composite.
+    private func animateFocus(from: CGFloat, to: CGFloat, duration: TimeInterval, curve: RelayMotion.Curve) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              let blur = CIFilter(name: "CIGaussianBlur") else { return }
+        blur.name = "perimeterFocus"
+        blur.setValue(to, forKey: kCIInputRadiusKey)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            guard let self, self.particleLayer.animation(forKey: "perimeterFocus") == nil else { return }
+            self.particleLayer.filters = nil
+        }
+        particleLayer.filters = [blur]
+        let animation = CABasicAnimation(keyPath: "filters.perimeterFocus.inputRadius")
+        animation.fromValue = from
+        animation.toValue = to
+        animation.duration = duration
+        animation.timingFunction = curve.mediaTimingFunction
+        animation.isRemovedOnCompletion = true
+        particleLayer.add(animation, forKey: "perimeterFocus")
+        CATransaction.commit()
     }
 
     // MARK: - Animation loop

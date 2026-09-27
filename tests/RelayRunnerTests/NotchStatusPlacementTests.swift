@@ -505,9 +505,23 @@ final class NotchStatusPlacementTests: XCTestCase {
             NotchVisualLabelAllowlist.presentation(for: .idle, bridgeStartingUp: true),
             NotchVisualLabelPresentation(
                 labels: ["Starting up..."],
-                hoverLabel: "Starting session"
+                hoverLabel: "Starting session",
+                pinsLabel: true
             )
         )
+        XCTAssertEqual(
+            NotchStatusController.displayedActivityLabel(
+                status: .working,
+                compactLabel: "Starting up...",
+                workingProgressLabel: "Starting session",
+                workingGlyphHovered: false,
+                workingStatusRevealActive: false,
+                workingLabelPinned: true
+            ),
+            "Starting up...",
+            "startup copy stays up for the whole startup, not just its reveal"
+        )
+        XCTAssertFalse(NotchVisualLabelAllowlist.presentation(for: .sent).pinsLabel)
         XCTAssertEqual(
             NotchActivityLabelPlanner.labels(
                 for: .idle,
@@ -651,7 +665,7 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
     }
 
-    func testWorkingPresentationRefreshOnlyAnimatesFirstReveal() {
+    func testWorkingPresentationAnimatesVisibleCopyChangesButNotProgressRefreshes() {
         let initialReveal = NotchStatusPresentationUpdatePolicy.plan(
             statusChanged: true,
             activityLabelsChanged: false,
@@ -663,7 +677,7 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertTrue(initialReveal.shouldRestartWorkingReveal)
         XCTAssertTrue(initialReveal.shouldAnimatePlacement)
 
-        let refreshWhileVisible = NotchStatusPresentationUpdatePolicy.plan(
+        let copyChangeWhileVisible = NotchStatusPresentationUpdatePolicy.plan(
             statusChanged: false,
             activityLabelsChanged: true,
             workingProgressChanged: true,
@@ -671,8 +685,19 @@ final class NotchStatusPlacementTests: XCTestCase {
             workingRevealWasActive: true,
             workingGlyphHovered: false
         )
-        XCTAssertTrue(refreshWhileVisible.shouldRestartWorkingReveal)
-        XCTAssertFalse(refreshWhileVisible.shouldAnimatePlacement)
+        XCTAssertTrue(copyChangeWhileVisible.shouldRestartWorkingReveal)
+        XCTAssertTrue(copyChangeWhileVisible.shouldAnimatePlacement)
+
+        let progressRefreshWhileVisible = NotchStatusPresentationUpdatePolicy.plan(
+            statusChanged: false,
+            activityLabelsChanged: false,
+            workingProgressChanged: true,
+            nextStatus: .working,
+            workingRevealWasActive: true,
+            workingGlyphHovered: false
+        )
+        XCTAssertTrue(progressRefreshWhileVisible.shouldRestartWorkingReveal)
+        XCTAssertFalse(progressRefreshWhileVisible.shouldAnimatePlacement)
 
         let refreshWhileHovered = NotchStatusPresentationUpdatePolicy.plan(
             statusChanged: false,
@@ -697,40 +722,143 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertTrue(leaveWorking.shouldAnimatePlacement)
     }
 
-    func testPlacementContractionDefersContentUntilCurrentAnimationCompletes() {
-        XCTAssertTrue(
-            NotchActivityLabelRenderPolicy.shouldDeferContentUpdate(
-                previousActivityLabelWidth: 180,
-                nextActivityLabelWidth: 0,
-                animated: true
-            )
+    func testLabelChangesCrossfadeHorizontallyThroughABlur() {
+        var motion = NotchContentMotion()
+        motion.labelChanged(from: nil, width: 0, to: "Listening", now: 10)
+        XCTAssertTrue(motion.departingLabels.isEmpty)
+
+        let arriving = motion.arrivalAppearance(now: 10, reduceMotion: false)
+        XCTAssertEqual(arriving.alpha, 0)
+        XCTAssertEqual(arriving.offset, RelayMotion.Style.text.distance)
+        XCTAssertEqual(arriving.blur, RelayMotion.Style.text.blurRadius)
+        XCTAssertEqual(
+            motion.arrivalAppearance(now: 10 + RelayMotion.enterDuration + 0.001, reduceMotion: false),
+            .resting
         )
-        XCTAssertFalse(
-            NotchActivityLabelRenderPolicy.shouldDeferContentUpdate(
-                previousActivityLabelWidth: 0,
-                nextActivityLabelWidth: 180,
-                animated: true
-            )
+
+        motion.labelChanged(from: "Listening", width: 80, to: "Sending voice", now: 11)
+        let departing = try! XCTUnwrap(motion.departingLabels.first)
+        XCTAssertEqual(departing.text, "Listening")
+        XCTAssertEqual(departing.width, 80)
+        let midway = motion.departureAppearance(
+            of: departing,
+            now: 11 + RelayMotion.exitDuration / 2,
+            reduceMotion: false
         )
-        XCTAssertFalse(
-            NotchActivityLabelRenderPolicy.shouldDeferContentUpdate(
-                previousActivityLabelWidth: 180,
-                nextActivityLabelWidth: 0,
-                animated: false
-            )
+        XCTAssertGreaterThan(midway.alpha, 0)
+        XCTAssertLessThan(midway.alpha, 1)
+        XCTAssertGreaterThan(midway.offset, 0)
+        XCTAssertGreaterThan(midway.blur, 0)
+        XCTAssertTrue(motion.isAnimating(now: 11.1))
+
+        let settled = 11 + RelayMotion.enterDuration + 0.001
+        motion.prune(now: settled)
+        XCTAssertTrue(motion.departingLabels.isEmpty)
+        XCTAssertFalse(motion.isAnimating(now: settled))
+    }
+
+    func testReducedMotionLabelTransitionsOnlyFade() {
+        var motion = NotchContentMotion()
+        motion.labelChanged(from: "Listening", width: 80, to: "Playing", now: 0)
+        let arriving = motion.arrivalAppearance(now: 0.1, reduceMotion: true)
+        XCTAssertGreaterThan(arriving.alpha, 0)
+        XCTAssertEqual(arriving.offset, 0)
+        XCTAssertEqual(arriving.blur, 0)
+        let departing = motion.departureAppearance(
+            of: motion.departingLabels[0],
+            now: 0.1,
+            reduceMotion: true
         )
-        XCTAssertTrue(
-            NotchActivityLabelRenderPolicy.shouldApplyDeferredContentUpdate(
-                scheduledGeneration: 7,
-                currentGeneration: 7
-            )
+        XCTAssertLessThan(departing.alpha, 1)
+        XCTAssertEqual(departing.offset, 0)
+        XCTAssertEqual(departing.blur, 0)
+        XCTAssertEqual(motion.presenceBlur(now: 0, reduceMotion: true), 0)
+    }
+
+    func testSurfacePresenceSharpensCopyOnShowAndBlursItOnHide() {
+        var motion = NotchContentMotion()
+        XCTAssertEqual(motion.presenceBlur(now: 0, reduceMotion: false), 0)
+        motion.setPresence(visible: true, duration: 0.34, now: 1)
+        XCTAssertEqual(motion.presenceBlur(now: 1, reduceMotion: false), RelayMotion.Style.text.blurRadius)
+        XCTAssertEqual(motion.presenceBlur(now: 1.341, reduceMotion: false), 0)
+        motion.setPresence(visible: false, duration: 0.24, now: 2)
+        XCTAssertEqual(motion.presenceBlur(now: 2, reduceMotion: false), 0)
+        XCTAssertEqual(motion.presenceBlur(now: 2.241, reduceMotion: false), RelayMotion.Style.text.blurRadius)
+    }
+
+    func testGlyphChangesGrowAccentDotsFromTheCoreAndBlendColours() {
+        var motion = NotchContentMotion()
+        motion.glyphChanged(from: .neutral, now: 0)
+        let identity: (CGPoint) -> CGPoint = { $0 }
+
+        let start = motion.glyphDots(target: .listening, now: 0, reduceMotion: false, center: identity)
+        XCTAssertEqual(start.count, NotchStatusGlyph.listening.dots.count)
+        let emerging = start.filter { $0.alpha == 0 }
+        XCTAssertEqual(emerging.count, 8)
+        for dot in emerging {
+            XCTAssertTrue(NotchContentMotion.isCore(dot.center), "accent dots start inside the core")
+        }
+
+        let settled = motion.glyphDots(
+            target: .listening,
+            now: NotchContentMotion.glyphChangeDuration + 0.001,
+            reduceMotion: false,
+            center: identity
         )
-        XCTAssertFalse(
-            NotchActivityLabelRenderPolicy.shouldApplyDeferredContentUpdate(
-                scheduledGeneration: 7,
-                currentGeneration: 8
-            )
+        XCTAssertEqual(settled.map(\.center), NotchStatusGlyph.listening.dots.map { CGPoint(x: $0.x, y: $0.y) })
+        XCTAssertTrue(settled.allSatisfy { $0.alpha == 1 && $0.softness == 0 })
+
+        motion.glyphChanged(from: .listening, now: 10)
+        let blending = motion.glyphDots(
+            target: .playing,
+            now: 10 + RelayMotion.changeDuration / 2,
+            reduceMotion: false,
+            center: identity
         )
+        let accent = try! XCTUnwrap(blending.first { $0.center == CGPoint(x: 19.5, y: 9.5) })
+        XCTAssertNotEqual(accent.color, NotchStatusDotColor.orange.rgb)
+        XCTAssertNotEqual(accent.color, NotchStatusDotColor.blue.rgb)
+
+        motion.glyphChanged(from: .playing, now: 20)
+        let retracting = motion.glyphDots(target: .neutral, now: 20, reduceMotion: false, center: identity)
+        XCTAssertEqual(retracting.count, NotchStatusGlyph.playing.dots.count)
+        let retracted = motion.glyphDots(
+            target: .neutral,
+            now: 20 + RelayMotion.exitDuration + 0.001,
+            reduceMotion: false,
+            center: identity
+        )
+        XCTAssertEqual(retracted.filter { $0.alpha > 0 }.count, NotchStatusGlyph.neutral.dots.count)
+    }
+
+    func testStoppingGlyphMotionFinishesItsCycleAtRest() {
+        var motion = NotchContentMotion()
+        let now = NotchStatusGlyphMotion.duration * 10.25
+        motion.statusChanged(from: .working, to: .notWorking, now: now, reduceMotion: false)
+        XCTAssertEqual(motion.motionStatus(for: .notWorking, now: now), .working)
+        XCTAssertEqual(
+            motion.settleDeadline,
+            NotchStatusGlyphMotion.duration * 11,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(motion.motionStatus(for: .notWorking, now: motion.settleDeadline), .notWorking)
+
+        motion.statusChanged(from: .working, to: .notWorking, now: now, reduceMotion: true)
+        XCTAssertEqual(motion.motionStatus(for: .notWorking, now: now), .notWorking)
+
+        motion.statusChanged(from: .listening, to: .playing, now: now, reduceMotion: false)
+        XCTAssertNil(motion.settlingStatus)
+    }
+
+    func testHoverDiscEasesInAndOut() {
+        var motion = NotchContentMotion()
+        XCTAssertEqual(motion.hoverAmount(now: 0), 0)
+        motion.hoverChanged(to: true, now: 1)
+        XCTAssertEqual(motion.hoverAmount(now: 1), 0)
+        XCTAssertEqual(motion.hoverAmount(now: 1 + RelayMotion.hoverDuration + 0.001), 1)
+        motion.hoverChanged(to: false, now: 2)
+        XCTAssertEqual(motion.hoverAmount(now: 2), 1)
+        XCTAssertEqual(motion.hoverAmount(now: 2 + RelayMotion.hoverDuration + 0.001), 0)
     }
 
     func testWorkingProgressHoverUsesStableStaticLabelRendering() {
@@ -1048,6 +1176,23 @@ final class NotchStatusPlacementTests: XCTestCase {
             NotchSessionStatus.resolve(for: .messageWaiting(preview: nil), hasActivityLabels: true),
             .playing
         )
+        for outcome in [OverlayState.speechFailed, .cancelled(.stt), .cancelled(.tts)] {
+            XCTAssertEqual(
+                NotchSessionStatus.resolve(for: outcome, hasActivityLabels: true),
+                .notWorking,
+                "\(outcome) is an outcome, so its glyph rests and its label stays visible"
+            )
+            XCTAssertEqual(
+                NotchStatusController.displayedActivityLabel(
+                    status: .notWorking,
+                    compactLabel: NotchVisualLabelAllowlist.presentation(for: outcome).labels.first,
+                    workingProgressLabel: nil,
+                    workingGlyphHovered: false,
+                    workingStatusRevealActive: false
+                ),
+                NotchVisualLabelAllowlist.presentation(for: outcome).labels.first
+            )
+        }
     }
 
     func testNotchGlyphsMatchExportedDotMatrices() {
@@ -1381,5 +1526,76 @@ final class NotchStatusPlacementTests: XCTestCase {
             description: nil,
             body: ""
         )
+    }
+}
+
+final class NotchBlurredTextRendererTests: XCTestCase {
+    private final class FlippedCanvas: NSView {
+        var blur: CGFloat = 0
+        override var isFlipped: Bool { true }
+        override func draw(_ dirtyRect: NSRect) {
+            NSColor.black.setFill()
+            bounds.fill()
+            NotchBlurredTextRenderer.shared.draw(
+                "TTTT",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 18, weight: .bold),
+                    .foregroundColor: NSColor.white,
+                ],
+                in: NSRect(x: 20, y: 12, width: 80, height: 24),
+                blur: blur,
+                alpha: 1,
+                scale: 2
+            )
+        }
+    }
+
+    private struct Coverage {
+        let centroid: CGPoint
+        let litPixels: Int
+        let peak: CGFloat
+    }
+
+    private func coverage(blur: CGFloat) throws -> Coverage {
+        let canvas = FlippedCanvas(frame: NSRect(x: 0, y: 0, width: 120, height: 48))
+        canvas.blur = blur
+        let rep = try XCTUnwrap(canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds))
+        canvas.cacheDisplay(in: canvas.bounds, to: rep)
+        var sumX: CGFloat = 0
+        var sumY: CGFloat = 0
+        var total: CGFloat = 0
+        var lit = 0
+        var peak: CGFloat = 0
+        for y in 0..<rep.pixelsHigh {
+            for x in 0..<rep.pixelsWide {
+                let white = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB)?.redComponent ?? 0
+                guard white > 0.02 else { continue }
+                lit += 1
+                peak = max(peak, white)
+                sumX += CGFloat(x) * white
+                sumY += CGFloat(y) * white
+                total += white
+            }
+        }
+        let scale = CGFloat(rep.pixelsWide) / canvas.bounds.width
+        return Coverage(
+            centroid: CGPoint(x: sumX / total / scale, y: sumY / total / scale),
+            litPixels: lit,
+            peak: peak
+        )
+    }
+
+    func testBlurredCopyDrawsUprightInPlaceAndSofter() throws {
+        let crisp = try coverage(blur: 0)
+        let blurred = try coverage(blur: 3)
+
+        XCTAssertGreaterThan(crisp.litPixels, 0)
+        // Same place and orientation: a "T" is top-heavy, so an upside-down
+        // render would move the centroid by several points.
+        XCTAssertEqual(blurred.centroid.x, crisp.centroid.x, accuracy: 1)
+        XCTAssertEqual(blurred.centroid.y, crisp.centroid.y, accuracy: 1)
+        // Softer: the ink spreads over more pixels at a lower peak.
+        XCTAssertGreaterThan(blurred.litPixels, crisp.litPixels)
+        XCTAssertLessThan(blurred.peak, crisp.peak)
     }
 }

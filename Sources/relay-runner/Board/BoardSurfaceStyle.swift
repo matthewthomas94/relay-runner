@@ -92,7 +92,12 @@ struct ProgramBoardInteractionPresentation: Equatable {
     let animationDuration: Double
     let accent: ProgramBoardInteractionAccent
 
-    static let motionDuration: Double = 0.15
+    static let motionDuration: Double = RelayMotion.hoverDuration
+
+    /// Eases hover, focus, and selection chrome; none under Reduce Motion.
+    var animation: Animation? {
+        animationDuration == 0 ? nil : RelayMotion.changeCurve.animation(duration: animationDuration)
+    }
 
     static func resolve(
         surface: ProgramBoardInteractiveSurface,
@@ -176,15 +181,30 @@ struct ProgramBoardInteractionPresentation: Equatable {
 // Draw the placeholder separately while retaining the native field's editing behavior.
 extension View {
     func appPlaceholder(_ title: String, when isEmpty: Bool, inset: CGFloat = 0) -> some View {
-        overlay(alignment: .leading) {
-            if isEmpty {
-                Text(title)
-                    .foregroundStyle(BoardDarkSurfaceStyle.placeholderText)
-                    .lineLimit(1)
-                    .padding(.horizontal, inset)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+        modifier(AppPlaceholderModifier(title: title, isEmpty: isEmpty, inset: inset))
+    }
+}
+
+private struct AppPlaceholderModifier: ViewModifier {
+    let title: String
+    let isEmpty: Bool
+    let inset: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .leading) {
+            ZStack(alignment: .leading) {
+                if isEmpty {
+                    Text(title)
+                        .foregroundStyle(BoardDarkSurfaceStyle.placeholderText)
+                        .lineLimit(1)
+                        .padding(.horizontal, inset)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                        .transition(.relayText)
+                }
             }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isEmpty)
         }
     }
 }

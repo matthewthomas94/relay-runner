@@ -6,6 +6,7 @@ struct WorkspaceHistoryView: View {
     var onWorkspaceChanged: () -> Void = {}
     @State private var hoveredCardID: String?
     @FocusState private var searchFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,9 +14,11 @@ struct WorkspaceHistoryView: View {
             Rectangle().fill(BoardDarkSurfaceStyle.border).frame(height: 1)
             if let error = model.errorMessage {
                 messageStrip(error, warning: true)
+                    .transition(.relayElement)
             }
             if let notice = model.notice {
                 messageStrip(notice, warning: false)
+                    .transition(.relayElement)
             }
             historySurface
             .opacity(model.isLoading ? 0.65 : 1)
@@ -23,9 +26,13 @@ struct WorkspaceHistoryView: View {
                 if model.isLoading {
                     ProgressView().controlSize(.small)
                         .accessibilityLabel("Loading Workspace history")
+                        .transition(.relayElement)
                 }
             }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.isLoading)
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.errorMessage)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.notice)
         .frame(width: 940, height: 640)
         .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
         .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius, style: .continuous))
@@ -70,8 +77,10 @@ struct WorkspaceHistoryView: View {
                             if searchFocused {
                                 RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius)
                                     .stroke(ProgramBoardStyle.mutedText.opacity(0.5), lineWidth: 1)
+                                    .transition(.opacity)
                             }
                         }
+                        .animation(RelayMotion.hover, value: searchFocused)
                         .focused($searchFocused)
                         .onSubmit { Task { await model.search() } }
                         .accessibilityLabel("Search Workspace history")
@@ -90,21 +99,26 @@ struct WorkspaceHistoryView: View {
                                 .font(AppTypography.font(.supporting))
                                 .foregroundStyle(ProgramBoardStyle.mutedText)
                                 .padding(.top, 28)
+                                .transition(.relayText)
                         }
                         ForEach(model.cards) { card in
                             historyCard(card)
+                                .transition(.relayElement)
                         }
                     }
                 }
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.cards)
             }
             .padding(18)
             .frame(width: 330)
 
             Rectangle().fill(BoardDarkSurfaceStyle.border).frame(width: 1)
 
-            Group {
+            ZStack {
                 if let card = model.selectedCard {
                     historyDetail(card)
+                        .id(card.id)
+                        .transition(.relaySurface)
                 } else {
                     VStack(spacing: 10) {
                         Image(systemName: "clock.arrow.circlepath")
@@ -119,13 +133,17 @@ struct WorkspaceHistoryView: View {
                             .frame(maxWidth: 390)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(.relaySurface)
                 }
             }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.selectedCard?.id)
         }
     }
 
     private func historyCard(_ card: ArtifactHistoryCard) -> some View {
         let badge = WorkspaceHistoryBadge.resolve(state: card.state)
+        let selected = model.selectedCard?.id == card.id
+        let hovered = hoveredCardID == card.id
         return Button {
             Task { await model.select(card) }
         } label: {
@@ -158,9 +176,11 @@ struct WorkspaceHistoryView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(BoardDarkSurfaceBackground(
                 cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius,
-                fill: model.selectedCard?.id == card.id || hoveredCardID == card.id
+                fill: selected || hovered
                     ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.cardFill
             ))
+            .animation(RelayMotion.hover, value: hovered)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selected)
         }
         .buttonStyle(.plain)
         .onHover { hoveredCardID = $0 ? card.id : nil }
@@ -181,67 +201,80 @@ struct WorkspaceHistoryView: View {
                     Text(model.detail?.card?.title ?? card.title)
                         .font(AppTypography.font(.sectionHeading))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
+                        .relayTextSwap(model.detail?.card?.title ?? card.title)
                 }
                 Spacer()
                 badgeView(badge)
+                    .relaySwap(badge.label, alignment: .trailing)
             }
 
-            if let detail = model.detail, detail.availability != "available" {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(detail.recovery ?? unavailableExplanation(detail.availability))
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(ProgramBoardStyle.red)
-                    if detail.availability == "needs_network" {
-                        ProgramWorkspaceActionButton(
-                            title: "Fetch verified detail", systemName: "arrow.down",
-                            prominence: .primary, accessibilityLabel: "Fetch verified detail",
-                            help: "Download verified historical detail"
-                        ) {
-                            Task { await model.select(card, online: true) }
+            ZStack(alignment: .topLeading) {
+                if let detail = model.detail, detail.availability != "available" {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(detail.recovery ?? unavailableExplanation(detail.availability))
+                            .font(AppTypography.font(.supporting))
+                            .foregroundStyle(ProgramBoardStyle.red)
+                            .relayTextSwap(detail.recovery ?? unavailableExplanation(detail.availability))
+                        if detail.availability == "needs_network" {
+                            ProgramWorkspaceActionButton(
+                                title: "Fetch verified detail", systemName: "arrow.down",
+                                prominence: .primary, accessibilityLabel: "Fetch verified detail",
+                                help: "Download verified historical detail"
+                            ) {
+                                Task { await model.select(card, online: true) }
+                            }
+                            .transition(.relayElement)
                         }
                     }
+                    .transition(.relayElement)
+                } else {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 16) {
+                                if let markdown = model.detail?.markdown {
+                                    Text(markdown)
+                                        .font(AppTypography.monospacedFont(size: 12, weight: .regular))
+                                        .foregroundStyle(ProgramBoardStyle.secondaryText)
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .transition(.relayText)
+                                }
+                                dependencySummary
+                                attachmentSummary
+                            }
+                        }
+                        HStack {
+                            ProgramWorkspaceActionButton(
+                                title: "Restore detail", systemName: nil,
+                                isEnabled: model.detail?.availability == "available",
+                                accessibilityLabel: "Restore detail",
+                                help: "Explicitly rematerialize this terminal ticket and its verified attachments"
+                            ) {
+                                Task {
+                                    await model.restore(reopen: false)
+                                    onWorkspaceChanged()
+                                }
+                            }
+                            ProgramWorkspaceActionButton(
+                                title: "Reopen in Backlog", systemName: nil, prominence: .primary,
+                                isEnabled: model.detail?.availability == "available",
+                                accessibilityLabel: "Reopen in Backlog",
+                                help: "Move this ticket into the uncapped unfinished working set"
+                            ) {
+                                Task {
+                                    await model.restore(reopen: true)
+                                    onWorkspaceChanged()
+                                }
+                            }
+                            Spacer()
+                        }
+                        .disabled(model.detail?.availability != "available")
+                    }
+                    .transition(.relayElement)
                 }
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        if let markdown = model.detail?.markdown {
-                            Text(markdown)
-                                .font(AppTypography.monospacedFont(size: 12, weight: .regular))
-                                .foregroundStyle(ProgramBoardStyle.secondaryText)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        dependencySummary
-                        attachmentSummary
-                    }
-                }
-                HStack {
-                    ProgramWorkspaceActionButton(
-                        title: "Restore detail", systemName: nil,
-                        isEnabled: model.detail?.availability == "available",
-                        accessibilityLabel: "Restore detail",
-                        help: "Explicitly rematerialize this terminal ticket and its verified attachments"
-                    ) {
-                        Task {
-                            await model.restore(reopen: false)
-                            onWorkspaceChanged()
-                        }
-                    }
-                    ProgramWorkspaceActionButton(
-                        title: "Reopen in Backlog", systemName: nil, prominence: .primary,
-                        isEnabled: model.detail?.availability == "available",
-                        accessibilityLabel: "Reopen in Backlog",
-                        help: "Move this ticket into the uncapped unfinished working set"
-                    ) {
-                        Task {
-                            await model.restore(reopen: true)
-                            onWorkspaceChanged()
-                        }
-                    }
-                    Spacer()
-                }
-                .disabled(model.detail?.availability != "available")
             }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.detail)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.dependencies)
         }
         .padding(22)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -258,6 +291,7 @@ struct WorkspaceHistoryView: View {
                     Text("No dependencies")
                         .font(AppTypography.font(.metadata))
                         .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .transition(.relayText)
                 }
                 ForEach(dependencies.dependencies) { dependency in
                     HStack(alignment: .firstTextBaseline) {
@@ -269,8 +303,10 @@ struct WorkspaceHistoryView: View {
                     }
                     .font(AppTypography.font(.metadata))
                     .accessibilityElement(children: .combine)
+                    .transition(.relayElement)
                 }
             }
+            .transition(.relayElement)
         }
     }
 
@@ -290,11 +326,13 @@ struct WorkspaceHistoryView: View {
                     }
                     .font(AppTypography.font(.metadata))
                     .foregroundStyle(ProgramBoardStyle.secondaryText)
+                    .transition(.relayElement)
                 }
                 Text("Available after verified detail retrieval; viewing does not restore files.")
                     .font(AppTypography.font(.caption))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
             }
+            .transition(.relayElement)
         }
     }
 
@@ -312,6 +350,7 @@ struct WorkspaceHistoryView: View {
         Text(message)
             .font(AppTypography.font(.supporting))
             .foregroundStyle(warning ? ProgramBoardStyle.red : ProgramBoardStyle.green)
+            .relayTextSwap(message)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 22)
             .padding(.vertical, 8)

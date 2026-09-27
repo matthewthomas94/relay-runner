@@ -88,16 +88,45 @@ enum ProgramWorkspaceDotMatrixStyle {
 }
 
 enum ProgramWorkspaceModalMotion {
-    static let response: TimeInterval = 0.34
-    static let dampingFraction: CGFloat = 1
+    static let panelStyle: RelayMotion.Style = .surface
 
-    static func animation(reduceMotion: Bool) -> Animation? {
-        guard !reduceMotion else { return nil }
-        return .spring(response: response, dampingFraction: dampingFraction)
+    /// Eases the modal swap together with the board blur behind it.
+    static func animation(reduceMotion: Bool) -> Animation {
+        RelayMotion.change(reduceMotion: reduceMotion)
     }
 
-    static func transition(reduceMotion: Bool) -> AnyTransition {
-        reduceMotion ? .identity : .opacity
+    /// Modal panels rise in and sink out. A leaving modal stops taking clicks
+    /// so its click catcher never swallows the next click on the board.
+    static var transition: AnyTransition {
+        .programBoardLeaving(panelStyle)
+    }
+
+    /// The full-bleed dot-matrix backdrop only fades.
+    static var backdropTransition: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.animation(RelayMotion.enter),
+            removal: .opacity.animation(RelayMotion.exit)
+        )
+    }
+}
+
+/// A Relay transition whose leaving view no longer takes clicks.
+private struct ProgramBoardLeavingTransition: Transition {
+    let style: RelayMotion.Style
+
+    func body(content: Content, phase: TransitionPhase) -> some View {
+        content
+            .modifier(RelayMotionEffect(style: style, hidden: !phase.isIdentity))
+            .allowsHitTesting(phase != .didDisappear)
+    }
+}
+
+private extension AnyTransition {
+    static func programBoardLeaving(_ style: RelayMotion.Style) -> AnyTransition {
+        .asymmetric(
+            insertion: AnyTransition(ProgramBoardLeavingTransition(style: style)).animation(RelayMotion.enter),
+            removal: AnyTransition(ProgramBoardLeavingTransition(style: style)).animation(RelayMotion.exit)
+        )
     }
 }
 
@@ -224,6 +253,7 @@ struct ProgramBoardOverlayView: View {
                 Text("\(model.noteItems.count) \(model.noteItems.count == 1 ? "note" : "notes")")
                     .font(AppTypography.font(.sectionHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
+                    .relayTextSwap(model.noteItems.count)
                 Spacer()
             }
             .padding(.horizontal, 22)
@@ -254,7 +284,9 @@ struct ProgramBoardOverlayView: View {
                                 Text(model.noteQuery.isEmpty ? "Your notes will appear here." : "No matching notes.")
                                     .font(AppTypography.font(.supporting))
                                     .foregroundStyle(ProgramBoardStyle.mutedText)
+                                    .relayTextSwap(model.noteQuery.isEmpty)
                                     .padding(.top, 28)
+                                    .transition(.relayText)
                             }
                             ForEach(model.visibleNotes) { note in
                                 ProgramNoteCard(
@@ -262,41 +294,50 @@ struct ProgramBoardOverlayView: View {
                                     isSelected: model.selectedNoteDetail?.item.id == note.id,
                                     onSelect: { onNoteOpen(note) }
                                 )
+                                .transition(.relayElement)
                             }
                         }
+                        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteItems)
+                        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteQuery)
                     }
                 }
                 .padding(18)
                 .frame(width: 330)
                 Rectangle().fill(BoardDarkSurfaceStyle.border).frame(width: 1)
-                if let detail = model.selectedNoteDetail {
-                    ProgramNoteDetailPanel(
-                        detail: detail,
-                        captureSnapshot: model.noteCaptureSnapshot,
-                        theme: model.theme,
-                        onClose: onNoteClose,
-                        onStop: onStopNoteTaker,
-                        onRetry: { onNoteOpen(detail.item) },
-                        onMetadataRetry: { onNoteMetadataRetry(detail.item) },
-                        onDelete: { onNoteDelete(detail.item) },
-                        recoveryOffer: model.selectedNoteRecoveryOffer,
-                        recoveryInFlight: model.noteRecoveryInFlight,
-                        recoveryErrorMessage: model.noteRecoveryErrorMessage,
-                        onRecover: onNoteRecovery,
-                        onResume: onResumeRecoveredNote
-                    )
-                } else {
-                    VStack(spacing: 10) {
-                        Image(systemName: "note.text")
-                            .font(.system(size: 28))
-                        Text("Select a note")
-                            .font(AppTypography.font(.sectionHeading))
-                        Text("Your transcripts and summaries, all in one place.")
-                            .font(AppTypography.font(.supporting))
+                ZStack {
+                    if let detail = model.selectedNoteDetail {
+                        ProgramNoteDetailPanel(
+                            detail: detail,
+                            captureSnapshot: model.noteCaptureSnapshot,
+                            theme: model.theme,
+                            onClose: onNoteClose,
+                            onStop: onStopNoteTaker,
+                            onRetry: { onNoteOpen(detail.item) },
+                            onMetadataRetry: { onNoteMetadataRetry(detail.item) },
+                            onDelete: { onNoteDelete(detail.item) },
+                            recoveryOffer: model.selectedNoteRecoveryOffer,
+                            recoveryInFlight: model.noteRecoveryInFlight,
+                            recoveryErrorMessage: model.noteRecoveryErrorMessage,
+                            onRecover: onNoteRecovery,
+                            onResume: onResumeRecoveredNote
+                        )
+                        .id(detail.item.id)
+                        .transition(.programBoardLeaving(.surface))
+                    } else {
+                        VStack(spacing: 10) {
+                            Image(systemName: "note.text")
+                                .font(.system(size: 28))
+                            Text("Select a note")
+                                .font(AppTypography.font(.sectionHeading))
+                            Text("Your transcripts and summaries, all in one place.")
+                                .font(AppTypography.font(.supporting))
+                        }
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.relaySurface)
                     }
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.selectedNoteDetail?.item.id)
             }
         }
         .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
@@ -378,63 +419,73 @@ struct ProgramBoardOverlayView: View {
             .allowsHitTesting(!dotMatrixPresentation.isVisible)
             .zIndex(2)
 
-            if workspace.selectedTab == .terminal,
-               let terminalContent = terminalContent(model.selectedSessionProjectPath) {
-                VStack(spacing: 0) {
-                    terminalContent
-                        .padding(.top, BoardSurfaceLayout.columnTopPadding)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
-                .frame(maxWidth: .infinity, alignment: .top)
-                .blur(radius: backgroundBlurRadius)
-                .allowsHitTesting(!dotMatrixPresentation.isVisible)
-            } else if workspace.selectedTab == .systemSettings, let settingsContent {
-                VStack(spacing: 0) {
-                    settingsContent
-                        .padding(.top, BoardSurfaceLayout.columnTopPadding)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
-                .frame(maxWidth: .infinity, alignment: .top)
-                .blur(radius: backgroundBlurRadius)
-                .allowsHitTesting(!dotMatrixPresentation.isVisible)
-            } else if workspace.selectedTab == .notes {
-                notesLibrary
-                    .padding(.top, BoardSurfaceLayout.columnTopPadding)
-                    .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
-                    .padding(.bottom, 20)
-                    .frame(height: min(viewportSize.height, ProgramBoardBackdropStyle.backdropHeight))
-            } else if workspace.showsWorkTab {
-                let contentPresentation = boardContentPresentation
-                VStack(spacing: 0) {
-                    ProgramBoardContent(
-                        model: model,
-                        onRefresh: onRefresh,
-                        onCreateDiagnostics: onCreateDiagnostics,
-                        onHistoryStart: onHistoryStart,
-                        onDismiss: onDismiss,
-                        onAddExistingProject: onAddExistingProject,
-                        onCreateProject: onCreateProject,
-                        onSelectProject: onSelectProject,
-                        onCreateStart: onCreateStart,
-                        onNoteOpen: onNoteOpen,
-                        onDrop: onDrop
-                    )
-                    .padding(.top, contentPresentation.workspaceTopPadding)
-
-                    if contentPresentation.usesTrailingSpacer {
+            // Tabs, and the Workspace states within the work tab, swap as pages.
+            ZStack(alignment: .topLeading) {
+                if workspace.selectedTab == .terminal,
+                   let terminalContent = terminalContent(model.selectedSessionProjectPath) {
+                    VStack(spacing: 0) {
+                        terminalContent
+                            .padding(.top, BoardSurfaceLayout.columnTopPadding)
                         Spacer(minLength: 0)
                     }
+                    .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .blur(radius: backgroundBlurRadius)
+                    .allowsHitTesting(!dotMatrixPresentation.isVisible)
+                    .transition(.programBoardLeaving(.surface))
+                } else if workspace.selectedTab == .systemSettings, let settingsContent {
+                    VStack(spacing: 0) {
+                        settingsContent
+                            .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .blur(radius: backgroundBlurRadius)
+                    .allowsHitTesting(!dotMatrixPresentation.isVisible)
+                    .transition(.programBoardLeaving(.surface))
+                } else if workspace.selectedTab == .notes {
+                    notesLibrary
+                        .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                        .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                        .padding(.bottom, 20)
+                        .frame(height: min(viewportSize.height, ProgramBoardBackdropStyle.backdropHeight))
+                        .transition(.programBoardLeaving(.surface))
+                } else if workspace.showsWorkTab {
+                    let contentPresentation = boardContentPresentation
+                    VStack(spacing: 0) {
+                        ProgramBoardContent(
+                            model: model,
+                            onRefresh: onRefresh,
+                            onCreateDiagnostics: onCreateDiagnostics,
+                            onHistoryStart: onHistoryStart,
+                            onDismiss: onDismiss,
+                            onAddExistingProject: onAddExistingProject,
+                            onCreateProject: onCreateProject,
+                            onSelectProject: onSelectProject,
+                            onCreateStart: onCreateStart,
+                            onNoteOpen: onNoteOpen,
+                            onDrop: onDrop
+                        )
+                        .padding(.top, contentPresentation.workspaceTopPadding)
+
+                        if contentPresentation.usesTrailingSpacer {
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(
+                        height: ProgramBoardLayout.workspaceContentHeight,
+                        alignment: contentPresentation.fillsWorkspace ? .center : .top
+                    )
+                    .blur(radius: backgroundBlurRadius)
+                    .allowsHitTesting(!dotMatrixPresentation.isVisible)
+                    .id(contentPresentation)
+                    .transition(.programBoardLeaving(.surface))
                 }
-                .frame(maxWidth: .infinity)
-                .frame(
-                    height: ProgramBoardLayout.workspaceContentHeight,
-                    alignment: contentPresentation.fillsWorkspace ? .center : .top
-                )
-                .blur(radius: backgroundBlurRadius)
-                .allowsHitTesting(!dotMatrixPresentation.isVisible)
             }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.selectedTab)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: boardContentPresentation)
 
             ProgramDragPreviewLayer(model: model)
                 .blur(radius: backgroundBlurRadius)
@@ -443,7 +494,7 @@ struct ProgramBoardOverlayView: View {
             if dotMatrixPresentation.isVisible {
                 ProgramWorkspaceDotMatrixLayer(presentation: dotMatrixPresentation)
                     .zIndex(dotMatrixPresentation.layerZIndex)
-                    .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+                    .transition(ProgramWorkspaceModalMotion.backdropTransition)
             }
 
             if let history = model.history {
@@ -454,7 +505,7 @@ struct ProgramBoardOverlayView: View {
                         onWorkspaceChanged: onHistoryChanged
                     )
                 }
-                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+                .transition(ProgramWorkspaceModalMotion.transition)
             }
 
             if let detail = model.selectedTicketDetail,
@@ -476,7 +527,7 @@ struct ProgramBoardOverlayView: View {
                         panelSize: ProgramTicketPanelStyle.detailSize(fitting: detailSurfaceSize)
                     )
                 }
-                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+                .transition(ProgramWorkspaceModalMotion.transition)
             }
 
             if let draft = model.creating {
@@ -499,7 +550,7 @@ struct ProgramBoardOverlayView: View {
                     )
                 }
                 .id("\(draft.lane.id)-\(draft.selectedProjectPath ?? "all")")
-                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+                .transition(ProgramWorkspaceModalMotion.transition)
             }
 
             if let draft = model.editing {
@@ -525,7 +576,7 @@ struct ProgramBoardOverlayView: View {
                     )
                 }
                 .id(draft.id)
-                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+                .transition(ProgramWorkspaceModalMotion.transition)
             }
 
             if let batch = model.spikeFollowupBatch {
@@ -537,7 +588,7 @@ struct ProgramBoardOverlayView: View {
                     )
                 }
                 .id(batch.id)
-                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+                .transition(ProgramWorkspaceModalMotion.transition)
             }
         }
         .frame(width: viewportSize.width, height: viewportSize.height, alignment: .topLeading)
@@ -996,12 +1047,7 @@ private struct ProgramBoardControlChrome: ViewModifier {
                 )
             )
             .contentShape(Rectangle())
-            .animation(
-                presentation.animationDuration == 0
-                    ? nil
-                    : .timingCurve(0.165, 0.84, 0.44, 1, duration: presentation.animationDuration),
-                value: presentation
-            )
+            .animation(presentation.animation, value: presentation)
             .focusable(!disabled)
             .focusEffectDisabled(true)
             .focused($isFocused)
@@ -1160,6 +1206,7 @@ private struct ProgramOverviewColumn: View {
     let onRetry: () -> Void
     let onCreateDiagnostics: () -> Void
     let onHistoryStart: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1180,6 +1227,7 @@ private struct ProgramOverviewColumn: View {
                     onCreateDiagnostics: onCreateDiagnostics
                 )
                     .padding(.top, ProgramBoardLayout.overviewSectionSpacing)
+                    .transition(.relayElement)
             }
 
             BoardOverlayScrollView(contentInsets: ProgramBoardLayout.projectScrollContentInsets) {
@@ -1202,13 +1250,16 @@ private struct ProgramOverviewColumn: View {
                                 }
                             }
                         )
+                        .transition(.relayElement)
                     }
                 }
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: snapshot.projects)
             }
             .padding(.top, ProgramBoardLayout.projectHeaderToListSpacing)
 
             Spacer(minLength: 0)
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: errorMessage)
         .programColumnChrome(theme: theme)
     }
 }
@@ -1430,6 +1481,7 @@ private struct ProgramProjectCard: View {
                             .font(AppTypography.font(.caption))
                             .foregroundStyle(ProgramBoardStyle.secondaryText)
                             .lineLimit(1)
+                            .transition(.relayText)
                     }
                 }
 
@@ -1446,6 +1498,8 @@ private struct ProgramProjectCard: View {
                         .font(AppTypography.font(.supporting))
                         .foregroundStyle(ProgramBoardStyle.red)
                         .lineLimit(1)
+                        .relayTextSwap(stale)
+                        .transition(.relayText)
                 }
 
                 if !item.providerHealth.isEmpty {
@@ -1453,6 +1507,8 @@ private struct ProgramProjectCard: View {
                         .font(AppTypography.font(.supporting))
                         .foregroundStyle(ProgramBoardStyle.red)
                         .lineLimit(2)
+                        .relayTextSwap(item.providerHealth)
+                        .transition(.relayText)
                 }
             }
             .padding(16)
@@ -1469,12 +1525,7 @@ private struct ProgramProjectCard: View {
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.55)
-        .animation(
-            presentation.animationDuration == 0
-                ? nil
-                : .timingCurve(0.165, 0.84, 0.44, 1, duration: presentation.animationDuration),
-            value: presentation
-        )
+        .animation(presentation.animation, value: presentation)
         .focusable(isEnabled)
         .focusEffectDisabled(true)
         .focused($isFocused)
@@ -1518,6 +1569,7 @@ private struct ProjectCount: View {
                 .foregroundStyle(ProgramBoardStyle.secondaryText)
                 .monospacedDigit()
                 .lineLimit(1)
+                .relayTextSwap(value ?? 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .minimumScaleFactor(0.8)
@@ -1533,6 +1585,7 @@ struct ProgramWorkColumnPanel: View {
     let onCreate: () -> Void
     var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
         model: ProgramBoardViewModel,
@@ -1586,6 +1639,7 @@ struct ProgramWorkColumnPanel: View {
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
                         .monospacedDigit()
                         .lineLimit(1)
+                        .relayTextSwap(laneItems.count, alignment: .trailing)
                 }
                 if canCreate {
                     ProgramIconButton(
@@ -1594,16 +1648,19 @@ struct ProgramWorkColumnPanel: View {
                         size: ProgramBoardLayout.newTicketButtonSize,
                         action: onCreate
                     )
+                    .transition(.relayElement)
                 }
             }
             .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
             .frame(height: ProgramBoardLayout.workHeaderHeight)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: canCreate)
 
             ProgramColumnTicketScrollView(resetID: scrollResetID) {
                 VStack(alignment: .leading, spacing: 0) {
                     ProgramDropIndicator(target: activeTarget)
                     if laneItems.isEmpty {
                         ProgramColumnEmpty(text: lane.emptyText)
+                            .transition(.relayText)
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(laneItems) { item in
@@ -1620,16 +1677,25 @@ struct ProgramWorkColumnPanel: View {
                                         onSelect: { model.selectTicket(ticket) },
                                         onDrop: onDrop
                                     )
+                                    .transition(.programBoardLeaving(.element))
                                 case .note(let note):
                                     ProgramNoteCard(
                                         item: note,
                                         isSelected: model.selectedNoteDetail?.item.id == note.id,
                                         onSelect: { onNoteOpen(note) }
                                     )
+                                    .transition(.programBoardLeaving(.element))
                                 }
                             }
                         }
+                        .transition(.programBoardLeaving(.element))
                     }
+                }
+                // Reloads insert, remove, and reflow cards; drag updates run
+                // with animations disabled so the preview is never chased.
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: laneItems)
+                .background {
+                    ProgramLaneLiveCardsMarker(liveItemIDs: Set(laneItems.compactMap(\.ticketItemID)))
                 }
             }
             Spacer(minLength: 0)
@@ -1682,6 +1748,7 @@ private struct ProgramNoteCard: View {
                     .font(AppTypography.font(.ticketTitle))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                     .lineLimit(2)
+                    .relayTextSwap(item.title)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1695,6 +1762,7 @@ private struct ProgramNoteCard: View {
             )
         }
         .buttonStyle(.plain)
+        .animation(presentation.animation, value: presentation)
         .focusable()
         .focusEffectDisabled(true)
         .focused($isFocused)
@@ -1779,6 +1847,7 @@ private struct DraggableProgramWorkCard: View {
             .overlay(
                 ProgramWorkCardDragEventLayer(
                     interactionID: "\(model.selectedProjectPath ?? "all")|\(lane.id)|\(item.id)",
+                    workItemID: item.id,
                     canDrag: canDrag,
                     scrollBoundary: scrollBoundary,
                     toolTip: ProgramWorkCard.toolTip(for: item),
@@ -1866,6 +1935,7 @@ private struct DraggableProgramWorkCard: View {
 
 private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
     let interactionID: String
+    let workItemID: String
     let canDrag: Bool
     let scrollBoundary: BoardOverlayScrollBoundary?
     let toolTip: String
@@ -1895,8 +1965,59 @@ private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
         nsView.onEnded = onEnded
         nsView.onCancelled = onCancelled
         nsView.canDrag = canDrag
+        nsView.workItemID = workItemID
         nsView.refreshMountedWorkCardRegistration()
         nsView.schedulePointerReconciliation()
+    }
+}
+
+/// Marks the cards a reload removed from a lane as leaving. SwiftUI keeps a
+/// removed card mounted, with its last inputs, while its exit transition
+/// plays, so without this its event view would keep claiming the pointer
+/// from the card that replaces it.
+private struct ProgramLaneLiveCardsMarker: NSViewRepresentable {
+    let liveItemIDs: Set<String>
+
+    func makeNSView(context: Context) -> ProgramLaneLiveCardsView {
+        ProgramLaneLiveCardsView()
+    }
+
+    func updateNSView(_ nsView: ProgramLaneLiveCardsView, context: Context) {
+        nsView.update(liveItemIDs: liveItemIDs)
+    }
+}
+
+final class ProgramLaneLiveCardsView: NSView {
+    private var liveItemIDs: Set<String>?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    func update(liveItemIDs: Set<String>) {
+        guard liveItemIDs != self.liveItemIDs else { return }
+        self.liveItemIDs = liveItemIDs
+        guard let container = boardOverlayScrollContainerAncestor else { return }
+        Self.markLeavingCards(in: container, liveItemIDs: liveItemIDs)
+    }
+
+    private static func markLeavingCards(in view: NSView, liveItemIDs: Set<String>) {
+        for subview in view.subviews {
+            if let card = subview as? ProgramWorkCardDragEventView {
+                if !card.workItemID.isEmpty, !liveItemIDs.contains(card.workItemID) {
+                    card.isLeaving = true
+                }
+            } else {
+                markLeavingCards(in: subview, liveItemIDs: liveItemIDs)
+            }
+        }
+    }
+}
+
+private extension ProgramBoardWorkItem {
+    var ticketItemID: String? {
+        if case .ticket(let item) = self { return item.id }
+        return nil
     }
 }
 
@@ -1940,6 +2061,17 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
             refreshCursorPresentation()
         }
     }
+    var workItemID = ""
+    /// Set while the card plays its exit transition. A leaving card leaves the
+    /// scroll container's hit index so the card replacing it owns the pointer.
+    var isLeaving = false {
+        didSet {
+            guard isLeaving, !oldValue else { return }
+            cancelPointerInteraction()
+            registeredScrollContainer?.unregisterMountedWorkCard(self)
+            registeredScrollContainer = nil
+        }
+    }
     var boardOverlayScrollBoundary: BoardOverlayScrollBoundary?
     var onHoverChange: (Bool) -> Void = { _ in }
     var onSelect: () -> Void = {}
@@ -1968,7 +2100,7 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
+        !isLeaving && bounds.contains(point) ? self : nil
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -2204,6 +2336,7 @@ final class ProgramWorkCardDragEventView: NSView, BoardOverlayScrollBoundaryProv
     }
 
     func refreshMountedWorkCardRegistration() {
+        guard !isLeaving else { return }
         let container = boardOverlayScrollContainerAncestor
         if registeredScrollContainer !== container {
             registeredScrollContainer?.unregisterMountedWorkCard(self)
@@ -2256,9 +2389,11 @@ private struct ProgramWorkCard: View {
                 HStack(alignment: .center, spacing: 6) {
                     ForEach(badges, id: \.self) { label in
                         ProgramInlineBadge(label: label)
+                            .transition(.relayElement)
                     }
                     Spacer(minLength: 0)
                 }
+                .transition(.relayElement)
             }
 
             if let dependencyText {
@@ -2267,6 +2402,8 @@ private struct ProgramWorkCard: View {
                     .foregroundStyle(item.blockedBy.isEmpty ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.red)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
+                    .relayTextSwap(dependencyText)
+                    .transition(.relayText)
             }
 
             if let lastError = item.visibleLastError {
@@ -2274,6 +2411,8 @@ private struct ProgramWorkCard: View {
                     .font(AppTypography.font(.supporting))
                     .foregroundStyle(ProgramBoardStyle.red)
                     .lineLimit(2)
+                    .relayTextSwap(lastError)
+                    .transition(.relayText)
             }
 
             if let activityLine {
@@ -2284,6 +2423,8 @@ private struct ProgramWorkCard: View {
                     .truncationMode(.tail)
                     .help(activityLine)
                     .accessibilityLabel("Agent activity: \(activityLine)")
+                    .relayTextSwap(activityLine)
+                    .transition(.relayText)
             }
         }
         .padding(16)
@@ -2296,12 +2437,7 @@ private struct ProgramWorkCard: View {
                 usesCardStyle: true
             )
         )
-        .animation(
-            presentation.animationDuration == 0
-                ? nil
-                : .timingCurve(0.165, 0.84, 0.44, 1, duration: presentation.animationDuration),
-            value: presentation
-        )
+        .animation(presentation.animation, value: presentation)
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
     }
@@ -2390,6 +2526,7 @@ private struct ProgramNoteDetailPanel: View {
     let recoveryErrorMessage: String?
     let onRecover: (MeetingNoteRecoveryResolution) -> Void
     let onResume: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isCurrentCapture: Bool {
         guard captureSnapshot.noteID == (detail.item.card.legacyRecovery?.noteID ?? detail.item.card.noteID),
@@ -2425,6 +2562,7 @@ private struct ProgramNoteDetailPanel: View {
                     Text(detail.item.title)
                         .font(AppTypography.font(.screenTitle))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
+                        .relayTextSwap(detail.item.title)
                 }
                 Spacer(minLength: 0)
                 ProgramIconButton(systemName: "xmark", help: "Close note", action: onClose)
@@ -2465,6 +2603,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onStop()
                     }
+                    .transition(.relayElement)
                 }
                 if recoveryOffer != nil,
                    isCurrentCapture,
@@ -2477,6 +2616,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onResume()
                     }
+                    .transition(.relayElement)
                 }
                 if recoveryOffer != nil, !isCurrentCapture {
                     ProgramDetailActionButton(
@@ -2487,6 +2627,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onRecover(.recoverPaused)
                     }
+                    .transition(.relayElement)
                     ProgramDetailActionButton(
                         systemName: "checkmark",
                         title: "Finalize",
@@ -2495,6 +2636,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onRecover(.finalize)
                     }
+                    .transition(.relayElement)
                     ProgramDetailActionButton(
                         systemName: "trash",
                         title: "Discard tail",
@@ -2503,6 +2645,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onRecover(.discardIncompleteTail)
                     }
+                    .transition(.relayElement)
                 }
                 if detail.errorMessage != nil {
                     ProgramDetailActionButton(
@@ -2513,6 +2656,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onRetry()
                     }
+                    .transition(.relayElement)
                 }
             }
 
@@ -2522,27 +2666,34 @@ private struct ProgramNoteDetailPanel: View {
                         Text(status)
                             .font(AppTypography.font(.supporting))
                             .foregroundStyle(ProgramBoardStyle.mutedText)
+                            .relayTextSwap(status)
                         if !detail.item.isArchived {
                             Button("Retry summary", action: onMetadataRetry)
                                 .buttonStyle(.plain)
+                                .transition(.relayElement)
                         }
                     }
+                    .transition(.relayElement)
                 }
             }
 
             if let errorMessage = captureErrorMessage {
                 ProgramDetailNotice(message: errorMessage)
+                    .transition(.relayElement)
             }
             if recoveryOffer != nil, !isCurrentCapture {
                 ProgramDetailNotice(
                     message: "Interrupted recording found. Recovery uses the original note and project and stays paused until you choose Resume."
                 )
+                .transition(.relayElement)
             }
             if let recoveryErrorMessage {
                 ProgramDetailNotice(message: recoveryErrorMessage)
+                    .transition(.relayElement)
             }
             if let errorMessage = detail.errorMessage {
                 ProgramDetailNotice(message: errorMessage)
+                    .transition(.relayElement)
             }
 
             BoardOverlayScrollView {
@@ -2550,6 +2701,7 @@ private struct ProgramNoteDetailPanel: View {
                     if let summary = detail.item.card.metadata?.summary {
                         ProgramDetailSection(title: "Summary", text: summary)
                             .textSelection(.enabled)
+                            .transition(.relayElement)
                     }
                     if detail.isLoading {
                         HStack(spacing: 8) {
@@ -2558,11 +2710,17 @@ private struct ProgramNoteDetailPanel: View {
                                 .font(AppTypography.font(.supporting))
                                 .foregroundStyle(ProgramBoardStyle.mutedText)
                         }
+                        .transition(.relayElement)
                     } else if let transcript = detail.transcript {
                         ProgramDetailSection(title: "Transcript", text: transcript.isEmpty ? "No transcript captured." : transcript)
                             .textSelection(.enabled)
+                            .transition(.relayElement)
                     }
                 }
+                .animation(
+                    RelayMotion.change(reduceMotion: reduceMotion),
+                    value: [detail.isLoading, detail.transcript != nil, detail.item.card.metadata?.summary != nil]
+                )
                 .overlay(alignment: .topLeading) {
                     ProgramTicketDetailTopBoundaryMarker()
                         .frame(width: 1, height: 1)
@@ -2573,6 +2731,22 @@ private struct ProgramNoteDetailPanel: View {
                 }
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: motionState)
+    }
+
+    /// Everything that inserts or removes a control or notice above the transcript.
+    private var motionState: [AnyHashable] {
+        [
+            showsStop,
+            recoveryOffer != nil,
+            isCurrentCapture,
+            captureSnapshot.phase,
+            detail.item.isArchived,
+            detail.item.card.metadata?.statusLabel,
+            captureErrorMessage,
+            recoveryErrorMessage,
+            detail.errorMessage,
+        ]
     }
     private var captureErrorMessage: String? {
         guard isCurrentCapture, let message = captureSnapshot.errorMessage else { return nil }
@@ -2598,6 +2772,7 @@ struct ProgramTicketDetailPanel: View {
     let onDelete: (ProgramBoardDeleteRequest) -> Void
     let onSpikeFollowup: () -> Void
     var panelSize: CGSize? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -2610,18 +2785,22 @@ struct ProgramTicketDetailPanel: View {
                             .lineLimit(1)
                         if detail.item.isAwaitingMerge {
                             ProgramInlineBadge(label: "Awaiting review")
+                                .transition(.relayElement)
                         }
                         if detail.item.isIntegrationBlocked {
                             ProgramInlineBadge(label: "Integration blocked")
+                                .transition(.relayElement)
                         }
                         if detail.item.isVerificationBlocked {
                             ProgramInlineBadge(label: "Verification blocked")
+                                .transition(.relayElement)
                         }
                     }
                     Text(detail.title)
                         .font(AppTypography.font(.screenTitle))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                         .lineLimit(2)
+                        .relayTextSwap(detail.title)
                     Text(detail.projectName)
                         .font(AppTypography.font(.label))
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
@@ -2632,6 +2811,7 @@ struct ProgramTicketDetailPanel: View {
                             .foregroundStyle(ProgramBoardStyle.mutedText)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                            .transition(.relayText)
                     }
                 }
                 Spacer(minLength: 0)
@@ -2648,6 +2828,7 @@ struct ProgramTicketDetailPanel: View {
                     ) {
                         onEdit()
                     }
+                    .transition(.relayElement)
                 }
                 ProgramDetailActionButton(
                     systemName: "trash",
@@ -2693,11 +2874,13 @@ struct ProgramTicketDetailPanel: View {
                     ) {
                         onSpikeFollowup()
                     }
+                    .transition(.relayElement)
                 }
             }
 
             if let unavailableMessage = detail.unavailableMessage {
                 ProgramDetailNotice(message: unavailableMessage)
+                    .transition(.relayElement)
             }
 
             BoardOverlayScrollView {
@@ -2713,11 +2896,14 @@ struct ProgramTicketDetailPanel: View {
                     )
                     if let spikeReport = detail.spikeReport {
                         ProgramDetailSection(title: "Spike report", text: spikeReport)
+                            .transition(.relayElement)
                     }
                     if !detail.imageAttachments.isEmpty {
                         ProgramTicketImageSection(attachments: detail.imageAttachments)
+                            .transition(.relayElement)
                     }
                 }
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: detail)
                 .overlay(alignment: .topLeading) {
                     ProgramTicketDetailTopBoundaryMarker()
                         .frame(width: 1, height: 1)
@@ -2728,6 +2914,7 @@ struct ProgramTicketDetailPanel: View {
                 }
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: detail)
         .programTicketPanelChrome(theme: theme, size: panelSize)
     }
 
@@ -2891,6 +3078,7 @@ private struct ProgramSpikeFollowupReviewModal: View {
     let batch: SpikeFollowupBatch
     let onReview: (SpikeFollowupBatch, SpikeFollowupProposal, String, [String: Any]?) -> Void
     let onClose: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -2919,8 +3107,10 @@ private struct ProgramSpikeFollowupReviewModal: View {
                             proposal: proposal,
                             onReview: onReview
                         )
+                        .transition(.relayElement)
                         }
                 }
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: batch.proposals)
             }
         }
         .padding(20)
@@ -2977,10 +3167,12 @@ private struct ProgramSpikeFollowupProposalCard: View {
                 Text(proposal.state.displayLabel)
                     .font(AppTypography.font(.caption))
                     .foregroundStyle(ProgramBoardStyle.secondaryText)
+                    .relayTextSwap(proposal.state)
                 if let ticketID = proposal.ticketID {
                     Text(ticketID)
                         .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
+                        .transition(.relayText)
                 }
                 Spacer(minLength: 0)
             }
@@ -3030,6 +3222,7 @@ private struct ProgramSpikeFollowupProposalCard: View {
 
             if let error = proposal.error, !error.isEmpty {
                 ProgramDetailNotice(message: error)
+                    .transition(.relayElement)
             }
 
             if isDraft {
@@ -3040,6 +3233,7 @@ private struct ProgramSpikeFollowupProposalCard: View {
                     Button("Accept to Backlog") { onReview(batch, proposal, "accept", updates) }
                         .keyboardShortcut(.defaultAction)
                 }
+                .transition(.relayElement)
             }
         }
         .padding(14)
@@ -3166,13 +3360,16 @@ private struct ProgramDetailMetadata: View {
                         metadataCell(rows[index])
                         if rows.indices.contains(index + 1) {
                             metadataCell(rows[index + 1])
+                                .transition(.relayElement)
                         } else {
                             Spacer(minLength: 0)
                                 .frame(maxWidth: .infinity)
                         }
                     }
+                    .transition(.relayElement)
                 }
             }
+            .transition(.relayElement)
         }
     }
 
@@ -3186,10 +3383,12 @@ private struct ProgramDetailMetadata: View {
                 .font(AppTypography.font(.caption))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .lineLimit(1)
+                .relayTextSwap(row.label)
             Text(row.value)
                 .font(AppTypography.font(.label))
                 .foregroundStyle(ProgramBoardStyle.secondaryText)
                 .lineLimit(2)
+                .relayTextSwap(row.value)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -3223,6 +3422,7 @@ private struct ProgramDetailNotice: View {
             .font(AppTypography.font(.status))
             .foregroundStyle(ProgramBoardStyle.red)
             .lineLimit(3)
+            .relayTextSwap(message)
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -3277,6 +3477,7 @@ private struct ProgramTicketEditModal: View {
     @State private var description: String
     @State private var acceptanceCriteria: String
     @State private var imageURLs: [URL] = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     init(
         draft: ProgramBoardEditDraft,
         makeRequest: @escaping (
@@ -3394,6 +3595,7 @@ private struct ProgramTicketEditModal: View {
             if let errorMessage {
                 ProgramErrorStrip(message: errorMessage)
                     .accessibilityLabel("Ticket save failed. \(errorMessage)")
+                    .transition(.relayElement)
             }
 
             HStack(spacing: 8) {
@@ -3422,6 +3624,7 @@ private struct ProgramTicketEditModal: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: errorMessage)
         .programTicketPanelChrome()
     }
 
@@ -3525,6 +3728,7 @@ private struct ProgramTicketProjectPicker: View {
                 Text(selectedProject?.name ?? "Select project")
                     .font(AppTypography.font(.field))
                     .lineLimit(1)
+                    .relayTextSwap(selection)
                 Spacer(minLength: 12)
                 Image(systemName: "chevron.down")
                     .font(AppTypography.symbolFont(size: 9, weight: .semibold))
@@ -3639,6 +3843,7 @@ private struct ProgramTicketCreateModal: View {
                         .foregroundStyle(ProgramBoardStyle.mutedText)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .relayTextSwap(selectedProjectPath)
                 }
 
                 ProgramTicketTitleField(text: $title)
@@ -3715,6 +3920,7 @@ private struct ProgramExecutionModePicker: View {
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
+                .relayTextSwap(selection, alignment: .topLeading)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .frame(height: ProgramTicketPanelStyle.executionModeDescriptionHeight, alignment: .topLeading)
             HStack(spacing: 0) {
@@ -3782,6 +3988,7 @@ private struct ProgramExecutionModeButton: View {
         .focused($isFocused)
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isSelected)
         .programButtonCursor()
         .accessibilityLabel(mode.displayName)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -3792,6 +3999,7 @@ private struct ProgramTicketImageSelector: View {
     let existingPaths: [String]
     @Binding var selectedURLs: [URL]
     let chooseImages: (@escaping ([URL]) -> Void) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -3819,11 +4027,14 @@ private struct ProgramTicketImageSelector: View {
                                     selectedURLs.removeAll { $0 == url }
                                 }
                             )
+                            .transition(.relayElement)
                         }
                     }
                 }
+                .transition(.relayElement)
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selectedURLs)
     }
 
     private func addImages() {
@@ -3913,6 +4124,7 @@ private struct ProgramStatePanel: View {
     var diagnosticsPreview: RelaySupportBundlePreview? = nil
     var isDiagnosticsExporting = false
     var onCreateDiagnostics: (() -> Void)? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -3934,7 +4146,9 @@ private struct ProgramStatePanel: View {
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
                         .multilineTextAlignment(.center)
                         .lineLimit(3)
+                        .relayTextSwap(detail, alignment: .center)
                         .frame(maxWidth: 560)
+                        .transition(.relayText)
                 }
                 if let primaryActionTitle, let primaryAction {
                     HStack(spacing: 8) {
@@ -3976,6 +4190,7 @@ private struct ProgramStatePanel: View {
                                 Text(isDiagnosticsExporting ? "Exporting…" : "Export Diagnostics…")
                                     .font(AppTypography.font(.programAction))
                                     .foregroundStyle(ProgramBoardStyle.secondaryText)
+                                    .relayTextSwap(isDiagnosticsExporting, alignment: .center)
                                     .padding(.horizontal, 12)
                                     .frame(height: ProgramBoardLayout.compactControlHeight)
                             }
@@ -3993,10 +4208,15 @@ private struct ProgramStatePanel: View {
                         .foregroundStyle(ProgramBoardStyle.mutedText)
                         .multilineTextAlignment(.center)
                         .lineLimit(4)
+                        .relayTextSwap(diagnosticsPreview.summary, alignment: .center)
                         .frame(maxWidth: 620)
+                        .transition(.relayText)
                 }
             }
             .frame(maxWidth: .infinity)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: detail)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isDiagnosticsExporting)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: diagnosticsPreview?.summary)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
@@ -4031,6 +4251,7 @@ private struct ProgramErrorStrip: View {
                 .font(AppTypography.font(.supporting))
                 .foregroundStyle(ProgramBoardStyle.red)
                 .lineLimit(2)
+                .relayTextSwap(message)
             if onRetry != nil || onCreateDiagnostics != nil {
                 HStack(spacing: 10) {
                     if let onRetry {
@@ -4044,6 +4265,7 @@ private struct ProgramErrorStrip: View {
                         )
                             .buttonStyle(.plain)
                             .disabled(isDiagnosticsExporting)
+                            .relayTextSwap(isDiagnosticsExporting)
                     }
                 }
                 .font(AppTypography.font(.caption))
@@ -4166,6 +4388,7 @@ private struct ProgramSessionButton: View {
     let presentation: ProgramSessionToolbarPresentation
     let isEnabled: Bool
     let action: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         WorkspaceNavigationButton(
@@ -4177,6 +4400,8 @@ private struct ProgramSessionButton: View {
         )
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.45)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isEnabled)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: presentation)
     }
 }
 
@@ -4336,6 +4561,7 @@ private struct ProgramInlineBadge: View {
 
 private struct ProgramBoardColumnChrome: ViewModifier {
     let theme: ParticleFieldRenderer.Theme?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
@@ -4349,7 +4575,7 @@ private struct ProgramBoardColumnChrome: ViewModifier {
                 x: 0,
                 y: BoardDarkSurfaceStyle.shadowYOffset
             )
-            .animation(.easeInOut(duration: 0.4), value: theme)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: theme)
             .contentShape(Rectangle())
             .onTapGesture { }
     }

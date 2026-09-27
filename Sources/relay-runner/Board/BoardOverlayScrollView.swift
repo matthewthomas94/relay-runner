@@ -337,6 +337,7 @@ final class BoardOverlayScrollContainer: NSView {
         hideWorkItem?.cancel()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.10
+            context.timingFunction = RelayMotion.enterCurve.mediaTimingFunction
             thumbView.animator().alphaValue = 1
         }
         scheduleHide(after: 0.85)
@@ -361,6 +362,7 @@ final class BoardOverlayScrollContainer: NSView {
         }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.22
+            context.timingFunction = RelayMotion.exitCurve.mediaTimingFunction
             thumbView.animator().alphaValue = 0
         }
     }

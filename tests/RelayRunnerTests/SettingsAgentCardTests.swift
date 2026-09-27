@@ -292,6 +292,36 @@ final class SettingsAgentCardTests: XCTestCase {
         XCTAssertFalse(host.isAnimationRunning)
     }
 
+    @MainActor
+    func testHostedOrbRisesInOnlyWhenItBecomesVisible() throws {
+        let host = SettingsAgentParticleHostView()
+        host.update(theme: .idle, reduceMotion: false)
+        XCTAssertFalse(host.showsField)
+        XCTAssertNil(host.layer?.filters)
+        let window = NSWindow(
+            contentRect: NSRect(x: -5000, y: -5000, width: 280, height: 640),
+            styleMask: .borderless, backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { host.stop(); window.close() }
+        window.orderFront(nil)
+        host.update(theme: .stt, reduceMotion: false)
+        XCTAssertTrue(host.showsField)
+        let entranceBlur = host.layer?.filters?
+            .compactMap { $0 as? CIFilter }
+            .first { $0.name == RelayLayerMotion.blurFilterName }
+        XCTAssertNotNil(entranceBlur)
+        let particles = try XCTUnwrap(host.layer?.sublayers?.last)
+        XCTAssertEqual(particles.opacity, 1, accuracy: 0.001)
+        XCTAssertTrue(particles.filters?.isEmpty ?? true)
+
+        window.orderOut(nil)
+        host.update(theme: .stt, reduceMotion: false)
+        XCTAssertFalse(host.showsField)
+        XCTAssertFalse(host.isAnimationRunning)
+    }
+
     private struct Pixel {
         let x: Int, y: Int, r: Int, g: Int, b: Int
     }

@@ -31,6 +31,7 @@ struct PermissionAppDragGuide: View {
     let settingsPane: String
     let targets: [PermissionAppTarget]
     let highlightedTargetIDs: Set<String>
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(title: String,
          settingsPane: String,
@@ -54,6 +55,7 @@ struct PermissionAppDragGuide: View {
                     .foregroundStyle(.tint)
                 Text(title)
                     .font(AppTypography.font(.cardHeading))
+                    .relayTextSwap(title)
             }
             HStack(alignment: .center, spacing: 12) {
                 LazyVGrid(columns: iconColumns, alignment: .leading, spacing: 10) {
@@ -138,6 +140,7 @@ struct PermissionAppDragGuide: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4))
         }
         .frame(width: tileWidth)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isHighlighted)
         .contextMenu {
             if target.bundleURL != nil {
                 Button("Reveal in Finder") { reveal(target) }
@@ -151,6 +154,7 @@ struct PermissionAppDragGuide: View {
 
     @ViewBuilder
     private func iconTileBackground(isHighlighted: Bool) -> some View {
+        // Backgrounds only crossfade; travel would detach them from the icon.
         if isHighlighted {
             ZStack {
                 Color(nsColor: .controlBackgroundColor)
@@ -158,8 +162,10 @@ struct PermissionAppDragGuide: View {
                 PermissionTargetParticleGlow()
                     .allowsHitTesting(false)
             }
+            .transition(.opacity)
         } else {
             Color(nsColor: .controlBackgroundColor)
+                .transition(.opacity)
         }
     }
 

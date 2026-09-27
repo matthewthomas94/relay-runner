@@ -2269,7 +2269,7 @@ final class OnboardingIntroTests: XCTestCase {
             root.replaceContent(with: queued, policy: .fadeBlur)
 
             DispatchQueue.main.asyncAfter(
-                deadline: .now() + OnboardingPostTitleTransition.duration * 2 + 0.2
+                deadline: .now() + OnboardingFlowMotion.surfaceTransitionDuration * 2 + 0.2
             ) {
                 XCTAssertTrue(root.subviews.last === queued)
                 XCTAssertEqual(queued.alphaValue, 1, accuracy: 0.001)
@@ -2406,7 +2406,7 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(OnboardingPromptTransitionTimeline.finalHold, 0.30)
         XCTAssertEqual(
             OnboardingFlowMotion.surfaceTransitionDuration,
-            OnboardingPostTitleTransition.duration
+            RelayMotion.exitDuration + RelayMotion.enterDuration
         )
         XCTAssertGreaterThanOrEqual(OnboardingFlowMotion.controlsRevealDuration, 0.35)
         XCTAssertGreaterThan(
@@ -2415,8 +2415,55 @@ final class OnboardingIntroTests: XCTestCase {
         )
         XCTAssertEqual(OnboardingPromptTiming.agentLoginDwell, 1.25)
         XCTAssertEqual(OnboardingPostTitleTransition.blurRadius, 6)
+        let contentStyle = OnboardingPostTitleTransition.contentStyle
+        XCTAssertEqual(contentStyle.blurRadius, OnboardingPostTitleTransition.blurRadius)
+        XCTAssertEqual(contentStyle.blur(hidden: true, reduceMotion: true), 0)
         XCTAssertEqual(
-            OnboardingPostTitleTransition.animatedBlurRadius(reduceMotion: true),
+            contentStyle.offset(hidden: true, reduceMotion: false),
+            CGSize(width: 0, height: RelayMotion.Style.surface.distance)
+        )
+        XCTAssertEqual(contentStyle.offset(hidden: true, reduceMotion: true), .zero)
+    }
+
+    func testRuntimeContentAnimationUsesSharedCurveAndReduceMotionCrossfade() {
+        XCTAssertEqual(
+            OnboardingFlowMotion.contentAnimation,
+            RelayMotion.changeCurve.animation(duration: OnboardingFlowMotion.contentTransitionDuration)
+        )
+        XCTAssertEqual(
+            OnboardingFlowMotion.contentAnimation(reduceMotion: false),
+            OnboardingFlowMotion.contentAnimation
+        )
+        XCTAssertEqual(
+            OnboardingFlowMotion.contentAnimation(reduceMotion: true),
+            RelayMotion.change(reduceMotion: true)
+        )
+        XCTAssertEqual(OnboardingIntroWhiteActionButton.hoverAnimation, RelayMotion.hover)
+    }
+
+    func testHeroCopyDriftsTowardTrailingSideOnlyWhileFading() {
+        XCTAssertEqual(OnboardingIntroTextLayout.swapDrift(forOpacity: 1, reduceMotion: false), 0)
+        XCTAssertEqual(
+            OnboardingIntroTextLayout.swapDrift(forOpacity: 0, reduceMotion: false),
+            RelayMotion.Style.text.distance
+        )
+        XCTAssertEqual(
+            OnboardingIntroTextLayout.swapDrift(forOpacity: 0.5, reduceMotion: false),
+            RelayMotion.Style.text.distance / 2,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(OnboardingIntroTextLayout.swapDrift(forOpacity: 0, reduceMotion: true), 0)
+
+        let source = "Preparing Codex /"
+        let target = "Codex is ready /"
+        let fadeStart = OnboardingPromptTransitionTimeline.initialHold
+        let outgoing = OnboardingPromptTransitionTimeline.frame(
+            from: source,
+            to: target,
+            at: fadeStart + OnboardingPostTitleTransition.fadeOutDuration / 2
+        )
+        XCTAssertGreaterThan(
+            OnboardingIntroTextLayout.swapDrift(forOpacity: outgoing.textOpacity, reduceMotion: false),
             0
         )
     }
@@ -2450,7 +2497,8 @@ final class OnboardingIntroTests: XCTestCase {
             )
         )
         XCTAssertTrue(contents.contains("OnboardingPostTitleTransition.blurRadius"))
-        XCTAssertTrue(contents.contains("CAMediaTimingFunction(name: .easeInEaseOut)"))
+        XCTAssertTrue(contents.contains("RelayLayerMotion.animateOut(oldView, style: style"))
+        XCTAssertTrue(contents.contains("RelayLayerMotion.animateIn(view, style: style)"))
     }
 
     func testFreshInteractiveHandoffCanStartAtAgentChoice() {

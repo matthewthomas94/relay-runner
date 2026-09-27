@@ -20,6 +20,7 @@ struct CustomVoiceSettingsSection: View {
     @State private var runtimeReady = false
     @State private var deleteTarget: CustomVoiceProfile?
     @State private var recorder = VoiceSampleRecorder()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var selected: CustomVoiceProfile? { profiles.first { $0.id == selectedID } }
     private var audioActionsEnabled: Bool { !preview.isBusy && !recorder.isBusy && !appState.settingsAudioBusy }
@@ -60,6 +61,7 @@ struct CustomVoiceSettingsSection: View {
 
             if !profiles.isEmpty {
                 SettingsDivider()
+                    .transition(.relayElement)
                 SettingsControlRow(
                     "Saved voice",
                     description: "Preview before selecting. Save settings below to apply the selection."
@@ -69,6 +71,7 @@ struct CustomVoiceSettingsSection: View {
                         ForEach(profiles) { Text($0.name).tag($0.id) }
                     }
                 }
+                .transition(.relayElement)
                 if let profile = selected {
                     SettingsRow {
                         SettingsActionButton(title: "Original", systemImage: "play.fill", isEnabled: audioActionsEnabled) {
@@ -96,6 +99,7 @@ struct CustomVoiceSettingsSection: View {
                             deleteTarget = profile
                         }
                     }
+                    .transition(.relayElement)
                 }
             }
             if let id = config.custom_voice_id, !profiles.contains(where: { $0.id == id }) {
@@ -104,6 +108,7 @@ struct CustomVoiceSettingsSection: View {
                         .font(AppTypography.font(.settingsDescription))
                         .foregroundStyle(SettingsSurfaceColor.error)
                 }
+                .transition(.relayElement)
             }
 
             SettingsDivider()
@@ -127,44 +132,69 @@ struct CustomVoiceSettingsSection: View {
                 }
                 if !samples.isEmpty || importing {
                     SettingsActionButton(title: "Cancel Import", systemImage: "xmark", action: cancelDraft)
+                        .transition(.relayElement)
                 }
                 if preview.isBusy {
                     SettingsActionButton(title: "Stop", systemImage: "stop.fill", action: preview.stop)
+                        .transition(.relayElement)
                 }
             }
             if recorder.isBusy {
-                SettingsDivider()
-                SettingsRow {
-                    Text("Recording reference: \(recorder.elapsed, specifier: "%.1f") / 10s")
-                        .monospacedDigit()
-                    Spacer(minLength: SettingsLayout.labelControlSpacing)
-                    SettingsActionButton(title: "Stop Recording", systemImage: "stop.fill", action: recorder.stop)
-                    SettingsActionButton(title: "Cancel", systemImage: "xmark", action: recorder.cancel)
+                VStack(spacing: 0) {
+                    SettingsDivider()
+                    SettingsRow {
+                        Text("Recording reference: \(recorder.elapsed, specifier: "%.1f") / 10s")
+                            .monospacedDigit()
+                        Spacer(minLength: SettingsLayout.labelControlSpacing)
+                        SettingsActionButton(title: "Stop Recording", systemImage: "stop.fill", action: recorder.stop)
+                        SettingsActionButton(title: "Cancel", systemImage: "xmark", action: recorder.cancel)
+                    }
                 }
+                .transition(.relayElement)
             }
-            if !samples.isEmpty { draftEditor }
+            if !samples.isEmpty {
+                draftEditor
+                    .transition(.relayElement)
+            }
             if let recordingError = recorder.error {
                 SettingsRow {
                     Text(recordingError)
                         .font(AppTypography.font(.settingsDescription))
                         .foregroundStyle(SettingsSurfaceColor.error)
+                        .relayTextSwap(recordingError)
                 }
+                .transition(.relayElement)
             }
             if let notice = appState.customVoiceNotice {
                 SettingsRow {
                     Text(notice)
                         .font(AppTypography.font(.settingsDescription))
                         .foregroundStyle(SettingsSurfaceColor.error)
+                        .relayTextSwap(notice)
                 }
+                .transition(.relayElement)
             }
             if let error {
                 SettingsRow {
                     Text(error)
                         .font(AppTypography.font(.settingsDescription))
                         .foregroundStyle(SettingsSurfaceColor.error)
+                        .relayTextSwap(error)
                 }
+                .transition(.relayElement)
             }
         }
+        .animation(motion, value: profiles.isEmpty)
+        .animation(motion, value: selected?.id)
+        .animation(motion, value: config.custom_voice_id)
+        .animation(motion, value: runtimeReady)
+        .animation(motion, value: importing)
+        .animation(motion, value: samples.isEmpty)
+        .animation(motion, value: preview.isBusy)
+        .animation(motion, value: recorder.isBusy)
+        .animation(motion, value: recorder.error)
+        .animation(motion, value: appState.customVoiceNotice)
+        .animation(motion, value: error)
         .onAppear { refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
         .onDisappear { cancelDraft() }
@@ -179,6 +209,8 @@ struct CustomVoiceSettingsSection: View {
             Button("Cancel", role: .cancel) { deleteTarget = nil }
         } message: { Text("This removes the managed reference, not the original recording or your backups. The selected voice will switch to George.") }
     }
+
+    private var motion: Animation { RelayMotion.change(reduceMotion: reduceMotion) }
 
     private func rename(_ profile: CustomVoiceProfile) {
         let field = NSTextField(string: profile.name)
@@ -220,6 +252,7 @@ struct CustomVoiceSettingsSection: View {
                     Slider(value: $sampleStart, in: 0...max(0.01, duration - sampleLength), step: 0.1)
                         .accessibilityLabel("Reference start time")
                         .onChange(of: sampleStart) { _, _ in discardStaged() }
+                        .transition(.relayElement)
                 }
                 Slider(value: $sampleLength, in: 5...max(5.01, min(10, duration)), step: 0.1)
                     .accessibilityLabel("Reference duration")
@@ -228,8 +261,10 @@ struct CustomVoiceSettingsSection: View {
                     Text("This recording may be clipped. A cleaner reference can improve the result.")
                         .font(AppTypography.font(.settingsDescription))
                         .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                        .transition(.relayText)
                 }
             }
+            .animation(motion, value: duration > sampleLength)
 
             SettingsDivider()
 

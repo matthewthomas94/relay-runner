@@ -119,6 +119,7 @@ struct SettingsStackedControlRow<Control: View>: View {
 struct SettingsRowLabel: View {
     let title: String
     let description: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(_ title: String, description: String? = nil) {
         self.title = title
@@ -130,13 +131,17 @@ struct SettingsRowLabel: View {
             Text(title)
                 .font(AppTypography.font(.body))
                 .foregroundStyle(SettingsSurfaceColor.primaryText)
+                .relayTextSwap(title)
             if let description {
                 Text(description)
                     .font(AppTypography.font(.settingsDescription))
                     .foregroundStyle(SettingsSurfaceColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
+                    .relayTextSwap(description)
+                    .transition(.relayText)
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: description)
     }
 }
 
@@ -272,7 +277,7 @@ struct SharedActionButtonChrome<Label: View>: View {
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
         .focused($isFocused)
         .onHover { isHovered = $0 }
-        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
+        .animation(presentation.animationDuration > 0 ? RelayMotion.hover : nil, value: presentation)
         .accessibilityLabel(accessibilityLabel)
         .help(helpText)
     }
@@ -292,6 +297,7 @@ struct SettingsActionButton: View {
     var accessibilityLabel: String?
     var helpText: String?
     let action: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         SharedActionButtonChrome(
@@ -307,14 +313,17 @@ struct SettingsActionButton: View {
                     Image(systemName: systemImage)
                         .font(AppTypography.symbolFont(size: prominence == .icon ? 12 : 10, weight: .bold))
                         .accessibilityHidden(true)
+                        .relaySwap(systemImage)
                 }
                 if prominence != .icon {
                     Text(title)
                         .font(AppTypography.font(.button))
+                        .relayTextSwap(title)
                 }
             }
             }
         )
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: title)
     }
 
     private var fillColor: Color {
@@ -354,21 +363,27 @@ struct SettingsInlineStatus: View {
     let text: String?
     let semanticColor: SettingsSemanticColor
     var reservedWidth: CGFloat = 150
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 5) {
             if let text {
-                Image(systemName: iconName)
-                    .font(AppTypography.symbolFont(size: 10, weight: .semibold))
-                    .foregroundStyle(semanticColor.color)
-                    .accessibilityHidden(true)
-                Text(text)
-                    .font(AppTypography.font(.settingsDescription))
-                    .foregroundStyle(semanticColor.color)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Image(systemName: iconName)
+                        .font(AppTypography.symbolFont(size: 10, weight: .semibold))
+                        .foregroundStyle(semanticColor.color)
+                        .accessibilityHidden(true)
+                    Text(text)
+                        .font(AppTypography.font(.settingsDescription))
+                        .foregroundStyle(semanticColor.color)
+                        .lineLimit(1)
+                }
+                .relayTextSwap(text, alignment: .trailing)
+                .transition(.relayText)
             }
         }
         .frame(width: reservedWidth, alignment: .trailing)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: text)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(text ?? "")
         .accessibilityHidden(text == nil)

@@ -564,7 +564,8 @@ final class AppState {
             notchStatusController.setPresentation(
                 status: note.status,
                 activityLabels: note.label.map { [$0] } ?? [],
-                workingProgressLabel: note.label
+                workingProgressLabel: note.label,
+                pinsWorkingLabel: note.pinsLabel
             )
             return
         }
@@ -619,7 +620,11 @@ final class AppState {
                 boardIsLoading: boardIsLoading
             ),
             activityLabels: labels,
-            workingProgressLabel: hoverActivityLabel
+            workingProgressLabel: hoverActivityLabel,
+            pinsWorkingLabel: NotchVisualLabelAllowlist.presentation(
+                for: stateMachine.state,
+                bridgeStartingUp: bridgeStartingUp
+            ).pinsLabel
         )
     }
 

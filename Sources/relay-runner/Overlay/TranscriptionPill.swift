@@ -177,7 +177,8 @@ final class TranscriptionPill: NSView {
 
         applyTypography()
         applyTheme(theme)
-        titleLabel.stringValue = title
+        let swapsTitleInPlace = wasVisible && animated && wasCompact && !themeChanged
+        setText(title, on: titleLabel, crossfade: swapsTitleInPlace)
         titleLabel.alignment = .center
         isCompact = true
 
@@ -214,7 +215,12 @@ final class TranscriptionPill: NSView {
         if suppressShadow {
             layer?.shadowOpacity = 0
         }
-        titleLabel.stringValue = title
+        // Full → full updates keep the surface and swap the copy in place.
+        // Streaming text (live transcription, a growing preview) updates
+        // directly; only a different response crossfades.
+        let swapsInPlace = wasVisible && animated && !wasCompact
+        let bodyContinues = body.hasPrefix(bodyLabel.stringValue)
+        setText(title, on: titleLabel, crossfade: swapsInPlace)
         titleLabel.alignment = .left
         // New body text means a fresh message — drop any manual-scroll override
         // so the next layout starts from the top with the auto-teleprompter
@@ -223,7 +229,7 @@ final class TranscriptionPill: NSView {
         if bodyLabel.stringValue != body {
             manualScrollEngaged = false
         }
-        bodyLabel.stringValue = body
+        setText(body, on: bodyLabel, crossfade: swapsInPlace && !themeMatches(.stt) && !bodyContinues)
         isCompact = false
 
         let contentWidth = maxWidth - pillPadH * 2
@@ -287,6 +293,19 @@ final class TranscriptionPill: NSView {
             alphaValue = 0
             bodyContainer.isHidden = true
             bodyContainer.alphaValue = 0
+        }
+    }
+
+    /// Replaces a label's copy, crossfading it horizontally through a blur
+    /// when the pill is already on screen.
+    private func setText(_ text: String, on label: NSTextField, crossfade: Bool) {
+        guard label.stringValue != text else { return }
+        guard crossfade, !label.stringValue.isEmpty else {
+            label.stringValue = text
+            return
+        }
+        RelayLayerMotion.crossfade(label, style: .text) {
+            label.stringValue = text
         }
     }
 

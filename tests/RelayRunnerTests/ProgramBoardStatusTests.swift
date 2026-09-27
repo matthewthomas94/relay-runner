@@ -494,6 +494,22 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(reducedMotionHover.animationDuration, 0)
     }
 
+    func testProgramBoardInteractionChromeEasesThroughRelayMotionAndStopsUnderReducedMotion() {
+        let hover = ProgramBoardInteractionPresentation.resolve(surface: .ticketCard, isHovered: true)
+        let reducedMotionHover = ProgramBoardInteractionPresentation.resolve(
+            surface: .ticketCard,
+            isHovered: true,
+            reduceMotion: true
+        )
+
+        XCTAssertEqual(ProgramBoardInteractionPresentation.motionDuration, RelayMotion.hoverDuration)
+        XCTAssertEqual(
+            hover.animation,
+            RelayMotion.changeCurve.animation(duration: RelayMotion.hoverDuration)
+        )
+        XCTAssertNil(reducedMotionHover.animation)
+    }
+
     func testProgramBoardControlHoverPresentationUsesNeutralGenericHover() {
         let hover = ProgramBoardInteractionPresentation.resolve(
             surface: .control,
