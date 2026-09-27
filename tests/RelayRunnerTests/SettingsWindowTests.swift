@@ -101,8 +101,8 @@ final class SettingsWindowTests: XCTestCase {
         )
         XCTAssertTrue(hovered.usesHoverFill)
         XCTAssertEqual(hovered.fillOverlayOpacity, 0)
-        XCTAssertEqual(hovered.strokeOpacity, 0.07)
-        XCTAssertEqual(hovered.foregroundOpacity, 0.95)
+        XCTAssertEqual(hovered.strokeOpacity, 0.15)
+        XCTAssertEqual(hovered.foregroundOpacity, 0.98)
 
         let focused = SettingsNavigationPresentation.resolve(
             selected: false,
@@ -112,7 +112,7 @@ final class SettingsWindowTests: XCTestCase {
         )
         XCTAssertTrue(focused.usesHoverFill)
         XCTAssertEqual(focused.fillOverlayOpacity, 0)
-        XCTAssertGreaterThan(focused.strokeOpacity, hovered.strokeOpacity)
+        XCTAssertEqual(focused.strokeOpacity, hovered.strokeOpacity)
 
         let selected = SettingsNavigationPresentation.resolve(
             selected: true,

@@ -393,7 +393,7 @@ enum SettingsNavigationPresentation {
     ) -> ProgramBoardInteractionPresentation {
         ProgramBoardInteractionPresentation.resolve(
             surface: .ticketCard,
-            isSelected: selected,
+            isSelected: selected || isHovered,
             isHovered: isHovered,
             isFocused: isFocused,
             reduceMotion: reduceMotion

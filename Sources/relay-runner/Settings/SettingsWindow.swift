@@ -426,6 +426,7 @@ private struct SettingsCategoryButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let highlighted = selected || isHovered
         let presentation = SettingsNavigationPresentation.resolve(
             selected: selected,
             isHovered: isHovered,
@@ -451,7 +452,7 @@ private struct SettingsCategoryButton: View {
             .frame(maxWidth: .infinity, minHeight: SettingsLayout.sidebarRowHeight, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
-                    .fill(selected ? BoardDarkSurfaceStyle.cardActiveFill : (presentation.usesHoverFill ? BoardDarkSurfaceStyle.hoverFill : Color.clear))
+                    .fill(highlighted ? BoardDarkSurfaceStyle.cardActiveFill : Color.clear)
                     .overlay(
                         RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
                             .fill(Color.white.opacity(presentation.fillOverlayOpacity))
@@ -460,7 +461,7 @@ private struct SettingsCategoryButton: View {
             .clipShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
-                    .strokeBorder(selected ? BoardDarkSurfaceStyle.border : Color.white.opacity(presentation.strokeOpacity), lineWidth: 1)
+                    .strokeBorder(highlighted ? BoardDarkSurfaceStyle.border : Color.white.opacity(presentation.strokeOpacity), lineWidth: 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
         }
