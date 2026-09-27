@@ -123,6 +123,7 @@ final class BoardRevealContainerView: NSView {
     private let reduceMotion: Bool
     private var revealExpanded = false
     private var contentVisible = false
+    private var contentBlurGeneration = 0
     private var loading: Bool
 
     override var isFlipped: Bool { true }
@@ -155,7 +156,7 @@ final class BoardRevealContainerView: NSView {
         contentContainerView.autoresizingMask = [.width, .height]
         contentContainerView.alphaValue = 0
         contentContainerView.isHidden = true
-        setContentYOffset(Self.hiddenContentYOffset)
+        setContentYOffset(hiddenContentYOffset)
         addSubview(contentContainerView)
 
         hostedContentView.frame = contentContainerView.bounds
@@ -207,7 +208,7 @@ final class BoardRevealContainerView: NSView {
         contentVisible = false
         contentContainerView.alphaValue = 0
         contentContainerView.isHidden = true
-        setContentYOffset(Self.hiddenContentYOffset)
+        setContentYOffset(hiddenContentYOffset)
         setLoading(startsLoading)
     }
 
@@ -294,17 +295,25 @@ final class BoardRevealContainerView: NSView {
         contentVisible = true
         contentContainerView.isHidden = false
         contentContainerView.alphaValue = 0
-        setContentYOffset(Self.hiddenContentYOffset)
+        setContentYOffset(hiddenContentYOffset)
         animateContentYOffset(
-            from: Self.hiddenContentYOffset,
+            from: hiddenContentYOffset,
             to: 0,
-            duration: BoardRevealTransitionTiming.contentRevealDuration
+            duration: BoardRevealTransitionTiming.contentRevealDuration,
+            timing: Self.revealTiming
+        )
+        let blurGeneration = animateContentBlur(
+            from: hiddenContentBlurRadius,
+            to: 0,
+            duration: BoardRevealTransitionTiming.contentRevealDuration,
+            timing: Self.revealTiming
         )
         NSAnimationContext.runAnimationGroup { context in
             context.duration = BoardRevealTransitionTiming.contentRevealDuration
             context.timingFunction = Self.revealTiming
             contentContainerView.animator().alphaValue = 1
-        } completionHandler: {
+        } completionHandler: { [weak self] in
+            self?.removeContentBlur(ifCurrent: blurGeneration)
             completion?()
         }
     }
@@ -318,15 +327,23 @@ final class BoardRevealContainerView: NSView {
         contentVisible = false
         animateContentYOffset(
             from: 0,
-            to: Self.hiddenContentYOffset,
-            duration: BoardRevealTransitionTiming.contentHideDuration
+            to: hiddenContentYOffset,
+            duration: BoardRevealTransitionTiming.contentHideDuration,
+            timing: Self.hideTiming
+        )
+        let blurGeneration = animateContentBlur(
+            from: 0,
+            to: hiddenContentBlurRadius,
+            duration: BoardRevealTransitionTiming.contentHideDuration,
+            timing: Self.hideTiming
         )
         NSAnimationContext.runAnimationGroup { context in
             context.duration = BoardRevealTransitionTiming.contentHideDuration
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.5, 0, 0.75, 0)
+            context.timingFunction = Self.hideTiming
             contentContainerView.animator().alphaValue = 0
         } completionHandler: { [weak self] in
             self?.contentContainerView.isHidden = true
+            self?.removeContentBlur(ifCurrent: blurGeneration)
             completion()
         }
     }
@@ -335,27 +352,83 @@ final class BoardRevealContainerView: NSView {
         contentContainerView.layer?.transform = CATransform3DMakeTranslation(0, offset, 0)
     }
 
-    private func animateContentYOffset(from: CGFloat, to: CGFloat, duration: CFTimeInterval) {
+    private func animateContentYOffset(
+        from: CGFloat,
+        to: CGFloat,
+        duration: CFTimeInterval,
+        timing: CAMediaTimingFunction
+    ) {
         let animation = CABasicAnimation(keyPath: "transform.translation.y")
         animation.fromValue = from
         animation.toValue = to
         animation.duration = duration
-        animation.timingFunction = Self.revealTiming
+        animation.timingFunction = timing
         animation.fillMode = .forwards
         animation.isRemovedOnCompletion = false
         contentContainerView.layer?.add(animation, forKey: "boardRevealContentYOffset")
         setContentYOffset(to)
     }
 
+    /// Blurs the hosted Workspace only while it travels; the filter is
+    /// removed once the content settles so the resting surface renders
+    /// without an offscreen pass.
+    private func animateContentBlur(
+        from: CGFloat,
+        to: CGFloat,
+        duration: CFTimeInterval,
+        timing: CAMediaTimingFunction
+    ) -> Int {
+        contentBlurGeneration += 1
+        guard !reduceMotion else { return contentBlurGeneration }
+        RelayLayerMotion.prepare(contentContainerView)
+        guard let layer = contentContainerView.layer else { return contentBlurGeneration }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.setValue(to, forKeyPath: Self.contentBlurKeyPath)
+        CATransaction.commit()
+        let animation = CABasicAnimation(keyPath: Self.contentBlurKeyPath)
+        animation.fromValue = from
+        animation.toValue = to
+        animation.duration = duration
+        animation.timingFunction = timing
+        layer.add(animation, forKey: Self.contentBlurAnimationKey)
+        return contentBlurGeneration
+    }
+
+    private func removeContentBlur(ifCurrent generation: Int) {
+        guard generation == contentBlurGeneration,
+              let layer = contentContainerView.layer else { return }
+        layer.removeAnimation(forKey: Self.contentBlurAnimationKey)
+        layer.filters = layer.filters?.filter {
+            ($0 as? CIFilter)?.name != RelayLayerMotion.blurFilterName
+        }
+    }
+
+    /// Travel and blur drop out under Reduce Motion; the fade remains.
+    private var hiddenContentYOffset: CGFloat {
+        reduceMotion ? 0 : Self.hiddenContentYOffset
+    }
+
+    private var hiddenContentBlurRadius: CGFloat {
+        reduceMotion ? 0 : RelayMotion.Style.surface.blurRadius
+    }
+
+    // The container is flipped, so a positive offset sits below the resting
+    // position: content rises into place on reveal and sinks on hide.
     private static let hiddenContentYOffset: CGFloat = 14
-    private static let revealTiming = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.28, 1.0)
+    private static let revealTiming = RelayMotion.enterCurve.mediaTimingFunction
+    private static let hideTiming = RelayMotion.exitCurve.mediaTimingFunction
+    private static let contentBlurKeyPath = "filters.\(RelayLayerMotion.blurFilterName).inputRadius"
+    private static let contentBlurAnimationKey = "boardRevealContentBlur"
 }
 
 private final class BoardRevealSurfaceView: NSView {
     private let plan: BoardRevealTransitionPlan
     private let surfaceMaskLayer = CAShapeLayer()
+    private let loadingLabel = BoardRevealLoadingLabelView()
     private var surfaceFrame: CGRect
     private var loading = false
+    private var loadingLabelVisible = false
     private var animationTimer: Timer?
     private var animationCompletion: (() -> Void)?
 
@@ -374,7 +447,10 @@ private final class BoardRevealSurfaceView: NSView {
             "position": NSNull(),
         ]
         layer?.mask = surfaceMaskLayer
+        loadingLabel.isHidden = true
+        addSubview(loadingLabel)
         updateSurfaceMask()
+        updateLoadingLabel(animated: false)
     }
 
     required init?(coder: NSCoder) {
@@ -392,12 +468,14 @@ private final class BoardRevealSurfaceView: NSView {
     override func layout() {
         super.layout()
         updateSurfaceMask()
+        updateLoadingLabel(animated: true)
     }
 
     func showExpanded() {
         cancelAnimation()
         surfaceFrame = plan.expandedFrame
         updateSurfaceMask()
+        updateLoadingLabel(animated: false)
         needsDisplay = true
     }
 
@@ -405,13 +483,14 @@ private final class BoardRevealSurfaceView: NSView {
         cancelAnimation()
         surfaceFrame = plan.compactFrame
         updateSurfaceMask()
+        updateLoadingLabel(animated: false)
         needsDisplay = true
     }
 
     func setLoading(_ loading: Bool) {
         guard self.loading != loading else { return }
         self.loading = loading
-        needsDisplay = true
+        updateLoadingLabel(animated: true)
     }
 
     func animateToFullWidth(
@@ -461,7 +540,6 @@ private final class BoardRevealSurfaceView: NSView {
 
         NSColor(calibratedWhite: 0, alpha: 0.985).setFill()
         surfacePath(in: surfaceFrame).fill()
-        drawLoadingTextIfNeeded()
     }
 
     private func animate(
@@ -488,6 +566,7 @@ private final class BoardRevealSurfaceView: NSView {
             let progress = Self.easeOutQuart(CGFloat(rawProgress))
             self.surfaceFrame = Self.interpolate(from: startFrame, to: targetFrame, progress: progress)
             self.updateSurfaceMask()
+            self.updateLoadingLabel(animated: true)
             self.needsDisplay = true
             if !reportedFirstMotion {
                 reportedFirstMotion = true
@@ -499,6 +578,7 @@ private final class BoardRevealSurfaceView: NSView {
                 self.animationTimer = nil
                 self.surfaceFrame = targetFrame
                 self.updateSurfaceMask()
+                self.updateLoadingLabel(animated: true)
                 self.needsDisplay = true
                 let completion = self.animationCompletion
                 self.animationCompletion = nil
@@ -510,22 +590,28 @@ private final class BoardRevealSurfaceView: NSView {
         animationTimer = timer
     }
 
-    private func drawLoadingTextIfNeeded() {
-        guard loading, surfaceFrame.height > plan.fullWidthFrame.height + 40 else { return }
-
-        let text = BoardUpdateStatus.workingLabel as NSString
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: AppTypography.appKitFont(.sectionHeading),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.92),
-        ]
-        let size = text.size(withAttributes: attributes)
-        let rect = NSRect(
+    /// Keeps the loading label centred on the surface and fades it in or out
+    /// (with the horizontal text motion) when it starts or stops showing.
+    private func updateLoadingLabel(animated: Bool) {
+        let size = loadingLabel.intrinsicContentSize
+        loadingLabel.frame = NSRect(
             x: surfaceFrame.midX - size.width / 2,
             y: surfaceFrame.midY - size.height / 2,
             width: size.width,
             height: size.height
         )
-        text.draw(in: rect, withAttributes: attributes)
+
+        let visible = loading && surfaceFrame.height > plan.fullWidthFrame.height + 40
+        guard visible != loadingLabelVisible else { return }
+        loadingLabelVisible = visible
+        let duration = animated && window != nil
+            ? (visible ? RelayMotion.enterDuration : RelayMotion.exitDuration)
+            : 0
+        if visible {
+            RelayLayerMotion.animateIn(loadingLabel, style: .text, duration: duration)
+        } else {
+            RelayLayerMotion.animateOut(loadingLabel, style: .text, duration: duration)
+        }
     }
 
     private func surfacePath(in rect: CGRect) -> NSBezierPath {
@@ -599,10 +685,97 @@ private final class BoardRevealSurfaceView: NSView {
     }
 }
 
+private final class BoardRevealLoadingLabelView: NSView {
+    // Room around the text so the transition blur is not clipped.
+    private static let blurMargin: CGFloat = 8
+    private let text = BoardUpdateStatus.workingLabel as NSString
+    private let attributes: [NSAttributedString.Key: Any] = [
+        .font: AppTypography.appKitFont(.sectionHeading),
+        .foregroundColor: NSColor.white.withAlphaComponent(0.92),
+    ]
+
+    override var isFlipped: Bool { true }
+
+    override var intrinsicContentSize: NSSize {
+        let size = text.size(withAttributes: attributes)
+        return NSSize(
+            width: size.width + Self.blurMargin * 2,
+            height: size.height + Self.blurMargin * 2
+        )
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        text.draw(
+            in: bounds.insetBy(dx: Self.blurMargin, dy: Self.blurMargin),
+            withAttributes: attributes
+        )
+    }
+}
+
+/// A scalar that eases toward its target on the caller's display timer.
+struct BoardRevealEasedValue {
+    private(set) var value: CGFloat
+    private(set) var target: CGFloat
+    private var startValue: CGFloat
+    private var startTime: CFTimeInterval?
+    let duration: TimeInterval
+    let curve: RelayMotion.Curve
+
+    init(_ value: CGFloat, duration: TimeInterval, curve: RelayMotion.Curve) {
+        self.value = value
+        self.target = value
+        self.startValue = value
+        self.duration = duration
+        self.curve = curve
+    }
+
+    var isAnimating: Bool { startTime != nil }
+
+    mutating func set(_ newTarget: CGFloat, animated: Bool, now: CFTimeInterval) {
+        guard newTarget != target else { return }
+        target = newTarget
+        if animated, duration > 0 {
+            startValue = value
+            startTime = now
+        } else {
+            value = newTarget
+            startTime = nil
+        }
+    }
+
+    mutating func advance(to now: CFTimeInterval) {
+        guard let startTime else { return }
+        let fraction = CGFloat((now - startTime) / duration)
+        guard fraction < 1 else {
+            value = target
+            self.startTime = nil
+            return
+        }
+        value = startValue + (target - startValue) * curve.progress(fraction)
+    }
+}
+
 private final class BoardRevealGlyphView: NSView {
     private let plan: BoardRevealTransitionPlan
     private var loading = false
     private var glyphHovered = false
+    // Crossfades the resting glyph with the animated working glyph so a
+    // loading or update-check change never snaps.
+    private var activity = BoardRevealEasedValue(
+        0,
+        duration: RelayMotion.changeDuration,
+        curve: RelayMotion.changeCurve
+    )
+    private var hover = BoardRevealEasedValue(
+        0,
+        duration: RelayMotion.hoverDuration,
+        curve: RelayMotion.changeCurve
+    )
     private var trackingArea: NSTrackingArea?
     private var animationTimer: Timer?
 
@@ -626,6 +799,11 @@ private final class BoardRevealGlyphView: NSView {
     func setLoading(_ loading: Bool) {
         guard self.loading != loading else { return }
         self.loading = loading
+        activity.set(
+            loading ? 1 : 0,
+            animated: window != nil && !Self.reduceMotion,
+            now: CACurrentMediaTime()
+        )
         updateAnimationTimer()
         needsDisplay = true
     }
@@ -672,31 +850,45 @@ private final class BoardRevealGlyphView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        let status: NotchSessionStatus = loading ? .working : .notWorking
-        let glyph = status.glyph
         let glyphFrame = currentGlyphFrame()
         let artworkSize = NotchStatusGlyph.artworkSize
         let dotOrigin = CGPoint(
             x: glyphFrame.minX + (glyphFrame.width - artworkSize.width) / 2,
             y: glyphFrame.minY + (glyphFrame.height - artworkSize.height) / 2
         )
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let time = CACurrentMediaTime()
-        let shouldAnimateMotion = loading && !reduceMotion
-        let motionPhase = shouldAnimateMotion ? NotchStatusGlyphMotion.phase(at: time) : 0
 
-        if glyphHovered {
-            NSColor(calibratedWhite: 0.85, alpha: 0.25).setFill()
+        if hover.value > 0 {
+            NSColor(calibratedWhite: 0.85, alpha: 0.25 * hover.value).setFill()
             NSBezierPath(
                 ovalIn: NSRect(x: dotOrigin.x + 2, y: dotOrigin.y + 2, width: 20, height: 20)
             ).fill()
         }
 
-        for (index, dot) in glyph.dots.enumerated() {
-            let shimmer = loading && !reduceMotion
+        // Under Reduce Motion the working glyph is drawn at rest, exactly
+        // like the idle glyph, so only the resting pass is needed.
+        let workingWeight = Self.reduceMotion ? 0 : activity.value
+        if workingWeight < 1 {
+            drawDots(status: .notWorking, animated: false, alpha: 1 - workingWeight, origin: dotOrigin, time: time)
+        }
+        if workingWeight > 0 {
+            drawDots(status: .working, animated: true, alpha: workingWeight, origin: dotOrigin, time: time)
+        }
+    }
+
+    private func drawDots(
+        status: NotchSessionStatus,
+        animated: Bool,
+        alpha: CGFloat,
+        origin dotOrigin: CGPoint,
+        time: CFTimeInterval
+    ) {
+        let motionPhase = animated ? NotchStatusGlyphMotion.phase(at: time) : 0
+        for (index, dot) in status.glyph.dots.enumerated() {
+            let shimmer = animated
                 ? 0.72 + 0.28 * ((Darwin.sin(time * 5.2 + Double(index) * 0.62) + 1) / 2)
                 : 1
-            let center = shouldAnimateMotion
+            let center = animated
                 ? NotchStatusGlyphMotion.transformedCenter(for: dot, status: status, phase: motionPhase)
                 : CGPoint(x: dot.x, y: dot.y)
             let rect = NSRect(
@@ -705,16 +897,17 @@ private final class BoardRevealGlyphView: NSView {
                 width: dot.diameter,
                 height: dot.diameter
             )
-            dot.color.boardRevealNSColor.withAlphaComponent(dot.opacity * shimmer).setFill()
+            dot.color.boardRevealNSColor.withAlphaComponent(dot.opacity * shimmer * alpha).setFill()
             NSBezierPath(ovalIn: rect).fill()
         }
     }
 
     private func updateAnimationTimer() {
-        if loading && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        let needsFrames = (loading && !Self.reduceMotion) || activity.isAnimating || hover.isAnimating
+        if needsFrames {
             guard animationTimer == nil else { return }
             let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-                self?.needsDisplay = true
+                self?.advanceFrame()
             }
             RunLoop.main.add(timer, forMode: .common)
             animationTimer = timer
@@ -722,6 +915,20 @@ private final class BoardRevealGlyphView: NSView {
             animationTimer?.invalidate()
             animationTimer = nil
         }
+    }
+
+    private func advanceFrame() {
+        let now = CACurrentMediaTime()
+        activity.advance(to: now)
+        hover.advance(to: now)
+        needsDisplay = true
+        if !activity.isAnimating, !hover.isAnimating {
+            updateAnimationTimer()
+        }
+    }
+
+    private static var reduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
     private func updateHover(with event: NSEvent) {
@@ -742,6 +949,8 @@ private final class BoardRevealGlyphView: NSView {
     private func setHovered(_ hovered: Bool) {
         guard glyphHovered != hovered else { return }
         glyphHovered = hovered
+        hover.set(hovered ? 1 : 0, animated: window != nil, now: CACurrentMediaTime())
+        updateAnimationTimer()
         needsDisplay = true
     }
 
