@@ -307,11 +307,50 @@ class ProviderTurnBroker:
             try:
                 owner_id = self._insert_owner(record, now=now)
                 existing = self._connection.execute(
-                    "SELECT state FROM provider_turns WHERE turn_id=?",
+                    """SELECT state, origin, intent_id, command_seq, command_id,
+                              manual_submission_id
+                         FROM provider_turns WHERE turn_id=?""",
                     (turn_id,),
                 ).fetchone()
                 if existing is not None:
+                    # A steered prompt can share the physical Codex turn id.
+                    # Keep its one completion bound to the latest submitted
+                    # input, rather than leaving the original intent active.
+                    identity = (
+                        _text(record.get("origin")) or "relay",
+                        _text(record.get("intent_id")) or None,
+                        _integer(record.get("relay_command_seq")),
+                        _text(record.get("relay_command_id")) or None,
+                        _text(record.get("manual_submission_id")) or None,
+                    )
+                    previous = tuple(existing[field] for field in (
+                        "origin", "intent_id", "command_seq", "command_id",
+                        "manual_submission_id",
+                    ))
+                    if existing["state"] == "active" and identity != previous:
+                        self._connection.execute(
+                            """UPDATE provider_turns
+                                  SET origin=?, intent_id=?, command_seq=?,
+                                      command_id=?, manual_submission_id=?,
+                                      manual_submit_evidence_source=?, updated_at=?
+                                WHERE turn_id=? AND state='active'""",
+                            (
+                                *identity,
+                                _text(record.get("manual_submit_evidence_source")) or None,
+                                now,
+                                turn_id,
+                            ),
+                        )
+                        self._connection.execute(
+                            """INSERT OR IGNORE INTO provider_turn_transitions(
+                                   event_id, turn_id, event_type, from_state,
+                                   to_state, occurred_at, release_reason
+                               ) VALUES(?, ?, 'prompt_steered', 'active', 'active', ?, NULL)""",
+                            (stable_event_id("steer", turn_id, *identity), turn_id, now),
+                        )
                     self._finish(commit=True)
+                    if existing["state"] == "active" and identity != previous:
+                        self.project()
                     return False
 
                 active = self._connection.execute(

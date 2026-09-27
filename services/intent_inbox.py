@@ -455,7 +455,21 @@ class IntentInbox:
             ).fetchone()
             if unacked is not None:
                 return None
+            row = self._connection.execute(
+                """
+                SELECT *
+                  FROM intents
+                 WHERE state='pending' AND route != 'run_sidecar'
+                 ORDER BY command_seq, within_turn_order, ordinal
+                 LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
             if self.provider_turn_events_enabled:
+                # A later voice turn can steer an active PM turn. Siblings of
+                # one source turn stay ordered, and a completed final still
+                # waits for its authoritative reply effect.
                 predecessor = self._connection.execute(
                     """
                     SELECT intents.ordinal
@@ -469,6 +483,8 @@ class IntentInbox:
                                   AND provider_turns.command_seq=intents.command_seq
                                   AND provider_turns.command_id=intents.command_id
                                   AND provider_turns.state='active'
+                                  AND intents.command_seq=?
+                                  AND intents.command_id=?
                            )
                            OR (
                                EXISTS (
@@ -491,21 +507,11 @@ class IntentInbox:
                      ORDER BY intents.command_seq, intents.within_turn_order,
                               intents.ordinal
                      LIMIT 1
-                    """
+                    """,
+                    (int(row["command_seq"]), str(row["command_id"])),
                 ).fetchone()
                 if predecessor is not None:
                     return None
-            row = self._connection.execute(
-                """
-                SELECT *
-                  FROM intents
-                 WHERE state='pending' AND route != 'run_sidecar'
-                 ORDER BY command_seq, within_turn_order, ordinal
-                 LIMIT 1
-                """
-            ).fetchone()
-            if row is None:
-                return None
             metadata = json.loads(row["metadata_json"])
             metadata["intent_delivery_id"] = row["delivery_id"]
             command_tmp = command_path + ".tmp"

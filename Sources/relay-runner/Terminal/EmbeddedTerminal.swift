@@ -809,6 +809,7 @@ final class RelayVoiceCommandDelivery {
     private var lastProviderProgressAt: Date?
     private var lastProviderOutputAt: Date?
     private var pendingInterruptRelease: (nonce: String, sentAt: Date, turns: [[String: Any]])?
+    private var interruptedTurnIdentities: Set<[String]> = []
 
     /// Quiet PTY time that counts as the provider having returned to its prompt.
     static let providerIdleInterval: TimeInterval = 1.5
@@ -1083,7 +1084,7 @@ final class RelayVoiceCommandDelivery {
             return false
         }
         if let boundary = manualBoundary {
-            guard safeBoundaryReached(boundary) else {
+            guard safeBoundaryReached(boundary) || canSteerManualTurn(boundary) else {
                 deferForSafeBoundary(key: key, boundary: boundary)
                 touchPendingCommand()
                 return false
@@ -1105,7 +1106,19 @@ final class RelayVoiceCommandDelivery {
 
         let pendingText = peekPendingCommandText()?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        if providerTurnActive(), pendingText != "__INTERRUPT__" {
+        if pendingText != "__INTERRUPT__", !interruptedTurnIdentities.isEmpty {
+            let activeIdentities = Set(providerTurnRecords().filter {
+                ($0["state"] as? String) == "active"
+            }.map(Self.providerTurnIdentity))
+            if !interruptedTurnIdentities.isDisjoint(with: activeIdentities) {
+                deferForProviderTurn(key: key, reason: .providerTurn)
+                touchPendingCommand()
+                return false
+            }
+            interruptedTurnIdentities.removeAll()
+        }
+        let activeTurn = providerTurnActive()
+        if activeTurn, pendingText != "__INTERRUPT__" {
             if pendingCommandRequestsProviderPreemption() {
                 if !isWaitingForProviderPreemption(key) {
                     send(ArraySlice([3]))
@@ -1113,11 +1126,9 @@ final class RelayVoiceCommandDelivery {
                     recordDeliveryEvent("provider_preemption_requested", key: key)
                 }
                 deferForProviderTurn(key: key, reason: .providerPreemption)
-            } else {
-                deferForProviderTurn(key: key, reason: .providerTurn)
+                touchPendingCommand()
+                return false
             }
-            touchPendingCommand()
-            return false
         }
         if case .waitingForSafeBoundary(let deferral) = deliveryState,
            deferral.key == key,
@@ -1156,6 +1167,9 @@ final class RelayVoiceCommandDelivery {
             return true
         }
         recordDeliveryEvent("claimed", key: key)
+        if activeTurn, pendingText != "__INTERRUPT__" {
+            recordDeliveryEvent("provider_steering_requested", key: key)
+        }
         if command.text.trimmingCharacters(in: .whitespacesAndNewlines) == "__INTERRUPT__" {
             if providerTurnActive() {
                 send(ArraySlice(first))
@@ -1178,9 +1192,14 @@ final class RelayVoiceCommandDelivery {
             deliveryState = .acknowledged(key)
             return true
         }
+        let steeringProvider = (provider ?? key.provider)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // Claude queues Enter during an active turn. Ctrl-X Ctrl-S sends its
+        // queued message now; Codex steers on Enter without another key.
         let pending = PendingSubmission(
             key: key,
-            events: Array(events.dropFirst()),
+            events: Array(events.dropFirst())
+                + (activeTurn && steeringProvider == "claude" ? [[24, 19]] : []),
             submittedAt: now()
         )
         deliveryState = .promptWritten(pending)
@@ -1569,6 +1588,18 @@ final class RelayVoiceCommandDelivery {
         }
     }
 
+    private func canSteerManualTurn(_ boundary: ManualBoundary) -> Bool {
+        guard boundary.reason == .manualSubmission else { return false }
+        return providerTurnRecords().contains { record in
+            let createdAt = (record["created_at"] as? NSNumber)?.doubleValue
+                ?? (record["updated_at"] as? NSNumber)?.doubleValue
+                ?? 0
+            return createdAt >= boundary.startedAt.timeIntervalSince1970 - 0.25
+                && (record["origin"] as? String) == "manual"
+                && (record["state"] as? String) == "active"
+        }
+    }
+
     /// Claude runs no UserPromptSubmit hook for local slash commands (`/model`,
     /// `/compact`) or `!` shell mode, so their manual record never appears.
     /// Once the hook could no longer bind the submission and the terminal is
@@ -1823,13 +1854,15 @@ final class RelayVoiceCommandDelivery {
         _ = writeBridgeControlLine("__PROVIDER_TURN_EVENT__:\(json)")
     }
 
-    /// Claude runs no Stop/StopFailure hook for an aborted turn, so the turn a
-    /// Ctrl-C interrupted would stay active forever. Remember it until the PTY
-    /// goes quiet, then cancel exactly that turn through the bridge broker.
+    /// Keep an explicit interrupt separate from ordinary steering. Claude has
+    /// no Stop hook for an aborted turn, so release its exact turn once idle.
     private func noteProviderInterrupt() {
-        let turns = providerTurnRecords().filter { record in
-            (record["state"] as? String) == "active"
-                && ((record["provider"] as? String) ?? resolvedProvider)?.lowercased() == "claude"
+        let activeTurns = providerTurnRecords().filter {
+            ($0["state"] as? String) == "active"
+        }
+        interruptedTurnIdentities.formUnion(activeTurns.map(Self.providerTurnIdentity))
+        let turns = activeTurns.filter { record in
+            ((record["provider"] as? String) ?? resolvedProvider)?.lowercased() == "claude"
         }
         guard !turns.isEmpty else { return }
         pendingInterruptRelease = (UUID().uuidString.lowercased(), now(), turns)
@@ -1845,13 +1878,11 @@ final class RelayVoiceCommandDelivery {
               let recoveryGeneration, !recoveryGeneration.isEmpty,
               let foregroundGateHandle, !foregroundGateHandle.isEmpty else { return }
         let identityFields = ["provider_session_id", "session_id", "turn_id", "local_turn_seq"]
-        func identity(_ record: [String: Any]) -> [String] {
-            identityFields.map { record[$0].map { "\($0)" } ?? "" }
-        }
-        let interrupted = Set(pending.turns.map(identity))
+        let interrupted = Set(pending.turns.map(Self.providerTurnIdentity))
         for record in providerTurnRecords() where
-            (record["state"] as? String) == "active" && interrupted.contains(identity(record)) {
-            let turn = identity(record)
+            (record["state"] as? String) == "active"
+                && interrupted.contains(Self.providerTurnIdentity(record)) {
+            let turn = Self.providerTurnIdentity(record)
             var payload: [String: Any] = [
                 "event": "provider_turn_cancelled",
                 // One id per interrupt and turn: a later interrupt in the same
@@ -1875,6 +1906,12 @@ final class RelayVoiceCommandDelivery {
                 key: pendingCommandKey(),
                 fields: ["release_reason": "provider_interrupted"]
             )
+        }
+    }
+
+    private static func providerTurnIdentity(_ record: [String: Any]) -> [String] {
+        ["provider_session_id", "session_id", "turn_id", "local_turn_seq"].map {
+            record[$0].map { "\($0)" } ?? ""
         }
     }
 

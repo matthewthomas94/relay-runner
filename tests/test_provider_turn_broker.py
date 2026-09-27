@@ -195,9 +195,10 @@ class ProviderTurnBrokerTests(unittest.TestCase):
                 "intent_id": "intent-1",
             }
             second = {
-                "relay_command_seq": 2,
-                "relay_command_id": "command-2",
+                "relay_command_seq": 1,
+                "relay_command_id": "command-1",
                 "intent_id": "intent-2",
+                "within_turn_order": 2,
             }
             turn = {
                 **turn_record("codex"),
@@ -245,6 +246,50 @@ class ProviderTurnBrokerTests(unittest.TestCase):
             )
             self.assertEqual(materialized["intent_id"], "intent-2")
 
+    def test_new_voice_turn_materializes_while_prior_turn_is_active(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                database = os.path.join(temp_dir, "inbox.sqlite3")
+                projection = os.path.join(temp_dir, "provider-turns-v2.json")
+                command_path = os.path.join(temp_dir, "voice_cmd_ready")
+                metadata_path = command_path + ".meta"
+                inbox = IntentInbox(database, provider_turn_projection_path=projection)
+                broker = ProviderTurnBroker(database, projection_path=projection)
+                self.addCleanup(broker.close)
+                self.addCleanup(inbox.close)
+                first = {
+                    "relay_command_seq": 1,
+                    "relay_command_id": "command-1",
+                    "intent_id": "intent-1",
+                    "provider": provider,
+                }
+                second = {
+                    "relay_command_seq": 2,
+                    "relay_command_id": "command-2",
+                    "intent_id": "intent-2",
+                    "provider": provider,
+                }
+                stored = inbox.enqueue("first", first, "continue_current")
+                inbox.enqueue("steer first", second, "continue_current")
+                inbox.materialize_next(
+                    command_path=command_path,
+                    metadata_path=metadata_path,
+                    transport="test",
+                )
+                turn = {**turn_record(provider), "relay_command_id": "command-1"}
+                self.assertTrue(broker.activate(turn, now=100.0))
+                self.assertTrue(inbox.observe_claim(stored, provider_turn_seen=True, now=100.1))
+                os.unlink(command_path)
+                os.unlink(metadata_path)
+
+                materialized = inbox.materialize_next(
+                    command_path=command_path,
+                    metadata_path=metadata_path,
+                    transport="test",
+                )
+                self.assertEqual(materialized["intent_id"], "intent-2")
+                self.assertEqual(Path(command_path).read_text(), "steer first")
+
     def test_failed_authoritative_effect_releases_successor(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = os.path.join(temp_dir, "inbox.sqlite3")
@@ -261,9 +306,10 @@ class ProviderTurnBrokerTests(unittest.TestCase):
                 "intent_id": "intent-1",
             }
             second = {
-                "relay_command_seq": 2,
-                "relay_command_id": "command-2",
+                "relay_command_seq": 1,
+                "relay_command_id": "command-1",
                 "intent_id": "intent-2",
+                "within_turn_order": 2,
             }
             turn = {
                 **turn_record("codex"),
@@ -462,6 +508,68 @@ class ProviderTurnBrokerTests(unittest.TestCase):
                     [payload.get("text") for payload in delivered],
                     ["final 1", "final 2", "final 3"],
                 )
+
+    def test_steered_prompt_rebinds_same_native_turn_to_latest_command(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                native_turn = (
+                    {"turn_id": "native-turn"} if provider == "codex"
+                    else {"prompt_id": "prompt-1"}
+                )
+                delivered = []
+                with mock.patch.dict(os.environ, {
+                    "RELAY_APP_SESSION_ID": OWNERSHIP["app_session_id"],
+                    "RELAY_RECOVERY_GENERATION": OWNERSHIP["recovery_generation"],
+                    "RELAY_ACTOR_ROLE": OWNERSHIP["actor_role"],
+                    "RELAY_FOREGROUND_GATE_HANDLE": OWNERSHIP["foreground_gate_handle"],
+                    "RELAY_RUNNER_PROVIDER": provider,
+                    "RELAY_PROVIDER_SESSION_ID": f"provider-session-{provider}",
+                }):
+                    for number in (1, 2):
+                        command = {
+                            "relay_command_seq": number,
+                            "relay_command_id": f"command-{number}",
+                            "intent_id": f"intent-{number}",
+                            "agent_prompt": f"prompt {number}",
+                            "provider": provider,
+                        }
+                        Path(state_path).write_text(json.dumps(command))
+                        Path(claim_path).write_text(json.dumps(command))
+                        self.assertTrue(relay_completion_hook.handle_hook_payload(
+                            {
+                                "hook_event_name": "UserPromptSubmit",
+                                "session_id": "native-session",
+                                "prompt": f"prompt {number}",
+                                **native_turn,
+                            },
+                            claim_path=claim_path,
+                            state_path=state_path,
+                            turns_path=turns_path,
+                            stderr=io.StringIO(),
+                        ))
+                    with sqlite3.connect(turns_path + ".sqlite3") as connection:
+                        self.assertEqual(connection.execute(
+                            "SELECT intent_id, command_seq, command_id "
+                            "FROM provider_turns WHERE state='active'"
+                        ).fetchall(), [("intent-2", 2, "command-2")])
+                    self.assertTrue(relay_completion_hook.handle_hook_payload(
+                        {
+                            "hook_event_name": "Stop",
+                            "session_id": "native-session",
+                            "last_assistant_message": "latest final",
+                            **native_turn,
+                        },
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        write_control=lambda payload: delivered.append(payload) or True,
+                        stderr=io.StringIO(),
+                    ))
+                self.assertEqual(len(delivered), 1)
+                self.assertEqual(delivered[0]["intent_id"], "intent-2")
+                self.assertEqual(delivered[0]["text"], "latest final")
 
     def _stop_hook_continuation(self, provider: str, *, first_stop: bool) -> list[dict]:
         """Run one turn whose final Stop is a continuation after another hook blocked."""
