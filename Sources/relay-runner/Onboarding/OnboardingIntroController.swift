@@ -142,13 +142,16 @@ enum OnboardingPostTitleTransition {
     static let fadeOutDuration: TimeInterval = 0.24
     static let fadeInDuration: TimeInterval = 0.24
     static let blurRadius: CGFloat = 6
+    /// Whole onboarding pages sink out and rise in by a surface's distance
+    /// while blurring as far as the hero copy does between phrases.
+    static let contentStyle = RelayMotion.Style(
+        axis: .vertical,
+        distance: RelayMotion.Style.surface.distance,
+        blurRadius: blurRadius
+    )
 
     static var duration: TimeInterval {
         fadeOutDuration + fadeInDuration
-    }
-
-    static func animatedBlurRadius(reduceMotion: Bool) -> CGFloat {
-        reduceMotion ? 0 : blurRadius
     }
 }
 
@@ -515,13 +518,17 @@ struct OnboardingPromptTransitionQueue: Equatable {
 }
 
 enum OnboardingFlowMotion {
-    static let surfaceTransitionDuration = OnboardingPostTitleTransition.duration
+    static let surfaceTransitionDuration = RelayMotion.exitDuration + RelayMotion.enterDuration
     static let contentTransitionDuration: TimeInterval = 0.42
     static let controlsRevealDuration: TimeInterval = 0.36
     static let completedStepHold: TimeInterval = 0.85
 
     static var contentAnimation: Animation {
-        .easeInOut(duration: contentTransitionDuration)
+        RelayMotion.changeCurve.animation(duration: contentTransitionDuration)
+    }
+
+    static func contentAnimation(reduceMotion: Bool) -> Animation {
+        reduceMotion ? RelayMotion.change(reduceMotion: true) : contentAnimation
     }
 }
 
@@ -533,6 +540,13 @@ enum OnboardingIntroTextLayout {
     static func permissionControlsTop(forHeight height: CGFloat) -> CGFloat {
         let scale = height / referenceWorkspaceHeight
         return (referenceTextTop + lineHeight + 54) * scale
+    }
+
+    /// Hero copy drifts toward the trailing side as it fades between phrases,
+    /// matching the horizontal travel of every other text swap.
+    static func swapDrift(forOpacity opacity: CGFloat, reduceMotion: Bool) -> CGFloat {
+        guard !reduceMotion else { return 0 }
+        return (1 - min(max(opacity, 0), 1)) * RelayMotion.Style.text.distance
     }
 
     static func drawRect(
@@ -986,12 +1000,8 @@ final class OnboardingIntroRootView: NSView {
             model = runtimeModel
             model.retryAction = retryAction
             if model.presentation != presentation {
-                if reduceMotion {
+                withAnimation(OnboardingFlowMotion.contentAnimation(reduceMotion: reduceMotion)) {
                     model.presentation = presentation
-                } else {
-                    withAnimation(OnboardingFlowMotion.contentAnimation) {
-                        model.presentation = presentation
-                    }
                 }
             }
         } else {
@@ -1110,7 +1120,7 @@ final class OnboardingIntroRootView: NSView {
         view.frame = bounds
         oldView.flatMap { $0 as? OnboardingIntroCinematicView }?.stopAnimations()
 
-        guard policy == .fadeBlur, let oldView, !reduceMotion else {
+        guard policy == .fadeBlur, let oldView else {
             oldView?.removeFromSuperview()
             currentContentView = view
             view.alphaValue = 1
@@ -1120,45 +1130,23 @@ final class OnboardingIntroRootView: NSView {
             return
         }
 
+        // The outgoing page blurs, fades, and sinks; the incoming page then
+        // sharpens, fades in, and rises. Reduce Motion keeps only the fades.
         contentTransitionInProgress = true
         view.alphaValue = 0
-        configureFadeBlur(on: oldView, radius: 0)
-        animateFadeBlur(
-            on: oldView,
-            from: 0,
-            to: OnboardingPostTitleTransition.blurRadius,
-            duration: OnboardingPostTitleTransition.fadeOutDuration
-        )
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = OnboardingPostTitleTransition.fadeOutDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            oldView.animator().alphaValue = 0
-        } completionHandler: { [weak self, weak oldView] in
+        let style = OnboardingPostTitleTransition.contentStyle
+        RelayLayerMotion.animateOut(oldView, style: style, hidesWhenDone: false) { [weak self, weak oldView] in
             guard let self else { return }
             oldView?.removeFromSuperview()
-            oldView?.layer?.filters = nil
             self.currentContentView = view
             self.addSubview(view)
             self.applyLayout(to: view)
             view.layoutSubtreeIfNeeded()
 
-            let blurRadius = OnboardingPostTitleTransition.animatedBlurRadius(
-                reduceMotion: self.reduceMotion
-            )
-            self.configureFadeBlur(on: view, radius: blurRadius)
-            self.animateFadeBlur(
-                on: view,
-                from: blurRadius,
-                to: 0,
-                duration: OnboardingPostTitleTransition.fadeInDuration
-            )
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = OnboardingPostTitleTransition.fadeInDuration
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                view.animator().alphaValue = 1
-            } completionHandler: { [weak self, weak view] in
-                view?.layer?.filters = nil
+            RelayLayerMotion.animateIn(view, style: style) { [weak self, weak view] in
+                if let view {
+                    removeRelayMotionBlur(from: view)
+                }
                 self?.finishContentTransition()
             }
         }
@@ -1174,30 +1162,6 @@ final class OnboardingIntroRootView: NSView {
         )
     }
 
-    private func configureFadeBlur(on view: NSView, radius: CGFloat) {
-        guard let blur = CIFilter(name: "CIGaussianBlur") else { return }
-        blur.name = "onboardingFadeBlur"
-        blur.setValue(radius, forKey: kCIInputRadiusKey)
-        view.wantsLayer = true
-        view.layer?.filters = [blur]
-    }
-
-    private func animateFadeBlur(
-        on view: NSView,
-        from: CGFloat,
-        to: CGFloat,
-        duration: TimeInterval
-    ) {
-        let keyPath = "filters.onboardingFadeBlur.inputRadius"
-        let animation = CABasicAnimation(keyPath: keyPath)
-        animation.fromValue = from
-        animation.toValue = to
-        animation.duration = duration
-        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        view.layer?.add(animation, forKey: keyPath)
-        view.layer?.setValue(to, forKeyPath: keyPath)
-    }
-
     private func applyLayout(to view: NSView?) {
         if let view = view as? OnboardingIntroCinematicView {
             view.layoutFrame = layoutFrame
@@ -1207,6 +1171,29 @@ final class OnboardingIntroRootView: NSView {
             view.layoutFrame = layoutFrame
         }
     }
+}
+
+/// Drops the motion kit's blur filter once an entrance settles so large,
+/// continuously animating onboarding surfaces do not render through Core
+/// Image at rest.
+private func removeRelayMotionBlur(from view: NSView) {
+    view.layer?.filters = view.layer?.filters?.filter {
+        ($0 as? CIFilter)?.name != RelayLayerMotion.blurFilterName
+    }
+}
+
+/// A still image of a view's current content, used to animate controls out
+/// after the live view has already been hidden and reused.
+private func relayMotionSnapshotLayer(of view: NSView) -> CALayer? {
+    guard view.window != nil, !view.bounds.isEmpty,
+          let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+    view.cacheDisplay(in: view.bounds, to: rep)
+    guard let image = rep.cgImage else { return nil }
+    let layer = CALayer()
+    layer.contents = image
+    layer.contentsGravity = .resize
+    layer.contentsScale = view.window?.backingScaleFactor ?? 2
+    return layer
 }
 
 private final class OnboardingIntroCinematicView: NSView {
@@ -1389,6 +1376,11 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
     }
 
     func update(title: String, content: AnyView, completion: (() -> Void)? = nil) {
+        if transitionTimer == nil,
+           OnboardingPromptTransitionTimeline.phrase(from: textView.timelineFrame.text)
+               != OnboardingPromptTransitionTimeline.phrase(from: title) {
+            dismissControls()
+        }
         hostingView.rootView = content
         textView.setAccessibilityLabel(String(OnboardingPromptTransitionTimeline.phrase(from: title)))
         if transitionTarget == title, transitionTimer != nil {
@@ -1508,15 +1500,31 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
             return
         }
         controlsVisible = true
-        hostingView.isHidden = false
-        guard !reduceMotion else {
-            hostingView.alphaValue = 1
-            return
+        RelayLayerMotion.animateIn(
+            hostingView,
+            style: .element,
+            duration: OnboardingFlowMotion.controlsRevealDuration
+        ) { [weak self] in
+            guard let self, self.controlsVisible else { return }
+            removeRelayMotionBlur(from: self.hostingView)
         }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = OnboardingFlowMotion.controlsRevealDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            hostingView.animator().alphaValue = 1
+    }
+
+    /// Lets the current controls blur, fade, and sink away from a still copy
+    /// while the live hosting view is hidden immediately for the next step.
+    private func dismissControls() {
+        guard controlsVisible, !hostingView.isHidden, hostingView.alphaValue > 0.01,
+              let snapshot = relayMotionSnapshotLayer(of: hostingView) else { return }
+        let holder = NSView(frame: hostingView.frame)
+        // Assigning the layer first makes the holder layer-hosting.
+        holder.layer = snapshot
+        holder.wantsLayer = true
+        addSubview(holder, positioned: .above, relativeTo: hostingView)
+        controlsVisible = false
+        hostingView.alphaValue = 0
+        hostingView.isHidden = true
+        RelayLayerMotion.animateOut(holder, style: .element, hidesWhenDone: false) { [weak holder] in
+            holder?.removeFromSuperview()
         }
     }
 }
@@ -1661,8 +1669,10 @@ struct OnboardingRuntimeProgressView: View {
                 ongoingActivityIndicator
             }
             .frame(maxWidth: 360)
+            .transition(.relayElement)
         } else {
             ongoingActivityIndicator
+                .transition(.relayElement)
         }
     }
 
@@ -1700,6 +1710,7 @@ private struct OnboardingIntroRuntimePromptView: View {
                         accessibilityLabel: "Retry \(presentation.provider.displayName) setup",
                         action: model.retryAction
                     )
+                    .transition(.relayElement)
                 }
             }
         }
@@ -1711,15 +1722,15 @@ private struct OnboardingIntroRuntimePromptView: View {
             switch presentation.status {
             case .idle:
                 OnboardingRuntimeProgressView(progress: nil, reduceMotion: reduceMotion)
-                    .transition(reduceMotion ? .identity : .opacity)
+                    .transition(.relayElement)
             case .running(_, let progress):
                 OnboardingRuntimeProgressView(progress: progress, reduceMotion: reduceMotion)
-                    .transition(reduceMotion ? .identity : .opacity)
+                    .transition(.relayElement)
             case .succeeded:
                 Image(systemName: "checkmark.circle.fill")
                     .font(AppTypography.symbolFont(size: 20, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.82))
-                    .transition(reduceMotion ? .identity : .opacity)
+                    .transition(.relayElement)
                     .accessibilityLabel("Setup complete")
             case .failed(let errorMessage):
                 Text(errorMessage)
@@ -1728,12 +1739,13 @@ private struct OnboardingIntroRuntimePromptView: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
-                    .transition(reduceMotion ? .identity : .opacity)
+                    .relayTextSwap(errorMessage, alignment: .center)
+                    .transition(.relayText)
             }
         }
         .frame(minHeight: 24)
         .animation(
-            reduceMotion ? nil : OnboardingFlowMotion.contentAnimation,
+            OnboardingFlowMotion.contentAnimation(reduceMotion: reduceMotion),
             value: OnboardingRuntimeVisualPhase(status: presentation.status)
         )
         .accessibilityElement(children: .ignore)
@@ -1750,20 +1762,25 @@ private struct OnboardingIntroRuntimePromptView: View {
 struct OnboardingIntroAgentLoginPromptView: View {
     let presentation: OnboardingAgentLoginPromptPresentation
     let signInAction: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         OnboardingIntroPromptContentLayout {
             VStack(spacing: 24) {
-                if presentation.signedIn {
-                    Text("Signed in.")
-                        .font(AppTypography.font(.body))
-                        .foregroundStyle(.white.opacity(0.72))
-                } else {
-                    OnboardingIntroWhiteActionButton(
-                        title: "Sign in",
-                        accessibilityLabel: "Sign in to \(presentation.provider.displayName)",
-                        action: signInAction
-                    )
+                ZStack {
+                    if presentation.signedIn {
+                        Text("Signed in.")
+                            .font(AppTypography.font(.body))
+                            .foregroundStyle(.white.opacity(0.72))
+                            .transition(.relayText)
+                    } else {
+                        OnboardingIntroWhiteActionButton(
+                            title: "Sign in",
+                            accessibilityLabel: "Sign in to \(presentation.provider.displayName)",
+                            action: signInAction
+                        )
+                        .transition(.relayElement)
+                    }
                 }
 
                 if let message = presentation.message {
@@ -1773,8 +1790,11 @@ struct OnboardingIntroAgentLoginPromptView: View {
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+                        .relayTextSwap(message, alignment: .center)
+                        .transition(.relayText)
                 }
             }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: presentation)
         }
         .accessibilityElement(children: .contain)
     }
@@ -1795,6 +1815,7 @@ struct OnboardingIntroWorkspacePromptView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .foregroundStyle(.white)
+                        .relayTextSwap(currentPath)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 12)
                         .frame(maxWidth: 640)
@@ -1859,6 +1880,7 @@ struct OnboardingBlinkingTitle: View {
         .multilineTextAlignment(.center)
         .lineLimit(2)
         .minimumScaleFactor(0.72)
+        .relayTextSwap(text, alignment: .center)
         .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
         .accessibilityLabel(String(OnboardingPromptTransitionTimeline.phrase(from: text)))
         .accessibilityAddTraits(.isHeader)
@@ -1887,6 +1909,7 @@ struct OnboardingBlinkingTitle: View {
 private struct OnboardingIntroPermissionControlsView: View {
     let presentation: OnboardingPermissionPromptPresentation
     let action: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { proxy in
@@ -1906,8 +1929,11 @@ private struct OnboardingIntroPermissionControlsView: View {
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+                        .relayTextSwap(supportingCopy, alignment: .center)
+                        .transition(.relayText)
                 }
             }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: presentation)
             .frame(maxWidth: .infinity)
             .padding(
                 .top,
@@ -1921,7 +1947,7 @@ private struct OnboardingIntroPermissionControlsView: View {
 
 struct OnboardingIntroWhiteActionButton: View {
     static let hoverScale: CGFloat = 1
-    static let hoverAnimation: Animation = .easeInOut(duration: 0.16)
+    static let hoverAnimation: Animation = RelayMotion.hover
 
     let title: String
     var accessibilityLabel: String?
@@ -1942,6 +1968,7 @@ struct OnboardingIntroWhiteActionButton: View {
                 .foregroundStyle(Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
+                .relayTextSwap(title, alignment: .center)
                 .frame(width: width, height: height)
                 .background(
                     RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
@@ -2055,6 +2082,10 @@ private final class OnboardingIntroTextView: NSView {
             reserveWidth: reserveWidth,
             visibleWidth: visibleText.size(withAttributes: attributes).width
         )
-        attributedText.draw(in: drawRect)
+        let drift = OnboardingIntroTextLayout.swapDrift(
+            forOpacity: timelineFrame.textOpacity,
+            reduceMotion: RelayLayerMotion.reduceMotion
+        )
+        attributedText.draw(in: drawRect.offsetBy(dx: drift, dy: 0))
     }
 }
