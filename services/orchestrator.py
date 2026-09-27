@@ -46,6 +46,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 # Reuse the existing config loader (sibling file).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
+from claude_subscription import check as check_claude_subscription
 try:
     from services.artifact_lifecycle import ArtifactLifecycleCoordinator
     from services.automatic_retention import (
@@ -4276,6 +4277,16 @@ def _claude_result_error(agent_kind: str, tail: Iterable[str]) -> str | None:
     return None
 
 
+def _claude_subscription_error(agent_kind: str, cmd: list[str], cwd: str,
+                               environment: Mapping[str, str] | None) -> str | None:
+    """Subscription-only: refuse a Claude launch on an API key or other metered route."""
+    if agent_kind != "claude":
+        return None
+    readiness = check_claude_subscription(
+        cmd[:1], cwd=cwd, environment=os.environ if environment is None else environment)
+    return None if readiness.ready else readiness.message
+
+
 def _failure_tail(agent_kind: str, rc: int | None, tail: Iterable[str]) -> str:
     lines = list(tail)
     result_error = _claude_result_error(agent_kind, lines)
@@ -4508,8 +4519,17 @@ class Worker:
             start_head = _git_head(self.run["workspace_path"])
             if start_head:
                 log.write(f"[orchestrator] start_head={start_head}\n")
+            environment = (
+                {**os.environ, **self.run["spike_git_environment"]}
+                if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE
+                and self.run.get("spike_git_environment") else None
+            )
             try:
                 cmd = self._command()
+                subscription_error = _claude_subscription_error(
+                    self.agent_kind, cmd, self.run["workspace_path"], environment)
+                if subscription_error:
+                    raise RuntimeError(subscription_error)
             except RuntimeError as e:
                 self.store.update(
                     self.run_id,
@@ -4536,11 +4556,7 @@ class Worker:
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
-                    env=(
-                        {**os.environ, **self.run["spike_git_environment"]}
-                        if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE
-                        and self.run.get("spike_git_environment") else None
-                    ),
+                    env=environment,
                 )
             except FileNotFoundError as e:
                 self.store.update(self.run_id, state="Failed",
@@ -4925,6 +4941,16 @@ class ReviewWorker:
             log.write(f"\n[orchestrator] review_provider={self.agent_kind}\n")
             log.write(f"[orchestrator] review_prompt_sha256={hashlib.sha256(self.prompt.encode('utf-8')).hexdigest()}\n")
             cmd = self._command()
+            subscription_error = _claude_subscription_error(
+                self.agent_kind, cmd, self.run["repo_path"], None)
+            if subscription_error:
+                self.store.update(self.run_id, state="AwaitingReview", last_error=subscription_error)
+                log.write(f"[orchestrator] {subscription_error}\n")
+                self._emit_lifecycle(
+                    "run-review-needed",
+                    message=f"{self.run['ticket_id']} run {self.run_id} still needs review attention",
+                )
+                return
             try:
                 self.proc = subprocess.Popen(
                     cmd,

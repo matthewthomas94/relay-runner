@@ -1,9 +1,17 @@
 # Spec: drop `claude -p` at both relay-runner callsites
 
-Status: ready for implementation
+Status: superseded premise — do not implement on billing grounds (see correction below)
 Scope: tiny — two `cmd` arrays in two files. Total diff is ~3 lines.
 
-## Why
+## Correction (2026-09-27)
+
+The billing change this spec relies on did not take effect. Anthropic paused it on June 15, 2026, and the current support notice says that for now "nothing has changed": Claude Agent SDK, `claude -p`, and third-party app usage still draw from the subscription's usage limits, and no monthly credit is available. Anthropic says it will announce an update before any change takes effect. Source (checked 2026-09-27): https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan
+
+So there is currently no billing reason to drop `-p`, and Relay Runner must not change worker invocation solely to influence a presumed billing bucket. The classification may change later; before claiming any billing outcome, re-check Anthropic's current guidance and a controlled live account usage check, not CLI output or rate-limit event shapes. The original rationale below is kept for history only.
+
+What does decide billing today is the credential Claude uses. Relay Runner is subscription-only and enforces that before every Relay-owned Claude launch (`services/claude_subscription.py`); see [provider setup](../providers.md#subscription-only-authentication).
+
+## Why (original, superseded)
 
 Anthropic published a billing change effective **June 15, 2026** that introduces a new Agent SDK credit pool, separate from the existing Claude Code subscription bucket. Source: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan
 
@@ -120,5 +128,5 @@ A sub-agent picking this up should verify all of:
 ## Caveats and follow-ups (not blocking implementation)
 
 1. **Billing-classification confirmation is owed.** The protocol works (proven); the billing bucket is inferred from structural signals (rate-limit event shape) but not yet confirmed against the post-June-15 usage dashboard. Implement now, verify after June 15. Verification plan: in a shell with subscription auth and no `ANTHROPIC_API_KEY` exported, run one dispatch and one voice session, then inspect the Anthropic usage dashboard. Interactive Claude Code usage should increment; the Agent SDK credit pool should remain untouched.
-2. **Auth env hygiene.** Independent of this change but worth noting: if `ANTHROPIC_API_KEY` is set in the shell launching the orchestrator daemon or voice bridge, the CLI prefers API-key auth and bills the API account regardless of `-p`/no-`-p`. The launching shell must have no `ANTHROPIC_API_KEY` exported for the subscription bucket to be used. A small startup warning in `scripts/relay-orchestrator` and `scripts/relay-bridge` (detect the env var and log a warning) is a sensible follow-up but is out of scope for this spec.
+2. **Auth env hygiene.** If `ANTHROPIC_API_KEY` (or another metered credential or route) is present, the CLI uses it and bills that account regardless of `-p`/no-`-p`. This is now enforced rather than warned about: the subscription-only launch gate refuses any Relay-owned Claude process whose effective route is not a verified Claude subscription.
 3. **Output-format change in orchestrator logs.** After this change, worker logs in `.orchestrator/logs/` become plain text instead of JSON. No current consumer parses them as JSON, but anyone who'd built tooling against the old format will need to adapt.

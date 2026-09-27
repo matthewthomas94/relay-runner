@@ -1980,6 +1980,52 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertIn("saved findings", failure["message"])
             self.assertEqual(report.read_text(), "Further evidence needed.")
 
+    def test_claude_worker_and_review_refuse_an_unverified_subscription_before_launch(self):
+        from claude_subscription import ClaudeSubscriptionReadiness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            agent = root / "claude"
+            agent.write_text('#!/bin/sh\ntouch "$0.launched"\nexit 0\n')
+            os.chmod(agent, 0o755)
+            store = RunsStore(root / "runs.db")
+            checks = []
+
+            def gate(command, *, cwd, environment):
+                checks.append((command, cwd))
+                return ClaudeSubscriptionReadiness(
+                    "blocked", "metered_environment",
+                    "Relay Runner only uses your Claude subscription. ANTHROPIC_API_KEY would route Claude away.")
+
+            run_id = store.insert(ticket_id="RR-1", repo_path=str(workspace),
+                                  workspace_path=str(workspace), branch="relay/rr-1", state="Claimed")
+            worker = Worker(run_id=run_id, run=store.get(run_id), prompt="prompt",
+                            agent_bin=str(agent), agent_kind="claude", store=store,
+                            log_path=root / "run.log")
+            with patch("orchestrator.check_claude_subscription", side_effect=gate), \
+                    patch.object(worker, "_command", return_value=[str(agent), "-p"]):
+                worker._run()
+            failed = store.get(run_id) or {}
+            self.assertEqual(failed["state"], "Failed")
+            self.assertIn("only uses your Claude subscription", failed["last_error"])
+            self.assertEqual(checks, [([str(agent)], str(workspace))])
+
+            review_id = store.insert(ticket_id="RR-2", repo_path=str(workspace),
+                                     workspace_path=str(workspace), branch="relay/rr-2",
+                                     state="Reviewing", provider_key="claude")
+            review = ReviewWorker(run_id=review_id, run=store.get(review_id) or {}, prompt="review",
+                                  agent_bin=str(agent), agent_kind="claude", store=store,
+                                  log_path=root / "review.log")
+            with patch("orchestrator.check_claude_subscription", side_effect=gate), \
+                    patch.object(review, "_command", return_value=[str(agent), "-p"]):
+                review._run()
+            waiting = store.get(review_id) or {}
+            self.assertEqual(waiting["state"], "AwaitingReview")
+            self.assertIn("only uses your Claude subscription", waiting["last_error"])
+            self.assertFalse(Path(f"{agent}.launched").exists())
+
     def test_inspect_run_for_review_returns_branch_logs_and_diff_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

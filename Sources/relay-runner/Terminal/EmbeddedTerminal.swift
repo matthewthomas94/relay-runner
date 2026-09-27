@@ -377,6 +377,9 @@ final class EmbeddedTerminalSession {
         if bridgeSocketOutcome == "timeout" {
             return "The voice bridge socket timed out before \(providerName) started. Relay Runner cleaned up the partial session; start a new session to retry."
         }
+        if decodeWaitStatus(rawStatus) == ProcessManager.claudeSubscriptionGateExitCode {
+            return "Relay Runner only uses your Claude subscription and couldn't confirm this session would. Remove any ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, cloud-provider or apiKeyHelper setting from your shell profile and Claude settings, run `claude auth login` with your Claude.ai subscription account, then start a new session."
+        }
         let outcome = decodeWaitStatus(rawStatus).map { " with code \($0)" } ?? ""
         return "The session launcher exited\(outcome) before \(providerName) started. Relay Runner cleaned up the partial session; start a new session to retry."
     }

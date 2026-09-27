@@ -1240,6 +1240,7 @@ final class ProcessManager {
         ))
         \(cdLine)
         relay_record_session_event launcher_start started
+        \(Self.claudeSubscriptionGate(relayBridge: relayBridge, target: target, agentBinary: agentBinary))
         # relay-bridge owns bridge readiness. Agent-skill sessions only bootstrap
         # here; app-owned sessions wait for the Python bridge's socket.
         \(bridgeStartLine)
@@ -1250,6 +1251,28 @@ final class ProcessManager {
         # Replacing this launcher process keeps the PTY child PID aligned with
         # the agent, so End Session terminates the interactive process cleanly.
         exec \(launchLine)
+        """
+    }
+
+    /// Exit status the launcher uses when Claude's subscription gate refuses.
+    static let claudeSubscriptionGateExitCode: Int32 = 78
+
+    /// Relay Runner is subscription-only. Before Claude starts, check in the
+    /// launch shell (after the profile and cwd apply) that the effective
+    /// credential is the user's Claude subscription, not an API key or other
+    /// metered route. The shared Python gate prints the fix without values.
+    static func claudeSubscriptionGate(relayBridge: String, target: AgentTarget, agentBinary: String) -> String {
+        guard target == .claude else { return "" }
+        let gate = URL(fileURLWithPath: relayBridge)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("services/claude_subscription.py")
+            .path
+        return """
+        if ! \(shellQuoted(servicePython)) \(shellQuoted(gate)) --binary \(shellQuoted(agentBinary)) --cwd "$PWD"; then
+            relay_record_session_event claude_subscription blocked
+            exit \(claudeSubscriptionGateExitCode)
+        fi
         """
     }
 
@@ -1414,7 +1437,7 @@ final class ProcessManager {
 
     /// Render the `--model <name>` flag for the launcher script, or empty
     /// string when the user wants the agent's default. Single-quotes the name
-    /// so a TOML-edited custom model id (e.g. `claude-sonnet-4-6`) can't
+    /// so a TOML-edited custom model id (e.g. `claude-sonnet-5`) can't
     /// break shell parsing.
     private static func modelFlag(_ raw: String, target: AgentTarget, resolvedCodexModel: String? = nil) -> String {
         let v = raw.trimmingCharacters(in: .whitespaces).lowercased()

@@ -292,11 +292,29 @@ final class SupportDiagnosticsTests: XCTestCase {
                 ofItemAtPath: newest.path
             )
 
-            let bridge = root.appendingPathComponent("relay-bridge")
+            let bridge = root.appendingPathComponent("scripts/relay-bridge")
             let agent = root.appendingPathComponent("agent")
             let launcher = root.appendingPathComponent("launch.sh")
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent("scripts"),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent("services"),
+                withIntermediateDirectories: true
+            )
+            // Claude launches pass the subscription-only gate before the bridge starts.
+            try FileManager.default.copyItem(
+                at: URL(fileURLWithPath: #filePath)
+                    .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                    .appendingPathComponent("services/claude_subscription.py"),
+                to: root.appendingPathComponent("services/claude_subscription.py")
+            )
             try writeExecutable("#!/bin/bash\nexit 0\n", to: bridge)
-            try writeExecutable("#!/bin/bash\nexit 0\n", to: agent)
+            try writeExecutable(
+                "#!/bin/bash\n[ \"$1\" = auth ] && echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"apiProvider\":\"firstParty\",\"subscriptionType\":\"max\"}'\nexit 0\n",
+                to: agent
+            )
             var config = AppConfig()
             config.general.provider = provider
             config.general.working_directory = root.path

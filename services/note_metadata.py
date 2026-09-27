@@ -16,9 +16,11 @@ from datetime import datetime, timezone
 try:
     from services.note_contract import NoteIdentity, NoteUpdate, note_source
     from services.codex_model_catalog import resolve_codex_family_from_cli
+    from services.claude_subscription import check as check_claude_subscription
 except ModuleNotFoundError:
     from note_contract import NoteIdentity, NoteUpdate, note_source
     from codex_model_catalog import resolve_codex_family_from_cli
+    from claude_subscription import check as check_claude_subscription
 
 MAX_INPUT_BYTES = 96_000
 MAX_OUTPUT_BYTES = 128_000
@@ -92,10 +94,11 @@ def command(provider: str, binary: str, model: str, directory: Path) -> list[str
 
 
 def isolated_environment() -> dict[str, str]:
-    # Preserve normal CLI OAuth/keychain/key discovery; discard inherited Relay,
-    # MCP, agent-session, plugin and diagnostic configuration.
+    # Preserve normal CLI subscription login discovery; discard API keys
+    # (subscription only) and inherited Relay, MCP, agent-session, plugin and
+    # diagnostic configuration.
     names = {"HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "CODEX_HOME",
-             "CLAUDE_CONFIG_DIR", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
+             "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN",
              "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR"}
     return {key: value for key, value in os.environ.items() if key in names}
 
@@ -146,9 +149,10 @@ def run_process(args: list[str], payload: bytes, directory: Path, cancel: thread
 
 
 class NoteMetadataGenerator:
-    def __init__(self, config_loader, find_binary):
+    def __init__(self, config_loader, find_binary, subscription_check=check_claude_subscription):
         self.config_loader = config_loader
         self.find_binary = find_binary
+        self.subscription_check = subscription_check
 
     def __call__(self, text: str, cancel: threading.Event) -> dict[str, object]:
         if not text.strip():
@@ -164,6 +168,9 @@ class NoteMetadataGenerator:
             binary = self.find_binary(provider, configured if configured.startswith("/") else "")
         except RuntimeError as error:
             raise GenerationError("cli_unavailable") from error
+        if provider == "claude" and not self.subscription_check(
+                [binary], cwd=tempfile.gettempdir(), environment=isolated_environment()).ready:
+            raise GenerationError("subscription_unverified")
         model = str(general.get("model") or ("sol" if provider == "codex" else "opus"))
         if provider == "codex":
             try:

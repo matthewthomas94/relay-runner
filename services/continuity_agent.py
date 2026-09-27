@@ -43,29 +43,13 @@ _CHILD_ENVIRONMENT_ALLOWLIST = frozenset({
     "SHELL",
     "TMPDIR",
 })
-# Each provider CLI may authenticate from its own environment (API key, setup
-# token, custom config directory, cloud-provider routing). Only the launched
-# provider's names are passed, and only to that provider's CLI process.
+# Each provider CLI finds the user's subscription login through its own config
+# directory; a Claude setup token is passed so the subscription gate can judge
+# it. API keys and cloud-provider routing are never forwarded (subscription
+# only). Only the launched provider's names reach that provider's CLI.
 _PROVIDER_AUTH_ENVIRONMENT = {
-    "codex": frozenset({"CODEX_HOME", "OPENAI_API_KEY"}),
-    "claude": frozenset({
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "CLAUDE_CONFIG_DIR",
-        "CLAUDE_CODE_USE_BEDROCK",
-        "CLAUDE_CODE_USE_VERTEX",
-        "AWS_REGION",
-        "AWS_PROFILE",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-        "AWS_BEARER_TOKEN_BEDROCK",
-        "CLOUD_ML_REGION",
-        "ANTHROPIC_VERTEX_PROJECT_ID",
-        "GOOGLE_APPLICATION_CREDENTIALS",
-    }),
+    "codex": frozenset({"CODEX_HOME"}),
+    "claude": frozenset({"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"}),
 }
 _INCIDENT_FIELDS = (
     "schema_version",
