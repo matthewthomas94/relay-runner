@@ -114,7 +114,6 @@ enum WorkspaceNavigationStyle {
     static let inactiveTextOpacity: Double = 0.72
     static let selectedFillOpacity: Double = 0.08
     static let focusedFillOpacity: Double = 0.12
-    static let hoveredFillOpacity: Double = 0.06
 }
 
 struct WorkspaceMenuBarStrip: View {
@@ -225,10 +224,7 @@ struct WorkspaceNavigationButton: View {
             .frame(height: WorkspaceNavigationStyle.controlHeight - 2 * WorkspaceNavigationStyle.verticalPadding)
             .padding(.horizontal, WorkspaceNavigationStyle.horizontalPadding)
             .padding(.vertical, WorkspaceNavigationStyle.verticalPadding)
-            .background(
-                RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius)
-                    .fill(buttonFill)
-            )
+            // Selection, hover, and focus show through the text colour alone.
             .contentShape(
                 RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius)
             )
@@ -249,12 +245,5 @@ struct WorkspaceNavigationButton: View {
         selected || isHovered || isFocused
             ? WorkspaceNavigationStyle.activeTextOpacity
             : WorkspaceNavigationStyle.inactiveTextOpacity
-    }
-
-    /// Selection shows through the text colour alone.
-    private var buttonFill: Color {
-        if isFocused { return Color.white.opacity(WorkspaceNavigationStyle.focusedFillOpacity) }
-        if isHovered { return Color.white.opacity(WorkspaceNavigationStyle.hoveredFillOpacity) }
-        return Color.clear
     }
 }
