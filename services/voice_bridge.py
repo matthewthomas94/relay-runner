@@ -10,6 +10,7 @@ mode retained for manual debugging; Start Session and relay-bridge do not use it
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -1513,6 +1514,7 @@ def _resolve_voice_work_items(
     *,
     repo_path: str | Path,
     active_work: tuple[ActiveWork, ...] = (),
+    foreground_active: bool = False,
 ) -> list[dict]:
     """Normalize one real turn into provider-neutral ordered item deliveries."""
     relay_command_seq = int(relay_command["relay_command_seq"])
@@ -1558,6 +1560,12 @@ def _resolve_voice_work_items(
             cancellation_scope=item.cancellation_scope,
             target_work_ids=item.target_intent_ids,
         )
+        if foreground_active and disposition.route == IntentRoute.RUN_SIDECAR:
+            disposition = replace(
+                disposition,
+                route=IntentRoute.CONTINUE_CURRENT,
+                public_reason="Steer the active foreground PM with this voice turn.",
+            )
         metadata = _metadata_for_action(action, item_command, disposition, item)
         prompt = format_command_for_agent(action, disposition.to_dict())
         if action.kind != "control":
@@ -4312,6 +4320,7 @@ def _run_relay(
                     relay_command,
                     repo_path=Path.cwd(),
                     active_work=_active_work(repo_path=Path.cwd()),
+                    foreground_active=_any_provider_turn_active(),
                 )
                 relay_command["voice_work_items"] = [
                     resolved["item"].to_dict() for resolved in resolved_items

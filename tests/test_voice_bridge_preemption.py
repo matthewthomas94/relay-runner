@@ -6535,6 +6535,34 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 self.assertFalse(metadata["preempt_provider"])
                 self.assertEqual(metadata["provider"], provider)
 
+    def test_busy_pm_receives_even_explicit_sidecar_voice_requests(self):
+        source_text = "In parallel, research and compare the public docs"
+        active_work = (voice_bridge.ActiveWork("intent-1"),)
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                command = {
+                    "provider": provider,
+                    "relay_command_seq": 2,
+                    "relay_command_id": f"{provider}-cmd-2",
+                    "source_text": source_text,
+                }
+                idle = voice_bridge._resolve_voice_work_items(
+                    source_text,
+                    command,
+                    repo_path="/tmp/repo",
+                    active_work=active_work,
+                )
+                busy = voice_bridge._resolve_voice_work_items(
+                    source_text,
+                    command,
+                    repo_path="/tmp/repo",
+                    active_work=active_work,
+                    foreground_active=True,
+                )
+                self.assertEqual(idle[0]["disposition"].route, voice_bridge.IntentRoute.RUN_SIDECAR)
+                self.assertEqual(busy[0]["disposition"].route, voice_bridge.IntentRoute.CONTINUE_CURRENT)
+                self.assertEqual(busy[0]["metadata"]["work_disposition"]["route"], "continue_current")
+
     def test_demo_self_explanation_is_provider_neutral_conversation(self):
         source_text = (
             "I'm demoing Relay Runner; please explain what it does to the audience."
