@@ -463,6 +463,85 @@ class ProviderTurnBrokerTests(unittest.TestCase):
                     ["final 1", "final 2", "final 3"],
                 )
 
+    def _stop_hook_continuation(self, provider: str, *, first_stop: bool) -> list[dict]:
+        """Run one turn whose final Stop is a continuation after another hook blocked."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            command = {
+                "relay_command_seq": 1,
+                "relay_command_id": f"command-{provider}",
+                "intent_id": "intent-1",
+                "agent_prompt": "bounded prompt",
+                "provider": provider,
+            }
+            Path(state_path).write_text(json.dumps(command))
+            Path(claim_path).write_text(json.dumps(command))
+            native_turn = (
+                {"turn_id": "native-turn"} if provider == "codex" else {"prompt_id": "prompt-1"}
+            )
+            stop = {
+                "hook_event_name": "Stop",
+                "session_id": f"native-session-{provider}",
+                **native_turn,
+            }
+            delivered = []
+            with mock.patch.dict(os.environ, {
+                "RELAY_APP_SESSION_ID": OWNERSHIP["app_session_id"],
+                "RELAY_RECOVERY_GENERATION": OWNERSHIP["recovery_generation"],
+                "RELAY_ACTOR_ROLE": OWNERSHIP["actor_role"],
+                "RELAY_FOREGROUND_GATE_HANDLE": OWNERSHIP["foreground_gate_handle"],
+                "RELAY_RUNNER_PROVIDER": provider,
+                "RELAY_PROVIDER_SESSION_ID": f"provider-session-{provider}",
+            }):
+                self.assertTrue(relay_completion_hook.handle_hook_payload(
+                    {
+                        "hook_event_name": "UserPromptSubmit",
+                        "session_id": f"native-session-{provider}",
+                        "prompt": "bounded prompt",
+                        **native_turn,
+                    },
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    turns_path=turns_path,
+                    stderr=io.StringIO(),
+                ))
+                stops = [{
+                    **stop,
+                    "stop_hook_active": True,
+                    "last_assistant_message": "real final",
+                }]
+                if first_stop:
+                    stops.insert(0, {
+                        **stop,
+                        "stop_hook_active": False,
+                        "last_assistant_message": "interim",
+                    })
+                for payload in stops:
+                    relay_completion_hook.handle_hook_payload(
+                        payload,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        write_control=lambda payload: delivered.append(payload) or True,
+                        stderr=io.StringIO(),
+                    )
+            return delivered
+
+    def test_stop_hook_continuation_completes_a_still_active_turn(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                delivered = self._stop_hook_continuation(provider, first_stop=False)
+                self.assertEqual([payload.get("text") for payload in delivered], ["real final"])
+
+    def test_stop_hook_continuation_never_speaks_a_second_final(self):
+        # Stop hooks run in parallel, so the first Stop already owns the turn's
+        # single authoritative final; the continuation is a duplicate.
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                delivered = self._stop_hook_continuation(provider, first_stop=True)
+                self.assertEqual([payload.get("text") for payload in delivered], ["interim"])
+
     def test_codex_and_claude_duplicate_completion_faults_emit_one_effect(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:

@@ -402,6 +402,7 @@ class ProviderTurnBroker:
         event_type: str,
         release_reason: str,
         now: float | None = None,
+        event_id: str | None = None,
     ) -> bool:
         now = time.time() if now is None else now
         turn_id = _turn_id(record)
@@ -421,7 +422,11 @@ class ProviderTurnBroker:
                 if to_state not in ALLOWED_TRANSITIONS.get(current, frozenset()):
                     self._finish(commit=True)
                     return False
-                event_id = stable_event_id(event_type, turn_id, to_state, release_reason)
+                event_id = (
+                    stable_event_id(event_id, turn_id)
+                    if event_id
+                    else stable_event_id(event_type, turn_id, to_state, release_reason)
+                )
                 cursor = self._connection.execute(
                     """
                     INSERT OR IGNORE INTO provider_turn_transitions(

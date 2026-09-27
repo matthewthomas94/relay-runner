@@ -804,6 +804,14 @@ final class RelayVoiceCommandDelivery {
     private var bufferedManualInput: BufferedManualInput?
     private var deliveryOrder = 0
     private var lastProviderProgressAt: Date?
+    private var lastProviderOutputAt: Date?
+    private var pendingInterruptRelease: (nonce: String, sentAt: Date, turns: [[String: Any]])?
+
+    /// Quiet PTY time that counts as the provider having returned to its prompt.
+    static let providerIdleInterval: TimeInterval = 1.5
+    /// Matches the completion hook's manual-submit evidence TTL: after this a
+    /// UserPromptSubmit can no longer bind the submission to a manual turn.
+    static let manualSubmitHookTimeout: TimeInterval = 10
 
     init(
         paths: Paths = Paths(),
@@ -891,6 +899,7 @@ final class RelayVoiceCommandDelivery {
         var published = false
         performOnDeliveryQueue {
             let observedAt = now()
+            lastProviderOutputAt = observedAt
             // PTY spinner frames can arrive many times per second. Five-second
             // evidence stays well inside the detector's 30-second grace.
             if let lastProviderProgressAt,
@@ -982,15 +991,17 @@ final class RelayVoiceCommandDelivery {
         }
     }
 
+    private var resolvedProvider: String? {
+        (provider ?? ProcessInfo.processInfo.environment["RELAY_RUNNER_PROVIDER"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
     private func recordManualSubmissionEvidence(recordedAt: Date) {
         guard let providerSessionID, !providerSessionID.isEmpty,
               let appSessionID, !appSessionID.isEmpty,
               let recoveryGeneration, !recoveryGeneration.isEmpty,
               let foregroundGateHandle, !foregroundGateHandle.isEmpty else { return }
-        let resolvedProvider = (provider
-            ?? ProcessInfo.processInfo.environment["RELAY_RUNNER_PROVIDER"])?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
         guard let resolvedProvider, !resolvedProvider.isEmpty else { return }
 
         let submissionID = UUID().uuidString.lowercased()
@@ -1038,6 +1049,7 @@ final class RelayVoiceCommandDelivery {
     @discardableResult
     func claimAndSendIfPossible() -> Bool {
         touchHeartbeat()
+        releaseInterruptedProviderTurnsIfIdle()
         let blocker = readInboxRecoveryBlocker()
         if blocker != inboxRecoveryBlocker {
             inboxRecoveryBlocker = blocker
@@ -1094,6 +1106,7 @@ final class RelayVoiceCommandDelivery {
             if pendingCommandRequestsProviderPreemption() {
                 if !isWaitingForProviderPreemption(key) {
                     send(ArraySlice([3]))
+                    noteProviderInterrupt()
                     recordDeliveryEvent("provider_preemption_requested", key: key)
                 }
                 deferForProviderTurn(key: key, reason: .providerPreemption)
@@ -1143,6 +1156,7 @@ final class RelayVoiceCommandDelivery {
         if command.text.trimmingCharacters(in: .whitespacesAndNewlines) == "__INTERRUPT__" {
             if providerTurnActive() {
                 send(ArraySlice(first))
+                noteProviderInterrupt()
             }
             writeClaimedMetadata(command.metadata)
             writeConsumerAcknowledgement(command.metadata)
@@ -1543,13 +1557,32 @@ final class RelayVoiceCommandDelivery {
                 return createdAt >= boundary.startedAt.timeIntervalSince1970 - 0.25
                     && (record["origin"] as? String) == "manual"
             }
-            guard !records.isEmpty else { return false }
+            guard !records.isEmpty else { return manualSubmitHookSkipped(boundary) }
             return !records.contains {
                 ($0["state"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) == "active"
             }
         case .providerTurn, .providerPreemption:
             return !providerTurnActive()
         }
+    }
+
+    /// Claude runs no UserPromptSubmit hook for local slash commands (`/model`,
+    /// `/compact`) or `!` shell mode, so their manual record never appears.
+    /// Once the hook could no longer bind the submission and the terminal is
+    /// quiet, treat it as a hookless local command instead of waiting forever.
+    private func manualSubmitHookSkipped(_ boundary: ManualBoundary) -> Bool {
+        guard resolvedProvider == "claude" else { return false }
+        let currentTime = now()
+        let quietSince = max(boundary.startedAt, lastProviderOutputAt ?? boundary.startedAt)
+        guard currentTime.timeIntervalSince(boundary.startedAt) >= Self.manualSubmitHookTimeout,
+              currentTime.timeIntervalSince(quietSince) >= Self.providerIdleInterval,
+              !providerTurnActive() else { return false }
+        recordDeliveryEvent(
+            "manual_submit_hook_timeout",
+            key: pendingCommandKey(),
+            fields: ["barrier_elapsed_ms": elapsedMilliseconds(since: boundary.startedAt)]
+        )
+        return true
     }
 
     private func elapsedMilliseconds(since date: Date) -> Int {
@@ -1785,6 +1818,61 @@ final class RelayVoiceCommandDelivery {
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
               let json = String(data: data, encoding: .utf8) else { return }
         _ = writeBridgeControlLine("__PROVIDER_TURN_EVENT__:\(json)")
+    }
+
+    /// Claude runs no Stop/StopFailure hook for an aborted turn, so the turn a
+    /// Ctrl-C interrupted would stay active forever. Remember it until the PTY
+    /// goes quiet, then cancel exactly that turn through the bridge broker.
+    private func noteProviderInterrupt() {
+        let turns = providerTurnRecords().filter { record in
+            (record["state"] as? String) == "active"
+                && ((record["provider"] as? String) ?? resolvedProvider)?.lowercased() == "claude"
+        }
+        guard !turns.isEmpty else { return }
+        pendingInterruptRelease = (UUID().uuidString.lowercased(), now(), turns)
+    }
+
+    private func releaseInterruptedProviderTurnsIfIdle() {
+        guard let pending = pendingInterruptRelease else { return }
+        let quietSince = max(pending.sentAt, lastProviderOutputAt ?? pending.sentAt)
+        guard now().timeIntervalSince(quietSince) >= Self.providerIdleInterval else { return }
+        pendingInterruptRelease = nil
+        guard let providerSessionID, !providerSessionID.isEmpty,
+              let appSessionID, !appSessionID.isEmpty,
+              let recoveryGeneration, !recoveryGeneration.isEmpty,
+              let foregroundGateHandle, !foregroundGateHandle.isEmpty else { return }
+        let identityFields = ["provider_session_id", "session_id", "turn_id", "local_turn_seq"]
+        func identity(_ record: [String: Any]) -> [String] {
+            identityFields.map { record[$0].map { "\($0)" } ?? "" }
+        }
+        let interrupted = Set(pending.turns.map(identity))
+        for record in providerTurnRecords() where
+            (record["state"] as? String) == "active" && interrupted.contains(identity(record)) {
+            let turn = identity(record)
+            var payload: [String: Any] = [
+                "event": "provider_turn_cancelled",
+                // One id per interrupt and turn: a later interrupt in the same
+                // session must never be deduplicated against this one.
+                "event_id": (["interrupt", pending.nonce] + turn).joined(separator: ":"),
+                "release_reason": "provider_interrupted",
+                "provider": "claude",
+                "app_session_id": appSessionID,
+                "recovery_generation": recoveryGeneration,
+                "actor_role": (record["actor_role"] as? String) ?? "foreground_pm",
+                "foreground_gate_handle": foregroundGateHandle,
+            ]
+            for field in identityFields {
+                if let value = record[field] { payload[field] = value }
+            }
+            guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+                  let json = String(data: data, encoding: .utf8) else { continue }
+            _ = writeBridgeControlLine("__PROVIDER_TURN_EVENT__:\(json)")
+            recordDeliveryEvent(
+                "provider_interrupt_released",
+                key: pendingCommandKey(),
+                fields: ["release_reason": "provider_interrupted"]
+            )
+        }
     }
 
     private func providerTurnState(for key: RelayCommandKey) -> String? {
