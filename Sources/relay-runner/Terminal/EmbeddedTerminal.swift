@@ -2985,7 +2985,6 @@ private struct EmbeddedTerminalRepresentable: NSViewRepresentable {
 struct EmbeddedTerminalTab: View {
     @Bindable var session: EmbeddedTerminalSession
     let providerName: String
-    let workingDirectory: String
     let recoverDelivery: () -> Void
     @State private var confirmsRecovery = false
     @State private var confirmedInboxBlocker: InboxRecoveryBlocker?
@@ -3087,24 +3086,12 @@ struct EmbeddedTerminalTab: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "terminal")
-                .font(AppTypography.symbolFont(size: 16, weight: .regular))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(statusTitle)
-                    .font(AppTypography.font(.sectionHeading))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                    .relayTextSwap(statusTitleSwapKey)
-                Text(displayDirectory)
-                    .font(AppTypography.font(.supporting))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .relayTextSwap(displayDirectory)
-            }
-            Spacer(minLength: 12)
+        HStack {
+            Text(statusTitle)
+                .font(AppTypography.font(.sectionHeading))
+                .foregroundStyle(ProgramBoardStyle.primaryText)
+                .relayTextSwap(statusTitleSwapKey)
+            Spacer()
         }
         .padding(.horizontal, 22)
         .frame(height: 60)
@@ -3171,29 +3158,16 @@ struct EmbeddedTerminalTab: View {
             return "Starts the configured agent with Relay voice mode in this workspace. Closing Workspace leaves the session running."
         }
     }
-
-    private var displayDirectory: String {
-        let source = session.phase == .idle ? workingDirectory : session.workingDirectory
-        return (source as NSString).abbreviatingWithTildeInPath
-    }
 }
 
 struct WorkspaceTerminalPanel: View {
     @Bindable var appState: AppState
-    let workingDirectory: String?
 
     var body: some View {
         EmbeddedTerminalTab(
             session: appState.embeddedTerminal,
             providerName: appState.config.general.provider.displayName,
-            workingDirectory: resolvedWorkingDirectory,
             recoverDelivery: { appState.recoverBlockedVoiceDelivery() }
         )
-    }
-
-    private var resolvedWorkingDirectory: String {
-        let override = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let configured = override.isEmpty ? appState.config.general.working_directory : override
-        return WorkspaceFolder.url(from: configured).path
     }
 }

@@ -5,7 +5,6 @@ struct WorkspaceHistoryView: View {
     let onClose: () -> Void
     var onWorkspaceChanged: () -> Void = {}
     @State private var hoveredCardID: String?
-    @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -65,23 +64,12 @@ struct WorkspaceHistoryView: View {
                     TextField("Search archived tickets", text: $model.query, prompt: Text(""))
                         .appPlaceholder("Search archived tickets", when: model.query.isEmpty)
                         .textFieldStyle(.plain)
-                        .font(AppTypography.font(.supporting))
+                        .font(AppTypography.font(.field))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
+                        .lineLimit(1)
                         .padding(.horizontal, 10)
-                        .frame(height: SharedActionButtonMetrics.controlHeight)
-                        .background(BoardDarkSurfaceBackground(
-                            cornerRadius: SharedActionButtonMetrics.cornerRadius,
-                            fill: BoardDarkSurfaceStyle.cardFill
-                        ))
-                        .overlay {
-                            if searchFocused {
-                                RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius)
-                                    .stroke(ProgramBoardStyle.mutedText.opacity(0.5), lineWidth: 1)
-                                    .transition(.opacity)
-                            }
-                        }
-                        .animation(RelayMotion.hover, value: searchFocused)
-                        .focused($searchFocused)
+                        .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
+                        .background(ProgramTicketFieldBackground())
                         .onSubmit { Task { await model.search() } }
                         .accessibilityLabel("Search Workspace history")
                     ProgramIconButton(systemName: "magnifyingglass", help: "Search history") {
