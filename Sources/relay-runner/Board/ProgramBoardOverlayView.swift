@@ -188,7 +188,7 @@ struct ProgramWorkspaceDotMatrixPresentation: Equatable {
     }
 }
 
-private enum ProgramTicketPanelStyle {
+enum ProgramTicketPanelStyle {
     static let width: CGFloat = 560
     static let height: CGFloat = 633
     static let horizontalPadding: CGFloat = 24
@@ -3805,7 +3805,7 @@ private struct ProgramTicketProjectPicker: View {
     }
 }
 
-private struct ProgramTicketFieldBackground: View {
+struct ProgramTicketFieldBackground: View {
     var body: some View {
         RoundedRectangle(
             cornerRadius: SettingsLayout.sidebarCornerRadius,

@@ -407,12 +407,15 @@ private struct SettingsCategorySidebar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        // Rows start where the Notes tab's list does: below a 60pt header
+        // and an 18pt inset.
+        VStack(alignment: .leading, spacing: 18) {
             Text("Settings")
                 .font(AppTypography.font(.workspaceHeading))
                 .foregroundStyle(SettingsSurfaceColor.primaryText)
                 .padding(.horizontal, 16)
                 .padding(.top, style == .workspace ? 18 : 16)
+                .frame(height: 60, alignment: .top)
 
             VStack(spacing: 4) {
                 ForEach(SettingsCategory.allCases) { category in

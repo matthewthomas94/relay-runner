@@ -251,8 +251,8 @@ struct WorkspaceNavigationButton: View {
             : WorkspaceNavigationStyle.inactiveTextOpacity
     }
 
+    /// Selection shows through the text colour alone.
     private var buttonFill: Color {
-        if selected { return Color.white.opacity(WorkspaceNavigationStyle.selectedFillOpacity) }
         if isFocused { return Color.white.opacity(WorkspaceNavigationStyle.focusedFillOpacity) }
         if isHovered { return Color.white.opacity(WorkspaceNavigationStyle.hoveredFillOpacity) }
         return Color.clear

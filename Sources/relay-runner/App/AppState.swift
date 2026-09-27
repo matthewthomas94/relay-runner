@@ -2848,14 +2848,9 @@ final class AppState {
                 }
             ))
         }
-        programBoardOverlay.setTerminalContentProvider { [weak self] workingDirectory in
+        programBoardOverlay.setTerminalContentProvider { [weak self] _ in
             guard let self else { return nil }
-            return AnyView(
-                WorkspaceTerminalPanel(
-                    appState: self,
-                    workingDirectory: workingDirectory
-                )
-            )
+            return AnyView(WorkspaceTerminalPanel(appState: self))
         }
         programBoardOverlay.setTerminalFocusProvider(
             hasFocus: { [weak self] in self?.embeddedTerminal.hasTerminalFocus ?? false },
