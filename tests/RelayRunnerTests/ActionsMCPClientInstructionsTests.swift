@@ -56,7 +56,7 @@ final class ActionsMCPClientInstructionsTests: XCTestCase {
         _ = try await initialize(claude, client: "claude-code")
         let claudeClick = try await tools(claude)["click"]?["description"] as? String
         XCTAssertEqual(claudeClick?.contains("propose_action"), false)
-        XCTAssertEqual(claudeClick?.contains("SAME pixel"), true)
+        XCTAssertEqual(claudeClick?.contains("screenshot_scale"), true)
 
         let codex = MCPServer()
         _ = try await initialize(codex, client: "codex-mcp-client")

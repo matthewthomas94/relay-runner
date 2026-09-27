@@ -33,8 +33,13 @@ final class VisionMCPClientInstructionsTests: XCTestCase {
         XCTAssertEqual(instructions, Instructions.claudeCompact)
         XCTAssertLessThanOrEqual(instructions.utf16.count, 2048)
         XCTAssertTrue(instructions.contains("mcp__relay-vision__screenshot"))
-        let list = try await server.dispatch(method: "tools/list", params: [:])
-        XCTAssertEqual(try mcpCanonicalJSONSHA256(list), releasedToolsListSHA256)
+        // Claude's screenshot description states the downscale and its scale.
+        let list = try await server.dispatch(method: "tools/list", params: [:]) as? [String: Any]
+        let tool = try XCTUnwrap((list?["tools"] as? [[String: Any]])?.first)
+        let description = try XCTUnwrap(tool["description"] as? String)
+        XCTAssertTrue(description.contains("2000 px"))
+        XCTAssertTrue(description.contains("screenshot_scale"))
+        XCTAssertNotEqual(try mcpCanonicalJSONSHA256(try XCTUnwrap(list)), releasedToolsListSHA256)
     }
 
     func testPingReturnsEmptyResult() async throws {

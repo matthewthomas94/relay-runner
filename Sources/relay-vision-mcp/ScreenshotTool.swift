@@ -9,6 +9,13 @@ struct ScreenshotTool: MCPTool {
         consumed by `click`, `scroll`, etc. are in this same pixel space — the agent can read \
         a coordinate directly off the image and pass it through.
         """
+    let claudeDescription = """
+        Capture a screenshot of a connected display and return it as a base64-encoded PNG. \
+        Defaults to the primary display. The image is at most 2000 px on its long edge and \
+        the result states its `screenshot_scale` (image pixels per native pixel). Read x/y \
+        directly off this image and pass them to `click`/`scroll` together with that \
+        `screenshot_scale`.
+        """
 
     var inputSchema: [String: Any] {
         [

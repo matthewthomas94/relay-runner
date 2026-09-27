@@ -140,7 +140,7 @@ final class MCPServer {
                     [
                         "name": tool.name,
                         "description": clientIsClaudeCode ? tool.claudeDescription : tool.description,
-                        "inputSchema": tool.inputSchema,
+                        "inputSchema": clientIsClaudeCode ? tool.claudeInputSchema : tool.inputSchema,
                     ]
                 }
             return ["tools": toolDescriptors]
@@ -154,7 +154,16 @@ final class MCPServer {
             }
             let arguments = params["arguments"] as? [String: Any] ?? [:]
             do {
-                let content = try await tool.call(arguments: arguments)
+                let hostedArguments = try toolArguments(name: name, arguments: arguments)
+                var content = try await tool.call(arguments: hostedArguments)
+                if clientIsClaudeCode, ClaudeScreenshotCoordinates.tools.contains(name),
+                   let scale = arguments["screenshot_scale"], let x = hostedArguments["x"], let y = hostedArguments["y"] {
+                    content.append([
+                        "type": "text",
+                        "text": "Mapped screenshot (\(arguments["x"] ?? ""), \(arguments["y"] ?? "")) at "
+                            + "screenshot_scale \(scale) to native pixel (\(x), \(y)).",
+                    ])
+                }
                 // Notify the menu-bar app that a tool fired — drives the
                 // perimeter glow + 10s decay window. propose_action skips this
                 // here because it already calls notifyToolFired() inline (and
@@ -180,6 +189,14 @@ final class MCPServer {
         default:
             throw JSONRPCError(code: -32601, message: "Method not found: \(method)")
         }
+    }
+
+    /// Claude screenshots are downscaled, so `claude-code` click/scroll x/y
+    /// arrive in image space and are mapped to native pixels here. Every other
+    /// client's arguments pass through unchanged.
+    func toolArguments(name: String, arguments: [String: Any]) throws -> [String: Any] {
+        guard clientIsClaudeCode, ClaudeScreenshotCoordinates.tools.contains(name) else { return arguments }
+        return try ClaudeScreenshotCoordinates.nativeArguments(tool: name, arguments)
     }
 
     // MARK: - Response writing
@@ -244,11 +261,14 @@ protocol MCPTool {
     // Description shown to `claude-code` clients; defaults to `description`.
     var claudeDescription: String { get }
     var inputSchema: [String: Any] { get }
+    // Schema shown to `claude-code` clients; defaults to `inputSchema`.
+    var claudeInputSchema: [String: Any] { get }
     func call(arguments: [String: Any]) async throws -> [[String: Any]]
 }
 
 extension MCPTool {
     var claudeDescription: String { description }
+    var claudeInputSchema: [String: Any] { inputSchema }
 }
 
 // MARK: - Logging
