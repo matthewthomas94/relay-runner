@@ -7,6 +7,11 @@ struct KeyCaptureView: View {
     @Binding var value: String
 
     @State private var isCapturing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var showsReset: Bool {
+        value.lowercased() != "caps lock" && !value.isEmpty
+    }
 
     var body: some View {
         HStack {
@@ -16,7 +21,7 @@ struct KeyCaptureView: View {
             }
             KeyCaptureField(label: label, value: $value, isCapturing: $isCapturing)
                 .frame(width: 150, height: 24)
-            if value.lowercased() != "caps lock" && !value.isEmpty {
+            if showsReset {
                 Button {
                     value = "Caps Lock"
                 } label: {
@@ -26,8 +31,10 @@ struct KeyCaptureView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Reset \(label) to Caps Lock")
                 .help("Reset \(label) to Caps Lock")
+                .transition(.relayElement)
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: showsReset)
     }
 }
 
@@ -50,6 +57,7 @@ private struct KeyCaptureField: NSViewRepresentable {
         view.accessibilityLabelText = label
         view.displayText = value.isEmpty ? "Caps Lock" : value
         view.committedDisplayText = view.displayText
+        view.restoreCommittedDisplay()
         return view
     }
 
@@ -79,7 +87,35 @@ private final class KeyInputView: NSView {
     private var localMonitor: Any?
     private var globalMonitor: Any?
 
+    /// The key name swaps with the shared text motion; the field chrome
+    /// eases between its resting and capturing colours.
+    private let titleLabel = NSTextField(labelWithString: "")
+    private var highlightAmount: CGFloat = 0
+    private var highlightTarget: CGFloat = 0
+    private var highlightTimer: Timer?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        titleLabel.font = AppTypography.appKitFont(.body)
+        titleLabel.alignment = .center
+        titleLabel.textColor = .labelColor
+        titleLabel.setAccessibilityElement(false)
+        addSubview(titleLabel)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
     override var acceptsFirstResponder: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
+    }
+
+    override func layout() {
+        super.layout()
+        let height = titleLabel.intrinsicContentSize.height
+        titleLabel.frame = NSRect(x: 4, y: (bounds.height - height) / 2, width: max(0, bounds.width - 8), height: height)
+    }
 
     override func mouseDown(with event: NSEvent) {
         activateCapture()
@@ -107,7 +143,7 @@ private final class KeyInputView: NSView {
         isCaptureActive = true
         isHighlighted = true
         displayText = "Press a key\u{2026}"
-        needsDisplay = true
+        refreshAppearance()
 
         // MenuBarExtra apps may not be active — force activation so the
         // local monitor can receive key events in the Settings window.
@@ -139,7 +175,40 @@ private final class KeyInputView: NSView {
     func restoreCommittedDisplay() {
         displayText = committedDisplayText
         isHighlighted = false
-        needsDisplay = true
+        refreshAppearance()
+    }
+
+    private func refreshAppearance() {
+        let color: NSColor = isHighlighted ? .secondaryLabelColor : .labelColor
+        if titleLabel.stringValue != displayText || titleLabel.textColor != color {
+            let text = displayText
+            RelayLayerMotion.crossfade(titleLabel) {
+                titleLabel.stringValue = text
+                titleLabel.textColor = color
+            }
+        }
+        animateHighlight(to: isHighlighted ? 1 : 0)
+    }
+
+    private func animateHighlight(to target: CGFloat) {
+        guard target != highlightTarget else { return }
+        highlightTarget = target
+        highlightTimer?.invalidate()
+        let start = highlightAmount
+        let began = CACurrentMediaTime()
+        let duration = RelayLayerMotion.reduceMotion ? 0.18 : RelayMotion.changeDuration
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
+            guard let self else { return timer.invalidate() }
+            let fraction = CGFloat((CACurrentMediaTime() - began) / duration)
+            self.highlightAmount = start + (target - start) * RelayMotion.changeCurve.progress(fraction)
+            self.needsDisplay = true
+            if fraction >= 1 {
+                timer.invalidate()
+                self.highlightTimer = nil
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        highlightTimer = timer
     }
 
     @discardableResult
@@ -196,31 +265,39 @@ private final class KeyInputView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        let bg: NSColor = isHighlighted
-            ? SettingsSurfaceColor.neutralAccentNSColor.withAlphaComponent(0.15)
-            : .controlBackgroundColor
+        let bg = Self.blend(
+            .controlBackgroundColor,
+            SettingsSurfaceColor.neutralAccentNSColor.withAlphaComponent(0.15),
+            highlightAmount
+        )
         bg.setFill()
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5)
         path.fill()
 
-        let stroke = isHighlighted
-            ? SettingsSurfaceColor.neutralAccentNSColor.withAlphaComponent(0.65)
-            : NSColor.separatorColor
+        let stroke = Self.blend(
+            .separatorColor,
+            SettingsSurfaceColor.neutralAccentNSColor.withAlphaComponent(0.65),
+            highlightAmount
+        )
         stroke.setStroke()
         path.lineWidth = 0.5
         path.stroke()
+    }
 
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: AppTypography.appKitFont(.body),
-            .foregroundColor: isHighlighted ? NSColor.secondaryLabelColor : NSColor.labelColor,
-        ]
-        let str = NSAttributedString(string: displayText, attributes: attrs)
-        let size = str.size()
-        let origin = NSPoint(
-            x: (bounds.width - size.width) / 2,
-            y: (bounds.height - size.height) / 2
+    /// Mixes two colours resolved for the current drawing appearance.
+    private static func blend(_ from: NSColor, _ to: NSColor, _ amount: CGFloat) -> NSColor {
+        guard amount > 0 else { return from }
+        guard amount < 1 else { return to }
+        guard let start = from.usingColorSpace(.sRGB), let end = to.usingColorSpace(.sRGB) else {
+            return amount < 0.5 ? from : to
+        }
+        func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * amount }
+        return NSColor(
+            srgbRed: mix(start.redComponent, end.redComponent),
+            green: mix(start.greenComponent, end.greenComponent),
+            blue: mix(start.blueComponent, end.blueComponent),
+            alpha: mix(start.alphaComponent, end.alphaComponent)
         )
-        str.draw(at: origin)
     }
 
     // MARK: - Key formatting (matches CapsLockGesture.parseKeyString)
@@ -263,6 +340,7 @@ private final class KeyInputView: NSView {
     }
 
     deinit {
+        highlightTimer?.invalidate()
         stopCapture()
     }
 }
