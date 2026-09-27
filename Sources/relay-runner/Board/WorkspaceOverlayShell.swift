@@ -204,11 +204,15 @@ struct WorkspaceNavigationButton: View {
                             width: WorkspaceNavigationStyle.iconSize,
                             height: WorkspaceNavigationStyle.iconSize
                         )
+                        .relaySwap(systemName)
                 }
+                // Start ↔ End session and note-taker titles swap in place.
                 Text(title)
                     .font(AppTypography.font(.menuTab))
                     .lineLimit(1)
+                    .relayTextSwap(title)
             }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: title)
             .foregroundStyle(
                 Color(
                     .sRGB,

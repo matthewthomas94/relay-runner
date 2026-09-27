@@ -14,6 +14,7 @@ final class ParentOnboardingController {
     /// pings while the window is already open for that parent (the MCP server
     /// fires one on every spawn).
     private var visibleParent: String?
+    private let windowDelegate = ParentOnboardingWindowDelegate()
 
     /// Show the wizard for `parent` if it isn't already visible. No-op if a
     /// window for the same parent is already up. If a window for a *different*
@@ -45,7 +46,7 @@ final class ParentOnboardingController {
         window.setContentSize(NSSize(width: 560, height: 700))
         window.center()
         window.isReleasedWhenClosed = false
-        window.delegate = nil
+        window.delegate = windowDelegate
         // RelayWindowMotion owns the entrance; skip AppKit's document zoom.
         window.animationBehavior = .none
 
@@ -77,5 +78,16 @@ final class ParentOnboardingController {
         // we leave activation policy alone and let OnboardingController
         // restore it when its own flow finishes. Worst case: app stays
         // .regular until the user quits.
+    }
+}
+
+/// Lets the title-bar close button play the same eased dismissal as the
+/// wizard's own button instead of vanishing.
+private final class ParentOnboardingWindowDelegate: NSObject, NSWindowDelegate {
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        RelayWindowMotion.dismiss(sender) {
+            sender.close()
+        }
+        return false
     }
 }
