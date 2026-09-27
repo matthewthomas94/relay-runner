@@ -11,19 +11,26 @@ import Foundation
 
 struct ClickTool: MCPTool {
     let name = "click"
-    // Claude sessions get the text without the retired `propose_action` step;
-    // other clients keep the released description byte for byte.
-    let claudeDescription = """
+    // Non-Claude clients keep the released description byte for byte.
+    let description = """
         Post a mouse click at the given pixel coordinates. x/y are in the SAME pixel \
         space as the most recent `screenshot` tool output — read the coordinate directly \
         off the screenshot image and pass it through. `button` defaults to 'left'. \
-        `modifiers` is an optional array of any of: 'cmd', 'shift', 'option', 'control'.
+        `modifiers` is an optional array of any of: 'cmd', 'shift', 'option', 'control'. \
+        Call `propose_action` first for any state-changing click so the user can confirm \
+        the action accurately.
         """
-    var description: String {
-        claudeDescription
-            + " Call `propose_action` first for any state-changing click so the user can confirm"
-            + " the action accurately."
-    }
+    // Claude sessions drop the retired `propose_action` step and pass the
+    // screenshot's scale, because their screenshots are downscaled.
+    let claudeDescription = """
+        Post a mouse click. Read x/y directly off the most recent `screenshot` image and \
+        pass that result's `screenshot_scale`; Relay Actions maps them back to native pixels. \
+        For native-pixel coordinates (e.g. `list_windows` frames) pass `screenshot_scale` 1. \
+        `button` defaults to 'left'. `modifiers` is an optional array of any of: 'cmd', \
+        'shift', 'option', 'control'.
+        """
+
+    var claudeInputSchema: [String: Any] { ClaudeScreenshotCoordinates.schema(adding: inputSchema) }
 
     var inputSchema: [String: Any] {
         [
@@ -135,6 +142,14 @@ struct ScrollTool: MCPTool {
         Post a scroll wheel event at pixel coordinates (x, y). `dx` and `dy` are line counts \
         (positive dy = scroll up / content moves down; negative dy = scroll down).
         """
+    let claudeDescription = """
+        Post a scroll wheel event at (x, y) read directly off the most recent `screenshot` \
+        image; pass that result's `screenshot_scale` (1 for native-pixel coordinates). `dx` \
+        and `dy` are line counts (positive dy = scroll up / content moves down; negative dy = \
+        scroll down).
+        """
+
+    var claudeInputSchema: [String: Any] { ClaudeScreenshotCoordinates.schema(adding: inputSchema) }
 
     var inputSchema: [String: Any] {
         [

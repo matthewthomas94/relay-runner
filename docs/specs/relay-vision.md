@@ -10,6 +10,8 @@ The current `relay-vision-mcp` server exposes one tool:
 
 - `screenshot(display_index?: int)` captures a connected display as a base64 PNG. Display `0` is the default primary display. The response includes the native pixel dimensions used by Relay Actions click and scroll coordinates.
 
+Claude Code re-encodes MCP images larger than 2000 px on either edge, which would make coordinates read off a native Retina capture drift. For `claude-code` clients, `relay-vision-mcp` therefore downscales the capture so its long edge is at most 2000 px and states a `screenshot_scale` (image pixels per native pixel, `1.000000` when no downscale is needed). Claude passes that scale to Relay Actions `click` and `scroll`, which map the image coordinate back to native pixels. Other clients, including Codex, receive the unchanged native-pixel image and text.
+
 Relay Vision excludes Relay Runner overlay windows from the capture policy where the app can identify them, hides the pointer in the returned frame, and returns a descriptive MCP error when the display index is invalid or capture fails.
 
 ## Permission and process boundary
@@ -28,6 +30,6 @@ Every successful screenshot sends the same local `tool_fired` notification used 
 
 `scripts/relay-bridge` idempotently registers the bundled `relay-vision-mcp` binary with every available supported provider. `scripts/build-dmg.sh` builds, embeds, and signs it alongside the Relay Actions and orchestrator helpers.
 
-Codex and Claude receive the same screenshot schema, app-hosted permission ownership, coordinate space, errors, and ActionGlow behavior. Provider differences are limited to MCP registration commands and the surrounding provider CLI data policies.
+Codex and Claude receive the same screenshot schema, app-hosted permission ownership, errors, and ActionGlow behavior. Provider differences are limited to MCP registration commands, the surrounding provider CLI data policies, and Claude's downscaled image with its stated `screenshot_scale` described above.
 
 Region capture, OCR, screenshot history, annotation, and automatic background observation are not current capabilities.
