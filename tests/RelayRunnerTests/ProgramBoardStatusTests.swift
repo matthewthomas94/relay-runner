@@ -1050,6 +1050,39 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1", "CD-1"])
     }
 
+    func testProgramBoardViewModelBackgroundRefreshKeepsPersistentErrorSteady() async throws {
+        let snapshot = try programBoardSnapshot(
+            clientPath: "/repo/client-dashboard",
+            toolsPath: "/repo/tools"
+        )
+        let spy = ProgramDashboardFetchSpy(
+            results: [
+                .failure(ProgramBoardTestError(message: "daemon unavailable")),
+                .failure(ProgramBoardTestError(message: "daemon unavailable")),
+                .success(snapshot),
+            ],
+            delayNanoseconds: 10_000_000
+        )
+        let model = ProgramBoardViewModel(fetchDashboard: spy.fetch)
+        model.snapshot = snapshot
+
+        await model.refreshInBackground().value
+        let failedMessage = try XCTUnwrap(model.errorMessage)
+        let failedPreview = try XCTUnwrap(model.supportBundlePreview)
+
+        let retry = model.refreshInBackground()
+        XCTAssertEqual(model.errorMessage, failedMessage)
+        XCTAssertEqual(model.supportBundlePreview, failedPreview)
+        await retry.value
+        XCTAssertEqual(model.errorMessage, failedMessage)
+
+        await model.refreshInBackground().value
+        XCTAssertEqual(spy.callCount, 3)
+        XCTAssertEqual(model.reloadState, .succeeded)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertNil(model.supportBundlePreview)
+    }
+
     func testProgramBoardViewModelSlowReloadIgnoresPollingRefreshUntilSettled() async throws {
         let snapshot = try programBoardSnapshot(
             clientPath: "/repo/client-dashboard",

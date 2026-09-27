@@ -792,6 +792,11 @@ def _archive_catalog_tickets_at_head(
                 f"archive catalog line {line_number} has mismatched historical metadata: {error}"
             ) from error
         if str(entry["status"]).lower() not in {"done", "canceled", "cancelled"}:
+            if entry["state"] == "deleted_tombstone":
+                # Delete accepts unfinished work. Its verified tombstone is
+                # recovery metadata, not terminal history, so keep it off
+                # the board rather than resurfacing deleted backlog cards.
+                continue
             raise ValueError(
                 f"archive catalog line {line_number} has nonterminal history"
             )

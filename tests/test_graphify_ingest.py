@@ -619,6 +619,51 @@ class GraphifyIngestTests(unittest.TestCase):
             lane = build_program_status(store, query=query, limit=0)
             self.assertIn("LIVE-1", [item["ticket_id"] for item in lane["items"]])
 
+    def test_deleted_unfinished_ticket_tombstone_does_not_fail_or_resurface(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "deleted-backlog")
+        _install_confirmed_archive(repo, [
+            {
+                "schema_version": 1,
+                "artifact_id": "artifact-DEL-1",
+                "ticket_id": "DEL-1",
+                "title": "Deleted backlog idea",
+                "status": "backlog",
+                "activity_at": "2026-01-01T00:00:00Z",
+                "state": "deleted_tombstone",
+                "ticket_path": ".orchestrator/DEL-1.md",
+                "attachments": [],
+            },
+            {
+                "schema_version": 1,
+                "artifact_id": "artifact-DONE-1",
+                "ticket_id": "DONE-1",
+                "title": "Archived work",
+                "status": "done",
+                "activity_at": "2026-01-01T00:00:00Z",
+                "state": "archived",
+                "ticket_path": ".orchestrator/DONE-1.md",
+                "attachments": [],
+            },
+        ])
+        registry_path = root / "projects.json"
+        registry_path.write_text(json.dumps({
+            "activeProjectID": str(repo.resolve()),
+            "projects": [{"id": str(repo.resolve()), "repoPath": str(repo.resolve())}],
+        }))
+        store = self.make_store()
+
+        counts = ingest_registered_projects(store, registry_path=registry_path)
+
+        self.assertEqual(counts["archived_tickets"], 1)
+        self.assertIsNone(
+            store.find_node(kind=NODE_TICKET, stable_key=f"repo:{repo.resolve()}:DEL-1")
+        )
+        self.assertIsNotNone(
+            store.find_node(kind=NODE_TICKET, stable_key=f"repo:{repo.resolve()}:DONE-1")
+        )
+
     def test_archive_catalog_rejects_invalid_activity_timestamp(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: _remove_tree(root))

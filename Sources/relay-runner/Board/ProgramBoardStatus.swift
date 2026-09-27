@@ -1657,6 +1657,7 @@ final class ProgramBoardViewModel {
         reloadInFlight = true
         reloadState = .loading
         errorMessage = nil
+        supportBundlePreview = nil
         let fetchDashboard = fetchDashboard
         let projectPaths = projectPaths
         let task = Task { [weak self] in
@@ -1679,7 +1680,6 @@ final class ProgramBoardViewModel {
         cancelReload()
         let attempt = beginWorkspaceAttempt()
         reloadInFlight = true
-        errorMessage = nil
         let fetchDashboard = fetchDashboard
         let projectPaths = projectPaths
         let task = Task { [weak self] in
@@ -1713,7 +1713,6 @@ final class ProgramBoardViewModel {
         let correlationID = UUID().uuidString.lowercased()
         workspaceIncidentID = incidentID
         workspaceRetryAttempt = attempt
-        supportBundlePreview = nil
         diagnostics.record(
             process: "app",
             phase: "workspace_readiness",
@@ -2134,6 +2133,7 @@ final class ProgramBoardViewModel {
             }
         }
         reloadState = .succeeded
+        errorMessage = nil
         reloadTask = nil
         reloadInFlight = false
         diagnostics.record(

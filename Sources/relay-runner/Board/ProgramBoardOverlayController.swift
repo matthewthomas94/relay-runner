@@ -934,7 +934,7 @@ final class ProgramBoardOverlayController {
         statusPollTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             guard let self, self.isVisible else { return }
             guard self.model.editing == nil else { return }
-            self.checkForUpdates(inBackground: false)
+            self.checkForUpdates(inBackground: true)
         }
     }
 
