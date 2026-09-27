@@ -80,7 +80,6 @@ final class ProgramBoardOverlayController {
     private var panel: BoardOverlayPanel?
     private(set) var isVisible = false
     private(set) var isSuspendedForExternalWindow = false
-    private var resumesExternalWindowWithAnimation = false
     private var dismissInFlight = false
     private var lastSelectedTab: WorkspaceTab = .work
     private weak var revealContainer: BoardRevealContainerView?
@@ -787,7 +786,6 @@ final class ProgramBoardOverlayController {
         stopStatusPoll()
         isVisible = false
         isSuspendedForExternalWindow = true
-        resumesExternalWindowWithAnimation = animated
 
         let panelToDismiss = panel
         let container = revealContainer ?? panelToDismiss?.contentView as? BoardRevealContainerView
@@ -814,16 +812,16 @@ final class ProgramBoardOverlayController {
               let panel,
               panel.contentView != nil else { return false }
 
-        let animated = resumesExternalWindowWithAnimation
         isSuspendedForExternalWindow = false
-        resumesExternalWindowWithAnimation = false
         workspace.select(initialTab)
         lastSelectedTab = workspace.selectedTab
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
         contentLoadBlocked = workspace.selectedTab == .work && workspace.showsWorkTab && model.snapshot == nil
+        // Even after an instant suspend, the Workspace returns with its
+        // reveal rather than popping back in.
         let container = revealContainer ?? panel.contentView as? BoardRevealContainerView
-        if animated, let container {
+        if let container {
             container.prepareForOpening(startsLoading: contentLoadBlocked)
         }
         isVisible = true
@@ -836,7 +834,7 @@ final class ProgramBoardOverlayController {
         } else {
             loadingStateHandler?(false)
         }
-        if animated, let container {
+        if let container {
             DispatchQueue.main.async {
                 container.animateReveal(firstMotion: {}, completion: {})
             }
