@@ -153,6 +153,151 @@ struct SettingsDivider: View {
     }
 }
 
+/// A dropdown drawn like the Workspace ticket panel's project picker.
+struct SettingsMenuPicker<Value: Hashable>: View {
+    let title: String
+    @Binding var selection: Value
+    let options: [(label: String, value: Value)]
+
+    init(_ title: String, selection: Binding<Value>, options: [(label: String, value: Value)]) {
+        self.title = title
+        self._selection = selection
+        self.options = options
+    }
+
+    private var selectedLabel: String {
+        options.first { $0.value == selection }?.label ?? ""
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(options.indices, id: \.self) { index in
+                let option = options[index]
+                Button {
+                    selection = option.value
+                } label: {
+                    if option.value == selection {
+                        Label(option.label, systemImage: "checkmark")
+                    } else {
+                        Text(option.label)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Text(selectedLabel)
+                    .font(AppTypography.font(.field))
+                    .lineLimit(1)
+                    .relayTextSwap(selectedLabel)
+                Spacer(minLength: 12)
+                Image(systemName: "chevron.down")
+                    .font(AppTypography.symbolFont(size: 9, weight: .semibold))
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(ProgramBoardStyle.primaryText)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity)
+            .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
+            .background(ProgramTicketFieldBackground())
+            .contentShape(
+                RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+            )
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel(title)
+        .accessibilityValue(selectedLabel)
+    }
+}
+
+/// A segmented choice drawn like the Workspace ticket panel's execution-mode toggle.
+struct SettingsSegmentedPicker<Value: Hashable>: View {
+    let title: String
+    @Binding var selection: Value
+    let options: [(label: String, value: Value)]
+
+    init(_ title: String, selection: Binding<Value>, options: [(label: String, value: Value)]) {
+        self.title = title
+        self._selection = selection
+        self.options = options
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(options.indices, id: \.self) { index in
+                let option = options[index]
+                SettingsSegmentButton(
+                    title: option.label,
+                    isSelected: selection == option.value,
+                    action: { selection = option.value }
+                )
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: SharedActionButtonMetrics.controlHeight)
+        .background(BoardDarkSurfaceBackground(
+            cornerRadius: SharedActionButtonMetrics.cornerRadius,
+            fill: BoardDarkSurfaceStyle.cardFill
+        ))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
+    }
+}
+
+private struct SettingsSegmentButton: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+    @FocusState private var isFocused: Bool
+
+    private var presentation: SettingsActionPresentation {
+        SettingsActionPresentation.resolve(
+            isEnabled: true,
+            isHovered: isHovered,
+            isFocused: isFocused,
+            reduceMotion: reduceMotion
+        )
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(
+            cornerRadius: SharedActionButtonMetrics.cornerRadius,
+            style: .continuous
+        )
+
+        Button(action: action) {
+            Text(title)
+                .font(AppTypography.font(.action))
+                .foregroundStyle(
+                    (isSelected || isHovered || isFocused ? ProgramBoardStyle.primaryText : ProgramBoardStyle.mutedText)
+                        .opacity(presentation.foregroundOpacity)
+                )
+                .frame(maxWidth: .infinity, minHeight: SharedActionButtonMetrics.controlHeight)
+                .background {
+                    // Hover and focus brighten the text only.
+                    if isSelected {
+                        shape.fill(BoardDarkSurfaceStyle.cardActiveFill)
+                    }
+                }
+                .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .focusable(true)
+        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        .focused($isFocused)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isSelected)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
 enum SettingsLayout {
     static let sectionSpacing: CGFloat = 24
     static let sectionTitleSpacing: CGFloat = 10

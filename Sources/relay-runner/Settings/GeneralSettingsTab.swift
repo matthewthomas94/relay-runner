@@ -30,11 +30,11 @@ struct GeneralSettingsTab: View {
                         claudeReadiness: claudeReadiness
                     )
                 ) {
-                    Picker("LLM Provider", selection: providerSelection) {
-                        ForEach(GeneralConfig.AgentProvider.allCases) { provider in
-                            Text(provider.displayName).tag(provider)
-                        }
-                    }
+                    SettingsMenuPicker(
+                        "LLM Provider",
+                        selection: providerSelection,
+                        options: GeneralConfig.AgentProvider.allCases.map { (label: $0.displayName, value: $0) }
+                    )
                 }
 
                 SettingsDivider()
@@ -47,31 +47,32 @@ struct GeneralSettingsTab: View {
                         provider: config.provider
                     )
                 ) {
-                    Picker(Self.orchestratorModelLabel, selection: modelSelection) {
-                        ForEach(GeneralConfig.modelOptions(for: config.provider)) { option in
-                            Text(option.label).tag(option.value)
-                        }
-                    }
+                    SettingsMenuPicker(
+                        Self.orchestratorModelLabel,
+                        selection: modelSelection,
+                        options: GeneralConfig.modelOptions(for: config.provider).map { (label: $0.label, value: $0.value) }
+                    )
                 }
 
                 SettingsDivider()
 
                 SettingsControlRow(Self.orchestratorEffortLabel) {
-                    Picker(Self.orchestratorEffortLabel, selection: orchestratorEffortSelection) {
-                        ForEach(GeneralConfig.reasoningEffortOptions(for: config.provider, model: config.model)) { option in
-                            Text(option.label).tag(option.value)
-                        }
-                    }
+                    SettingsMenuPicker(
+                        Self.orchestratorEffortLabel,
+                        selection: orchestratorEffortSelection,
+                        options: GeneralConfig.reasoningEffortOptions(for: config.provider, model: config.model)
+                            .map { (label: $0.label, value: $0.value) }
+                    )
                 }
             }
 
             SettingsSection("Sub-agents") {
                 SettingsControlRow(Self.subagentSizingLabel) {
-                    Picker(Self.subagentSizingLabel, selection: $config.subagent_sizing_policy) {
-                        ForEach(GeneralConfig.SubagentSizingPolicy.allCases) { policy in
-                            Text(policy.displayName).tag(policy)
-                        }
-                    }
+                    SettingsMenuPicker(
+                        Self.subagentSizingLabel,
+                        selection: $config.subagent_sizing_policy,
+                        options: GeneralConfig.SubagentSizingPolicy.allCases.map { (label: $0.displayName, value: $0) }
+                    )
                 }
 
             }

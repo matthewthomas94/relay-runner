@@ -66,10 +66,11 @@ struct CustomVoiceSettingsSection: View {
                     "Saved voice",
                     description: "Preview before selecting. Save settings below to apply the selection."
                 ) {
-                    Picker("Saved voice", selection: $selectedID) {
-                        Text("Choose a voice").tag("")
-                        ForEach(profiles) { Text($0.name).tag($0.id) }
-                    }
+                    SettingsMenuPicker(
+                        "Saved voice",
+                        selection: $selectedID,
+                        options: [(label: "Choose a voice", value: "")] + profiles.map { (label: $0.name, value: $0.id) }
+                    )
                 }
                 .transition(.relayElement)
                 if let profile = selected {

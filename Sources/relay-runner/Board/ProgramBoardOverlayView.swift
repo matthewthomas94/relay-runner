@@ -4019,15 +4019,14 @@ private struct ProgramExecutionModeButton: View {
             Text(mode.displayName)
                 .font(AppTypography.font(.action))
                 .foregroundStyle(
-                    (isSelected ? ProgramBoardStyle.primaryText : ProgramBoardStyle.mutedText)
+                    (isSelected || isHovered || isFocused ? ProgramBoardStyle.primaryText : ProgramBoardStyle.mutedText)
                         .opacity(presentation.foregroundOpacity)
                 )
                 .frame(maxWidth: .infinity, minHeight: SharedActionButtonMetrics.controlHeight)
                 .background {
+                    // Hover and focus brighten the text only.
                     if isSelected {
                         shape.fill(BoardDarkSurfaceStyle.cardActiveFill)
-                    } else if isHovered || isFocused {
-                        shape.fill(BoardDarkSurfaceStyle.hoverFill)
                     }
                 }
                 .contentShape(shape)

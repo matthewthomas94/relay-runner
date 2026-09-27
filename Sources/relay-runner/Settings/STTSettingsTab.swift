@@ -8,10 +8,10 @@ struct STTSettingsTab: View {
         SettingsStack {
             SettingsSection("Recognition") {
                 SettingsControlRow("STT Model") {
-                    Picker("STT Model", selection: $config.model) {
-                        Text("Parakeet v2 (recommended)").tag("parakeet-tdt-v2")
-                        Text("Parakeet v3 (most accurate, larger)").tag("parakeet-tdt-v3")
-                    }
+                    SettingsMenuPicker("STT Model", selection: $config.model, options: [
+                        (label: "Parakeet v2 (recommended)", value: "parakeet-tdt-v2"),
+                        (label: "Parakeet v3 (most accurate, larger)", value: "parakeet-tdt-v3"),
+                    ])
                 }
 
                 SettingsDivider()
@@ -56,11 +56,11 @@ struct STTSettingsTab: View {
 
             SettingsSection("Voice Activity") {
                 SettingsControlRow("VAD Sensitivity") {
-                    Picker("VAD Sensitivity", selection: $config.vad_sensitivity) {
-                        Text("Low").tag("low")
-                        Text("Medium").tag("medium")
-                        Text("High").tag("high")
-                    }
+                    SettingsMenuPicker("VAD Sensitivity", selection: $config.vad_sensitivity, options: [
+                        (label: "Low", value: "low"),
+                        (label: "Medium", value: "medium"),
+                        (label: "High", value: "high"),
+                    ])
                 }
             }
         }

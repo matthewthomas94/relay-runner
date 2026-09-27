@@ -32,11 +32,11 @@ struct TTSSettingsTab: View {
                 SettingsDivider()
                 SettingsControlRow(config.custom_voice_id == nil ? "Voice" : "Base Voice") {
                     HStack(spacing: 8) {
-                        Picker("Voice", selection: $config.voice) {
-                            ForEach(voices, id: \.self) { voice in
-                                Text(formatVoiceName(voice)).tag(voice)
-                            }
-                        }
+                        SettingsMenuPicker(
+                            "Voice",
+                            selection: $config.voice,
+                            options: voices.map { (label: formatVoiceName($0), value: $0) }
+                        )
                         SettingsActionButton(
                             title: "Preview",
                             systemImage: preview.isBusy ? "stop.fill" : "play.fill",
@@ -73,11 +73,10 @@ struct TTSSettingsTab: View {
 
             SettingsSection("Playback") {
                 SettingsControlRow("Playback Mode") {
-                    Picker("Playback Mode", selection: $config.auto_play) {
-                        Text("Auto-play").tag(true)
-                        Text("Queue").tag(false)
-                    }
-                    .pickerStyle(.segmented)
+                    SettingsSegmentedPicker("Playback Mode", selection: $config.auto_play, options: [
+                        (label: "Auto-play", value: true),
+                        (label: "Queue", value: false),
+                    ])
                 }
 
                 SettingsDivider()
@@ -97,11 +96,11 @@ struct TTSSettingsTab: View {
 
             SettingsSection("Notifications") {
                 SettingsControlRow("Notification Chime") {
-                    Picker("Notification Chime", selection: $config.chime) {
-                        ForEach(chimes, id: \.self) { chime in
-                            Text(chime).tag(chime)
-                        }
-                    }
+                    SettingsMenuPicker(
+                        "Notification Chime",
+                        selection: $config.chime,
+                        options: chimes.map { (label: $0, value: $0) }
+                    )
                 }
 
                 SettingsDivider()
