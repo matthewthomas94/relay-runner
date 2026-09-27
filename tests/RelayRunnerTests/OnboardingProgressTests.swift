@@ -578,4 +578,51 @@ final class OnboardingProgressTests: XCTestCase {
             voiceReady: true
         ))
     }
+
+    func testPythonStatusPhaseKeepsStreamedProgressInOnePhase() {
+        XCTAssertEqual(OnboardingView.pythonStatusPhase(for: .idle), .idle)
+        XCTAssertEqual(
+            OnboardingView.pythonStatusPhase(for: .running(message: "Starting setup…", progress: nil)),
+            .running
+        )
+        XCTAssertEqual(
+            OnboardingView.pythonStatusPhase(for: .running(message: "Collecting numpy", progress: 0.42)),
+            .running
+        )
+        XCTAssertEqual(OnboardingView.pythonStatusPhase(for: .succeeded), .succeeded)
+        XCTAssertEqual(OnboardingView.pythonStatusPhase(for: .failed(message: "Incident 1")), .failed)
+    }
+
+    func testReadyDetailPhaseKeepsModelLoadingMessagesInOnePhase() {
+        XCTAssertEqual(
+            OnboardingView.readyDetailPhase(
+                setupStatus: .preparing("Downloading model 1/4 (10%)"),
+                voiceReady: true
+            ),
+            OnboardingView.readyDetailPhase(
+                setupStatus: .preparing("Downloading model 3/4 (72%)"),
+                voiceReady: true
+            )
+        )
+        XCTAssertEqual(
+            OnboardingView.readyDetailPhase(setupStatus: .preparing("Compiling…"), voiceReady: false),
+            .runtimePreparing
+        )
+        XCTAssertEqual(
+            OnboardingView.readyDetailPhase(setupStatus: .notStarted, voiceReady: true),
+            .runtimeNeedsAction
+        )
+        XCTAssertEqual(
+            OnboardingView.readyDetailPhase(setupStatus: .failed("Timed out."), voiceReady: true),
+            .runtimeNeedsAction
+        )
+        XCTAssertEqual(
+            OnboardingView.readyDetailPhase(setupStatus: .ready, voiceReady: false),
+            .voiceBlocked
+        )
+        XCTAssertEqual(
+            OnboardingView.readyDetailPhase(setupStatus: .ready, voiceReady: true),
+            .ready
+        )
+    }
 }
