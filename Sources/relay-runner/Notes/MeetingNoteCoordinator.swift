@@ -80,21 +80,22 @@ struct MeetingNoteCoordinatorSnapshot: Equatable, Sendable {
         return nil
     }
 
-    var notchPresentation: (status: NotchSessionStatus, label: String?)? {
+    var notchPresentation: (status: NotchSessionStatus, label: String?, pinsLabel: Bool)? {
         switch phase {
         case .recording:
             // Warnings and failures hold their label at rest; the working
             // status would retract them after its brief reveal.
-            if let captureStatusMessage { return (.notWorking, captureStatusMessage) }
-            return (.listening, "Taking notes")
+            if let captureStatusMessage { return (.notWorking, captureStatusMessage, false) }
+            return (.listening, "Taking notes", false)
         case .paused:
-            return (.paused, "Paused")
+            return (.paused, "Paused", false)
         case .stopping:
-            return (.working, "Saving notes")
+            // Saving is work, but its label stays up until the note is saved.
+            return (.working, "Saving notes", true)
         case .error:
-            return (.notWorking, "Note save failed")
+            return (.notWorking, "Note save failed", false)
         case .preparing, .interrupted:
-            return (.working, nil)
+            return (.working, nil, false)
         case .idle, .saved:
             return nil
         }

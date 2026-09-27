@@ -501,6 +501,8 @@ enum NotchStatusSurfaceShape {
 struct NotchVisualLabelPresentation: Equatable {
     let labels: [String]
     let hoverLabel: String?
+    /// Holds a working label for the whole state rather than its brief reveal.
+    var pinsLabel = false
 }
 
 /// The complete set of state-driven copy allowed on the notch surface.
@@ -514,7 +516,8 @@ enum NotchVisualLabelAllowlist {
         if bridgeStartingUp {
             return NotchVisualLabelPresentation(
                 labels: ["Starting up..."],
-                hoverLabel: "Starting session"
+                hoverLabel: "Starting session",
+                pinsLabel: true
             )
         }
 
@@ -1102,6 +1105,9 @@ final class NotchStatusController {
     private var workingProgressLabel: String?
     private var workingGlyphHovered = false
     private var workingStatusRevealActive = false
+    /// A working label that should stay up for as long as its state lasts
+    /// (bridge startup, saving notes) instead of retracting after its reveal.
+    private var workingLabelPinned = false
     private var activityIndex = 0
     private var carouselTimer: Timer?
     private var workingStatusRevealTimer: Timer?
@@ -1158,14 +1164,16 @@ final class NotchStatusController {
     func setPresentation(
         status nextStatus: NotchSessionStatus,
         activityLabels labels: [String],
-        workingProgressLabel label: String?
+        workingProgressLabel label: String?,
+        pinsWorkingLabel: Bool = false
     ) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
                 self?.setPresentation(
                     status: nextStatus,
                     activityLabels: labels,
-                    workingProgressLabel: label
+                    workingProgressLabel: label,
+                    pinsWorkingLabel: pinsWorkingLabel
                 )
             }
             return
@@ -1177,8 +1185,9 @@ final class NotchStatusController {
         let statusChanged = status != nextStatus
         let activityLabelsChanged = activityLabels != compactLabels
         let workingProgressChanged = workingProgressLabel != progress
+        let pinChanged = workingLabelPinned != pinsWorkingLabel
         let plan = NotchStatusPresentationUpdatePolicy.plan(
-            statusChanged: statusChanged,
+            statusChanged: statusChanged || pinChanged,
             activityLabelsChanged: activityLabelsChanged,
             workingProgressChanged: workingProgressChanged,
             nextStatus: nextStatus,
@@ -1186,7 +1195,7 @@ final class NotchStatusController {
             workingGlyphHovered: workingGlyphHovered
         )
 
-        guard statusChanged || activityLabelsChanged || workingProgressChanged else {
+        guard statusChanged || activityLabelsChanged || workingProgressChanged || pinChanged else {
             if active {
                 updatePlacement(animated: false)
             } else {
@@ -1196,6 +1205,7 @@ final class NotchStatusController {
         }
 
         status = nextStatus
+        workingLabelPinned = pinsWorkingLabel
         if activityLabelsChanged {
             activityLabels = compactLabels
             activityIndex = 0
@@ -1400,7 +1410,8 @@ final class NotchStatusController {
             compactLabel: activityLabels[safe: activityIndex],
             workingProgressLabel: workingProgressLabel,
             workingGlyphHovered: workingGlyphHovered,
-            workingStatusRevealActive: workingStatusRevealActive
+            workingStatusRevealActive: workingStatusRevealActive,
+            workingLabelPinned: workingLabelPinned
         )
         return NotchStatusPlacementPlanner.placement(
             for: NotchStatusDisplayGeometry(screen: screen),
@@ -1414,7 +1425,8 @@ final class NotchStatusController {
             compactLabel: activityLabels[safe: activityIndex],
             workingProgressLabel: workingProgressLabel,
             workingGlyphHovered: workingGlyphHovered,
-            workingStatusRevealActive: workingStatusRevealActive
+            workingStatusRevealActive: workingStatusRevealActive,
+            workingLabelPinned: workingLabelPinned
         )
     }
 
@@ -1423,7 +1435,8 @@ final class NotchStatusController {
         compactLabel: String?,
         workingProgressLabel: String?,
         workingGlyphHovered: Bool,
-        workingStatusRevealActive: Bool
+        workingStatusRevealActive: Bool,
+        workingLabelPinned: Bool = false
     ) -> String? {
         if status == .working {
             if workingGlyphHovered,
@@ -1431,7 +1444,7 @@ final class NotchStatusController {
                !workingProgressLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return workingProgressLabel
             }
-            guard workingStatusRevealActive else { return nil }
+            guard workingStatusRevealActive || workingLabelPinned else { return nil }
             return compactLabel ?? workingProgressLabel
         }
         return compactLabel
@@ -1442,14 +1455,16 @@ final class NotchStatusController {
         compactLabel: String?,
         workingProgressLabel: String?,
         workingGlyphHovered: Bool,
-        workingStatusRevealActive: Bool
+        workingStatusRevealActive: Bool,
+        workingLabelPinned: Bool = false
     ) -> CGFloat {
         let label = displayedActivityLabel(
             status: status,
             compactLabel: compactLabel,
             workingProgressLabel: workingProgressLabel,
             workingGlyphHovered: workingGlyphHovered,
-            workingStatusRevealActive: workingStatusRevealActive
+            workingStatusRevealActive: workingStatusRevealActive,
+            workingLabelPinned: workingLabelPinned
         )
         let measuredWidth = NotchStatusPlacementPlanner.activityLabelWidth(for: label)
         return status == .working

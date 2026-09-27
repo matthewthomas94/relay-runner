@@ -12,6 +12,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(paused?.status, .paused)
         XCTAssertEqual(paused?.label, "Paused")
         XCTAssertEqual(snapshot(phase: .stopping).notchPresentation?.label, "Saving notes")
+        XCTAssertEqual(snapshot(phase: .stopping).notchPresentation?.pinsLabel, true)
         XCTAssertEqual(snapshot(phase: .error).notchPresentation?.label, "Note save failed")
         XCTAssertEqual(snapshot(phase: .error).notchPresentation?.status, .notWorking)
         for phase in [

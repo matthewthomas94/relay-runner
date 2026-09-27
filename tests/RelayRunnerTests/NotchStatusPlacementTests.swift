@@ -505,9 +505,23 @@ final class NotchStatusPlacementTests: XCTestCase {
             NotchVisualLabelAllowlist.presentation(for: .idle, bridgeStartingUp: true),
             NotchVisualLabelPresentation(
                 labels: ["Starting up..."],
-                hoverLabel: "Starting session"
+                hoverLabel: "Starting session",
+                pinsLabel: true
             )
         )
+        XCTAssertEqual(
+            NotchStatusController.displayedActivityLabel(
+                status: .working,
+                compactLabel: "Starting up...",
+                workingProgressLabel: "Starting session",
+                workingGlyphHovered: false,
+                workingStatusRevealActive: false,
+                workingLabelPinned: true
+            ),
+            "Starting up...",
+            "startup copy stays up for the whole startup, not just its reveal"
+        )
+        XCTAssertFalse(NotchVisualLabelAllowlist.presentation(for: .sent).pinsLabel)
         XCTAssertEqual(
             NotchActivityLabelPlanner.labels(
                 for: .idle,
