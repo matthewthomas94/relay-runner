@@ -13,6 +13,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(paused?.label, "Paused")
         XCTAssertEqual(snapshot(phase: .stopping).notchPresentation?.label, "Saving notes")
         XCTAssertEqual(snapshot(phase: .error).notchPresentation?.label, "Note save failed")
+        XCTAssertEqual(snapshot(phase: .error).notchPresentation?.status, .notWorking)
         for phase in [
             MeetingNoteCoordinatorPhase.preparing,
             .interrupted,
@@ -49,6 +50,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             "Computer audio interrupted"
         )
         XCTAssertNotEqual(recording.notchPresentation?.status, .listening)
+        XCTAssertEqual(recording.notchPresentation?.status, .notWorking)
         events.append(.source(.systemAudio, .capturing))
         recording.unhealthySourceIDs = events.unhealthySources()
         XCTAssertEqual(recording.notchPresentation?.label, "Taking notes")
