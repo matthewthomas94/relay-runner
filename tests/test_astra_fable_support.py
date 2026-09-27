@@ -49,7 +49,7 @@ class AstraFableSupportTests(unittest.TestCase):
                         [sol, {**ASTRA, "inputModalities": ["audio"]}]):
             with self.assertRaisesRegex(CodexModelResolutionError, "astra"):
                 resolve_codex_family("gpt-6-astra", codex_models_from_model_list(entries))
-        self.assertEqual(CODEX_WORKER_TIER_FAMILIES, {"fast": "luna", "balanced": "terra", "strong": "sol"})
+        self.assertEqual(CODEX_WORKER_TIER_FAMILIES, {"fast": "luna", "balanced": "sol", "strong": "astra"})
 
     def test_config_and_messenger_preserve_new_selections(self):
         for provider, model, effort in (("codex", "astra", "ultra"), ("claude", "claude-fable-5-1", "max")):

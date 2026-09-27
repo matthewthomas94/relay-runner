@@ -1172,7 +1172,7 @@ def _inherited_worker_sizing(general: dict[str, Any], agent_kind: str) -> dict[s
         "worker_sizing_rationale": "Inherited provider, model, and effort from Relay Runner General Settings.",
         "worker_provider_notes": (
             "Use my defaults preserves explicit stable provider selections; Codex resolves "
-            "Astra/Sol/Terra/Luna then uses model_reasoning_effort and Claude uses --effort."
+            "Astra/Sol/Luna then uses model_reasoning_effort and Claude uses --effort."
         ),
     }
 

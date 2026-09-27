@@ -445,7 +445,7 @@ final class BoardProjectConfigTests: XCTestCase {
         )
         XCTAssertEqual(
             defaults?.workerProviderNotes,
-            "Use my defaults preserves explicit stable provider selections; Codex resolves Sol/Terra/Luna then uses model_reasoning_effort and Claude uses --effort."
+            "Use my defaults preserves explicit stable provider selections; Codex resolves Astra/Sol/Luna then uses model_reasoning_effort and Claude uses --effort."
         )
     }
 

@@ -17,7 +17,7 @@ class ConfigTests(unittest.TestCase):
     def test_codex_suffixed_models_migrate_to_families(self):
         for model, family in (
             ("gpt-5.6-sol", "sol"),
-            ("gpt-5.6-terra", "terra"),
+            ("gpt-5.6-terra", "sol"),
             ("gpt-5.6-luna", "luna"),
         ):
             with self.subTest(model=model), tempfile.TemporaryDirectory() as tmp:
@@ -205,11 +205,11 @@ class ConfigTests(unittest.TestCase):
     def test_load_config_applies_rr150_model_effort_matrix(self):
         cases = [
             ("codex", "sol", "ultra", "sol", "ultra"),
-            ("codex", "terra", "ultra", "terra", "ultra"),
+            ("codex", "terra", "ultra", "sol", "ultra"),
             ("codex", "luna", "max", "luna", "max"),
             ("codex", "luna", "ultra", "luna", "ultra"),
             ("codex", "gpt-5.5", "xhigh", "sol", "xhigh"),
-            ("codex", "gpt-5.6-terra", "max", "terra", "max"),
+            ("codex", "gpt-5.6-terra", "max", "sol", "max"),
             ("codex", "gpt-5.3-codex-spark", "xhigh", "sol", "xhigh"),
             ("codex", "default", "low", "sol", "low"),
             ("claude", "best", "max", "opus", "max"),

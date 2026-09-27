@@ -117,6 +117,8 @@ Provider-scoped model values are allowed when the ticket intentionally requires 
 
 Provider parity is part of the sizing decision. Shared worker tiers retain `low`, `medium`, `high`, and `xhigh`. RR-349 verified Astra's `max` and `ultra` through the Codex 0.153.4 provider catalog; use an explicit `codex:astra` or `codex:gpt-6-astra` override for those levels. The configured CLI must advertise the selected level at launch. Claude uses `--effort` and allows `max` on Claude-scoped tickets with provider notes; `claude:claude-fable-5-1` selects Fable 5.1 explicitly. Document intentional provider limits instead of leaving the cold worker to discover them.
 
+For Codex, `fast`, `balanced`, and `strong` select Luna, Sol, and Astra, respectively. Each family resolves to its newest visible text model in the configured Codex catalog; currently that is GPT-6. Saved Terra selections migrate to Sol. Claude retains its Haiku, Sonnet, and Opus tier mapping.
+
 ### Execution modes
 
 `implementation` is the default and retains the isolated `relay/<id>` branch, source commit, independent review, and merge lifecycle.

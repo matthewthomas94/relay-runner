@@ -50,8 +50,8 @@ CODEX_MODEL_LIST_FIXTURE = json.dumps({
             ],
         },
         {
-            "id": "gpt-6.0-sol",
-            "model": "gpt-6.0-sol",
+            "id": "gpt-6-sol",
+            "model": "gpt-6-sol",
             "hidden": False,
             "defaultReasoningEffort": "medium",
             "supportedReasoningEfforts": [
@@ -62,8 +62,8 @@ CODEX_MODEL_LIST_FIXTURE = json.dumps({
             ],
         },
         {
-            "id": "gpt-6.0-terra",
-            "model": "gpt-6.0-terra",
+            "id": "gpt-6-astra",
+            "model": "gpt-6-astra",
             "hidden": False,
             "defaultReasoningEffort": "medium",
             "supportedReasoningEfforts": [
@@ -149,7 +149,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
             command = Worker._command(worker)
 
         self.assertIn("--model", command)
-        self.assertIn("gpt-6.0-sol", command)
+        self.assertIn("gpt-6-sol", command)
         self.assertIn("--config", command)
         self.assertIn("model_reasoning_effort=high", command)
         self.assertNotIn("--effort", command)
@@ -410,7 +410,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                     log_path=Path(tmp) / "run.log",
                 )._command()
             self.assertIn("--model", command)
-            self.assertIn("gpt-6.0-sol", command)
+            self.assertIn("gpt-6-sol", command)
             self.assertIn("model_reasoning_effort=xhigh", command)
 
     def test_user_default_inherits_claude_model_and_effort(self):
@@ -496,7 +496,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                     log_path=Path(tmp) / "run.log",
                 )._command()
             self.assertIn("--model", command)
-            self.assertIn("gpt-6.0-sol", command)
+            self.assertIn("gpt-6-sol", command)
             self.assertIn("model_reasoning_effort=xhigh", command)
 
     def test_user_default_legacy_claude_defaults_migrate_to_opus_xhigh(self):
@@ -565,7 +565,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
             run = result["run"]
             self.assertEqual(run["state"], "Claimed")
             self.assertEqual(run["provider_key"], "codex")
-            self.assertEqual(run["model_alias"], "sol")
+            self.assertEqual(run["model_alias"], "astra")
             self.assertEqual(run["worker_model"], "strong")
             self.assertEqual(run["worker_effort"], "high")
             self.assertIn("Cross-provider", run["worker_sizing_rationale"])
@@ -736,7 +736,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 result = daemon.dispatch(ticket_id="RR-1", repo_path=str(repo))
 
             self.assertEqual(result["run"]["provider_key"], "codex")
-            self.assertEqual(result["run"]["model_alias"], "sol")
+            self.assertEqual(result["run"]["model_alias"], "astra")
 
     def test_ready_sweeper_holds_after_deterministic_failed_attempt(self):
         with tempfile.TemporaryDirectory() as tmp:

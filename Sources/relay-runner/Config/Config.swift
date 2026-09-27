@@ -102,7 +102,6 @@ struct GeneralConfig: Codable, Equatable {
     static let codexModelOptions: [ModelOption] = [
         ModelOption(label: "Astra", value: "astra"),
         ModelOption(label: "Sol", value: "sol"),
-        ModelOption(label: "Terra", value: "terra"),
         ModelOption(label: "Luna", value: "luna"),
     ]
 
@@ -200,7 +199,7 @@ struct GeneralConfig: Codable, Equatable {
         switch provider {
         case .codex:
             switch normalizedModel {
-            case "astra", "sol", "terra":
+            case "astra", "sol":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption, ultraReasoningEffortOption]
             case "luna":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption]
@@ -285,6 +284,9 @@ struct GeneralConfig: Codable, Equatable {
 
     static func normalizeCodexFamily(_ model: String) -> String {
         let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "terra" || normalized.hasSuffix("-terra") {
+            return "sol"
+        }
         if codexModelOptions.contains(where: { $0.value == normalized }) {
             return normalized
         }
@@ -327,6 +329,9 @@ struct GeneralConfig: Codable, Equatable {
         let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch provider {
         case .codex:
+            if normalized == "terra" || normalized.hasSuffix("-terra") {
+                return "sol"
+            }
             if codexModelOptions.contains(where: { $0.value == normalized }) {
                 return normalized
             }

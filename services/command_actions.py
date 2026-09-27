@@ -843,7 +843,7 @@ def _worker_sizing_frontmatter(general_config: dict | None = None) -> str:
         f"worker_model: {provider}:{model}\n"
         f"worker_effort: {effort}\n"
         "worker_sizing_rationale: \"Inherited provider, model, and effort from Relay Runner General Settings.\"\n"
-        "worker_provider_notes: \"Use my defaults preserves explicit stable provider selections; Codex resolves Astra/Sol/Terra/Luna then uses model_reasoning_effort and Claude uses --effort.\"\n"
+        "worker_provider_notes: \"Use my defaults preserves explicit stable provider selections; Codex resolves Astra/Sol/Luna then uses model_reasoning_effort and Claude uses --effort.\"\n"
     )
 
 
