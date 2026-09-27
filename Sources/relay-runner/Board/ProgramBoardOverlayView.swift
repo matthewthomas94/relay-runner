@@ -2526,6 +2526,7 @@ private struct ProgramNoteDetailPanel: View {
     let recoveryErrorMessage: String?
     let onRecover: (MeetingNoteRecoveryResolution) -> Void
     let onResume: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isCurrentCapture: Bool {
         guard captureSnapshot.noteID == (detail.item.card.legacyRecovery?.noteID ?? detail.item.card.noteID),
@@ -2561,6 +2562,7 @@ private struct ProgramNoteDetailPanel: View {
                     Text(detail.item.title)
                         .font(AppTypography.font(.screenTitle))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
+                        .relayTextSwap(detail.item.title)
                 }
                 Spacer(minLength: 0)
                 ProgramIconButton(systemName: "xmark", help: "Close note", action: onClose)
@@ -2601,6 +2603,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onStop()
                     }
+                    .transition(.relayElement)
                 }
                 if recoveryOffer != nil,
                    isCurrentCapture,
@@ -2613,6 +2616,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onResume()
                     }
+                    .transition(.relayElement)
                 }
                 if recoveryOffer != nil, !isCurrentCapture {
                     ProgramDetailActionButton(
@@ -2623,6 +2627,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onRecover(.recoverPaused)
                     }
+                    .transition(.relayElement)
                     ProgramDetailActionButton(
                         systemName: "checkmark",
                         title: "Finalize",
@@ -2631,6 +2636,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onRecover(.finalize)
                     }
+                    .transition(.relayElement)
                     ProgramDetailActionButton(
                         systemName: "trash",
                         title: "Discard tail",
@@ -2639,6 +2645,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onRecover(.discardIncompleteTail)
                     }
+                    .transition(.relayElement)
                 }
                 if detail.errorMessage != nil {
                     ProgramDetailActionButton(
@@ -2649,6 +2656,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onRetry()
                     }
+                    .transition(.relayElement)
                 }
             }
 
@@ -2658,27 +2666,34 @@ private struct ProgramNoteDetailPanel: View {
                         Text(status)
                             .font(AppTypography.font(.supporting))
                             .foregroundStyle(ProgramBoardStyle.mutedText)
+                            .relayTextSwap(status)
                         if !detail.item.isArchived {
                             Button("Retry summary", action: onMetadataRetry)
                                 .buttonStyle(.plain)
+                                .transition(.relayElement)
                         }
                     }
+                    .transition(.relayElement)
                 }
             }
 
             if let errorMessage = captureErrorMessage {
                 ProgramDetailNotice(message: errorMessage)
+                    .transition(.relayElement)
             }
             if recoveryOffer != nil, !isCurrentCapture {
                 ProgramDetailNotice(
                     message: "Interrupted recording found. Recovery uses the original note and project and stays paused until you choose Resume."
                 )
+                .transition(.relayElement)
             }
             if let recoveryErrorMessage {
                 ProgramDetailNotice(message: recoveryErrorMessage)
+                    .transition(.relayElement)
             }
             if let errorMessage = detail.errorMessage {
                 ProgramDetailNotice(message: errorMessage)
+                    .transition(.relayElement)
             }
 
             BoardOverlayScrollView {
@@ -2686,6 +2701,7 @@ private struct ProgramNoteDetailPanel: View {
                     if let summary = detail.item.card.metadata?.summary {
                         ProgramDetailSection(title: "Summary", text: summary)
                             .textSelection(.enabled)
+                            .transition(.relayElement)
                     }
                     if detail.isLoading {
                         HStack(spacing: 8) {
@@ -2694,11 +2710,17 @@ private struct ProgramNoteDetailPanel: View {
                                 .font(AppTypography.font(.supporting))
                                 .foregroundStyle(ProgramBoardStyle.mutedText)
                         }
+                        .transition(.relayElement)
                     } else if let transcript = detail.transcript {
                         ProgramDetailSection(title: "Transcript", text: transcript.isEmpty ? "No transcript captured." : transcript)
                             .textSelection(.enabled)
+                            .transition(.relayElement)
                     }
                 }
+                .animation(
+                    RelayMotion.change(reduceMotion: reduceMotion),
+                    value: [detail.isLoading, detail.transcript != nil, detail.item.card.metadata?.summary != nil]
+                )
                 .overlay(alignment: .topLeading) {
                     ProgramTicketDetailTopBoundaryMarker()
                         .frame(width: 1, height: 1)
@@ -2709,6 +2731,22 @@ private struct ProgramNoteDetailPanel: View {
                 }
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: motionState)
+    }
+
+    /// Everything that inserts or removes a control or notice above the transcript.
+    private var motionState: [AnyHashable] {
+        [
+            showsStop,
+            recoveryOffer != nil,
+            isCurrentCapture,
+            captureSnapshot.phase,
+            detail.item.isArchived,
+            detail.item.card.metadata?.statusLabel,
+            captureErrorMessage,
+            recoveryErrorMessage,
+            detail.errorMessage,
+        ]
     }
     private var captureErrorMessage: String? {
         guard isCurrentCapture, let message = captureSnapshot.errorMessage else { return nil }
@@ -2734,6 +2772,7 @@ struct ProgramTicketDetailPanel: View {
     let onDelete: (ProgramBoardDeleteRequest) -> Void
     let onSpikeFollowup: () -> Void
     var panelSize: CGSize? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -2746,18 +2785,22 @@ struct ProgramTicketDetailPanel: View {
                             .lineLimit(1)
                         if detail.item.isAwaitingMerge {
                             ProgramInlineBadge(label: "Awaiting review")
+                                .transition(.relayElement)
                         }
                         if detail.item.isIntegrationBlocked {
                             ProgramInlineBadge(label: "Integration blocked")
+                                .transition(.relayElement)
                         }
                         if detail.item.isVerificationBlocked {
                             ProgramInlineBadge(label: "Verification blocked")
+                                .transition(.relayElement)
                         }
                     }
                     Text(detail.title)
                         .font(AppTypography.font(.screenTitle))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                         .lineLimit(2)
+                        .relayTextSwap(detail.title)
                     Text(detail.projectName)
                         .font(AppTypography.font(.label))
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
@@ -2768,6 +2811,7 @@ struct ProgramTicketDetailPanel: View {
                             .foregroundStyle(ProgramBoardStyle.mutedText)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                            .transition(.relayText)
                     }
                 }
                 Spacer(minLength: 0)
@@ -2784,6 +2828,7 @@ struct ProgramTicketDetailPanel: View {
                     ) {
                         onEdit()
                     }
+                    .transition(.relayElement)
                 }
                 ProgramDetailActionButton(
                     systemName: "trash",
@@ -2829,11 +2874,13 @@ struct ProgramTicketDetailPanel: View {
                     ) {
                         onSpikeFollowup()
                     }
+                    .transition(.relayElement)
                 }
             }
 
             if let unavailableMessage = detail.unavailableMessage {
                 ProgramDetailNotice(message: unavailableMessage)
+                    .transition(.relayElement)
             }
 
             BoardOverlayScrollView {
@@ -2849,11 +2896,14 @@ struct ProgramTicketDetailPanel: View {
                     )
                     if let spikeReport = detail.spikeReport {
                         ProgramDetailSection(title: "Spike report", text: spikeReport)
+                            .transition(.relayElement)
                     }
                     if !detail.imageAttachments.isEmpty {
                         ProgramTicketImageSection(attachments: detail.imageAttachments)
+                            .transition(.relayElement)
                     }
                 }
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: detail)
                 .overlay(alignment: .topLeading) {
                     ProgramTicketDetailTopBoundaryMarker()
                         .frame(width: 1, height: 1)
@@ -2864,6 +2914,7 @@ struct ProgramTicketDetailPanel: View {
                 }
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: detail)
         .programTicketPanelChrome(theme: theme, size: panelSize)
     }
 
@@ -3027,6 +3078,7 @@ private struct ProgramSpikeFollowupReviewModal: View {
     let batch: SpikeFollowupBatch
     let onReview: (SpikeFollowupBatch, SpikeFollowupProposal, String, [String: Any]?) -> Void
     let onClose: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -3055,8 +3107,10 @@ private struct ProgramSpikeFollowupReviewModal: View {
                             proposal: proposal,
                             onReview: onReview
                         )
+                        .transition(.relayElement)
                         }
                 }
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: batch.proposals)
             }
         }
         .padding(20)
@@ -3113,10 +3167,12 @@ private struct ProgramSpikeFollowupProposalCard: View {
                 Text(proposal.state.displayLabel)
                     .font(AppTypography.font(.caption))
                     .foregroundStyle(ProgramBoardStyle.secondaryText)
+                    .relayTextSwap(proposal.state)
                 if let ticketID = proposal.ticketID {
                     Text(ticketID)
                         .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
+                        .transition(.relayText)
                 }
                 Spacer(minLength: 0)
             }
@@ -3166,6 +3222,7 @@ private struct ProgramSpikeFollowupProposalCard: View {
 
             if let error = proposal.error, !error.isEmpty {
                 ProgramDetailNotice(message: error)
+                    .transition(.relayElement)
             }
 
             if isDraft {
@@ -3176,6 +3233,7 @@ private struct ProgramSpikeFollowupProposalCard: View {
                     Button("Accept to Backlog") { onReview(batch, proposal, "accept", updates) }
                         .keyboardShortcut(.defaultAction)
                 }
+                .transition(.relayElement)
             }
         }
         .padding(14)
@@ -3302,13 +3360,16 @@ private struct ProgramDetailMetadata: View {
                         metadataCell(rows[index])
                         if rows.indices.contains(index + 1) {
                             metadataCell(rows[index + 1])
+                                .transition(.relayElement)
                         } else {
                             Spacer(minLength: 0)
                                 .frame(maxWidth: .infinity)
                         }
                     }
+                    .transition(.relayElement)
                 }
             }
+            .transition(.relayElement)
         }
     }
 
@@ -3322,10 +3383,12 @@ private struct ProgramDetailMetadata: View {
                 .font(AppTypography.font(.caption))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .lineLimit(1)
+                .relayTextSwap(row.label)
             Text(row.value)
                 .font(AppTypography.font(.label))
                 .foregroundStyle(ProgramBoardStyle.secondaryText)
                 .lineLimit(2)
+                .relayTextSwap(row.value)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -3359,6 +3422,7 @@ private struct ProgramDetailNotice: View {
             .font(AppTypography.font(.status))
             .foregroundStyle(ProgramBoardStyle.red)
             .lineLimit(3)
+            .relayTextSwap(message)
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -3413,6 +3477,7 @@ private struct ProgramTicketEditModal: View {
     @State private var description: String
     @State private var acceptanceCriteria: String
     @State private var imageURLs: [URL] = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     init(
         draft: ProgramBoardEditDraft,
         makeRequest: @escaping (
@@ -3530,6 +3595,7 @@ private struct ProgramTicketEditModal: View {
             if let errorMessage {
                 ProgramErrorStrip(message: errorMessage)
                     .accessibilityLabel("Ticket save failed. \(errorMessage)")
+                    .transition(.relayElement)
             }
 
             HStack(spacing: 8) {
@@ -3558,6 +3624,7 @@ private struct ProgramTicketEditModal: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: errorMessage)
         .programTicketPanelChrome()
     }
 
@@ -3661,6 +3728,7 @@ private struct ProgramTicketProjectPicker: View {
                 Text(selectedProject?.name ?? "Select project")
                     .font(AppTypography.font(.field))
                     .lineLimit(1)
+                    .relayTextSwap(selection)
                 Spacer(minLength: 12)
                 Image(systemName: "chevron.down")
                     .font(AppTypography.symbolFont(size: 9, weight: .semibold))
@@ -3775,6 +3843,7 @@ private struct ProgramTicketCreateModal: View {
                         .foregroundStyle(ProgramBoardStyle.mutedText)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .relayTextSwap(selectedProjectPath)
                 }
 
                 ProgramTicketTitleField(text: $title)
@@ -3851,6 +3920,7 @@ private struct ProgramExecutionModePicker: View {
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
+                .relayTextSwap(selection, alignment: .topLeading)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .frame(height: ProgramTicketPanelStyle.executionModeDescriptionHeight, alignment: .topLeading)
             HStack(spacing: 0) {
@@ -3918,6 +3988,7 @@ private struct ProgramExecutionModeButton: View {
         .focused($isFocused)
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isSelected)
         .programButtonCursor()
         .accessibilityLabel(mode.displayName)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -3928,6 +3999,7 @@ private struct ProgramTicketImageSelector: View {
     let existingPaths: [String]
     @Binding var selectedURLs: [URL]
     let chooseImages: (@escaping ([URL]) -> Void) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -3955,11 +4027,14 @@ private struct ProgramTicketImageSelector: View {
                                     selectedURLs.removeAll { $0 == url }
                                 }
                             )
+                            .transition(.relayElement)
                         }
                     }
                 }
+                .transition(.relayElement)
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selectedURLs)
     }
 
     private func addImages() {
@@ -4049,6 +4124,7 @@ private struct ProgramStatePanel: View {
     var diagnosticsPreview: RelaySupportBundlePreview? = nil
     var isDiagnosticsExporting = false
     var onCreateDiagnostics: (() -> Void)? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -4070,7 +4146,9 @@ private struct ProgramStatePanel: View {
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
                         .multilineTextAlignment(.center)
                         .lineLimit(3)
+                        .relayTextSwap(detail, alignment: .center)
                         .frame(maxWidth: 560)
+                        .transition(.relayText)
                 }
                 if let primaryActionTitle, let primaryAction {
                     HStack(spacing: 8) {
@@ -4112,6 +4190,7 @@ private struct ProgramStatePanel: View {
                                 Text(isDiagnosticsExporting ? "Exporting…" : "Export Diagnostics…")
                                     .font(AppTypography.font(.programAction))
                                     .foregroundStyle(ProgramBoardStyle.secondaryText)
+                                    .relayTextSwap(isDiagnosticsExporting, alignment: .center)
                                     .padding(.horizontal, 12)
                                     .frame(height: ProgramBoardLayout.compactControlHeight)
                             }
@@ -4129,10 +4208,15 @@ private struct ProgramStatePanel: View {
                         .foregroundStyle(ProgramBoardStyle.mutedText)
                         .multilineTextAlignment(.center)
                         .lineLimit(4)
+                        .relayTextSwap(diagnosticsPreview.summary, alignment: .center)
                         .frame(maxWidth: 620)
+                        .transition(.relayText)
                 }
             }
             .frame(maxWidth: .infinity)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: detail)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isDiagnosticsExporting)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: diagnosticsPreview?.summary)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
@@ -4167,6 +4251,7 @@ private struct ProgramErrorStrip: View {
                 .font(AppTypography.font(.supporting))
                 .foregroundStyle(ProgramBoardStyle.red)
                 .lineLimit(2)
+                .relayTextSwap(message)
             if onRetry != nil || onCreateDiagnostics != nil {
                 HStack(spacing: 10) {
                     if let onRetry {
@@ -4180,6 +4265,7 @@ private struct ProgramErrorStrip: View {
                         )
                             .buttonStyle(.plain)
                             .disabled(isDiagnosticsExporting)
+                            .relayTextSwap(isDiagnosticsExporting)
                     }
                 }
                 .font(AppTypography.font(.caption))
@@ -4302,6 +4388,7 @@ private struct ProgramSessionButton: View {
     let presentation: ProgramSessionToolbarPresentation
     let isEnabled: Bool
     let action: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         WorkspaceNavigationButton(
@@ -4313,6 +4400,8 @@ private struct ProgramSessionButton: View {
         )
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.45)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isEnabled)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: presentation)
     }
 }
 
