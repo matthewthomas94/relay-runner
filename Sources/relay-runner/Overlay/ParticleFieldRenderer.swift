@@ -94,6 +94,10 @@ final class ParticleFieldRenderer {
     private var displayedOrbColor: SIMD3<Double>?
     private var previousOrbColor: SIMD3<Double>?
     private var orbColorStartedAt: CFTimeInterval = 0
+    /// Screen fields crossfade from the theme they were showing.
+    private var previousTheme: Theme?
+    private var themeChangedAt: CFTimeInterval = 0
+    static let themeCrossfadeDuration: TimeInterval = 0.45
 
     private let spacing: CGFloat = 8
     private let maxDotRadius: CGFloat = 3
@@ -189,6 +193,13 @@ final class ParticleFieldRenderer {
             previousOrbColor = displayedOrbColor
             orbColorStartedAt = now
         }
+        if coverage != .agentOrb, let currentTheme, let theme, currentTheme != theme,
+           !resolvedReduceMotion {
+            previousTheme = currentTheme
+            themeChangedAt = now
+        } else if theme != currentTheme {
+            previousTheme = nil
+        }
         currentTheme = theme
         self.reduceMotion = resolvedReduceMotion
         applyPresentation()
@@ -238,10 +249,7 @@ final class ParticleFieldRenderer {
         if coverage == .agentOrb {
             grid = buildOrbGrid(theme: theme, size: size, elapsed: elapsed, now: time)
         } else {
-            if dots[theme] == nil {
-                dots[theme] = buildDotGrid(theme: theme, size: size)
-            }
-            guard let cached = dots[theme] else { return }
+            guard let cached = cachedGrid(for: theme, size: size) else { return }
             grid = cached
         }
 
@@ -250,7 +258,41 @@ final class ParticleFieldRenderer {
         ctx.saveGState()
         ctx.scaleBy(x: scale, y: scale)
 
-        // Draw each dot with wave-modulated radius
+        var arrival: CGFloat = 1
+        if let previousTheme {
+            arrival = RelayMotion.changeCurve.progress(
+                CGFloat((time - themeChangedAt) / Self.themeCrossfadeDuration)
+            )
+            if arrival < 1, let previousGrid = cachedGrid(for: previousTheme, size: size) {
+                drawDots(previousGrid, theme: previousTheme, elapsed: elapsed, alphaScale: 1 - arrival, in: ctx)
+            } else {
+                self.previousTheme = nil
+                arrival = 1
+            }
+        }
+        drawDots(grid, theme: theme, elapsed: elapsed, alphaScale: arrival, in: ctx)
+
+        ctx.restoreGState()
+        let image = ctx.makeImage()
+        latestParticleImage = image
+        particleLayer.contents = image
+    }
+
+    private func cachedGrid(for theme: Theme, size: CGSize) -> [Dot]? {
+        if dots[theme] == nil {
+            dots[theme] = buildDotGrid(theme: theme, size: size)
+        }
+        return dots[theme]
+    }
+
+    private func drawDots(
+        _ grid: [Dot],
+        theme: Theme,
+        elapsed: Double,
+        alphaScale: CGFloat,
+        in ctx: CGContext
+    ) {
+        guard alphaScale > 0.001 else { return }
         for dot in grid {
             // The card's silhouette changes through the density field. Keep
             // its dot centres fixed so the halftone grid stays crisp.
@@ -269,21 +311,17 @@ final class ParticleFieldRenderer {
             guard radius > 0.1 else { continue }
 
             // Preserve the exact design color for the static workspace matrix.
-            let alpha = theme == .workspace
+            let baseAlpha = theme == .workspace
                 ? dot.baseAlpha
                 : dot.baseAlpha * (1.0 + wave * 0.1)
-            guard alpha > 0.02 else { continue }
+            let alpha = baseAlpha * alphaScale
+            guard baseAlpha > 0.02, alpha > 0.002 else { continue }
 
             ctx.setFillColor(red: dot.r, green: dot.g, blue: dot.b, alpha: alpha)
             ctx.fillEllipse(in: CGRect(
                 x: dot.x - radius, y: dot.y - radius,
                 width: radius * 2, height: radius * 2))
         }
-
-        ctx.restoreGState()
-        let image = ctx.makeImage()
-        latestParticleImage = image
-        particleLayer.contents = image
     }
 
     // MARK: - Dot grid generation
