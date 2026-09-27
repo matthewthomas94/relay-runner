@@ -40,12 +40,13 @@ from datetime import datetime, timezone
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 
 # Reuse the existing config loader (sibling file).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
+from claude_subscription import check as check_claude_subscription
 try:
     from services.artifact_lifecycle import ArtifactLifecycleCoordinator
     from services.automatic_retention import (
@@ -1743,7 +1744,7 @@ def _autonomous_ticket_action(
 ACTIVITY_MAX_LEN = 60
 ACTIVITY_DEBOUNCE_SECONDS = 5.0
 ACTIVITY_HEARTBEAT_SECONDS = 5.0
-_NOOP_TOOLS = frozenset({"TodoWrite"})
+_NOOP_TOOLS = frozenset({"TodoWrite", "TaskCreate", "TaskUpdate", "TaskList"})
 _SHELL_NAMES = frozenset({"sh", "bash", "zsh"})
 
 
@@ -1871,9 +1872,9 @@ def derive_activity(tool_name: str, tool_input: dict | None) -> str:
         return _semantic_shell_activity(cmd, desc)
     if name in ("WebFetch", "WebSearch"):
         return "Researching"
-    if name == "Task":
+    if name in ("Task", "Agent"):
         return "Delegating to sub-agent"
-    if name == "TodoWrite":
+    if name in ("TodoWrite", "TaskCreate", "TaskUpdate", "TaskList"):
         return "Planning"
     # Unknown / MCP tools: just show the (clipped) tool name.
     return _clip(name) or "Working"
@@ -4251,6 +4252,76 @@ def validate_worker_completion(
 # Worker
 # ---------------------------------------------------------------------------
 
+def _claude_result_error(agent_kind: str, tail: Iterable[str]) -> str | None:
+    """Return Claude's terminal error text from its stream-json result event.
+
+    Claude's early events are multi-KB, so a joined tail truncated to 500
+    characters loses the result line that names the actual failure (auth,
+    usage limit, invalid model).
+    """
+    if agent_kind != "claude":
+        return None
+    for line in reversed(list(tail)):
+        try:
+            evt = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(evt, dict) or evt.get("type") != "result" or not evt.get("is_error"):
+            continue
+        status = evt.get("api_error_status")
+        text = str(evt.get("result") or evt.get("subtype") or "error").strip()
+        prefix = f"claude result error (HTTP {status})" if status else "claude result error"
+        return f"{prefix}: {text}"[:300]
+    return None
+
+
+def _claude_subscription_error(agent_kind: str, cmd: list[str], cwd: str,
+                               environment: Mapping[str, str] | None) -> str | None:
+    """Subscription-only: refuse a Claude launch on an API key or other metered route."""
+    if agent_kind != "claude":
+        return None
+    readiness = check_claude_subscription(
+        cmd[:1], cwd=cwd, environment=os.environ if environment is None else environment)
+    return None if readiness.ready else readiness.message
+
+
+def _failure_tail(agent_kind: str, rc: int | None, tail: Iterable[str]) -> str:
+    lines = list(tail)
+    result_error = _claude_result_error(agent_kind, lines)
+    joined = " / ".join(lines)
+    if result_error:
+        return f"exit={rc}; {result_error}; tail={joined}"[:500]
+    return f"exit={rc}; tail={joined[:500]}"
+
+
+def _review_command_run(run: dict, review_provider: str) -> dict:
+    """Re-resolve launch sizing when the reviewer runs on a different provider.
+
+    The implementation run's model alias and effort were resolved for its own
+    provider (e.g. Codex ``sol``/``ultra``) and are not valid launch flags for
+    the other CLI. Same-provider reviews keep the run's resolved sizing.
+    """
+    run_provider = str(run.get("provider_key") or "").strip().lower()
+    if not run_provider or run_provider == review_provider:
+        return run
+    worker_model = str(run.get("worker_model") or "")
+    worker_effort = str(run.get("worker_effort") or "")
+    try:
+        model_alias = _resolve_worker_model(worker_model, review_provider)
+    except ValueError:
+        model_alias = ""
+    try:
+        effort = _validate_worker_effort(
+            worker_effort,
+            worker_model=worker_model,
+            agent_kind=review_provider,
+            provider_notes=str(run.get("worker_provider_notes") or ""),
+        )
+    except ValueError:
+        effort = ""
+    return {**run, "model_alias": model_alias, "worker_effort": effort}
+
+
 def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
     model_alias = str(run.get("model_alias") or "").strip().lower()
     worker_effort = str(run.get("worker_effort") or "").strip().lower()
@@ -4272,6 +4343,8 @@ def _agent_command(*, agent_kind: str, agent_bin: str, run: dict) -> list[str]:
                 "--no-session-persistence",
                 "--permission-mode", "dontAsk",
                 "--tools", "Read,Glob,Grep,WebSearch,WebFetch",
+                # dontAsk denies anything not pre-approved, including web research.
+                "--allowedTools", "Read,Glob,Grep,WebSearch,WebFetch",
                 "--strict-mcp-config",
                 "--mcp-config", '{"mcpServers":{}}',
                 "--json-schema", json.dumps(SPIKE_RESULT_SCHEMA, separators=(",", ":")),
@@ -4444,8 +4517,17 @@ class Worker:
             start_head = _git_head(self.run["workspace_path"])
             if start_head:
                 log.write(f"[orchestrator] start_head={start_head}\n")
+            environment = (
+                {**os.environ, **self.run["spike_git_environment"]}
+                if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE
+                and self.run.get("spike_git_environment") else None
+            )
             try:
                 cmd = self._command()
+                subscription_error = _claude_subscription_error(
+                    self.agent_kind, cmd, self.run["workspace_path"], environment)
+                if subscription_error:
+                    raise RuntimeError(subscription_error)
             except RuntimeError as e:
                 self.store.update(
                     self.run_id,
@@ -4472,11 +4554,7 @@ class Worker:
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
-                    env=(
-                        {**os.environ, **self.run["spike_git_environment"]}
-                        if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE
-                        and self.run.get("spike_git_environment") else None
-                    ),
+                    env=environment,
                 )
             except FileNotFoundError as e:
                 self.store.update(self.run_id, state="Failed",
@@ -4611,7 +4689,7 @@ class Worker:
                         f"spike provider exited with status {rc}; inspect the local run log before retrying."
                     )
                 else:
-                    failure = f"exit={rc}; tail={' / '.join(tail)[:500]}"
+                    failure = _failure_tail(self.agent_kind, rc, tail)
                 self.store.update(self.run_id, state="Failed",
                                   last_error=failure,
                                   ended=True, exit_code=rc)
@@ -4662,7 +4740,14 @@ class Worker:
             return last_meaningful_at
 
         etype = evt.get("type")
-        if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE:
+        # Claude reports transient retries (e.g. 429/529) as system/api_retry
+        # events that may still succeed; only auth/access retries are evidence.
+        transient_retry = (
+            etype == "system"
+            and evt.get("subtype") == "api_retry"
+            and evt.get("error_status") not in (401, "401", 403, "403")
+        )
+        if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE and not transient_retry:
             error_status = evt.get("api_error_status") or evt.get("error_status")
             if error_status in (401, "401"):
                 self._research_access_error = "provider authentication failed (HTTP 401); re-authenticate the provider and retry"
@@ -4687,7 +4772,9 @@ class Worker:
                         self._inflight.add(tool_id)
                 name = block.get("name") or ""
                 if self.run.get("execution_mode") == SPIKE_EXECUTION_MODE and name not in {
-                    "Read", "Glob", "Grep", "WebSearch", "WebFetch"
+                    # StructuredOutput is how Claude's --json-schema returns
+                    # the terminal spike result; it performs no side effects.
+                    "Read", "Glob", "Grep", "WebSearch", "WebFetch", "StructuredOutput"
                 }:
                     self._spike_violation = f"spike attempted disallowed tool {name or 'unknown'}"
                 now = time.time()
@@ -4852,6 +4939,16 @@ class ReviewWorker:
             log.write(f"\n[orchestrator] review_provider={self.agent_kind}\n")
             log.write(f"[orchestrator] review_prompt_sha256={hashlib.sha256(self.prompt.encode('utf-8')).hexdigest()}\n")
             cmd = self._command()
+            subscription_error = _claude_subscription_error(
+                self.agent_kind, cmd, self.run["repo_path"], None)
+            if subscription_error:
+                self.store.update(self.run_id, state="AwaitingReview", last_error=subscription_error)
+                log.write(f"[orchestrator] {subscription_error}\n")
+                self._emit_lifecycle(
+                    "run-review-needed",
+                    message=f"{self.run['ticket_id']} run {self.run_id} still needs review attention",
+                )
+                return
             try:
                 self.proc = subprocess.Popen(
                     cmd,
@@ -4922,7 +5019,7 @@ class ReviewWorker:
             if rc == 0:
                 reason = "review worker exited 0 without accepting or retrying run"
             else:
-                reason = f"review worker failed: exit={rc}; tail={' / '.join(tail)[:500]}"
+                reason = f"review worker failed: {_failure_tail(self.agent_kind, rc, tail)}"
             self.store.update(self.run_id, state="AwaitingReview", last_error=reason)
             self._emit_lifecycle(
                 "run-review-needed",
@@ -4944,7 +5041,7 @@ class ReviewWorker:
         return _agent_command(
             agent_kind=self.agent_kind,
             agent_bin=self.agent_bin,
-            run=self.run,
+            run=_review_command_run(self.run, self.agent_kind),
         )
 
     def _heartbeat(self, stop: threading.Event) -> None:
@@ -5104,14 +5201,24 @@ class Daemon:
                 file=sys.stderr,
             )
 
-        agent_setting = orch_cfg.get("agent") or cfg.get("general", {}).get("command") or "codex"
+        general_cfg = cfg.get("general", {}) if isinstance(cfg.get("general"), dict) else {}
+        explicit_agent = str(orch_cfg.get("agent") or "").strip()
         self.config_loader = load_config
         self.note_metadata = NoteMetadataQueue(NoteMetadataGenerator(lambda: self.config_loader(), _find_agent_bin))
-        self.agent_kind = _agent_kind(str(agent_setting))
-        self.agent_bin = _find_agent_bin(
-            self.agent_kind,
-            str(orch_cfg.get("command") or ""),
+        self.agent_kind = (
+            _agent_kind(explicit_agent) if explicit_agent
+            else _provider_from_general(general_cfg, "codex")
         )
+        # A missing worker CLI must not stop the daemon: the board, notes and
+        # the other provider still work. Dispatch re-resolves the binary.
+        try:
+            self.agent_bin = _find_agent_bin(
+                self.agent_kind,
+                str(orch_cfg.get("command") or ""),
+            )
+        except RuntimeError as e:
+            self.agent_bin = ""
+            print(f"[orchestrator] worker CLI unavailable at startup: {e}", file=sys.stderr)
         continuity_cfg = cfg.get("continuity", {})
         if not isinstance(continuity_cfg, dict):
             continuity_cfg = {}
@@ -6688,6 +6795,8 @@ Title: {ticket['title']}
             kind = _provider_from_general(general, self.agent_kind)
 
         if kind == self.agent_kind:
+            if not self.agent_bin:
+                self.agent_bin = _find_agent_bin(kind, str(orch_cfg.get("command") or ""))
             return kind, self.agent_bin, general
         return kind, _find_agent_bin(kind), general
 

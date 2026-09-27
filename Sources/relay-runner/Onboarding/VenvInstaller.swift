@@ -156,13 +156,19 @@ final class VenvInstaller {
         commonRuntimeInstalled && cliInstalled(for: provider)
     }
 
-    static func cliInstalled(for provider: GeneralConfig.AgentProvider) -> Bool {
-        let fm = FileManager.default
+    static func cliInstalled(
+        for provider: GeneralConfig.AgentProvider,
+        isExecutable: (String) -> Bool = FileManager.default.isExecutableFile(atPath:),
+        claudeShellLookup: () -> String? = { ProcessManager.lookUpClaudeInLaunchShell() }
+    ) -> Bool {
         switch provider {
         case .codex:
-            return codexCLIPaths.contains { fm.isExecutableFile(atPath: $0) }
+            return codexCLIPaths.contains(where: isExecutable)
         case .claude:
-            return fm.isExecutableFile(atPath: claudeCLIPath)
+            return ClaudeAuth.resolveBinary(
+                isExecutable: isExecutable,
+                shellLookup: claudeShellLookup
+            ) != nil
         }
     }
 
@@ -191,12 +197,6 @@ final class VenvInstaller {
     private static var kokoroVoicesPath: String {
         (NSHomeDirectory() as NSString)
             .appendingPathComponent(".local/share/kokoro/voices-v1.0.bin")
-    }
-    /// claude.ai/install.sh symlinks the Claude Code binary here. Match
-    /// the same path relay-bridge's CLAUDE_CLI_OK gate inspects.
-    private static var claudeCLIPath: String {
-        (NSHomeDirectory() as NSString)
-            .appendingPathComponent(".local/bin/claude")
     }
     static let codexCLIPaths = [
         "/Applications/ChatGPT.app/Contents/Resources/codex",
@@ -334,6 +334,11 @@ final class VenvInstaller {
         environment["RELAY_CORRELATION_ID"] = correlationID
         environment["RELAY_INCIDENT_ID"] = incidentID
         environment["RELAY_RETRY_ATTEMPT"] = String(retryAttempt)
+        // relay-bridge installs Claude Code when Claude is the selected
+        // provider, even if Codex is already present.
+        if let provider {
+            environment["RELAY_RUNNER_PROVIDER"] = provider.rawValue
+        }
         proc.environment = environment
         // Inherit env (PATH for Homebrew etc.) but null stdin so any
         // stray prompts don't hang the install indefinitely.

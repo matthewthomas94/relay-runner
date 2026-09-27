@@ -15,6 +15,16 @@ final class MCPServer {
     private let protocolVersion = "2024-11-05"
 
     private let tools: [String: any MCPTool]
+    // Extra tools for `claude-code` only, so every other client keeps the
+    // released tool list byte for byte.
+    private let claudeTools: [String: any MCPTool] = [
+        "get_relay_instructions": GetRelayInstructionsTool(),
+    ]
+    private var clientIsClaudeCode = false
+
+    private var visibleTools: [String: any MCPTool] {
+        clientIsClaudeCode ? tools.merging(claudeTools) { current, _ in current } : tools
+    }
 
     init() {
         let registered: [any MCPTool] = [
@@ -94,24 +104,32 @@ final class MCPServer {
         }
     }
 
-    private func dispatch(method: String, params: [String: Any]) async throws -> Any {
+    func dispatch(method: String, params: [String: Any]) async throws -> Any {
         switch method {
         case "initialize":
             // `instructions` ships the orchestration workflow + recovery rules to
             // every session that connects — baked into the binary from
             // services/instructions/ (see Instructions.generated.swift).
+            // Claude Code truncates instructions at 2048 characters, so it
+            // gets the compact payload plus `get_relay_instructions`.
+            let clientInfo = params["clientInfo"] as? [String: Any]
+            clientIsClaudeCode = clientInfo?["name"] as? String == "claude-code"
             return [
                 "protocolVersion": protocolVersion,
                 "capabilities": ["tools": [String: Any]()],
                 "serverInfo": ["name": serverName, "version": serverVersion],
-                "instructions": Instructions.payload,
+                "instructions": clientIsClaudeCode ? Instructions.claudeCompact : Instructions.payload,
             ]
 
         case "notifications/initialized", "notifications/cancelled":
             return [String: Any]()
 
+        case "ping":
+            // MCP spec: ping is answered with an empty result.
+            return [String: Any]()
+
         case "tools/list":
-            let toolDescriptors: [[String: Any]] = tools.values
+            let toolDescriptors: [[String: Any]] = visibleTools.values
                 .sorted(by: { $0.name < $1.name })
                 .map { tool in
                     [
@@ -126,7 +144,7 @@ final class MCPServer {
             guard let name = params["name"] as? String else {
                 throw JSONRPCError(code: -32602, message: "Missing tool name")
             }
-            guard let tool = tools[name] else {
+            guard let tool = visibleTools[name] else {
                 throw JSONRPCError(code: -32602, message: "Unknown tool: \(name)")
             }
             let arguments = params["arguments"] as? [String: Any] ?? [:]

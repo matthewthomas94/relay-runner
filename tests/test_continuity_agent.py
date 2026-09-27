@@ -144,6 +144,38 @@ class ContinuityAgentTests(unittest.TestCase):
             self.assertNotIn(private, serialized)
         self.assertEqual(cleaned["incident_id"], payload["incident_id"])
 
+    def test_child_environment_passes_only_the_launched_providers_subscription_login(self):
+        parent = {
+            "HOME": "/Users/test",
+            "PATH": "/usr/bin",
+            "ANTHROPIC_API_KEY": "anthropic-key",
+            "ANTHROPIC_AUTH_TOKEN": "gateway-token",
+            "ANTHROPIC_BASE_URL": "https://gateway.example.com",
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-key",
+            "CLAUDE_CODE_OAUTH_TOKEN": "setup-token",
+            "CLAUDE_CONFIG_DIR": "/Users/test/.claude-work",
+            "OPENAI_API_KEY": "openai-key",
+            "CODEX_HOME": "/Users/test/.codex-work",
+            "GH_TOKEN": "secret",
+            "VOICE_FIFO": "/private/voice",
+        }
+
+        claude = continuity_agent_environment("p", "inc", 1, parent=parent, provider="claude")
+        codex = continuity_agent_environment("p", "inc", 1, parent=parent, provider="codex")
+
+        # The setup token reaches Claude so the subscription gate judges it;
+        # API keys and cloud routes never do (subscription only).
+        self.assertEqual(claude["CLAUDE_CODE_OAUTH_TOKEN"], "setup-token")
+        self.assertEqual(claude["CLAUDE_CONFIG_DIR"], "/Users/test/.claude-work")
+        self.assertEqual(codex["CODEX_HOME"], "/Users/test/.codex-work")
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", codex)
+        for environment in (claude, codex):
+            for excluded in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+                             "CLAUDE_CODE_USE_BEDROCK", "AWS_BEARER_TOKEN_BEDROCK",
+                             "OPENAI_API_KEY", "GH_TOKEN", "VOICE_FIFO"):
+                self.assertNotIn(excluded, environment)
+
     def test_child_environment_has_identity_but_no_foreground_or_secret_authority(self):
         environment = continuity_agent_environment(
             "continuity-process",

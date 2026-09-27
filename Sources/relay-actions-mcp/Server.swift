@@ -18,6 +18,16 @@ final class MCPServer {
     private let protocolVersion = "2024-11-05"
 
     private let tools: [String: any MCPTool]
+    // Extra tools for `claude-code` only, so every other client keeps the
+    // released tool list byte for byte.
+    private let claudeTools: [String: any MCPTool] = [
+        "get_relay_instructions": GetRelayInstructionsTool(),
+    ]
+    private var clientIsClaudeCode = false
+
+    private var visibleTools: [String: any MCPTool] {
+        clientIsClaudeCode ? tools.merging(claudeTools) { current, _ in current } : tools
+    }
 
     init() {
         let registered: [any MCPTool] = [
@@ -92,12 +102,16 @@ final class MCPServer {
         }
     }
 
-    private func dispatch(method: String, params: [String: Any]) async throws -> Any {
+    func dispatch(method: String, params: [String: Any]) async throws -> Any {
         switch method {
         case "initialize":
             // `instructions` ships the Relay behavioral rules to every session
             // that connects, regardless of project — baked into the binary from
             // services/instructions/ (see Instructions.generated.swift).
+            // Claude Code truncates instructions at 2048 characters, so it
+            // gets the compact payload plus `get_relay_instructions`.
+            let clientInfo = params["clientInfo"] as? [String: Any]
+            clientIsClaudeCode = clientInfo?["name"] as? String == "claude-code"
             return [
                 "protocolVersion": protocolVersion,
                 "capabilities": [
@@ -107,7 +121,7 @@ final class MCPServer {
                     "name": serverName,
                     "version": serverVersion,
                 ],
-                "instructions": Instructions.payload,
+                "instructions": clientIsClaudeCode ? Instructions.claudeCompact : Instructions.payload,
             ]
 
         case "notifications/initialized", "notifications/cancelled":
@@ -115,14 +129,18 @@ final class MCPServer {
             // checks `isNotification` before sending.
             return [String: Any]()
 
+        case "ping":
+            // MCP spec: ping is answered with an empty result.
+            return [String: Any]()
+
         case "tools/list":
-            let toolDescriptors: [[String: Any]] = tools.values
+            let toolDescriptors: [[String: Any]] = visibleTools.values
                 .sorted(by: { $0.name < $1.name })
                 .map { tool in
                     [
                         "name": tool.name,
-                        "description": tool.description,
-                        "inputSchema": tool.inputSchema,
+                        "description": clientIsClaudeCode ? tool.claudeDescription : tool.description,
+                        "inputSchema": clientIsClaudeCode ? tool.claudeInputSchema : tool.inputSchema,
                     ]
                 }
             return ["tools": toolDescriptors]
@@ -131,21 +149,31 @@ final class MCPServer {
             guard let name = params["name"] as? String else {
                 throw JSONRPCError(code: -32602, message: "Missing tool name")
             }
-            guard let tool = tools[name] else {
+            guard let tool = visibleTools[name] else {
                 throw JSONRPCError(code: -32602, message: "Unknown tool: \(name)")
             }
             let arguments = params["arguments"] as? [String: Any] ?? [:]
             do {
-                let content = try await tool.call(arguments: arguments)
+                let hostedArguments = try toolArguments(name: name, arguments: arguments)
+                var content = try await tool.call(arguments: hostedArguments)
+                if clientIsClaudeCode, ClaudeScreenshotCoordinates.tools.contains(name),
+                   let scale = arguments["screenshot_scale"], let x = hostedArguments["x"], let y = hostedArguments["y"] {
+                    content.append([
+                        "type": "text",
+                        "text": "Mapped screenshot (\(arguments["x"] ?? ""), \(arguments["y"] ?? "")) at "
+                            + "screenshot_scale \(scale) to native pixel (\(x), \(y)).",
+                    ])
+                }
                 // Notify the menu-bar app that a tool fired — drives the
                 // perimeter glow + 10s decay window. propose_action skips this
                 // here because it already calls notifyToolFired() inline (and
                 // we don't want to double-notify when the user is staring at a
                 // confirmation prompt). toggle_board also sends inline so the
                 // board/no-session UI update can happen after ActionGlow is
-                // already applied. Tool failures also skip — we only light up
+                // already applied. get_relay_instructions only reads rules, so
+                // it never glows. Tool failures also skip — we only light up
                 // on successful actions, not error responses.
-                if name != "propose_action" && name != "toggle_board" {
+                if name != "propose_action" && name != "toggle_board" && name != "get_relay_instructions" {
                     ConfirmationClient.notifyToolFired(toolName: name)
                 }
                 return ["content": content, "isError": false]
@@ -161,6 +189,14 @@ final class MCPServer {
         default:
             throw JSONRPCError(code: -32601, message: "Method not found: \(method)")
         }
+    }
+
+    /// Claude screenshots are downscaled, so `claude-code` click/scroll x/y
+    /// arrive in image space and are mapped to native pixels here. Every other
+    /// client's arguments pass through unchanged.
+    func toolArguments(name: String, arguments: [String: Any]) throws -> [String: Any] {
+        guard clientIsClaudeCode, ClaudeScreenshotCoordinates.tools.contains(name) else { return arguments }
+        return try ClaudeScreenshotCoordinates.nativeArguments(tool: name, arguments)
     }
 
     // MARK: - Response writing
@@ -222,8 +258,17 @@ struct MCPToolError: Error {
 protocol MCPTool {
     var name: String { get }
     var description: String { get }
+    // Description shown to `claude-code` clients; defaults to `description`.
+    var claudeDescription: String { get }
     var inputSchema: [String: Any] { get }
+    // Schema shown to `claude-code` clients; defaults to `inputSchema`.
+    var claudeInputSchema: [String: Any] { get }
     func call(arguments: [String: Any]) async throws -> [[String: Any]]
+}
+
+extension MCPTool {
+    var claudeDescription: String { description }
+    var claudeInputSchema: [String: Any] { inputSchema }
 }
 
 // MARK: - Logging

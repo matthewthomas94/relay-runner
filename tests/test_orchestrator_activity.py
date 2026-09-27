@@ -8,7 +8,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
-from orchestrator import derive_codex_activity  # noqa: E402
+from orchestrator import _NOOP_TOOLS, derive_activity, derive_codex_activity  # noqa: E402
 
 
 class CodexActivityTests(unittest.TestCase):
@@ -54,6 +54,26 @@ class CodexActivityTests(unittest.TestCase):
 
         self.assertEqual(source_activity, "Editing source files")
         self.assertEqual(ticket_activity, "Updating ticket run log")
+
+
+class ClaudeActivityTests(unittest.TestCase):
+    def test_subagent_and_task_tools_have_readable_labels(self):
+        cases = {
+            "Task": "Delegating to sub-agent",
+            "Agent": "Delegating to sub-agent",
+            "TodoWrite": "Planning",
+            "TaskCreate": "Planning",
+            "TaskUpdate": "Planning",
+            "TaskList": "Planning",
+        }
+
+        for tool, expected in cases.items():
+            with self.subTest(tool=tool):
+                self.assertEqual(derive_activity(tool, {"description": "Explore repo"}), expected)
+
+    def test_task_list_tools_do_not_clobber_meaningful_activity(self):
+        self.assertTrue({"TodoWrite", "TaskCreate", "TaskUpdate", "TaskList"} <= _NOOP_TOOLS)
+        self.assertNotIn("Agent", _NOOP_TOOLS)
 
 
 if __name__ == "__main__":

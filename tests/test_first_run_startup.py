@@ -194,6 +194,87 @@ exit 0
             self.assertIn("Existing venv uses Python 3.9", result.stdout)
             self.assertIn("Venv ready (--venv-only)", result.stdout)
 
+    def test_claude_setup_installs_claude_even_when_codex_is_present(self):
+        for provider, expect_install in (("claude", True), ("codex", False), ("", False)):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                scripts = root / "scripts"
+                services = root / "services"
+                fake_bin = root / "bin"
+                home = root / "home"
+                for directory in (scripts, services, fake_bin, home):
+                    directory.mkdir()
+
+                source = (ROOT / "scripts" / "relay-bridge").read_text()
+                start = source.index("find_codex_bin() {")
+                end = source.index("\n}\n", start) + 3
+                source = source[:start] + 'find_codex_bin() {\n    echo "$FAKE_CODEX"\n}\n' + source[end:]
+                # Keep a Homebrew Claude on the test machine out of the result.
+                source = source.replace(" /opt/homebrew/bin/claude /usr/local/bin/claude", "")
+                launcher = scripts / "relay-bridge"
+                launcher.write_text(source)
+                launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
+                (services / "requirements.txt").write_text("placeholder\n")
+
+                for relative in (
+                    ".claude/commands/relay-bridge.md",
+                    ".claude/commands/relay-stop.md",
+                    ".claude/commands/relay-dispatch.md",
+                    ".claude/commands/relay-workflow.md",
+                    ".codex/skills/relay-bridge/SKILL.md",
+                    ".codex/skills/relay-stop/SKILL.md",
+                    ".codex/skills/relay-dispatch/SKILL.md",
+                    ".codex/skills/relay-workflow/SKILL.md",
+                    ".local/share/kokoro/kokoro-v1.0.onnx",
+                    ".local/share/kokoro/voices-v1.0.bin",
+                    "Library/LaunchAgents/com.relay.orchestrator.plist",
+                ):
+                    path = home / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("ready\n")
+                venv_bin = home / "Library/Application Support/relay-runner/services/.venv/bin"
+                venv_bin.mkdir(parents=True)
+                self.write_executable(venv_bin / "python3", "#!/bin/bash\nexit 0\n")
+                codex = fake_bin / "codex"
+                self.write_executable(codex, "#!/bin/bash\nexit 0\n")
+                installed = root / "curl-called"
+                self.write_executable(
+                    fake_bin / "curl",
+                    """#!/bin/bash
+touch "$FAKE_CURL_CALLED"
+cat <<'SH'
+mkdir -p "$HOME/.local/bin"
+printf '#!/bin/bash\\nexit 0\\n' > "$HOME/.local/bin/claude"
+chmod +x "$HOME/.local/bin/claude"
+SH
+""",
+                )
+                env = {
+                    **os.environ,
+                    "HOME": str(home),
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "FAKE_CODEX": str(codex),
+                    "FAKE_CURL_CALLED": str(installed),
+                    "RELAY_DIAGNOSTICS_DIR": str(root / "diagnostics"),
+                }
+                env.pop("RELAY_RUNNER_PROVIDER", None)
+                if provider:
+                    env["RELAY_RUNNER_PROVIDER"] = provider
+
+                result = subprocess.run(
+                    [str(launcher), "--venv-only"],
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(installed.exists(), expect_install, result.stdout)
+                self.assertEqual((home / ".local/bin/claude").exists(), expect_install)
+                if expect_install:
+                    self.assertIn("Claude Code CLI not found", result.stdout)
+
     def test_pre_main_import_failure_is_safe_and_stops_launchd_retry_churn(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -368,6 +449,9 @@ chmod +x "$venv/python"
                 scripts / "relay-bridge",
                 """#!/bin/bash
 set -e
+# Skill refresh and MCP registration are delegated here too; only the
+# nested venv bootstrap reports progress.
+[ "${1:-}" = "--venv-only" ] || exit 0
 max_percent="${RELAY_PROGRESS_MAX_PERCENT:-100}"
 echo "RELAY_PROGRESS:$((100 * max_percent / 100)):Nested runtime ready." >&2
 venv="$HOME/Library/Application Support/relay-runner/services/.venv/bin"

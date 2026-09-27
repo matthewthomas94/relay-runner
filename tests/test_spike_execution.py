@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services"))
 
 import orchestrator  # noqa: E402
+from claude_subscription import ClaudeSubscriptionReadiness  # noqa: E402
 from orchestrator import (  # noqa: E402
     Daemon,
     MessengerOutcomeStore,
@@ -25,6 +26,8 @@ from orchestrator import (  # noqa: E402
     remove_spike_workspace,
     validate_spike_result,
 )
+
+SUBSCRIPTION = ClaudeSubscriptionReadiness("verified", "subscription", "ok")
 from tickets import read as read_ticket  # noqa: E402
 
 
@@ -119,6 +122,10 @@ class SpikeExecutionTests(unittest.TestCase):
                 run={"execution_mode": "spike", "result_schema_path": "/tmp/schema.json"},
             )
         self.assertIn("Read,Glob,Grep,WebSearch,WebFetch", claude)
+        # dontAsk denies tools that are not pre-approved, including web research.
+        self.assertEqual(
+            claude[claude.index("--allowedTools") + 1], "Read,Glob,Grep,WebSearch,WebFetch"
+        )
         self.assertIn("--safe-mode", claude)
         self.assertIn("--strict-mcp-config", claude)
         self.assertEqual(claude[claude.index("--mcp-config") + 1], '{"mcpServers":{}}')
@@ -362,6 +369,15 @@ class SpikeExecutionTests(unittest.TestCase):
                 ]},
             }), 0)
             self.assertIsNone(worker._spike_violation)
+            # Claude's --json-schema returns the terminal result through the
+            # StructuredOutput tool; it is the designated result, not a mutation.
+            worker._handle_event(json.dumps({
+                "type": "assistant",
+                "message": {"content": [
+                    {"type": "tool_use", "id": "result", "name": "StructuredOutput", "input": {}},
+                ]},
+            }), 0)
+            self.assertIsNone(worker._spike_violation)
             worker._handle_event(json.dumps({
                 "type": "assistant",
                 "message": {"content": [
@@ -504,7 +520,8 @@ class SpikeExecutionTests(unittest.TestCase):
                 "error": "authentication_failed",
             })
             command = [sys.executable, "-c", f"import sys; print({event!r}); sys.exit(1)"]
-            with patch.object(worker, "_command", return_value=command):
+            with patch.object(worker, "_command", return_value=command), \
+                    patch("orchestrator.check_claude_subscription", return_value=SUBSCRIPTION):
                 worker._run()
 
             self.assertEqual(
@@ -512,6 +529,24 @@ class SpikeExecutionTests(unittest.TestCase):
                 "spike research access unavailable: provider authentication failed (HTTP 401); "
                 "re-authenticate the provider and retry",
             )
+
+    def test_claude_transient_retry_is_not_reported_as_research_access_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunsStore(Path(tmp) / "runs.db")
+            run_id = store.insert(
+                ticket_id="RR-1", repo_path=tmp, workspace_path=tmp,
+                branch="", execution_mode="spike", state="Running",
+            )
+            worker = Worker(
+                run_id=run_id, run=store.get(run_id) or {}, prompt="",
+                agent_bin="claude", agent_kind="claude", store=store,
+                log_path=Path(tmp) / "run.log",
+            )
+            worker._handle_event(json.dumps({
+                "type": "system", "subtype": "api_retry", "error_status": 529,
+                "error": "overloaded",
+            }), 0)
+            self.assertIsNone(worker._research_access_error)
 
     def test_schema_and_validator_share_structured_result_limits(self):
         schema = orchestrator.SPIKE_RESULT_SCHEMA["properties"]

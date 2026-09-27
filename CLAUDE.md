@@ -2,9 +2,15 @@
 
 This repo is its own dogfood: the relay-runner orchestrator is the sub-agent dispatcher you'll use *here*, not a separate tool. When the user is working in this repo, default to the orchestration workflow described below unless they say otherwise — and follow the Relay-stack tool defaults below for any screen-control work.
 
-> **The behavioral rules below are mirrored into `relay-actions-mcp` and `relay-orchestrator-mcp`** so they ship to any Claude session that connects to those servers — not just sessions opened inside this repo. The **source of truth is `services/instructions/`** (one markdown chunk per concern); `scripts/build-instructions` bakes those chunks into each MCP server's `initialize` instructions payload and regenerates the block below. **Don't hand-edit between the GENERATED markers** — edit the chunks and re-run the script.
+> **The behavioral rules below are mirrored into `relay-actions-mcp` and `relay-orchestrator-mcp`** so they ship to any Claude session that connects to those servers — not just sessions opened inside this repo. The **source of truth is `services/instructions/`** (one markdown chunk per concern); `scripts/build-instructions` bakes those chunks into each MCP server's `initialize` instructions payload and regenerates the block below. Claude Code truncates MCP instructions at 2048 characters, so `claude-code` clients instead receive the compact payloads in `services/instructions/compact/` and fetch the full rules with the orchestrator and actions servers' `get_relay_instructions` tool. **Don't hand-edit between the GENERATED markers** — edit the chunks and re-run the script.
 
 <!-- BEGIN GENERATED: relay behavioral rules — edit services/instructions/, not here -->
+
+## Subscription-only provider access
+
+Relay Runner uses only the user's own Claude or ChatGPT subscription for model requests — never an API key, cloud-provider account (Bedrock, Vertex, Foundry), gateway, or other pay-as-you-go credential. This covers every Relay-launched provider process: foreground sessions, workers and reviews, spikes, messenger, continuity recovery, sidecar research, and note metadata.
+
+When authentication is missing, expired, failed (for example a 401), or cannot be verified as a subscription, stop the affected work and send the user to subscription sign-in (`claude auth login` for Claude, `codex login` for Codex), then re-dispatch. Never suggest setting `ANTHROPIC_API_KEY`, an API-key helper, or another metered route to repair an auth failure, and never print credential values.
 
 ## The orchestration workflow
 
@@ -77,6 +83,12 @@ A small change you can do inline in this session **without going through the boa
 - Don't push `relay/<id>` branches. They're throwaway by design; integrate into the working branch (typically `main`) before deleting.
 - Don't let a sub-agent edit `.orchestrator/` files other than its own ticket. That boundary is enforced in `services/orchestrator_workflow.md`. The daemon writes ticket files only through structured orchestrator actions or dependency progression.
 - Don't ad-hoc fix the bundled `.app`'s scripts. The DMG-build action is the source of truth; commit fixes upstream and let the action rebuild.
+
+## Artifact-enabled projects and finding completed tickets
+
+For an artifact-enabled project, `.orchestrator/` is a projection of `refs/heads/relay/artifacts`. Use the daemon's artifact-backed ticket writer for ticket creation and changes; do not stage, edit, or commit projected ticket files directly. In such a project this replaces step 2's direct ticket-file write, `next_id` bump, and commit. This keeps automatic archival and board changes under the same writer.
+
+The daemon automatically archives older completed tickets to the project's GitHub artifact branch, retaining the newest 25 Done-or-Canceled tickets and all unfinished tickets locally. A missing local ticket may be archived. Before treating it as lost, use `scripts/relay-ticket-history search "words or ticket ID"` or `scripts/relay-ticket-history show RR-42`. Add `--full-text` to search ticket bodies. These commands return verified text and permanent GitHub links without restoring Markdown. For other projects, use the installed command at `/Applications/Relay Runner.app/Contents/SharedSupport/scripts/relay-ticket-history` with `--repo /path/to/project`. Setup and cleanup are automatic for registered projects once more than 25 completed tickets and a usable GitHub remote exist. An agent only needs `enable --remote <name>` to resolve an ambiguous destination. Add `--remote origin` to search/show from a fresh checkout without local archive state. The command verifies a disposable GitHub fetch and removes its temporary data.
 
 ## Program Manager capture
 

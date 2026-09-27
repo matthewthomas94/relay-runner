@@ -25,6 +25,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol
 
+from claude_subscription import check as check_claude_subscription
 from continuity_incidents import normalize_recovery_generation
 
 from codex_model_catalog import (
@@ -826,9 +827,11 @@ class ClaudeMessengerBackend:
         config: MessengerConfig,
         *,
         popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
+        subscription_check: Callable[..., object] = check_claude_subscription,
     ):
         self.config = config
         self._popen_factory = popen_factory
+        self._subscription_check = subscription_check
         self._proc: subprocess.Popen | None = None
         self._reader_thread: threading.Thread | None = None
         self._start_lock = threading.Lock()
@@ -865,6 +868,12 @@ class ClaudeMessengerBackend:
         with self._start_lock:
             if self._proc and self._proc.poll() is None:
                 return
+            environment = self.child_environment()
+            # Subscription-only: never start Claude on an API key or other metered route.
+            readiness = self._subscription_check(
+                _command_prefix(self.config.command), cwd=self.config.cwd, environment=environment)
+            if not readiness.ready:
+                raise MessengerError(readiness.message)
             try:
                 proc = self._popen_factory(
                     self.spawn_command(),
@@ -874,7 +883,7 @@ class ClaudeMessengerBackend:
                     text=True,
                     bufsize=1,
                     cwd=self.config.cwd,
-                    env=self.child_environment(),
+                    env=environment,
                 )
             except OSError as exc:
                 raise MessengerError(f"could not start Claude messenger: {exc}") from exc

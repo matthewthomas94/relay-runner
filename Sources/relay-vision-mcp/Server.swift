@@ -24,6 +24,7 @@ final class MCPServer {
     private let protocolVersion = "2024-11-05"
 
     private let tools: [String: any MCPTool]
+    private var clientIsClaudeCode = false
 
     init() {
         let registered: [any MCPTool] = [
@@ -90,10 +91,10 @@ final class MCPServer {
         }
     }
 
-    private func dispatch(method: String, params: [String: Any]) async throws -> Any {
+    func dispatch(method: String, params: [String: Any]) async throws -> Any {
         switch method {
         case "initialize":
-            return [
+            var result: [String: Any] = [
                 "protocolVersion": protocolVersion,
                 "capabilities": [
                     "tools": [String: Any](),
@@ -103,10 +104,23 @@ final class MCPServer {
                     "version": serverVersion,
                 ],
             ]
+            // Only `claude-code` gets the look-at-screen rule (generated from
+            // services/instructions/compact/); other clients keep the released
+            // response with no instructions.
+            let clientInfo = params["clientInfo"] as? [String: Any]
+            clientIsClaudeCode = clientInfo?["name"] as? String == "claude-code"
+            if clientIsClaudeCode {
+                result["instructions"] = Instructions.claudeCompact
+            }
+            return result
 
         case "notifications/initialized", "notifications/cancelled":
             // Notifications — no response. Returning anything is harmless because the caller
             // checks `isNotification` before sending.
+            return [String: Any]()
+
+        case "ping":
+            // MCP spec: ping is answered with an empty result.
             return [String: Any]()
 
         case "tools/list":
@@ -115,7 +129,7 @@ final class MCPServer {
                 .map { tool in
                     [
                         "name": tool.name,
-                        "description": tool.description,
+                        "description": clientIsClaudeCode ? tool.claudeDescription : tool.description,
                         "inputSchema": tool.inputSchema,
                     ]
                 }
@@ -130,7 +144,8 @@ final class MCPServer {
             }
             let arguments = params["arguments"] as? [String: Any] ?? [:]
             do {
-                let content = try await tool.call(arguments: arguments)
+                let raw = try await tool.call(arguments: arguments)
+                let content = try toolContent(name: name, arguments: arguments, raw: raw)
                 // Notify the menu-bar app that a tool fired — drives the
                 // perimeter glow + 10s decay window. Same notification name and
                 // payload shape as relay-actions-mcp, so ActionGlow pulses on
@@ -150,6 +165,17 @@ final class MCPServer {
         default:
             throw JSONRPCError(code: -32601, message: "Method not found: \(method)")
         }
+    }
+
+    /// Claude Code downscales images over 2000 px, so `claude-code` gets a
+    /// screenshot sized and labelled with its scale here. Every other client
+    /// gets the app's content unchanged.
+    func toolContent(name: String, arguments: [String: Any], raw: [[String: Any]]) throws -> [[String: Any]] {
+        guard clientIsClaudeCode, name == "screenshot" else { return raw }
+        return try ClaudeScreenshotScaling.downscale(
+            content: raw,
+            displayIndex: arguments["display_index"] as? Int ?? 0
+        )
     }
 
     // MARK: - Response writing
@@ -211,8 +237,14 @@ struct MCPToolError: Error {
 protocol MCPTool {
     var name: String { get }
     var description: String { get }
+    // Description shown to `claude-code` clients; defaults to `description`.
+    var claudeDescription: String { get }
     var inputSchema: [String: Any] { get }
     func call(arguments: [String: Any]) async throws -> [[String: Any]]
+}
+
+extension MCPTool {
+    var claudeDescription: String { description }
 }
 
 // MARK: - Logging

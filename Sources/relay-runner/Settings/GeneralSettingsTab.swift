@@ -18,11 +18,18 @@ struct GeneralSettingsTab: View {
     @State private var skillStatusColor: SettingsSemanticColor = .idle
     @State private var showOverwriteAlert = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var claudeReadiness: ProcessManager.ClaudeSubscriptionCheck?
 
     var body: some View {
         SettingsStack {
             SettingsSection("Agent") {
-                SettingsControlRow("LLM Provider") {
+                SettingsControlRow(
+                    "LLM Provider",
+                    description: Self.providerReadinessDescription(
+                        provider: config.provider,
+                        claudeReadiness: claudeReadiness
+                    )
+                ) {
                     Picker("LLM Provider", selection: providerSelection) {
                         ForEach(GeneralConfig.AgentProvider.allCases) { provider in
                             Text(provider.displayName).tag(provider)
@@ -120,7 +127,7 @@ struct GeneralSettingsTab: View {
                 SettingsRow {
                     SettingsRowLabel(
                         "Relay Skills",
-                        description: "Adds relay-bridge and relay-stop support to Codex and Claude Code"
+                        description: "Adds relay-bridge, relay-stop, relay-workflow, and relay-dispatch to Codex and Claude Code"
                     )
                     Spacer()
                     SettingsInlineStatus(
@@ -143,7 +150,7 @@ struct GeneralSettingsTab: View {
                     Button("Overwrite", role: .destructive) { doInstallSkill() }
                     Button("Cancel", role: .cancel) { }
                 } message: {
-                    Text("This will replace the installed Relay Runner voice command/skill files with the default versions.")
+                    Text("This will replace the installed Relay Runner command/skill files, including any you edited, with the default versions.")
                 }
             }
         }
@@ -155,6 +162,36 @@ struct GeneralSettingsTab: View {
                 provider: config.provider
             )
         )
+        .task(id: config.provider) { await refreshProviderReadiness() }
+    }
+
+    /// Claude must be installed and verified on the user's subscription before
+    /// a session can start, so choosing it shows that readiness here rather
+    /// than as a failed session later. Codex shows nothing.
+    static func providerReadinessDescription(
+        provider: GeneralConfig.AgentProvider,
+        claudeReadiness: ProcessManager.ClaudeSubscriptionCheck?
+    ) -> String? {
+        guard provider == .claude else { return nil }
+        switch claudeReadiness {
+        case nil:
+            return "Checking your Claude subscription\u{2026}"
+        case .verified:
+            return "Using your Claude subscription."
+        case .unavailable(let message):
+            return message
+        }
+    }
+
+    private func refreshProviderReadiness() async {
+        claudeReadiness = nil
+        guard config.provider == .claude else { return }
+        let workingDirectory = WorkspaceFolder.url(from: config.working_directory).path
+        claudeReadiness = await withCheckedContinuation { continuation in
+            ClaudeSubscriptionMonitor.shared.refresh(workingDirectory: workingDirectory) {
+                continuation.resume(returning: $0)
+            }
+        }
     }
 
     private var providerSelection: Binding<GeneralConfig.AgentProvider> {

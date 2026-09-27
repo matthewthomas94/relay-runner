@@ -80,6 +80,10 @@ final class OnboardingController {
     private let makeVenvInstaller: () -> any OnboardingRuntimeInstalling
     private let runtimeAlreadyInstalled: (GeneralConfig.AgentProvider) -> Bool
     private let isAgentAuthenticated: (GeneralConfig.AgentProvider) -> Bool
+    /// Rechecks readiness before `isAgentAuthenticated` is read and reports
+    /// why the provider isn't ready. Claude's subscription gate is slow, so it
+    /// answers asynchronously; the default answers at once with no detail.
+    private let refreshAgentReadiness: (GeneralConfig.AgentProvider, @escaping (String?) -> Void) -> Void
     private let openAgentLoginInTerminal: (GeneralConfig.AgentProvider) -> Bool
     private let onOpenExternalWindow: () -> Void
     private let runtimePollInterval: TimeInterval
@@ -149,6 +153,7 @@ final class OnboardingController {
          makeVenvInstaller: @escaping () -> any OnboardingRuntimeInstalling = { VenvInstaller() },
          runtimeAlreadyInstalled: @escaping (GeneralConfig.AgentProvider) -> Bool = { VenvInstaller.alreadyInstalled(for: $0) },
          isAgentAuthenticated: @escaping (GeneralConfig.AgentProvider) -> Bool = { AgentAuth.isAuthenticated(for: $0) },
+         refreshAgentReadiness: @escaping (GeneralConfig.AgentProvider, @escaping (String?) -> Void) -> Void = { _, done in done(nil) },
          openAgentLoginInTerminal: @escaping (GeneralConfig.AgentProvider) -> Bool = { AgentAuth.openLoginInTerminal(for: $0) },
          onOpenExternalWindow: @escaping () -> Void = {},
          runtimePollInterval: TimeInterval = 0.5,
@@ -197,6 +202,7 @@ final class OnboardingController {
         self.venvInstaller = makeVenvInstaller()
         self.runtimeAlreadyInstalled = runtimeAlreadyInstalled
         self.isAgentAuthenticated = isAgentAuthenticated
+        self.refreshAgentReadiness = refreshAgentReadiness
         self.openAgentLoginInTerminal = openAgentLoginInTerminal
         self.onOpenExternalWindow = onOpenExternalWindow
         self.runtimePollInterval = runtimePollInterval
@@ -739,19 +745,28 @@ final class OnboardingController {
 
     private func showIntroAgentLogin(message: String?) {
         guard let state = agentSetupState,
-              let intro = introController else { return }
+              introController != nil else { return }
         stopRuntimePolling()
         OnboardingResumeState.save(
             step: .agentLogin,
             provider: state.provider,
             parentPermissionsReviewed: true
         )
+        refreshAgentReadiness(state.provider) { [weak self] detail in
+            self?.presentIntroAgentLogin(provider: state.provider, message: message ?? detail)
+        }
+    }
+
+    private func presentIntroAgentLogin(provider: GeneralConfig.AgentProvider, message: String?) {
+        guard let state = agentSetupState,
+              state.provider == provider,
+              let intro = introController else { return }
         let signedIn = isAgentAuthenticated(state.provider)
         intro.presentAgentLoginPrompt(
             OnboardingAgentLoginPromptPresentation(
                 provider: state.provider,
                 signedIn: signedIn,
-                message: message
+                message: signedIn ? nil : message
             ),
             fullyRendered: { [weak self] in
                 guard signedIn else { return }
@@ -762,8 +777,24 @@ final class OnboardingController {
                     self.completeAuthenticatedProvider(state.provider, introDismissed: false)
                 }
             },
-            signInAction: { [weak self] in self?.startIntroAgentLogin() }
+            signInAction: { [weak self] in self?.startIntroAgentLogin() },
+            continueWithoutSignInAction: Self.allowsContinueWithoutSignIn(state.provider)
+                ? { [weak self] in self?.continueIntroWithoutSignIn() }
+                : nil
         )
+    }
+
+    /// Claude can finish app setup unsigned: its sessions and background model
+    /// work stay unavailable until the subscription gate verifies the account,
+    /// because every Claude launch runs that gate. Codex keeps its sign-in step.
+    static func allowsContinueWithoutSignIn(_ provider: GeneralConfig.AgentProvider) -> Bool {
+        provider == .claude
+    }
+
+    private func continueIntroWithoutSignIn() {
+        guard let state = agentSetupState else { return }
+        stopAuthPolling()
+        completeAuthenticatedProvider(state.provider, introDismissed: false)
     }
 
     private func startIntroAgentLogin() {
@@ -815,19 +846,29 @@ final class OnboardingController {
             stopAuthPolling()
             return
         }
-        guard isAgentAuthenticated(provider) else { return }
-        stopAuthPolling()
-        completeAuthenticatedProvider(provider, introDismissed: true)
+        refreshAgentReadiness(provider) { [weak self] _ in
+            guard let self,
+                  self.authPollTimer != nil,
+                  self.agentSetupState?.provider == provider,
+                  self.isAgentAuthenticated(provider) else { return }
+            self.stopAuthPolling()
+            self.completeAuthenticatedProvider(provider, introDismissed: true)
+        }
     }
 
     private func restoreLoginIfAuthenticationDidNotComplete(provider: GeneralConfig.AgentProvider) {
-        guard agentSetupState?.provider == provider,
-              !isAgentAuthenticated(provider) else { return }
-        stopAuthPolling()
-        restoreIntroAgentLogin(
-            provider: provider,
-            message: "\(provider.displayName) sign-in did not complete. Try again when you are ready."
-        )
+        refreshAgentReadiness(provider) { [weak self] detail in
+            guard let self,
+                  self.authPollTimer != nil,
+                  self.agentSetupState?.provider == provider,
+                  !self.isAgentAuthenticated(provider) else { return }
+            self.stopAuthPolling()
+            self.restoreIntroAgentLogin(
+                provider: provider,
+                message: detail
+                    ?? "\(provider.displayName) sign-in did not complete. Try again when you are ready."
+            )
+        }
     }
 
     private func restoreIntroAgentLogin(provider: GeneralConfig.AgentProvider, message: String) {

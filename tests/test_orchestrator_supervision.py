@@ -14,7 +14,10 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
+from claude_subscription import ClaudeSubscriptionReadiness  # noqa: E402
 from orchestrator import Daemon, ReviewWorker, RunsStore, Worker  # noqa: E402
+
+SUBSCRIPTION = ClaudeSubscriptionReadiness("verified", "subscription", "ok")
 
 
 class OrchestratorSupervisionTests(unittest.TestCase):
@@ -43,7 +46,9 @@ class OrchestratorSupervisionTests(unittest.TestCase):
                 )
 
                 started = time.monotonic()
-                worker._run()
+                # A fake agent stands in for Claude, so the subscription gate is stubbed.
+                with patch("orchestrator.check_claude_subscription", return_value=SUBSCRIPTION):
+                    worker._run()
 
                 updated = store.get(run_id) or {}
                 self.assertGreaterEqual(time.monotonic() - started, 0.15)

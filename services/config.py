@@ -137,7 +137,7 @@ def load_config(config_path: str | None = None) -> dict:
             "prevent_sleep_while_running": False,
         },
         "orchestrator": {
-            "agent": "codex",
+            "agent": "",
             "command": "",
             "port": 7634,
             "workspace_root": "",
@@ -223,8 +223,10 @@ def _migrate_config(
         provider = "codex"
     general["provider"] = provider
 
-    command = str(general.get("command", ""))
-    if not command.strip().startswith("/"):
+    command = str(general.get("command", "")).strip()
+    command_name = os.path.basename(command).lower()
+    command_provider = "claude" if "claude" in command_name else "codex"
+    if not command.startswith("/") or command_provider != provider:
         general["command"] = provider
 
     valid_models = {

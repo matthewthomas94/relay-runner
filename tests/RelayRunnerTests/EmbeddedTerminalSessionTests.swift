@@ -520,7 +520,11 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
             withIntermediateDirectories: true
         )
         let events = directory.appendingPathComponent("events.jsonl")
-        try #"{"stage":"provider_spawn","outcome":"started"}"#.write(
+        // provider_session_start is Claude's SessionStart hook; Codex ignores it.
+        try """
+        {"stage":"provider_spawn","outcome":"started"}
+        {"stage":"provider_session_start","outcome":"ready"}
+        """.write(
             to: events,
             atomically: true,
             encoding: .utf8
@@ -2577,6 +2581,177 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.command.path), provider)
             XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.claimed.path), provider)
         }
+    }
+
+    func testInterruptedClaudeTurnWithoutStopHookReleasesOnceIdleForEachInterrupt() throws {
+        let results = try runInterruptWithoutStopHook(provider: "claude")
+        XCTAssertEqual(results.cancelledTurns, ["prompt-1", "prompt-2"])
+        XCTAssertEqual(Set(results.eventIDs).count, 2)
+        XCTAssertEqual(results.delivered, ["Next task 1", "Next task 2"])
+    }
+
+    func testInterruptedCodexTurnStillWaitsForItsStopHook() throws {
+        let results = try runInterruptWithoutStopHook(provider: "codex")
+        XCTAssertEqual(results.cancelledTurns, [])
+        XCTAssertEqual(results.delivered, [])
+    }
+
+    /// Interrupts two active turns in one session. No Stop hook ever fires; the
+    /// test plays the bridge by projecting a published cancellation.
+    private func runInterruptWithoutStopHook(
+        provider: String
+    ) throws -> (cancelledTurns: [String], eventIDs: [String], delivered: [String]) {
+        let fixture = try makeFixture()
+        XCTAssertEqual(Darwin.mkfifo(fixture.voiceInput.path, 0o600), 0)
+        let reader = Darwin.open(fixture.voiceInput.path, O_RDONLY | O_NONBLOCK)
+        XCTAssertGreaterThanOrEqual(reader, 0)
+        defer { Darwin.close(reader) }
+        var currentTime = Date(timeIntervalSince1970: 100)
+        var sent: [String] = []
+        var scheduled: [() -> Void] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { sent.append(String(decoding: $0, as: UTF8.self)) },
+            schedule: { _, _, work in scheduled.append(work) },
+            isRunning: { true },
+            now: { currentTime },
+            providerSessionID: "provider-session",
+            provider: provider,
+            appSessionID: "app-session",
+            recoveryGeneration: "generation",
+            foregroundGateHandle: "gate"
+        )
+        func turn(_ number: Int, state: String) -> [String: Any] {
+            [
+                "app_session_id": "app-session",
+                "recovery_generation": "generation",
+                "actor_role": "foreground_pm",
+                "foreground_gate_handle": "gate",
+                "provider": provider,
+                "provider_session_id": "provider-session",
+                "session_id": "native-session",
+                "turn_id": "prompt-\(number)",
+                "relay_command_seq": number * 10,
+                "relay_command_id": "work-\(number)",
+                "state": state,
+                "updated_at": currentTime.timeIntervalSince1970,
+            ]
+        }
+        func queue(_ text: String, seq: Int, extra: String = "") throws {
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-\(seq)\",\"relay_command_seq\":\(seq)\(extra)}"
+            try "\(text)\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        }
+        func drainCancellations() -> [[String: Any]] {
+            var buffer = [UInt8](repeating: 0, count: 16_384)
+            let count = Darwin.read(reader, &buffer, buffer.count)
+            let lines = String(decoding: buffer.prefix(max(0, count)), as: UTF8.self)
+                .split(separator: "\n")
+            return lines.compactMap { line in
+                guard line.hasPrefix("__PROVIDER_TURN_EVENT__:"),
+                      let object = try? JSONSerialization.jsonObject(
+                        with: Data(line.dropFirst("__PROVIDER_TURN_EVENT__:".count).utf8)
+                      ) as? [String: Any],
+                      object["event"] as? String == "provider_turn_cancelled" else { return nil }
+                return object
+            }
+        }
+
+        var cancelledTurns: [String] = []
+        var eventIDs: [String] = []
+        var delivered: [String] = []
+        var projected: [[String: Any]] = []
+        for number in 1...2 {
+            projected.append(turn(number, state: "active"))
+            try writeProviderTurnRecords(projected, to: fixture.providerTurns)
+            try queue("__INTERRUPT__", seq: number * 10 + 1, extra: ",\"preempt_provider\":true")
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(sent.last, "\u{3}", provider)
+
+            try queue("Next task \(number)", seq: number * 10 + 2)
+            currentTime += 0.5
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+            // The provider redraws its prompt after the interrupt.
+            delivery.recordProviderOutputProgress()
+            currentTime += 1.0
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertTrue(drainCancellations().isEmpty, provider)
+
+            currentTime += 1.0
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+            let cancellations = drainCancellations()
+            guard let cancellation = cancellations.first else { break }
+            XCTAssertEqual(cancellations.count, 1, provider)
+            XCTAssertEqual(cancellation["release_reason"] as? String, "provider_interrupted")
+            XCTAssertEqual(cancellation["session_id"] as? String, "native-session")
+            XCTAssertEqual(cancellation["provider_session_id"] as? String, "provider-session")
+            cancelledTurns.append(cancellation["turn_id"] as? String ?? "")
+            eventIDs.append(cancellation["event_id"] as? String ?? "")
+
+            projected[projected.count - 1] = turn(number, state: "cancelled")
+            try writeProviderTurnRecords(projected, to: fixture.providerTurns)
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            scheduled.removeLast()()
+            XCTAssertEqual(Array(sent.suffix(2)), ["Next task \(number)", "\r"], provider)
+            delivered.append("Next task \(number)")
+
+            // The delivered prompt's own turn acknowledges it and completes.
+            var acknowledged = turn(number, state: "completed_final")
+            acknowledged["turn_id"] = "prompt-\(number)-next"
+            acknowledged["relay_command_seq"] = number * 10 + 2
+            acknowledged["relay_command_id"] = "cmd-\(number * 10 + 2)"
+            projected.append(acknowledged)
+            try writeProviderTurnRecords(projected, to: fixture.providerTurns)
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+        }
+        return (cancelledTurns, eventIDs, delivered)
+    }
+
+    func testHooklessClaudeManualSubmitReleasesVoiceDeliveryAfterTimeout() throws {
+        for input in ["/model", "!ls"] {
+            let results = try runHooklessManualSubmit(input, provider: "claude")
+            XCTAssertEqual(results, [false, false, false, true], input)
+        }
+    }
+
+    func testCodexManualSubmitBarrierStillWaitsForItsHookRecord() throws {
+        let results = try runHooklessManualSubmit("/model", provider: "codex")
+        XCTAssertEqual(results, [false, false, false, false])
+    }
+
+    /// Claims at 5s, 10s (timeout, but output 0.6s ago), 10.5s (still not
+    /// quiet) and 11.1s (quiet) after a manual submit that never gets a hook.
+    private func runHooklessManualSubmit(_ input: String, provider: String) throws -> [Bool] {
+        let fixture = try makeFixture()
+        var currentTime = Date(timeIntervalSince1970: 100)
+        var sent: [String] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { sent.append(String(decoding: $0, as: UTF8.self)) },
+            schedule: { _, _, _ in },
+            isRunning: { true },
+            now: { currentTime },
+            provider: provider
+        )
+        delivery.recordUserInput(ArraySlice(Array(input.utf8)))
+        delivery.recordUserInput(ArraySlice([13]))
+        let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-9\",\"relay_command_seq\":9}"
+        try "Voice task\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+
+        var results: [Bool] = []
+        for (offset, outputAt) in [(5.0, nil), (10.0, 9.4), (10.5, nil), (11.1, nil)] as [(Double, Double?)] {
+            if let outputAt {
+                currentTime = Date(timeIntervalSince1970: 100 + outputAt)
+                delivery.recordProviderOutputProgress()
+            }
+            currentTime = Date(timeIntervalSince1970: 100 + offset)
+            results.append(delivery.claimAndSendIfPossible())
+        }
+        XCTAssertEqual(sent == ["Voice task"], results.last == true, input)
+        return results
     }
 
     func testRestartFaultMatrixEmitsEvidence() throws {

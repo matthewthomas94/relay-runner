@@ -50,6 +50,85 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertFalse(claudeScript.contains(" -c "))
     }
 
+    func testClaudeLaunchChecksSubscriptionBeforeBridgeAndProvider() {
+        let relayBridge = "/App/Contents/SharedSupport/scripts/relay-bridge"
+        for target in [ProcessManager.AgentTarget.claude, .codex] {
+            var config = AppConfig()
+            config.general.provider = target == .claude ? .claude : .codex
+            let script = ProcessManager.launchScript(
+                relayBridge: relayBridge,
+                target: target,
+                agentBinary: "/usr/local/bin/agent",
+                config: config,
+                voiceDelivery: .appOwned
+            )
+            guard target == .claude else {
+                XCTAssertFalse(script.contains("claude_subscription"))
+                continue
+            }
+            let gate = script.range(of: "'/App/Contents/SharedSupport/services/claude_subscription.py' --binary '/usr/local/bin/agent' --cwd \"$PWD\"")
+            let bridge = script.range(of: "--start-daemon")
+            let provider = script.range(of: "exec '/usr/local/bin/agent'")
+            XCTAssertNotNil(gate)
+            XCTAssertLessThan(gate!.lowerBound, bridge!.lowerBound)
+            XCTAssertLessThan(gate!.lowerBound, provider!.lowerBound)
+            XCTAssertTrue(script.contains("exit 78"))
+        }
+    }
+
+    func testClaudeSubscriptionGateRefusesAnAPIKeyRouteWithoutPrintingIt() throws {
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("relay-subscription-gate-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let claude = temp.appendingPathComponent("claude")
+        let status = temp.appendingPathComponent("status.json")
+        try "#!/bin/sh\ncat \"$(dirname \"$0\")/status.json\"\n".write(to: claude, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: claude.path)
+        let gate = ProcessManager.claudeSubscriptionGate(
+            relayBridge: repo.appendingPathComponent("scripts/relay-bridge").path,
+            target: .claude,
+            agentBinary: claude.path
+        )
+        let script = "relay_record_session_event() { :; }\ncd \(temp.path)\n\(gate)\necho launched\n"
+
+        func run(_ json: String, environment extra: [String: String] = [:]) throws -> (Int32, String) {
+            try json.write(to: status, atomically: true, encoding: .utf8)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", script]
+            process.environment = ["HOME": temp.path, "PATH": "/usr/bin:/bin"].merging(extra) { $1 }
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = output
+            try process.run()
+            process.waitUntilExit()
+            let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            return (process.terminationStatus, text)
+        }
+
+        let subscription = #"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}"#
+        let verified = try run(subscription)
+        XCTAssertEqual(verified.0, 0, verified.1)
+        XCTAssertTrue(verified.1.contains("launched"))
+
+        let keyed = try run(subscription, environment: ["ANTHROPIC_API_KEY": "sk-ant-api03-SECRET"])
+        XCTAssertEqual(keyed.0, ProcessManager.claudeSubscriptionGateExitCode)
+        XCTAssertFalse(keyed.1.contains("launched"))
+        XCTAssertTrue(keyed.1.contains("ANTHROPIC_API_KEY"))
+        XCTAssertFalse(keyed.1.contains("SECRET"))
+
+        let message = EmbeddedTerminalSession.launchFailureMessage(
+            providerName: "Claude",
+            rawStatus: ProcessManager.claudeSubscriptionGateExitCode << 8,
+            bridgeSocketOutcome: nil
+        )
+        XCTAssertTrue(message.contains("only uses your Claude subscription"))
+        XCTAssertTrue(message.contains("claude auth login"))
+    }
+
     func testEmbeddedLaunchScriptStartsBridgeDaemonAndLeavesProviderPromptUsable() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
         var config = AppConfig()
@@ -322,7 +401,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
             XCTAssertTrue(claudeScript.contains(
                 "export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=\(ProcessManager.claudeAutoCompactPercentage)"
             ), alias)
-            XCTAssertFalse(claudeScript.contains("autoCompactEnabled"), alias)
+            XCTAssertTrue(claudeScript.contains(#""autoCompactEnabled":true"#), alias)
             XCTAssertTrue(claudeScript.contains("StopFailure"), alias)
             XCTAssertFalse(claudeScript.contains("model_auto_compact_token_limit"), alias)
             XCTAssertFalse(claudeScript.contains("/compact\\r"), alias)
@@ -597,6 +676,11 @@ final class ProcessManagerLaunchTests: XCTestCase {
         }
     }
 
+    func testLaunchRefreshKeepsSkillEditsWhileSettingsReinstallOverwrites() {
+        XCTAssertEqual(ProcessManager.skillInstallArgument(force: false), "--refresh-skills")
+        XCTAssertEqual(ProcessManager.skillInstallArgument(force: true), "--install-skills")
+    }
+
     func testCodexBinaryResolutionPrefersCurrentChatGPTAppThenLegacyCodexApp() {
         let chatGPT = "/Applications/ChatGPT.app/Contents/Resources/codex"
         let legacy = "/Applications/Codex.app/Contents/Resources/codex"
@@ -623,6 +707,28 @@ final class ProcessManagerLaunchTests: XCTestCase {
                 target: .codex,
                 isExecutable: { _ in false }
             ),
+            "codex"
+        )
+    }
+
+    func testAbsoluteCommandIsUsedOnlyForTheProviderItTargets() {
+        let codexPath = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        let claudePath = "/opt/homebrew/bin/claude"
+
+        XCTAssertEqual(
+            ProcessManager.resolveAgentBinary(codexPath, target: .codex, isExecutable: { _ in false }),
+            codexPath
+        )
+        XCTAssertEqual(
+            ProcessManager.resolveAgentBinary(claudePath, target: .claude, isExecutable: { _ in false }),
+            claudePath
+        )
+        XCTAssertEqual(
+            ProcessManager.resolveAgentBinary(codexPath, target: .claude, isExecutable: { _ in false }),
+            "claude"
+        )
+        XCTAssertEqual(
+            ProcessManager.resolveAgentBinary(claudePath, target: .codex, isExecutable: { _ in false }),
             "codex"
         )
     }

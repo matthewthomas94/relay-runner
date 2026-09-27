@@ -6,12 +6,33 @@ Relay Runner supports Codex and Claude Code as equivalent session providers. The
 
 | | Codex | Claude Code |
 | --- | --- | --- |
-| Executable discovery | Bundled Codex executable in ChatGPT.app or Codex.app, followed by configured command resolution. | Configured command or `~/.local/bin/claude`. Onboarding can run Claude's official installer when neither supported CLI is present. |
-| Authentication check | Presence of `~/.codex/auth.json`. | Presence of the `Claude Code-credentials` login-keychain item; API-key-only setups may need to skip the onboarding check. |
-| Manual sign-in | `codex login` | `claude /login` |
+| Executable discovery | Bundled Codex executable in ChatGPT.app or Codex.app, followed by configured command resolution. | Configured command, then `~/.local/bin/claude`, `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`, the npm global prefix, and `claude` on the PATH your shell profile sets. Setup runs Claude's official installer when Claude is selected and missing, or when neither supported CLI is present. |
+| Authentication check | Presence of `~/.codex/auth.json`. | Onboarding, Settings and every launch use the [subscription-only gate](#subscription-only-authentication). A keychain login or `loggedIn` status alone is not enough. Setup can finish without sign-in; Claude sessions stay unavailable until the gate passes. |
+| Manual sign-in | `codex login` | `claude auth login` with your Claude.ai subscription account |
 | Relay install | Relay skills and the Relay Actions, Relay Vision, and orchestrator MCP helpers are registered for the available CLI. | Same. |
 
 Relay Runner does not read provider credential values. It checks the local presence needed to avoid launching directly into an authentication failure.
+
+## Subscription-only authentication
+
+Relay Runner sends model requests only through the user's own provider subscription: a Claude.ai Pro, Max, Team or Enterprise plan, or a ChatGPT sign-in for Codex. It never uses an API key, cloud-provider account, gateway or other pay-as-you-go credential, and never falls back to one.
+
+### Claude
+
+Claude Code accepts several credentials, and `claude auth status` alone does not prove which one a launch uses. Before every Relay-owned Claude process starts — the embedded foreground session, workers, reviews, spikes, the messenger, sidecar research, the continuity agent and note summaries — `services/claude_subscription.py` decides readiness from:
+
+- the environment the process will receive: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, a non-Anthropic `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`/`VERTEX`/`FOUNDRY`, `AWS_BEARER_TOKEN_BEDROCK`, `ANTHROPIC_FOUNDRY_API_KEY`, `ANTHROPIC_PROFILE` or `ANTHROPIC_FEDERATION_RULE_ID` block the launch;
+- Claude settings that apply to the launch (managed, user, project and local): the same names in `env`, `apiKeyHelper`, or `forceLoginMethod: "console"` block it;
+- an active Anthropic workload-identity-federation profile, which blocks it;
+- `claude auth status --json`, run with that environment and working directory: it must report a first-party claude.ai login with a Pro, Max, Team or Enterprise plan and no API-key source.
+
+Anything else fails closed with the fix to make and no credential values. The foreground launcher stops before Claude starts; background work records the message on the run. Relay Runner does not strip the user's credentials to get past the gate.
+
+A long-lived `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` is a subscription credential per Anthropic's documentation, but Claude Code 2.1.239 reports no plan for it, so the gate treats it as unverified and asks for a `claude auth login` sign-in instead. It passes automatically if a future Claude Code reports its plan.
+
+### Codex
+
+Codex sessions sign in with ChatGPT (`codex login`; `codex login status` reports `Logged in using ChatGPT`). Relay Runner no longer forwards `OPENAI_API_KEY` to the continuity agent or note summaries. Workers, reviews, the messenger and the foreground session still inherit the launching environment. Codex 0.151.0 can store an API-key login (`codex login --with-api-key`) and its binary reads `CODEX_API_KEY` and `OPENAI_API_KEY`, with undocumented precedence, so a Codex launch gate equivalent to Claude's is still owed before Relay Runner as a whole can claim to be subscription-only.
 
 ## Models and effort
 

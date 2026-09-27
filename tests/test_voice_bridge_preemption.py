@@ -5841,6 +5841,67 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             ))
             self.assertEqual(broker.table_records("provider_turns")[0]["state"], "terminated")
 
+    def test_interrupted_claude_turns_cancel_once_per_interrupt_in_one_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broker = ProviderTurnBroker(os.path.join(temp_dir, "inbox.sqlite3"))
+            self.addCleanup(broker.close)
+            ownership = self.foreground_ownership()
+
+            def turn(number: int) -> dict:
+                return {
+                    **ownership,
+                    "origin": "relay",
+                    "provider": "claude",
+                    "provider_session_id": "provider-session",
+                    "session_id": "native-session",
+                    "turn_id": f"prompt-{number}",
+                    "relay_command_seq": number,
+                    "relay_command_id": f"command-{number}",
+                }
+
+            def cancellation(record: dict, nonce: str, **overrides) -> str:
+                return json.dumps({
+                    **record,
+                    "event": "provider_turn_cancelled",
+                    "event_id": f"interrupt:{nonce}:{record['turn_id']}",
+                    "release_reason": "provider_interrupted",
+                    **overrides,
+                })
+
+            first, second = turn(1), turn(2)
+            broker.activate(first)
+            self.assertFalse(voice_bridge._handle_provider_turn_event_control(
+                cancellation(first, "nonce-1", event_id=""),
+                provider_turn_broker=broker,
+            ))
+            self.assertFalse(voice_bridge._handle_provider_turn_event_control(
+                cancellation(first, "nonce-1", release_reason="app_teardown"),
+                provider_turn_broker=broker,
+            ))
+            self.assertTrue(voice_bridge._handle_provider_turn_event_control(
+                cancellation(first, "nonce-1"),
+                provider_turn_broker=broker,
+            ))
+            self.assertEqual(broker.state_for(first), "cancelled")
+            self.assertFalse(voice_bridge._handle_provider_turn_event_control(
+                cancellation(first, "nonce-1"),
+                provider_turn_broker=broker,
+            ))
+            self.assertEqual(broker.reserve_effect(first).reason, "turn_revoked")
+
+            broker.activate(second)
+            self.assertTrue(voice_bridge._handle_provider_turn_event_control(
+                cancellation(second, "nonce-2"),
+                provider_turn_broker=broker,
+            ))
+            self.assertEqual(broker.state_for(second), "cancelled")
+            transitions = [
+                row for row in broker.table_records("provider_turn_transitions")
+                if row["event_type"] == "provider_interrupted"
+            ]
+            self.assertEqual(len(transitions), 2)
+            self.assertEqual(len({row["event_id"] for row in transitions}), 2)
+
     def test_real_delivery_paths_reject_revocation_between_reserve_and_submission(self):
         for provider in ("codex", "claude"):
             for relationship in ("cancellation", "replacement"):

@@ -412,8 +412,11 @@ struct GeneralConfig: Codable, Equatable {
         normalizeSubagentDefaults()
     }
 
+    /// A custom absolute command is kept only while it still targets the
+    /// selected provider, so switching providers never launches the other CLI.
     private var hasCustomAbsoluteCommand: Bool {
         command.trimmingCharacters(in: .whitespaces).hasPrefix("/")
+            && Self.inferProvider(from: command) == provider
     }
 
     private mutating func normalizeSelectedModel() {

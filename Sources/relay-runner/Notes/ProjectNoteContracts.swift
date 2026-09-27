@@ -87,6 +87,8 @@ struct RelayProjectNoteMetadata: Codable, Equatable, Sendable {
             switch errorCode {
             case "input_too_large": return "This note is too long to summarize. Shorten it and retry."
             case "cli_unavailable": return "Summary unavailable: provider CLI not found."
+            case "subscription_unverified":
+                return "Summary unavailable: sign in to Claude with your subscription (claude auth login), then retry."
             case "timeout": return "Summary timed out. You can retry."
             case "canceled": return "Summary interrupted. You can retry."
             default: return "Summary unavailable. Check provider access and retry."

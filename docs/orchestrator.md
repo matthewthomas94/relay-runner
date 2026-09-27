@@ -63,7 +63,7 @@ The daemon:
 1. Validates `<repo>/.orchestrator/MA-6.md` exists.
 2. Adds a git worktree at `~/Library/Application Support/relay-runner/workspaces/ma-6/` on branch `relay/ma-6`, branched off the repo's default branch (resolved via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `main`).
 3. Renders the workflow prompt (default at `services/orchestrator_workflow.md`, override per-repo at `<repo>/.orchestrator/WORKFLOW.md`).
-4. Spawns the configured agent in that worktree, piping the prompt as stdin. New configs default to `codex --search exec --json --dangerously-bypass-approvals-and-sandbox`; Claude remains available via `[orchestrator].agent = "claude"` and uses its default built-in tool set, including WebSearch/WebFetch.
+4. Spawns the configured agent in that worktree, piping the prompt as stdin. Workers use the provider selected in General settings (`[general].provider`): Codex runs `codex --search exec --json --dangerously-bypass-approvals-and-sandbox`, and Claude uses its default built-in tool set, including WebSearch/WebFetch. `[orchestrator].agent` is an optional explicit override. A missing worker CLI no longer stops the daemon; dispatch reports it instead.
 5. Returns a `run_id` immediately — the worker continues in the background.
 
 The worker reads the ticket file, flips its status to `in_progress`, implements the change, commits the code with a conventional commit referencing the ticket, then flips the ticket's status to `done` (or leaves it `in_progress` if partial) and appends a `## Run log` section before exiting. Both edits land on the worker's branch.
@@ -246,7 +246,7 @@ Artifact defaults and legacy offers remain behind the [signed installed verifica
 ```bash
 codex mcp list | grep relay-orchestrator
 ```
-Re-run if absent: `scripts/relay-orchestrator --install`. For Claude, use `claude mcp list`.
+Re-run if absent: `scripts/relay-orchestrator --install`. For Claude, use `claude mcp list`. Setup repairs a Relay-registered entry that points at an old app path, but it only reports a project `.mcp.json` or `.codex/config.toml` entry that overrides the registration; edit or remove that project entry yourself.
 
 **Tools error with "Orchestrator daemon is not reachable".** The daemon isn't running. Check:
 ```bash
@@ -256,12 +256,11 @@ tail /tmp/relay_orchestrator.err
 ```
 Restart with `scripts/relay-orchestrator --start`.
 
-**Installed skills still show older foreground-session guidance.** Re-generate the installed command and skill files from the repo sources:
+**Installed skills still show older foreground-session guidance.** Every Start Session refreshes the installed command and skill files that are still exactly what Relay installed, and keeps files you edited (Relay records each installed file's hash in `~/Library/Application Support/relay-runner/installed-commands.sha256`). To overwrite edited files with the current repo sources:
 ```bash
 scripts/relay-bridge --install-skills
-scripts/relay-orchestrator --install-skills
 ```
-If you're validating the bundled app instead of the repo checkout, rebuild or reinstall the app first so the bundled scripts match the updated source.
+`scripts/relay-bridge --refresh-skills` runs the edit-preserving refresh by hand. If you're validating the bundled app instead of the repo checkout, rebuild or reinstall the app first so the bundled scripts match the updated source.
 
 **Worker hangs.** Cancel and inspect:
 ```

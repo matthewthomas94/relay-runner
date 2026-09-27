@@ -77,6 +77,35 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["general"]["messenger_model"], "haiku")
         self.assertEqual(config["general"]["messenger_effort"], "default")
 
+    def test_worker_agent_follows_general_provider_and_drops_other_provider_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(
+                '[general]\nprovider = "claude"\n'
+                'command = "/Applications/ChatGPT.app/Contents/Resources/codex"\n',
+                encoding="utf-8",
+            )
+
+            config = load_config(str(path))
+
+        # No implicit [orchestrator].agent override: workers follow general.provider.
+        self.assertEqual(config["orchestrator"]["agent"], "")
+        self.assertEqual(config["general"]["command"], "claude")
+
+    def test_custom_absolute_command_for_selected_provider_is_kept(self):
+        for provider, command in (
+            ("codex", "/Applications/ChatGPT.app/Contents/Resources/codex"),
+            ("claude", "/opt/homebrew/bin/claude"),
+        ):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "config.toml"
+                path.write_text(
+                    f'[general]\nprovider = "{provider}"\ncommand = "{command}"\n',
+                    encoding="utf-8",
+                )
+                config = load_config(str(path))
+            self.assertEqual(config["general"]["command"], command)
+
     def test_load_config_migrates_legacy_orchestrator_values_without_resetting_explicit_values(self):
         cases = [
             ("claude", "best", "default", "opus", "xhigh"),

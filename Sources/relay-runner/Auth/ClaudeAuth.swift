@@ -1,64 +1,81 @@
 import Foundation
-import Security
 
-/// Tells whether the Claude Code CLI (used by voice_bridge.py) has
-/// credentials it can use. Used to decide whether onboarding should
-/// show the "Sign in" step and whether session-start is going to
-/// hit an immediate auth wall.
+/// Claude Code install discovery and Relay's Claude readiness.
 ///
-/// claude.ai/install.sh's `claude /login` writes an OAuth token into
-/// the macOS login keychain under service name `Claude Code-credentials`.
-/// On a freshly-installed CLI that's never been signed in, the entry
-/// doesn't exist. We check for the *existence* of the entry — not the
-/// password value — so the keychain doesn't prompt the user for an
-/// access password (reading `kSecReturnAttributes` is silent; reading
-/// `kSecReturnData` is the call that triggers the ACL).
-///
-/// Doesn't cover the Anthropic-Console-API-key path (where the user
-/// sets `ANTHROPIC_API_KEY` in their shell profile or `claude config`).
-/// That's a small edge case and the user can simply skip the onboarding
-/// step in that flow.
+/// Relay Runner is subscription-only, so Claude is ready only when
+/// services/claude_subscription.py verifies that a launch would use the
+/// user's Claude.ai subscription. A keychain login or `claude auth status`
+/// reporting `loggedIn` is not enough: an API key, gateway or cloud route can
+/// take precedence. The gate runs the CLI, so it is slow; polling UIs read
+/// `ClaudeSubscriptionMonitor`'s cached result and ask it to recheck.
 enum ClaudeAuth {
 
-    private static let keychainService = "Claude Code-credentials"
+    static let notInstalledMessage =
+        "Claude Code isn't installed. Choose Redo Onboarding\u{2026} in Settings to set it up, then sign in with your Claude.ai subscription account."
 
-    /// True iff the Claude Code keychain entry is present.
-    static var isAuthenticated: Bool {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecReturnAttributes as String: true,
-            kSecReturnData as String: false,
+    /// Install locations checked before asking a shell: the claude.ai
+    /// installer symlink, then Homebrew on Apple silicon and Intel.
+    static var candidatePaths: [String] {
+        [
+            (NSHomeDirectory() as NSString).appendingPathComponent(".local/bin/claude"),
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
         ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        return status == errSecSuccess
     }
 
-    /// Path to the bundled Claude binary that relay-bridge installed.
-    /// Used by the "Sign in" button as the explicit interpreter, since
-    /// `claude` may not be on PATH yet for a fresh install (the user
-    /// hasn't restarted their shell since the binary was symlinked).
-    static var claudeBinaryPath: String {
-        (NSHomeDirectory() as NSString)
-            .appendingPathComponent(".local/bin/claude")
+    /// The Claude CLI that setup, sign-in and launch share, or nil when none
+    /// is installed. npm and custom installs are found through the launch
+    /// shell (npm global prefix, then PATH after the profile loads).
+    static func resolveBinary(
+        isExecutable: (String) -> Bool = FileManager.default.isExecutableFile(atPath:),
+        shellLookup: () -> String? = { ProcessManager.lookUpClaudeInLaunchShell() }
+    ) -> String? {
+        if let path = candidatePaths.first(where: isExecutable) {
+            return path
+        }
+        guard let found = shellLookup(), found.hasPrefix("/"), isExecutable(found) else {
+            return nil
+        }
+        return found
     }
 
-    /// Open Terminal.app and run `claude /login` in it. Returns once
-    /// the AppleScript dispatch is fired — the user completes the
-    /// login flow on their own time, and the onboarding view polls
-    /// `isAuthenticated` to detect completion.
+    /// True once the subscription gate has verified Claude. Cached; use
+    /// `AgentAuth.refreshReadiness` to recheck.
+    static var isAuthenticated: Bool {
+        ClaudeSubscriptionMonitor.shared.latest?.isVerified == true
+    }
+
+    /// Installed, then verified by the subscription gate. Blocking.
+    static func readiness(workingDirectory: String) -> ProcessManager.ClaudeSubscriptionCheck {
+        guard let binary = resolveBinary() else {
+            return .unavailable(notInstalledMessage)
+        }
+        return ProcessManager.checkClaudeSubscription(
+            agentBinary: binary,
+            workingDirectory: workingDirectory
+        )
+    }
+
+    /// `claude auth login` exits on its own, unlike `claude /login`, which
+    /// opens a full interactive session. `--claudeai` picks subscription
+    /// sign-in over Console; the gate still rechecks the account's plan.
+    static func loginCommand(claudePath: String) -> String {
+        "echo '[Relay Runner] Sign in with the Claude.ai account that has your Pro, Max, Team or Enterprise subscription. Relay Runner does not use Anthropic Console or API billing.'; "
+            + "'\(claudePath)' auth login --claudeai; "
+            + "echo ''; echo '[Relay Runner] Return to Relay Runner to finish setup. You can close this window.'"
+    }
+
+    /// Open Terminal.app and run `claude auth login` in it. Returns once
+    /// the AppleScript dispatch is fired — the user completes the login
+    /// flow on their own time, and onboarding reruns the subscription gate
+    /// to detect completion.
     @discardableResult
     static func openLoginInTerminal() -> Bool {
-        let claude = claudeBinaryPath
-        // The trailing echo gives the user a clear "you can close this
-        // window" cue after the OAuth flow finishes, instead of leaving
-        // a bare shell prompt that looks unfinished.
+        let claude = resolveBinary() ?? candidatePaths[0]
         let script = """
         tell application "Terminal"
             activate
-            do script "'\(claude)' /login; echo ''; echo '[Relay Runner] Sign-in complete — you can close this window.'"
+            do script "\(loginCommand(claudePath: claude))"
         end tell
         """
         let proc = Process()
@@ -71,6 +88,57 @@ enum ClaudeAuth {
             return true
         } catch {
             return false
+        }
+    }
+}
+
+/// Caches Relay's Claude subscription gate. Every refresh is answered, on the
+/// main thread, with a check that started after the caller asked; checks run
+/// off the main thread, one at a time, and callers that arrive during one
+/// share the next.
+final class ClaudeSubscriptionMonitor {
+    static let shared = ClaudeSubscriptionMonitor()
+
+    private let check: (String) -> ProcessManager.ClaudeSubscriptionCheck
+    private let runInBackground: (@escaping () -> Void) -> Void
+    private(set) var latest: ProcessManager.ClaudeSubscriptionCheck?
+    private var running = false
+    private var waiting: [(ProcessManager.ClaudeSubscriptionCheck) -> Void] = []
+
+    init(
+        check: @escaping (String) -> ProcessManager.ClaudeSubscriptionCheck = {
+            ClaudeAuth.readiness(workingDirectory: $0)
+        },
+        runInBackground: @escaping (@escaping () -> Void) -> Void = {
+            DispatchQueue.global(qos: .userInitiated).async(execute: $0)
+        }
+    ) {
+        self.check = check
+        self.runInBackground = runInBackground
+    }
+
+    /// Call on the main thread.
+    func refresh(
+        workingDirectory: String,
+        completion: @escaping (ProcessManager.ClaudeSubscriptionCheck) -> Void
+    ) {
+        waiting.append(completion)
+        startIfIdle(workingDirectory: workingDirectory)
+    }
+
+    private func startIfIdle(workingDirectory: String) {
+        guard !running, !waiting.isEmpty else { return }
+        running = true
+        let callers = waiting
+        waiting = []
+        runInBackground { [self] in
+            let result = check(workingDirectory)
+            DispatchQueue.main.async { [self] in
+                latest = result
+                running = false
+                callers.forEach { $0(result) }
+                startIfIdle(workingDirectory: workingDirectory)
+            }
         }
     }
 }
@@ -114,6 +182,24 @@ enum AgentAuth {
         switch provider {
         case .codex: return CodexAuth.isAuthenticated
         case .claude: return ClaudeAuth.isAuthenticated
+        }
+    }
+
+    /// Recheck readiness, then call back on the main thread with the reason
+    /// the provider isn't ready (nil when it is, or when there is no detail).
+    /// Codex's check is a cheap file test, so it answers immediately.
+    static func refreshReadiness(
+        for provider: GeneralConfig.AgentProvider,
+        workingDirectory: String,
+        completion: @escaping (String?) -> Void
+    ) {
+        switch provider {
+        case .codex:
+            completion(nil)
+        case .claude:
+            ClaudeSubscriptionMonitor.shared.refresh(workingDirectory: workingDirectory) {
+                completion($0.message)
+            }
         }
     }
 

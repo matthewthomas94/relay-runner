@@ -63,7 +63,9 @@ final class ProcessManager {
     /// user-writable path so non-admin users (or admin-installed bundles
     /// owned by root) can write to it. Match SERVICES_BUNDLE in
     /// scripts/relay-bridge.
-    private var bundledServicesDir: URL {
+    private var bundledServicesDir: URL { Self.servicesDirectory }
+
+    static var servicesDirectory: URL {
         let bundled = Bundle.main.bundleURL
             .appendingPathComponent("Contents/SharedSupport/services")
         if FileManager.default.fileExists(atPath: bundled.path) {
@@ -934,6 +936,7 @@ final class ProcessManager {
         case projectScopeRequired
         case invalidProjectScope(String)
         case invalidRecoveryLaunch
+        case providerUnavailable(String)
 
         var errorDescription: String? {
             switch self {
@@ -951,6 +954,8 @@ final class ProcessManager {
                 return "The selected project scope is no longer valid: \(message)"
             case .invalidRecoveryLaunch:
                 return "Provider recovery requires the active app-owned bridge generation."
+            case .providerUnavailable(let message):
+                return message
             }
         }
     }
@@ -1031,6 +1036,9 @@ final class ProcessManager {
                 throw SessionLaunchPreparationError.codexModelResolution(error.localizedDescription)
             }
         } else {
+            if let error = Self.claudeLaunchReadinessError(agentBinary: agentBinary) {
+                throw error
+            }
             codexSelection = nil
         }
         NSLog("[ProcessManager] launchNewSession: relayBridge=\(relayBridge) agentBinary=\(agentBinary) configPath=\(configPath)")
@@ -1038,12 +1046,12 @@ final class ProcessManager {
         // Relay startup is delivered as the prompt arg; if its command/skill
         // file is missing or stale, the agent would treat the string as literal
         // user input or follow obsolete instructions. The skill content lives in
-        // the relay-bridge bash script as the source of truth, so we
-        // unconditionally reinstall on every launch — cheap (single file
-        // write, ~10ms) and ensures the user always runs against the
-        // shipped version of the skill text. Onboarding already gave consent.
+        // the relay-bridge bash script as the source of truth, so every launch
+        // refreshes it — cheap, and after an app upgrade it brings unmodified
+        // Relay-installed files to the shipped version. Files the user edited
+        // are kept; Settings → Reinstall is the explicit overwrite.
         NSLog("[ProcessManager] Refreshing Relay skill files before launch.")
-        installSkill()
+        installSkill(force: false)
 
         let launcher = "/tmp/voice_bridge_launch.command"
         let providerSessionID = voiceDelivery == .appOwned
@@ -1240,6 +1248,7 @@ final class ProcessManager {
         ))
         \(cdLine)
         relay_record_session_event launcher_start started
+        \(Self.claudeSubscriptionGate(relayBridge: relayBridge, target: target, agentBinary: agentBinary))
         # relay-bridge owns bridge readiness. Agent-skill sessions only bootstrap
         # here; app-owned sessions wait for the Python bridge's socket.
         \(bridgeStartLine)
@@ -1250,6 +1259,28 @@ final class ProcessManager {
         # Replacing this launcher process keeps the PTY child PID aligned with
         # the agent, so End Session terminates the interactive process cleanly.
         exec \(launchLine)
+        """
+    }
+
+    /// Exit status the launcher uses when Claude's subscription gate refuses.
+    static let claudeSubscriptionGateExitCode: Int32 = 78
+
+    /// Relay Runner is subscription-only. Before Claude starts, check in the
+    /// launch shell (after the profile and cwd apply) that the effective
+    /// credential is the user's Claude subscription, not an API key or other
+    /// metered route. The shared Python gate prints the fix without values.
+    static func claudeSubscriptionGate(relayBridge: String, target: AgentTarget, agentBinary: String) -> String {
+        guard target == .claude else { return "" }
+        let gate = URL(fileURLWithPath: relayBridge)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("services/claude_subscription.py")
+            .path
+        return """
+        if ! \(shellQuoted(servicePython)) \(shellQuoted(gate)) --binary \(shellQuoted(agentBinary)) --cwd "$PWD"; then
+            relay_record_session_event claude_subscription blocked
+            exit \(claudeSubscriptionGateExitCode)
+        fi
         """
     }
 
@@ -1389,7 +1420,8 @@ final class ProcessManager {
         isExecutable: (String) -> Bool = FileManager.default.isExecutableFile(atPath:)
     ) -> String {
         let trimmed = command.trimmingCharacters(in: .whitespaces)
-        if !trimmed.isEmpty && trimmed.hasPrefix("/") {
+        if !trimmed.isEmpty && trimmed.hasPrefix("/")
+            && GeneralConfig.inferProvider(from: trimmed).rawValue == target.providerMetadataValue {
             return trimmed
         }
         switch target {
@@ -1403,12 +1435,137 @@ final class ProcessManager {
             }
             return "codex"
         case .claude:
-            let local = ClaudeAuth.claudeBinaryPath
-            if isExecutable(local) {
-                return local
-            }
-            return "claude"
+            // A bare name resolves on the launch shell's PATH once the
+            // profile loads, which covers npm and custom installs.
+            return ClaudeAuth.candidatePaths.first(where: isExecutable) ?? "claude"
         }
+    }
+
+    /// Readiness error for a Claude launch whose CLI can't be found, so Start
+    /// Session reports it instead of starting a session that fails at once.
+    static func claudeLaunchReadinessError(
+        agentBinary: String,
+        isExecutable: (String) -> Bool = FileManager.default.isExecutableFile(atPath:),
+        shellLookup: () -> String? = { ProcessManager.lookUpClaudeInLaunchShell() }
+    ) -> SessionLaunchPreparationError? {
+        let installed = agentBinary.hasPrefix("/")
+            ? isExecutable(agentBinary)
+            : ClaudeAuth.resolveBinary(isExecutable: isExecutable, shellLookup: shellLookup) != nil
+        return installed ? nil : .providerUnavailable(ClaudeAuth.notInstalledMessage)
+    }
+
+    /// Find `claude` the way the launcher would: in the npm global prefix, then
+    /// on PATH after the user's shell profile loads. Blocking and bounded.
+    static func lookUpClaudeInLaunchShell(timeout: TimeInterval = 5) -> String? {
+        let script = """
+        \(shellProfileSource())
+        npm_prefix="$(npm prefix -g 2>/dev/null)"
+        if [ -n "$npm_prefix" ] && [ -x "$npm_prefix/bin/claude" ]; then
+            printf '%s\\n' "$npm_prefix/bin/claude"
+        else
+            command -v claude
+        fi
+        """
+        guard let result = runShell(script, timeout: timeout) else { return nil }
+        // Profiles may print their own output first; the answer is last.
+        return result.stdout
+            .split(separator: "\n")
+            .last
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.hasPrefix("/") ? $0 : nil }
+    }
+
+    /// Outcome of Relay's subscription-only gate for Claude.
+    enum ClaudeSubscriptionCheck: Equatable {
+        case verified
+        case unavailable(String)
+
+        var isVerified: Bool { self == .verified }
+
+        var message: String? {
+            if case .unavailable(let message) = self { return message }
+            return nil
+        }
+    }
+
+    static let claudeSubscriptionFallbackMessage =
+        "Relay Runner couldn't confirm Claude is using your Claude subscription. Run `claude auth login` and sign in with your Claude.ai subscription account."
+
+    /// Run services/claude_subscription.py after the same shell profile the
+    /// launcher sources, so an API key or gateway exported there blocks
+    /// readiness exactly as it would block the launch. Blocking; call it off
+    /// the main thread.
+    static func checkClaudeSubscription(
+        agentBinary: String,
+        workingDirectory: String,
+        shellPrelude: String = shellProfileSource(),
+        pythonPath: String = servicePython,
+        gatePath: String = servicesDirectory.appendingPathComponent("claude_subscription.py").path,
+        environment: [String: String]? = nil,
+        timeout: TimeInterval = 45
+    ) -> ClaudeSubscriptionCheck {
+        let script = """
+        \(shellPrelude)
+        export PATH="$HOME/.local/bin:$PATH"
+        exec \(shellQuoted(pythonPath)) \(shellQuoted(gatePath)) --binary \(shellQuoted(agentBinary)) --cwd \(shellQuoted(workingDirectory))
+        """
+        guard let result = runShell(script, environment: environment, timeout: timeout) else {
+            return .unavailable(claudeSubscriptionFallbackMessage)
+        }
+        return claudeSubscriptionCheck(exitStatus: result.status, stderr: result.stderr)
+    }
+
+    static func claudeSubscriptionCheck(exitStatus: Int32, stderr: String) -> ClaudeSubscriptionCheck {
+        guard exitStatus != 0 else { return .verified }
+        let prefix = "[Relay Runner] "
+        let message = stderr
+            .split(separator: "\n")
+            .last { $0.hasPrefix(prefix) }
+            .map { String($0.dropFirst(prefix.count)) }
+        return .unavailable(message ?? claudeSubscriptionFallbackMessage)
+    }
+
+    private static func runShell(
+        _ script: String,
+        environment: [String: String]? = nil,
+        timeout: TimeInterval
+    ) -> (status: Int32, stdout: String, stderr: String)? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", script]
+        if let environment { process.environment = environment }
+        let output = Pipe()
+        let error = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = output
+        process.standardError = error
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        // Drain both pipes while waiting so a chatty profile can't fill one.
+        var stdoutData = Data()
+        var stderrData = Data()
+        let drained = DispatchGroup()
+        DispatchQueue.global().async(group: drained) {
+            stdoutData = output.fileHandleForReading.readDataToEndOfFile()
+        }
+        DispatchQueue.global().async(group: drained) {
+            stderrData = error.fileHandleForReading.readDataToEndOfFile()
+        }
+        guard exited.wait(timeout: .now() + timeout) == .success else {
+            process.terminate()
+            return nil
+        }
+        drained.wait()
+        return (
+            process.terminationStatus,
+            String(data: stdoutData, encoding: .utf8) ?? "",
+            String(data: stderrData, encoding: .utf8) ?? ""
+        )
     }
 
     /// Render the `--model <name>` flag for the launcher script, or empty
@@ -1643,9 +1800,13 @@ final class ProcessManager {
         return "-c \(Self.shellQuoted("hooks.\(event)=\(handler)")) "
     }
 
+    /// SessionStart fires only after Claude's first-run screens (onboarding,
+    /// folder trust, bypass-permissions disclaimer), so the terminal holds
+    /// voice delivery until it is recorded. `autoCompactEnabled` keeps a user
+    /// setting from defeating the 150K compaction target.
     private static func claudeCompletionHookSettings(command: String) -> String {
         let handler = "[{\"hooks\":[{\"type\":\"command\",\"command\":\(Self.jsonStringLiteral(command)),\"timeout\":2}]}]"
-        return "{\"hooks\":{\"UserPromptSubmit\":\(handler),\"Stop\":\(handler),\"StopFailure\":\(handler),\"PreCompact\":\(handler),\"PostCompact\":\(handler)}}"
+        return "{\"autoCompactEnabled\":true,\"hooks\":{\"SessionStart\":\(handler),\"UserPromptSubmit\":\(handler),\"Stop\":\(handler),\"StopFailure\":\(handler),\"PreCompact\":\(handler),\"PostCompact\":\(handler)}}"
     }
 
     private static func appOwnedCompletionHookFlag(
@@ -1753,32 +1914,38 @@ final class ProcessManager {
             && fm.fileExists(atPath: Self.codexStopSkillPath.path)
     }
 
-    /// Force-install the relay-bridge and relay-stop command/skill files by
-    /// shelling out to `relay-bridge --install-skills`. The content itself
-    /// lives in the bash script (single source of truth — the
+    /// Install the Relay command/skill files (relay-bridge, relay-stop,
+    /// relay-workflow, relay-dispatch) by shelling out to relay-bridge. The
+    /// content itself lives in the bash script (single source of truth — the
     /// onboarding bootstrap and this Settings action both read from the
-    /// same place). Always overwrites — Settings shows an explicit
-    /// confirmation alert before this is reached.
+    /// same place). `force` overwrites — Settings shows an explicit
+    /// confirmation alert before this is reached. Otherwise only missing
+    /// files and unmodified Relay installs are written; user edits are kept.
     @discardableResult
-    func installSkill() -> Bool {
+    func installSkill(force: Bool = true) -> Bool {
+        let flag = Self.skillInstallArgument(force: force)
         let proc = Process()
         proc.executableURL = bundledRelayBridge
-        proc.arguments = ["--install-skills"]
+        proc.arguments = [flag]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         do {
             try proc.run()
             proc.waitUntilExit()
             if proc.terminationStatus == 0 {
-                NSLog("[ProcessManager] Installed relay skills via \(bundledRelayBridge.path)")
+                NSLog("[ProcessManager] Installed relay skills via \(bundledRelayBridge.path) \(flag)")
                 return true
             }
-            NSLog("[ProcessManager] relay-bridge --install-skills exited with code \(proc.terminationStatus)")
+            NSLog("[ProcessManager] relay-bridge \(flag) exited with code \(proc.terminationStatus)")
             return false
         } catch {
-            NSLog("[ProcessManager] Failed to launch relay-bridge --install-skills: \(error)")
+            NSLog("[ProcessManager] Failed to launch relay-bridge \(flag): \(error)")
             return false
         }
+    }
+
+    static func skillInstallArgument(force: Bool) -> String {
+        force ? "--install-skills" : "--refresh-skills"
     }
 
     // MARK: - Voice preview

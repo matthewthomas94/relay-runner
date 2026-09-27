@@ -450,6 +450,13 @@ def _turn_id(payload: dict) -> str | None:
         value = str(payload.get(key) or "").strip()
         if value:
             return value
+    # Claude Code hooks carry no turn_id, and session_id is constant across a
+    # session's turns. prompt_id is unique per turn and shared by that turn's
+    # UserPromptSubmit and Stop/StopFailure payloads, so it pairs them exactly.
+    if _provider_name(payload) == "claude":
+        value = str(payload.get("prompt_id") or "").strip()
+        if value:
+            return value
     return None
 
 
@@ -1315,11 +1322,22 @@ def handle_hook_payload(
     manual_submissions_path: str = TERMINAL_MANUAL_SUBMISSION_FILE,
     write_control: Callable[[dict], bool] = _write_bridge_control,
     write_provider_event: Callable[[dict], bool] = _write_provider_turn_event,
+    session_events_path: str = SESSION_EVENTS_FILE,
     now: float | None = None,
     stderr: TextIO = sys.stderr,
 ) -> bool:
     now = time.time() if now is None else now
     event = _hook_event_name(payload)
+    if event == "SessionStart":
+        # Claude fires SessionStart only after its first-run screens (folder
+        # trust, onboarding, bypass disclaimer); the embedded terminal holds
+        # voice delivery until this stage is recorded.
+        _append_session_event({
+            "outcome": "ready",
+            "stage": "provider_session_start",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        }, path=session_events_path)
+        return False
     if event in {"UserPromptSubmit", "Stop", "StopFailure"} and _foreground_ownership() is None:
         print(
             "[relay_completion_hook] ignored lifecycle event without foreground ownership",
@@ -1342,8 +1360,10 @@ def handle_hook_payload(
                 stderr=stderr,
             )
         if event in {"Stop", "StopFailure"}:
-            if payload.get("stop_hook_active"):
-                return False
+            # stop_hook_active marks a continuation after another Stop hook
+            # blocked. This hook never blocks, so there is no loop to break:
+            # a turn still active here completes with this, its real final.
+            # A turn an earlier Stop already completed is a duplicate below.
             return _complete_turn(
                 payload,
                 state_path=state_path,

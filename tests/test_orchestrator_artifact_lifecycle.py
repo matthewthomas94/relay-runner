@@ -31,7 +31,10 @@ from services.artifact_store import (  # noqa: E402
     ConfigWrite,
     TicketWrite,
 )
+from claude_subscription import ClaudeSubscriptionReadiness  # noqa: E402
 from orchestrator import Daemon, Worker  # noqa: E402
+
+SUBSCRIPTION = ClaudeSubscriptionReadiness("verified", "subscription", "ok")
 
 
 UTC = timezone.utc
@@ -183,6 +186,7 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
                     f"print({early!r}); print({final!r})"
                 )]
                 with patch.object(worker, "_command", return_value=command), \
+                        patch("orchestrator.check_claude_subscription", return_value=SUBSCRIPTION), \
                         patch.object(self.daemon, "dispatch_review_worker") as review:
                     worker._run()
                     head = self.store._head()

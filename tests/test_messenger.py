@@ -15,6 +15,7 @@ SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
 from messenger import (  # noqa: E402
+    MessengerError,
     MESSENGER_DEGRADED_TEXT,
     MESSENGER_SYSTEM_PROMPT,
     RELAY_RUNNER_DEMO_EXPLANATION,
@@ -380,6 +381,47 @@ class MessengerBackendContractTests(unittest.TestCase):
         self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertEqual(command[command.index("--model") + 1], "haiku")
         self.assertNotIn("--effort", command)
+
+    def test_claude_backend_starts_only_after_the_subscription_gate_passes(self):
+        from claude_subscription import ClaudeSubscriptionReadiness
+        from continuity_agent import ClaudeContinuityBackend
+        from sidecar_lane import ClaudeSidecarBackend
+
+        class Process:
+            stdout = iter([])
+
+            def poll(self):
+                return None
+
+        config = MessengerConfig(True, "claude", "/opt/claude", "haiku", "default", "/tmp/project")
+        blocked = ClaudeSubscriptionReadiness(
+            "blocked", "metered_environment", "Relay Runner only uses your Claude subscription.")
+        verified = ClaudeSubscriptionReadiness("verified", "subscription", "ok")
+        continuity = {"process_identity": "p", "incident_id": "inc", "recovery_generation": 1}
+        for backend_type, extra in ((ClaudeMessengerBackend, {}), (ClaudeSidecarBackend, {}),
+                                    (ClaudeContinuityBackend, continuity)):
+            launches, checks = [], []
+
+            def popen(args, **kwargs):
+                launches.append(kwargs["env"])
+                return Process()
+
+            def gate(result):
+                def check(command, *, cwd, environment):
+                    checks.append((command, cwd, environment))
+                    return result
+                return check
+
+            backend = backend_type(config, popen_factory=popen, subscription_check=gate(blocked), **extra)
+            with self.assertRaisesRegex(MessengerError, "only uses your Claude subscription"):
+                backend.start()
+            self.assertEqual(launches, [], backend_type.__name__)
+
+            backend = backend_type(config, popen_factory=popen, subscription_check=gate(verified), **extra)
+            backend.start()
+            self.assertEqual(len(launches), 1, backend_type.__name__)
+            self.assertEqual(checks[-1][:2], (["/opt/claude"], "/tmp/project"))
+            self.assertIs(checks[-1][2], launches[0])
 
     def test_claude_backend_collects_stream_result_and_session_id(self):
         class FakeProcess:

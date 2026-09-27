@@ -35,10 +35,10 @@ Starting a Relay session authorizes ordinary use of the tools within the user's 
 
 ## Coordinate and error behavior
 
-Click coordinates use the same native-pixel display space returned by Relay Vision. Window frames are derived from macOS workspace and accessibility APIs. Tool errors are returned as MCP error content rather than crashing the server. A successful transport response does not prove the requested higher-level outcome; callers should inspect the target state when that outcome matters.
+Click coordinates use the same native-pixel display space returned by Relay Vision. For `claude-code` clients, whose Relay Vision screenshots are downscaled to at most 2000 px, `click` and `scroll` also require the screenshot's `screenshot_scale` and map the image coordinate back to native pixels before the app converts pixels to points (`1` passes native-pixel coordinates, such as `list_windows` frames, through). Window frames are derived from macOS workspace and accessibility APIs. Tool errors are returned as MCP error content rather than crashing the server. A successful transport response does not prove the requested higher-level outcome; callers should inspect the target state when that outcome matters.
 
 ## Registration and packaging
 
 `scripts/relay-bridge` idempotently registers the bundled `relay-actions-mcp` binary for every available supported provider. `scripts/build-dmg.sh` builds, embeds, and signs the helper alongside `relay-vision-mcp` and `relay-orchestrator-mcp`.
 
-Codex and Claude receive the same tool schema, app-hosted permission boundary, ActionGlow behavior, and user-confirmation rule. Provider differences are limited to MCP registration commands and the surrounding provider CLI permission model.
+Codex and Claude receive the same app-hosted permission boundary, ActionGlow behavior, and user-confirmation rule. Provider differences are limited to MCP registration commands, the surrounding provider CLI permission model, and Claude's required `screenshot_scale` on `click` and `scroll` described above.

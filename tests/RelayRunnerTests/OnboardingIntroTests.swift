@@ -319,6 +319,122 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(intro.runtimePrompts.map(\.provider).suffix(2), [.claude, .claude])
     }
 
+    func testClaudeSetupCanContinueWithoutSignInWhileCodexStillRequiresIt() throws {
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            let intro = CapturingIntroPresenter()
+            var terminalLaunches: [GeneralConfig.AgentProvider] = []
+            let controller = OnboardingController(
+                permissions: PermissionsManager(),
+                flagURLs: flagURLs,
+                getWorkingDirectory: { "/Users/example/current" },
+                permissionStatus: { _ in .granted },
+                makeIntroController: { intro },
+                makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+                runtimeAlreadyInstalled: { _ in false },
+                isAgentAuthenticated: { _ in false },
+                openAgentLoginInTerminal: {
+                    terminalLaunches.append($0)
+                    return true
+                },
+                runtimePollInterval: 0.01,
+                introAdvanceDelay: 0,
+                loginPromptDwell: 0,
+                reduceMotion: { true }
+            )
+
+            controller.showIfNeeded()
+            provider == .codex ? intro.performCodexAction() : intro.performClaudeAction()
+            waitForMainQueue(after: 0.05)
+
+            XCTAssertEqual(intro.loginPrompts.last?.signedIn, false, provider.rawValue)
+            XCTAssertEqual(intro.continueWithoutSignInOffered.last, provider == .claude, provider.rawValue)
+
+            intro.performContinueWithoutSignIn()
+
+            XCTAssertEqual(terminalLaunches, [], provider.rawValue)
+            if provider == .claude {
+                XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"])
+                XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
+            } else {
+                XCTAssertTrue(intro.workspacePromptPaths.isEmpty)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
+            }
+        }
+    }
+
+    func testClaudeSignInIsRecheckedForSubscriptionBeforeSetupContinues() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        let gateMessage = "Relay Runner only uses your Claude subscription. Claude would use an API key instead of your subscription login."
+        // `claude auth status` would say loggedIn after either sign-in; only
+        // a subscription account passes the gate, and only a recheck sees it.
+        var loggedIn = false
+        var subscriptionAccount = false
+        var verified = false
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            getWorkingDirectory: { "/Users/example/current" },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in verified },
+            refreshAgentReadiness: { _, completion in
+                DispatchQueue.main.async {
+                    verified = loggedIn && subscriptionAccount
+                    completion(verified ? nil : gateMessage)
+                }
+            },
+            openAgentLoginInTerminal: { _ in
+                loggedIn = true
+                return true
+            },
+            runtimePollInterval: 0.01,
+            authPollInterval: 0.01,
+            introAdvanceDelay: 0,
+            loginPromptDwell: 0,
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        intro.performClaudeAction()
+        waitForMainQueue(after: 0.05)
+        XCTAssertEqual(intro.loginPrompts.last?.signedIn, false)
+        XCTAssertEqual(intro.loginPrompts.last?.message, gateMessage)
+
+        // Console sign-in: logged in, but not on a subscription.
+        intro.performLoginAction()
+        waitForMainQueue(after: 0.1)
+        XCTAssertTrue(loggedIn)
+        XCTAssertTrue(intro.workspacePromptPaths.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
+
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApp)
+        waitForMainQueue(after: 0.05)
+        XCTAssertEqual(intro.loginPrompts.last?.signedIn, false)
+        XCTAssertEqual(intro.loginPrompts.last?.message, gateMessage)
+
+        // Signing in again with the subscription account passes the recheck.
+        subscriptionAccount = true
+        intro.performLoginAction()
+        waitForMainQueue(after: 0.1)
+        XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
+    }
+
     func testAlreadyAuthenticatedProviderSkipsExternalLoginAndShowsWorkspaceLast() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -2718,8 +2834,10 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     private(set) var agentChoiceSelectedProviders: [GeneralConfig.AgentProvider] = []
     private(set) var runtimePrompts: [OnboardingRuntimePromptPresentation] = []
     private(set) var loginPrompts: [OnboardingAgentLoginPromptPresentation] = []
+    private(set) var continueWithoutSignInOffered: [Bool] = []
     private(set) var workspacePromptPaths: [String] = []
     private(set) var tutorialPresentations: [OnboardingTutorialPresentation] = []
+    private var continueWithoutSignInAction: (() -> Void)?
     private var cinematicCompletion: (() -> Void)?
     private var permissionAction: (() -> Void)?
     private var codexAction: (() -> Void)?
@@ -2772,6 +2890,19 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
         } else {
             loginRenderedCompletion = fullyRendered
         }
+    }
+
+    func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
+                                 fullyRendered: @escaping () -> Void,
+                                 signInAction: @escaping () -> Void,
+                                 continueWithoutSignInAction: (() -> Void)?) {
+        continueWithoutSignInOffered.append(continueWithoutSignInAction != nil)
+        self.continueWithoutSignInAction = continueWithoutSignInAction
+        presentAgentLoginPrompt(presentation, fullyRendered: fullyRendered, signInAction: signInAction)
+    }
+
+    func performContinueWithoutSignIn() {
+        continueWithoutSignInAction?()
     }
 
     func presentWorkspacePrompt(currentPath: String,
