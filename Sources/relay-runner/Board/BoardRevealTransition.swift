@@ -297,7 +297,8 @@ final class BoardRevealContainerView: NSView {
         contentContainerView.alphaValue = 0
         setContentYOffset(hiddenContentYOffset)
         // The Workspace takes the loading label's place only once it has left.
-        let delay = revealView.loadingLabelExitRemaining
+        let labelExit = revealView.loadingLabelExitRemaining
+        let delay = labelExit > 0 ? labelExit + RelayMotion.replacementGap : 0
         animateContentYOffset(
             from: hiddenContentYOffset,
             to: 0,

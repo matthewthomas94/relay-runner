@@ -159,28 +159,31 @@ struct CustomVoiceSettingsSection: View {
             }
             if let recordingError = recorder.error {
                 SettingsRow {
-                    Text(recordingError)
-                        .font(AppTypography.font(.settingsDescription))
-                        .foregroundStyle(SettingsSurfaceColor.error)
-                        .relayTextSwap(recordingError)
+                    RelaySwap(recordingError, style: .text, alignment: .leading) { recordingError in
+                        Text(recordingError)
+                            .font(AppTypography.font(.settingsDescription))
+                            .foregroundStyle(SettingsSurfaceColor.error)
+                    }
                 }
                 .transition(.relayReplacing(.element))
             }
             if let notice = appState.customVoiceNotice {
                 SettingsRow {
-                    Text(notice)
-                        .font(AppTypography.font(.settingsDescription))
-                        .foregroundStyle(SettingsSurfaceColor.error)
-                        .relayTextSwap(notice)
+                    RelaySwap(notice, style: .text, alignment: .leading) { notice in
+                        Text(notice)
+                            .font(AppTypography.font(.settingsDescription))
+                            .foregroundStyle(SettingsSurfaceColor.error)
+                    }
                 }
                 .transition(.relayElement)
             }
             if let error {
                 SettingsRow {
-                    Text(error)
-                        .font(AppTypography.font(.settingsDescription))
-                        .foregroundStyle(SettingsSurfaceColor.error)
-                        .relayTextSwap(error)
+                    RelaySwap(error, style: .text, alignment: .leading) { error in
+                        Text(error)
+                            .font(AppTypography.font(.settingsDescription))
+                            .foregroundStyle(SettingsSurfaceColor.error)
+                    }
                 }
                 .transition(.relayElement)
             }

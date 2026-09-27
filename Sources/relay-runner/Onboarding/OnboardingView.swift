@@ -505,14 +505,16 @@ struct OnboardingView: View {
                         .font(AppTypography.symbolFont(size: 12))
                         .frame(width: 18)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(item.title)
-                            .font(AppTypography.font(.body))
-                            .relayTextSwap(item.title)
-                        Text(item.detail)
-                            .font(AppTypography.font(.caption))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .relayTextSwap(item.detail)
+                        RelaySwap(item.title, style: .text, alignment: .leading) { title in
+                            Text(title)
+                                .font(AppTypography.font(.body))
+                        }
+                        RelaySwap(item.detail, style: .text, alignment: .leading) { detail in
+                            Text(detail)
+                                .font(AppTypography.font(.caption))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
             }
@@ -547,12 +549,13 @@ struct OnboardingView: View {
                 .frame(width: 180)
             }
             if let note = accessNote {
-                Text(note)
-                    .font(AppTypography.font(.caption))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .relayTextSwap(note)
-                    .transition(.relayText)
+                RelaySwap(note, style: .text, alignment: .leading) { note in
+                    Text(note)
+                        .font(AppTypography.font(.caption))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .transition(.relayText)
             }
         }
         .padding(12)
@@ -596,11 +599,12 @@ struct OnboardingView: View {
             selectAgentProvider(provider)
         } label: {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: selectedAgentProvider == provider ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(selectedAgentProvider == provider ? Color.accentColor : Color.secondary)
-                    .font(AppTypography.symbolFont(size: 17, weight: .semibold))
-                    .relaySwap(selectedAgentProvider == provider)
-                    .frame(width: 24)
+                RelaySwap(selectedAgentProvider == provider) { isSelected in
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                        .font(AppTypography.symbolFont(size: 17, weight: .semibold))
+                }
+                .frame(width: 24)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .font(AppTypography.font(.cardHeading))
@@ -1007,51 +1011,52 @@ struct OnboardingView: View {
                 : readinessIcon(for: readiness.mode)
         return VStack(spacing: 16) {
             Spacer(minLength: 4)
-            ZStack {
-                if runtimeReadiness.isPreparing {
+            // The symbol alone decides the glyph: nil while preparing, the
+            // orange triangle when setup needs attention, otherwise green.
+            RelaySwap(statusSymbol) { statusSymbol in
+                if let statusSymbol {
+                    Image(systemName: statusSymbol)
+                        .font(AppTypography.symbolFont(size: 44))
+                        .foregroundStyle(statusSymbol == "exclamationmark.triangle.fill" ? Color.orange : Color.green)
+                } else {
                     ProgressView()
                         .controlSize(.large)
-                } else if runtimeReadiness.needsSetupAction {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(AppTypography.symbolFont(size: 44))
-                        .foregroundStyle(.orange)
-                } else {
-                    Image(systemName: readinessIcon(for: readiness.mode))
-                        .font(AppTypography.symbolFont(size: 44))
-                        .foregroundStyle(readinessColor(for: readiness.mode))
                 }
             }
-            .relaySwap(statusSymbol)
-            Text(title)
-                .font(AppTypography.font(.appTitle))
-                .relayTextSwap(title, alignment: .center)
+            RelaySwap(title, style: .text, alignment: .center) { title in
+                Text(title)
+                    .font(AppTypography.font(.appTitle))
+            }
             ZStack(alignment: .top) {
                 if !runtimeReadiness.isReady {
                     // Preparing progress updates in place; a failure swaps in.
-                    Text(runtimeReadiness.statusDetail)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .relayTextSwap(detailPhase, alignment: .center)
-                        .transition(.relayReplacing(.text))
+                    RelaySwap(detailPhase, style: .text, alignment: .center) { _ in
+                        Text(runtimeReadiness.statusDetail)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .transition(.relayReplacing(.text))
                 } else if !voiceReady {
-                    Text(readiness.detail)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .relayTextSwap(readiness.detail, alignment: .center)
-                        .transition(.relayReplacing(.text))
+                    RelaySwap(readiness.detail, style: .text, alignment: .center) { detail in
+                        Text(detail)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .transition(.relayReplacing(.text))
                 } else {
                     VStack(spacing: 16) {
                         if showsWorkingDirectoryPicker {
                             workingDirectoryPicker
                         }
-                        Text(readiness.detail)
-                            .font(AppTypography.font(.body))
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .relayTextSwap(readiness.detail, alignment: .center)
+                        RelaySwap(readiness.detail, style: .text, alignment: .center) { detail in
+                            Text(detail)
+                                .font(AppTypography.font(.body))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         Text("Two ways to start a voice session:")
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1122,12 +1127,13 @@ struct OnboardingView: View {
             HStack(spacing: 8) {
                 Image(systemName: "folder")
                     .foregroundStyle(.secondary)
-                Text(workingDirectoryDisplay)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .foregroundStyle(hasConfirmedWorkingDirectory ? .primary : .secondary)
-                    .relayTextSwap(workingDirectoryDisplay)
+                RelaySwap(workingDirectoryDisplay, style: .text, alignment: .leading) { display in
+                    Text(display)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .foregroundStyle(hasConfirmedWorkingDirectory ? .primary : .secondary)
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -1974,14 +1980,6 @@ struct OnboardingView: View {
         }
     }
 
-    private func readinessColor(for mode: GuidedSetupReadiness.Mode) -> Color {
-        switch mode {
-        case .blocked: return .orange
-        case .voiceOnly: return .green
-        case .fullyArmed: return .green
-        }
-    }
-
     private func openParentPermissionSettings(for kind: PermissionKind) {
         persistResume()
         let urlString: String
@@ -2051,14 +2049,15 @@ struct OnboardingPermissionPromptView: View {
 
     var body: some View {
         VStack(spacing: 54) {
-            Text(presentation.prompt)
-                .font(AppTypography.font(.onboardingHero))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.72)
-                .relayTextSwap(presentation.prompt, alignment: .center)
-                .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
+            RelaySwap(presentation.prompt, style: .text, alignment: .center) { prompt in
+                Text(prompt)
+                    .font(AppTypography.font(.onboardingHero))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.72)
+            }
+            .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
                 .accessibilityAddTraits(.isHeader)
 
             OnboardingIntroWhiteActionButton(

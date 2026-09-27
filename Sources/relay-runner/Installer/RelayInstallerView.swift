@@ -150,14 +150,16 @@ struct RelayInstallerView: View {
             VStack(spacing: 8) {
                 Text("Install Relay Runner")
                     .font(AppTypography.font(.appTitle))
-                Text(model.statusText)
-                    .font(AppTypography.font(.cardHeading))
-                    .relayTextSwap(model.statusText, alignment: .center)
+                RelaySwap(model.statusText, style: .text, alignment: .center) { statusText in
+                    Text(statusText)
+                        .font(AppTypography.font(.cardHeading))
+                }
                 // Per-file copy progress updates in place; the detail line
                 // only crossfades when the install moves to a new phase.
-                Text(model.detailText)
-                    .foregroundStyle(.secondary)
-                    .relayTextSwap(model.phase, alignment: .center)
+                RelaySwap(model.phase, style: .text, alignment: .center) { _ in
+                    Text(model.detailText)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             ProgressView(value: model.progress)

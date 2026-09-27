@@ -4,13 +4,14 @@ import SwiftUI
 
 /// The shared motion language for every Relay Runner surface.
 ///
-/// Anything that appears rises a few points into place while it sharpens from
-/// a blur and fades in. Anything that disappears sinks back down, blurs and
-/// fades out. Text travels horizontally instead: it arrives from, and leaves
-/// toward, the trailing side. Every movement is eased; exits are quicker than
-/// entrances so dismissals feel responsive. When one thing replaces another,
-/// the outgoing content finishes leaving before its replacement arrives, so
-/// the two never share the screen.
+/// Anything that appears, text included, rises a few points into place while
+/// it sharpens from a blur and fades in. Anything that disappears sinks back
+/// down, blurs and fades out. Only the notch's status label travels
+/// horizontally (see `NotchContentMotion`). Every movement is eased; exits are
+/// quicker than entrances so dismissals feel responsive. When one thing
+/// replaces another, the outgoing content finishes leaving and the screen
+/// rests for a beat before its replacement arrives, so the two never share
+/// the screen.
 ///
 /// Reduce Motion keeps the opacity crossfade and drops travel and blur.
 enum RelayMotion {
@@ -20,8 +21,10 @@ enum RelayMotion {
     static let exitDuration: TimeInterval = 0.2
     static let changeDuration: TimeInterval = 0.3
     static let hoverDuration: TimeInterval = 0.15
-    /// How long a replacement waits for the content it replaces to leave.
-    static let replacementDelay: TimeInterval = exitDuration
+    /// The empty beat between an exit and the entrance that replaces it.
+    static let replacementGap: TimeInterval = 0.1
+    /// How long a replacement waits: the outgoing exit plus a short rest.
+    static let replacementDelay: TimeInterval = exitDuration + replacementGap
 
     /// A cubic Bézier easing curve shared by SwiftUI, Core Animation, and
     /// timer-driven AppKit drawing so all three move identically.
@@ -97,7 +100,7 @@ enum RelayMotion {
         /// Modals, panels, popovers, windows, and whole pages.
         static let surface = Style(axis: .vertical, distance: 12, blurRadius: 12)
         /// Labels and copy that swap in place.
-        static let text = Style(axis: .horizontal, distance: 6, blurRadius: 4)
+        static let text = Style(axis: .vertical, distance: 6, blurRadius: 4)
 
         func offset(hidden: Bool, reduceMotion: Bool) -> CGSize {
             guard hidden, !reduceMotion else { return .zero }
@@ -163,17 +166,37 @@ extension AnyTransition {
     }
 }
 
-/// Re-identifies content whenever `value` changes so the outgoing copy
-/// leaves, then the new copy arrives, with a Relay transition.
-private struct RelaySwapModifier<Value: Hashable>: ViewModifier {
+/// Swaps content built from `value`: the outgoing copy sinks out still
+/// showing its own value, the space rests for a beat, then the copy for the
+/// new value rises in.
+///
+/// Build everything that changes with `value` inside `content` from its
+/// argument. The leaving copy is frozen with the value it was built from; a
+/// modifier-based swap cannot do this, because its leaving copy keeps
+/// rendering the live content and morphs into the new value as it exits.
+struct RelaySwap<Value: Hashable, Content: View>: View {
     let value: Value
     let style: RelayMotion.Style
     let alignment: Alignment
+    let content: (Value) -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    func body(content: Content) -> some View {
+    /// `style: .text` for copy; the default suits icons, glyphs, and badges.
+    init(
+        _ value: Value,
+        style: RelayMotion.Style = .element,
+        alignment: Alignment = .center,
+        @ViewBuilder content: @escaping (Value) -> Content
+    ) {
+        self.value = value
+        self.style = style
+        self.alignment = alignment
+        self.content = content
+    }
+
+    var body: some View {
         ZStack(alignment: alignment) {
-            content
+            content(value)
                 .id(value)
                 .transition(.relayReplacing(style))
         }
@@ -182,25 +205,6 @@ private struct RelaySwapModifier<Value: Hashable>: ViewModifier {
 }
 
 extension View {
-    /// Swaps text when `value` changes: the old copy slides out, then the
-    /// new copy slides in.
-    func relayTextSwap<Value: Hashable>(
-        _ value: Value,
-        alignment: Alignment = .leading
-    ) -> some View {
-        modifier(RelaySwapModifier(value: value, style: .text, alignment: alignment))
-    }
-
-    /// Swaps non-text content (icons, glyphs, badges) when `value` changes:
-    /// the old copy sinks out, then the new copy rises in.
-    func relaySwap<Value: Hashable>(
-        _ value: Value,
-        style: RelayMotion.Style = .element,
-        alignment: Alignment = .center
-    ) -> some View {
-        modifier(RelaySwapModifier(value: value, style: style, alignment: alignment))
-    }
-
     /// Plays the Relay entrance once when the view first appears, for
     /// content that is mounted by AppKit rather than inserted by SwiftUI.
     func relayAppearOnMount(style: RelayMotion.Style = .surface, delay: TimeInterval = 0) -> some View {

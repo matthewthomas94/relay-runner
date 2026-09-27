@@ -99,11 +99,12 @@ struct PermissionsSettingsTab: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Permissions were reset")
                     .font(AppTypography.font(.cardHeading))
-                Text("\(names) showed as granted on a previous run but appear denied now. macOS sometimes resets permissions after an OS update or app reinstall — re-grant below to continue using the affected features.")
-                    .font(AppTypography.font(.settingsDescription))
-                    .foregroundStyle(SettingsSurfaceColor.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .relayTextSwap(names)
+                RelaySwap(names, style: .text, alignment: .leading) { names in
+                    Text("\(names) showed as granted on a previous run but appear denied now. macOS sometimes resets permissions after an OS update or app reinstall — re-grant below to continue using the affected features.")
+                        .font(AppTypography.font(.settingsDescription))
+                        .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
             SettingsActionButton(
@@ -200,16 +201,18 @@ struct PermissionsSettingsTab: View {
                            detail: String,
                            action: RowAction?) -> some View {
         SettingsRow {
-            stateIcon(state)
-                .relaySwap(state)
-                .frame(width: 16)
+            RelaySwap(state) { state in
+                stateIcon(state)
+            }
+            .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
-                Text(detail)
-                    .font(AppTypography.font(.settingsDescription))
-                    .foregroundStyle(SettingsSurfaceColor.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .relayTextSwap(detail)
+                RelaySwap(detail, style: .text, alignment: .leading) { detail in
+                    Text(detail)
+                        .font(AppTypography.font(.settingsDescription))
+                        .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
             if let action {

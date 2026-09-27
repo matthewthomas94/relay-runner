@@ -259,10 +259,11 @@ struct ProgramBoardOverlayView: View {
     private var notesLibrary: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("\(model.noteItems.count) \(model.noteItems.count == 1 ? "note" : "notes")")
-                    .font(AppTypography.font(.sectionHeading))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                    .relayTextSwap(model.noteItems.count)
+                RelaySwap(model.noteItems.count, style: .text, alignment: .leading) { count in
+                    Text("\(count) \(count == 1 ? "note" : "notes")")
+                        .font(AppTypography.font(.sectionHeading))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                }
                 Spacer()
             }
             .padding(.horizontal, 22)
@@ -290,12 +291,13 @@ struct ProgramBoardOverlayView: View {
                     ScrollView {
                         LazyVStack(spacing: 8) {
                             if model.visibleNotes.isEmpty {
-                                Text(model.noteQuery.isEmpty ? "Your notes will appear here." : "No matching notes.")
-                                    .font(AppTypography.font(.supporting))
-                                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                                    .relayTextSwap(model.noteQuery.isEmpty)
-                                    .padding(.top, 28)
-                                    .transition(.relayReplacing(.text))
+                                RelaySwap(model.noteQuery.isEmpty, style: .text, alignment: .leading) { isEmpty in
+                                    Text(isEmpty ? "Your notes will appear here." : "No matching notes.")
+                                        .font(AppTypography.font(.supporting))
+                                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                                }
+                                .padding(.top, 28)
+                                .transition(.relayReplacing(.text))
                             }
                             ForEach(model.visibleNotes) { note in
                                 ProgramNoteCard(
@@ -1513,21 +1515,23 @@ private struct ProgramProjectCard: View {
                 ProjectBoardOverview(item: item)
 
                 if let stale = item.staleRuns, stale > 0 {
-                    Text("\(stale) stale")
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(ProgramBoardStyle.red)
-                        .lineLimit(1)
-                        .relayTextSwap(stale)
-                        .transition(.relayText)
+                    RelaySwap(stale, style: .text, alignment: .leading) { stale in
+                        Text("\(stale) stale")
+                            .font(AppTypography.font(.supporting))
+                            .foregroundStyle(ProgramBoardStyle.red)
+                            .lineLimit(1)
+                    }
+                    .transition(.relayText)
                 }
 
                 if !item.providerHealth.isEmpty {
-                    Text(item.providerHealth.joined(separator: "  "))
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(ProgramBoardStyle.red)
-                        .lineLimit(2)
-                        .relayTextSwap(item.providerHealth)
-                        .transition(.relayText)
+                    RelaySwap(item.providerHealth, style: .text, alignment: .leading) { providerHealth in
+                        Text(providerHealth.joined(separator: "  "))
+                            .font(AppTypography.font(.supporting))
+                            .foregroundStyle(ProgramBoardStyle.red)
+                            .lineLimit(2)
+                    }
+                    .transition(.relayText)
                 }
             }
             .padding(16)
@@ -1583,12 +1587,13 @@ private struct ProjectCount: View {
                 .font(AppTypography.font(.caption))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .lineLimit(1)
-            Text("\(value ?? 0)")
-                .font(AppTypography.font(.count))
-                .foregroundStyle(ProgramBoardStyle.secondaryText)
-                .monospacedDigit()
-                .lineLimit(1)
-                .relayTextSwap(value ?? 0)
+            RelaySwap(value ?? 0, style: .text, alignment: .leading) { count in
+                Text("\(count)")
+                    .font(AppTypography.font(.count))
+                    .foregroundStyle(ProgramBoardStyle.secondaryText)
+                    .monospacedDigit()
+                    .lineLimit(1)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .minimumScaleFactor(0.8)
@@ -1653,12 +1658,13 @@ struct ProgramWorkColumnPanel: View {
                     .minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
                 Group {
-                    Text("\(model.ticketItems(in: lane).count) \(model.ticketItems(in: lane).count == 1 ? "Ticket" : "Tickets")")
-                        .font(AppTypography.font(.count))
-                        .foregroundStyle(ProgramBoardStyle.secondaryText)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .relayTextSwap(laneItems.count, alignment: .trailing)
+                    RelaySwap(laneItems.count, style: .text, alignment: .trailing) { count in
+                        Text("\(count) \(count == 1 ? "Ticket" : "Tickets")")
+                            .font(AppTypography.font(.count))
+                            .foregroundStyle(ProgramBoardStyle.secondaryText)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                    }
                 }
                 if canCreate {
                     ProgramIconButton(
@@ -1763,11 +1769,12 @@ private struct ProgramNoteCard: View {
                     }
                     Spacer(minLength: 0)
                 }
-                Text(item.title)
-                    .font(AppTypography.font(.ticketTitle))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                    .lineLimit(2)
-                    .relayTextSwap(item.title)
+                RelaySwap(item.title, style: .text, alignment: .leading) { title in
+                    Text(title)
+                        .font(AppTypography.font(.ticketTitle))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                        .lineLimit(2)
+                }
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2416,34 +2423,37 @@ private struct ProgramWorkCard: View {
             }
 
             if let dependencyText {
-                Text(dependencyText)
-                    .font(AppTypography.font(.supporting))
-                    .foregroundStyle(item.blockedBy.isEmpty ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.red)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .relayTextSwap(dependencyText)
-                    .transition(.relayText)
+                RelaySwap(dependencyText, style: .text, alignment: .leading) { dependencyText in
+                    Text(dependencyText)
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(item.blockedBy.isEmpty ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.red)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                .transition(.relayText)
             }
 
             if let lastError = item.visibleLastError {
-                Text(lastError)
-                    .font(AppTypography.font(.supporting))
-                    .foregroundStyle(ProgramBoardStyle.red)
-                    .lineLimit(2)
-                    .relayTextSwap(lastError)
-                    .transition(.relayText)
+                RelaySwap(lastError, style: .text, alignment: .leading) { lastError in
+                    Text(lastError)
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.red)
+                        .lineLimit(2)
+                }
+                .transition(.relayText)
             }
 
             if let activityLine {
-                Text(activityLine)
-                    .font(AppTypography.font(.supporting))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .help(activityLine)
-                    .accessibilityLabel("Agent activity: \(activityLine)")
-                    .relayTextSwap(activityLine)
-                    .transition(.relayText)
+                RelaySwap(activityLine, style: .text, alignment: .leading) { activityLine in
+                    Text(activityLine)
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help(activityLine)
+                        .accessibilityLabel("Agent activity: \(activityLine)")
+                }
+                .transition(.relayText)
             }
         }
         .padding(16)
@@ -2578,10 +2588,11 @@ private struct ProgramNoteDetailPanel: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(detail.item.title)
-                        .font(AppTypography.font(.screenTitle))
-                        .foregroundStyle(ProgramBoardStyle.primaryText)
-                        .relayTextSwap(detail.item.title)
+                    RelaySwap(detail.item.title, style: .text, alignment: .leading) { title in
+                        Text(title)
+                            .font(AppTypography.font(.screenTitle))
+                            .foregroundStyle(ProgramBoardStyle.primaryText)
+                    }
                 }
                 Spacer(minLength: 0)
                 ProgramIconButton(systemName: "xmark", help: "Close note", action: onClose)
@@ -2682,10 +2693,11 @@ private struct ProgramNoteDetailPanel: View {
             if let metadata = detail.item.card.metadata {
                 if let status = metadata.statusLabel {
                     HStack {
-                        Text(status)
-                            .font(AppTypography.font(.supporting))
-                            .foregroundStyle(ProgramBoardStyle.mutedText)
-                            .relayTextSwap(status)
+                        RelaySwap(status, style: .text, alignment: .leading) { status in
+                            Text(status)
+                                .font(AppTypography.font(.supporting))
+                                .foregroundStyle(ProgramBoardStyle.mutedText)
+                        }
                         if !detail.item.isArchived {
                             Button("Retry summary", action: onMetadataRetry)
                                 .buttonStyle(.plain)
@@ -2815,11 +2827,12 @@ struct ProgramTicketDetailPanel: View {
                                 .transition(.relayElement)
                         }
                     }
-                    Text(detail.title)
-                        .font(AppTypography.font(.screenTitle))
-                        .foregroundStyle(ProgramBoardStyle.primaryText)
-                        .lineLimit(2)
-                        .relayTextSwap(detail.title)
+                    RelaySwap(detail.title, style: .text, alignment: .leading) { title in
+                        Text(title)
+                            .font(AppTypography.font(.screenTitle))
+                            .foregroundStyle(ProgramBoardStyle.primaryText)
+                            .lineLimit(2)
+                    }
                     Text(detail.projectName)
                         .font(AppTypography.font(.label))
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
@@ -3183,10 +3196,11 @@ private struct ProgramSpikeFollowupProposalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(proposal.state.displayLabel)
-                    .font(AppTypography.font(.caption))
-                    .foregroundStyle(ProgramBoardStyle.secondaryText)
-                    .relayTextSwap(proposal.state)
+                RelaySwap(proposal.state, style: .text, alignment: .leading) { state in
+                    Text(state.displayLabel)
+                        .font(AppTypography.font(.caption))
+                        .foregroundStyle(ProgramBoardStyle.secondaryText)
+                }
                 if let ticketID = proposal.ticketID {
                     Text(ticketID)
                         .font(AppTypography.monospacedFont(size: 11, weight: .semibold))
@@ -3434,11 +3448,12 @@ private struct ProgramDetailMetadata: View {
                 .font(AppTypography.font(.caption))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .lineLimit(1)
-            Text(row.value)
-                .font(AppTypography.font(.label))
-                .foregroundStyle(ProgramBoardStyle.secondaryText)
-                .lineLimit(2)
-                .relayTextSwap(row.value)
+            RelaySwap(row.value, style: .text, alignment: .leading) { value in
+                Text(value)
+                    .font(AppTypography.font(.label))
+                    .foregroundStyle(ProgramBoardStyle.secondaryText)
+                    .lineLimit(2)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -3468,11 +3483,12 @@ private struct ProgramDetailNotice: View {
     let message: String
 
     var body: some View {
-            Text(message)
-            .font(AppTypography.font(.status))
-            .foregroundStyle(ProgramBoardStyle.red)
-            .lineLimit(3)
-            .relayTextSwap(message)
+            RelaySwap(message, style: .text, alignment: .leading) { message in
+                Text(message)
+                    .font(AppTypography.font(.status))
+                    .foregroundStyle(ProgramBoardStyle.red)
+                    .lineLimit(3)
+            }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -3746,8 +3762,8 @@ private struct ProgramTicketProjectPicker: View {
     let projects: [ProgramBoardProjectTarget]
     @Binding var selection: String?
 
-    private var selectedProject: ProgramBoardProjectTarget? {
-        projects.first { $0.path == selection }
+    private func project(at path: String?) -> ProgramBoardProjectTarget? {
+        projects.first { $0.path == path }
     }
 
     var body: some View {
@@ -3775,10 +3791,11 @@ private struct ProgramTicketProjectPicker: View {
             }
         } label: {
             HStack(spacing: 8) {
-                Text(selectedProject?.name ?? "Select project")
-                    .font(AppTypography.font(.field))
-                    .lineLimit(1)
-                    .relayTextSwap(selection)
+                RelaySwap(selection, style: .text, alignment: .leading) { selection in
+                    Text(project(at: selection)?.name ?? "Select project")
+                        .font(AppTypography.font(.field))
+                        .lineLimit(1)
+                }
                 Spacer(minLength: 12)
                 Image(systemName: "chevron.down")
                     .font(AppTypography.symbolFont(size: 9, weight: .semibold))
@@ -3888,12 +3905,13 @@ private struct ProgramTicketCreateModal: View {
                         selection: $selectedProjectPath
                     )
 
-                    Text(selectedProject?.path ?? "Select project")
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .relayTextSwap(selectedProjectPath)
+                    RelaySwap(selectedProjectPath, style: .text, alignment: .leading) { selectedProjectPath in
+                        Text(project(at: selectedProjectPath)?.path ?? "Select project")
+                            .font(AppTypography.font(.supporting))
+                            .foregroundStyle(ProgramBoardStyle.mutedText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
 
                 ProgramTicketTitleField(text: $title)
@@ -3948,8 +3966,8 @@ private struct ProgramTicketCreateModal: View {
         .programTicketPanelChrome()
     }
 
-    private var selectedProject: ProgramBoardProjectTarget? {
-        projects.first { $0.path == selectedProjectPath }
+    private func project(at path: String?) -> ProgramBoardProjectTarget? {
+        projects.first { $0.path == path }
     }
 
     private var canSave: Bool {
@@ -3965,14 +3983,15 @@ private struct ProgramExecutionModePicker: View {
             Text("Execution mode")
                 .font(AppTypography.font(.cardHeading))
                 .foregroundStyle(ProgramBoardStyle.primaryText)
-            Text(selection.explanation)
-                .font(AppTypography.font(.supporting))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .relayTextSwap(selection, alignment: .topLeading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .frame(height: ProgramTicketPanelStyle.executionModeDescriptionHeight, alignment: .topLeading)
+            RelaySwap(selection, style: .text, alignment: .topLeading) { selection in
+                Text(selection.explanation)
+                    .font(AppTypography.font(.supporting))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(height: ProgramTicketPanelStyle.executionModeDescriptionHeight, alignment: .topLeading)
             HStack(spacing: 0) {
                 ForEach([Ticket.ExecutionMode.spike, .implementation], id: \.rawValue) { mode in
                     ProgramExecutionModeButton(
@@ -4190,14 +4209,15 @@ private struct ProgramStatePanel: View {
                     .font(AppTypography.font(.sectionHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                 if let detail, !detail.isEmpty {
-                    Text(detail)
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(ProgramBoardStyle.secondaryText)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(3)
-                        .relayTextSwap(detail, alignment: .center)
-                        .frame(maxWidth: 560)
-                        .transition(.relayText)
+                    RelaySwap(detail, style: .text, alignment: .center) { detail in
+                        Text(detail)
+                            .font(AppTypography.font(.supporting))
+                            .foregroundStyle(ProgramBoardStyle.secondaryText)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(3)
+                    }
+                    .frame(maxWidth: 560)
+                    .transition(.relayText)
                 }
                 if let primaryActionTitle, let primaryAction {
                     HStack(spacing: 8) {
@@ -4236,12 +4256,13 @@ private struct ProgramStatePanel: View {
 
                         if onCreateDiagnostics != nil {
                             Button(action: { onCreateDiagnostics?() }) {
-                                Text(isDiagnosticsExporting ? "Exporting…" : "Export Diagnostics…")
-                                    .font(AppTypography.font(.programAction))
-                                    .foregroundStyle(ProgramBoardStyle.secondaryText)
-                                    .relayTextSwap(isDiagnosticsExporting, alignment: .center)
-                                    .padding(.horizontal, 12)
-                                    .frame(height: ProgramBoardLayout.compactControlHeight)
+                                RelaySwap(isDiagnosticsExporting, style: .text, alignment: .center) { isDiagnosticsExporting in
+                                    Text(isDiagnosticsExporting ? "Exporting…" : "Export Diagnostics…")
+                                        .font(AppTypography.font(.programAction))
+                                        .foregroundStyle(ProgramBoardStyle.secondaryText)
+                                }
+                                .padding(.horizontal, 12)
+                                .frame(height: ProgramBoardLayout.compactControlHeight)
                             }
                             .buttonStyle(.plain)
                             .disabled(isDiagnosticsExporting)
@@ -4252,14 +4273,15 @@ private struct ProgramStatePanel: View {
                     }
                 }
                 if let diagnosticsPreview {
-                    Text(diagnosticsPreview.summary)
-                        .font(AppTypography.font(.caption))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(4)
-                        .relayTextSwap(diagnosticsPreview.summary, alignment: .center)
-                        .frame(maxWidth: 620)
-                        .transition(.relayText)
+                    RelaySwap(diagnosticsPreview.summary, style: .text, alignment: .center) { summary in
+                        Text(summary)
+                            .font(AppTypography.font(.caption))
+                            .foregroundStyle(ProgramBoardStyle.mutedText)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(4)
+                    }
+                    .frame(maxWidth: 620)
+                    .transition(.relayText)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -4296,11 +4318,12 @@ private struct ProgramErrorStrip: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(message)
-                .font(AppTypography.font(.supporting))
-                .foregroundStyle(ProgramBoardStyle.red)
-                .lineLimit(2)
-                .relayTextSwap(message)
+            RelaySwap(message, style: .text, alignment: .leading) { message in
+                Text(message)
+                    .font(AppTypography.font(.supporting))
+                    .foregroundStyle(ProgramBoardStyle.red)
+                    .lineLimit(2)
+            }
             if onRetry != nil || onCreateDiagnostics != nil {
                 HStack(spacing: 10) {
                     if let onRetry {
@@ -4308,13 +4331,14 @@ private struct ProgramErrorStrip: View {
                             .buttonStyle(.plain)
                     }
                     if let onCreateDiagnostics {
-                        Button(
-                            isDiagnosticsExporting ? "Exporting…" : "Export diagnostics…",
-                            action: onCreateDiagnostics
-                        )
-                            .buttonStyle(.plain)
-                            .disabled(isDiagnosticsExporting)
-                            .relayTextSwap(isDiagnosticsExporting)
+                        RelaySwap(isDiagnosticsExporting, style: .text, alignment: .leading) { isDiagnosticsExporting in
+                            Button(
+                                isDiagnosticsExporting ? "Exporting…" : "Export diagnostics…",
+                                action: onCreateDiagnostics
+                            )
+                                .buttonStyle(.plain)
+                                .disabled(isDiagnosticsExporting)
+                        }
                     }
                 }
                 .font(AppTypography.font(.caption))

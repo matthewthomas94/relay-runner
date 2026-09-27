@@ -53,9 +53,10 @@ struct PermissionAppDragGuide: View {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.up.forward.app")
                     .foregroundStyle(.tint)
-                Text(title)
-                    .font(AppTypography.font(.cardHeading))
-                    .relayTextSwap(title)
+                RelaySwap(title, style: .text, alignment: .leading) { title in
+                    Text(title)
+                        .font(AppTypography.font(.cardHeading))
+                }
             }
             HStack(alignment: .center, spacing: 12) {
                 LazyVGrid(columns: iconColumns, alignment: .leading, spacing: 10) {

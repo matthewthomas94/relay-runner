@@ -729,8 +729,10 @@ final class NotchStatusPlacementTests: XCTestCase {
 
         let arriving = motion.arrivalAppearance(now: 10, reduceMotion: false)
         XCTAssertEqual(arriving.alpha, 0)
-        XCTAssertEqual(arriving.offset, RelayMotion.Style.text.distance)
-        XCTAssertEqual(arriving.blur, RelayMotion.Style.text.blurRadius)
+        XCTAssertEqual(NotchContentMotion.labelStyle.axis, .horizontal, "status copy is the one horizontal slide")
+        XCTAssertEqual(RelayMotion.Style.text.axis, .vertical)
+        XCTAssertEqual(arriving.offset, NotchContentMotion.labelStyle.distance)
+        XCTAssertEqual(arriving.blur, NotchContentMotion.labelStyle.blurRadius)
         XCTAssertEqual(
             motion.arrivalAppearance(now: 10 + RelayMotion.enterDuration + 0.001, reduceMotion: false),
             .resting

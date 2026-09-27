@@ -67,18 +67,20 @@ struct SettingsAgentCard: View {
             .accessibilityHidden(true)
 
             VStack(spacing: 11) {
-                Text(presentation.name)
-                    .font(AppTypography.font(.appTitle, size: 24))
-                    .tracking(-0.5)
-                    .foregroundStyle(SettingsSurfaceColor.primaryText)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-                    .relayTextSwap(presentation.name, alignment: .center)
-                Text(presentation.subtitle)
-                    .font(AppTypography.font(.settingsDescription, size: 12))
-                    .foregroundStyle(SettingsSurfaceColor.secondaryText)
-                    .multilineTextAlignment(.center)
-                    .relayTextSwap(presentation.subtitle, alignment: .center)
+                RelaySwap(presentation.name, style: .text, alignment: .center) { name in
+                    Text(name)
+                        .font(AppTypography.font(.appTitle, size: 24))
+                        .tracking(-0.5)
+                        .foregroundStyle(SettingsSurfaceColor.primaryText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                }
+                RelaySwap(presentation.subtitle, style: .text, alignment: .center) { subtitle in
+                    Text(subtitle)
+                        .font(AppTypography.font(.settingsDescription, size: 12))
+                        .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                        .multilineTextAlignment(.center)
+                }
             }
             .padding(.horizontal, 24)
             .padding(.top, 61)

@@ -46,7 +46,13 @@ struct NotchContentMotion {
         let index: Int
     }
 
-    static let labelStyle = RelayMotion.Style.text
+    /// Status copy (Listening, Playing, …) is the one place text slides
+    /// horizontally; everything else in the app rises and sinks.
+    static let labelStyle = RelayMotion.Style(
+        axis: .horizontal,
+        distance: RelayMotion.Style.text.distance,
+        blurRadius: RelayMotion.Style.text.blurRadius
+    )
     static let glyphChangeDuration = max(RelayMotion.enterDuration, RelayMotion.changeDuration)
     static let maximumDotSoftness: CGFloat = 1.5
     static let coreCenters = [
