@@ -1,9 +1,11 @@
 # RR-379: local intent qualification experiment
 
-This experiment lives on `codex/laya-intent-qualification`. It is not approved for
+The original experiment lives on `codex/laya-intent-qualification`; the optional
+computer-action extension lives on `codex/laya-fast-actions`. Neither is approved for
 production routing or automatic merge. Local Laya is fast enough in the measured
 warm tests, but the stock checkpoints did **not** improve qualification accuracy
-on the independent synthetic set. Keep the PM authoritative.
+on the independent synthetic set. The PM remains authoritative except for the
+new branch's explicitly enabled, exact one-step Action experiment.
 
 The three choices are Task (project work, tickets, spikes and workers), Action
 (bounded foreground operations), and Discussion (research, status, explanation,
@@ -15,12 +17,16 @@ one fixed-choice answer; it does not generate prose or execute a command.
 `services/laya_qualification.py` supplies a standard-library-only bridge client
 and an explicitly loaded MLX adapter. `RELAY_LAYA_TEST_MODE=1` enables a bounded
 request to a preloaded local service through a private Unix socket. The default
-is off. The branch's voice bridge submits to Messenger first, then attaches an
-advisory Laya result to the PM metadata and prompt. Existing actions, work
-dispositions, cancellation, authorization, and current-command checks are not
-changed by the Laya result. The complete original request remains in the prompt.
+is off. The original branch's voice bridge submits to Messenger first, then
+attaches an advisory Laya result to the PM metadata and prompt. With fast Actions
+disabled, existing actions, work dispositions, cancellation, authorization, and
+current-command checks are unchanged. The complete original request remains in
+the prompt.
 
-The PM always qualifies the command, including hints with high probabilities.
+With `RELAY_LAYA_FAST_ACTIONS` unset, the PM always qualifies the command,
+including hints with high probabilities. The fast-action branch adds a second
+explicit switch for exact one-step desktop commands; its scope and safeguards are
+in [FAST_ACTIONS.md](FAST_ACTIONS.md).
 Probabilities are not calibrated for RR. Negations, corrections, references and
 detected mixed requests abstain; raw model decisions remain visible in evaluation
 results so these guards cannot conceal model errors. They are conservative

@@ -51,6 +51,7 @@ from intent_qualification import (
     whole_turn_resolution_required,
 )
 from laya_qualification import attach_hint as attach_laya_hint, qualify_for_bridge as qualify_with_laya
+from laya_fast_actions import try_fast_action
 from provider_turn_broker import ProviderTurnBroker
 from relay_authorization import (
     allowed_mutations_for_metadata,
@@ -4309,6 +4310,36 @@ def _run_relay(
                     relay_command["work_disposition"] = resolved_items[-1][
                         "disposition"
                     ].to_dict()
+                fast_result = try_fast_action(
+                    text,
+                    repo_path=Path.cwd(),
+                    resolved_items=resolved_items,
+                    hint=laya_hint,
+                    current_command=lambda: _relay_command_current(
+                        relay_command["relay_command_seq"],
+                        relay_command["relay_command_id"],
+                    ),
+                )
+                if fast_result is not None:
+                    if inbox is None:
+                        _discard_pending_command()
+                    metadata = resolved_items[0]["metadata"]
+                    metadata["fast_action"] = {
+                        "kind": fast_result.kind,
+                        "confirmed": fast_result.confirmed,
+                    }
+                    _record_command_action_state(metadata, "completed" if fast_result.confirmed else "completion_unconfirmed")
+                    _handle_orchestrator_reply_control(
+                        json.dumps({
+                            "text": fast_result.text,
+                            "relay_command_seq": relay_command["relay_command_seq"],
+                            "relay_command_id": relay_command["relay_command_id"],
+                            "speech_source": "fast_action",
+                        }),
+                        tts_worker=tts_worker,
+                        messenger=messenger,
+                    )
+                    continue
                 update_user_context = getattr(messenger, "update_user_context", None)
                 if should_submit_to_messenger and callable(update_user_context):
                     update_user_context(relay_command)

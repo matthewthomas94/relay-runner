@@ -318,6 +318,54 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
         self.assertEqual(messenger.users[0][1]["relay_command_id"], "fast-submit")
 
+    def test_laya_fast_action_completes_once_without_pm_turn_for_both_providers(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                voice_bridge._reset_foreground_reply_delivery_for_tests()
+                worker = FakeTTSWorker()
+                messenger = FakeMessenger()
+                shutdown_event = threading.Event()
+                command = {
+                    "relay_command_seq": 7,
+                    "relay_command_id": f"fast-action-{provider}",
+                    "provider": provider,
+                }
+
+                def read_once(_fd, _size):
+                    shutdown_event.set()
+                    return b"Open Calculator\n"
+
+                with (
+                    mock.patch.dict(os.environ, {"RELAY_LAYA_FAST_ACTIONS": "1"}),
+                    mock.patch.object(voice_bridge.os, "unlink"),
+                    mock.patch.object(voice_bridge.os, "close"),
+                    mock.patch.object(voice_bridge.os, "read", side_effect=read_once),
+                    mock.patch.object(voice_bridge, "ensure_fifo", return_value=True),
+                    mock.patch.object(voice_bridge, "open_fifo", return_value=123),
+                    mock.patch.object(voice_bridge.select, "select", return_value=([123], [], [])),
+                    mock.patch.object(voice_bridge.threading, "Thread"),
+                    mock.patch.object(voice_bridge, "_begin_relay_command", return_value=command),
+                    mock.patch.object(voice_bridge, "_active_work", return_value=[]),
+                    mock.patch.object(voice_bridge, "_relay_command_current", return_value=True),
+                    mock.patch.object(voice_bridge, "_relay_command_current_or_preserved", return_value=True),
+                    mock.patch.object(voice_bridge, "qualify_with_laya", return_value={**command, "bucket": "action"}),
+                    mock.patch("laya_fast_actions.execute_fast_action", return_value=types.SimpleNamespace(
+                        text="Opened Calculator.", confirmed=True, kind="open_app",
+                    )) as execute,
+                    mock.patch.object(voice_bridge, "_publish_command") as publish,
+                    mock.patch.object(voice_bridge, "_discard_pending_command") as discard,
+                    mock.patch.object(voice_bridge, "_queue_voice_acknowledgement") as acknowledge,
+                    mock.patch.object(voice_bridge, "_record_command_action_state"),
+                ):
+                    voice_bridge._run_relay(worker, shutdown_event, messenger=messenger)
+
+                execute.assert_called_once()
+                publish.assert_not_called()
+                discard.assert_called_once()
+                acknowledge.assert_not_called()
+                self.assertEqual(len(messenger.users), 1)
+                self.assertEqual([entry["text"] for entry in messenger.finals], ["Opened Calculator."])
+
     def test_explicitly_disabled_messenger_does_not_emit_degraded_prompt(self):
         worker = FakeTTSWorker()
         shutdown_event = threading.Event()
