@@ -168,11 +168,13 @@ final class WorkspaceDotMatrixTests: XCTestCase {
         XCTAssertTrue(contents.contains(".allowsHitTesting(!dotMatrixPresentation.isVisible)"))
     }
 
-    func testModalMotionIsCriticallyDampedAndReducedMotionIsStatic() {
-        XCTAssertEqual(ProgramWorkspaceModalMotion.response, 0.34, accuracy: 0.001)
-        XCTAssertEqual(ProgramWorkspaceModalMotion.dampingFraction, 1, accuracy: 0.001)
-        XCTAssertNotNil(ProgramWorkspaceModalMotion.animation(reduceMotion: false))
-        XCTAssertNil(ProgramWorkspaceModalMotion.animation(reduceMotion: true))
+    func testModalMotionUsesRelaySurfaceAndEasedChange() {
+        XCTAssertEqual(ProgramWorkspaceModalMotion.panelStyle, .surface)
+        XCTAssertEqual(ProgramWorkspaceModalMotion.animation(reduceMotion: false), RelayMotion.change)
+        XCTAssertEqual(
+            ProgramWorkspaceModalMotion.animation(reduceMotion: true),
+            RelayMotion.change(reduceMotion: true)
+        )
     }
 
     func testModalBackdropHitViewConsumesFullClickBeforeDismissingOnce() throws {

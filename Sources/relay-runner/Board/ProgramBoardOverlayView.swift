@@ -88,16 +88,45 @@ enum ProgramWorkspaceDotMatrixStyle {
 }
 
 enum ProgramWorkspaceModalMotion {
-    static let response: TimeInterval = 0.34
-    static let dampingFraction: CGFloat = 1
+    static let panelStyle: RelayMotion.Style = .surface
 
-    static func animation(reduceMotion: Bool) -> Animation? {
-        guard !reduceMotion else { return nil }
-        return .spring(response: response, dampingFraction: dampingFraction)
+    /// Eases the modal swap together with the board blur behind it.
+    static func animation(reduceMotion: Bool) -> Animation {
+        RelayMotion.change(reduceMotion: reduceMotion)
     }
 
-    static func transition(reduceMotion: Bool) -> AnyTransition {
-        reduceMotion ? .identity : .opacity
+    /// Modal panels rise in and sink out. A leaving modal stops taking clicks
+    /// so its click catcher never swallows the next click on the board.
+    static var transition: AnyTransition {
+        .programBoardLeaving(panelStyle)
+    }
+
+    /// The full-bleed dot-matrix backdrop only fades.
+    static var backdropTransition: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.animation(RelayMotion.enter),
+            removal: .opacity.animation(RelayMotion.exit)
+        )
+    }
+}
+
+/// A Relay transition whose leaving view no longer takes clicks.
+private struct ProgramBoardLeavingTransition: Transition {
+    let style: RelayMotion.Style
+
+    func body(content: Content, phase: TransitionPhase) -> some View {
+        content
+            .modifier(RelayMotionEffect(style: style, hidden: !phase.isIdentity))
+            .allowsHitTesting(phase != .didDisappear)
+    }
+}
+
+private extension AnyTransition {
+    static func programBoardLeaving(_ style: RelayMotion.Style) -> AnyTransition {
+        .asymmetric(
+            insertion: AnyTransition(ProgramBoardLeavingTransition(style: style)).animation(RelayMotion.enter),
+            removal: AnyTransition(ProgramBoardLeavingTransition(style: style)).animation(RelayMotion.exit)
+        )
     }
 }
 
@@ -224,6 +253,7 @@ struct ProgramBoardOverlayView: View {
                 Text("\(model.noteItems.count) \(model.noteItems.count == 1 ? "note" : "notes")")
                     .font(AppTypography.font(.sectionHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
+                    .relayTextSwap(model.noteItems.count)
                 Spacer()
             }
             .padding(.horizontal, 22)
@@ -254,7 +284,9 @@ struct ProgramBoardOverlayView: View {
                                 Text(model.noteQuery.isEmpty ? "Your notes will appear here." : "No matching notes.")
                                     .font(AppTypography.font(.supporting))
                                     .foregroundStyle(ProgramBoardStyle.mutedText)
+                                    .relayTextSwap(model.noteQuery.isEmpty)
                                     .padding(.top, 28)
+                                    .transition(.relayText)
                             }
                             ForEach(model.visibleNotes) { note in
                                 ProgramNoteCard(
@@ -262,41 +294,50 @@ struct ProgramBoardOverlayView: View {
                                     isSelected: model.selectedNoteDetail?.item.id == note.id,
                                     onSelect: { onNoteOpen(note) }
                                 )
+                                .transition(.relayElement)
                             }
                         }
+                        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteItems)
+                        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteQuery)
                     }
                 }
                 .padding(18)
                 .frame(width: 330)
                 Rectangle().fill(BoardDarkSurfaceStyle.border).frame(width: 1)
-                if let detail = model.selectedNoteDetail {
-                    ProgramNoteDetailPanel(
-                        detail: detail,
-                        captureSnapshot: model.noteCaptureSnapshot,
-                        theme: model.theme,
-                        onClose: onNoteClose,
-                        onStop: onStopNoteTaker,
-                        onRetry: { onNoteOpen(detail.item) },
-                        onMetadataRetry: { onNoteMetadataRetry(detail.item) },
-                        onDelete: { onNoteDelete(detail.item) },
-                        recoveryOffer: model.selectedNoteRecoveryOffer,
-                        recoveryInFlight: model.noteRecoveryInFlight,
-                        recoveryErrorMessage: model.noteRecoveryErrorMessage,
-                        onRecover: onNoteRecovery,
-                        onResume: onResumeRecoveredNote
-                    )
-                } else {
-                    VStack(spacing: 10) {
-                        Image(systemName: "note.text")
-                            .font(.system(size: 28))
-                        Text("Select a note")
-                            .font(AppTypography.font(.sectionHeading))
-                        Text("Your transcripts and summaries, all in one place.")
-                            .font(AppTypography.font(.supporting))
+                ZStack {
+                    if let detail = model.selectedNoteDetail {
+                        ProgramNoteDetailPanel(
+                            detail: detail,
+                            captureSnapshot: model.noteCaptureSnapshot,
+                            theme: model.theme,
+                            onClose: onNoteClose,
+                            onStop: onStopNoteTaker,
+                            onRetry: { onNoteOpen(detail.item) },
+                            onMetadataRetry: { onNoteMetadataRetry(detail.item) },
+                            onDelete: { onNoteDelete(detail.item) },
+                            recoveryOffer: model.selectedNoteRecoveryOffer,
+                            recoveryInFlight: model.noteRecoveryInFlight,
+                            recoveryErrorMessage: model.noteRecoveryErrorMessage,
+                            onRecover: onNoteRecovery,
+                            onResume: onResumeRecoveredNote
+                        )
+                        .id(detail.item.id)
+                        .transition(.programBoardLeaving(.surface))
+                    } else {
+                        VStack(spacing: 10) {
+                            Image(systemName: "note.text")
+                                .font(.system(size: 28))
+                            Text("Select a note")
+                                .font(AppTypography.font(.sectionHeading))
+                            Text("Your transcripts and summaries, all in one place.")
+                                .font(AppTypography.font(.supporting))
+                        }
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.relaySurface)
                     }
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.selectedNoteDetail?.item.id)
             }
         }
         .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
@@ -378,63 +419,73 @@ struct ProgramBoardOverlayView: View {
             .allowsHitTesting(!dotMatrixPresentation.isVisible)
             .zIndex(2)
 
-            if workspace.selectedTab == .terminal,
-               let terminalContent = terminalContent(model.selectedSessionProjectPath) {
-                VStack(spacing: 0) {
-                    terminalContent
-                        .padding(.top, BoardSurfaceLayout.columnTopPadding)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
-                .frame(maxWidth: .infinity, alignment: .top)
-                .blur(radius: backgroundBlurRadius)
-                .allowsHitTesting(!dotMatrixPresentation.isVisible)
-            } else if workspace.selectedTab == .systemSettings, let settingsContent {
-                VStack(spacing: 0) {
-                    settingsContent
-                        .padding(.top, BoardSurfaceLayout.columnTopPadding)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
-                .frame(maxWidth: .infinity, alignment: .top)
-                .blur(radius: backgroundBlurRadius)
-                .allowsHitTesting(!dotMatrixPresentation.isVisible)
-            } else if workspace.selectedTab == .notes {
-                notesLibrary
-                    .padding(.top, BoardSurfaceLayout.columnTopPadding)
-                    .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
-                    .padding(.bottom, 20)
-                    .frame(height: min(viewportSize.height, ProgramBoardBackdropStyle.backdropHeight))
-            } else if workspace.showsWorkTab {
-                let contentPresentation = boardContentPresentation
-                VStack(spacing: 0) {
-                    ProgramBoardContent(
-                        model: model,
-                        onRefresh: onRefresh,
-                        onCreateDiagnostics: onCreateDiagnostics,
-                        onHistoryStart: onHistoryStart,
-                        onDismiss: onDismiss,
-                        onAddExistingProject: onAddExistingProject,
-                        onCreateProject: onCreateProject,
-                        onSelectProject: onSelectProject,
-                        onCreateStart: onCreateStart,
-                        onNoteOpen: onNoteOpen,
-                        onDrop: onDrop
-                    )
-                    .padding(.top, contentPresentation.workspaceTopPadding)
-
-                    if contentPresentation.usesTrailingSpacer {
+            // Tabs, and the Workspace states within the work tab, swap as pages.
+            ZStack(alignment: .topLeading) {
+                if workspace.selectedTab == .terminal,
+                   let terminalContent = terminalContent(model.selectedSessionProjectPath) {
+                    VStack(spacing: 0) {
+                        terminalContent
+                            .padding(.top, BoardSurfaceLayout.columnTopPadding)
                         Spacer(minLength: 0)
                     }
+                    .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .blur(radius: backgroundBlurRadius)
+                    .allowsHitTesting(!dotMatrixPresentation.isVisible)
+                    .transition(.programBoardLeaving(.surface))
+                } else if workspace.selectedTab == .systemSettings, let settingsContent {
+                    VStack(spacing: 0) {
+                        settingsContent
+                            .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .blur(radius: backgroundBlurRadius)
+                    .allowsHitTesting(!dotMatrixPresentation.isVisible)
+                    .transition(.programBoardLeaving(.surface))
+                } else if workspace.selectedTab == .notes {
+                    notesLibrary
+                        .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                        .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                        .padding(.bottom, 20)
+                        .frame(height: min(viewportSize.height, ProgramBoardBackdropStyle.backdropHeight))
+                        .transition(.programBoardLeaving(.surface))
+                } else if workspace.showsWorkTab {
+                    let contentPresentation = boardContentPresentation
+                    VStack(spacing: 0) {
+                        ProgramBoardContent(
+                            model: model,
+                            onRefresh: onRefresh,
+                            onCreateDiagnostics: onCreateDiagnostics,
+                            onHistoryStart: onHistoryStart,
+                            onDismiss: onDismiss,
+                            onAddExistingProject: onAddExistingProject,
+                            onCreateProject: onCreateProject,
+                            onSelectProject: onSelectProject,
+                            onCreateStart: onCreateStart,
+                            onNoteOpen: onNoteOpen,
+                            onDrop: onDrop
+                        )
+                        .padding(.top, contentPresentation.workspaceTopPadding)
+
+                        if contentPresentation.usesTrailingSpacer {
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(
+                        height: ProgramBoardLayout.workspaceContentHeight,
+                        alignment: contentPresentation.fillsWorkspace ? .center : .top
+                    )
+                    .blur(radius: backgroundBlurRadius)
+                    .allowsHitTesting(!dotMatrixPresentation.isVisible)
+                    .id(contentPresentation)
+                    .transition(.programBoardLeaving(.surface))
                 }
-                .frame(maxWidth: .infinity)
-                .frame(
-                    height: ProgramBoardLayout.workspaceContentHeight,
-                    alignment: contentPresentation.fillsWorkspace ? .center : .top
-                )
-                .blur(radius: backgroundBlurRadius)
-                .allowsHitTesting(!dotMatrixPresentation.isVisible)
             }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.selectedTab)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: boardContentPresentation)
 
             ProgramDragPreviewLayer(model: model)
                 .blur(radius: backgroundBlurRadius)
@@ -443,7 +494,7 @@ struct ProgramBoardOverlayView: View {
             if dotMatrixPresentation.isVisible {
                 ProgramWorkspaceDotMatrixLayer(presentation: dotMatrixPresentation)
                     .zIndex(dotMatrixPresentation.layerZIndex)
-                    .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+                    .transition(ProgramWorkspaceModalMotion.backdropTransition)
             }
 
             if let history = model.history {
@@ -454,7 +505,7 @@ struct ProgramBoardOverlayView: View {
                         onWorkspaceChanged: onHistoryChanged
                     )
                 }
-                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+                .transition(ProgramWorkspaceModalMotion.transition)
             }
 
             if let detail = model.selectedTicketDetail,
@@ -476,7 +527,7 @@ struct ProgramBoardOverlayView: View {
                         panelSize: ProgramTicketPanelStyle.detailSize(fitting: detailSurfaceSize)
                     )
                 }
-                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+                .transition(ProgramWorkspaceModalMotion.transition)
             }
 
             if let draft = model.creating {
@@ -499,7 +550,7 @@ struct ProgramBoardOverlayView: View {
                     )
                 }
                 .id("\(draft.lane.id)-\(draft.selectedProjectPath ?? "all")")
-                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+                .transition(ProgramWorkspaceModalMotion.transition)
             }
 
             if let draft = model.editing {
@@ -525,7 +576,7 @@ struct ProgramBoardOverlayView: View {
                     )
                 }
                 .id(draft.id)
-                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+                .transition(ProgramWorkspaceModalMotion.transition)
             }
 
             if let batch = model.spikeFollowupBatch {
@@ -537,7 +588,7 @@ struct ProgramBoardOverlayView: View {
                     )
                 }
                 .id(batch.id)
-                .transition(ProgramWorkspaceModalMotion.transition(reduceMotion: reduceMotion))
+                .transition(ProgramWorkspaceModalMotion.transition)
             }
         }
         .frame(width: viewportSize.width, height: viewportSize.height, alignment: .topLeading)
