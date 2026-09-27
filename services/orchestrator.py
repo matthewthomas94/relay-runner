@@ -1746,7 +1746,7 @@ def _autonomous_ticket_action(
 ACTIVITY_MAX_LEN = 60
 ACTIVITY_DEBOUNCE_SECONDS = 5.0
 ACTIVITY_HEARTBEAT_SECONDS = 5.0
-_NOOP_TOOLS = frozenset({"TodoWrite"})
+_NOOP_TOOLS = frozenset({"TodoWrite", "TaskCreate", "TaskUpdate", "TaskList"})
 _SHELL_NAMES = frozenset({"sh", "bash", "zsh"})
 
 
@@ -1874,9 +1874,9 @@ def derive_activity(tool_name: str, tool_input: dict | None) -> str:
         return _semantic_shell_activity(cmd, desc)
     if name in ("WebFetch", "WebSearch"):
         return "Researching"
-    if name == "Task":
+    if name in ("Task", "Agent"):
         return "Delegating to sub-agent"
-    if name == "TodoWrite":
+    if name in ("TodoWrite", "TaskCreate", "TaskUpdate", "TaskList"):
         return "Planning"
     # Unknown / MCP tools: just show the (clipped) tool name.
     return _clip(name) or "Working"
