@@ -3000,9 +3000,10 @@ struct EmbeddedTerminalTab: View {
                 if let blocker = session.inboxRecoveryBlocker, session.isEmbeddedProcessRunning {
                     let message = session.deliveryRecoveryMessage ?? "Message \(blocker.command_seq) has an uncertain outcome and is blocking the queue. Skip it to continue; check its outcome before repeating it."
                     HStack {
-                        Text(message)
-                            .font(AppTypography.font(.status))
-                            .relayTextSwap(message)
+                        RelaySwap(message, style: .text, alignment: .leading) { message in
+                            Text(message)
+                                .font(AppTypography.font(.status))
+                        }
                         Button("Skip uncertain message") { confirmedInboxBlocker = blocker }
                     }
                     .padding(14)
@@ -3023,9 +3024,10 @@ struct EmbeddedTerminalTab: View {
                 if session.deliveryBlocked {
                     let message = session.deliveryRecoveryMessage ?? "Session delivery blocked. The last message was not acknowledged; later messages remain queued. Restart skips the uncertain message—check its outcome before repeating it."
                     HStack {
-                        Text(message)
-                            .font(AppTypography.font(.status))
-                            .relayTextSwap(message)
+                        RelaySwap(message, style: .text, alignment: .leading) { message in
+                            Text(message)
+                                .font(AppTypography.font(.status))
+                        }
                         Button("Restart session") { confirmsRecovery = true }
                     }
                     .padding(14)
@@ -3038,15 +3040,16 @@ struct EmbeddedTerminalTab: View {
                     .transition(.relayElement)
                 }
                 if case .failed(let message) = session.phase {
-                    Text(message)
-                        .font(AppTypography.font(.status))
-                        .foregroundStyle(Color.red.opacity(0.88))
-                        .relayTextSwap(message)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(Color.red.opacity(0.08))
-                        .transition(.relayElement)
+                    RelaySwap(message, style: .text, alignment: .leading) { message in
+                        Text(message)
+                            .font(AppTypography.font(.status))
+                            .foregroundStyle(Color.red.opacity(0.88))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color.red.opacity(0.08))
+                    .transition(.relayElement)
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: visibleBanners)
@@ -3093,16 +3096,20 @@ struct EmbeddedTerminalTab: View {
                 .foregroundStyle(ProgramBoardStyle.mutedText)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(statusTitle)
-                    .font(AppTypography.font(.sectionHeading))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                    .relayTextSwap(statusTitleSwapKey)
-                Text(displayDirectory)
-                    .font(AppTypography.font(.supporting))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .relayTextSwap(displayDirectory)
+                // A running session's live terminal title updates in place
+                // under the fixed "running" key; every other key is the title.
+                RelaySwap(statusTitleSwapKey, style: .text, alignment: .leading) { titleKey in
+                    Text(titleKey == "running" ? statusTitle : titleKey)
+                        .font(AppTypography.font(.sectionHeading))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                }
+                RelaySwap(displayDirectory, style: .text, alignment: .leading) { displayDirectory in
+                    Text(displayDirectory)
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             Spacer(minLength: 12)
         }
@@ -3118,12 +3125,13 @@ struct EmbeddedTerminalTab: View {
             Text("Run the Relay session here")
                 .font(AppTypography.font(.sectionHeading))
                 .foregroundStyle(ProgramBoardStyle.secondaryText)
-            Text(emptyStateDetail)
-                .font(AppTypography.font(.supporting))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 390)
-                .relayTextSwap(emptyStateDetail, alignment: .top)
+            RelaySwap(emptyStateDetail, style: .text, alignment: .top) { emptyStateDetail in
+                Text(emptyStateDetail)
+                    .font(AppTypography.font(.supporting))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 390)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)

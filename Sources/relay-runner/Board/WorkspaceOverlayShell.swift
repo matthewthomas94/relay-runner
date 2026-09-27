@@ -124,14 +124,15 @@ struct WorkspaceMenuBarStrip: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            Image(TrayIconAsset.name(hasActiveSession: hasActiveSession), bundle: RelayRunnerResources.bundle)
-                .renderingMode(.original)
-                .frame(
-                    width: BoardSurfaceLayout.navigationHeight,
-                    height: BoardSurfaceLayout.navigationHeight
-                )
-                .relaySwap(hasActiveSession)
-                .accessibilityLabel(hasActiveSession ? "Relay Runner session active" : "Relay Runner session inactive")
+            RelaySwap(hasActiveSession) { hasActiveSession in
+                Image(TrayIconAsset.name(hasActiveSession: hasActiveSession), bundle: RelayRunnerResources.bundle)
+                    .renderingMode(.original)
+                    .frame(
+                        width: BoardSurfaceLayout.navigationHeight,
+                        height: BoardSurfaceLayout.navigationHeight
+                    )
+            }
+            .accessibilityLabel(hasActiveSession ? "Relay Runner session active" : "Relay Runner session inactive")
 
             ForEach(workspace.availableTabs) { tab in
                 WorkspaceTabButton(
@@ -195,22 +196,24 @@ struct WorkspaceNavigationButton: View {
         Button(action: action) {
             HStack(alignment: .center, spacing: WorkspaceNavigationStyle.iconTextSpacing) {
                 if let systemName {
-                    Image(systemName: systemName)
-                        .font(AppTypography.symbolFont(
-                            size: WorkspaceNavigationStyle.iconSize,
-                            weight: .bold
-                        ))
-                        .frame(
-                            width: WorkspaceNavigationStyle.iconSize,
-                            height: WorkspaceNavigationStyle.iconSize
-                        )
-                        .relaySwap(systemName)
+                    RelaySwap(systemName) { systemName in
+                        Image(systemName: systemName)
+                            .font(AppTypography.symbolFont(
+                                size: WorkspaceNavigationStyle.iconSize,
+                                weight: .bold
+                            ))
+                            .frame(
+                                width: WorkspaceNavigationStyle.iconSize,
+                                height: WorkspaceNavigationStyle.iconSize
+                            )
+                    }
                 }
                 // Start ↔ End session and note-taker titles swap in place.
-                Text(title)
-                    .font(AppTypography.font(.menuTab))
-                    .lineLimit(1)
-                    .relayTextSwap(title)
+                RelaySwap(title, style: .text, alignment: .leading) { title in
+                    Text(title)
+                        .font(AppTypography.font(.menuTab))
+                        .lineLimit(1)
+                }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: title)
             .foregroundStyle(

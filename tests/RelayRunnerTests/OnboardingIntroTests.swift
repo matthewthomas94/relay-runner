@@ -2189,6 +2189,7 @@ final class OnboardingIntroTests: XCTestCase {
                 + OnboardingIntroTimeline.dotFieldTravel
                 + OnboardingIntroTimeline.brandSettle
                 + OnboardingPostTitleTransition.fadeOutDuration
+                + OnboardingPostTitleTransition.swapGap
                 + OnboardingPostTitleTransition.fadeInDuration / 2
         )
         XCTAssertEqual(fadingIn.text, "First thing’s first /")
@@ -2522,7 +2523,8 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(OnboardingPromptTransitionTimeline.finalHold, 0.30)
         XCTAssertEqual(
             OnboardingFlowMotion.surfaceTransitionDuration,
-            RelayMotion.exitDuration + RelayMotion.enterDuration
+            RelayMotion.exitDuration + RelayMotion.replacementGap + RelayMotion.enterDuration,
+            accuracy: 0.0001
         )
         XCTAssertGreaterThanOrEqual(OnboardingFlowMotion.controlsRevealDuration, 0.35)
         XCTAssertGreaterThan(
@@ -2557,7 +2559,7 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(OnboardingIntroWhiteActionButton.hoverAnimation, RelayMotion.hover)
     }
 
-    func testHeroCopyDriftsTowardTrailingSideOnlyWhileFading() {
+    func testHeroCopySinksAndRisesOnlyWhileFading() {
         XCTAssertEqual(OnboardingIntroTextLayout.swapDrift(forOpacity: 1, reduceMotion: false), 0)
         XCTAssertEqual(
             OnboardingIntroTextLayout.swapDrift(forOpacity: 0, reduceMotion: false),
@@ -2614,7 +2616,7 @@ final class OnboardingIntroTests: XCTestCase {
         )
         XCTAssertTrue(contents.contains("OnboardingPostTitleTransition.blurRadius"))
         XCTAssertTrue(contents.contains("RelayLayerMotion.animateOut(oldView, style: style"))
-        XCTAssertTrue(contents.contains("RelayLayerMotion.animateIn(view, style: style)"))
+        XCTAssertTrue(contents.contains("RelayLayerMotion.animateIn(view, style: style, delay: RelayMotion.replacementGap)"))
     }
 
     func testFreshInteractiveHandoffCanStartAtAgentChoice() {

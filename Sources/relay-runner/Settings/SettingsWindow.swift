@@ -306,16 +306,20 @@ private struct SettingsContent: View {
     private var settingsFooter: some View {
         let presentation = SettingsFooterPresentation(hasChanges: hasChanges)
         return HStack(spacing: 12) {
-            Image(systemName: presentation.iconName)
-                .font(AppTypography.symbolFont(size: 10, weight: .semibold))
-                .foregroundStyle(presentation.iconColor)
-                .accessibilityHidden(true)
-                .relaySwap(presentation.iconName)
+            RelaySwap(presentation.hasChanges) { hasChanges in
+                let presentation = SettingsFooterPresentation(hasChanges: hasChanges)
+                Image(systemName: presentation.iconName)
+                    .font(AppTypography.symbolFont(size: 10, weight: .semibold))
+                    .foregroundStyle(presentation.iconColor)
+                    .accessibilityHidden(true)
+            }
 
-            Text(presentation.statusText)
-                .font(AppTypography.font(.settingsDescription))
-                .foregroundStyle(presentation.textColor)
-                .relayTextSwap(presentation.statusText)
+            RelaySwap(presentation.hasChanges, style: .text, alignment: .leading) { hasChanges in
+                let presentation = SettingsFooterPresentation(hasChanges: hasChanges)
+                Text(presentation.statusText)
+                    .font(AppTypography.font(.settingsDescription))
+                    .foregroundStyle(presentation.textColor)
+            }
 
             Spacer(minLength: 0)
 

@@ -343,11 +343,12 @@ private struct RegisteredProjectsSettingsView: View {
                 VStack(spacing: 0) {
                     SettingsDivider()
                     SettingsRow {
-                        Text(statusText)
-                            .font(AppTypography.font(.settingsDescription))
-                            .foregroundStyle(SettingsSurfaceColor.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .relayTextSwap(statusText)
+                        RelaySwap(statusText, style: .text, alignment: .leading) { statusText in
+                            Text(statusText)
+                                .font(AppTypography.font(.settingsDescription))
+                                .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 .transition(.relayElement)
@@ -386,15 +387,16 @@ private struct RegisteredProjectsSettingsView: View {
                 Text(project.displayName)
                     .font(AppTypography.font(.body))
                     .foregroundStyle(SettingsSurfaceColor.primaryText)
-                Text("\(project.availability.settingsLabel) · \(project.lastResolvedPath)")
-                    .font(AppTypography.font(.settingsDescription))
-                    .foregroundStyle(
-                        project.availability == .available
-                            ? SettingsSurfaceColor.secondaryText
-                            : SettingsSurfaceColor.error
-                    )
-                    .lineLimit(2)
-                    .relayTextSwap("\(project.availability.settingsLabel) · \(project.lastResolvedPath)")
+                RelaySwap("\(project.availability.settingsLabel) · \(project.lastResolvedPath)", style: .text, alignment: .leading) { availabilityText in
+                    Text(availabilityText)
+                        .font(AppTypography.font(.settingsDescription))
+                        .foregroundStyle(
+                            project.availability == .available
+                                ? SettingsSurfaceColor.secondaryText
+                                : SettingsSurfaceColor.error
+                        )
+                        .lineLimit(2)
+                }
             }
             Spacer(minLength: 12)
             HStack(spacing: 6) {

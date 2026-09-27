@@ -1350,8 +1350,9 @@ private struct PermissionCompanionCard: View {
     let onOpenSettings: () -> Void
 
     var body: some View {
-        content
-        .relaySwap(isGranted)
+        RelaySwap(isGranted) { isGranted in
+            content(isGranted: isGranted)
+        }
         .padding(.top, 11)
         .padding(.bottom, 9)
         .frame(
@@ -1385,7 +1386,7 @@ private struct PermissionCompanionCard: View {
     }
 
     @ViewBuilder
-    private var content: some View {
+    private func content(isGranted: Bool) -> some View {
         if isGranted {
             VStack(spacing: 7) {
                 Image(systemName: "checkmark.circle.fill")

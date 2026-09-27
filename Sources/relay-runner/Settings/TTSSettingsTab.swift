@@ -19,8 +19,9 @@ struct TTSSettingsTab: View {
         SettingsStack {
             SettingsSection("Standard Voices") {
                 SettingsControlRow("Mode") {
-                    Text(config.custom_voice_id == nil ? "Standard" : "Custom")
-                        .relayTextSwap(config.custom_voice_id == nil, alignment: .trailing)
+                    RelaySwap(config.custom_voice_id == nil, style: .text, alignment: .trailing) { usesStandardVoice in
+                        Text(usesStandardVoice ? "Standard" : "Custom")
+                    }
                     if config.custom_voice_id != nil {
                         SettingsActionButton(title: "Use Standard", systemImage: nil) {
                             preview.invalidate()
@@ -58,11 +59,12 @@ struct TTSSettingsTab: View {
                                 semanticColor: preview.error == nil ? .neutralAccent : .error,
                                 reservedWidth: 170
                             )
-                            Text(preview.error ?? preview.status)
-                                .font(AppTypography.font(.settingsDescription))
-                                .foregroundStyle(preview.error == nil ? SettingsSurfaceColor.secondaryText : SettingsSurfaceColor.error)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .relayTextSwap(preview.error ?? preview.status)
+                            RelaySwap(preview.error ?? preview.status, style: .text, alignment: .leading) { message in
+                                Text(message)
+                                    .font(AppTypography.font(.settingsDescription))
+                                    .foregroundStyle(preview.error == nil ? SettingsSurfaceColor.secondaryText : SettingsSurfaceColor.error)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
                     .transition(.relayElement)

@@ -17,7 +17,7 @@ final class RelayMotionTests: XCTestCase {
         XCTAssertLessThan(RelayMotion.exitDuration, RelayMotion.enterDuration)
     }
 
-    func testHiddenElementsSitBelowAndTextSitsTrailing() {
+    func testHiddenContentAndTextSitBelow() {
         XCTAssertEqual(
             RelayMotion.Style.element.offset(hidden: true, reduceMotion: false),
             CGSize(width: 0, height: RelayMotion.Style.element.distance)
@@ -28,7 +28,7 @@ final class RelayMotionTests: XCTestCase {
         )
         XCTAssertEqual(
             RelayMotion.Style.text.offset(hidden: true, reduceMotion: false),
-            CGSize(width: RelayMotion.Style.text.distance, height: 0)
+            CGSize(width: 0, height: RelayMotion.Style.text.distance)
         )
         XCTAssertEqual(RelayMotion.Style.text.offset(hidden: false, reduceMotion: false), .zero)
         XCTAssertGreaterThan(RelayMotion.Style.text.blur(hidden: true, reduceMotion: false), 0)
@@ -74,8 +74,13 @@ final class RelayMotionTests: XCTestCase {
         XCTAssertEqual(RelayLayerMotion.hiddenTranslation(for: child, style: .element).height, expected(1))
     }
 
-    func testReplacementsWaitForTheOutgoingExit() {
-        XCTAssertEqual(RelayMotion.replacementDelay, RelayMotion.exitDuration)
+    func testReplacementsWaitForTheOutgoingExitAndABeat() {
+        XCTAssertGreaterThan(RelayMotion.replacementGap, 0)
+        XCTAssertEqual(
+            RelayMotion.replacementDelay,
+            RelayMotion.exitDuration + RelayMotion.replacementGap,
+            accuracy: 0.0001
+        )
     }
 
     @MainActor

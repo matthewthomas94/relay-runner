@@ -200,23 +200,30 @@ struct WorkspaceHistoryView: View {
                     Text(card.ticketID)
                         .font(AppTypography.font(.metadata))
                         .foregroundStyle(ProgramBoardStyle.mutedText)
-                    Text(model.detail?.card?.title ?? card.title)
-                        .font(AppTypography.font(.sectionHeading))
-                        .foregroundStyle(ProgramBoardStyle.primaryText)
-                        .relayTextSwap(model.detail?.card?.title ?? card.title)
+                    RelaySwap(model.detail?.card?.title ?? card.title, style: .text, alignment: .leading) { title in
+                        Text(title)
+                            .font(AppTypography.font(.sectionHeading))
+                            .foregroundStyle(ProgramBoardStyle.primaryText)
+                    }
                 }
                 Spacer()
-                badgeView(badge)
-                    .relaySwap(badge.label, alignment: .trailing)
+                RelaySwap(badge.label, alignment: .trailing) { label in
+                    badgeView(WorkspaceHistoryBadge(label: label, isWarning: badge.isWarning))
+                }
             }
 
             ZStack(alignment: .topLeading) {
                 if let detail = model.detail, detail.availability != "available" {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(detail.recovery ?? unavailableExplanation(detail.availability))
-                            .font(AppTypography.font(.supporting))
-                            .foregroundStyle(ProgramBoardStyle.red)
-                            .relayTextSwap(detail.recovery ?? unavailableExplanation(detail.availability))
+                        RelaySwap(
+                            detail.recovery ?? unavailableExplanation(detail.availability),
+                            style: .text,
+                            alignment: .leading
+                        ) { explanation in
+                            Text(explanation)
+                                .font(AppTypography.font(.supporting))
+                                .foregroundStyle(ProgramBoardStyle.red)
+                        }
                         if detail.availability == "needs_network" {
                             ProgramWorkspaceActionButton(
                                 title: "Fetch verified detail", systemName: "arrow.down",
@@ -349,14 +356,15 @@ struct WorkspaceHistoryView: View {
     }
 
     private func messageStrip(_ message: String, warning: Bool) -> some View {
-        Text(message)
-            .font(AppTypography.font(.supporting))
-            .foregroundStyle(warning ? ProgramBoardStyle.red : ProgramBoardStyle.green)
-            .relayTextSwap(message)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 22)
-            .padding(.vertical, 8)
-            .background(BoardDarkSurfaceStyle.cardFill)
+        RelaySwap(message, style: .text, alignment: .leading) { message in
+            Text(message)
+                .font(AppTypography.font(.supporting))
+                .foregroundStyle(warning ? ProgramBoardStyle.red : ProgramBoardStyle.green)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 8)
+        .background(BoardDarkSurfaceStyle.cardFill)
     }
 
     private func unavailableExplanation(_ availability: String) -> String {

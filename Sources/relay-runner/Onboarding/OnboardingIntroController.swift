@@ -159,6 +159,8 @@ enum OnboardingPromptTiming {
 enum OnboardingPostTitleTransition {
     static let fadeOutDuration: TimeInterval = 0.24
     static let fadeInDuration: TimeInterval = 0.24
+    /// The copy rests off screen for a beat between phrases.
+    static let swapGap: TimeInterval = RelayMotion.replacementGap
     static let blurRadius: CGFloat = 6
     /// Whole onboarding pages sink out and rise in by a surface's distance
     /// while blurring as far as the hero copy does between phrases.
@@ -169,7 +171,7 @@ enum OnboardingPostTitleTransition {
     )
 
     static var duration: TimeInterval {
-        fadeOutDuration + fadeInDuration
+        fadeOutDuration + swapGap + fadeInDuration
     }
 }
 
@@ -184,7 +186,8 @@ enum OnboardingIntroTimeline {
     static let brandSettle = OnboardingPromptTiming.initialHold
     static let phraseHold: TimeInterval = 1.05
     static let dotFieldTravel: TimeInterval = 4.00
-    static let finalPhraseHold: TimeInterval = 1.50
+    // Trimmed by the phrase swaps' resting beats to keep the intro under 9s.
+    static let finalPhraseHold: TimeInterval = 1.40
     static let cursorBlinkPeriod: TimeInterval = 0.8
 
     static var duration: TimeInterval {
@@ -279,6 +282,17 @@ enum OnboardingIntroTimeline {
 
         let firstCopy = phrases[1]
         let firstCopyGraphemes = phraseGraphemes(firstCopy)
+        if cursor < OnboardingPostTitleTransition.swapGap {
+            return frame(
+                phrase: firstCopy,
+                visible: firstCopyGraphemes,
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
+                textOpacity: 0,
+                textBlurRadius: OnboardingPostTitleTransition.blurRadius
+            )
+        }
+        cursor -= OnboardingPostTitleTransition.swapGap
+
         if cursor < OnboardingPostTitleTransition.fadeInDuration {
             let phase = CGFloat(easeInOut(cursor / OnboardingPostTitleTransition.fadeInDuration))
             return frame(
@@ -314,6 +328,17 @@ enum OnboardingIntroTimeline {
 
         let finalCopy = phrases[2]
         let finalCopyGraphemes = phraseGraphemes(finalCopy)
+        if cursor < OnboardingPostTitleTransition.swapGap {
+            return frame(
+                phrase: finalCopy,
+                visible: finalCopyGraphemes,
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
+                textOpacity: 0,
+                textBlurRadius: OnboardingPostTitleTransition.blurRadius
+            )
+        }
+        cursor -= OnboardingPostTitleTransition.swapGap
+
         if cursor < OnboardingPostTitleTransition.fadeInDuration {
             let phase = CGFloat(easeInOut(cursor / OnboardingPostTitleTransition.fadeInDuration))
             return frame(
@@ -442,6 +467,17 @@ enum OnboardingPromptTransitionTimeline {
         }
         cursor -= OnboardingPostTitleTransition.fadeOutDuration
 
+        if cursor < OnboardingPostTitleTransition.swapGap {
+            return makeFrame(
+                phrase: targetPhrase,
+                visible: targetPhrase,
+                cursorVisible: OnboardingCursorBlink.isVisible(at: timelineElapsed),
+                textOpacity: 0,
+                textBlurRadius: OnboardingPostTitleTransition.blurRadius
+            )
+        }
+        cursor -= OnboardingPostTitleTransition.swapGap
+
         if cursor < OnboardingPostTitleTransition.fadeInDuration {
             let phase = CGFloat(OnboardingIntroTimeline.easeInOut(
                 cursor / OnboardingPostTitleTransition.fadeInDuration
@@ -536,7 +572,7 @@ struct OnboardingPromptTransitionQueue: Equatable {
 }
 
 enum OnboardingFlowMotion {
-    static let surfaceTransitionDuration = RelayMotion.exitDuration + RelayMotion.enterDuration
+    static let surfaceTransitionDuration = RelayMotion.replacementDelay + RelayMotion.enterDuration
     static let contentTransitionDuration: TimeInterval = 0.42
     static let controlsRevealDuration: TimeInterval = 0.36
     static let completedStepHold: TimeInterval = 0.85
@@ -560,8 +596,8 @@ enum OnboardingIntroTextLayout {
         return (referenceTextTop + lineHeight + 54) * scale
     }
 
-    /// Hero copy drifts toward the trailing side as it fades between phrases,
-    /// matching the horizontal travel of every other text swap.
+    /// Hero copy sinks as it fades out and rises back as the next phrase
+    /// fades in, matching the vertical travel of every other text swap.
     static func swapDrift(forOpacity opacity: CGFloat, reduceMotion: Bool) -> CGFloat {
         guard !reduceMotion else { return 0 }
         return (1 - min(max(opacity, 0), 1)) * RelayMotion.Style.text.distance
@@ -1176,7 +1212,8 @@ final class OnboardingIntroRootView: NSView {
             self.applyLayout(to: view)
             view.layoutSubtreeIfNeeded()
 
-            RelayLayerMotion.animateIn(view, style: style) { [weak self, weak view] in
+            // The outgoing page has gone; rest a beat before the next arrives.
+            RelayLayerMotion.animateIn(view, style: style, delay: RelayMotion.replacementGap) { [weak self, weak view] in
                 if let view {
                     removeRelayMotionBlur(from: view)
                 }
@@ -1776,14 +1813,15 @@ private struct OnboardingIntroRuntimePromptView: View {
                     .transition(.relayReplacing(.element))
                     .accessibilityLabel("Setup complete")
             case .failed(let errorMessage):
-                Text(errorMessage)
-                    .font(AppTypography.font(.body))
-                    .foregroundStyle(.white.opacity(0.72))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
-                    .relayTextSwap(errorMessage, alignment: .center)
-                    .transition(.relayReplacing(.text))
+                RelaySwap(errorMessage, style: .text, alignment: .center) { errorMessage in
+                    Text(errorMessage)
+                        .font(AppTypography.font(.body))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+                }
+                .transition(.relayReplacing(.text))
             }
         }
         .frame(minHeight: 24)
@@ -1841,14 +1879,15 @@ struct OnboardingIntroAgentLoginPromptView: View {
                 }
 
                 if let message = presentation.message {
-                    Text(message)
-                        .font(AppTypography.font(.body))
-                        .foregroundStyle(.white.opacity(0.68))
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
-                        .relayTextSwap(message, alignment: .center)
-                        .transition(.relayText)
+                    RelaySwap(message, style: .text, alignment: .center) { message in
+                        Text(message)
+                            .font(AppTypography.font(.body))
+                            .foregroundStyle(.white.opacity(0.68))
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+                    }
+                    .transition(.relayText)
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: presentation)
@@ -1867,22 +1906,23 @@ struct OnboardingIntroWorkspacePromptView: View {
         OnboardingIntroPromptContentLayout {
             VStack(spacing: 28) {
                 HStack(spacing: 14) {
-                    Text(currentPath)
-                        .font(AppTypography.font(.body))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .foregroundStyle(.white)
-                        .relayTextSwap(currentPath)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .frame(maxWidth: 640)
-                        .frame(height: Self.controlHeight)
-                        .background(Color(nsColor: .textBackgroundColor).opacity(0.92))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.white.opacity(0.12))
-                        )
+                    RelaySwap(currentPath, style: .text, alignment: .leading) { currentPath in
+                        Text(currentPath)
+                            .font(AppTypography.font(.body))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.white)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: 640)
+                    .frame(height: Self.controlHeight)
+                    .background(Color(nsColor: .textBackgroundColor).opacity(0.92))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.white.opacity(0.12))
+                    )
 
                     HStack(spacing: 8) {
                         OnboardingIntroWhiteActionButton(
@@ -1926,18 +1966,19 @@ struct OnboardingBlinkingTitle: View {
 
     var body: some View {
         let reduceMotion = reduceMotionOverride ?? environmentReduceMotion
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
-            Self.styledText(
-                text,
-                at: context.date.timeIntervalSinceReferenceDate,
-                reduceMotion: reduceMotion
-            )
+        RelaySwap(text, style: .text, alignment: .center) { text in
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
+                Self.styledText(
+                    text,
+                    at: context.date.timeIntervalSinceReferenceDate,
+                    reduceMotion: reduceMotion
+                )
+            }
+            .font(AppTypography.font(.onboardingHero))
+            .multilineTextAlignment(.center)
+            .lineLimit(2)
+            .minimumScaleFactor(0.72)
         }
-        .font(AppTypography.font(.onboardingHero))
-        .multilineTextAlignment(.center)
-        .lineLimit(2)
-        .minimumScaleFactor(0.72)
-        .relayTextSwap(text, alignment: .center)
         .frame(maxWidth: OnboardingPermissionTreatment.promptMaxWidth)
         .accessibilityLabel(String(OnboardingPromptTransitionTimeline.phrase(from: text)))
         .accessibilityAddTraits(.isHeader)
@@ -1980,14 +2021,15 @@ private struct OnboardingIntroPermissionControlsView: View {
                 .disabled(!presentation.isButtonEnabled)
 
                 if let supportingCopy = presentation.supportingCopy {
-                    Text(supportingCopy)
-                        .font(AppTypography.font(.body))
-                        .foregroundStyle(.white.opacity(0.68))
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
-                        .relayTextSwap(supportingCopy, alignment: .center)
-                        .transition(.relayText)
+                    RelaySwap(supportingCopy, style: .text, alignment: .center) { supportingCopy in
+                        Text(supportingCopy)
+                            .font(AppTypography.font(.body))
+                            .foregroundStyle(.white.opacity(0.68))
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+                    }
+                    .transition(.relayText)
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: presentation)
@@ -2017,28 +2059,29 @@ struct OnboardingIntroWhiteActionButton: View {
     var body: some View {
         let showsHover = isEnabled && isHovering
         Button(action: action) {
-            Text(title)
-                .font(AppTypography.font(
-                    .permissionButton,
-                    size: OnboardingPermissionTreatment.buttonLabelSize
-                ))
-                .foregroundStyle(Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor))
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-                .relayTextSwap(title, alignment: .center)
-                .frame(width: width, height: height)
-                .background(
-                    RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
-                        .fill(Color.white.opacity(showsHover ? 0.86 : 1))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
-                        .stroke(
-                            Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor)
-                                .opacity(showsHover ? 0.72 : 1),
-                            lineWidth: showsHover ? 1.5 : 1
-                        )
-                )
+            RelaySwap(title, style: .text, alignment: .center) { title in
+                Text(title)
+                    .font(AppTypography.font(
+                        .permissionButton,
+                        size: OnboardingPermissionTreatment.buttonLabelSize
+                    ))
+                    .foregroundStyle(Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .frame(width: width, height: height)
+            .background(
+                RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
+                    .fill(Color.white.opacity(showsHover ? 0.86 : 1))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
+                    .stroke(
+                        Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor)
+                            .opacity(showsHover ? 0.72 : 1),
+                        lineWidth: showsHover ? 1.5 : 1
+                    )
+            )
         }
         .buttonStyle(.plain)
         .scaleEffect(Self.hoverScale)
@@ -2143,6 +2186,6 @@ private final class OnboardingIntroTextView: NSView {
             forOpacity: timelineFrame.textOpacity,
             reduceMotion: RelayLayerMotion.reduceMotion
         )
-        attributedText.draw(in: drawRect.offsetBy(dx: drift, dy: 0))
+        attributedText.draw(in: drawRect.offsetBy(dx: 0, dy: drift))
     }
 }

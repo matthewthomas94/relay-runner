@@ -21,10 +21,11 @@ struct STTSettingsTab: View {
                     description: "Uses the current macOS input device until real device selection is available."
                 ) {
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(Self.inputDeviceDisplayName(config.input_device))
-                            .font(AppTypography.font(.body))
-                            .foregroundStyle(SettingsSurfaceColor.primaryText)
-                            .relayTextSwap(Self.inputDeviceDisplayName(config.input_device), alignment: .trailing)
+                        RelaySwap(Self.inputDeviceDisplayName(config.input_device), style: .text, alignment: .trailing) { deviceName in
+                            Text(deviceName)
+                                .font(AppTypography.font(.body))
+                                .foregroundStyle(SettingsSurfaceColor.primaryText)
+                        }
                         Text("Read-only")
                             .font(AppTypography.font(.settingsDescription))
                             .foregroundStyle(SettingsSurfaceColor.mutedText)
