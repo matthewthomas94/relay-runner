@@ -399,6 +399,70 @@ class ProviderTurnBrokerTests(unittest.TestCase):
             finally:
                 broker.close()
 
+    def test_each_turn_in_one_session_completes_with_native_hook_payloads(self):
+        # Real hook payloads: Codex sends turn_id; Claude sends none and keeps
+        # session_id constant, but gives each turn a distinct prompt_id.
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                delivered = []
+                with mock.patch.dict(os.environ, {
+                    "RELAY_APP_SESSION_ID": OWNERSHIP["app_session_id"],
+                    "RELAY_RECOVERY_GENERATION": OWNERSHIP["recovery_generation"],
+                    "RELAY_ACTOR_ROLE": OWNERSHIP["actor_role"],
+                    "RELAY_FOREGROUND_GATE_HANDLE": OWNERSHIP["foreground_gate_handle"],
+                    "RELAY_RUNNER_PROVIDER": provider,
+                    "RELAY_PROVIDER_SESSION_ID": f"provider-session-{provider}",
+                }):
+                    for turn in (1, 2, 3):
+                        command = {
+                            "relay_command_seq": turn,
+                            "relay_command_id": f"command-{provider}-{turn}",
+                            "intent_id": f"intent-{turn}",
+                            "agent_prompt": f"bounded prompt {turn}",
+                            "provider": provider,
+                        }
+                        Path(state_path).write_text(json.dumps(command))
+                        Path(claim_path).write_text(json.dumps(command))
+                        native_turn = (
+                            {"turn_id": f"native-turn-{turn}"} if provider == "codex"
+                            else {"prompt_id": f"prompt-{turn}"}
+                        )
+                        prompt = {
+                            "hook_event_name": "UserPromptSubmit",
+                            "session_id": f"native-session-{provider}",
+                            "prompt": f"bounded prompt {turn}",
+                            **native_turn,
+                        }
+                        stop = {
+                            "hook_event_name": "Stop",
+                            "session_id": f"native-session-{provider}",
+                            "stop_hook_active": False,
+                            "last_assistant_message": f"final {turn}",
+                            **native_turn,
+                        }
+                        self.assertTrue(relay_completion_hook.handle_hook_payload(
+                            prompt,
+                            claim_path=claim_path,
+                            state_path=state_path,
+                            turns_path=turns_path,
+                            stderr=io.StringIO(),
+                        ))
+                        self.assertTrue(relay_completion_hook.handle_hook_payload(
+                            stop,
+                            state_path=state_path,
+                            turns_path=turns_path,
+                            write_control=lambda payload: delivered.append(payload) or True,
+                            stderr=io.StringIO(),
+                        ))
+
+                self.assertEqual(
+                    [payload.get("text") for payload in delivered],
+                    ["final 1", "final 2", "final 3"],
+                )
+
     def test_codex_and_claude_duplicate_completion_faults_emit_one_effect(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:

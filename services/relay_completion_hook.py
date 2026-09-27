@@ -450,6 +450,13 @@ def _turn_id(payload: dict) -> str | None:
         value = str(payload.get(key) or "").strip()
         if value:
             return value
+    # Claude Code hooks carry no turn_id, and session_id is constant across a
+    # session's turns. prompt_id is unique per turn and shared by that turn's
+    # UserPromptSubmit and Stop/StopFailure payloads, so it pairs them exactly.
+    if _provider_name(payload) == "claude":
+        value = str(payload.get("prompt_id") or "").strip()
+        if value:
+            return value
     return None
 
 
