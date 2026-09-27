@@ -299,10 +299,8 @@ def _normalize_model_and_effort(
 def _valid_efforts(provider: str, model: str) -> frozenset[str]:
     if provider == "codex":
         return _BASE_EFFORTS | {"max", "ultra"}
-    if model in {"best", "claude-fable-5-1", "fable", "opus"}:
+    if model in {"best", "claude-fable-5-1", "fable", "opus", "sonnet"}:
         return _BASE_EFFORTS | {"max"}
-    if model == "sonnet":
-        return frozenset({"default", "low", "medium", "high", "max"})
     return frozenset({"default"})
 
 

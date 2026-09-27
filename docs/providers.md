@@ -50,9 +50,9 @@ Availability, especially newer families and Ultra effort, depends on the user's 
 
 ### Claude
 
-- Stable choices: Fable, Opus, Sonnet, and Haiku.
-- Fable and Opus expose Low through Max.
-- Sonnet exposes Low, Medium, High, and Max.
+- Stable choices: Fable, Opus, Sonnet, and Haiku. These are Claude Code aliases that resolve to the newest model in each family that the installed CLI knows, so new releases need a current CLI (`claude update`) rather than a Relay Runner change.
+- Fable 5.1 (`claude-fable-5-1`) remains available as a pinned choice.
+- Fable, Opus, and Sonnet expose Low through Max, including Extra High.
 - Haiku exposes Low.
 - The chosen values are passed with Claude's `--model` and `--effort` flags.
 

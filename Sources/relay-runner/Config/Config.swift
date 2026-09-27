@@ -102,7 +102,6 @@ struct GeneralConfig: Codable, Equatable {
     static let codexModelOptions: [ModelOption] = [
         ModelOption(label: "Astra", value: "astra"),
         ModelOption(label: "Sol", value: "sol"),
-        ModelOption(label: "Terra", value: "terra"),
         ModelOption(label: "Luna", value: "luna"),
     ]
 
@@ -200,7 +199,7 @@ struct GeneralConfig: Codable, Equatable {
         switch provider {
         case .codex:
             switch normalizedModel {
-            case "astra", "sol", "terra":
+            case "astra", "sol":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption, ultraReasoningEffortOption]
             case "luna":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption]
@@ -209,15 +208,8 @@ struct GeneralConfig: Codable, Equatable {
             }
         case .claude:
             switch normalizedModel {
-            case "claude-fable-5-1", "fable", "opus":
+            case "claude-fable-5-1", "fable", "opus", "sonnet":
                 return baseReasoningEffortOptions + [maxReasoningEffortOption]
-            case "sonnet":
-                return [
-                    ReasoningEffortOption(label: "Low", value: "low"),
-                    ReasoningEffortOption(label: "Medium", value: "medium"),
-                    ReasoningEffortOption(label: "High", value: "high"),
-                    maxReasoningEffortOption,
-                ]
             case "haiku":
                 return [ReasoningEffortOption(label: "Low", value: "low")]
             default:
@@ -285,6 +277,9 @@ struct GeneralConfig: Codable, Equatable {
 
     static func normalizeCodexFamily(_ model: String) -> String {
         let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "terra" || normalized.hasSuffix("-terra") {
+            return "sol"
+        }
         if codexModelOptions.contains(where: { $0.value == normalized }) {
             return normalized
         }
@@ -327,6 +322,9 @@ struct GeneralConfig: Codable, Equatable {
         let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch provider {
         case .codex:
+            if normalized == "terra" || normalized.hasSuffix("-terra") {
+                return "sol"
+            }
             if codexModelOptions.contains(where: { $0.value == normalized }) {
                 return normalized
             }
@@ -362,8 +360,8 @@ struct GeneralConfig: Codable, Equatable {
             validEfforts = ["default", "low", "medium", "high", "xhigh", "max", "ultra"]
         case .claude:
             switch normalizedModel {
-            case "best", "claude-fable-5-1", "fable", "opus": validEfforts = ["default", "low", "medium", "high", "xhigh", "max"]
-            case "sonnet": validEfforts = ["default", "low", "medium", "high", "max"]
+            case "best", "claude-fable-5-1", "fable", "opus", "sonnet":
+                validEfforts = ["default", "low", "medium", "high", "xhigh", "max"]
             default: validEfforts = ["default"]
             }
         }

@@ -593,7 +593,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
                     config.general.orchestrator_effort = effort
 
                     let resolvedCodexModel: String? = provider == .codex
-                        ? "gpt-6.0-\(model)"
+                        ? "gpt-6-\(model)"
                         : nil
                     let resolvedCodexEffort: String? = provider == .codex
                         ? (effort == GeneralConfig.defaultReasoningEffort ? "medium" : effort)
@@ -609,7 +609,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
                     )
 
                     if provider == .codex {
-                        XCTAssertTrue(script.contains("--model 'gpt-6.0-\(model)'"), "\(provider) \(model) \(effort)")
+                        XCTAssertTrue(script.contains("--model 'gpt-6-\(model)'"), "\(provider) \(model) \(effort)")
                     } else if model == GeneralConfig.defaultModel {
                         XCTAssertFalse(script.contains("--model"), "\(provider) \(model) \(effort)")
                     } else {

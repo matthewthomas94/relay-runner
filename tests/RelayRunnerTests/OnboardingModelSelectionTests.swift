@@ -18,12 +18,12 @@ final class OnboardingModelSelectionTests: XCTestCase {
     func testInitialClaudeSelectionNormalizesEffortForSelectedModel() {
         let selection = OnboardingView.normalizedInitialSelection(
             provider: .claude,
-            model: "sonnet",
+            model: "haiku",
             effort: "xhigh"
         )
 
-        XCTAssertEqual(selection.model, "sonnet")
-        XCTAssertEqual(selection.effort, "high")
+        XCTAssertEqual(selection.model, "haiku")
+        XCTAssertEqual(selection.effort, "low")
     }
 
     func testGuidedSetupPersistsClaudeProviderModelAndEffort() {

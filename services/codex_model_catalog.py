@@ -15,13 +15,13 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 
-CODEX_FAMILIES = frozenset({"astra", "sol", "terra", "luna"})
+CODEX_FAMILIES = frozenset({"astra", "sol", "luna"})
 CODEX_DEFAULT_FAMILY = "sol"
 CODEX_MESSENGER_DEFAULT_FAMILY = "luna"
 CODEX_WORKER_TIER_FAMILIES = {
     "fast": "luna",
-    "balanced": "terra",
-    "strong": "sol",
+    "balanced": "sol",
+    "strong": "astra",
 }
 CODEX_PROVIDER_DEFAULT_EFFORT = "default"
 _CODEX_FAMILY_RE = re.compile(r"^gpt-(?P<version>\d+(?:\.\d+)*)(?:-[a-z0-9]+)*-(?P<family>astra|sol|terra|luna)$")
@@ -53,13 +53,15 @@ class CodexModel:
 
 def normalize_codex_family(value: object, *, default_family: str = CODEX_DEFAULT_FAMILY) -> str:
     text = str(value or "").strip().lower()
+    if text == "terra":
+        return "sol"
     if text in CODEX_FAMILIES:
         return text
     if text in {"", "default"}:
         return default_family
     match = _CODEX_FAMILY_RE.match(text)
     if match:
-        return match.group("family")
+        return "sol" if match.group("family") == "terra" else match.group("family")
     if _CODEX_GENERIC_VERSION_RE.match(text):
         return default_family
     return default_family
@@ -70,7 +72,8 @@ def codex_family_for_model(value: object) -> str | None:
     if text in CODEX_FAMILIES:
         return text
     match = _CODEX_FAMILY_RE.match(text)
-    return match.group("family") if match else None
+    family = match.group("family") if match else None
+    return family if family in CODEX_FAMILIES else None
 
 
 def is_codex_family(value: object) -> bool:

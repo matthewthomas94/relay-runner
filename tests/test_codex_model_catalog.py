@@ -35,8 +35,8 @@ CATALOGUE = {
             ],
         },
         {
-            "id": "gpt-6.0-sol",
-            "model": "gpt-6.0-sol",
+            "id": "gpt-6-sol",
+            "model": "gpt-6-sol",
             "hidden": False,
             "defaultReasoningEffort": "medium",
             "supportedReasoningEfforts": [
@@ -50,7 +50,7 @@ CATALOGUE = {
             "id": "gpt-7.0-sol",
             "model": "gpt-7.0-sol",
             "hidden": False,
-            "inputModalities": ["audio"],
+            "inputModalities": ["text"],
             "defaultReasoningEffort": "low",
             "supportedReasoningEfforts": [
                 {"reasoningEffort": "low"},
@@ -72,17 +72,23 @@ CATALOGUE = {
 class CodexModelCatalogTests(unittest.TestCase):
     def test_legacy_values_normalize_to_stable_families(self):
         self.assertEqual(normalize_codex_family("default"), "sol")
-        self.assertEqual(normalize_codex_family("gpt-5.6-terra"), "terra")
+        self.assertEqual(normalize_codex_family("gpt-5.6-terra"), "sol")
+        self.assertEqual(normalize_codex_family("terra"), "sol")
         self.assertEqual(normalize_codex_family("gpt-5.5"), "sol")
         self.assertEqual(normalize_codex_family("haiku"), "sol")
 
-    def test_resolves_highest_visible_semantic_version(self):
+    def test_resolves_newest_visible_family_model(self):
         models = codex_models_from_model_list(CATALOGUE)
 
         resolved = resolve_codex_family("sol", models)
 
-        self.assertEqual(resolved.launch_model, "gpt-6.0-sol")
-        self.assertEqual(resolve_codex_effort("default", resolved), "medium")
+        self.assertEqual(resolved.launch_model, "gpt-7.0-sol")
+        self.assertEqual(resolve_codex_effort("default", resolved), "low")
+
+    def test_older_family_model_remains_available(self):
+        models = codex_models_from_model_list({"data": [CATALOGUE["data"][0]]})
+
+        self.assertEqual(resolve_codex_family("sol", models).launch_model, "gpt-5.7-sol")
 
     def test_hidden_models_do_not_satisfy_family(self):
         models = codex_models_from_model_list(CATALOGUE)

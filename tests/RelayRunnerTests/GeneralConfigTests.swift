@@ -30,14 +30,13 @@ final class GeneralConfigTests: XCTestCase {
             [
                 GeneralConfig.ModelOption(label: "Astra", value: "astra"),
                 GeneralConfig.ModelOption(label: "Sol", value: "sol"),
-                GeneralConfig.ModelOption(label: "Terra", value: "terra"),
                 GeneralConfig.ModelOption(label: "Luna", value: "luna"),
             ]
         )
     }
 
     func testCodexFamiliesAreCodexOnlyPlanGatedOptions() {
-        let models = ["astra", "sol", "terra", "luna"]
+        let models = ["astra", "sol", "luna"]
 
         for model in models {
             XCTAssertTrue(GeneralConfig.isModel(model, validFor: .codex))
@@ -89,10 +88,6 @@ final class GeneralConfigTests: XCTestCase {
             ["low", "medium", "high", "xhigh", "max", "ultra"]
         )
         XCTAssertEqual(
-            codexMatrix["terra"],
-            ["low", "medium", "high", "xhigh", "max", "ultra"]
-        )
-        XCTAssertEqual(
             codexMatrix["luna"],
             ["low", "medium", "high", "xhigh", "max"]
         )
@@ -105,7 +100,7 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertNil(claudeMatrix["best"])
         XCTAssertEqual(claudeMatrix["fable"], ["low", "medium", "high", "xhigh", "max"])
         XCTAssertEqual(claudeMatrix["opus"], ["low", "medium", "high", "xhigh", "max"])
-        XCTAssertEqual(claudeMatrix["sonnet"], ["low", "medium", "high", "max"])
+        XCTAssertEqual(claudeMatrix["sonnet"], ["low", "medium", "high", "xhigh", "max"])
         XCTAssertEqual(claudeMatrix["haiku"], ["low"])
         XCTAssertNil(claudeMatrix["default"])
 
@@ -119,7 +114,7 @@ final class GeneralConfigTests: XCTestCase {
         )
         XCTAssertEqual(
             GeneralConfig.normalizedOrchestratorEffort("xhigh", for: .claude, model: "sonnet"),
-            "high"
+            "xhigh"
         )
         XCTAssertEqual(GeneralConfig.normalizedOrchestratorEffort("max", for: .claude, model: "sonnet"), "max")
     }
@@ -147,15 +142,25 @@ final class GeneralConfigTests: XCTestCase {
 
     func testCodexResolverSelectsNewestVisibleFamilyModel() throws {
         let resolution = try CodexModelResolver.resolve(
-            family: "terra",
+            family: "sol",
             effort: "default",
             catalogueData: Self.fixtureCodexCatalogue
         )
 
-        XCTAssertEqual(resolution.selectedFamily, "terra")
-        XCTAssertEqual(resolution.resolvedModel, "gpt-6.0-terra")
-        XCTAssertEqual(resolution.resolvedEffort, "medium")
-        XCTAssertEqual(resolution.supportedReasoningEfforts, ["low", "medium", "high", "xhigh"])
+        XCTAssertEqual(resolution.selectedFamily, "sol")
+        XCTAssertEqual(resolution.resolvedModel, "gpt-7.0-sol")
+        XCTAssertEqual(resolution.resolvedEffort, "low")
+        XCTAssertEqual(resolution.supportedReasoningEfforts, ["low"])
+    }
+
+    func testCodexResolverKeepsOlderFamilyAvailable() throws {
+        let older = """
+        [{"id":"gpt-5.6-sol","model":"gpt-5.6-sol","hidden":false}]
+        """.data(using: .utf8)!
+        XCTAssertEqual(
+            try CodexModelResolver.resolve(family: "sol", catalogueData: older).resolvedModel,
+            "gpt-5.6-sol"
+        )
     }
 
     func testCodexResolverExcludesHiddenModelsAndReportsUnavailableFamilies() throws {
@@ -172,7 +177,7 @@ final class GeneralConfigTests: XCTestCase {
     func testCodexResolverRejectsUnadvertisedEffort() throws {
         XCTAssertThrowsError(
             try CodexModelResolver.resolve(
-                family: "terra",
+                family: "sol",
                 effort: "ultra",
                 catalogueData: Self.fixtureCodexCatalogue
             )
@@ -180,9 +185,9 @@ final class GeneralConfigTests: XCTestCase {
             XCTAssertEqual(
                 error as? CodexModelResolver.Error,
                 .unsupportedEffort(
-                    model: "gpt-6.0-terra",
+                    model: "gpt-7.0-sol",
                     effort: "ultra",
-                    supported: ["low", "medium", "high", "xhigh"]
+                    supported: ["low"]
                 )
             )
         }
@@ -298,7 +303,7 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(codex.messenger_effort, "high")
         XCTAssertEqual(
             GeneralConfig.normalizedMessengerModel("gpt-5.6-terra", for: .codex),
-            "terra"
+            "sol"
         )
     }
 
@@ -337,8 +342,8 @@ final class GeneralConfigTests: XCTestCase {
     {
       "data": [
         {
-          "id": "gpt-5.7-terra",
-          "model": "gpt-5.7-terra",
+          "id": "gpt-5.7-sol",
+          "model": "gpt-5.7-sol",
           "hidden": false,
           "defaultReasoningEffort": "medium",
           "supportedReasoningEfforts": [
@@ -349,8 +354,8 @@ final class GeneralConfigTests: XCTestCase {
           ]
         },
         {
-          "id": "gpt-6.0-terra",
-          "model": "gpt-6.0-terra",
+          "id": "gpt-6-sol",
+          "model": "gpt-6-sol",
           "hidden": false,
           "defaultReasoningEffort": "medium",
           "supportedReasoningEfforts": [
@@ -361,10 +366,10 @@ final class GeneralConfigTests: XCTestCase {
           ]
         },
         {
-          "id": "gpt-7.0-terra",
-          "model": "gpt-7.0-terra",
+          "id": "gpt-7.0-sol",
+          "model": "gpt-7.0-sol",
           "hidden": false,
-          "inputModalities": ["audio"],
+          "inputModalities": ["text"],
           "defaultReasoningEffort": "low",
           "supportedReasoningEfforts": [
             {"reasoningEffort": "low"}

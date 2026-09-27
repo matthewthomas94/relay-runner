@@ -33,6 +33,7 @@ final class AstraFableSupportTests: XCTestCase {
         XCTAssertEqual(GeneralConfig.defaultMessengerModel, "luna")
         for (provider, model, effort): (GeneralConfig.AgentProvider, String, String) in [
             (.codex, "astra", "ultra"), (.claude, "claude-fable-5-1", "max"),
+            (.claude, "sonnet", "xhigh"),
         ] {
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: directory) }

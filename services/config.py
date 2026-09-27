@@ -244,10 +244,8 @@ def _migrate_config(
     def valid_orchestrator_efforts(provider_name: str, model_name: str) -> set[str]:
         if provider_name == "codex":
             return explicit_reasoning_efforts | {"max", "ultra"}
-        if model_name in {"claude-fable-5-1", "fable", "opus"}:
+        if model_name in {"claude-fable-5-1", "fable", "opus", "sonnet"}:
             return explicit_reasoning_efforts | {"max"}
-        if model_name == "sonnet":
-            return {"low", "medium", "high", "max"}
         if model_name == "haiku":
             return {"low"}
         return set()
@@ -256,10 +254,8 @@ def _migrate_config(
         base = {"default", "low", "medium", "high", "xhigh"}
         if provider_name == "codex":
             return base | {"max", "ultra"}
-        if model_name in {"best", "claude-fable-5-1", "fable", "opus"}:
+        if model_name in {"best", "claude-fable-5-1", "fable", "opus", "sonnet"}:
             return base | {"max"}
-        if model_name == "sonnet":
-            return {"default", "low", "medium", "high", "max"}
         return {"default"}
 
     def default_orchestrator_effort(provider_name: str, model_name: str) -> str:
