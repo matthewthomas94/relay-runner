@@ -10113,6 +10113,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             relay_intent_id=intent_id,
             mutation=_relay_mutation_metadata(
                 "orchestrator_command",
+                action_kind="record" if defer_processing else "process",
                 request_id=str(intent_id or relay_command_id),
             ),
         )

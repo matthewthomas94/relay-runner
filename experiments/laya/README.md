@@ -89,6 +89,14 @@ for one request, and `--context /path/to/context.json` for known conversation.
 Context is explicit and static; the preview does not invent previous PM replies.
 Ctrl-D exits the preview; Ctrl-C stops the service.
 
+The optional service now warms twice before reporting ready, then performs one
+synthetic warmup after each two-second interval without a request. Installed
+testing found that a first call after idle could take 171 ms even though immediate
+repeats took 35–52 ms. This keeps the GPU active and consumes background compute
+while the service is running; energy impact has not been measured. Stop the
+service when leaving the experiment. The live client's 100 ms limit, stale-result
+checks and advisory-only authority remain unchanged.
+
 The actual branch voice hook uses `RELAY_LAYA_TEST_MODE=1` and
 `RELAY_LAYA_SOCKET=/private/tmp/rr-laya-preview/qualifier.sock` in the source bridge
 process environment. Do not launch a second standard bridge beside an active
@@ -192,6 +200,26 @@ in the final focused runs. Python compile checks and `git diff --check` also pas
 
 The runtime tests use explicit doubles to verify guards and transport; they are
 separate from the recorded real MLX inference and warmed-service measurements.
+
+## Installed-test fixes, 2026-09-27
+
+The first installed run exposed two independent routing defects. No-dispatch
+authorization allowed ticket drafting but accidentally excluded private command
+recording, causing HTTP 400 responses. Deferred recording now has its own allowed
+operation; automatic processing, dispatch and worker requests remain prohibited
+for these commands. The inbox also waited for a separate reply effect for each
+item, while speech is deduplicated per source utterance. A completed sibling now
+accepts a delivered source reply from the same provider owner and exact command.
+Active siblings and replies from other owners or commands still block delivery.
+The regression runs cover both Codex and Claude. A copy of the stalled live inbox
+now releases its existing pending Task without replaying the command.
+
+The idle-warmup change returned all 15 local IPC probes within the existing
+deadline after 30 seconds without requests: 33–75 ms, with no timeouts. This is
+timing evidence, not a new accuracy evaluation. The model still misclassified a
+Backlog-only task variant as Action; its negation guard withheld that hint. Keep
+the PM authoritative. Physical voice retesting is recorded separately from these
+isolated probes.
 
 ## Disable / revert
 

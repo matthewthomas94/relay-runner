@@ -4,13 +4,15 @@ import copy
 import json
 import os
 from pathlib import Path
+import runpy
 import socket
 import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "services"))
 from laya_qualification import LocalLaya, attach_hint, fallback_reason, qualify_for_bridge
@@ -106,6 +108,33 @@ class LayaClientTests(unittest.TestCase):
         item = {"metadata": dict(COMMAND), "prompt": "Original"}
         attach_hint([item], {**COMMAND, "relay_command_seq": 6, "bucket": "task"})
         self.assertEqual(item, {"metadata": COMMAND, "prompt": "Original"})
+
+
+class ModelServiceTests(unittest.TestCase):
+    def test_idle_warmup_keeps_service_available_and_preserves_request_identity(self):
+        serve = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/relay-laya-qualify"))["serve"]
+        for warmup_failed in (False, True):
+            with self.subTest(warmup_failed=warmup_failed), tempfile.TemporaryDirectory() as folder:
+                request = {**COMMAND, "text": "Open Calculator", "expires_at": time.time() + 2}
+                model = MagicMock(identity={"test_double": True})
+                model.qualify.side_effect = [
+                    {}, {}, RuntimeError("model failure") if warmup_failed else {},
+                    {**COMMAND, "bucket": "action"},
+                ]
+                connection = MagicMock()
+                connection.__enter__.return_value = connection
+                connection.recv.return_value = (json.dumps(request) + "\n").encode()
+                server = MagicMock()
+                server.__enter__.return_value = server
+                server.accept.side_effect = [socket.timeout(), (connection, None), KeyboardInterrupt()]
+                with patch("socket.socket", return_value=server), patch("os.chmod"), self.assertRaises(KeyboardInterrupt):
+                    serve(SimpleNamespace(socket=str(Path(folder) / "test.sock")), model)
+                server.settimeout.assert_called_once_with(2.0)
+                self.assertEqual(model.qualify.call_count, 4)
+                self.assertEqual(model.qualify.call_args.args[0], request)
+                response = json.loads(connection.sendall.call_args.args[0])
+                self.assertEqual(response["relay_command_id"], COMMAND["relay_command_id"])
+                self.assertEqual(response["bucket"], "action")
 
 
 class ModelBoundaryTests(unittest.TestCase):

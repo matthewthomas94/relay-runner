@@ -85,10 +85,11 @@ class IntentQualificationTests(unittest.TestCase):
                 self.assertEqual(len(items), 1)
                 self.assertEqual(items[0]["metadata"]["intent_qualification"]["bucket"], "task")
                 allowed = allowed_mutations_for_metadata(items[0]["metadata"])
-                self.assertEqual(len(allowed), 1)
+                self.assertEqual(len(allowed), 2)
                 self.assertEqual(allowed[0]["kind"], "orchestrator_action")
                 self.assertIn("create_ticket", allowed[0]["action_kinds"])
                 self.assertNotIn("request_worker", allowed[0]["action_kinds"])
+                self.assertEqual(allowed[1], {"kind": "orchestrator_command", "action_kinds": ["record"]})
 
     def test_bucket_alone_never_grants_mutation(self):
         for bucket in ("task", "action", "discussion"):

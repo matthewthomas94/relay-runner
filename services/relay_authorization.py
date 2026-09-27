@@ -156,7 +156,7 @@ def allowed_mutations_for_metadata(metadata: dict[str, Any]) -> list[dict[str, A
                 "action_kinds": (["create_ticket"] if action == "create_ticket" else [])
                 + ["edit_ticket", "update_dependencies"],
                 "ticket_id": str(metadata.get("ticket_id") or "*").upper(),
-            }]
+            }, {"kind": "orchestrator_command", "action_kinds": ["record"]}]
         return []
     ticket_id = str(metadata.get("ticket_id") or "").strip().upper()
     ticket_ids = [match.upper() for match in _TICKET_ID_RE.findall(source_text)]

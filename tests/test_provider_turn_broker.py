@@ -245,6 +245,50 @@ class ProviderTurnBrokerTests(unittest.TestCase):
             )
             self.assertEqual(materialized["intent_id"], "intent-2")
 
+    def test_completed_sibling_uses_same_source_reply_without_blocking_next_turn(self):
+        for provider in ("codex", "claude"):
+            for same_owner in (True, False):
+                with self.subTest(provider=provider, same_owner=same_owner), tempfile.TemporaryDirectory() as tmp:
+                    database = os.path.join(tmp, "inbox.sqlite3")
+                    inbox = IntentInbox(database, provider_turn_projection_path=os.path.join(tmp, "turns.json"))
+                    broker = ProviderTurnBroker(database)
+                    self.addCleanup(inbox.close)
+                    self.addCleanup(broker.close)
+                    paths = {"command_path": os.path.join(tmp, "ready"), "metadata_path": os.path.join(tmp, "meta"), "transport": "test"}
+                    first = turn_record(provider)
+                    stored = inbox.enqueue("private first", first, "continue_current")
+                    inbox.materialize_next(**paths)
+                    broker.activate(first)
+                    inbox.observe_claim(stored, provider_turn_seen=True)
+                    for path in (paths["command_path"], paths["metadata_path"]):
+                        os.unlink(path)
+                    broker.transition(first, to_state="completed_final", event_type="provider_completed", release_reason="provider_stop")
+                    effect = broker.reserve_effect(first)
+                    broker.authorize_effect_delivery(effect.effect_id)
+                    broker.finish_effect(effect.effect_id, delivered=True)
+
+                    sibling = {**first, "intent_id": "intent-2", "turn_id": "native-turn-2", "within_turn_order": 2}
+                    if not same_owner:
+                        sibling["foreground_gate_handle"] = "another-owner"
+                    stored = inbox.enqueue("private sibling", sibling, "continue_current")
+                    self.assertIsNotNone(inbox.materialize_next(**paths))
+                    broker.activate(sibling)
+                    inbox.observe_claim(stored, provider_turn_seen=True)
+                    for path in (paths["command_path"], paths["metadata_path"]):
+                        os.unlink(path)
+                    inbox.enqueue("next task", {"relay_command_seq": 2, "relay_command_id": "next-command", "intent_id": "next-intent"}, "queue_project_work")
+                    self.assertIsNone(inbox.materialize_next(**paths), "An active sibling still owns the foreground")
+                    broker.transition(sibling, to_state="completed_final", event_type="provider_completed", release_reason="provider_stop")
+                    # Reopen to exercise recovery of the already-stalled live state.
+                    inbox.close()
+                    inbox = IntentInbox(database, provider_turn_projection_path=os.path.join(tmp, "turns.json"))
+                    self.addCleanup(inbox.close)
+                    successor = inbox.materialize_next(**paths)
+                    if same_owner:
+                        self.assertEqual(successor["intent_id"], "next-intent")
+                    else:
+                        self.assertIsNone(successor, "Another owner's reply must not release this turn")
+
     def test_failed_authoritative_effect_releases_successor(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = os.path.join(temp_dir, "inbox.sqlite3")

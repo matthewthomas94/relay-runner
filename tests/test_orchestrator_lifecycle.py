@@ -504,6 +504,28 @@ class OrchestratorLifecycleTests(unittest.TestCase):
             )
             self.assertTrue(all("source_text" not in command for command in recoverable))
 
+    def test_backlog_only_command_can_be_recorded_without_dispatch_authority(self):
+        from relay_authorization import record_command_authorization, validate_and_mark_mutation
+
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                repo = root / "repo"
+                self.make_git_repo(repo)
+                command = {"relay_command_seq": 1, "relay_command_id": "draft", "intent_id": "draft:item:1", "action": "create_ticket", "source_text": "Create a ticket, backlog only. Do not dispatch it."}
+                state_path, auth_path = root / "state.json", root / "auth.json"
+                state_path.write_text(json.dumps(command))
+                record_command_authorization(auth_path, command, relationship="additive")
+                daemon = self.make_daemon(root, provider=provider)
+                with patch.object(orchestrator, "RELAY_COMMAND_STATE_FILE", state_path), patch.object(orchestrator, "RELAY_COMMAND_AUTHORIZATION_FILE", auth_path):
+                    result = daemon.record_orchestrator_command(repo_path=str(repo), source_text=command["source_text"], relay_command_seq=1, relay_command_id="draft", intent_id=command["intent_id"], provider=provider, action="create_ticket", defer_processing=True)
+                self.assertEqual(result["orchestrator_command"]["status"], "queued")
+                self.assertEqual(result["processing"], {"processed": []})
+                self.assertFalse((repo / ".orchestrator" / "RR-1.md").exists())
+                for mutation in ({"kind": "dispatch_ticket"}, {"kind": "orchestrator_action", "action_kind": "request_worker"}, {"kind": "orchestrator_command", "action_kind": "process"}):
+                    with self.assertRaisesRegex(ValueError, "not authorized"):
+                        validate_and_mark_mutation(auth_path, 1, "draft", mutation, relay_intent_id=command["intent_id"])
+
     def test_deferred_workspace_command_requests_project_without_parent_ticket(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:

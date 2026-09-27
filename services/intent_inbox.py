@@ -456,35 +456,37 @@ class IntentInbox:
             if unacked is not None:
                 return None
             if self.provider_turn_events_enabled:
+                # Speech is deduplicated per source command. A completed sibling
+                # may therefore have no effect of its own after that source's
+                # final reply was delivered. Active siblings still block.
                 predecessor = self._connection.execute(
                     """
                     SELECT intents.ordinal
                      FROM intents
+                     JOIN provider_turns AS predecessor
+                       ON predecessor.intent_id=intents.intent_id
+                      AND predecessor.command_seq=intents.command_seq
+                      AND predecessor.command_id=intents.command_id
                      WHERE intents.state='acked'
                        AND (
-                           EXISTS (
-                               SELECT 1
-                                 FROM provider_turns
-                                WHERE provider_turns.intent_id=intents.intent_id
-                                  AND provider_turns.command_seq=intents.command_seq
-                                  AND provider_turns.command_id=intents.command_id
-                                  AND provider_turns.state='active'
-                           )
+                           predecessor.state='active'
                            OR (
-                               EXISTS (
-                                   SELECT 1
-                                     FROM provider_turns
-                                    WHERE provider_turns.intent_id=intents.intent_id
-                                      AND provider_turns.command_seq=intents.command_seq
-                                      AND provider_turns.command_id=intents.command_id
-                                      AND provider_turns.state='completed_final'
-                               )
+                               predecessor.state='completed_final'
                                AND NOT EXISTS (
                                    SELECT 1
-                                     FROM provider_turn_effects
-                                    WHERE provider_turn_effects.intent_id=intents.intent_id
-                                      AND provider_turn_effects.effect_kind='authoritative_reply'
-                                      AND provider_turn_effects.state IN ('delivered', 'failed')
+                                     FROM provider_turn_effects AS effects
+                                     JOIN provider_turns AS replied
+                                       ON replied.turn_id=effects.turn_id
+                                    WHERE effects.effect_kind='authoritative_reply'
+                                      AND (
+                                          (effects.intent_id=intents.intent_id
+                                           AND effects.state IN ('delivered', 'failed'))
+                                          OR
+                                          (replied.owner_id=predecessor.owner_id
+                                           AND replied.command_seq=intents.command_seq
+                                           AND replied.command_id=intents.command_id
+                                           AND effects.state='delivered')
+                                      )
                                )
                            )
                        )
