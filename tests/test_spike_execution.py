@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services"))
 
 import orchestrator  # noqa: E402
+from claude_subscription import ClaudeSubscriptionReadiness  # noqa: E402
 from orchestrator import (  # noqa: E402
     Daemon,
     MessengerOutcomeStore,
@@ -25,6 +26,8 @@ from orchestrator import (  # noqa: E402
     remove_spike_workspace,
     validate_spike_result,
 )
+
+SUBSCRIPTION = ClaudeSubscriptionReadiness("verified", "subscription", "ok")
 from tickets import read as read_ticket  # noqa: E402
 
 
@@ -517,7 +520,8 @@ class SpikeExecutionTests(unittest.TestCase):
                 "error": "authentication_failed",
             })
             command = [sys.executable, "-c", f"import sys; print({event!r}); sys.exit(1)"]
-            with patch.object(worker, "_command", return_value=command):
+            with patch.object(worker, "_command", return_value=command), \
+                    patch("orchestrator.check_claude_subscription", return_value=SUBSCRIPTION):
                 worker._run()
 
             self.assertEqual(
