@@ -9,7 +9,7 @@ final class RelayInstallerWindowController {
 
     func show(context: RelayInstallerContext) {
         if let window = windowController?.window {
-            window.makeKeyAndOrderFront(nil)
+            RelayWindowMotion.present(window)
             NSApplication.shared.activate(ignoringOtherApps: true)
             return
         }
@@ -21,13 +21,23 @@ final class RelayInstallerWindowController {
         window.setContentSize(NSSize(width: 460, height: 360))
         window.center()
         window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
 
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
 
         let wc = NSWindowController(window: window)
         windowController = wc
-        wc.showWindow(nil)
+        RelayWindowMotion.present(window)
+    }
+
+    /// Fades the installer window out before `completion` quits the app.
+    func dismiss(completion: @escaping () -> Void) {
+        guard let window = windowController?.window else {
+            completion()
+            return
+        }
+        RelayWindowMotion.dismiss(window, completion: completion)
     }
 }
 
@@ -109,7 +119,9 @@ final class RelayInstallerModel {
                 if let error {
                     self.fail(error)
                 } else {
-                    NSApplication.shared.terminate(nil)
+                    RelayInstallerWindowController.shared.dismiss {
+                        NSApplication.shared.terminate(nil)
+                    }
                 }
             }
         }
@@ -126,6 +138,7 @@ final class RelayInstallerModel {
 struct RelayInstallerView: View {
     let context: RelayInstallerContext
     @State private var model = RelayInstallerModel()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 22) {
@@ -139,12 +152,17 @@ struct RelayInstallerView: View {
                     .font(AppTypography.font(.appTitle))
                 Text(model.statusText)
                     .font(AppTypography.font(.cardHeading))
+                    .relayTextSwap(model.statusText, alignment: .center)
+                // Per-file copy progress updates in place; the detail line
+                // only crossfades when the install moves to a new phase.
                 Text(model.detailText)
                     .foregroundStyle(.secondary)
+                    .relayTextSwap(model.phase, alignment: .center)
             }
 
             ProgressView(value: model.progress)
                 .frame(width: 320)
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.progress)
 
             if let errorText = model.errorText {
                 Text(errorText)
@@ -152,14 +170,21 @@ struct RelayInstallerView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(width: 360)
+                    .transition(.relayElement)
 
                 HStack {
-                    Button("Quit") { NSApplication.shared.terminate(nil) }
+                    Button("Quit") {
+                        RelayInstallerWindowController.shared.dismiss {
+                            NSApplication.shared.terminate(nil)
+                        }
+                    }
                     Button("Retry") { model.retry(context: context) }
                         .keyboardShortcut(.defaultAction)
                 }
+                .transition(.relayElement)
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.errorText)
         .padding(36)
         .frame(width: 460, height: 360)
         .task {
