@@ -2,12 +2,22 @@ import SwiftUI
 
 struct SettingsWindow: View {
     @Bindable var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(appState: AppState) {
         self.appState = appState
     }
 
     var body: some View {
+        shellContent
+            .animation(
+                RelayMotion.change(reduceMotion: reduceMotion),
+                value: appState.isFirstRunExperienceActive
+            )
+    }
+
+    @ViewBuilder
+    private var shellContent: some View {
         if AppState.allowsAppShellAccess(
             firstRunExperienceActive: appState.isFirstRunExperienceActive
         ) {
@@ -15,6 +25,9 @@ struct SettingsWindow: View {
                 appState: appState,
                 style: .window
             )
+            // The Settings scene mounts this from AppKit, so it plays its own entrance.
+            .relayAppearOnMount()
+            .transition(.asymmetric(insertion: .identity, removal: .relaySurface))
         } else {
             EmptyView()
         }
@@ -155,6 +168,7 @@ private struct SettingsContent: View {
     @State private var selectedCategory: SettingsCategory = .permissions
     @State private var scrollTarget: SettingsCategory = .permissions
     @State private var customVoiceName: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
         appState: AppState,
@@ -226,19 +240,27 @@ private struct SettingsContent: View {
 
             VStack(spacing: 0) {
                 ScrollViewReader { proxy in
-                    ScrollView(.vertical, showsIndicators: false) {
-                        VStack(spacing: 0) {
-                            Color.clear
-                                .frame(height: 0)
-                                .id(selectedCategory)
-                            selectedDetail
-                                .padding(style.detailPadding)
-                                .frame(maxWidth: style.detailMaxWidth, alignment: .topLeading)
-                                .frame(maxWidth: .infinity, alignment: .topLeading)
-                                .padding(.bottom, 4)
+                    // Each category is its own page: the outgoing page sinks away
+                    // at its own scroll position while the next one rises in.
+                    ZStack(alignment: .topLeading) {
+                        ScrollView(.vertical, showsIndicators: false) {
+                            VStack(spacing: 0) {
+                                Color.clear
+                                    .frame(height: 0)
+                                    .id(selectedCategory)
+                                selectedDetail
+                                    .padding(style.detailPadding)
+                                    .frame(maxWidth: style.detailMaxWidth, alignment: .topLeading)
+                                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                                    .padding(.bottom, 4)
+                            }
                         }
+                        .id(selectedCategory)
+                        .transition(.relaySurface)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .clipped()
+                    .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selectedCategory)
                     .onChange(of: scrollTarget) { _, target in
                         proxy.scrollTo(target, anchor: .top)
                     }
@@ -288,10 +310,12 @@ private struct SettingsContent: View {
                 .font(AppTypography.symbolFont(size: 10, weight: .semibold))
                 .foregroundStyle(presentation.iconColor)
                 .accessibilityHidden(true)
+                .relaySwap(presentation.iconName)
 
             Text(presentation.statusText)
                 .font(AppTypography.font(.settingsDescription))
                 .foregroundStyle(presentation.textColor)
+                .relayTextSwap(presentation.statusText)
 
             Spacer(minLength: 0)
 
@@ -379,6 +403,8 @@ struct SettingsFooterPresentation: Equatable {
 private struct SettingsCategorySidebar: View {
     @Binding var selection: SettingsCategory
     let style: SettingsContentStyle
+    @Namespace private var selectionHighlight
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -395,9 +421,24 @@ private struct SettingsCategorySidebar: View {
                         selected: selection == category,
                         action: { selection = category }
                     )
+                    .background {
+                        if selection == category {
+                            let shape = RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+                            // One highlight glides between rows; Reduce Motion
+                            // gives each row its own id so it only crossfades.
+                            shape
+                                .fill(BoardDarkSurfaceStyle.cardActiveFill)
+                                .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1))
+                                .matchedGeometryEffect(
+                                    id: reduceMotion ? category.id : "selection",
+                                    in: selectionHighlight
+                                )
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 10)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selection)
 
             Spacer(minLength: 0)
         }
@@ -426,7 +467,8 @@ private struct SettingsCategoryButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let highlighted = selected || isHovered
+        // The selected fill is drawn by the sidebar so it can glide between rows.
+        let highlighted = isHovered
         let presentation = SettingsNavigationPresentation.resolve(
             selected: selected,
             isHovered: isHovered,
@@ -461,7 +503,7 @@ private struct SettingsCategoryButton: View {
             .clipShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
-                    .strokeBorder(highlighted ? BoardDarkSurfaceStyle.border : Color.white.opacity(presentation.strokeOpacity), lineWidth: 1)
+                    .strokeBorder(highlighted ? BoardDarkSurfaceStyle.border : Color.white.opacity(selected ? 0 : presentation.strokeOpacity), lineWidth: 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
         }
@@ -470,7 +512,7 @@ private struct SettingsCategoryButton: View {
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
         .focused($isFocused)
         .onHover { isHovered = $0 }
-        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
+        .animation(presentation.animationDuration > 0 ? RelayMotion.hover : nil, value: presentation)
         .accessibilityLabel(category.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help(category.title)
