@@ -96,9 +96,11 @@ enum ProgramWorkspaceModalMotion {
     }
 
     /// Modal panels rise in and sink out. A leaving modal stops taking clicks
-    /// so its click catcher never swallows the next click on the board.
-    static var transition: AnyTransition {
-        .programBoardLeaving(panelStyle)
+    /// so its click catcher never swallows the next click on the board. A
+    /// modal that takes the place of another one (ticket detail to edit and
+    /// back) arrives only once the outgoing modal has left.
+    static func transition(replacing: Bool) -> AnyTransition {
+        .programBoardLeaving(panelStyle, replacing: replacing)
     }
 
     /// The full-bleed dot-matrix backdrop only fades.
@@ -122,9 +124,13 @@ private struct ProgramBoardLeavingTransition: Transition {
 }
 
 private extension AnyTransition {
-    static func programBoardLeaving(_ style: RelayMotion.Style) -> AnyTransition {
+    /// Pass `replacing` for a view that takes the place of one leaving, such
+    /// as a page keyed by selection: it arrives only once the outgoing view
+    /// has finished its exit.
+    static func programBoardLeaving(_ style: RelayMotion.Style, replacing: Bool = false) -> AnyTransition {
         .asymmetric(
-            insertion: AnyTransition(ProgramBoardLeavingTransition(style: style)).animation(RelayMotion.enter),
+            insertion: AnyTransition(ProgramBoardLeavingTransition(style: style))
+                .animation(replacing ? RelayMotion.replacingEnter : RelayMotion.enter),
             removal: AnyTransition(ProgramBoardLeavingTransition(style: style)).animation(RelayMotion.exit)
         )
     }
@@ -240,6 +246,9 @@ struct ProgramBoardOverlayView: View {
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var notesSearchFocused: Bool
+    /// The modal on screen before the current update, so a modal that takes
+    /// another's place can wait for it to leave.
+    @State private var presentedModalKind: ProgramWorkspaceModalKind = .none
 
     var body: some View {
         GeometryReader { proxy in
@@ -286,7 +295,7 @@ struct ProgramBoardOverlayView: View {
                                     .foregroundStyle(ProgramBoardStyle.mutedText)
                                     .relayTextSwap(model.noteQuery.isEmpty)
                                     .padding(.top, 28)
-                                    .transition(.relayText)
+                                    .transition(.relayReplacing(.text))
                             }
                             ForEach(model.visibleNotes) { note in
                                 ProgramNoteCard(
@@ -294,7 +303,9 @@ struct ProgramBoardOverlayView: View {
                                     isSelected: model.selectedNoteDetail?.item.id == note.id,
                                     onSelect: { onNoteOpen(note) }
                                 )
-                                .transition(.relayElement)
+                                // Cards returning to an empty search wait for
+                                // "No matching notes." to leave their place.
+                                .transition(.relayReplacing(.element))
                             }
                         }
                         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteItems)
@@ -322,7 +333,7 @@ struct ProgramBoardOverlayView: View {
                             onResume: onResumeRecoveredNote
                         )
                         .id(detail.item.id)
-                        .transition(.programBoardLeaving(.surface))
+                        .transition(.programBoardLeaving(.surface, replacing: true))
                     } else {
                         VStack(spacing: 10) {
                             Image(systemName: "note.text")
@@ -334,7 +345,7 @@ struct ProgramBoardOverlayView: View {
                         }
                         .foregroundStyle(ProgramBoardStyle.mutedText)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .transition(.relaySurface)
+                        .transition(.relayReplacing(.surface))
                     }
                 }
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.selectedNoteDetail?.item.id)
@@ -367,6 +378,11 @@ struct ProgramBoardOverlayView: View {
         let backgroundBlurRadius = dotMatrixPresentation.isVisible
             ? ProgramWorkspaceDotMatrixStyle.backgroundBlurRadius
             : 0
+        // A modal that replaces another (ticket detail to edit and back)
+        // waits for it to leave; one opening over the board arrives at once.
+        let modalTransition = ProgramWorkspaceModalMotion.transition(
+            replacing: presentedModalKind != .none
+        )
         return ZStack(alignment: .topLeading) {
             ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
                 .fill(Color.black.opacity(ProgramBoardBackdropStyle.backdropOpacity))
@@ -432,7 +448,7 @@ struct ProgramBoardOverlayView: View {
                     .frame(maxWidth: .infinity, alignment: .top)
                     .blur(radius: backgroundBlurRadius)
                     .allowsHitTesting(!dotMatrixPresentation.isVisible)
-                    .transition(.programBoardLeaving(.surface))
+                    .transition(.programBoardLeaving(.surface, replacing: true))
                 } else if workspace.selectedTab == .systemSettings, let settingsContent {
                     VStack(spacing: 0) {
                         settingsContent
@@ -443,14 +459,14 @@ struct ProgramBoardOverlayView: View {
                     .frame(maxWidth: .infinity, alignment: .top)
                     .blur(radius: backgroundBlurRadius)
                     .allowsHitTesting(!dotMatrixPresentation.isVisible)
-                    .transition(.programBoardLeaving(.surface))
+                    .transition(.programBoardLeaving(.surface, replacing: true))
                 } else if workspace.selectedTab == .notes {
                     notesLibrary
                         .padding(.top, BoardSurfaceLayout.columnTopPadding)
                         .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
                         .padding(.bottom, 20)
                         .frame(height: min(viewportSize.height, ProgramBoardBackdropStyle.backdropHeight))
-                        .transition(.programBoardLeaving(.surface))
+                        .transition(.programBoardLeaving(.surface, replacing: true))
                 } else if workspace.showsWorkTab {
                     let contentPresentation = boardContentPresentation
                     VStack(spacing: 0) {
@@ -481,7 +497,7 @@ struct ProgramBoardOverlayView: View {
                     .blur(radius: backgroundBlurRadius)
                     .allowsHitTesting(!dotMatrixPresentation.isVisible)
                     .id(contentPresentation)
-                    .transition(.programBoardLeaving(.surface))
+                    .transition(.programBoardLeaving(.surface, replacing: true))
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.selectedTab)
@@ -505,7 +521,7 @@ struct ProgramBoardOverlayView: View {
                         onWorkspaceChanged: onHistoryChanged
                     )
                 }
-                .transition(ProgramWorkspaceModalMotion.transition)
+                .transition(modalTransition)
             }
 
             if let detail = model.selectedTicketDetail,
@@ -527,7 +543,7 @@ struct ProgramBoardOverlayView: View {
                         panelSize: ProgramTicketPanelStyle.detailSize(fitting: detailSurfaceSize)
                     )
                 }
-                .transition(ProgramWorkspaceModalMotion.transition)
+                .transition(modalTransition)
             }
 
             if let draft = model.creating {
@@ -550,7 +566,7 @@ struct ProgramBoardOverlayView: View {
                     )
                 }
                 .id("\(draft.lane.id)-\(draft.selectedProjectPath ?? "all")")
-                .transition(ProgramWorkspaceModalMotion.transition)
+                .transition(modalTransition)
             }
 
             if let draft = model.editing {
@@ -576,7 +592,7 @@ struct ProgramBoardOverlayView: View {
                     )
                 }
                 .id(draft.id)
-                .transition(ProgramWorkspaceModalMotion.transition)
+                .transition(modalTransition)
             }
 
             if let batch = model.spikeFollowupBatch {
@@ -588,7 +604,7 @@ struct ProgramBoardOverlayView: View {
                     )
                 }
                 .id(batch.id)
-                .transition(ProgramWorkspaceModalMotion.transition)
+                .transition(modalTransition)
             }
         }
         .frame(width: viewportSize.width, height: viewportSize.height, alignment: .topLeading)
@@ -601,6 +617,9 @@ struct ProgramBoardOverlayView: View {
         .ignoresSafeArea(edges: .top)
         .onChange(of: workspace.selectedTab) { _, tab in
             onWorkspaceTabChange(tab)
+        }
+        .onChange(of: dotMatrixPresentation.modalKind, initial: true) { _, kind in
+            presentedModalKind = kind
         }
         .onPreferenceChange(ProgramColumnFramesKey.self) { model.columnFrames = $0 }
         .animation(
@@ -1660,7 +1679,7 @@ struct ProgramWorkColumnPanel: View {
                     ProgramDropIndicator(target: activeTarget)
                     if laneItems.isEmpty {
                         ProgramColumnEmpty(text: lane.emptyText)
-                            .transition(.relayText)
+                            .transition(.relayReplacing(.text))
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(laneItems) { item in
@@ -1688,7 +1707,7 @@ struct ProgramWorkColumnPanel: View {
                                 }
                             }
                         }
-                        .transition(.programBoardLeaving(.element))
+                        .transition(.programBoardLeaving(.element, replacing: true))
                     }
                 }
                 // Reloads insert, remove, and reflow cards; drag updates run
@@ -2603,7 +2622,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onStop()
                     }
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
                 }
                 if recoveryOffer != nil,
                    isCurrentCapture,
@@ -2616,7 +2635,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onResume()
                     }
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
                 }
                 if recoveryOffer != nil, !isCurrentCapture {
                     ProgramDetailActionButton(
@@ -2627,7 +2646,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onRecover(.recoverPaused)
                     }
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
                     ProgramDetailActionButton(
                         systemName: "checkmark",
                         title: "Finalize",
@@ -2636,7 +2655,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onRecover(.finalize)
                     }
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
                     ProgramDetailActionButton(
                         systemName: "trash",
                         title: "Discard tail",
@@ -2645,7 +2664,7 @@ private struct ProgramNoteDetailPanel: View {
                     ) {
                         onRecover(.discardIncompleteTail)
                     }
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
                 }
                 if detail.errorMessage != nil {
                     ProgramDetailActionButton(
@@ -2679,13 +2698,13 @@ private struct ProgramNoteDetailPanel: View {
 
             if let errorMessage = captureErrorMessage {
                 ProgramDetailNotice(message: errorMessage)
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
             }
             if recoveryOffer != nil, !isCurrentCapture {
                 ProgramDetailNotice(
                     message: "Interrupted recording found. Recovery uses the original note and project and stays paused until you choose Resume."
                 )
-                .transition(.relayElement)
+                .transition(.relayReplacing(.element))
             }
             if let recoveryErrorMessage {
                 ProgramDetailNotice(message: recoveryErrorMessage)
@@ -2710,11 +2729,11 @@ private struct ProgramNoteDetailPanel: View {
                                 .font(AppTypography.font(.supporting))
                                 .foregroundStyle(ProgramBoardStyle.mutedText)
                         }
-                        .transition(.relayElement)
+                        .transition(.relayReplacing(.element))
                     } else if let transcript = detail.transcript {
                         ProgramDetailSection(title: "Transcript", text: transcript.isEmpty ? "No transcript captured." : transcript)
                             .textSelection(.enabled)
-                            .transition(.relayElement)
+                            .transition(.relayReplacing(.element))
                     }
                 }
                 .animation(
@@ -3345,6 +3364,51 @@ private struct ProgramDetailRow: Identifiable {
     var id: String { label }
 }
 
+/// Two equal columns filled row by row. Each cell keeps its identity, so a
+/// row that appears mid-list lets later cells glide to their new places
+/// instead of every one of them swapping its text.
+private struct ProgramDetailMetadataGrid: Layout {
+    let columnSpacing: CGFloat
+    let rowSpacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let columnWidth = columnWidth(for: proposal.width, subviews: subviews)
+        let heights = rowHeights(subviews: subviews, columnWidth: columnWidth)
+        let height = heights.reduce(0, +) + rowSpacing * CGFloat(max(heights.count - 1, 0))
+        return CGSize(width: columnWidth * 2 + columnSpacing, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let columnWidth = columnWidth(for: bounds.width, subviews: subviews)
+        var y = bounds.minY
+        for (row, height) in rowHeights(subviews: subviews, columnWidth: columnWidth).enumerated() {
+            for column in 0..<2 where subviews.indices.contains(row * 2 + column) {
+                subviews[row * 2 + column].place(
+                    at: CGPoint(x: bounds.minX + CGFloat(column) * (columnWidth + columnSpacing), y: y),
+                    anchor: .topLeading,
+                    proposal: ProposedViewSize(width: columnWidth, height: nil)
+                )
+            }
+            y += height + rowSpacing
+        }
+    }
+
+    private func columnWidth(for width: CGFloat?, subviews: Subviews) -> CGFloat {
+        if let width, width.isFinite {
+            return max(0, (width - columnSpacing) / 2)
+        }
+        return subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+    }
+
+    private func rowHeights(subviews: Subviews, columnWidth: CGFloat) -> [CGFloat] {
+        stride(from: 0, to: subviews.count, by: 2).map { start in
+            subviews[start..<min(start + 2, subviews.count)]
+                .map { $0.sizeThatFits(ProposedViewSize(width: columnWidth, height: nil)).height }
+                .max() ?? 0
+        }
+    }
+}
+
 private struct ProgramDetailMetadata: View {
     let rows: [ProgramDetailRow]
 
@@ -3354,27 +3418,14 @@ private struct ProgramDetailMetadata: View {
             // content to preserve exact endpoints. A lazy grid can cull these
             // few rows against the untranslated viewport while retaining their
             // height, which presents as a large blank spacer.
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(rowStartIndices, id: \.self) { index in
-                    HStack(alignment: .top, spacing: 10) {
-                        metadataCell(rows[index])
-                        if rows.indices.contains(index + 1) {
-                            metadataCell(rows[index + 1])
-                                .transition(.relayElement)
-                        } else {
-                            Spacer(minLength: 0)
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-                    .transition(.relayElement)
+            ProgramDetailMetadataGrid(columnSpacing: 10, rowSpacing: 8) {
+                ForEach(rows) { row in
+                    metadataCell(row)
+                        .transition(.relayElement)
                 }
             }
             .transition(.relayElement)
         }
-    }
-
-    private var rowStartIndices: [Int] {
-        Array(stride(from: rows.startIndex, to: rows.endIndex, by: 2))
     }
 
     private func metadataCell(_ row: ProgramDetailRow) -> some View {
@@ -3383,7 +3434,6 @@ private struct ProgramDetailMetadata: View {
                 .font(AppTypography.font(.caption))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .lineLimit(1)
-                .relayTextSwap(row.label)
             Text(row.value)
                 .font(AppTypography.font(.label))
                 .foregroundStyle(ProgramBoardStyle.secondaryText)

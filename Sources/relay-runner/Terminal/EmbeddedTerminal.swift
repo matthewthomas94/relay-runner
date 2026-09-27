@@ -2911,17 +2911,23 @@ struct EmbeddedTerminalTab: View {
             Divider().overlay(BoardDarkSurfaceStyle.border)
 
             ZStack {
-                // The terminal itself never animates; only the empty state
-                // above it transitions.
+                // The terminal only fades, and only once the empty state has
+                // left; a restart (new presentation revision) swaps in place.
                 if session.hostedView != nil {
-                    EmbeddedTerminalRepresentable(session: session)
-                        .id(session.presentationRevision)
-                        .background(Color(nsColor: BoardDarkSurfaceStyle.panelFillNSColor))
+                    ZStack {
+                        EmbeddedTerminalRepresentable(session: session)
+                            .id(session.presentationRevision)
+                    }
+                    .background(Color(nsColor: BoardDarkSurfaceStyle.panelFillNSColor))
+                    .transition(.asymmetric(
+                        insertion: .opacity.animation(RelayMotion.replacingEnter),
+                        removal: .opacity.animation(RelayMotion.exit)
+                    ))
                 }
                 ZStack {
                     if session.hostedView == nil {
                         emptyState
-                            .transition(.relaySurface)
+                            .transition(.relayReplacing(.surface))
                     }
                 }
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: session.hostedView == nil)

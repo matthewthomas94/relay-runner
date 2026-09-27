@@ -291,7 +291,7 @@ private struct RegisteredProjectsSettingsView: View {
                             .foregroundStyle(SettingsSurfaceColor.secondaryText)
                     }
                 }
-                .transition(.relayElement)
+                .transition(.relayReplacing(.element))
             } else {
                 ForEach(Array(projects.enumerated()), id: \.element.projectID) { index, project in
                     VStack(spacing: 0) {

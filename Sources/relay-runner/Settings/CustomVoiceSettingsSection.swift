@@ -150,11 +150,11 @@ struct CustomVoiceSettingsSection: View {
                         SettingsActionButton(title: "Cancel", systemImage: "xmark", action: recorder.cancel)
                     }
                 }
-                .transition(.relayElement)
+                .transition(.relayReplacing(.element))
             }
             if !samples.isEmpty {
                 draftEditor
-                    .transition(.relayElement)
+                    .transition(.relayReplacing(.element))
             }
             if let recordingError = recorder.error {
                 SettingsRow {
@@ -163,7 +163,7 @@ struct CustomVoiceSettingsSection: View {
                         .foregroundStyle(SettingsSurfaceColor.error)
                         .relayTextSwap(recordingError)
                 }
-                .transition(.relayElement)
+                .transition(.relayReplacing(.element))
             }
             if let notice = appState.customVoiceNotice {
                 SettingsRow {

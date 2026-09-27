@@ -41,14 +41,14 @@ struct STTSettingsTab: View {
                         SettingsControlRow("Push-to-talk Key") {
                             KeyCaptureView(label: "Push-to-talk Key", showsLabel: false, value: $config.push_to_talk_key)
                         }
-                        .transition(.relayElement)
+                        .transition(.relayReplacing(.element))
                     }
 
                     if config.input_mode == "caps_lock_toggle" {
                         SettingsControlRow("Activation Key") {
                             KeyCaptureView(label: "Activation Key", showsLabel: false, value: $config.activation_key)
                         }
-                        .transition(.relayElement)
+                        .transition(.relayReplacing(.element))
                     }
                 }
                 .transition(.relayElement)

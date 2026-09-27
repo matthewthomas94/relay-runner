@@ -241,7 +241,7 @@ private struct SettingsContent: View {
             VStack(spacing: 0) {
                 ScrollViewReader { proxy in
                     // Each category is its own page: the outgoing page sinks away
-                    // at its own scroll position while the next one rises in.
+                    // at its own scroll position, then the next one rises in.
                     ZStack(alignment: .topLeading) {
                         ScrollView(.vertical, showsIndicators: false) {
                             VStack(spacing: 0) {
@@ -256,7 +256,7 @@ private struct SettingsContent: View {
                             }
                         }
                         .id(selectedCategory)
-                        .transition(.relaySurface)
+                        .transition(.relayReplacing(.surface))
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .clipped()
