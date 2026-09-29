@@ -56,6 +56,67 @@ def item_metadata(
 
 
 class IntentInboxTests(unittest.TestCase):
+    def test_new_session_voice_retires_stale_foreground_without_replaying_it(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "inbox.sqlite3"
+                projection = Path(directory) / "turns.json"
+                command = str(Path(directory) / "ready")
+                meta = command + ".meta"
+                inbox = IntentInbox(path, provider_turn_projection_path=projection)
+                old = inbox.enqueue("old claimed", {
+                    **metadata(1, "old"), "provider": provider,
+                    "recovery_generation": "old-generation",
+                }, "continue_current")
+                inbox.observe_claim(old, provider_turn_seen=False)
+                inbox.enqueue("old pending", {
+                    **metadata(2, "pending"), "recovery_generation": "old-generation",
+                }, "continue_current")
+                inbox.enqueue("old work request", {
+                    **metadata(3, "work", "queue_project_work"),
+                    "recovery_generation": "old-generation",
+                }, "queue_project_work")
+                inbox.enqueue("worker", {
+                    **metadata(4, "worker", "run_sidecar"),
+                    "recovery_generation": "old-generation",
+                }, "run_sidecar")
+                inbox.close()
+
+                inbox = IntentInbox(path, provider_turn_projection_path=projection)
+                self.assertEqual(inbox.recovery_blocker()["command_seq"], 1)
+                Path(command).write_text("old pending")
+                Path(meta).write_text(json.dumps({"intent_id": "intent-2"}))
+                fresh = {**metadata(5, "fresh"), "recovery_generation": "new-generation"}
+                self.assertEqual(inbox.retire_stale_foreground(
+                    "new-generation", command_path=command, metadata_path=meta,
+                ), 3)
+                self.assertFalse(Path(command).exists())
+                self.assertFalse(Path(meta).exists())
+                self.assertIsNone(inbox.recovery_blocker())
+                self.assertEqual([r["state"] for r in inbox.records()],
+                                 ["cancelled", "cancelled", "cancelled", "pending"])
+                inbox.enqueue("fresh", fresh, "continue_current")
+                delivered = inbox.materialize_next(
+                    command_path=command, metadata_path=meta, transport="test",
+                )
+                self.assertEqual(delivered["relay_command_seq"], 5)
+                self.assertEqual(Path(command).read_text(), "fresh")
+                inbox.close()
+
+    def test_stale_retirement_preserves_current_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = IntentInbox(Path(directory) / "inbox.sqlite3")
+            inbox.enqueue("current", {
+                **metadata(1, "current"), "recovery_generation": "same",
+            }, "continue_current")
+            self.assertEqual(inbox.retire_stale_foreground(
+                "same", before_command_seq=2,
+                command_path=str(Path(directory) / "ready"),
+                metadata_path=str(Path(directory) / "ready.meta"),
+            ), 0)
+            self.assertEqual(inbox.records()[0]["state"], "pending")
+            inbox.close()
+
     def test_restart_retirement_requires_exact_claim_and_never_cancels_acknowledged_work(self):
         with tempfile.TemporaryDirectory() as directory:
             inbox = IntentInbox(Path(directory) / "inbox.sqlite3")
@@ -221,6 +282,38 @@ class IntentInboxTests(unittest.TestCase):
                 [record["transport"] for record in inbox.records()],
                 ["app-owned", "manual-bridge"],
             )
+
+    def test_completed_old_turn_without_reply_does_not_block_new_command(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "inbox.sqlite3"
+                inbox = IntentInbox(path, provider_turn_projection_path=Path(directory) / "turns.json")
+                old = inbox.enqueue("old", {**metadata(1, "old"), "provider": provider}, "continue_current")
+                turn = {
+                    "app_session_id": "old-app", "recovery_generation": "old-generation",
+                    "actor_role": "foreground_pm", "foreground_gate_handle": "old-gate",
+                    "origin": "relay", "provider": provider,
+                    "provider_session_id": "old-provider", "session_id": "old-native",
+                    "turn_id": "old-turn", "intent_id": old["intent_id"],
+                    "relay_command_seq": 1, "relay_command_id": "old",
+                }
+                broker = ProviderTurnBroker(path)
+                self.assertTrue(broker.activate(turn, now=1))
+                self.assertTrue(broker.transition(
+                    turn, to_state="completed_final", event_type="provider_final",
+                    release_reason="final", now=2,
+                ))
+                inbox.observe_claim(old, provider_turn_seen=True)
+                inbox.enqueue("new", {**metadata(2, "new"), "provider": provider}, "continue_current")
+
+                command = str(Path(directory) / "ready")
+                delivered = inbox.materialize_next(
+                    command_path=command, metadata_path=command + ".meta", transport="test",
+                )
+                self.assertEqual(delivered["relay_command_seq"], 2)
+                self.assertEqual(Path(command).read_text(), "new")
+                broker.close()
+                inbox.close()
 
     def test_restart_releases_oldest_unacked_delivery_before_later_pending(self):
         with tempfile.TemporaryDirectory() as directory:

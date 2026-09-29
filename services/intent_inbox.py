@@ -255,6 +255,59 @@ class IntentInbox:
             )
         return stored
 
+    def retire_stale_foreground(
+        self,
+        recovery_generation: str,
+        *,
+        command_path: str,
+        metadata_path: str,
+        before_command_seq: int | None = None,
+    ) -> int:
+        """Retire foreground prompts that cannot belong to this live session."""
+        generation = normalize_recovery_generation(recovery_generation)
+        now = time.time()
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                """
+                SELECT intent_id FROM intents
+                 WHERE recovery_generation != ?
+                   AND (? IS NULL OR command_seq < ?)
+                   AND route!='run_sidecar'
+                   AND state IN ('pending', 'delivered', 'claimed', 'review_required', 'recovery_pending')
+                """,
+                (generation, before_command_seq, before_command_seq),
+            ).fetchall()
+            if not rows:
+                return 0
+            ids = [str(row["intent_id"]) for row in rows]
+            placeholders = ",".join("?" for _ in ids)
+            self._connection.execute(
+                f"UPDATE intents SET state='cancelled', cancelled_at=?, "
+                f"recovery_decision='stale_generation_retired' "
+                f"WHERE intent_id IN ({placeholders})",
+                (now, *ids),
+            )
+            if self.provider_turn_events_enabled:
+                record_intent_events(
+                    self._connection, ids,
+                    event_type="intent_cancelled", event_scope=f"generation:{generation}",
+                    occurred_at=now, terminal_state="cancelled",
+                    release_reason="stale_generation_retired",
+                )
+        leased = {}
+        try:
+            leased = json.loads(Path(metadata_path).read_text())
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+        if str(leased.get("intent_id") or "") in ids:
+            for path in (command_path, metadata_path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        self._project_provider_turns()
+        return len(ids)
+
     def resume_after_recovery(
         self,
         *,
@@ -475,6 +528,8 @@ class IntentInbox:
                     SELECT intents.ordinal
                      FROM intents
                      WHERE intents.state='acked'
+                       AND intents.command_seq=?
+                       AND intents.command_id=?
                        AND (
                            EXISTS (
                                SELECT 1
@@ -483,8 +538,6 @@ class IntentInbox:
                                   AND provider_turns.command_seq=intents.command_seq
                                   AND provider_turns.command_id=intents.command_id
                                   AND provider_turns.state='active'
-                                  AND intents.command_seq=?
-                                  AND intents.command_id=?
                            )
                            OR (
                                EXISTS (

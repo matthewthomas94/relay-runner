@@ -463,7 +463,10 @@ class TTSWorker:
             # response grows. Deferred-playback overlays should render the latest
             # response body before playback starts, not wait for a later preparing
             # or speaking event to repopulate the pill.
-            publish_waiting_preview(preview_text, speech_intent)
+            # An explicit replay starts straight away; skip the waiting
+            # preview so the notch doesn't flash "Replay available".
+            if not (speech_intent or {}).get("replay_of"):
+                publish_waiting_preview(preview_text, speech_intent)
 
             # Kick off speculative TTS in parallel with the pill so audio is
             # ready by the time the user double-taps Option.
@@ -649,24 +652,6 @@ class TTSWorker:
             if intent is not None:
                 _notify_state("idle", **_presentation_fields(intent, stop_reason=reason))
             self._observe_speech("cancelled", intent)
-
-    def publish_replay_retained(
-        self,
-        speech_intent: dict | None = None,
-        *,
-        stop_reason: str | None = None,
-    ):
-        """Tell the app that a stopped attempt remains available to replay."""
-        preview = self._last_response_display_text or self._last_response_text
-        _notify_state(
-            "replay_retained",
-            text=preview[:2000],
-            **_presentation_fields(
-                speech_intent,
-                presentation_mode="retained_replay",
-                stop_reason=stop_reason,
-            ),
-        )
 
     def publish_replay_invalidated(
         self,

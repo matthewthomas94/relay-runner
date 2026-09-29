@@ -1070,6 +1070,38 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             self.assertTrue(queued)
             self.assertEqual(tts_queue.get_nowait(), "Here is the fast answer.")
 
+    def test_new_session_voice_bypasses_stale_recovery_blocker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            command_path = os.path.join(directory, "ready")
+            meta_path = command_path + ".meta"
+            state_path = os.path.join(directory, "state.json")
+            inbox_path = os.path.join(directory, "inbox.sqlite3")
+            inbox = voice_bridge.IntentInbox(inbox_path)
+            old = {
+                "relay_command_seq": 1, "relay_command_id": "old",
+                "intent_id": "old-intent", "recovery_generation": "old-generation",
+                "work_disposition": {"route": "continue_current"},
+            }
+            inbox.enqueue("old", old, "continue_current")
+            inbox.observe_claim(old, provider_turn_seen=False)
+            inbox.close()
+            inbox = voice_bridge.IntentInbox(inbox_path)
+            self.assertIsNotNone(inbox.recovery_blocker())
+
+            fresh = {
+                "relay_command_seq": 2, "relay_command_id": "fresh",
+                "intent_id": "fresh-intent", "recovery_generation": "new-generation",
+                "work_disposition": {"route": "continue_current"},
+            }
+            voice_bridge._publish_command(
+                "fresh prompt", fresh, command_path=command_path,
+                meta_path=meta_path, state_path=state_path, inbox=inbox,
+            )
+            self.assertIsNone(inbox.recovery_blocker())
+            self.assertEqual(Path(command_path).read_text(), "fresh prompt")
+            self.assertEqual([r["state"] for r in inbox.records()], ["cancelled", "delivered"])
+            inbox.close()
+
     def test_voice_acknowledgement_replaces_stale_pending_command(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")
@@ -2838,6 +2870,99 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
             self.assertEqual(arbitration["decision"], "cancel")
             self.assertEqual(arbitration["reason"], "source_cancelled")
+
+    def test_completion_hook_binds_claude_pasted_prompt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+            turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+            claim = {
+                "relay_command_seq": 1,
+                "relay_command_id": "cmd-1",
+                "intent_id": "cmd-1:item:1",
+                "agent_prompt": "Private Relay prompt\nwith a second line",
+                "provider": "claude",
+            }
+            Path(state_path).write_text(json.dumps(claim))
+            Path(claim_path).write_text(json.dumps(claim))
+            pasted = '\n\n<pasted_content id="25e8">\n' + claim["agent_prompt"] + '\n</pasted_content id="25e8">\n'
+
+            self.assertFalse(relay_completion_hook._prompt_matches_claim(
+                pasted.replace('id="25e8">\n', 'id="other">\n', 1), claim
+            ))
+            self.assertFalse(relay_completion_hook._prompt_matches_claim(
+                pasted, {**claim, "provider": "codex"}
+            ))
+            self.assertFalse(relay_completion_hook._prompt_matches_claim(
+                pasted + "extra", claim
+            ))
+            self.assertFalse(relay_completion_hook._prompt_matches_claim(
+                pasted[2:], claim
+            ))
+            self.assertTrue(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "provider": "claude",
+                    "session_id": "claude-session",
+                    "prompt_id": "prompt-1",
+                    "provider_session_id": "embedded-claude",
+                    "prompt": pasted,
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                write_provider_event=lambda _event: True,
+                now=10,
+                stderr=io.StringIO(),
+            ))
+            records = json.loads(Path(turns_path).read_text())["records"]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["state"], "active")
+            self.assertEqual(records[0]["relay_command_id"], "cmd-1")
+            self.assertNotIn(claim["agent_prompt"], Path(turns_path).read_text())
+
+            steered = {**claim, "relay_command_seq": 2, "relay_command_id": "cmd-2",
+                       "intent_id": "cmd-2:item:1"}
+            Path(state_path).write_text(json.dumps(steered))
+            Path(claim_path).write_text(json.dumps(steered))
+            queued_prompt = '<pasted_content id="bd00">\n' + steered["agent_prompt"] + '\n</pasted_content id="bd00">'
+            self.assertTrue(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "provider": "claude",
+                    "session_id": "claude-session",
+                    "prompt_id": "prompt-2",
+                    "provider_session_id": "embedded-claude",
+                    "prompt": queued_prompt,
+                },
+                claim_path=claim_path,
+                state_path=state_path,
+                turns_path=turns_path,
+                write_provider_event=lambda _event: True,
+                now=11,
+                stderr=io.StringIO(),
+            ))
+            records = json.loads(Path(turns_path).read_text())["records"]
+            self.assertEqual([(r["relay_command_seq"], r["state"]) for r in records],
+                             [(1, "orphaned"), (2, "active")])
+            self.assertTrue(relay_completion_hook.handle_hook_payload(
+                {
+                    "hook_event_name": "Stop",
+                    "provider": "claude",
+                    "session_id": "claude-session",
+                    "prompt_id": "prompt-2",
+                    "provider_session_id": "embedded-claude",
+                    "last_assistant_message": "Done.",
+                },
+                state_path=state_path,
+                turns_path=turns_path,
+                write_control=lambda _completion: True,
+                now=12,
+                stderr=io.StringIO(),
+            ))
+            records = json.loads(Path(turns_path).read_text())["records"]
+            self.assertEqual(records[-1]["state"], "completed_final")
+            self.assertNotIn(claim["agent_prompt"], Path(turns_path).read_text())
 
     def test_completion_hook_binds_exact_claimed_prompt_without_storing_text(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -4972,7 +5097,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     "completed_final",
                 )
 
-    def test_pump_releases_terminal_recovered_claim_before_materializing_next(self):
+    def test_pump_releases_terminal_recovered_claim_without_waiting_for_old_reply(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command_path = os.path.join(temp_dir, "voice_cmd_ready")
             meta_path = command_path + ".meta"
@@ -5049,19 +5174,6 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 poll_seconds=0.005,
             )
             try:
-                for _ in range(100):
-                    if restarted.records()[0]["state"] == "acked":
-                        break
-                    shutdown_event.wait(0.005)
-
-                self.assertFalse(os.path.exists(meta_path))
-                reservation = broker.reserve_effect(turn, now=101.1)
-                self.assertTrue(reservation.accepted)
-                self.assertTrue(
-                    broker.authorize_effect_delivery(reservation.effect_id, now=101.2)
-                )
-                broker.finish_effect(reservation.effect_id, delivered=True, now=101.3)
-
                 for _ in range(100):
                     if os.path.exists(meta_path):
                         break

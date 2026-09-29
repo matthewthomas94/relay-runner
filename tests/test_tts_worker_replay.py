@@ -559,6 +559,29 @@ class TTSWorkerReplayTests(unittest.TestCase):
         worker = self.make_worker()
         worker._start_speculation = lambda text: None
         speech_intent = {
+            "utterance_id": "speech-2",
+            "original_utterance_id": "speech-2",
+            "command_seq": 7,
+            "command_id": "command-7",
+        }
+
+        with patch.object(tts_worker, "_notify_state") as notify_state:
+            worker._handle_collected_chunk({
+                "text": "Private response text.",
+                "display_text": "Visible response.",
+                "_speech_intent": speech_intent,
+            })
+
+        waiting = notify_state.call_args_list[0]
+        self.assertEqual(waiting.args, ("message_waiting",))
+        self.assertEqual(waiting.kwargs["presentation_mode"], "new_delivery")
+        self.assertEqual(waiting.kwargs["original_utterance_id"], "speech-2")
+        self.assertNotIn("spoken_text", waiting.kwargs)
+
+    def test_explicit_replay_does_not_publish_a_waiting_preview(self):
+        worker = self.make_worker()
+        worker._start_speculation = lambda text: None
+        speech_intent = {
             "utterance_id": "replay-2",
             "original_utterance_id": "original-1",
             "replay_of": "original-1",
@@ -572,18 +595,12 @@ class TTSWorkerReplayTests(unittest.TestCase):
                 "display_text": "Visible response.",
                 "_speech_intent": speech_intent,
             })
-            worker._last_response_display_text = "Visible response."
-            worker.publish_replay_retained(speech_intent, stop_reason="user_stop")
 
-        waiting = notify_state.call_args_list[0]
-        self.assertEqual(waiting.args, ("message_waiting",))
-        self.assertEqual(waiting.kwargs["presentation_mode"], "explicit_replay")
-        self.assertEqual(waiting.kwargs["original_utterance_id"], "original-1")
-        self.assertNotIn("spoken_text", waiting.kwargs)
-        retained = notify_state.call_args_list[-1]
-        self.assertEqual(retained.args, ("replay_retained",))
-        self.assertEqual(retained.kwargs["presentation_mode"], "retained_replay")
-        self.assertEqual(retained.kwargs["stop_reason"], "user_stop")
+        self.assertNotIn(
+            "message_waiting",
+            [call.args[0] for call in notify_state.call_args_list],
+        )
+        self.assertEqual(worker._pending_text, "Private response text.")
 
     def test_speaking_event_keeps_active_intent_body_when_new_preview_is_queued(self):
         worker = self.make_worker()

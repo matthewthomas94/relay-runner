@@ -1820,6 +1820,13 @@ def _publish_command(
         )
     disposition = published_metadata.get("work_disposition")
     route = str(disposition.get("route") or "") if isinstance(disposition, dict) else ""
+    if inbox is not None and route != IntentRoute.RUN_SIDECAR.value and published_metadata.get("recovery_generation"):
+        inbox.retire_stale_foreground(
+            str(published_metadata["recovery_generation"]),
+            command_path=command_path,
+            metadata_path=meta_path,
+            before_command_seq=int(published_metadata["relay_command_seq"]),
+        )
     if inbox is not None and route == IntentRoute.REPLACE_CURRENT.value:
         if not published_metadata.get("cancellation_scope") and not (
             isinstance(disposition, dict) and disposition.get("cancellation_scope")
@@ -4539,6 +4546,12 @@ def main():
                 os.environ.get("RELAY_CONTINUITY_RECOVERY_PENDING") == "1"
             ),
         )
+        if os.environ.get("RELAY_RECOVERY_GENERATION"):
+            intent_inbox.retire_stale_foreground(
+                os.environ["RELAY_RECOVERY_GENERATION"],
+                command_path=VOICE_CMD_FILE,
+                metadata_path=VOICE_CMD_META_FILE,
+            )
         if projection_path is not None:
             provider_turn_broker = ProviderTurnBroker(
                 VOICE_INTENT_INBOX,

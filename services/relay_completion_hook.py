@@ -13,6 +13,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from typing import Callable, TextIO
@@ -392,10 +393,25 @@ def _relay_command_deliverable(command: dict, *, state_path: str) -> bool:
 
 def _prompt_matches_claim(prompt: str, claim: dict) -> bool:
     agent_prompt = claim.get("agent_prompt")
-    if isinstance(agent_prompt, str) and agent_prompt:
-        return prompt == agent_prompt
-    source_text = claim.get("source_text")
-    return isinstance(source_text, str) and bool(source_text) and prompt == source_text
+    expected = agent_prompt if isinstance(agent_prompt, str) and agent_prompt else claim.get("source_text")
+    if not isinstance(expected, str) or not expected:
+        return False
+    if prompt == expected:
+        return True
+    if str(claim.get("provider") or "").lower() != "claude":
+        return False
+    # Claude uses different outer newlines for a new pasted prompt and one
+    # steered into an active turn. Match only either complete envelope.
+    pasted = re.fullmatch(
+        r'(?P<leading>\n\n)?<pasted_content id="([0-9a-f]+)">\n(.*)\n</pasted_content id="\2">(?P<trailing>\n)?',
+        prompt,
+        flags=re.DOTALL,
+    )
+    return (
+        pasted is not None
+        and bool(pasted.group("leading")) == bool(pasted.group("trailing"))
+        and pasted.group(3) == expected
+    )
 
 
 def _hook_event_name(payload: dict) -> str:
