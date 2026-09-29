@@ -12,11 +12,14 @@ final class CustomVoiceAudioPickerTests: XCTestCase {
 
     func testImportUsesTheAppOwnedPickerInsteadOfOpeningABlockingPanelInTheView() throws {
         let view = try source("Settings/CustomVoiceSettingsSection.swift")
+        let start = try XCTUnwrap(view.range(of: "private func chooseAudio()"))
+        let end = try XCTUnwrap(view.range(of: "private func importAudio(", range: start.upperBound..<view.endIndex))
+        let picker = String(view[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(view.contains("appState.chooseCustomVoiceAudio"))
-        XCTAssertFalse(view.contains("NSOpenPanel()"))
-        XCTAssertFalse(view.contains("runModal()"))
-        XCTAssertTrue(view.contains("guard let url else { return }"))
+        XCTAssertTrue(picker.contains("appState.chooseCustomVoiceAudio"))
+        XCTAssertFalse(picker.contains("NSOpenPanel()"))
+        XCTAssertFalse(picker.contains("runModal()"))
+        XCTAssertTrue(picker.contains("guard let url else { return }"))
         XCTAssertTrue(view.contains("Task.detached(priority: .userInitiated)"))
     }
 
