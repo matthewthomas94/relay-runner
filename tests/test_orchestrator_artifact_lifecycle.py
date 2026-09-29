@@ -336,7 +336,7 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
             ("missing", [], 0, "no structured spike result"),
             ("malformed", [self.spike_event("codex", self.spike_result()), "{\"type\":\"result\",\"result\":\"invalid\"}"], 0, "not valid JSON"),
             ("crashed", [self.spike_event("claude", self.spike_result())], 1, "exited with status 1"),
-            ("mutation", [json.dumps({"type": "item.started", "item": {"id": "tool-1", "type": "command_execution", "command": "touch source.txt"}}), self.spike_event("codex", self.spike_result())], 0, "mutating command"),
+            ("mutation", [json.dumps({"type": "item.started", "item": {"id": "tool-1", "type": "command_execution", "command": "touch source.txt"}}), self.spike_event("codex", self.spike_result())], 0, "mutating or external command"),
         )
         for name, events, exit_code, diagnostic in cases:
             with self.subTest(case=name):
