@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Observation
 import Sparkle
 
 extension Notification.Name {
@@ -7,7 +8,9 @@ extension Notification.Name {
 }
 
 @MainActor
+@Observable
 final class RelayUpdaterController: NSObject, SPUUpdaterDelegate {
+    private(set) var availableVersion: String?
     private var standardUpdaterController: SPUStandardUpdaterController?
     private let prepareForRelaunch: () -> Void
     private let focusUpdateUI: @MainActor () -> Void
@@ -46,6 +49,9 @@ final class RelayUpdaterController: NSObject, SPUUpdaterDelegate {
             updaterDelegate: self,
             userDriverDelegate: nil
         )
+        if let updater = standardUpdaterController?.updater, updater.automaticallyChecksForUpdates {
+            updater.checkForUpdatesInBackground()
+        }
     }
 
     func checkForUpdates() {
@@ -92,6 +98,23 @@ final class RelayUpdaterController: NSObject, SPUUpdaterDelegate {
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         NSLog("[RelayRunner] Sparkle update failed: \(error.localizedDescription)")
+    }
+
+    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        availableVersion = item.isInformationOnlyUpdate ? nil : item.displayVersionString
+    }
+
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+        availableVersion = nil
+    }
+
+    func updater(
+        _ updater: SPUUpdater,
+        userDidMake choice: SPUUserUpdateChoice,
+        forUpdate updateItem: SUAppcastItem,
+        state: SPUUserUpdateState
+    ) {
+        if choice == .skip { availableVersion = nil }
     }
 
     nonisolated static func shouldStartAutomatically(

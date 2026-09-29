@@ -32,6 +32,7 @@ final class WorkspaceViewModel {
     var showsWorkTab = true
     var showsTerminalTab = true
     var showsSettingsTab = false
+    var updater: RelayUpdaterController?
 
     var availableTabs: [WorkspaceTab] {
         WorkspaceViewModel.availableTabs(
@@ -141,9 +142,20 @@ struct WorkspaceMenuBarStrip: View {
                 )
                 .transition(.relayElement)
             }
+            if let updater = workspace.updater, let version = updater.availableVersion {
+                WorkspaceNavigationButton(
+                    title: "Update available",
+                    systemName: "arrow.down.to.line",
+                    accessibilityLabel: "Update available tab, version \(version)",
+                    help: "Download Relay Runner \(version)",
+                    action: { updater.checkForUpdates() }
+                )
+                .transition(.relayElement)
+            }
         }
         .frame(height: BoardSurfaceLayout.navigationHeight)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.availableTabs)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.updater?.availableVersion)
         .onTapGesture { }
     }
 }

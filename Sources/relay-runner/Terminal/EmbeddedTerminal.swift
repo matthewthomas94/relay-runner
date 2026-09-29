@@ -3048,6 +3048,16 @@ struct EmbeddedTerminalTab: View {
                     .background(Color.red.opacity(0.08))
                     .transition(.relayElement)
                 }
+                if session.phase == .preparing {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Updating \(session.providerName) before starting your session…")
+                            .font(AppTypography.font(.status))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .transition(.relayElement)
+                }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: visibleBanners)
             if visibleBanners.contains(true) {
@@ -3115,6 +3125,7 @@ struct EmbeddedTerminalTab: View {
             session.inboxRecoveryBlocker != nil && session.isEmbeddedProcessRunning,
             session.deliveryBlocked,
             failed,
+            session.phase == .preparing,
         ]
     }
 

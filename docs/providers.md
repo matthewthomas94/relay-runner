@@ -13,6 +13,14 @@ Relay Runner supports Codex and Claude Code as equivalent session providers. The
 
 Relay Runner does not read provider credential values. It checks the local presence needed to avoid launching directly into an authentication failure.
 
+## Harness updates at session start
+
+Every new session started by Relay Runner (embedded or external Terminal) waits for a harness update before model resolution, subscription checks, and provider launch. The Workspace terminal shows update progress while the UI remains responsive. Ending the session during this step prevents the pending launch. An update failure stops startup with a retry message; Relay does not silently launch a stale executable. Running sessions are not restarted by this preflight.
+
+Codex uses the [official standalone installer](https://learn.chatgpt.com/docs/codex/cli) when the selected executable is bundled inside ChatGPT.app or Codex.app, or is a standalone installation. Relay places its launcher under `~/Library/Application Support/relay-runner/harnesses/codex/bin` and launches the refreshed executable. The signed desktop app bundles are not modified. If the desktop bundle contains a newer version than the public standalone release, Relay keeps using that newer bundled version after checking for the update. An unrecognized custom Codex executable stops with guidance to choose the default command.
+
+Native Claude Code installations run [`claude update`](https://code.claude.com/docs/en/setup#update-manually), respecting the configured release channel. Homebrew installs of either provider run the owning Homebrew's update and upgrade commands for that provider package; npm installs update that provider package in its existing global prefix. Update commands have time limits and are serialized per provider. They do not change sign-in or enable API billing.
+
 ## Subscription-only authentication
 
 Relay Runner sends model requests only through the user's own provider subscription: a Claude.ai Pro, Max, Team or Enterprise plan, or a ChatGPT sign-in for Codex. It never uses an API key, cloud-provider account, gateway or other pay-as-you-go credential, and never falls back to one.

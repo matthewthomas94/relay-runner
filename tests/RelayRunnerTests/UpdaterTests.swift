@@ -1,7 +1,43 @@
 import XCTest
+import Sparkle
 @testable import relay_runner
 
 final class UpdaterTests: XCTestCase {
+    @MainActor
+    func testAvailableUpdateAppearsOnlyAfterSparkleFindsOneAndClearsWhenCurrent() throws {
+        var checks = 0
+        let controller = RelayUpdaterController(
+            installerContext: nil,
+            bundleURL: URL(fileURLWithPath: "/tmp/relay-runner"),
+            focusUpdateUI: {},
+            scheduleUpdateUIFocus: { _ in },
+            checkForUpdatesOverride: { checks += 1 }
+        )
+        let workspace = WorkspaceViewModel()
+        workspace.updater = controller
+        let sparkle = SPUStandardUpdaterController(
+            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+        ).updater
+        let item = try XCTUnwrap(SUAppcastItem(dictionary: [
+            "enclosure": [
+                "url": "https://example.com/RelayRunner.zip",
+                "sparkle:version": "999",
+                "sparkle:shortVersionString": "9.9.9",
+            ],
+        ]))
+
+        XCTAssertNil(workspace.updater?.availableVersion)
+        controller.updater(sparkle, didFindValidUpdate: item)
+        XCTAssertEqual(workspace.updater?.availableVersion, "9.9.9")
+        workspace.updater?.checkForUpdates()
+        XCTAssertEqual(checks, 1)
+        XCTAssertEqual(workspace.selectedTab, .work)
+        controller.updater(sparkle, didAbortWithError: NSError(domain: NSURLErrorDomain, code: -1009))
+        XCTAssertEqual(workspace.updater?.availableVersion, "9.9.9")
+        controller.updaterDidNotFindUpdate(sparkle)
+        XCTAssertNil(workspace.updater?.availableVersion)
+    }
+
     func testUpdaterStartsForInstalledRelayRunnerApp() {
         XCTAssertTrue(RelayUpdaterController.shouldStartAutomatically(
             installerContext: nil,

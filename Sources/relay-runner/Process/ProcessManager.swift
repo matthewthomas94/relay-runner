@@ -976,7 +976,8 @@ final class ProcessManager {
         sessionEventPath: String? = nil,
         projectScopeToken: ConfirmedProjectScopeToken? = nil,
         recoveryGeneration: String? = nil,
-        startsVoiceBridge: Bool = true
+        startsVoiceBridge: Bool = true,
+        updatedAgentBinary: String? = nil
     ) throws -> PreparedSessionLaunch {
         if !startsVoiceBridge,
            (voiceDelivery != .appOwned || recoveryGeneration == nil) {
@@ -1017,7 +1018,7 @@ final class ProcessManager {
         let configPath = ConfigManager.shared.configPath.path
         let relayBridge = bundledRelayBridge.path
         let target = Self.target(for: config.general.provider)
-        let agentBinary = Self.resolveAgentBinary(config.general.command, target: target)
+        let agentBinary = updatedAgentBinary ?? Self.resolveAgentBinary(config.general.command, target: target)
         let codexSelection: CodexModelResolution?
         if target == .codex {
             do {
@@ -1125,7 +1126,8 @@ final class ProcessManager {
     @discardableResult
     func launchNewSession(config: AppConfig) -> Bool {
         do {
-            return launchPreparedSessionInTerminal(try prepareNewSession(config: config))
+            let binary = try Self.updateHarness(config: config)
+            return launchPreparedSessionInTerminal(try prepareNewSession(config: config, updatedAgentBinary: binary))
         } catch {
             NSLog("[ProcessManager] Failed to prepare new session: \(error)")
             return false
@@ -1523,6 +1525,34 @@ final class ProcessManager {
             .last { $0.hasPrefix(prefix) }
             .map { String($0.dropFirst(prefix.count)) }
         return .unavailable(message ?? claudeSubscriptionFallbackMessage)
+    }
+
+    /// Blocking update preflight; callers must run this off the main thread.
+    static func updateHarness(config: AppConfig) throws -> String {
+        let target = target(for: config.general.provider)
+        let binary = resolveAgentBinary(config.general.command, target: target)
+        let script = """
+        \(shellProfileSource())
+        export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+        \(cdLine(config.general.working_directory)) || exit 1
+        exec \(shellQuoted(servicePython)) \(shellQuoted(servicesDirectory.appendingPathComponent("harness_update.py").path)) --provider \(shellQuoted(target.providerMetadataValue)) --command \(shellQuoted(binary))
+        """
+        guard let result = runShell(script, timeout: 420),
+              let line = result.stdout.split(separator: "\n").last,
+              let data = String(line).data(using: .utf8),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            throw SessionLaunchPreparationError.providerUnavailable(
+                "Could not update \(config.general.provider.displayName). Check your connection and start the session again."
+            )
+        }
+        guard result.status == 0, let updated = payload["binary"] as? String,
+              FileManager.default.isExecutableFile(atPath: updated) else {
+            throw SessionLaunchPreparationError.providerUnavailable(
+                payload["error"] as? String ?? "The harness update failed. Start the session again to retry."
+            )
+        }
+        return updated
     }
 
     private static func runShell(

@@ -372,6 +372,7 @@ final class AppState {
     private var sessionPromptGate = SessionPromptGate()
     /// Grace period: don't let the watchdog revert a session before the bridge has time to start.
     private var sessionStartTime: Date = .distantPast
+    @ObservationIgnored private var pendingSessionLaunchID: UUID?
     /// Has the bridge for the current menu-started session been observed alive at least once?
     /// Used to distinguish "still starting up" from "came up and then died".
     private var sessionBridgeSeen = false {
@@ -658,12 +659,14 @@ final class AppState {
 
     init(
         checkForUpdates: @escaping @MainActor () -> Void = {},
+        updater: RelayUpdaterController? = nil,
         bundleURL: URL = Bundle.main.bundleURL,
         refreshBundledOrchestratorDaemon: @escaping () async -> OrchestratorDaemonRefreshResult = {
             await OrchestratorClient.refreshBundledOrchestratorDaemonIfIdle()
         }
     ) {
         self.checkForUpdatesAction = checkForUpdates
+        programBoardOverlay.setUpdater(updater)
         self.refreshBundledOrchestratorDaemon = refreshBundledOrchestratorDaemon
         self.refreshBundledServicesOnLaunch = RelayUpdaterController.shouldStartAutomatically(
             installerContext: nil,
@@ -1459,6 +1462,7 @@ final class AppState {
     }
 
     private func resetActiveSessionState() {
+        pendingSessionLaunchID = nil
         userDeliveryRecoveryPending = false
         processManager.killBridge(stopRequested: true)
         menuSessionActive = false
@@ -1483,6 +1487,7 @@ final class AppState {
 
     /// Full shutdown (for app quit).
     func stopServices() {
+        pendingSessionLaunchID = nil
         stopMeetingNoteOptionGesture()
         guard isRunning else {
             workspaceDiscoveryTask?.cancel()
@@ -1516,6 +1521,7 @@ final class AppState {
     }
 
     func prepareForSparkleRelaunch() {
+        pendingSessionLaunchID = nil
         workspaceDiscoveryTask?.cancel()
         workspaceDiscoveryTask = nil
         cancelWorkspaceActivityRefresh(invalidate: true)
@@ -1654,6 +1660,7 @@ final class AppState {
                 preservesVoiceBridge: preservesVoiceBridge
             )
         }
+        guard pendingSessionLaunchID == nil else { return false }
         if !preservesVoiceBridge {
             pendingContinuityProviderReady = nil
         }
@@ -1729,82 +1736,99 @@ final class AppState {
         }
 
         let sessionDirectory = WorkspaceFolder.url(from: launchConfig.general.working_directory).path
-        do {
-            try embeddedTerminal.beginPreparing(
-                providerName: launchConfig.general.provider.displayName,
-                providerKey: launchConfig.general.provider.rawValue,
-                workingDirectory: sessionDirectory,
-                recordDiagnostics: request.destination == .embedded
-            )
-            let voiceDelivery: ProcessManager.SessionVoiceDelivery =
-                (request.destination == .embedded) ? .appOwned : .agentSkill
-            let prepared = try processManager.prepareNewSession(
-                config: launchConfig,
-                voiceDelivery: voiceDelivery,
-                suppressStartupGreeting: suppressesStartupGreeting,
-                sessionEventPath: embeddedTerminal.diagnosticEventPath,
-                projectScopeToken: projectScopeToken,
-                recoveryGeneration: recoveryGeneration,
-                startsVoiceBridge: !preservesVoiceBridge
-            )
-            if preservesVoiceBridge {
-                guard let context = pendingContinuityProviderReady,
-                      let authorized = context.authorizingReplacement(
-                        providerSessionID: prepared.providerSessionID,
-                        appSessionID: prepared.appSessionID,
-                        foregroundGateHandle: prepared.foregroundGateHandle,
-                        provider: prepared.target.providerMetadataValue
-                      ) else {
-                    throw ProcessManager.SessionLaunchPreparationError.invalidRecoveryLaunch
-                }
-                pendingContinuityProviderReady = authorized
+        let launchID = UUID()
+        pendingSessionLaunchID = launchID
+        Task { @MainActor in
+            guard pendingSessionLaunchID == launchID else { return }
+            defer {
+                if pendingSessionLaunchID == launchID { pendingSessionLaunchID = nil }
             }
-            if let generation = prepared.recoveryGeneration {
-                let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
-                    repositoryPath: prepared.workingDirectory
-                )
-                continuityRecoveryGenerationBySession[sessionID] = generation
-            }
-            switch request.destination {
-            case .embedded:
-                try embeddedTerminal.start(prepared)
-            case .externalTerminal:
-                guard processManager.launchPreparedSessionInTerminal(prepared) else {
-                    throw ProcessManager.SessionLaunchPreparationError.externalTerminalLaunch
-                }
-                embeddedTerminal.markExternal(
+            do {
+                try embeddedTerminal.beginPreparing(
                     providerName: launchConfig.general.provider.displayName,
-                    workingDirectory: prepared.workingDirectory
+                    providerKey: launchConfig.general.provider.rawValue,
+                    workingDirectory: sessionDirectory,
+                    recordDiagnostics: request.destination == .embedded
                 )
-            }
-        } catch {
-            pendingContinuityProviderReady = nil
-            if !preservesVoiceBridge {
-                continuityRecoveryGenerationBySession.removeValue(
-                    forKey: ContinuityRecoveryRequest.projectSessionIdentifier(
-                        repositoryPath: launchConfig.general.working_directory
+                let voiceDelivery: ProcessManager.SessionVoiceDelivery =
+                    (request.destination == .embedded) ? .appOwned : .agentSkill
+                let updatedAgentBinary = try await Task.detached(priority: .userInitiated) {
+                    try ProcessManager.updateHarness(config: launchConfig)
+                }.value
+                guard pendingSessionLaunchID == launchID,
+                      embeddedTerminal.phase == .preparing else { return }
+                let prepared = try processManager.prepareNewSession(
+                    config: launchConfig,
+                    voiceDelivery: voiceDelivery,
+                    suppressStartupGreeting: suppressesStartupGreeting,
+                    sessionEventPath: embeddedTerminal.diagnosticEventPath,
+                    projectScopeToken: projectScopeToken,
+                    recoveryGeneration: recoveryGeneration,
+                    startsVoiceBridge: !preservesVoiceBridge,
+                    updatedAgentBinary: updatedAgentBinary
+                )
+                if preservesVoiceBridge {
+                    guard let context = pendingContinuityProviderReady,
+                          let authorized = context.authorizingReplacement(
+                            providerSessionID: prepared.providerSessionID,
+                            appSessionID: prepared.appSessionID,
+                            foregroundGateHandle: prepared.foregroundGateHandle,
+                            provider: prepared.target.providerMetadataValue
+                          ) else {
+                        throw ProcessManager.SessionLaunchPreparationError.invalidRecoveryLaunch
+                    }
+                    pendingContinuityProviderReady = authorized
+                }
+                if let generation = prepared.recoveryGeneration {
+                    let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
+                        repositoryPath: prepared.workingDirectory
                     )
-                )
+                    continuityRecoveryGenerationBySession[sessionID] = generation
+                }
+                sessionStartTime = Date()
+                switch request.destination {
+                case .embedded:
+                    try embeddedTerminal.start(prepared)
+                case .externalTerminal:
+                    guard processManager.launchPreparedSessionInTerminal(prepared) else {
+                        throw ProcessManager.SessionLaunchPreparationError.externalTerminalLaunch
+                    }
+                    embeddedTerminal.markExternal(
+                        providerName: launchConfig.general.provider.displayName,
+                        workingDirectory: prepared.workingDirectory
+                    )
+                }
+            } catch {
+                guard pendingSessionLaunchID == launchID else { return }
+                pendingContinuityProviderReady = nil
+                if !preservesVoiceBridge {
+                    continuityRecoveryGenerationBySession.removeValue(
+                        forKey: ContinuityRecoveryRequest.projectSessionIdentifier(
+                            repositoryPath: launchConfig.general.working_directory
+                        )
+                    )
+                }
+                embeddedTerminal.markFailed(error)
+                if preservesVoiceBridge {
+                    bridgeAliveCache = processManager.bridgeAlive()
+                    menuSessionActive = bridgeAliveCache
+                    statusText = bridgeAliveCache ? "Session reconnecting" : "Ready"
+                } else {
+                    processManager.killBridge(stopRequested: true)
+                    menuSessionActive = false
+                    activeSessionLaunchConfig = nil
+                    activeSessionProjectScopeToken = nil
+                    projectScopeCoordinator.cancel()
+                    bridgeAliveCache = false
+                    sessionBridgeSeen = false
+                    activeSessionSuppressesStartupGreeting = false
+                    sessionStartTime = .distantPast
+                    statusText = "Ready"
+                }
+                NSLog("[AppState] Failed to start session: \(error)")
+                if showsWorkspaceOnLaunch { programBoardOverlay.showTerminal() }
+                return
             }
-            embeddedTerminal.markFailed(error)
-            if preservesVoiceBridge {
-                bridgeAliveCache = processManager.bridgeAlive()
-                menuSessionActive = bridgeAliveCache
-                statusText = bridgeAliveCache ? "Session reconnecting" : "Ready"
-            } else {
-                processManager.killBridge(stopRequested: true)
-                menuSessionActive = false
-                activeSessionLaunchConfig = nil
-                activeSessionProjectScopeToken = nil
-                projectScopeCoordinator.cancel()
-                bridgeAliveCache = false
-                sessionBridgeSeen = false
-                activeSessionSuppressesStartupGreeting = false
-                sessionStartTime = .distantPast
-                statusText = "Ready"
-            }
-            NSLog("[AppState] Failed to start session: \(error)")
-            return false
         }
         isRunning = true
         if menuSessionActive {
@@ -2329,6 +2353,8 @@ final class AppState {
     }
 
     private func applyBridgeWatchdogSample(_ sample: BridgeWatchdogSample) {
+        // The update preflight can take longer than the bridge launch grace.
+        guard pendingSessionLaunchID == nil else { return }
         let daemonAlive = sample.daemonAlive
         let consumerAlive = sample.consumerAlive
         let hasSessionContext = sample.hasSessionContext

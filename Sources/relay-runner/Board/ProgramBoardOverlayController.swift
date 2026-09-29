@@ -145,6 +145,10 @@ final class ProgramBoardOverlayController {
         self.themeResolver = resolver
     }
 
+    func setUpdater(_ updater: RelayUpdaterController?) {
+        workspace.updater = updater
+    }
+
     func setProjectScopeProvider(_ provider: @escaping () -> [String]) {
         projectScopeProvider = provider
     }

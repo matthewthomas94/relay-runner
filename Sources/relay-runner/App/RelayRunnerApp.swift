@@ -27,7 +27,8 @@ struct RelayRunnerApp: App {
         _appState = State(initialValue: context == nil ? AppState(
             checkForUpdates: { [weak updaterController] in
                 updaterController?.checkForUpdates()
-            }
+            },
+            updater: updaterController
         ) : nil)
 
         if let context {
