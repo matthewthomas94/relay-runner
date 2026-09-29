@@ -1,8 +1,48 @@
 import XCTest
 import Sparkle
+import SwiftUI
 @testable import relay_runner
 
 final class UpdaterTests: XCTestCase {
+    @MainActor
+    func testUpdateActionHidesWorkspaceBeforeFocusingAndCheckingAndAllowsReopening() throws {
+        _ = NSApplication.shared
+        let workspace = ProgramBoardOverlayController(boardRouteResolver: { .unavailable })
+        workspace.setSettingsContentProvider { AnyView(Text("Settings")) }
+        defer { workspace.suspendForExternalWindow() }
+        workspace.showSettings()
+        let panel = try XCTUnwrap(NSApp.windows.first { $0 is BoardOverlayPanel && $0.isVisible })
+        var checks = 0
+        let updater = RelayUpdaterController(
+            installerContext: nil,
+            bundleURL: URL(fileURLWithPath: "/tmp/relay-runner"),
+            focusUpdateUI: {
+                XCTAssertFalse(workspace.isVisible)
+                XCTAssertFalse(panel.isVisible)
+            },
+            scheduleUpdateUIFocus: { $0() },
+            checkForUpdatesOverride: {
+                XCTAssertFalse(workspace.isVisible)
+                XCTAssertFalse(panel.isVisible)
+                checks += 1
+            }
+        )
+        workspace.setUpdater(updater)
+
+        for expectedChecks in 1...2 {
+            XCTAssertTrue(workspace.isVisible)
+            XCTAssertTrue(panel.isVisible)
+            updater.checkForUpdates()
+            XCTAssertEqual(checks, expectedChecks)
+            XCTAssertTrue(workspace.isSuspendedForExternalWindow)
+            workspace.showSettings()
+            XCTAssertTrue(panel.isVisible)
+        }
+        workspace.suspendForExternalWindow()
+        updater.checkForUpdates()
+        XCTAssertEqual(checks, 3)
+    }
+
     @MainActor
     func testAvailableUpdateAppearsOnlyAfterSparkleFindsOneAndClearsWhenCurrent() throws {
         var checks = 0

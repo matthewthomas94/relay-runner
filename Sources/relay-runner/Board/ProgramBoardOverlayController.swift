@@ -145,8 +145,12 @@ final class ProgramBoardOverlayController {
         self.themeResolver = resolver
     }
 
+    @MainActor
     func setUpdater(_ updater: RelayUpdaterController?) {
         workspace.updater = updater
+        updater?.dismissWorkspaceForUpdate = { [weak self] in
+            self?.suspendForExternalWindow()
+        }
     }
 
     func setProjectScopeProvider(_ provider: @escaping () -> [String]) {

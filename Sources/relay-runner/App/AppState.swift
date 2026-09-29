@@ -657,6 +657,7 @@ final class AppState {
         "\(repoPath)|\(ticketId)"
     }
 
+    @MainActor
     init(
         checkForUpdates: @escaping @MainActor () -> Void = {},
         updater: RelayUpdaterController? = nil,

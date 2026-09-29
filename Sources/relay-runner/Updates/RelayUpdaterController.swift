@@ -11,6 +11,7 @@ extension Notification.Name {
 @Observable
 final class RelayUpdaterController: NSObject, SPUUpdaterDelegate {
     private(set) var availableVersion: String?
+    @ObservationIgnored var dismissWorkspaceForUpdate: @MainActor () -> Void = {}
     private var standardUpdaterController: SPUStandardUpdaterController?
     private let prepareForRelaunch: () -> Void
     private let focusUpdateUI: @MainActor () -> Void
@@ -60,6 +61,7 @@ final class RelayUpdaterController: NSObject, SPUUpdaterDelegate {
             return
         }
 
+        dismissWorkspaceForUpdate()
         focusUpdateUI()
         if let checkForUpdatesOverride {
             checkForUpdatesOverride()
