@@ -706,6 +706,9 @@ final class AppState {
         programBoardOverlay.setSessionActiveProvider { [weak self] in
             self?.hasActiveSession ?? false
         }
+        programBoardOverlay.setSessionProvider { [weak self] in
+            self?.config.general.provider ?? .codex
+        }
         programBoardOverlay.setNoteCaptureSnapshotProvider { [weak self] in
             self?.meetingNoteSnapshot ?? MeetingNoteCoordinatorSnapshot(
                 phase: .idle,

@@ -894,34 +894,6 @@ struct NotchStatusPanelFrameTransition {
     }
 }
 
-enum NotchStatusPanelFrameAnimationTiming {
-    static func easedProgress(_ progress: CGFloat) -> CGFloat {
-        let progress = min(max(progress, 0), 1)
-        guard progress > 0, progress < 1 else { return progress }
-
-        // Match the existing (0.16, 1.0, 0.28, 1.0) frame timing while
-        // interpolating the panel's screen-space edges as one geometry.
-        var lower: CGFloat = 0
-        var upper: CGFloat = 1
-        for _ in 0..<12 {
-            let candidate = (lower + upper) / 2
-            if cubicBezier(candidate, first: 0.16, second: 0.28) < progress {
-                lower = candidate
-            } else {
-                upper = candidate
-            }
-        }
-        return cubicBezier((lower + upper) / 2, first: 1, second: 1)
-    }
-
-    private static func cubicBezier(_ t: CGFloat, first: CGFloat, second: CGFloat) -> CGFloat {
-        let inverse = 1 - t
-        return 3 * inverse * inverse * t * first
-            + 3 * inverse * t * t * second
-            + t * t * t
-    }
-}
-
 enum NotchActivityLabelRenderPolicy {
     static let workingStatusRevealDuration: TimeInterval = 2.0
     static let hoverScrollDelay: TimeInterval = 1.0
@@ -1272,13 +1244,13 @@ final class NotchStatusController {
         panel.alphaValue = 0
         panel.orderFrontRegardless()
 
-        let duration = animationDuration(0.34)
+        let duration = animationDuration(RelayMotion.enterDuration)
         pillView.setContentPresence(visible: true, duration: duration)
         pillView.redrawDuringFrameAnimation(duration: duration)
-        panel.animateFrame(to: placement.visibleFrame, duration: duration)
+        panel.animateFrame(to: placement.visibleFrame, duration: duration, curve: RelayMotion.enterCurve)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.28, 1.0)
+            context.timingFunction = RelayMotion.enterCurve.mediaTimingFunction
             panel.animator().alphaValue = 1
         }
     }
@@ -1293,11 +1265,11 @@ final class NotchStatusController {
         let targetFrame = currentPlacement()?.retractedFrame
             ?? lastPlacement?.retractedFrame
             ?? panel.frame.offsetBy(dx: 0, dy: 2)
-        let duration = animationDuration(0.24)
+        let duration = animationDuration(RelayMotion.exitDuration)
 
         pillView.setContentPresence(visible: false, duration: duration)
         pillView.redrawDuringFrameAnimation(duration: duration)
-        panel.animateFrame(to: targetFrame, duration: duration) { [weak self, weak panel] in
+        panel.animateFrame(to: targetFrame, duration: duration, curve: RelayMotion.exitCurve) { [weak self, weak panel] in
             guard let self,
                   self.placementAnimationGeneration == animationGeneration,
                   !self.active else {
@@ -1307,7 +1279,7 @@ final class NotchStatusController {
         }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.42, 0.0, 1.0, 1.0)
+            context.timingFunction = RelayMotion.exitCurve.mediaTimingFunction
             panel.animator().alphaValue = 0
         }
     }
@@ -1330,9 +1302,9 @@ final class NotchStatusController {
             // The outgoing label fades while the surface eases to its new
             // width, so content updates alongside the frame animation.
             updateStatusContent()
-            let duration = animationDuration(0.36)
+            let duration = animationDuration(RelayMotion.changeDuration)
             pillView.redrawDuringFrameAnimation(duration: duration)
-            panel.animateFrame(to: placement.visibleFrame, duration: duration)
+            panel.animateFrame(to: placement.visibleFrame, duration: duration, curve: RelayMotion.changeCurve)
         } else {
             panel.stopFrameAnimation()
             panel.setFrame(placement.visibleFrame, display: true)
@@ -1573,9 +1545,9 @@ final class NotchStatusPanel: NSPanel {
             defer: true
         )
 
-        // Keep the notch above Workspace while leaving ActionGlow one level
-        // higher so Relay Vision feedback is never obscured by app surfaces.
-        level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        // Keep the notch above Workspace and ActionGlow: the Relay Vision
+        // glow covers app surfaces but always sits beneath the notch.
+        level = NSWindow.Level(rawValue: RelayVisionOverlayWindowPolicy.windowLevel.rawValue + 1)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         isOpaque = false
         backgroundColor = .clear
@@ -1594,6 +1566,7 @@ final class NotchStatusPanel: NSPanel {
     func animateFrame(
         to targetFrame: CGRect,
         duration: TimeInterval,
+        curve: RelayMotion.Curve = RelayMotion.changeCurve,
         completion: (() -> Void)? = nil
     ) {
         stopFrameAnimation()
@@ -1617,7 +1590,7 @@ final class NotchStatusPanel: NSPanel {
             }
             let elapsed = CACurrentMediaTime() - startTime
             let linearProgress = min(1, CGFloat(elapsed / duration))
-            let easedProgress = NotchStatusPanelFrameAnimationTiming.easedProgress(linearProgress)
+            let easedProgress = curve.progress(linearProgress)
             self.setFrame(transition.frame(at: easedProgress), display: true)
 
             guard linearProgress >= 1 else { return }

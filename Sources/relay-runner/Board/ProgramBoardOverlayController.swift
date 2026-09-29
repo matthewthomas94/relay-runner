@@ -107,6 +107,7 @@ final class ProgramBoardOverlayController {
     )?
     private var resumeRecoveredNoteHandler: (() async throws -> MeetingNoteCoordinatorSnapshot)?
     private var sessionActiveProvider: () -> Bool = { false }
+    private var sessionProvider: () -> GeneralConfig.AgentProvider = { .codex }
     private var noteCaptureSnapshotProvider: () -> MeetingNoteCoordinatorSnapshot = {
         MeetingNoteCoordinatorSnapshot(
             phase: .idle,
@@ -203,6 +204,10 @@ final class ProgramBoardOverlayController {
 
     func setSessionActiveProvider(_ provider: @escaping () -> Bool) {
         self.sessionActiveProvider = provider
+    }
+
+    func setSessionProvider(_ provider: @escaping () -> GeneralConfig.AgentProvider) {
+        self.sessionProvider = provider
     }
 
     func setNoteCaptureSnapshotProvider(
@@ -583,6 +588,7 @@ final class ProgramBoardOverlayController {
         model.prepareForOpening()
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
+        model.sessionProvider = sessionProvider()
         model.noteCaptureSnapshot = noteCaptureSnapshotProvider()
 
         let contentFrame = NSRect(origin: .zero, size: p.frame.size)
@@ -910,6 +916,10 @@ final class ProgramBoardOverlayController {
             let hasActiveSession = self.sessionActiveProvider()
             if hasActiveSession != self.model.hasActiveSession {
                 self.model.hasActiveSession = hasActiveSession
+            }
+            let sessionProvider = self.sessionProvider()
+            if sessionProvider != self.model.sessionProvider {
+                self.model.sessionProvider = sessionProvider
             }
             let noteSnapshot = self.noteCaptureSnapshotProvider()
             if noteSnapshot != self.model.noteCaptureSnapshot {

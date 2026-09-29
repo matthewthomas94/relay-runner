@@ -48,6 +48,14 @@ final class RelayHostedToolTests: XCTestCase {
         ))
     }
 
+    @MainActor
+    func testRelayVisionOverlaySitsBeneathNotch() {
+        XCTAssertGreaterThan(
+            NotchStatusPanel().level.rawValue,
+            RelayVisionOverlayWindowPolicy.windowLevel.rawValue
+        )
+    }
+
     func testUnknownHostedToolReturnsStructuredFailure() async {
         let result = await RelayHostedTool.perform(tool: "unknown_tool", arguments: [:])
 

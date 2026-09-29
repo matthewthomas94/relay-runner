@@ -300,20 +300,28 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
 
     func testSessionToolbarPresentationSwitchesBetweenStartAndEnd() {
         XCTAssertEqual(
-            ProgramSessionToolbarPresentation.resolve(hasActiveSession: false),
+            ProgramSessionToolbarPresentation.resolve(hasActiveSession: false, provider: .codex),
             ProgramSessionToolbarPresentation(
-                title: "Start Session",
-                systemName: "play.fill",
-                help: "Start a Relay Runner voice session"
+                title: "Start Codex",
+                systemName: "terminal",
+                help: "Start a Codex voice session"
             )
         )
         XCTAssertEqual(
-            ProgramSessionToolbarPresentation.resolve(hasActiveSession: true),
+            ProgramSessionToolbarPresentation.resolve(hasActiveSession: true, provider: .codex),
             ProgramSessionToolbarPresentation(
-                title: "End Session",
-                systemName: "stop.fill",
-                help: "End the active Relay Runner voice session"
+                title: "End Codex",
+                systemName: "terminal",
+                help: "End the active Codex voice session"
             )
+        )
+        XCTAssertEqual(
+            ProgramSessionToolbarPresentation.resolve(hasActiveSession: false, provider: .claude).title,
+            "Start Claude"
+        )
+        XCTAssertEqual(
+            ProgramSessionToolbarPresentation.resolve(hasActiveSession: true, provider: .claude).title,
+            "End Claude"
         )
     }
 
@@ -324,8 +332,8 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(
             ProgramNoteToolbarPresentation.resolve(phase: .idle),
             ProgramNoteToolbarPresentation(
-                title: "Start Note Taker",
-                systemName: "waveform",
+                title: "Start Notetaker",
+                systemName: "square.and.pencil",
                 help: "Record a note in your library"
             )
         )

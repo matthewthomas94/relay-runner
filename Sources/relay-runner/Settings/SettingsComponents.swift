@@ -200,8 +200,11 @@ struct SettingsMenuPicker<Value: Hashable>: View {
             .foregroundStyle(ProgramBoardStyle.primaryText)
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity)
-            .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
-            .background(ProgramTicketFieldBackground())
+            .frame(height: 34)
+            .background(BoardDarkSurfaceBackground(
+                cornerRadius: SettingsLayout.sidebarCornerRadius,
+                fill: BoardDarkSurfaceStyle.contentFill
+            ))
             .contentShape(
                 RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
             )

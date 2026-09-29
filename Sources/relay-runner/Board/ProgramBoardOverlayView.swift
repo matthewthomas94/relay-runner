@@ -416,6 +416,7 @@ struct ProgramBoardOverlayView: View {
                 Spacer(minLength: 0)
                 ProgramSessionToolbarControl(
                     hasActiveSession: model.hasActiveSession,
+                    provider: model.sessionProvider,
                     noteSnapshot: model.noteCaptureSnapshot,
                     canStartSession: ProgramSessionControlPolicy.canStart(
                         hasActiveSession: model.hasActiveSession,
@@ -4357,17 +4358,21 @@ struct ProgramSessionToolbarPresentation: Equatable {
     let systemName: String
     let help: String
 
-    static func resolve(hasActiveSession: Bool) -> ProgramSessionToolbarPresentation {
-        hasActiveSession
+    static func resolve(
+        hasActiveSession: Bool,
+        provider: GeneralConfig.AgentProvider
+    ) -> ProgramSessionToolbarPresentation {
+        let name = provider.displayName
+        return hasActiveSession
             ? ProgramSessionToolbarPresentation(
-                title: "End Session",
-                systemName: "stop.fill",
-                help: "End the active Relay Runner voice session"
+                title: "End \(name)",
+                systemName: "terminal",
+                help: "End the active \(name) voice session"
             )
             : ProgramSessionToolbarPresentation(
-                title: "Start Session",
-                systemName: "play.fill",
-                help: "Start a Relay Runner voice session"
+                title: "Start \(name)",
+                systemName: "terminal",
+                help: "Start a \(name) voice session"
             )
     }
 }
@@ -4401,8 +4406,8 @@ struct ProgramNoteToolbarPresentation: Equatable {
                 help: "Double-tap Option to pause or resume; Stop saves the note"
             )
             : ProgramNoteToolbarPresentation(
-                title: "Start Note Taker",
-                systemName: "waveform",
+                title: "Start Notetaker",
+                systemName: "square.and.pencil",
                 help: "Record a note in your library"
             )
     }
@@ -4410,6 +4415,7 @@ struct ProgramNoteToolbarPresentation: Equatable {
 
 private struct ProgramSessionToolbarControl: View {
     let hasActiveSession: Bool
+    let provider: GeneralConfig.AgentProvider
     let noteSnapshot: MeetingNoteCoordinatorSnapshot
     let canStartSession: Bool
     let canStartNoteTaker: Bool
@@ -4419,7 +4425,10 @@ private struct ProgramSessionToolbarControl: View {
     let onStopNoteTaker: () -> Void
 
     private var presentation: ProgramSessionToolbarPresentation {
-        ProgramSessionToolbarPresentation.resolve(hasActiveSession: hasActiveSession)
+        ProgramSessionToolbarPresentation.resolve(
+            hasActiveSession: hasActiveSession,
+            provider: provider
+        )
     }
 
     private var notePresentation: ProgramSessionToolbarPresentation {
@@ -4432,17 +4441,7 @@ private struct ProgramSessionToolbarControl: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            ProgramSessionButton(
-                presentation: presentation,
-                isEnabled: hasActiveSession || canStartSession
-            ) {
-                if hasActiveSession {
-                    onEndSession()
-                } else {
-                    onStartSession()
-                }
-            }
+        HStack(alignment: .center, spacing: 20) {
             ProgramSessionButton(
                 presentation: notePresentation,
                 isEnabled: noteSnapshot.phase.ownsForeground || canStartNoteTaker
@@ -4453,6 +4452,16 @@ private struct ProgramSessionToolbarControl: View {
                     onStartNoteTaker()
                 }
             }
+            ProgramSessionButton(
+                presentation: presentation,
+                isEnabled: hasActiveSession || canStartSession
+            ) {
+                if hasActiveSession {
+                    onEndSession()
+                } else {
+                    onStartSession()
+                }
+            }
         }
     }
 }
@@ -4461,16 +4470,41 @@ private struct ProgramSessionButton: View {
     let presentation: ProgramSessionToolbarPresentation
     let isEnabled: Bool
     let action: () -> Void
+    @State private var isHovered = false
+    @FocusState private var isFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        WorkspaceNavigationButton(
-            title: presentation.title,
-            systemName: presentation.systemName,
-            accessibilityLabel: presentation.title,
-            help: presentation.help,
-            action: action
-        )
+        Button(action: action) {
+            HStack(spacing: WorkspaceNavigationStyle.iconTextSpacing) {
+                Image(systemName: presentation.systemName)
+                    .font(AppTypography.symbolFont(
+                        size: 14,
+                        weight: .bold
+                    ))
+                    .frame(width: 16, height: 16)
+                RelaySwap(presentation.title, style: .text, alignment: .leading) { title in
+                    Text(title)
+                        .font(AppTypography.font(.menuTab))
+                        .lineLimit(1)
+                }
+            }
+            .foregroundStyle(isHovered || isFocused
+                ? ProgramBoardStyle.primaryText
+                : ProgramBoardStyle.secondaryText)
+            .padding(.horizontal, 4)
+            .frame(height: BoardSurfaceLayout.navigationHeight)
+            .contentShape(Rectangle())
+            .animation(RelayMotion.hover, value: isHovered)
+            .animation(RelayMotion.hover, value: isFocused)
+        }
+        .buttonStyle(.plain)
+        .focusable()
+        .focusEffectDisabled(WorkspaceNavigationStyle.systemFocusEffectDisabled)
+        .focused($isFocused)
+        .onHover { isHovered = $0 }
+        .accessibilityLabel(presentation.title)
+        .help(presentation.help)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.45)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isEnabled)

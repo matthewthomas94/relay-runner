@@ -1537,6 +1537,7 @@ final class ProgramBoardViewModel {
     private(set) var supportBundlePreview: RelaySupportBundlePreview?
     var theme: ParticleFieldRenderer.Theme?
     var hasActiveSession = false
+    var sessionProvider: GeneralConfig.AgentProvider = .codex
     var selectedProjectPath: String?
     var selectedTicketDetail: ProgramTicketDetail?
     var selectedNoteDetail: ProgramBoardNoteDetail?

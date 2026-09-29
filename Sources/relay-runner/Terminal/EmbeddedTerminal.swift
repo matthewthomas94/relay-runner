@@ -2984,7 +2984,6 @@ private struct EmbeddedTerminalRepresentable: NSViewRepresentable {
 
 struct EmbeddedTerminalTab: View {
     @Bindable var session: EmbeddedTerminalSession
-    let providerName: String
     let recoverDelivery: () -> Void
     @State private var confirmsRecovery = false
     @State private var confirmedInboxBlocker: InboxRecoveryBlocker?
@@ -2992,7 +2991,6 @@ struct EmbeddedTerminalTab: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            toolbar
             // Banners animate inside their own stack so the terminal below is
             // resized once instead of on every frame of the transition.
             VStack(spacing: 0) {
@@ -3052,7 +3050,9 @@ struct EmbeddedTerminalTab: View {
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: visibleBanners)
-            Divider().overlay(BoardDarkSurfaceStyle.border)
+            if visibleBanners.contains(true) {
+                Divider().overlay(BoardDarkSurfaceStyle.border)
+            }
 
             ZStack {
                 // The terminal only fades, and only once the empty state has
@@ -3088,21 +3088,6 @@ struct EmbeddedTerminalTab: View {
         .environment(\.colorScheme, .dark)
     }
 
-    private var toolbar: some View {
-        HStack {
-            // A running session's live terminal title updates in place
-            // under the fixed "running" key; every other key is the title.
-            RelaySwap(statusTitleSwapKey, style: .text, alignment: .leading) { titleKey in
-                Text(titleKey == "running" ? statusTitle : titleKey)
-                    .font(AppTypography.font(.sectionHeading))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 22)
-        .frame(height: 60)
-    }
-
     private var emptyState: some View {
         VStack(spacing: 10) {
             Image(systemName: "terminal")
@@ -3133,26 +3118,6 @@ struct EmbeddedTerminalTab: View {
         ]
     }
 
-    /// A running session's title is set by the agent and can change rapidly,
-    /// so it updates in place; every other title change crossfades.
-    private var statusTitleSwapKey: String {
-        session.phase == .running ? "running" : statusTitle
-    }
-
-    private var statusTitle: String {
-        switch session.phase {
-        case .idle: return "Ready for \(providerName)"
-        case .preparing: return "Preparing \(session.providerName)"
-        case .starting: return "Starting \(session.providerName)"
-        case .running: return session.terminalTitle.isEmpty ? "\(session.providerName) session" : session.terminalTitle
-        case .external: return "\(session.providerName) in Terminal.app"
-        case .ended: return "Session ended"
-        case .exited(let code):
-            return code.map { "Session exited (\($0))" } ?? "Session exited"
-        case .failed: return "Session failed to start"
-        }
-    }
-
     private var emptyStateDetail: String {
         switch session.phase {
         case .external:
@@ -3173,7 +3138,6 @@ struct WorkspaceTerminalPanel: View {
     var body: some View {
         EmbeddedTerminalTab(
             session: appState.embeddedTerminal,
-            providerName: appState.config.general.provider.displayName,
             recoverDelivery: { appState.recoverBlockedVoiceDelivery() }
         )
     }
