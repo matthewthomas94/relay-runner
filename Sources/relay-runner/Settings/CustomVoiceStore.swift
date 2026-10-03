@@ -5,6 +5,7 @@ import Foundation
 
 enum CustomVoiceFailure: LocalizedError {
     case invalidAudio, duration, silent, unsafeStorage, invalidProfile, runtimeMissing, permission, affirmation, busy
+    case sessionRequired
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +18,7 @@ enum CustomVoiceFailure: LocalizedError {
         case .permission: return "Microphone permission is required to record a reference."
         case .affirmation: return "Confirm that you own the recording or have permission to use it for voice conversion."
         case .busy: return "Finish response playback or voice recording before previewing or recording a sample."
+        case .sessionRequired: return "Start a Claude or Codex voice session to record a reference. Importing a sample and previews remain available."
         }
     }
 }

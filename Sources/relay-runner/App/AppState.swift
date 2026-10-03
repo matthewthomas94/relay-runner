@@ -185,7 +185,9 @@ final class AppState {
         durableSegmentCount: 0,
         syncState: nil,
         errorMessage: nil
-    )
+    ) {
+        didSet { syncCommandCaptureOwnership() }
+    }
     @ObservationIgnored private let checkForUpdatesAction: @MainActor () -> Void
     @ObservationIgnored private let refreshBundledOrchestratorDaemon: () async -> OrchestratorDaemonRefreshResult
     @ObservationIgnored private let refreshBundledServicesOnLaunch: Bool
@@ -346,7 +348,10 @@ final class AppState {
     private var programStatusTask: Task<Void, Never>?
     /// True while a menu-started terminal session owns the bridge.
     private var menuSessionActive = false {
-        didSet { syncNotchStatusSurface() }
+        didSet {
+            syncNotchStatusSurface()
+            syncCommandCaptureOwnership()
+        }
     }
     @ObservationIgnored private var activeSessionLaunchConfig: AppConfig?
     @ObservationIgnored private var continuityRecoveryGenerationBySession: [String: String] = [:]
@@ -360,13 +365,17 @@ final class AppState {
     @ObservationIgnored private var activeSessionProjectScopeToken: ConfirmedProjectScopeToken?
     /// Cached by the watchdog so the 20fps poll timer avoids spawning pgrep.
     private var bridgeAliveCache = false {
-        didSet { syncNotchStatusSurface() }
+        didSet {
+            syncNotchStatusSurface()
+            syncCommandCaptureOwnership()
+        }
     }
     private var wasRecording = false
     private var observedRecordingStartedSerial = 0
     private var observedSpeechDetectedSerial = 0
     private var observedDeliveredTranscriptSerial = 0
     private var observedTutorialTranscriptSerial = 0
+    private var observedCaptureOwnerRequestedSerial = 0
     /// Caps Lock state when the session prompt was shown — any toggle dismisses it.
     private var sessionPromptCapsState = false
     private var sessionPromptGate = SessionPromptGate()
@@ -385,7 +394,10 @@ final class AppState {
     /// sessions suppress the bridge greeting, including after recovery.
     private var activeSessionSuppressesStartupGreeting = false
     private var bridgeRecoveryInFlight = false {
-        didSet { syncNotchStatusSurface() }
+        didSet {
+            syncNotchStatusSurface()
+            syncCommandCaptureOwnership()
+        }
     }
     private var programBoardLoading = false
     private var lastBridgeRecoveryAt: Date = .distantPast
@@ -406,6 +418,32 @@ final class AppState {
     /// within ~3 seconds of an external bridge coming up, so /relay-bridge
     /// users see the menu reflect their session promptly.
     var hasActiveSession: Bool { menuSessionActive || bridgeAliveCache || bridgeRecoveryInFlight }
+
+    /// Session-level microphone owner policy. Command capture may run only for
+    /// an active Claude or Codex voice session (embedded, external bridge, or a
+    /// bridge retained through provider reconnect) or the projectless onboarding
+    /// voice tutorial. Note Taker owns its own capture, so command capture yields.
+    static func commandCaptureAllowed(
+        hasActiveSession: Bool,
+        sessionControlsTutorialActive: Bool,
+        noteOwnsForeground: Bool
+    ) -> Bool {
+        !noteOwnsForeground && (hasActiveSession || sessionControlsTutorialActive)
+    }
+
+    /// Whether a Settings reference recording may open the microphone now.
+    var referenceRecordingAllowed: Bool {
+        hasActiveSession && !meetingNoteSnapshot.phase.ownsForeground
+    }
+
+    private func syncCommandCaptureOwnership() {
+        guard let engine = sttEngine else { return }
+        engine.setCaptureAllowed(Self.commandCaptureAllowed(
+            hasActiveSession: hasActiveSession,
+            sessionControlsTutorialActive: onboarding.isSessionControlsTutorialActive,
+            noteOwnsForeground: meetingNoteSnapshot.phase.ownsForeground
+        ))
+    }
 
     private var bridgeStartingUp: Bool {
         menuSessionActive && !sessionBridgeSeen && !bridgeRecoveryInFlight
@@ -938,6 +976,7 @@ final class AppState {
         let engine = STTEngine(config: config.stt)
         engine.tutorialActive = onboarding.isSessionControlsTutorialActive
         sttEngine = engine
+        syncCommandCaptureOwnership()
         resetObservedTutorialSTTSerials()
         sttSetupStartedAt = Date()
         sttSetupSucceeded = false
@@ -1980,6 +2019,7 @@ final class AppState {
     private func prepareOnboardingTutorialSpeech() -> Bool {
         guard processManager.startTutorialTTS() else { return false }
         sttEngine?.tutorialActive = true
+        syncCommandCaptureOwnership()
         stateMachine.dismissSessionPrompt()
         return true
     }
@@ -1997,6 +2037,7 @@ final class AppState {
 
     private func stopOnboardingTutorialSpeech() {
         sttEngine?.tutorialActive = false
+        syncCommandCaptureOwnership()
         processManager.stopTutorialTTS()
     }
 
@@ -2897,9 +2938,14 @@ final class AppState {
         // Poll STT engine state → state machine (STT is in-process, no socket needed)
         sttPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
             guard let self, let engine = self.sttEngine else { return }
+            // Tutorial ownership has no change hook; re-assert it each tick.
+            self.syncCommandCaptureOwnership()
 
             let nowRecording = engine.isRecording
             let justStartedRecording = nowRecording && !self.wasRecording
+            let captureOwnerRequested =
+                engine.captureOwnerRequestedSerial != self.observedCaptureOwnerRequestedSerial
+            self.observedCaptureOwnerRequestedSerial = engine.captureOwnerRequestedSerial
             self.publishOnboardingTutorialSTTEvents(from: engine, includeRecordingStart: false)
 
             if engine.boardToggleRequested {
@@ -2947,7 +2993,10 @@ final class AppState {
                     from: engine,
                     includeRecordingStart: true
                 )
-            } else if justStartedRecording {
+            } else if justStartedRecording
+                        || (captureOwnerRequested && !self.onboarding.isSessionControlsTutorialActive) {
+                // An out-of-session gesture never opened the mic; it takes the
+                // same real-time bridge check so the session affordance matches.
                 let daemonAlive = self.processManager.bridgeAlive()
                 let pendingDeliveryState = self.processManager.pendingVoiceCommandDeliveryState()
                 let consumerAlive = daemonAlive && self.processManager.bridgeConsumerAlive()
@@ -2965,7 +3014,17 @@ final class AppState {
                 switch bridgeAction {
                 case .allowRecording:
                     self.bridgeAliveCache = true
-                    self.publishOnboardingTutorialSTTEvents(from: engine, includeRecordingStart: true)
+                    if justStartedRecording {
+                        self.publishOnboardingTutorialSTTEvents(from: engine, includeRecordingStart: true)
+                    } else {
+                        // A live bridge the watchdog hadn't cached yet: capture
+                        // opens now, after the gesture, so ask for a retry.
+                        self.stateMachine.showProgramStatus(
+                            title: "Voice session connected",
+                            body: "The microphone is ready. Press your record key again to speak."
+                        )
+                        self.syncNotchActivitySurface()
+                    }
                 case .waitForBridgeRecovery:
                     engine.cancelRecording()
                     self.wasRecording = false
@@ -3400,6 +3459,7 @@ final class AppState {
         observedSpeechDetectedSerial = 0
         observedDeliveredTranscriptSerial = 0
         observedTutorialTranscriptSerial = 0
+        observedCaptureOwnerRequestedSerial = 0
     }
 
     private func publishOnboardingTutorialSTTEvents(from engine: STTEngine,
