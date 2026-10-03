@@ -1013,18 +1013,14 @@ final class OnboardingController {
         tutorialState != nil
     }
 
-    func noteTutorialRecordingStarted() {
-        advanceRecordingTutorial(with: .recordingStarted)
-    }
-
-    func noteTutorialSpeechDetected() {
-        advanceRecordingTutorial(with: .speechDetected)
+    func noteTutorialPracticeStarted() {
+        advanceRecordingTutorial(with: .practiceStarted)
     }
 
     @discardableResult
-    func noteTutorialRecordingSent() -> String? {
+    func noteTutorialPracticeSent() -> String? {
         let previousGate = tutorialState?.recordingGate
-        advanceRecordingTutorial(with: .recordingSent)
+        advanceRecordingTutorial(with: .practiceSent)
         guard previousGate == .waitingForSend,
               tutorialState?.recordingGate == .waitingForResponse else { return nil }
         return OnboardingSessionControlsTutorial.deterministicReply
@@ -1153,7 +1149,7 @@ final class OnboardingController {
         )
         tutorialState = state
         if previousGate == .waitingForStart,
-           state.recordingGate == .waitingForSpeech {
+           state.recordingGate == .waitingForSend {
             presentTutorial(screen: .recordingActive)
         } else if previousGate == .waitingForSend,
                   state.recordingGate == .waitingForResponse {

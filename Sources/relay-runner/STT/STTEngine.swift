@@ -49,13 +49,18 @@ final class STTEngine: @unchecked Sendable {
     var partialTranscription = ""
     var statusMessage = ""
     var recordingStartedSerial = 0
-    var speechDetectedSerial = 0
-    var deliveredTranscriptSerial = 0
-    var tutorialTranscriptSerial = 0
+    /// Onboarding tutorial practice: start/send gestures bump these instead of
+    /// recording. No capture, samples, speech detection, or delivery is involved.
+    var tutorialPracticeStartedSerial = 0
+    var tutorialPracticeSentSerial = 0
     /// Bumped when the activation gesture fires while no session owns capture.
     /// The microphone stays closed; AppState shows the session affordance.
     var captureOwnerRequestedSerial = 0
-    var tutorialActive = false
+    var tutorialActive = false {
+        // Entering or leaving practice drops any half-made gesture, so a key
+        // still held from one mode never starts a recording in the other.
+        didSet { if tutorialActive != oldValue { gesture.reset() } }
+    }
 
     // MARK: - Configuration
 
@@ -555,6 +560,11 @@ final class STTEngine: @unchecked Sendable {
             if let event = gesture.poll(currentSegment: transcript.transcript) {
                 switch event {
                 case .startRecording:
+                    if tutorialActive {
+                        tutorialPracticeStartedSerial += 1
+                        NSLog("[STTEngine] Tutorial practice started (microphone off)")
+                        continue
+                    }
                     // No session owns the mic: keep it closed, skip __TTS_STOP__,
                     // and let AppState show the session affordance instead.
                     guard isCaptureAllowed else {
@@ -590,17 +600,15 @@ final class STTEngine: @unchecked Sendable {
                     writeVoiceOutput("__STATUS__:preparing...")
 
                 case .stopRecording(_):
+                    if tutorialActive {
+                        finishTutorialPractice(&transcript, &mediaSettleDeadline)
+                        continue
+                    }
                     let captureEpoch = currentCaptureEpoch()
                     let finalText = try await finalizeRecordingTranscript(into: &transcript)
                     guard captureEpochIsCurrent(captureEpoch) else { continue }
-                    if let finalText {
-                        if tutorialActive {
-                            tutorialTranscriptSerial += 1
-                            NSLog("[STTEngine] Tutorial transcript consumed locally")
-                        } else if writeVoiceOutput(finalText) {
-                            deliveredTranscriptSerial += 1
-                            NSLog("[STTEngine] >> \(finalText)")
-                        }
+                    if let finalText, writeVoiceOutput(finalText) {
+                        NSLog("[STTEngine] >> \(finalText)")
                     }
                     transcript.reset()
                     resetRecordingBuffer()
@@ -619,15 +627,15 @@ final class STTEngine: @unchecked Sendable {
                     mediaSettleDeadline = nil
 
                 case .interrupt:
+                    if tutorialActive {
+                        finishTutorialPractice(&transcript, &mediaSettleDeadline)
+                        continue
+                    }
                     let captureEpoch = currentCaptureEpoch()
                     let finalText = try await finalizeRecordingTranscript(into: &transcript)
                     guard captureEpochIsCurrent(captureEpoch) else { continue }
                     if let finalText {
-                        if tutorialActive {
-                            tutorialTranscriptSerial += 1
-                            NSLog("[STTEngine] Tutorial transcript consumed locally")
-                        } else if writeVoiceOutput(finalText) {
-                            deliveredTranscriptSerial += 1
+                        if writeVoiceOutput(finalText) {
                             NSLog("[STTEngine] >> \(finalText)")
                         }
                     } else {
@@ -656,6 +664,9 @@ final class STTEngine: @unchecked Sendable {
                     continue
                 }
             }
+
+            // Practice never records: no settle, recording state, or transcription.
+            if tutorialActive { continue }
 
             // Media settle: wait for audio bleed-through to clear before recording
             if let deadline = mediaSettleDeadline {
@@ -702,7 +713,6 @@ final class STTEngine: @unchecked Sendable {
             else { continue }
 
             transcript.refine(text)
-            speechDetectedSerial += 1
             let renderedTranscript = transcript.transcript
             partialTranscription = renderedTranscript
             NSLog("[STTEngine] (refining) \(renderedTranscript)")
@@ -714,6 +724,17 @@ final class STTEngine: @unchecked Sendable {
                 partialTranscription = transcript.transcript
             }
         }
+    }
+
+    private func finishTutorialPractice(_ transcript: inout TranscriptAccumulator,
+                                        _ mediaSettleDeadline: inout Date?) {
+        tutorialPracticeSentSerial += 1
+        NSLog("[STTEngine] Tutorial practice sent (microphone off)")
+        transcript.reset()
+        resetRecordingBuffer()
+        isRecording = false
+        partialTranscription = ""
+        mediaSettleDeadline = nil
     }
 
     private func finalizeRecordingTranscript(into transcript: inout TranscriptAccumulator) async throws -> String? {

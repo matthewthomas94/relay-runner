@@ -28,10 +28,11 @@ enum OnboardingSessionControlsTutorial {
         case replay
     }
 
+    /// Practice events come from the shortcut gestures alone. The tutorial
+    /// never opens the microphone, so no event depends on detected speech.
     enum Event: Equatable {
-        case recordingStarted
-        case speechDetected
-        case recordingSent
+        case practiceStarted
+        case practiceSent
         case responseReady
         case playbackRequested
         case playbackStarted
@@ -42,7 +43,6 @@ enum OnboardingSessionControlsTutorial {
 
     enum RecordingGate: Equatable {
         case waitingForStart
-        case waitingForSpeech
         case waitingForSend
         case waitingForResponse
         case complete
@@ -59,11 +59,9 @@ enum OnboardingSessionControlsTutorial {
 
     static func nextRecordingGate(_ gate: RecordingGate, event: Event) -> RecordingGate {
         switch (gate, event) {
-        case (.waitingForStart, .recordingStarted):
-            return .waitingForSpeech
-        case (.waitingForSpeech, .speechDetected):
+        case (.waitingForStart, .practiceStarted):
             return .waitingForSend
-        case (.waitingForSend, .recordingSent):
+        case (.waitingForSend, .practiceSent):
             return .waitingForResponse
         case (.waitingForResponse, .responseReady):
             return .complete
@@ -155,7 +153,7 @@ struct OnboardingTutorialView: View {
         case .intro:
             ZStack {
                 OnboardingBlinkingTitle(
-                    "Great, now lets learn the basics /",
+                    "Great, now lets practice the shortcuts with the mic off /",
                     reduceMotion: presentation.reduceMotion
                 )
                 if presentation.screen.showsLoadingIndicator {
@@ -163,7 +161,7 @@ struct OnboardingTutorialView: View {
                         .controlSize(OnboardingSetupActivityIndicatorStyle.controlSize)
                         .tint(.white)
                         .offset(y: 72)
-                        .accessibilityLabel("Preparing voice session")
+                        .accessibilityLabel("Preparing shortcut practice")
                 }
             }
         case .recording:
@@ -173,7 +171,7 @@ struct OnboardingTutorialView: View {
                     animation: .capsLock,
                     reduceMotion: presentation.reduceMotion
                 )
-                tutorialText("on & say hi /")
+                tutorialText("on to start a practice message /")
             }
         case .recordingActive:
             HStack(alignment: .center, spacing: 30) {
@@ -182,7 +180,7 @@ struct OnboardingTutorialView: View {
                     animation: .capsLock,
                     reduceMotion: presentation.reduceMotion
                 )
-                tutorialText("off to send the message /")
+                tutorialText("off to send it /")
             }
         case .playback:
             HStack(alignment: .center, spacing: 26) {
@@ -242,11 +240,11 @@ struct OnboardingTutorialView: View {
     private var accessibilityLabel: String {
         switch presentation.screen {
         case .intro:
-            return "Great, now lets learn the basics"
+            return "Great, now lets practice the shortcuts with the microphone off"
         case .recording:
-            return "Turn Caps Lock on and say hi"
+            return "Turn Caps Lock on to start a practice message. The microphone stays off."
         case .recordingActive:
-            return "Now turn Caps Lock off to send the message"
+            return "Now turn Caps Lock off to send it"
         case .playback:
             return "Wait for a reply then double tap Option to play or replay"
         case .cancellation:

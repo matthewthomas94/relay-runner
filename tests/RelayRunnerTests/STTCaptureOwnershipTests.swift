@@ -262,21 +262,86 @@ final class STTCaptureOwnershipTests: XCTestCase {
         XCTAssertFalse(backend.isRunning)
     }
 
+    // MARK: - Onboarding practice
+
+    private func practiceOnce(_ engine: STTEngine, expected: Int) async throws {
+        engine.toggleRecording()
+        try await waitUntil { engine.tutorialPracticeStartedSerial == expected }
+        // Hold past the gesture's tap threshold so turning the key off sends.
+        try await Task.sleep(for: .milliseconds(700))
+        engine.toggleRecording()
+        try await waitUntil { engine.tutorialPracticeSentSerial == expected }
+    }
+
+    private func assertMicrophoneNeverOpened(_ engine: STTEngine, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(backend.starts, 0, file: file, line: line)
+        XCTAssertFalse(backend.isRunning, file: file, line: line)
+        XCTAssertFalse(engine.isRecording, file: file, line: line)
+        XCTAssertEqual(engine.recordingStartedSerial, 0, file: file, line: line)
+        XCTAssertEqual(engine.captureOwnerRequestedSerial, 0, file: file, line: line)
+        // Only engine startup status may reach the bridge: no __TTS_STOP__,
+        // transcript, or interrupt is written for practice gestures.
+        let delivered = output.lines.filter { !$0.hasPrefix("__STATUS__:") }
+        XCTAssertEqual(delivered, [], file: file, line: line)
+    }
+
+    func testTutorialPracticeGesturesNeverOpenMicrophone() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.tutorialActive = true
+        try await practiceOnce(engine, expected: 1)
+        try await practiceOnce(engine, expected: 2)
+        engine.cancelRecording()
+        assertMicrophoneNeverOpened(engine)
+    }
+
+    func testTutorialOpenCloseAndRestartNeverOpensMicrophone() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        for round in 1...3 {
+            engine.tutorialActive = true
+            try await practiceOnce(engine, expected: round)
+            engine.tutorialActive = false
+        }
+        assertMicrophoneNeverOpened(engine)
+    }
+
+    func testLateModelStartupDuringTutorialNeverOpensMicrophone() async throws {
+        let gate = ModelGate()
+        let engine = makeEngine(gate: gate)
+        engine.tutorialActive = true
+        let start = Task { try await engine.start() }
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(backend.starts, 0)
+        gate.release()
+        try await start.value
+        try await practiceOnce(engine, expected: 1)
+        assertMicrophoneNeverOpened(engine)
+    }
+
+    func testIdleActivationAfterTutorialStillRequestsSession() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.tutorialActive = true
+        try await practiceOnce(engine, expected: 1)
+        engine.tutorialActive = false
+        engine.toggleRecording()
+        try await waitUntil { engine.captureOwnerRequestedSerial == 1 }
+        XCTAssertEqual(engine.tutorialPracticeStartedSerial, 1)
+        XCTAssertEqual(backend.starts, 0)
+    }
+
     // MARK: - Ownership policy
 
     func testCommandCapturePolicyTreatsEverySessionOwnerAlike() {
         // Embedded and external bridge sessions, and the retained bridge during
         // provider reconnect, all reach AppState as an active session.
-        XCTAssertTrue(AppState.commandCaptureAllowed(hasActiveSession: true, sessionControlsTutorialActive: false, noteOwnsForeground: false))
-        XCTAssertFalse(AppState.commandCaptureAllowed(hasActiveSession: false, sessionControlsTutorialActive: false, noteOwnsForeground: false))
+        XCTAssertTrue(AppState.commandCaptureAllowed(hasActiveSession: true, noteOwnsForeground: false))
+        XCTAssertFalse(AppState.commandCaptureAllowed(hasActiveSession: false, noteOwnsForeground: false))
     }
 
     func testCommandCapturePolicyNeverOverlapsNoteCapture() {
-        XCTAssertFalse(AppState.commandCaptureAllowed(hasActiveSession: true, sessionControlsTutorialActive: false, noteOwnsForeground: true))
-        XCTAssertFalse(AppState.commandCaptureAllowed(hasActiveSession: false, sessionControlsTutorialActive: true, noteOwnsForeground: true))
-    }
-
-    func testCommandCapturePolicyAllowsOnlyTheSessionControlsTutorialWhileIdle() {
-        XCTAssertTrue(AppState.commandCaptureAllowed(hasActiveSession: false, sessionControlsTutorialActive: true, noteOwnsForeground: false))
+        XCTAssertFalse(AppState.commandCaptureAllowed(hasActiveSession: true, noteOwnsForeground: true))
+        XCTAssertFalse(AppState.commandCaptureAllowed(hasActiveSession: false, noteOwnsForeground: true))
     }
 }
