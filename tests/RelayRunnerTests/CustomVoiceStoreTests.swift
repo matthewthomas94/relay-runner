@@ -182,7 +182,7 @@ final class CustomVoiceStoreTests: XCTestCase {
         var config = AppConfig()
         XCTAssertNil(config.tts.custom_voice_id)
         config.tts.custom_voice_id = String(repeating: "d", count: 32)
-        config.tts.voice = "bf_emma"
+        config.tts.voice = "bf_isabella"
         try manager.save(config)
         XCTAssertEqual(manager.load().tts, config.tts)
         config.tts.custom_voice_id = "../invalid\"\n"

@@ -11,10 +11,10 @@ final class ConfigManagerTests: XCTestCase {
         let loaded = manager.load()
         let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
 
-        XCTAssertEqual(loaded.tts.voice, "bm_george")
+        XCTAssertEqual(loaded.tts.voice, "am_puck")
         XCTAssertEqual(loaded.tts.rate, 1.3)
         XCTAssertFalse(loaded.general.prevent_sleep_while_running)
-        XCTAssertTrue(raw.contains("voice = \"bm_george\""))
+        XCTAssertTrue(raw.contains("voice = \"am_puck\""))
         XCTAssertTrue(raw.contains("rate = 1.3"))
         XCTAssertTrue(raw.contains("prevent_sleep_while_running = false"))
     }
@@ -25,15 +25,28 @@ final class ConfigManagerTests: XCTestCase {
         try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
         try """
         [tts]
-        voice = "bf_emma"
+        voice = "bf_isabella"
         auto_play = true
         """.write(to: manager.configPath, atomically: true, encoding: .utf8)
 
         let loaded = manager.load()
 
-        XCTAssertEqual(loaded.tts.voice, "bf_emma")
+        XCTAssertEqual(loaded.tts.voice, "bf_isabella")
         XCTAssertTrue(loaded.tts.auto_play)
         XCTAssertEqual(loaded.tts.rate, 1.3)
+    }
+
+    func testVoiceOutsideStandardSetFallsBackToPuck() throws {
+        XCTAssertEqual(TtsConfig.standardVoices, ["am_puck", "bm_george", "bf_isabella", "af_sky"])
+        let configDir = temporaryConfigDir()
+        let manager = ConfigManager(configDir: configDir)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        try """
+        [tts]
+        voice = "af_bella"
+        """.write(to: manager.configPath, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(manager.load().tts.voice, "am_puck")
     }
 
     func testExplicitTTSRateIsPreserved() throws {
