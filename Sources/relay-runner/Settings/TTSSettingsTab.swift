@@ -4,12 +4,7 @@ struct TTSSettingsTab: View {
     @Binding var config: TtsConfig
     @Bindable var appState: AppState
 
-    private let voices = [
-        "af_bella", "af_sarah", "af_nicole", "af_sky", "af_heart",
-        "am_adam", "am_michael",
-        "bf_emma", "bf_isabella",
-        "bm_george", "bm_lewis",
-    ]
+    private let voices = TtsConfig.standardVoices
 
     @State private var chimes: [String] = []
     @State private var preview = VoicePreviewController()

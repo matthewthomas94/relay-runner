@@ -51,7 +51,7 @@ class ConfigTests(unittest.TestCase):
 
             config = load_config(path)
 
-        self.assertEqual(config["tts"]["voice"], "bm_george")
+        self.assertEqual(config["tts"]["voice"], "am_puck")
         self.assertEqual(config["tts"]["rate"], 1.3)
         self.assertEqual(config["general"]["codex_reasoning_effort"], "xhigh")
         self.assertEqual(config["general"]["orchestrator_effort"], "xhigh")
@@ -145,7 +145,7 @@ class ConfigTests(unittest.TestCase):
             path.write_text(
                 """
                 [tts]
-                voice = "bf_emma"
+                voice = "bf_isabella"
                 auto_play = true
                 """,
                 encoding="utf-8",
@@ -153,9 +153,24 @@ class ConfigTests(unittest.TestCase):
 
             config = load_config(str(path))
 
-        self.assertEqual(config["tts"]["voice"], "bf_emma")
+        self.assertEqual(config["tts"]["voice"], "bf_isabella")
         self.assertTrue(config["tts"]["auto_play"])
         self.assertEqual(config["tts"]["rate"], 1.3)
+
+    def test_load_config_falls_back_to_puck_for_voice_outside_standard_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(
+                """
+                [tts]
+                voice = "af_bella"
+                """,
+                encoding="utf-8",
+            )
+
+            config = load_config(str(path))
+
+        self.assertEqual(config["tts"]["voice"], "am_puck")
 
     def test_load_config_preserves_explicit_tts_rate(self):
         with tempfile.TemporaryDirectory() as tmp:

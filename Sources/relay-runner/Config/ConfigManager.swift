@@ -199,9 +199,12 @@ final class ConfigManager {
 
         // say/piper -> kokoro
         if config.tts.engine == "say" || config.tts.engine == "piper" {
-            let voiceMap = ["Amy": "bf_emma", "Libritts": "af_bella", "Glow-TTS": "af_sarah"]
-            config.tts.voice = voiceMap[config.tts.voice] ?? "af_bella"
             config.tts.engine = "kokoro"
+        }
+
+        // Voices outside the standard set (including old Piper names) -> Puck
+        if !TtsConfig.standardVoices.contains(config.tts.voice) {
+            config.tts.voice = "am_puck"
         }
 
         // WPM rate (int > 10) -> speed multiplier (0.5-2.0)

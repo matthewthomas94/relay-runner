@@ -7,7 +7,7 @@ import XCTest
 final class SettingsAgentCardTests: XCTestCase {
     func testNameFollowsStandardAndCustomVoiceSelection() {
         var voice = TtsConfig()
-        XCTAssertEqual(SettingsAgentPresentation.voiceName(voice, customName: nil), "George")
+        XCTAssertEqual(SettingsAgentPresentation.voiceName(voice, customName: nil), "Puck")
         voice.voice = "af_bella"
         XCTAssertEqual(SettingsAgentPresentation.voiceName(voice, customName: nil), "Bella")
         voice.custom_voice_id = "selected-profile"
