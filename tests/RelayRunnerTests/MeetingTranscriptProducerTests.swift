@@ -2075,6 +2075,41 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         XCTAssertEqual(system.descriptor.startSample, 20)
     }
 
+    func testLongMeetingCheckpointStaysProportionalToOpenWindows() async throws {
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-long-meeting",
+            transcriber: FakeMeetingTranscriber { request in
+                MeetingTranscriptionResult(
+                    text: request.isFinal ? "final words" : "partial words",
+                    tokens: [],
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration
+        )
+        try await producer.start(initiallyPaused: false)
+        for _ in 0..<400 {
+            try await producer.ingest(.init(repeating: 0.1, count: 8), from: .microphone)
+            try await producer.ingest(.init(repeating: 0.2, count: 8), from: .systemAudio)
+            await producer.waitUntilIdle()
+        }
+
+        let checkpoint = await producer.checkpoint()
+        let durableFinals = checkpoint.durableRevisions?.filter(\.isFinal) ?? []
+        XCTAssertGreaterThan(durableFinals.count, 700)
+        XCTAssertLessThanOrEqual(checkpoint.emittedRevisionBySegment.count, 4)
+        XCTAssertLessThanOrEqual(checkpoint.finalRevisionBySegment.count, 4)
+
+        await producer.releasePersistedRevisions(Dictionary(
+            uniqueKeysWithValues: durableFinals.map { ($0.segmentID, $0.revision) }
+        ))
+        let released = await producer.checkpoint()
+        XCTAssertFalse(released.durableRevisions?.contains(where: \.isFinal) ?? false)
+
+        let boundary = try await producer.stop()
+        XCTAssertGreaterThanOrEqual(boundary.finalSegmentRevisionByID.count, durableFinals.count)
+    }
+
     func testSyntheticSixtyMinuteDualSourceFixtureRemainsBounded() async throws {
         let configuration = MeetingTranscriptProducer.Configuration(
             sampleRate: 10,

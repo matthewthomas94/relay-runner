@@ -72,12 +72,14 @@ batches, not every partial callback.
 
 ## Bounded processing and backpressure
 
-Capture callbacks enter one tracked consumer through a 32-item bounded ingress
-(audio frames and rare source events share the bound);
-there is no task allocation per frame. Accepted chunks reach the RR-368 sink
+Capture callbacks enter one tracked consumer through a bounded ingress (audio
+frames and rare source events share the bound); there is no task allocation per
+frame. The live note session batches about 100 ms per source and holds 600
+items, roughly 30 seconds of two-source audio, so a transient stall delays
+persistence instead of dropping speech. Accepted chunks reach the RR-368 sink
 before entering the ASR buffer. The producer then retains at most the current
 window plus overlap per active source, plus a configurable bounded transcription
-queue (eight windows by default). If capture ingress overflows, dropped frame and
+queue (24 windows by default, about a minute of two-source final windows). If capture ingress overflows, dropped frame and
 sample counters are recorded, every started adapter is stopped, and capture
 enters `failed` with `backpressure_exceeded`. When the transcription queue is
 busy, a superseded partial refresh may be skipped with a typed issue; accepted
@@ -191,7 +193,10 @@ segment revisions target a 15-second canonical Markdown cadence while recording
 and are also published at pause, resume, manual checkpoint, and completion
 boundaries. Daemon/writer latency or outage can extend canonical publication;
 the acknowledged tail remains locally replayable rather than being claimed as
-already canonical.
+already canonical. A failed 15-second checkpoint does not stop capture: the
+journaled request is resent at the next interval and the note panel says that
+saving is retrying. Pause, resume, and completion checkpoints still fail into
+recovery as before.
 Partial hypotheses remain distinguishable from canonical durable segments and
 are not published as final transcript text. The exact pending artifact request
 and its stable request ID are journaled before a writer call, so a process death
@@ -200,15 +205,26 @@ the transcript twice.
 
 Transient state lives under Application Support at `Relay Runner/Note
 Recovery`, never under the project or source checkout. Each session has an
-atomic JSON journal and raw Float32 chunk files with opaque encoded names. The
-default per-session audio budget is 256 MiB. At 16 kHz mono Float32 this is a
+atomic JSON journal, a separate atomic producer checkpoint, and raw Float32
+chunk files with opaque encoded names. The producer checkpoint is rewritten for
+every accepted chunk, so it carries only open-window revision guards and finals
+the journal has not saved yet; its cost does not grow with meeting length. On
+load, the newer of the two replay cursors wins. The default per-session audio
+budget is 256 MiB. At 16 kHz mono Float32 this is a
 hard upper bound of 2,097 seconds (34m57s) with both sources continuously
 retained, or 4,194 seconds (69m54s) with one source; reaching it fails capture
-instead of accepting uncheckpointed speech. After a successful canonical checkpoint,
-audio not named by the producer's pending descriptor cursor is removed.
+instead of accepting uncheckpointed speech. After each canonical checkpoint
+attempt, audio not named by the producer's pending descriptor cursor is removed.
 Successful completion removes the complete owned recovery directory. Neither
 audio samples nor transcript text are written to diagnostics, provider input,
-or application logs.
+or application logs. Capture interruptions are logged under the
+`com.relayrunner.app` subsystem, `notes` category, as cause codes and producer
+counters only.
+
+A failure that ends capture while recording or paused shows "Recording
+interrupted", never "Saving notes"; "Saving notes" is reserved for a Stop the
+user requested. Stop pressed during that teardown waits for it, then finalizes
+from the recovery journal.
 
 On relaunch the coordinator lists incomplete journals without starting FluidAudio,
 a capture adapter, a provider, a messenger, a bridge, or a microphone. Recovery

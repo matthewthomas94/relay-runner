@@ -15,7 +15,9 @@ actor MeetingTranscriptProducer {
             overlapMilliseconds: 1_000,
             firstPartialMilliseconds: 2_000,
             partialIntervalMilliseconds: 2_000,
-            maximumQueuedWindows: 8
+            // About a minute of two-source final windows, so a slow stretch of
+            // local recognition delays the transcript instead of ending capture.
+            maximumQueuedWindows: 24
         )
 
         var windowSamples: Int { sampleRate * windowMilliseconds / 1_000 }
@@ -56,8 +58,13 @@ actor MeetingTranscriptProducer {
     private var nextWindowSequenceByEpoch: [String: Int] = [:]
     private var completedWindowSequencesByEpoch: [String: Set<Int>] = [:]
     private var completedTailEndSampleByEpoch: [String: [Int: Int]] = [:]
+    /// Revision guards for windows that can still receive results. Committed
+    /// windows leave these maps so every checkpoint stays proportional to open
+    /// work rather than to the length of the meeting.
     private var emittedRevisionBySegment: [String: Int] = [:]
     private var finalRevisionBySegment: [String: Int] = [:]
+    /// Committed finals, reported only by the stop boundary.
+    private var committedFinalRevisionBySegment: [String: Int] = [:]
     private var durableRevisions: [String: MeetingTranscriptSegmentRevision] = [:]
     private var queuedJobs: [MeetingTranscriptionRequest] = []
     private var drainTask: Task<Void, Never>?
@@ -366,7 +373,10 @@ actor MeetingTranscriptProducer {
         let boundary = MeetingProducerFinalBoundary(
             sessionID: sessionID,
             timingEpochs: timingEpochs,
-            finalSegmentRevisionByID: finalRevisionBySegment,
+            finalSegmentRevisionByID: committedFinalRevisionBySegment.merging(
+                finalRevisionBySegment,
+                uniquingKeysWith: max
+            ),
             metrics: metrics
         )
         emit(.finalBoundary(boundary))
@@ -447,6 +457,16 @@ actor MeetingTranscriptProducer {
         )
         checkpoint.completedTailEndSampleByEpoch = completedTailEndSampleByEpoch
         return checkpoint
+    }
+
+    /// Drops finals the note journal has already saved, so later checkpoints
+    /// carry only transcript that is not yet durable anywhere else.
+    func releasePersistedRevisions(_ persistedFinalRevisionBySegment: [String: Int]) {
+        durableRevisions = durableRevisions.filter { segmentID, revision in
+            guard revision.isFinal,
+                  let persisted = persistedFinalRevisionBySegment[segmentID] else { return true }
+            return revision.revision > persisted
+        }
     }
 
     func currentMetrics() -> MeetingProducerMetrics {
@@ -715,12 +735,11 @@ actor MeetingTranscriptProducer {
         _ result: MeetingTranscriptionResult,
         for request: MeetingTranscriptionRequest
     ) async {
-        if request.isFinal,
-           isCompletedFinalWindow(
-               epochID: request.timingEpochID,
-               sequence: request.windowSequence
-           )
-        {
+        // A completed window accepts no further results, final or partial.
+        if isCompletedFinalWindow(
+            epochID: request.timingEpochID,
+            sequence: request.windowSequence
+        ) {
             return
         }
         guard request.revision > (emittedRevisionBySegment[request.segmentID] ?? 0) else {
@@ -849,7 +868,8 @@ actor MeetingTranscriptProducer {
     private func completeFinalWindow(_ request: MeetingTranscriptionRequest) {
         var completed = completedWindowSequencesByEpoch[request.timingEpochID] ?? []
         completed.insert(request.windowSequence)
-        var next = nextWindowSequenceByEpoch[request.timingEpochID] ?? 0
+        let previousNext = nextWindowSequenceByEpoch[request.timingEpochID] ?? 0
+        var next = previousNext
         while completed.remove(next) != nil {
             next += 1
         }
@@ -860,6 +880,16 @@ actor MeetingTranscriptProducer {
             $0.epochID == request.timingEpochID
         }), var buffer = sourceBuffers[request.sourceID]
         else { return }
+        for sequence in previousNext..<next {
+            let committed = segmentID(
+                epoch: epoch,
+                ownedStartSample: epoch.startSample + sequence * configuration.ownedSamples
+            )
+            emittedRevisionBySegment.removeValue(forKey: committed)
+            if let final = finalRevisionBySegment.removeValue(forKey: committed) {
+                committedFinalRevisionBySegment[committed] = final
+            }
+        }
         let nominalEndSample = epoch.startSample +
             (request.windowSequence + 1) * configuration.ownedSamples
         if request.ownedEndSample > nominalEndSample {

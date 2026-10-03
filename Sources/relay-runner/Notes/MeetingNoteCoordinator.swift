@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 enum MeetingNoteCoordinatorPhase: String, Codable, Equatable, Sendable {
     case idle
@@ -65,6 +66,8 @@ struct MeetingNoteCoordinatorSnapshot: Equatable, Sendable {
     let syncState: String?
     let errorMessage: String?
     var unhealthySourceIDs: Set<MeetingAudioSourceID> = []
+    /// Capture ended on its own while recording or paused, not through Stop.
+    var captureInterrupted = false
 
     var captureStatusMessage: String? {
         guard phase == .recording else { return nil }
@@ -90,10 +93,13 @@ struct MeetingNoteCoordinatorSnapshot: Equatable, Sendable {
         case .paused:
             return (.paused, "Paused", false)
         case .stopping:
+            // A failure tears capture down through the same phase as Stop;
+            // it must not look like a save the user asked for.
+            if captureInterrupted { return (.notWorking, "Recording interrupted", false) }
             // Saving is work, but its label stays up until the note is saved.
             return (.working, "Saving notes", true)
         case .error:
-            return (.notWorking, "Note save failed", false)
+            return (.notWorking, captureInterrupted ? "Recording interrupted" : "Note save failed", false)
         case .preparing, .interrupted:
             return (.working, nil, false)
         case .idle, .saved:
@@ -128,6 +134,9 @@ enum MeetingNoteCoordinatorError: LocalizedError, Equatable {
     case captureUnavailable
     case captureFailed(String)
     case localSaveFailed(String)
+    /// The note writer rejected or missed a checkpoint. The journal and
+    /// accepted audio remain on this Mac.
+    case publicationFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -141,7 +150,7 @@ enum MeetingNoteCoordinatorError: LocalizedError, Equatable {
             return "The note capture runtime is unavailable."
         case .captureFailed(let message):
             return message
-        case .localSaveFailed(let message):
+        case .localSaveFailed(let message), .publicationFailed(let message):
             return "The note could not be saved locally: \(message)"
         }
     }
@@ -358,8 +367,13 @@ actor MeetingNoteCoordinator {
     private var checkpointPublicationWaiters: [CheckedContinuation<Void, Never>] = []
     private var interruptionTeardownActive = false
     private var interruptionTeardownWaiters: [CheckedContinuation<Void, Never>] = []
+    private var captureInterrupted = false
     private var activeScopeToken: String?
     private var hasPersistedRecoveryJournal = false
+
+    /// Interruption causes are logged as codes and counts only, never
+    /// transcript text, audio, paths, or capability tokens.
+    private static let logger = Logger(subsystem: "com.relayrunner.app", category: "notes")
 
     init(
         writer: any MeetingNoteArtifactWriting,
@@ -403,9 +417,12 @@ actor MeetingNoteCoordinator {
                 eventSink: eventSink
             )
             // Persist roughly 100 ms per source instead of rewriting the
-            // recovery journal for every hardware callback.
+            // recovery journal for every hardware callback. Hold about 30 s of
+            // two-source batches so a stall delays persistence instead of
+            // dropping audio and ending the recording.
             return MeetingNoteCaptureSession(
                 producer: producer,
+                maximumPendingFrames: 600,
                 minimumBatchSamples: 1_600
             )
         }
@@ -433,6 +450,7 @@ actor MeetingNoteCoordinator {
         checkpointTask?.cancel()
         stopTask = nil
         captureStatePersistenceTail = nil
+        captureInterrupted = false
         activeScopeToken = projectScopeToken
         hasPersistedRecoveryJournal = false
         phase = .preparing
@@ -638,6 +656,13 @@ actor MeetingNoteCoordinator {
     }
 
     func stop() async throws -> MeetingNoteCoordinatorSnapshot {
+        if interruptionTeardownActive {
+            // A failure is already stopping capture. Let it finish so Stop
+            // finalizes from the recovery journal instead of racing it.
+            await withCheckedContinuation { continuation in
+                interruptionTeardownWaiters.append(continuation)
+            }
+        }
         if phase == .saved { return snapshot() }
         if phase == .error, runtime == nil, !hasPersistedRecoveryJournal {
             releaseUndurableStartFailure()
@@ -690,6 +715,7 @@ actor MeetingNoteCoordinator {
 
         guard runtime == nil else { throw MeetingNoteCoordinatorError.foregroundBusy }
         checkpointTask?.cancel()
+        captureInterrupted = false
         activeScopeToken = projectScopeToken
         hasPersistedRecoveryJournal = true
         phase = .interrupted
@@ -988,6 +1014,12 @@ actor MeetingNoteCoordinator {
         journal.updatedAt = now()
         self.journal = journal
         try await recoveryStore.save(journal)
+        if let runtime {
+            await runtime.capture.releasePersistedRevisions(Dictionary(
+                journal.revisions.filter(\.isFinal).map { ($0.segmentID, $0.revision) },
+                uniquingKeysWith: max
+            ))
+        }
 
         var finalSegments = segmentsOverride ?? durableSegments(in: journal)
         if let pending = journal.pendingUpdate {
@@ -1078,7 +1110,7 @@ actor MeetingNoteCoordinator {
                 self.journal = current
                 try? await recoveryStore.save(current)
             }
-            throw MeetingNoteCoordinatorError.localSaveFailed(safeMessage(error))
+            throw MeetingNoteCoordinatorError.publicationFailed(safeMessage(error))
         }
     }
 
@@ -1225,6 +1257,12 @@ actor MeetingNoteCoordinator {
 
         checkpointTask?.cancel()
         checkpointTask = nil
+        if phase == .recording || phase == .paused {
+            captureInterrupted = true
+        }
+        Self.logger.error(
+            "Note capture interrupted: \(Self.diagnosticCode(for: error), privacy: .public) phase=\(self.phase.rawValue, privacy: .public)"
+        )
         phase = .stopping
         snapshotSink(snapshot())
 
@@ -1284,6 +1322,15 @@ actor MeetingNoteCoordinator {
         journal.producerCheckpoint = checkpoint
         let bufferedIssue = applyBufferedEvents(to: &journal)
         self.journal = journal
+        let metrics = checkpoint.metrics
+        Self.logger.error("""
+            Note producer failed: \((bufferedIssue ?? issue)?.code.rawValue ?? "unknown", privacy: .public) \
+            accepted_chunks=\(metrics.acceptedChunkCount, privacy: .public) \
+            dropped_frames=\(metrics.droppedAudioFrameCount, privacy: .public) \
+            max_queued_windows=\(metrics.maximumQueuedWindowCount, privacy: .public) \
+            max_processing_ms=\(metrics.maximumProcessingMilliseconds, privacy: .public) \
+            transcription_failures=\(metrics.transcriptionFailureCount, privacy: .public)
+            """)
         let failure = captureFailure(bufferedIssue ?? issue)
         try? await markInterrupted(failure)
         if let journal = self.journal {
@@ -1368,6 +1415,7 @@ actor MeetingNoteCoordinator {
         runtime = nil
         activeScopeToken = nil
         desiredPaused = false
+        captureInterrupted = false
         phase = .idle
         journal = nil
     }
@@ -1378,19 +1426,47 @@ actor MeetingNoteCoordinator {
               checkpointTask == nil else { return }
         let interval = UInt64(policy.artifactIntervalSeconds) * 1_000_000_000
         checkpointTask = Task { [weak self] in
+            var publicationFailing = false
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: interval)
                 guard !Task.isCancelled, let self else { return }
                 do {
                     _ = try await self.checkpointNow()
+                    if publicationFailing {
+                        publicationFailing = false
+                        await self.publicationRecovered()
+                    }
                 } catch {
                     if Task.isCancelled { return }
                     if Self.isCancellation(error) { continue }
+                    if case MeetingNoteCoordinatorError.publicationFailed = error {
+                        // The journal and accepted audio stay on this Mac, so a
+                        // slow or unavailable note writer must not end the
+                        // recording. The held request is resent next interval.
+                        publicationFailing = true
+                        await self.publicationFailedDuringCapture()
+                        continue
+                    }
                     try? await self.markInterrupted(error)
                     return
                 }
             }
         }
+    }
+
+    private func publicationFailedDuringCapture() async {
+        Self.logger.error("Note checkpoint publication failed; capture continues and will retry")
+        // Recognized audio no longer needs its recovery copy, whether or not
+        // the writer accepted the transcript.
+        if let journal { try? await retainPendingAudio(journal) }
+        guard phase == .recording || phase == .paused else { return }
+        snapshotSink(snapshot())
+    }
+
+    private func publicationRecovered() {
+        Self.logger.notice("Note checkpoint publication recovered")
+        guard phase == .recording || phase == .paused else { return }
+        snapshotSink(snapshot())
     }
 
     private func snapshot(from journal: MeetingNoteRecoveryJournal?) -> MeetingNoteCoordinatorSnapshot {
@@ -1403,7 +1479,8 @@ actor MeetingNoteCoordinator {
             durableSegmentCount: journal?.canonicalSegments.count ?? 0,
             syncState: journal?.syncState,
             errorMessage: journal?.lastError,
-            unhealthySourceIDs: runtime?.events.unhealthySources() ?? []
+            unhealthySourceIDs: runtime?.events.unhealthySources() ?? [],
+            captureInterrupted: captureInterrupted
         )
     }
 
@@ -1420,6 +1497,40 @@ actor MeetingNoteCoordinator {
             return "Local recovery storage is full."
         }
         return String(describing: type(of: error))
+    }
+
+    /// A stable, content-free label for logs.
+    private static func diagnosticCode(for error: Error) -> String {
+        switch error {
+        case let error as MeetingNoteCoordinatorError:
+            switch error {
+            case .foregroundBusy: return "foreground_busy"
+            case .recoveryNotFound: return "recovery_not_found"
+            case .projectIdentityChanged: return "project_identity_changed"
+            case .captureUnavailable: return "capture_unavailable"
+            case .captureFailed: return "capture_failed"
+            case .localSaveFailed: return "local_save_failed"
+            case .publicationFailed: return "publication_failed"
+            }
+        case let error as MeetingNoteRecoveryStoreError:
+            switch error {
+            case .audioBudgetExceeded: return "recovery_audio_budget_exceeded"
+            case .missingAudio: return "recovery_audio_missing"
+            case .invalidAudio: return "recovery_audio_invalid"
+            }
+        case let error as MeetingProducerError:
+            switch error {
+            case .backpressureExceeded: return "backpressure_exceeded"
+            default: return "producer_error"
+            }
+        default:
+            let nsError = error as NSError
+            if nsError.domain == NSCocoaErrorDomain,
+               nsError.code == CocoaError.fileWriteOutOfSpace.rawValue {
+                return "disk_full"
+            }
+            return "\(nsError.domain)#\(nsError.code)"
+        }
     }
 
     private static func isCancellation(_ error: Error) -> Bool {

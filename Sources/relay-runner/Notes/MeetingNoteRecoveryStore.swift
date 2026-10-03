@@ -40,11 +40,53 @@ protocol MeetingNoteRecoveryStoring: Sendable {
 actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
     static let defaultAudioBudgetBytes = 256 * 1_024 * 1_024
 
+    private static let journalFilename = "journal.json"
+    /// Capture checkpoints arrive several times a second for the whole meeting.
+    /// They live beside the journal so each one costs only its own size, never
+    /// a decode and rewrite of the transcript-bearing journal.
+    private static let producerCheckpointFilename = "producer-checkpoint.json"
+
+    /// Write-through mirror of one session's files.
+    private struct Session {
+        var journal: MeetingNoteRecoveryJournal
+        private let acknowledgedTextBySegment: [String: String]
+        private let persistedFinalRevisionBySegment: [String: Int]
+
+        init(journal: MeetingNoteRecoveryJournal) {
+            self.journal = journal
+            acknowledgedTextBySegment = Dictionary(
+                journal.canonicalSegments.map { ($0.segmentID, $0.text) },
+                uniquingKeysWith: { _, latest in latest }
+            )
+            persistedFinalRevisionBySegment = Dictionary(
+                journal.revisions.filter(\.isFinal).map { ($0.segmentID, $0.revision) },
+                uniquingKeysWith: max
+            )
+        }
+
+        /// Transcript the journal already holds leaves the capture checkpoint,
+        /// so the checkpoint stays proportional to unsaved work.
+        func filtered(_ checkpoint: MeetingProducerCheckpoint) -> MeetingProducerCheckpoint {
+            guard let revisions = checkpoint.durableRevisions else { return checkpoint }
+            var value = checkpoint
+            value.durableRevisions = revisions.filter { revision in
+                if acknowledgedTextBySegment[revision.segmentID] == revision.text { return false }
+                guard revision.isFinal,
+                      let persisted = persistedFinalRevisionBySegment[revision.segmentID] else {
+                    return true
+                }
+                return revision.revision > persisted
+            }
+            return value
+        }
+    }
+
     private let root: URL
     private let audioBudgetBytes: Int
     private let fileManager: FileManager
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private var sessions: [String: Session] = [:]
     private var audioAwaitingCheckpoint: [String: Set<String>] = [:]
     private var audioBytesBySession: [String: Int] = [:]
 
@@ -75,33 +117,18 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
 
     func save(_ journal: MeetingNoteRecoveryJournal) throws {
         let directory = try sessionDirectory(journal.sessionID, create: true)
-        let url = directory.appendingPathComponent("journal.json")
         var value = journal
-        if fileManager.fileExists(atPath: url.path),
-           let current = try? decoder.decode(
-            MeetingNoteRecoveryJournal.self,
-            from: Data(contentsOf: url)
-           ),
-           let currentCheckpoint = current.producerCheckpoint,
+        if let currentCheckpoint = try? session(journal.sessionID)?.journal.producerCheckpoint,
            shouldPreserveCheckpoint(currentCheckpoint, over: journal.producerCheckpoint) {
             // A capture callback may persist a newer replay cursor while an
             // artifact writer call is in flight. A completed final window can
             // also remove pending descriptors without accepting another chunk.
             value.producerCheckpoint = currentCheckpoint
         }
-        if var checkpoint = value.producerCheckpoint,
-           let revisions = checkpoint.durableRevisions {
-            let acknowledged = Dictionary(
-                uniqueKeysWithValues: value.canonicalSegments.map { ($0.segmentID, $0.text) }
-            )
-            checkpoint.durableRevisions = revisions.filter {
-                acknowledged[$0.segmentID] != $0.text
-            }
-            value.producerCheckpoint = checkpoint
-        }
-        let data = try encoder.encode(value)
-        try data.write(to: url, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        var session = Session(journal: value)
+        session.journal.producerCheckpoint = value.producerCheckpoint.map(session.filtered)
+        try write(session.journal, to: directory.appendingPathComponent(Self.journalFilename))
+        sessions[journal.sessionID] = session
     }
 
     private func shouldPreserveCheckpoint(
@@ -124,13 +151,7 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
     }
 
     func load(sessionID: String) throws -> MeetingNoteRecoveryJournal? {
-        let url = try sessionDirectory(sessionID, create: false)
-            .appendingPathComponent("journal.json")
-        guard fileManager.fileExists(atPath: url.path) else { return nil }
-        return try decoder.decode(
-            MeetingNoteRecoveryJournal.self,
-            from: Data(contentsOf: url)
-        )
+        try session(sessionID)?.journal
     }
 
     func loadAll() throws -> [MeetingNoteRecoveryJournal] {
@@ -140,12 +161,8 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ).compactMap { directory in
-            let url = directory.appendingPathComponent("journal.json")
-            guard fileManager.fileExists(atPath: url.path) else { return nil }
-            return try decoder.decode(
-                MeetingNoteRecoveryJournal.self,
-                from: Data(contentsOf: url)
-            )
+            guard let stored = try readSession(in: directory) else { return nil }
+            return sessions[stored.journal.sessionID]?.journal ?? stored.journal
         }.sorted { $0.updatedAt < $1.updatedAt }
     }
 
@@ -182,12 +199,17 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         sessionID: String,
         checkpoint: MeetingProducerCheckpoint
     ) throws {
-        guard var journal = try load(sessionID: sessionID) else {
+        guard var session = try session(sessionID) else {
             throw MeetingNoteRecoveryStoreError.invalidAudio(sessionID)
         }
-        journal.producerCheckpoint = checkpoint
-        journal.updatedAt = Date().ISO8601Format(.iso8601)
-        try save(journal)
+        let filtered = session.filtered(checkpoint)
+        try write(
+            filtered,
+            to: try sessionDirectory(sessionID, create: false)
+                .appendingPathComponent(Self.producerCheckpointFilename)
+        )
+        session.journal.producerCheckpoint = filtered
+        sessions[sessionID] = session
         audioAwaitingCheckpoint[sessionID]?.subtract(checkpoint.pendingAudio.map(\.chunkID))
     }
 
@@ -242,8 +264,45 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         let directory = try sessionDirectory(sessionID, create: false)
         guard fileManager.fileExists(atPath: directory.path) else { return }
         try fileManager.removeItem(at: directory)
+        sessions.removeValue(forKey: sessionID)
         audioAwaitingCheckpoint.removeValue(forKey: sessionID)
         audioBytesBySession.removeValue(forKey: sessionID)
+    }
+
+    private func session(_ sessionID: String) throws -> Session? {
+        if let session = sessions[sessionID] { return session }
+        guard let session = try readSession(in: try sessionDirectory(sessionID, create: false)) else {
+            return nil
+        }
+        sessions[sessionID] = session
+        return session
+    }
+
+    /// The journal and the capture checkpoint are written independently, so
+    /// recovery keeps whichever replay cursor is newer.
+    private func readSession(in directory: URL) throws -> Session? {
+        let journalURL = directory.appendingPathComponent(Self.journalFilename)
+        guard fileManager.fileExists(atPath: journalURL.path) else { return nil }
+        var journal = try decoder.decode(
+            MeetingNoteRecoveryJournal.self,
+            from: Data(contentsOf: journalURL)
+        )
+        let checkpointURL = directory.appendingPathComponent(Self.producerCheckpointFilename)
+        if fileManager.fileExists(atPath: checkpointURL.path) {
+            let checkpoint = try decoder.decode(
+                MeetingProducerCheckpoint.self,
+                from: Data(contentsOf: checkpointURL)
+            )
+            if shouldPreserveCheckpoint(checkpoint, over: journal.producerCheckpoint) {
+                journal.producerCheckpoint = checkpoint
+            }
+        }
+        return Session(journal: journal)
+    }
+
+    private func write<Value: Encodable>(_ value: Value, to url: URL) throws {
+        try encoder.encode(value).write(to: url, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     private func sessionDirectory(_ sessionID: String, create: Bool) throws -> URL {

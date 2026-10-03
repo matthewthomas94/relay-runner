@@ -12,6 +12,11 @@ protocol MeetingNoteCaptureControlling: Sendable {
     func stopCaptureSourcesForInterruption() async
     func checkpoint() async -> MeetingProducerCheckpoint
     func replayAcceptedAudio(_ chunks: [MeetingAcceptedAudio]) async throws
+    func releasePersistedRevisions(_ persistedFinalRevisionBySegment: [String: Int]) async
+}
+
+extension MeetingNoteCaptureControlling {
+    func releasePersistedRevisions(_ persistedFinalRevisionBySegment: [String: Int]) async {}
 }
 
 /// Note-only capture wiring for RR-368's exclusive foreground coordinator.
@@ -107,6 +112,10 @@ actor MeetingNoteCaptureSession {
 
     func replayAcceptedAudio(_ chunks: [MeetingAcceptedAudio]) async throws {
         try await producer.replayAcceptedAudio(chunks)
+    }
+
+    func releasePersistedRevisions(_ persistedFinalRevisionBySegment: [String: Int]) async {
+        await producer.releasePersistedRevisions(persistedFinalRevisionBySegment)
     }
 
     private func startSources() async throws {

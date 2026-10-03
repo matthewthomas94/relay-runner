@@ -2625,6 +2625,17 @@ private struct ProgramNoteDetailPanel: View {
                     guard let url = noteFileURL else { return }
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
+                if detail.item.card.metadata?.statusLabel != nil, !detail.item.isArchived {
+                    ProgramDetailActionButton(
+                        systemName: "arrow.clockwise",
+                        title: "Retry summary",
+                        disabled: false,
+                        help: "Generate this note's title and summary again"
+                    ) {
+                        onMetadataRetry()
+                    }
+                    .transition(.relayElement)
+                }
                 if showsStop {
                     ProgramDetailActionButton(
                         systemName: "stop.fill",
@@ -2691,22 +2702,13 @@ private struct ProgramNoteDetailPanel: View {
                 }
             }
 
-            if let metadata = detail.item.card.metadata {
-                if let status = metadata.statusLabel {
-                    HStack {
-                        RelaySwap(status, style: .text, alignment: .leading) { status in
-                            Text(status)
-                                .font(AppTypography.font(.supporting))
-                                .foregroundStyle(ProgramBoardStyle.mutedText)
-                        }
-                        if !detail.item.isArchived {
-                            Button("Retry summary", action: onMetadataRetry)
-                                .buttonStyle(.plain)
-                                .transition(.relayElement)
-                        }
-                    }
-                    .transition(.relayElement)
+            if let status = detail.item.card.metadata?.statusLabel {
+                RelaySwap(status, style: .text, alignment: .leading) { status in
+                    Text(status)
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
                 }
+                .transition(.relayElement)
             }
 
             if let errorMessage = captureErrorMessage {
@@ -2782,6 +2784,9 @@ private struct ProgramNoteDetailPanel: View {
     }
     private var captureErrorMessage: String? {
         guard isCurrentCapture, let message = captureSnapshot.errorMessage else { return nil }
+        if captureSnapshot.phase == .recording || captureSnapshot.phase == .paused {
+            return "The latest transcript hasn't saved yet. Recording continues and saving retries automatically."
+        }
         let normalized = message.lowercased()
         if normalized.contains("permission") || normalized.contains("microphone") {
             return "Microphone or computer-audio access is unavailable. Check permissions, then try again."
