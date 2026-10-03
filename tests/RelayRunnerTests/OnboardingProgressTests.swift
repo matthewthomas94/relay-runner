@@ -198,20 +198,27 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertFalse(indicators.contains { $0.isIndeterminate })
     }
 
-    func testTutorialRecordingGateRequiresStartSendAndResponseInOrderWithoutSpeech() {
+    func testTutorialRecordingGateRequiresStartSpeechSendAndResponseInOrder() {
         var gate = OnboardingSessionControlsTutorial.RecordingGate.waitingForStart
 
-        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .practiceSent)
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .speechDetected)
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .recordingSent)
         gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .responseReady)
         XCTAssertEqual(gate, .waitingForStart)
 
-        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .practiceStarted)
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .recordingStarted)
+        XCTAssertEqual(gate, .waitingForSpeech)
+
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .recordingSent)
+        XCTAssertEqual(gate, .waitingForSpeech)
+
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .speechDetected)
         XCTAssertEqual(gate, .waitingForSend)
 
         gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .playbackRequested)
         XCTAssertEqual(gate, .waitingForSend)
 
-        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .practiceSent)
+        gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .recordingSent)
         XCTAssertEqual(gate, .waitingForResponse)
 
         gate = OnboardingSessionControlsTutorial.nextRecordingGate(gate, event: .playbackRequested)
