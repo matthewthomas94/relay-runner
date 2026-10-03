@@ -2,6 +2,36 @@ import FluidAudio
 import Foundation
 import QuartzCore
 
+/// Process-facing seams for `STTEngine`. Production uses `.live`; tests inject
+/// a controllable model load, a fake capture backend, and a silent voice writer
+/// so lifecycle races run deterministically without a microphone or bridge.
+struct STTEngineDependencies {
+    typealias ModelLoader = (
+        _ modelName: String,
+        _ progress: @escaping @Sendable (String) -> Void
+    ) async throws -> AsrManager
+    typealias CaptureFactory = (
+        _ sampleHandler: @escaping ([Float]) -> Void,
+        _ isRecording: @escaping () -> Bool
+    ) -> AudioCaptureLifecycle
+
+    var loadModel: ModelLoader
+    var makeCapture: CaptureFactory
+    var makeGesture: (_ activationKey: String) -> CapsLockGesture
+    var prepareVoiceOutput: () -> Void
+    var writeVoiceOutput: (String) -> Bool
+
+    static let live = STTEngineDependencies(
+        loadModel: STTEngine.loadParakeetModel,
+        makeCapture: { sampleHandler, isRecording in
+            AudioCaptureLifecycle(sampleHandler: sampleHandler, isRecording: isRecording)
+        },
+        makeGesture: { CapsLockGesture(activationKey: $0) },
+        prepareVoiceOutput: { FIFOWriter.ensureFifo(FIFOWriter.voiceFifoPath) },
+        writeVoiceOutput: { FIFOWriter.write($0) }
+    )
+}
+
 /// FluidAudio Parakeet STT engine. Ported from stt-sidecar/Sources/VoiceListen/main.swift.
 /// Runs audio capture, VAD, transcription, and gesture detection in a background task.
 @Observable
@@ -22,6 +52,9 @@ final class STTEngine: @unchecked Sendable {
     var speechDetectedSerial = 0
     var deliveredTranscriptSerial = 0
     var tutorialTranscriptSerial = 0
+    /// Bumped when the activation gesture fires while no session owns capture.
+    /// The microphone stays closed; AppState shows the session affordance.
+    var captureOwnerRequestedSerial = 0
     var tutorialActive = false
 
     // MARK: - Configuration
@@ -60,27 +93,38 @@ final class STTEngine: @unchecked Sendable {
     @ObservationIgnored private var routeCancellationNoticePending = false
     @ObservationIgnored private var captureReady = false
     @ObservationIgnored private var referenceAudioToken: UUID?
-    @ObservationIgnored private lazy var audioCapture: AudioCaptureLifecycle = AudioCaptureLifecycle(
-        sampleHandler: { [weak self] samples in
-            self?.audioBuffer.append(samples)
-        },
-        isRecording: { [weak self] in
-            guard let self else { return false }
-            return self.isRecording || self.gesture.isRecording
-        }
-    )
+    /// Serializes every decision to open or close the microphone. Lock order:
+    /// `captureOwnershipLock` before `captureInterruptionLock`, never reversed.
+    @ObservationIgnored private let captureOwnershipLock = NSLock()
+    @ObservationIgnored private var captureAllowed = false
+    @ObservationIgnored private var captureModelReady = false
+    @ObservationIgnored private var engineStopped = false
+    @ObservationIgnored private let dependencies: STTEngineDependencies
+    /// Built eagerly in init: ownership changes reach it from both the main
+    /// thread and the model-load task, and a lazy initializer is not thread-safe.
+    @ObservationIgnored private var audioCapture: AudioCaptureLifecycle!
 
     // MARK: - Init
 
-    init(config: SttConfig) {
+    init(config: SttConfig, dependencies: STTEngineDependencies = .live) {
+        self.dependencies = dependencies
         self.modelName = config.model
         self.inputMode = config.input_mode
         self.vadSensitivity = config.vad_sensitivity
-        self.gesture = CapsLockGesture(activationKey: config.activation_key)
+        self.gesture = dependencies.makeGesture(config.activation_key)
         self.minSamples = sampleRate      // 1 second
         self.keepSamples = sampleRate * 200 / 1000  // 200ms
         self.recordingChunkSamples = sampleRate * 25
         self.recordingKeepSamples = sampleRate
+        self.audioCapture = dependencies.makeCapture(
+            { [weak self] samples in
+                self?.audioBuffer.append(samples)
+            },
+            { [weak self] in
+                guard let self else { return false }
+                return self.isRecording || self.gesture.isRecording
+            }
+        )
     }
 
     /// Inject the modal-confirmation hooks for Relay Actions `propose_action`
@@ -97,37 +141,29 @@ final class STTEngine: @unchecked Sendable {
     // MARK: - Lifecycle
 
     func start() async throws {
-        FIFOWriter.ensureFifo(FIFOWriter.voiceFifoPath)
+        dependencies.prepareVoiceOutput()
 
         // Load model (with download progress feedback)
-        let modelVersion: AsrModelVersion = modelName.contains("v3") ? .v3 : .v2
         NSLog("[STTEngine] Loading model: \(modelName)...")
         statusMessage = "Loading STT model..."
-        FIFOWriter.write("__STATUS__:Loading Parakeet \(modelName) model...")
+        _ = dependencies.writeVoiceOutput("__STATUS__:Loading Parakeet \(modelName) model...")
 
-        let models = try await AsrModels.downloadAndLoad(version: modelVersion) { [weak self] progress in
-            let pct = Int(progress.fractionCompleted * 100)
-            let message: String
-            switch progress.phase {
-            case .listing:
-                message = "Checking models..."
-            case .downloading(let completed, let total):
-                message = "Downloading model \(completed)/\(total) (\(pct)%)"
-            case .compiling(let name):
-                message = "Compiling \(name)..."
-            }
+        let manager = try await dependencies.loadModel(modelName) { [weak self] message in
             Task { @MainActor in
                 self?.statusMessage = message
             }
-            FIFOWriter.write("__STATUS__:\(message)")
+            _ = self?.dependencies.writeVoiceOutput("__STATUS__:\(message)")
             NSLog("[STTEngine] \(message)")
         }
-        let manager = AsrManager()
-        try await manager.loadModels(models)
+        // A model load that finishes after stop() must not reopen the mic.
+        guard !isEngineStopped else {
+            NSLog("[STTEngine] Model load finished after stop; capture stays closed.")
+            return
+        }
         self.asrManager = manager
         NSLog("[STTEngine] Model loaded.")
         statusMessage = "Listening"
-        FIFOWriter.write("__STATUS__:Listening")
+        _ = dependencies.writeVoiceOutput("__STATUS__:Listening")
 
         audioCapture.onWillReconfigure = { [weak self] interruption in
             self?.prepareForCaptureReconfiguration(interruption)
@@ -136,15 +172,9 @@ final class STTEngine: @unchecked Sendable {
             self?.captureDidRecover(recovery)
         }
         do {
-            if !referenceAudioSuspended, let route = try audioCapture.start() {
-                setCaptureReady(true)
-                NSLog(
-                    "[STTEngine] Audio capture started. device=\(route.deviceID) " +
-                    "format=\(route.sampleRate)Hz/\(route.channelCount)ch mode=\(inputMode)"
-                )
-            }
+            guard try markModelReadyAndApplyOwnership() else { return }
         } catch {
-            FIFOWriter.write("__CONTINUITY__:capture_failed")
+            _ = dependencies.writeVoiceOutput("__CONTINUITY__:capture_failed")
             throw error
         }
 
@@ -156,6 +186,97 @@ final class STTEngine: @unchecked Sendable {
             } else {
                 try await self.runAlwaysOnMode()
             }
+        }
+    }
+
+    static func loadParakeetModel(
+        modelName: String,
+        progress: @escaping @Sendable (String) -> Void
+    ) async throws -> AsrManager {
+        let modelVersion: AsrModelVersion = modelName.contains("v3") ? .v3 : .v2
+        let models = try await AsrModels.downloadAndLoad(version: modelVersion) { update in
+            let pct = Int(update.fractionCompleted * 100)
+            switch update.phase {
+            case .listing:
+                progress("Checking models...")
+            case .downloading(let completed, let total):
+                progress("Downloading model \(completed)/\(total) (\(pct)%)")
+            case .compiling(let name):
+                progress("Compiling \(name)...")
+            }
+        }
+        let manager = AsrManager()
+        try await manager.loadModels(models)
+        return manager
+    }
+
+    /// Session-level microphone ownership. The model and gestures stay live
+    /// regardless; AVAudioEngine capture runs only while an owner allows it.
+    /// Idempotent, so callers may re-assert the current owner freely.
+    func setCaptureAllowed(_ allowed: Bool) {
+        captureOwnershipLock.lock()
+        defer { captureOwnershipLock.unlock() }
+        guard captureAllowed != allowed else { return }
+        captureAllowed = allowed
+        if !allowed {
+            // The owner is gone: drop any half-spoken command with the mic.
+            gesture.reset()
+            isRecording = false
+            partialTranscription = ""
+        }
+        do {
+            try applyCaptureOwnershipLocked()
+        } catch {
+            setCaptureReady(false)
+            let message = "Microphone capture could not start. Check the input device."
+            statusMessage = message
+            _ = dependencies.writeVoiceOutput("__CONTINUITY__:capture_failed")
+            _ = dependencies.writeVoiceOutput("__STATUS__:\(message)")
+            NSLog("[STTEngine] Audio capture start failed: \(error)")
+        }
+    }
+
+    private var isEngineStopped: Bool {
+        captureOwnershipLock.lock()
+        defer { captureOwnershipLock.unlock() }
+        return engineStopped
+    }
+
+    /// Returns false when stop() won the race with the model load.
+    private func markModelReadyAndApplyOwnership() throws -> Bool {
+        captureOwnershipLock.lock()
+        defer { captureOwnershipLock.unlock() }
+        guard !engineStopped else { return false }
+        captureModelReady = true
+        try applyCaptureOwnershipLocked()
+        return true
+    }
+
+    var isCaptureAllowed: Bool {
+        captureOwnershipLock.lock()
+        defer { captureOwnershipLock.unlock() }
+        return captureAllowed
+    }
+
+    /// Opens or closes capture to match ownership. Caller holds `captureOwnershipLock`.
+    private func applyCaptureOwnershipLocked() throws {
+        let shouldCapture = captureAllowed && captureModelReady && !engineStopped && !referenceAudioSuspended
+        guard shouldCapture else {
+            captureInterruptionLock.lock()
+            captureInterruptionEpoch &+= 1
+            captureReady = false
+            captureInterruptionLock.unlock()
+            resetRecordingBuffer()
+            audioCapture.stop()
+            return
+        }
+        if let route = try audioCapture.start() {
+            setCaptureReady(true)
+            audioBuffer.accepting = inputMode != "caps_lock_toggle"
+            NSLog(
+                "[STTEngine] Audio capture started. device=\(route.deviceID) " +
+                "format=\(route.sampleRate)Hz/\(route.channelCount)ch mode=\(inputMode)"
+            )
         }
     }
 
@@ -185,7 +306,9 @@ final class STTEngine: @unchecked Sendable {
         captureInterruptionLock.unlock()
         resetRecordingBuffer()
         gesture.reset()
+        captureOwnershipLock.lock()
         audioCapture.stop()
+        captureOwnershipLock.unlock()
         return token
     }
 
@@ -197,12 +320,11 @@ final class STTEngine: @unchecked Sendable {
         captureInterruptionLock.unlock()
         resetRecordingBuffer()
         gesture.reset()
-        guard processingTask != nil else { return } // A stopped/replaced engine stays stopped.
+        // A stopped engine, or one whose session ended meanwhile, stays closed.
+        captureOwnershipLock.lock()
+        defer { captureOwnershipLock.unlock() }
         do {
-            if try audioCapture.start() != nil {
-                setCaptureReady(true)
-                audioBuffer.accepting = inputMode != "caps_lock_toggle"
-            }
+            try applyCaptureOwnershipLocked()
         } catch {
             setCaptureReady(false)
             statusMessage = "Microphone capture could not resume. Check the input device."
@@ -219,6 +341,10 @@ final class STTEngine: @unchecked Sendable {
     }
 
     func stop() {
+        captureOwnershipLock.lock()
+        engineStopped = true
+        captureModelReady = false
+        captureOwnershipLock.unlock()
         gesture.stopMonitoring()
         audioBuffer.accepting = false
         captureInterruptionLock.lock()
@@ -312,7 +438,7 @@ final class STTEngine: @unchecked Sendable {
             audioBuffer.accepting = false
             statusMessage = error.localizedDescription
             writeVoiceOutput("__CONTINUITY__:capture_failed")
-            FIFOWriter.write("__STATUS__:\(error.localizedDescription)")
+            _ = dependencies.writeVoiceOutput("__STATUS__:\(error.localizedDescription)")
             NSLog(
                 "[STTEngine] Audio route recovery failed. " +
                 "reasons=\(recovery.reasons.sorted().joined(separator: ",")) error=\(error)"
@@ -329,7 +455,7 @@ final class STTEngine: @unchecked Sendable {
             ? "Microphone changed — recording cancelled. Ready to retry."
             : "Listening"
         statusMessage = message
-        FIFOWriter.write("__STATUS__:\(message)")
+        _ = dependencies.writeVoiceOutput("__STATUS__:\(message)")
         let previousID = recovery.previousRoute.map { String($0.deviceID) } ?? "none"
         NSLog(
             "[STTEngine] Audio route recovered. previous=\(previousID) " +
@@ -359,12 +485,12 @@ final class STTEngine: @unchecked Sendable {
 
             guard let manager = asrManager else { continue }
             let captureEpoch = currentCaptureEpoch()
-            FIFOWriter.write("__CONTINUITY__:transcription_started")
+            _ = dependencies.writeVoiceOutput("__CONTINUITY__:transcription_started")
             let result = try await {
                 do {
                     return try await manager.transcribe(audio, source: .microphone)
                 } catch {
-                    FIFOWriter.write("__CONTINUITY__:transcription_failed")
+                    _ = dependencies.writeVoiceOutput("__CONTINUITY__:transcription_failed")
                     throw error
                 }
             }()
@@ -429,6 +555,15 @@ final class STTEngine: @unchecked Sendable {
             if let event = gesture.poll(currentSegment: transcript.transcript) {
                 switch event {
                 case .startRecording:
+                    // No session owns the mic: keep it closed, skip __TTS_STOP__,
+                    // and let AppState show the session affordance instead.
+                    guard isCaptureAllowed else {
+                        gesture.reset()
+                        isRecording = false
+                        partialTranscription = ""
+                        captureOwnerRequestedSerial += 1
+                        continue
+                    }
                     guard isCaptureReady() else {
                         gesture.reset()
                         isRecording = false
@@ -616,7 +751,8 @@ final class STTEngine: @unchecked Sendable {
     private func writeVoiceOutput(_ text: String) -> Bool {
         Self.writeVoiceOutput(
             text, tutorialActive: tutorialActive,
-            referenceAudioSuspended: referenceAudioSuspended
+            referenceAudioSuspended: referenceAudioSuspended,
+            writer: dependencies.writeVoiceOutput
         )
     }
 

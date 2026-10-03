@@ -64,19 +64,27 @@ final class VoiceSampleRecorder {
                        if let token { capture?.resumeAfterReferenceAudio(token) }
                    }
                }, permissionStillGranted: { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized },
+               sessionActive: { appState.referenceRecordingAllowed },
                completion: completion)
     }
 
     /// Dependency-injected lifecycle permits permission/cancel/device tests
     /// without opening a real microphone or changing the running app.
+    /// `sessionActive` is the same session boundary command capture obeys: it
+    /// is checked before the permission prompt, after it, and while recording.
     func record(requestPermission: (@escaping (Bool) -> Void) -> Void,
                 acquire: @escaping () throws -> (() -> Void),
                 permissionStillGranted: @escaping () -> Bool,
+                sessionActive: @escaping () -> Bool,
                 completion: @escaping ([Float]) -> Void) {
         guard !isBusy else { return }
-        isBusy = true
         elapsed = 0
         error = nil
+        guard sessionActive() else {
+            error = CustomVoiceFailure.sessionRequired.localizedDescription
+            return
+        }
+        isBusy = true
         finishRequested = false
         let token = UUID()
         generation = token
@@ -86,6 +94,11 @@ final class VoiceSampleRecorder {
                 guard self.generation == token else { self.isBusy = false; return }
                 guard granted else {
                     self.error = CustomVoiceFailure.permission.localizedDescription
+                    self.isBusy = false
+                    return
+                }
+                guard sessionActive() else {
+                    self.error = CustomVoiceFailure.sessionRequired.localizedDescription
                     self.isBusy = false
                     return
                 }
@@ -110,12 +123,14 @@ final class VoiceSampleRecorder {
                     while recorder.isRecording && !self.finishRequested && self.clock() < deadline {
                         guard self.generation == token else { throw CancellationError() }
                         guard permissionStillGranted() else { throw CustomVoiceFailure.permission }
+                        guard sessionActive() else { throw CustomVoiceFailure.sessionRequired }
                         self.elapsed = min(10, recorder.currentTime)
                         try await Task.sleep(for: .milliseconds(50))
                     }
                     recorder.stop()
                     guard self.generation == token else { throw CancellationError() }
                     guard permissionStillGranted() else { throw CustomVoiceFailure.permission }
+                    guard sessionActive() else { throw CustomVoiceFailure.sessionRequired }
                     let samples = try self.decode(url)
                     guard samples.count >= 120_000 else { throw CustomVoiceFailure.duration }
                     // Recording output enters the exact same editor/import pipeline.
