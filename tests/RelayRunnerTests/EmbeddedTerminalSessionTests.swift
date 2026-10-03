@@ -61,6 +61,115 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
         XCTAssertEqual(session.phase, .running)
     }
 
+    func testLoaderStandsInUntilTheProviderInterfaceIsShownForBothProviders() throws {
+        for provider in ["Codex", "Claude"] {
+            let process = FakeEmbeddedTerminalProcess()
+            process.autoReady = false
+            let session = EmbeddedTerminalSession(processFactory: { process })
+            XCTAssertNil(session.loadingStatus, provider)
+
+            try session.beginPreparing(providerName: provider, workingDirectory: "/repo")
+            XCTAssertEqual(session.loadingStatus, "Updating \(provider)")
+            try session.start(launch())
+            XCTAssertEqual(session.loadingStatus, "Starting \(provider)")
+
+            process.onInteractive?()
+            XCTAssertTrue(session.providerInterfaceShown, provider)
+            XCTAssertEqual(session.phase, .starting, provider)
+            XCTAssertNil(session.loadingStatus, "A first-run screen is never hidden")
+
+            process.onReady?()
+            XCTAssertEqual(session.phase, .running, provider)
+            XCTAssertNil(session.loadingStatus, provider)
+
+            // A restart shows the loader again until its own interface appears.
+            session.end()
+            try session.beginPreparing(providerName: provider, workingDirectory: "/repo")
+            try session.start(launch())
+            XCTAssertFalse(session.providerInterfaceShown, provider)
+            XCTAssertEqual(session.loadingStatus, "Starting \(provider)")
+            session.end()
+        }
+    }
+
+    func testLoaderGivesWayToALaunchFailure() throws {
+        let process = FakeEmbeddedTerminalProcess()
+        process.autoReady = false
+        let session = EmbeddedTerminalSession(processFactory: { process })
+        try session.beginPreparing(providerName: "Claude", workingDirectory: "/repo")
+        try session.start(launch())
+        XCTAssertNotNil(session.loadingStatus)
+
+        process.emitExit(rawStatus: 1 << 8)
+        drainMainQueue()
+        guard case .failed = session.phase else {
+            return XCTFail("Exit before readiness is a failure, got \(session.phase)")
+        }
+        XCTAssertNil(session.loadingStatus, "The terminal output and failure stay visible")
+        XCTAssertTrue(session.presentsTerminal)
+    }
+
+    func testClaudeFirstRunScreenEndsTheLoaderBeforeReadiness() throws {
+        let fixture = try makeRealPTYFixture()
+        // Only the spawn is recorded: Claude has not reached SessionStart.
+        try "{\"stage\":\"provider_spawn\",\"outcome\":\"started\"}\n".write(
+            to: fixture.events,
+            atomically: true,
+            encoding: .utf8
+        )
+        let process = SwiftTermEmbeddedProcess(
+            readinessStabilityInterval: 0.2,
+            readinessPollInterval: 0.02,
+            voiceDeliveryPaths: deliveryPaths(in: fixture.directory)
+        )
+        let session = EmbeddedTerminalSession(processFactory: { process })
+        try session.beginPreparing(
+            providerName: "Claude",
+            providerKey: "claude",
+            workingDirectory: fixture.directory.path
+        )
+        try session.start(ProcessManager.PreparedSessionLaunch(
+            executable: "/bin/bash",
+            arguments: ["-c", """
+                stty -icanon -echo
+                printf 'Do you trust the files in this folder?\\r\\n'
+                sleep 5
+                """],
+            launcherPath: "/bin/bash",
+            workingDirectory: fixture.directory.path,
+            target: .claude,
+            voiceDelivery: .appOwned,
+            sessionEventPath: fixture.events.path,
+            providerSessionID: "first-run-screen"
+        ))
+        defer { session.end() }
+        XCTAssertEqual(session.loadingStatus, "Starting Claude")
+
+        waitOnMainQueue(0.8)
+        XCTAssertTrue(session.providerInterfaceShown)
+        XCTAssertNil(session.loadingStatus, "The trust screen is shown")
+        XCTAssertEqual(session.phase, .starting, "Readiness still waits for SessionStart")
+
+        let handle = try FileHandle(forWritingTo: fixture.events)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("{\"stage\":\"provider_session_start\",\"outcome\":\"ready\"}\n".utf8))
+        try handle.close()
+        waitOnMainQueue(0.6)
+        XCTAssertEqual(session.phase, .running)
+    }
+
+    private func drainMainQueue() {
+        let drained = expectation(description: "main queue drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1)
+    }
+
+    private func waitOnMainQueue(_ seconds: TimeInterval) {
+        let elapsed = expectation(description: "waited \(seconds)s")
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { elapsed.fulfill() }
+        wait(for: [elapsed], timeout: seconds + 1)
+    }
+
     func testStartRejectsDuplicateActiveSession() throws {
         let process = FakeEmbeddedTerminalProcess()
         let session = EmbeddedTerminalSession(processFactory: { process })
@@ -90,16 +199,19 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
 
         try session.beginPreparing(providerName: "Codex", workingDirectory: "/repo")
         try session.start(launch())
+        XCTAssertTrue(session.presentsTerminal)
         first.emitExit(rawStatus: 256)
         wait(for: [exited], timeout: 1)
 
         XCTAssertEqual(session.phase, .exited(1))
+        XCTAssertFalse(session.presentsTerminal, "The tab returns to its empty state")
 
         try session.beginPreparing(providerName: "Claude", workingDirectory: "/other")
         try session.start(launch())
 
         XCTAssertEqual(session.phase, .running)
         XCTAssertEqual(second.startCount, 1)
+        XCTAssertTrue(session.presentsTerminal)
     }
 
     func testExplicitEndTerminatesOnceAndIgnoresLateExit() throws {
@@ -119,6 +231,7 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
         XCTAssertEqual(process.terminateCount, 1)
         XCTAssertEqual(session.phase, .ended)
         XCTAssertNotNil(session.hostedView)
+        XCTAssertFalse(session.presentsTerminal, "The stale output gives way to the empty state")
     }
 
     func testEndKeepsPhysicalProcessOwnershipVisibleUntilDelayedTeardownCompletes() throws {
@@ -2973,6 +3086,7 @@ private final class FakeEmbeddedTerminalProcess: EmbeddedTerminalProcess {
     var childPID: Int? = 123
     var onExit: ((Int32?) -> Void)?
     var onReady: (() -> Void)?
+    var onInteractive: (() -> Void)?
     var onTitle: ((String) -> Void)?
     var startError: Error?
     var autoReady = true

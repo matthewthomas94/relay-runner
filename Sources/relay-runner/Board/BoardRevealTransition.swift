@@ -296,9 +296,9 @@ final class BoardRevealContainerView: NSView {
         contentContainerView.isHidden = false
         contentContainerView.alphaValue = 0
         setContentYOffset(hiddenContentYOffset)
-        // The Workspace takes the loading label's place only once it has left.
-        let labelExit = revealView.loadingLabelExitRemaining
-        let delay = labelExit > 0 ? labelExit + RelayMotion.replacementGap : 0
+        // The Workspace takes the loader's place only once it has left.
+        let loaderExit = revealView.loadingExitRemaining
+        let delay = loaderExit > 0 ? loaderExit + RelayMotion.replacementGap : 0
         animateContentYOffset(
             from: hiddenContentYOffset,
             to: 0,
@@ -455,19 +455,19 @@ final class BoardRevealContainerView: NSView {
 private final class BoardRevealSurfaceView: NSView {
     private let plan: BoardRevealTransitionPlan
     private let surfaceMaskLayer = CAShapeLayer()
-    private let loadingLabel = BoardRevealLoadingLabelView()
+    private var loadingView: SkeletonLoaderView?
     private var surfaceFrame: CGRect
     private var loading = false
-    private var loadingLabelVisible = false
-    private var loadingLabelExitEndsAt: CFTimeInterval = 0
+    private var loadingVisible = false
+    private var loadingExitEndsAt: CFTimeInterval = 0
     private var animationTimer: Timer?
     private var animationCompletion: (() -> Void)?
 
     override var isFlipped: Bool { true }
 
-    /// How long the loading label still needs to finish leaving.
-    var loadingLabelExitRemaining: TimeInterval {
-        max(0, loadingLabelExitEndsAt - CACurrentMediaTime())
+    /// How long the loader still needs to finish leaving.
+    var loadingExitRemaining: TimeInterval {
+        max(0, loadingExitEndsAt - CACurrentMediaTime())
     }
 
     init(frame: NSRect, plan: BoardRevealTransitionPlan) {
@@ -483,10 +483,8 @@ private final class BoardRevealSurfaceView: NSView {
             "position": NSNull(),
         ]
         layer?.mask = surfaceMaskLayer
-        loadingLabel.isHidden = true
-        addSubview(loadingLabel)
         updateSurfaceMask()
-        updateLoadingLabel(animated: false)
+        updateLoadingIndicator(animated: false)
     }
 
     required init?(coder: NSCoder) {
@@ -504,14 +502,14 @@ private final class BoardRevealSurfaceView: NSView {
     override func layout() {
         super.layout()
         updateSurfaceMask()
-        updateLoadingLabel(animated: true)
+        updateLoadingIndicator(animated: true)
     }
 
     func showExpanded() {
         cancelAnimation()
         surfaceFrame = plan.expandedFrame
         updateSurfaceMask()
-        updateLoadingLabel(animated: false)
+        updateLoadingIndicator(animated: false)
         needsDisplay = true
     }
 
@@ -519,14 +517,14 @@ private final class BoardRevealSurfaceView: NSView {
         cancelAnimation()
         surfaceFrame = plan.compactFrame
         updateSurfaceMask()
-        updateLoadingLabel(animated: false)
+        updateLoadingIndicator(animated: false)
         needsDisplay = true
     }
 
     func setLoading(_ loading: Bool) {
         guard self.loading != loading else { return }
         self.loading = loading
-        updateLoadingLabel(animated: true)
+        updateLoadingIndicator(animated: true)
     }
 
     func animateToFullWidth(
@@ -602,7 +600,7 @@ private final class BoardRevealSurfaceView: NSView {
             let progress = Self.easeOutQuart(CGFloat(rawProgress))
             self.surfaceFrame = Self.interpolate(from: startFrame, to: targetFrame, progress: progress)
             self.updateSurfaceMask()
-            self.updateLoadingLabel(animated: true)
+            self.updateLoadingIndicator(animated: true)
             self.needsDisplay = true
             if !reportedFirstMotion {
                 reportedFirstMotion = true
@@ -614,7 +612,7 @@ private final class BoardRevealSurfaceView: NSView {
                 self.animationTimer = nil
                 self.surfaceFrame = targetFrame
                 self.updateSurfaceMask()
-                self.updateLoadingLabel(animated: true)
+                self.updateLoadingIndicator(animated: true)
                 self.needsDisplay = true
                 let completion = self.animationCompletion
                 self.animationCompletion = nil
@@ -626,30 +624,53 @@ private final class BoardRevealSurfaceView: NSView {
         animationTimer = timer
     }
 
-    /// Keeps the loading label centred on the surface and fades it in or out
-    /// (with the horizontal text motion) when it starts or stops showing.
-    private func updateLoadingLabel(animated: Bool) {
-        let size = loadingLabel.intrinsicContentSize
-        loadingLabel.frame = NSRect(
-            x: surfaceFrame.midX - size.width / 2,
-            y: surfaceFrame.midY - size.height / 2,
-            width: size.width,
-            height: size.height
-        )
-
+    /// Shows the update-check loader across the expanded surface, below the
+    /// notch strip, once the surface has room for it. It rises in and sinks
+    /// out like any surface, and leaves the view hierarchy once it has gone
+    /// so its animation stops.
+    private func updateLoadingIndicator(animated: Bool) {
         let visible = loading && surfaceFrame.height > plan.fullWidthFrame.height + 40
-        guard visible != loadingLabelVisible else { return }
-        loadingLabelVisible = visible
+        guard visible != loadingVisible else { return }
+        loadingVisible = visible
         let duration = animated && window != nil
             ? (visible ? RelayMotion.enterDuration : RelayMotion.exitDuration)
             : 0
         if visible {
-            loadingLabelExitEndsAt = 0
-            RelayLayerMotion.animateIn(loadingLabel, style: .text, duration: duration)
-        } else {
-            loadingLabelExitEndsAt = CACurrentMediaTime() + duration
-            RelayLayerMotion.animateOut(loadingLabel, style: .text, duration: duration)
+            loadingExitEndsAt = 0
+            let view = loadingView ?? makeLoadingView()
+            RelayLayerMotion.animateIn(view, style: .surface, duration: duration) { [weak self, weak view] in
+                // The shimmer never stops, so the loader rests without a blur pass.
+                guard let self, self.loadingVisible, let layer = view?.layer else { return }
+                layer.filters = layer.filters?.filter {
+                    ($0 as? CIFilter)?.name != RelayLayerMotion.blurFilterName
+                }
+            }
+        } else if let view = loadingView {
+            loadingExitEndsAt = CACurrentMediaTime() + duration
+            RelayLayerMotion.animateOut(view, style: .surface, duration: duration) { [weak self, weak view] in
+                guard let self, !self.loadingVisible, let view, self.loadingView === view else { return }
+                view.removeFromSuperview()
+                self.loadingView = nil
+            }
         }
+    }
+
+    private func makeLoadingView() -> SkeletonLoaderView {
+        let notchStrip = plan.fullWidthFrame.height
+        let view = SkeletonLoaderView(
+            layout: .board(columnTop: BoardSurfaceLayout.columnTopPadding - notchStrip),
+            label: BoardUpdateStatus.workingLabel
+        )
+        view.frame = CGRect(
+            x: plan.expandedFrame.minX,
+            y: plan.expandedFrame.minY + notchStrip,
+            width: plan.expandedFrame.width,
+            height: max(0, plan.expandedFrame.height - notchStrip)
+        )
+        view.isHidden = true
+        addSubview(view)
+        loadingView = view
+        return view
     }
 
     private func surfacePath(in rect: CGRect) -> NSBezierPath {
@@ -720,38 +741,6 @@ private final class BoardRevealSurfaceView: NSView {
     private static func easeOutQuart(_ value: CGFloat) -> CGFloat {
         let inverse = 1 - value
         return 1 - inverse * inverse * inverse * inverse
-    }
-}
-
-private final class BoardRevealLoadingLabelView: NSView {
-    // Room around the text so the transition blur is not clipped.
-    private static let blurMargin: CGFloat = 8
-    private let text = BoardUpdateStatus.workingLabel as NSString
-    private let attributes: [NSAttributedString.Key: Any] = [
-        .font: AppTypography.appKitFont(.sectionHeading),
-        .foregroundColor: NSColor.white.withAlphaComponent(0.92),
-    ]
-
-    override var isFlipped: Bool { true }
-
-    override var intrinsicContentSize: NSSize {
-        let size = text.size(withAttributes: attributes)
-        return NSSize(
-            width: size.width + Self.blurMargin * 2,
-            height: size.height + Self.blurMargin * 2
-        )
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        text.draw(
-            in: bounds.insetBy(dx: Self.blurMargin, dy: Self.blurMargin),
-            withAttributes: attributes
-        )
     }
 }
 
