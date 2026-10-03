@@ -21,6 +21,9 @@ except ImportError:
     except ImportError:
         tomllib = None  # type: ignore
 
+# Kokoro voices offered in Settings; any other saved voice loads as Puck.
+STANDARD_VOICES = ("am_puck", "bm_george", "bf_isabella", "af_sky")
+
 
 def _parse_toml_simple(text: str) -> dict:
     """Minimal TOML parser for flat sections — fallback when no toml library is available."""
@@ -109,7 +112,7 @@ def load_config(config_path: str | None = None) -> dict:
         },
         "tts": {
             "engine": "kokoro",
-            "voice": "bm_george",
+            "voice": "am_puck",
             "custom_voice_id": "",
             "rate": 1.3,
             "auto_play": False,
@@ -196,9 +199,10 @@ def _migrate_config(
     # Migrate say/piper -> kokoro
     if tts.get("engine") in ("say", "piper"):
         tts["engine"] = "kokoro"
-        # Map old Piper voice names to Kokoro equivalents
-        voice_map = {"Amy": "bf_emma", "Libritts": "af_bella", "Glow-TTS": "af_sarah"}
-        tts["voice"] = voice_map.get(tts.get("voice", ""), "af_bella")
+
+    # Voices outside the standard set (including old Piper names) -> Puck
+    if tts.get("voice") not in STANDARD_VOICES:
+        tts["voice"] = "am_puck"
 
     # Migrate WPM rate (int > 10) to speed multiplier (0.5-2.0)
     rate = tts.get("rate", 1.3)

@@ -121,12 +121,7 @@ def _resolve_chime(name: str) -> str:
     return f"/System/Library/Sounds/{name}.aiff"
 
 # Kokoro voice list (prefix: a=American, b=British; f=female, m=male)
-KOKORO_VOICES = [
-    "af_bella", "af_sarah", "af_nicole", "af_sky", "af_heart",
-    "am_adam", "am_michael",
-    "bf_emma", "bf_isabella",
-    "bm_george", "bm_lewis",
-]
+KOKORO_VOICES = ["am_puck", "bm_george", "bf_isabella", "af_sky"]
 
 # Search paths for Kokoro model files
 _bundled_kokoro = os.path.join(os.environ.get("VOICE_MODELS_DIR", ""), "kokoro")
@@ -232,7 +227,7 @@ class TTSWorker:
 
         # Read initial config
         cfg = load_config()["tts"]
-        self._voice: str = cfg.get("voice", "bm_george")
+        self._voice: str = cfg.get("voice", "am_puck")
         self._custom_voice_id = "" if TUTORIAL_TTS_MODE else str(cfg.get("custom_voice_id") or "")
         self._rate: float = float(cfg.get("rate", 1.3))
         self._chime: str = _resolve_chime(cfg.get("chime", "Tink"))
@@ -354,7 +349,7 @@ class TTSWorker:
                     self._profile_fingerprint_cache = (cache_key, fingerprint)
             except (CustomVoiceError, OSError):
                 fingerprint = "unavailable"
-        return VoiceSelection(getattr(self, "_voice", "bm_george"), self._rate,
+        return VoiceSelection(getattr(self, "_voice", "am_puck"), self._rate,
                               self.custom_voice_id, getattr(self, "_selection_epoch", 0), fingerprint)
 
     def _synthesize_selected(self, text, selection):

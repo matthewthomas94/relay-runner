@@ -73,9 +73,9 @@ class CustomVoiceTests(unittest.TestCase):
     def test_standard_config_compatible_and_custom_id_round_trips(self):
         config = self.root / "config.toml"
         self.assertEqual(load_config(str(config))["tts"]["custom_voice_id"], "")
-        config.write_text('[tts]\nvoice = "bf_emma"\ncustom_voice_id = "' + self.profile_id + '"\n')
+        config.write_text('[tts]\nvoice = "bf_isabella"\ncustom_voice_id = "' + self.profile_id + '"\n')
         loaded = load_config(str(config))["tts"]
-        self.assertEqual(loaded["voice"], "bf_emma")
+        self.assertEqual(loaded["voice"], "bf_isabella")
         self.assertEqual(loaded["custom_voice_id"], self.profile_id)
 
     def test_profile_hash_and_draft_resolution(self):

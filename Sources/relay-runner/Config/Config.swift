@@ -34,8 +34,11 @@ struct SttConfig: Codable, Equatable {
 }
 
 struct TtsConfig: Codable, Equatable {
+    /// Kokoro voices offered in Settings; any other saved voice loads as Puck.
+    static let standardVoices = ["am_puck", "bm_george", "bf_isabella", "af_sky"]
+
     var engine: String = "kokoro"
-    var voice: String = "bm_george"
+    var voice: String = "am_puck"
     var custom_voice_id: String? = nil
     var rate: Double = 1.3
     var auto_play: Bool = false
