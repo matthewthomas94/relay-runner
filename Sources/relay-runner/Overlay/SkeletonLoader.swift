@@ -9,6 +9,10 @@ enum SkeletonLoaderLayout: Equatable {
     case board(columnTop: CGFloat)
     /// A provider session in the embedded terminal.
     case terminal
+    /// The Notes tab: the list of notes beside the open note.
+    case notes
+    /// The Settings tab: categories, their settings, and the agent card.
+    case settings
 }
 
 /// A placeholder shape in a skeleton loader.
@@ -24,28 +28,26 @@ struct SkeletonBone: Equatable {
 }
 
 /// A loading state that sketches the screen it stands in for: bare shapes
-/// with a slow shimmer passing over them, and a shimmering label at the
-/// centre.
+/// with a slow shimmer passing over them. It shows no text; its label is
+/// for VoiceOver only.
 ///
-/// Both shimmers are Core Animation gradients, so they run on the render
+/// The shimmer is a Core Animation gradient, so it runs on the render
 /// server without per-frame work on the main thread. Reduce Motion holds
-/// everything still.
+/// it still.
 final class SkeletonLoaderView: NSView {
     static let boneBaseColor = NSColor(srgbRed: 22 / 255, green: 27 / 255, blue: 36 / 255, alpha: 1)
     static let boneHighlightColor = NSColor(srgbRed: 36 / 255, green: 43 / 255, blue: 55 / 255, alpha: 1)
     static let outlineWidth: CGFloat = 1.5
-    static let boneOpacity: Float = 0.5
+    static let boneOpacity: Float = 0.33
     static let shimmerKey = "skeletonShimmer"
 
     let skeleton: SkeletonLoaderLayout
-    let labelView: ShimmerLabelView
 
     private let panelsLayer = CAShapeLayer()
     private let bonesGradient = CAGradientLayer()
     private let bonesMask = CALayer()
     private let fillMask = CAShapeLayer()
     private let outlineMask = CAShapeLayer()
-    private var pendingLabel: String?
 
     private(set) var bones: [SkeletonBone] = []
 
@@ -53,7 +55,6 @@ final class SkeletonLoaderView: NSView {
 
     init(layout: SkeletonLoaderLayout, label: String) {
         self.skeleton = layout
-        labelView = ShimmerLabelView(text: label)
         super.init(frame: .zero)
         wantsLayer = true
 
@@ -80,8 +81,6 @@ final class SkeletonLoaderView: NSView {
         bonesGradient.opacity = Self.boneOpacity
         layer?.addSublayer(bonesGradient)
 
-        addSubview(labelView)
-
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
         setAccessibilityLabel(label)
@@ -97,14 +96,7 @@ final class SkeletonLoaderView: NSView {
 
     override func layout() {
         super.layout()
-        let labelSize = labelView.fittingSize
-        labelView.frame = CGRect(
-            x: ((bounds.width - labelSize.width) / 2).rounded(),
-            y: ((bounds.height - labelSize.height) / 2).rounded(),
-            width: labelSize.width,
-            height: labelSize.height
-        )
-        bones = Self.bones(for: skeleton, in: bounds, clearing: labelClearing)
+        bones = Self.bones(for: skeleton, in: bounds)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -140,40 +132,35 @@ final class SkeletonLoaderView: NSView {
         ShimmerAnimation.run(on: bonesGradient, duration: 2.2, pause: 0.9)
     }
 
-    /// Changes the label, letting the old one leave before the new one
-    /// arrives. Rapid changes settle on the newest label.
-    func setLabel(_ label: String, animated: Bool) {
+    /// Changes what VoiceOver announces.
+    func setLabel(_ label: String) {
         setAccessibilityLabel(label)
-        let current = pendingLabel ?? labelView.text
-        guard label != current else { return }
-        guard animated, window != nil, !labelView.isHidden else {
-            pendingLabel = nil
-            labelView.text = label
-            needsLayout = true
-            return
-        }
-        let swapping = pendingLabel != nil
-        pendingLabel = label
-        guard !swapping else { return }
-        RelayLayerMotion.animateOut(labelView, style: .text, hidesWhenDone: false) { [weak self] in
-            guard let self, let next = self.pendingLabel else { return }
-            self.pendingLabel = nil
-            self.labelView.text = next
-            self.layout()
-            RelayLayerMotion.animateIn(self.labelView, style: .text, delay: RelayMotion.replacementGap)
-        }
-    }
-
-    /// The space around the label that no bone crosses.
-    var labelClearing: CGRect {
-        labelView.frame.insetBy(dx: -24, dy: -14)
     }
 
     // MARK: Geometry
 
-    /// The board's column panels, behind the bones.
+    /// The surfaces behind the bones: the board's columns, the Notes
+    /// library, or the Settings pane and its agent card.
     static func panels(for layout: SkeletonLoaderLayout, in bounds: CGRect) -> [CGRect] {
-        guard case .board(let top) = layout else { return [] }
+        switch layout {
+        case .board(let top):
+            return boardPanels(columnTop: top, in: bounds)
+        case .terminal:
+            return []
+        case .notes:
+            return bounds.width > 0 && bounds.height > 0 ? [bounds] : []
+        case .settings:
+            let cardWidth = SettingsAgentCardLayout.width(availableWidth: bounds.width)
+            let paneWidth = bounds.width - cardWidth - SettingsAgentCardLayout.spacing
+            guard paneWidth > SettingsContentStyle.workspace.sidebarWidth + 1 + 160, bounds.height > 0 else { return [] }
+            return [
+                CGRect(x: bounds.minX, y: bounds.minY, width: paneWidth, height: bounds.height),
+                CGRect(x: bounds.maxX - cardWidth, y: bounds.minY, width: cardWidth, height: bounds.height),
+            ]
+        }
+    }
+
+    private static func boardPanels(columnTop top: CGFloat, in bounds: CGRect) -> [CGRect] {
         let padding = BoardSurfaceLayout.horizontalPadding
         let spacing = BoardSurfaceLayout.columnSpacing
         let count = CGFloat(ProgramBoardLane.allCases.count + 1)
@@ -193,16 +180,16 @@ final class SkeletonLoaderView: NSView {
         }
     }
 
-    static func bones(
-        for layout: SkeletonLoaderLayout,
-        in bounds: CGRect,
-        clearing: CGRect
-    ) -> [SkeletonBone] {
+    static func bones(for layout: SkeletonLoaderLayout, in bounds: CGRect) -> [SkeletonBone] {
         switch layout {
         case .board:
-            return boardBones(panels: panels(for: layout, in: bounds), clearing: clearing)
+            return boardBones(panels: panels(for: layout, in: bounds))
         case .terminal:
-            return terminalBones(in: bounds, clearing: clearing)
+            return terminalBones(in: bounds)
+        case .notes:
+            return notesBones(in: bounds)
+        case .settings:
+            return settingsBones(panels: panels(for: layout, in: bounds))
         }
     }
 
@@ -214,29 +201,25 @@ final class SkeletonLoaderView: NSView {
         [72, 72, 88, 72, 96, 72],
     ]
 
-    private static func boardBones(panels: [CGRect], clearing: CGRect) -> [SkeletonBone] {
+    private static func boardBones(panels: [CGRect]) -> [SkeletonBone] {
         var bones: [SkeletonBone] = []
         for (index, panel) in panels.enumerated() {
             // The column header: a title and an action.
             let headerMidY = panel.minY + ProgramBoardLayout.panelVerticalPadding
                 + ProgramBoardLayout.workHeaderHeight / 2
             let titleWidth = min(96, panel.width * 0.3)
-            for bone in [
-                SkeletonBone(
-                    rect: CGRect(x: panel.minX + 24, y: headerMidY - 6, width: titleWidth, height: 12),
-                    radius: 6,
-                    style: .fill
-                ),
-                SkeletonBone(
-                    rect: CGRect(x: panel.maxX - 24 - 24, y: headerMidY - 12, width: 24, height: 24),
-                    radius: 8,
-                    style: .fill
-                ),
-            ] where !bone.rect.intersects(clearing) {
-                bones.append(bone)
-            }
+            bones.append(SkeletonBone(
+                rect: CGRect(x: panel.minX + 24, y: headerMidY - 6, width: titleWidth, height: 12),
+                radius: 6,
+                style: .fill
+            ))
+            bones.append(SkeletonBone(
+                rect: CGRect(x: panel.maxX - 24 - 24, y: headerMidY - 12, width: 24, height: 24),
+                radius: 8,
+                style: .fill
+            ))
 
-            // The cards, stacked until the column or the label stops them.
+            // The cards, stacked until the column ends.
             let overview = index == 0
             let heights = overview
                 ? Array(repeating: ProgramBoardLayout.projectCardHeight, count: 4)
@@ -247,7 +230,7 @@ final class SkeletonLoaderView: NSView {
                 : panel.minY + ProgramBoardLayout.workCardTopOffset
             for height in heights {
                 let card = CGRect(x: panel.minX + 8, y: y, width: panel.width - 16, height: height)
-                guard card.maxY <= panel.maxY - 16, !card.intersects(clearing) else { break }
+                guard card.maxY <= panel.maxY - 16 else { break }
                 bones.append(SkeletonBone(rect: card, radius: 14, style: .outline))
                 bones.append(contentsOf: cardLines(in: card, wide: overview))
                 y = card.maxY + spacing
@@ -275,7 +258,7 @@ final class SkeletonLoaderView: NSView {
         ]
     }
 
-    private static func terminalBones(in bounds: CGRect, clearing: CGRect) -> [SkeletonBone] {
+    private static func terminalBones(in bounds: CGRect) -> [SkeletonBone] {
         let inset: CGFloat = 20
         let contentWidth = bounds.width - inset * 2
         guard contentWidth > 80, bounds.height > inset * 2 + 120 else { return [] }
@@ -299,7 +282,7 @@ final class SkeletonLoaderView: NSView {
         var y = welcome.maxY + 24
         for fraction in [0.62, 0.48, 0.7, 0.36] as [CGFloat] {
             let line = CGRect(x: bounds.minX + inset, y: y, width: lineWidth * fraction, height: 10)
-            guard line.maxY <= prompt.minY - 24, !line.intersects(clearing) else { break }
+            guard line.maxY <= prompt.minY - 24 else { break }
             bones.append(SkeletonBone(rect: line, radius: 5, style: .fill))
             y += 22
         }
@@ -318,91 +301,177 @@ final class SkeletonLoaderView: NSView {
         bones.append(SkeletonBone(rect: footer, radius: 4, style: .fill))
         return bones
     }
-}
 
-/// A single line of text with a soft band of light easing across it.
-final class ShimmerLabelView: NSView {
-    static let baseColor = NSColor.white.withAlphaComponent(0.5)
-    static let bandColor = NSColor.white.withAlphaComponent(0.98)
-    static let restingColor = NSColor.white.withAlphaComponent(0.88)
-    // Room around the text so the transition blur is not clipped.
-    private static let blurMargin: CGFloat = 8
+    static let notesHeaderHeight: CGFloat = 60
+    static let notesListWidth: CGFloat = 330
+    private static let noteCardHeights: [CGFloat] = [84, 68, 84, 76, 68, 84, 76, 68]
 
-    private let gradient = CAGradientLayer()
-    private let textMask = CATextLayer()
+    /// Mirrors the Notes library: a header with the note count, the list of
+    /// notes under a search field, and the open note beside it.
+    private static func notesBones(in bounds: CGRect) -> [SkeletonBone] {
+        guard bounds.width > notesListWidth + 160, bounds.height > notesHeaderHeight + 120 else { return [] }
+        var bones: [SkeletonBone] = []
 
-    var text: String {
-        didSet {
-            guard text != oldValue else { return }
-            updateText()
+        // The header's note count.
+        bones.append(SkeletonBone(
+            rect: CGRect(x: bounds.minX + 22, y: bounds.minY + notesHeaderHeight / 2 - 6, width: 96, height: 12),
+            radius: 6,
+            style: .fill
+        ))
+
+        // The search field and the notes under it.
+        let bodyTop = bounds.minY + notesHeaderHeight + 1
+        let list = CGRect(x: bounds.minX, y: bodyTop, width: notesListWidth, height: bounds.maxY - bodyTop)
+            .insetBy(dx: 18, dy: 18)
+        let search = CGRect(x: list.minX, y: list.minY, width: list.width, height: ProgramTicketPanelStyle.compactFieldHeight)
+        bones.append(SkeletonBone(rect: search, radius: 8, style: .outline))
+        var y = search.maxY + 12
+        for height in noteCardHeights {
+            let card = CGRect(x: list.minX, y: y, width: list.width, height: height)
+            guard card.maxY <= list.maxY else { break }
+            bones.append(SkeletonBone(rect: card, radius: 12, style: .outline))
+            bones.append(contentsOf: cardLines(in: card, wide: false))
+            y = card.maxY + 8
         }
+
+        // The open note: a title, a byline, then its paragraphs.
+        let detailMinX = bounds.minX + notesListWidth + 1 + 28
+        let detailWidth = bounds.maxX - 28 - detailMinX
+        let top = bodyTop + 28
+        bones.append(SkeletonBone(
+            rect: CGRect(x: detailMinX, y: top, width: min(320, detailWidth * 0.5), height: 16),
+            radius: 8,
+            style: .fill
+        ))
+        bones.append(SkeletonBone(
+            rect: CGRect(x: detailMinX, y: top + 28, width: min(180, detailWidth * 0.3), height: 8),
+            radius: 4,
+            style: .fill
+        ))
+        y = top + 64
+        for fraction in [0.92, 0.86, 0.9, 0.64, 0.88, 0.94, 0.8, 0.52] as [CGFloat] {
+            let line = CGRect(x: detailMinX, y: y, width: min(detailWidth, 720) * fraction, height: 10)
+            guard line.maxY <= bounds.maxY - 28 else { break }
+            bones.append(SkeletonBone(rect: line, radius: 5, style: .fill))
+            y += 20
+        }
+        return bones
     }
 
-    init(text: String) {
-        self.text = text
-        super.init(frame: .zero)
-        wantsLayer = true
-        gradient.startPoint = CGPoint(x: 0, y: 0.5)
-        gradient.endPoint = CGPoint(x: 1, y: 0.5)
-        gradient.locations = ShimmerAnimation.restingLocations
-        textMask.alignmentMode = .center
-        textMask.truncationMode = .end
-        gradient.mask = textMask
-        layer?.addSublayer(gradient)
-        updateText()
-    }
+    static let settingsFooterHeight: CGFloat = 54
 
-    required init?(coder: NSCoder) {
-        nil
-    }
+    /// Mirrors the Settings tab: the category sidebar, a column of settings
+    /// with their controls above the footer, and the agent card.
+    private static func settingsBones(panels: [CGRect]) -> [SkeletonBone] {
+        guard panels.count == 2 else { return [] }
+        let pane = panels[0]
+        let card = panels[1]
+        let style = SettingsContentStyle.workspace
+        var bones: [SkeletonBone] = []
 
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
+        // The sidebar's heading and categories.
+        bones.append(SkeletonBone(
+            rect: CGRect(x: pane.minX + 16, y: pane.minY + 22, width: 72, height: 14),
+            radius: 7,
+            style: .fill
+        ))
+        let rowWidth = style.sidebarWidth - 20
+        for index in 0..<SettingsCategory.allCases.count {
+            let row = CGRect(
+                x: pane.minX + 10,
+                y: pane.minY + 78 + CGFloat(index) * (SettingsLayout.sidebarRowHeight + 4),
+                width: rowWidth,
+                height: SettingsLayout.sidebarRowHeight
+            )
+            guard row.maxY <= pane.maxY - 16 else { break }
+            bones.append(SkeletonBone(
+                rect: CGRect(x: row.minX + 10, y: row.midY - 6, width: 12, height: 12),
+                radius: 3,
+                style: .fill
+            ))
+            bones.append(SkeletonBone(
+                rect: CGRect(x: row.minX + 32, y: row.midY - 5, width: rowWidth * (index.isMultiple(of: 2) ? 0.55 : 0.45), height: 10),
+                radius: 5,
+                style: .fill
+            ))
+        }
 
-    override var fittingSize: NSSize {
-        let size = attributedText.size()
-        return NSSize(
-            width: ceil(size.width) + Self.blurMargin * 2,
-            height: ceil(size.height) + Self.blurMargin * 2
-        )
-    }
+        // The settings: section titles, each over rows of a label and a control.
+        let detailMinX = pane.minX + style.sidebarWidth + 1
+        let columnWidth = min(style.detailMaxWidth, pane.maxX - detailMinX)
+        let contentMinX = detailMinX + style.detailPadding.leading
+        let contentWidth = columnWidth - style.detailPadding.leading - style.detailPadding.trailing
+        let footerTop = pane.maxY - settingsFooterHeight
+        let controlWidth = min(160, contentWidth * 0.3)
+        let rowHeight = SharedActionButtonMetrics.controlHeight + SettingsLayout.rowVerticalPadding * 2
+        var y = pane.minY + style.detailPadding.top
+        sections: for rowCount in [3, 2, 3] {
+            let title = CGRect(x: contentMinX, y: y, width: 120, height: 12)
+            guard title.maxY + SettingsLayout.sectionTitleSpacing + rowHeight <= footerTop - style.detailPadding.bottom else { break }
+            bones.append(SkeletonBone(rect: title, radius: 6, style: .fill))
+            y = title.maxY + SettingsLayout.sectionTitleSpacing
+            for row in 0..<rowCount {
+                guard y + rowHeight <= footerTop - style.detailPadding.bottom else { break sections }
+                let midY = y + rowHeight / 2
+                bones.append(SkeletonBone(
+                    rect: CGRect(x: contentMinX, y: midY - 5, width: min(220, contentWidth * (row.isMultiple(of: 2) ? 0.4 : 0.3)), height: 10),
+                    radius: 5,
+                    style: .fill
+                ))
+                bones.append(SkeletonBone(
+                    rect: CGRect(
+                        x: contentMinX + contentWidth - controlWidth,
+                        y: midY - SharedActionButtonMetrics.controlHeight / 2,
+                        width: controlWidth,
+                        height: SharedActionButtonMetrics.controlHeight
+                    ),
+                    radius: 6,
+                    style: .outline
+                ))
+                y += rowHeight
+            }
+            y += SettingsLayout.sectionSpacing
+        }
 
-    override func layout() {
-        super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        gradient.frame = bounds
-        textMask.frame = bounds.insetBy(dx: Self.blurMargin, dy: Self.blurMargin)
-        CATransaction.commit()
-        ShimmerAnimation.run(on: gradient, duration: 1.8, pause: 0.7)
-    }
+        // The footer: a status on the left and an action on the right.
+        let footerMidY = footerTop + settingsFooterHeight / 2
+        let footerMinX = detailMinX + style.footerPadding.leading
+        let footerMaxX = pane.maxX - style.footerPadding.trailing
+        bones.append(SkeletonBone(
+            rect: CGRect(x: footerMinX, y: footerMidY - 5, width: 10, height: 10),
+            radius: 5,
+            style: .fill
+        ))
+        bones.append(SkeletonBone(
+            rect: CGRect(x: footerMinX + 18, y: footerMidY - 4, width: min(160, (footerMaxX - footerMinX) * 0.4), height: 8),
+            radius: 4,
+            style: .fill
+        ))
+        bones.append(SkeletonBone(
+            rect: CGRect(x: footerMaxX - 72, y: footerMidY - SharedActionButtonMetrics.controlHeight / 2, width: 72, height: SharedActionButtonMetrics.controlHeight),
+            radius: 6,
+            style: .outline
+        ))
 
-    override func viewDidChangeBackingProperties() {
-        super.viewDidChangeBackingProperties()
-        textMask.contentsScale = window?.backingScaleFactor ?? 2
-    }
-
-    private var attributedText: NSAttributedString {
-        NSAttributedString(string: text, attributes: [
-            .font: AppTypography.appKitFont(.sectionHeading),
-            .foregroundColor: NSColor.white,
-        ])
-    }
-
-    private func updateText() {
-        let still = RelayLayerMotion.reduceMotion
-        gradient.colors = still
-            ? [Self.restingColor.cgColor, Self.restingColor.cgColor, Self.restingColor.cgColor]
-            : [Self.baseColor.cgColor, Self.bandColor.cgColor, Self.baseColor.cgColor]
-        textMask.string = attributedText
-        textMask.contentsScale = window?.backingScaleFactor ?? 2
-        needsLayout = true
+        // The agent card's name and subtitle.
+        let nameWidth = min(160, card.width * 0.6)
+        bones.append(SkeletonBone(
+            rect: CGRect(x: card.midX - nameWidth / 2, y: card.minY + 64, width: nameWidth, height: 18),
+            radius: 9,
+            style: .fill
+        ))
+        let subtitleWidth = min(120, card.width * 0.45)
+        bones.append(SkeletonBone(
+            rect: CGRect(x: card.midX - subtitleWidth / 2, y: card.minY + 64 + 18 + 12, width: subtitleWidth, height: 10),
+            radius: 5,
+            style: .fill
+        ))
+        return bones
     }
 }
 
-/// The repeating sweep both shimmers share: an eased pass of the gradient's
-/// bright stop from left to right, then a rest.
+/// The repeating shimmer: an eased pass of the gradient's bright stop from
+/// left to right, then a rest.
 enum ShimmerAnimation {
     /// The band sits off the left edge between passes.
     static let restingLocations: [NSNumber] = [-0.5, -0.25, 0]
@@ -437,6 +506,6 @@ struct SkeletonLoader: NSViewRepresentable {
     }
 
     func updateNSView(_ view: SkeletonLoaderView, context: Context) {
-        view.setLabel(label, animated: true)
+        view.setLabel(label)
     }
 }

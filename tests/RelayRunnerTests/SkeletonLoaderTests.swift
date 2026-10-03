@@ -18,7 +18,7 @@ final class SkeletonLoaderTests: XCTestCase {
             XCTAssertLessThanOrEqual(panel.maxY, bounds.maxY - ProgramBoardBackdropStyle.bottomPadding)
         }
 
-        let bones = SkeletonLoaderView.bones(for: .board(columnTop: boardTop), in: bounds, clearing: .null)
+        let bones = SkeletonLoaderView.bones(for: .board(columnTop: boardTop), in: bounds)
         for panel in panels {
             let cards = bones.filter { $0.style == .outline && panel.contains($0.rect) }
             XCTAssertFalse(cards.isEmpty, "Every column shows cards")
@@ -29,7 +29,7 @@ final class SkeletonLoaderTests: XCTestCase {
 
     func testTerminalSkeletonSketchesAWelcomeOutputAndPrompt() throws {
         let bounds = CGRect(x: 0, y: 0, width: 900, height: 667)
-        let bones = SkeletonLoaderView.bones(for: .terminal, in: bounds, clearing: .null)
+        let bones = SkeletonLoaderView.bones(for: .terminal, in: bounds)
         XCTAssertTrue(SkeletonLoaderView.panels(for: .terminal, in: bounds).isEmpty)
         let outlines = bones.filter { $0.style == .outline }
         XCTAssertEqual(outlines.count, 2, "A welcome box and a prompt box")
@@ -45,21 +45,72 @@ final class SkeletonLoaderTests: XCTestCase {
         }
     }
 
-    func testBonesKeepClearOfTheLabel() {
+    func testNotesSkeletonSketchesTheListAndTheOpenNote() throws {
+        let bounds = CGRect(x: 0, y: 0, width: 1_400, height: 760)
+        XCTAssertEqual(SkeletonLoaderView.panels(for: .notes, in: bounds), [bounds])
+        let bones = SkeletonLoaderView.bones(for: .notes, in: bounds)
+        let listEdge = SkeletonLoaderView.notesListWidth
+        let outlines = bones.filter { $0.style == .outline }
+        XCTAssertGreaterThan(outlines.count, 2, "A search field and several notes")
+        for outline in outlines {
+            XCTAssertLessThanOrEqual(outline.rect.maxX, listEdge, "The list keeps to the left")
+            XCTAssertGreaterThan(outline.rect.minY, SkeletonLoaderView.notesHeaderHeight)
+        }
+        let search = try XCTUnwrap(outlines.min { $0.rect.minY < $1.rect.minY })
+        XCTAssertEqual(search.rect.height, ProgramTicketPanelStyle.compactFieldHeight)
+        let noteLines = bones.filter { $0.style == .fill && $0.rect.minX > listEdge }
+        XCTAssertGreaterThan(noteLines.count, 3, "The open note shows a title and paragraphs")
+        for bone in bones {
+            XCTAssertTrue(bounds.contains(bone.rect), "\(bone.rect)")
+        }
+    }
+
+    func testSettingsSkeletonSketchesTheSidebarSettingsAndAgentCard() throws {
+        let bounds = CGRect(x: 0, y: 0, width: 1_400, height: 760)
+        let panels = SkeletonLoaderView.panels(for: .settings, in: bounds)
+        XCTAssertEqual(panels.count, 2, "The settings pane and the agent card")
+        let pane = panels[0]
+        let card = panels[1]
+        XCTAssertEqual(card.width, SettingsAgentCardLayout.width(availableWidth: bounds.width))
+        XCTAssertEqual(card.minX - pane.maxX, SettingsAgentCardLayout.spacing, accuracy: 0.001)
+        XCTAssertEqual(card.maxX, bounds.maxX)
+
+        let bones = SkeletonLoaderView.bones(for: .settings, in: bounds)
+        let sidebarEdge = pane.minX + SettingsContentStyle.workspace.sidebarWidth
+        let categoryIcons = bones.filter { $0.rect.maxX <= sidebarEdge && $0.rect.size == CGSize(width: 12, height: 12) }
+        XCTAssertEqual(categoryIcons.count, SettingsCategory.allCases.count, "One row per category")
+        let controls = bones.filter { $0.style == .outline && $0.rect.minX > sidebarEdge && pane.contains($0.rect) }
+        XCTAssertGreaterThan(controls.count, 3, "Settings rows with their controls, and the footer action")
+        for control in controls {
+            XCTAssertEqual(control.rect.height, SharedActionButtonMetrics.controlHeight)
+        }
+        XCTAssertEqual(bones.filter { card.contains($0.rect) }.count, 2, "The agent's name and subtitle")
+        for bone in bones {
+            XCTAssertTrue(panels.contains { $0.contains(bone.rect) }, "\(bone.rect)")
+        }
+    }
+
+    func testSkeletonsShowNoText() {
         for (layout, size) in [
             (SkeletonLoaderLayout.board(columnTop: boardTop), CGSize(width: 1_400, height: 760)),
             (.terminal, CGSize(width: 900, height: 420)),
+            (.notes, CGSize(width: 1_400, height: 760)),
+            (.settings, CGSize(width: 1_400, height: 760)),
         ] {
             let view = SkeletonLoaderView(layout: layout, label: BoardUpdateStatus.workingLabel)
             view.frame = CGRect(origin: .zero, size: size)
             view.layoutSubtreeIfNeeded()
-            XCTAssertEqual(view.labelView.frame.midX, size.width / 2, accuracy: 1)
-            XCTAssertEqual(view.labelView.frame.midY, size.height / 2, accuracy: 1)
-            XCTAssertFalse(view.bones.isEmpty)
-            for bone in view.bones {
-                XCTAssertFalse(bone.rect.intersects(view.labelClearing), "\(layout): \(bone.rect)")
-            }
+            XCTAssertFalse(view.bones.isEmpty, "\(layout)")
+            XCTAssertTrue(view.subviews.isEmpty, "\(layout) has no label view")
+            XCTAssertFalse(containsText(view.layer), "\(layout) draws no text")
+            XCTAssertEqual(view.accessibilityLabel(), BoardUpdateStatus.workingLabel, "VoiceOver still hears the status")
         }
+    }
+
+    private func containsText(_ layer: CALayer?) -> Bool {
+        guard let layer else { return false }
+        if layer is CATextLayer { return true }
+        return (layer.sublayers ?? []).contains { containsText($0) } || containsText(layer.mask)
     }
 
     func testLoaderShimmersWithoutTakingClicks() throws {
@@ -71,23 +122,20 @@ final class SkeletonLoaderTests: XCTestCase {
         XCTAssertEqual(view.accessibilityLabel(), "Starting Claude")
 
         let gradients = (view.layer?.sublayers ?? []).compactMap { $0 as? CAGradientLayer }
-            + (view.labelView.layer?.sublayers ?? []).compactMap { $0 as? CAGradientLayer }
-        XCTAssertEqual(gradients.count, 2, "The bones and the label each shimmer")
-        XCTAssertEqual(gradients.first?.opacity, SkeletonLoaderView.boneOpacity, "The bones sit back behind the label")
-        for gradient in gradients {
-            let shimmer = try XCTUnwrap(gradient.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAAnimationGroup)
-            XCTAssertEqual(shimmer.repeatCount, .infinity)
-            let sweep = try XCTUnwrap(shimmer.animations?.first as? CABasicAnimation)
-            XCTAssertEqual(sweep.keyPath, "locations")
-            XCTAssertLessThan(sweep.duration, shimmer.duration, "Each pass rests before the next")
-            XCTAssertNotEqual(sweep.timingFunction, CAMediaTimingFunction(name: .linear))
-        }
+        XCTAssertEqual(gradients.count, 1, "Only the bones shimmer")
+        let gradient = try XCTUnwrap(gradients.first)
+        XCTAssertEqual(gradient.opacity, 0.33, "The bones sit back at a third opacity")
+        let shimmer = try XCTUnwrap(gradient.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAAnimationGroup)
+        XCTAssertEqual(shimmer.repeatCount, .infinity)
+        let sweep = try XCTUnwrap(shimmer.animations?.first as? CABasicAnimation)
+        XCTAssertEqual(sweep.keyPath, "locations")
+        XCTAssertLessThan(sweep.duration, shimmer.duration, "Each pass rests before the next")
+        XCTAssertNotEqual(sweep.timingFunction, CAMediaTimingFunction(name: .linear))
     }
 
-    func testLabelChangesWithoutAWindowApplyAtOnce() {
+    func testLabelChangesReachVoiceOver() {
         let view = SkeletonLoaderView(layout: .terminal, label: "Updating Codex")
-        view.setLabel("Starting Codex", animated: true)
-        XCTAssertEqual(view.labelView.text, "Starting Codex")
+        view.setLabel("Starting Codex")
         XCTAssertEqual(view.accessibilityLabel(), "Starting Codex")
     }
 
