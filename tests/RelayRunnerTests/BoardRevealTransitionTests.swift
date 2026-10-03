@@ -187,6 +187,50 @@ final class BoardRevealTransitionTests: XCTestCase {
         }
     }
 
+    func testUpdateCheckLoaderFillsTheExpandedSurfaceAndLeavesOnceLoaded() throws {
+        let frame = CGRect(x: 0, y: 0, width: 1_200, height: 700)
+        let panel = BoardOverlayPanel()
+        panel.setFrame(frame, display: false)
+        let geometry = NotchStatusDisplayGeometry(screenFrame: frame)
+        let container = BoardRevealContainerView(
+            frame: CGRect(origin: .zero, size: frame.size),
+            contentView: NSView(frame: CGRect(origin: .zero, size: frame.size)),
+            displayGeometry: geometry,
+            startsLoading: true
+        )
+        panel.contentView = container
+        panel.orderFrontRegardless()
+        defer { panel.orderOut(nil) }
+        container.layoutSubtreeIfNeeded()
+        XCTAssertNil(skeletonLoader(in: container), "The compact surface has no room for it")
+
+        let expanded = expectation(description: "Surface expanded while loading")
+        container.animateReveal { expanded.fulfill() }
+        wait(for: [expanded], timeout: 5)
+
+        let loader = try XCTUnwrap(skeletonLoader(in: container))
+        let plan = BoardRevealTransitionPlanner.plan(for: geometry)
+        XCTAssertFalse(loader.isHidden)
+        XCTAssertEqual(loader.frame.width, plan.expandedFrame.width)
+        XCTAssertEqual(loader.frame.minY, plan.fullWidthFrame.height, "It sits below the notch strip")
+        XCTAssertEqual(loader.frame.maxY, plan.expandedFrame.maxY)
+        XCTAssertNil(loader.hitTest(CGPoint(x: loader.frame.midX, y: loader.frame.midY)))
+        XCTAssertEqual(loader.skeleton, .board(columnTop: BoardSurfaceLayout.columnTopPadding - plan.fullWidthFrame.height))
+        XCTAssertEqual(loader.labelView.text, BoardUpdateStatus.workingLabel)
+
+        container.setLoading(false)
+        waitForAnimations(RelayMotion.exitDuration + 0.25)
+        XCTAssertNil(skeletonLoader(in: container), "It leaves the hierarchy so its shimmer stops")
+    }
+
+    private func skeletonLoader(in view: NSView) -> SkeletonLoaderView? {
+        for subview in view.subviews {
+            if let loader = subview as? SkeletonLoaderView { return loader }
+            if let found = skeletonLoader(in: subview) { return found }
+        }
+        return nil
+    }
+
     func testWorkspaceFirstMotionBudgetIsSeparateFromDismissDuration() {
         XCTAssertEqual(BoardRevealTransitionTiming.firstMotionBudget, 0.10)
         XCTAssertEqual(BoardRevealTransitionTiming.contentHideDuration, 0.22)

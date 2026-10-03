@@ -18,6 +18,10 @@ protocol EmbeddedTerminalProcess: AnyObject {
     var childPID: Int? { get }
     var onExit: ((Int32?) -> Void)? { get set }
     var onReady: (() -> Void)? { get set }
+    /// The provider's interface has taken the terminal and may need the
+    /// person. Claude reaches this before readiness when it opens first-run
+    /// screens such as folder trust.
+    var onInteractive: (() -> Void)? { get set }
     var onTitle: ((String) -> Void)? { get set }
     var onDeliveryBlocked: ((Bool) -> Void)? { get set }
     var onInboxRecoveryBlocked: ((InboxRecoveryBlocker?) -> Void)? { get set }
@@ -74,6 +78,7 @@ final class EmbeddedTerminalSession {
     private(set) var presentationRevision = 0
     private(set) var deliveryBlocked = false
     private(set) var inboxRecoveryBlocker: InboxRecoveryBlocker?
+    private(set) var providerInterfaceShown = false
     var deliveryRecoveryMessage: String?
 
     @ObservationIgnored private let processFactory: ProcessFactory
@@ -97,6 +102,29 @@ final class EmbeddedTerminalSession {
     /// requested termination but before the child actually releases its PTY.
     var hasLiveEmbeddedProcess: Bool { process?.isRunning == true }
     var diagnosticEventPath: String? { diagnostics?.eventsURL.path }
+    /// Whether the tab shows the terminal. Once a session has ended or exited
+    /// the tab returns to its empty state, even while the PTY is torn down; a
+    /// failure keeps its output on screen.
+    var presentsTerminal: Bool {
+        guard hostedView != nil else { return false }
+        switch phase {
+        case .ended, .exited: return false
+        default: return true
+        }
+    }
+
+    /// What the loader says while it stands in for the terminal: while the
+    /// provider is updated, then until its interface is on screen.
+    var loadingStatus: String? {
+        switch phase {
+        case .preparing:
+            return "Updating \(providerName)"
+        case .starting where !providerInterfaceShown:
+            return "Starting \(providerName)"
+        default:
+            return nil
+        }
+    }
 
     func setExitHandler(_ handler: @escaping (Int32?) -> Void) {
         exitHandler = handler
@@ -159,6 +187,20 @@ final class EmbeddedTerminalSession {
         next.onTitle = { [weak self, weak next] title in
             guard let self, let next, self.process === next else { return }
             self.terminalTitle = title
+        }
+        next.onInteractive = { [weak self, weak next] in
+            let applyInteractive = { [weak self, weak next] in
+                guard let self,
+                      let next,
+                      self.process === next,
+                      self.phase == .starting else { return }
+                self.providerInterfaceShown = true
+            }
+            if Thread.isMainThread {
+                applyInteractive()
+            } else {
+                DispatchQueue.main.async(execute: applyInteractive)
+            }
         }
         next.onReady = { [weak self, weak next] in
             let applyReady = { [weak self, weak next] in
@@ -245,6 +287,7 @@ final class EmbeddedTerminalSession {
 
         process?.onExit = nil
         process?.onReady = nil
+        process?.onInteractive = nil
         process?.onTitle = nil
         if process?.isRunning == true {
             process?.terminate()
@@ -252,6 +295,7 @@ final class EmbeddedTerminalSession {
         process = next
         presentationRevision += 1
         diagnostics?.markLauncherPrepared(path: launch.launcherPath)
+        providerInterfaceShown = false
         phase = .starting
 
         do {
@@ -261,6 +305,7 @@ final class EmbeddedTerminalSession {
         } catch {
             next.onExit = nil
             next.onReady = nil
+            next.onInteractive = nil
             next.onTitle = nil
             next.terminate()
             diagnostics?.markSetupFailed(message: error.localizedDescription)
@@ -298,6 +343,7 @@ final class EmbeddedTerminalSession {
         process?.onDeliveryBlocked = nil
         process?.onExit = nil
         process?.onReady = nil
+        process?.onInteractive = nil
         process?.onTitle = nil
         if process?.isRunning == true {
             diagnostics?.markAppRequestedStop()
@@ -313,6 +359,7 @@ final class EmbeddedTerminalSession {
         process?.onDeliveryBlocked = nil
         process?.onExit = nil
         process?.onReady = nil
+        process?.onInteractive = nil
         process?.onTitle = nil
         if process?.isRunning == true {
             diagnostics?.markAppRequestedStop()
@@ -2656,6 +2703,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     lazy var localProcess = LocalProcess(delegate: self)
     var onExit: ((Int32?) -> Void)?
     var onReady: (() -> Void)?
+    var onInteractive: (() -> Void)?
     var onTitle: ((String) -> Void)?
     var onDeliveryBlocked: ((Bool) -> Void)?
     var onInboxRecoveryBlocked: ((InboxRecoveryBlocker?) -> Void)?
@@ -2680,6 +2728,10 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     /// SessionStart hook records `provider_session_start` once they are done.
     private var awaitsProviderSessionStart = false
     private var stableTerminalSince: UInt64?
+    /// Tracks the provider holding a stable raw terminal on its own, before
+    /// Claude's SessionStart has been recorded.
+    private var interactiveTerminalSince: UInt64?
+    private var interfaceShown = false
     private let readinessStabilityInterval: TimeInterval
     private let readinessPollInterval: TimeInterval
     private let voiceDeliveryPaths: RelayVoiceCommandDelivery.Paths
@@ -2747,6 +2799,8 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         readinessScheduled = false
         interactiveReady = false
         stableTerminalSince = nil
+        interactiveTerminalSince = nil
+        interfaceShown = false
         sessionEventPath = launch.sessionEventPath
         awaitsProviderSessionStart = launch.target == .claude && launch.voiceDelivery == .appOwned
         localProcess.startProcess(
@@ -2812,6 +2866,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     func terminate() {
         readinessScheduled = false
         stableTerminalSince = nil
+        interactiveTerminalSince = nil
         voiceDelivery?.providerProcessTerminated(releaseReason: "app_teardown")
         voiceDelivery = nil
         localProcess.terminate()
@@ -2864,6 +2919,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
         readinessScheduled = false
         stableTerminalSince = nil
+        interactiveTerminalSince = nil
         voiceDelivery?.providerProcessTerminated()
         voiceDelivery = nil
         onExit?(exitCode)
@@ -2890,7 +2946,19 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
               localProcess.running else { return }
 
         let now = DispatchTime.now().uptimeNanoseconds
-        if hasStableInteractiveTerminal && providerSessionStarted {
+        let interactive = hasStableInteractiveTerminal
+        if interactive {
+            let interactiveSince = interactiveTerminalSince ?? now
+            interactiveTerminalSince = interactiveSince
+            if !interfaceShown,
+               Double(now - interactiveSince) / 1_000_000_000 >= readinessStabilityInterval {
+                interfaceShown = true
+                onInteractive?()
+            }
+        } else {
+            interactiveTerminalSince = nil
+        }
+        if interactive && providerSessionStarted {
             let stableSince = stableTerminalSince ?? now
             self.stableTerminalSince = stableSince
             let stableDuration = Double(now - stableSince) / 1_000_000_000
@@ -3048,16 +3116,6 @@ struct EmbeddedTerminalTab: View {
                     .background(Color.red.opacity(0.08))
                     .transition(.relayElement)
                 }
-                if session.phase == .preparing {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text("Updating \(session.providerName) before starting your session…")
-                            .font(AppTypography.font(.status))
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
-                    .transition(.relayElement)
-                }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: visibleBanners)
             if visibleBanners.contains(true) {
@@ -3067,24 +3125,35 @@ struct EmbeddedTerminalTab: View {
             ZStack {
                 // The terminal only fades, and only once the empty state has
                 // left; a restart (new presentation revision) swaps in place.
-                if session.hostedView != nil {
+                if session.presentsTerminal {
                     ZStack {
                         EmbeddedTerminalRepresentable(session: session)
                             .id(session.presentationRevision)
                     }
                     .background(Color(nsColor: BoardDarkSurfaceStyle.panelFillNSColor))
+                    // Stays mounted, sized, and hidden while the loader stands
+                    // in, then arrives once the loader has left.
+                    .opacity(session.loadingStatus == nil ? 1 : 0)
+                    .animation(
+                        session.loadingStatus == nil ? RelayMotion.replacingEnter : RelayMotion.exit,
+                        value: session.loadingStatus == nil
+                    )
                     .transition(.asymmetric(
                         insertion: .opacity.animation(RelayMotion.replacingEnter),
                         removal: .opacity.animation(RelayMotion.exit)
                     ))
                 }
                 ZStack {
-                    if session.hostedView == nil {
+                    if let loadingStatus = session.loadingStatus {
+                        SkeletonLoader(layout: .terminal, label: loadingStatus)
+                            .transition(.relayReplacing(.surface))
+                    } else if !session.presentsTerminal {
                         emptyState
                             .transition(.relayReplacing(.surface))
                     }
                 }
-                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: session.hostedView == nil)
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: session.loadingStatus == nil)
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: session.presentsTerminal)
             }
         }
         .frame(maxWidth: WorkspaceSurfaceSizing.terminalMaxWidth, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight)
@@ -3125,7 +3194,6 @@ struct EmbeddedTerminalTab: View {
             session.inboxRecoveryBlocker != nil && session.isEmbeddedProcessRunning,
             session.deliveryBlocked,
             failed,
-            session.phase == .preparing,
         ]
     }
 
