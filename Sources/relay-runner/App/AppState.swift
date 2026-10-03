@@ -1324,10 +1324,10 @@ final class AppState {
         case .recording: snapshot.captureStatusMessage ?? "Taking notes"
         case .paused: "Notes paused"
         case .preparing: "Preparing notes"
-        case .stopping: "Saving notes"
+        case .stopping: snapshot.captureInterrupted ? "Recording interrupted" : "Saving notes"
         case .saved: "Note saved"
         case .interrupted: "Note interrupted"
-        case .error: "Note save failed"
+        case .error: snapshot.captureInterrupted ? "Recording interrupted" : "Note save failed"
         case .idle: "Ready"
         }
         syncNotchActivitySurface()

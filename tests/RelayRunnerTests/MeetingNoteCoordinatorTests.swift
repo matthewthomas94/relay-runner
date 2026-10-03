@@ -1645,7 +1645,8 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(failed.phase, .error)
         XCTAssertEqual(failed.errorMessage, "Local recovery storage is full.")
         XCTAssertNotEqual(failed.notchPresentation?.status, .listening)
-        XCTAssertEqual(failed.notchPresentation?.label, "Note save failed")
+        XCTAssertEqual(failed.notchPresentation?.label, "Recording interrupted")
+        XCTAssertFalse(updates.snapshots.contains { $0.notchPresentation?.label == "Saving notes" })
         XCTAssertEqual(captures.capture.stopCount, 1)
         XCTAssertFalse(captures.capture.isRunning)
         XCTAssertEqual(offers.count, 1)
@@ -1653,6 +1654,173 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertTrue(updates.snapshots.contains { snapshot in
             snapshot.phase == .error && snapshot.notchPresentation?.status != .listening
         })
+    }
+
+    func testInterruptedCapturePresentationIsNotASave() {
+        var stopping = snapshot(phase: .stopping)
+        stopping.captureInterrupted = true
+        var failed = snapshot(phase: .error)
+        failed.captureInterrupted = true
+
+        XCTAssertEqual(stopping.notchPresentation?.label, "Recording interrupted")
+        XCTAssertEqual(stopping.notchPresentation?.status, .notWorking)
+        XCTAssertEqual(failed.notchPresentation?.label, "Recording interrupted")
+    }
+
+    func testBackgroundPublicationFailureKeepsRecordingAndResendsHeldRequest() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let updates = MeetingNoteSnapshotRecorder()
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            policy: MeetingNoteCheckpointPolicy(
+                artifactIntervalSeconds: 1,
+                maximumUnpersistedAcceptedAudioMilliseconds: 0,
+                recoveryAudioBudgetBytes: MeetingNoteRecoveryStore.defaultAudioBudgetBytes
+            ),
+            automaticCheckpointing: true,
+            snapshotSink: { updates.append($0) }
+        )
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        let capture = try XCTUnwrap(captures.latest())
+        await writer.failNextUpdate()
+        await capture.emitRevision(
+            revision(id: "microphone-E0-S0", start: 0, text: "durable words", final: true)
+        )
+
+        for _ in 0..<500 {
+            if await writer.updates.count == 1 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let attempts = await writer.attemptedRequestIDs
+        let recording = await coordinator.snapshot()
+        let stillRecording = await capture.isRecording
+        XCTAssertEqual(attempts.count, 2)
+        XCTAssertEqual(attempts.first, attempts.last)
+        XCTAssertEqual(recording.phase, .recording)
+        XCTAssertNil(recording.errorMessage)
+        XCTAssertTrue(stillRecording)
+        XCTAssertEqual(captures.count, 1)
+        XCTAssertTrue(updates.snapshots.contains {
+            $0.phase == .recording && $0.errorMessage != nil
+        })
+
+        let saved = try await coordinator.stop()
+        XCTAssertEqual(saved.phase, .saved)
+        let storeIsEmpty = await store.isEmpty
+        XCTAssertTrue(storeIsEmpty)
+    }
+
+    func testStopDuringFailureTeardownFinalizesOnceAndClearsRecovery() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        let capture = try XCTUnwrap(captures.latest())
+        await capture.emitRevision(
+            revision(id: "microphone-E0-S0", start: 0, text: "before the failure", final: true)
+        )
+        await capture.suspendNextStop()
+        await capture.emitTerminalFailure(.backpressureExceeded)
+        await capture.waitForSuspendedStop()
+        let interrupted = await coordinator.snapshot()
+        XCTAssertEqual(interrupted.notchPresentation?.label, "Recording interrupted")
+
+        let stopTask = Task { try await coordinator.stop() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await capture.resumeSuspendedStop()
+        let saved = try await stopTask.value
+        // A Stop that raced the teardown would be overwritten here.
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let settled = await coordinator.snapshot()
+        let storeIsEmpty = await store.isEmpty
+        let updates = await writer.updates
+
+        XCTAssertEqual(saved.phase, .saved)
+        XCTAssertEqual(settled.phase, .saved)
+        XCTAssertTrue(storeIsEmpty)
+        XCTAssertEqual(updates.last?.update.recordingState, .completed)
+        XCTAssertEqual(updates.last?.update.segments.map(\.text), ["before the failure"])
+    }
+
+    func testProducerCheckpointWritesStayIndependentOfTranscriptLength() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meeting-note-long-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MeetingNoteRecoveryStore(root: root)
+        let sessionID = "long-meeting"
+        let timestamp = "2026-09-21T00:00:00Z"
+        let saved = (0..<2_000).map {
+            revision(
+                id: "microphone-E0-S\($0 * 10)",
+                start: $0 * 1_000,
+                text: "words spoken during a long meeting \($0)",
+                final: true
+            )
+        }
+        let unsaved = revision(id: "microphone-E0-S20000", start: 2_000_000, text: "newest words", final: true)
+        let journal = MeetingNoteRecoveryJournal(
+            schemaVersion: MeetingNoteRecoveryJournal.schemaVersion,
+            sessionID: sessionID,
+            project: project,
+            createRequest: RelayProjectNoteCreateRequest(
+                requestID: "create-long-meeting",
+                createdAt: timestamp,
+                captureStartedAt: timestamp,
+                capturedAt: timestamp,
+                recordingState: .recording,
+                checkpointReason: .checkpoint,
+                segments: [],
+                captureEndedAt: nil,
+                provider: "codex"
+            ),
+            identity: noteIdentity(),
+            phase: .recording,
+            producerCheckpoint: producerCheckpoint(sessionID: sessionID, state: .recording),
+            revisions: saved,
+            canonicalSegments: [],
+            pendingUpdate: nil,
+            nextCheckpointSequence: 1,
+            syncState: "local_only",
+            captureEndedAt: nil,
+            lastError: nil,
+            updatedAt: timestamp
+        )
+        try await store.save(journal)
+        let directory = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).first
+        )
+        let journalURL = directory.appendingPathComponent("journal.json")
+        let journalBefore = try Data(contentsOf: journalURL)
+
+        // The producer may still hold finals the journal already saved.
+        var checkpoint = producerCheckpoint(sessionID: sessionID, state: .recording, acceptedChunkCount: 2_001)
+        checkpoint.durableRevisions = saved + [unsaved]
+        try await store.saveProducerCheckpoint(sessionID: sessionID, checkpoint: checkpoint)
+
+        XCTAssertEqual(try Data(contentsOf: journalURL), journalBefore)
+        let checkpointBytes = try Data(
+            contentsOf: directory.appendingPathComponent("producer-checkpoint.json")
+        ).count
+        XCTAssertLessThan(checkpointBytes, 4_096)
+
+        let relaunched = MeetingNoteRecoveryStore(root: root)
+        let restored = try await relaunched.load(sessionID: sessionID)
+        XCTAssertEqual(restored?.producerCheckpoint?.metrics.acceptedChunkCount, 2_001)
+        XCTAssertEqual(restored?.producerCheckpoint?.durableRevisions, [unsaved])
+        XCTAssertEqual(restored?.revisions.count, saved.count)
     }
 
     func testFileRecoveryStoreEnforcesBudgetAndRemovesOwnedAudio() async throws {
@@ -2294,6 +2462,9 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
     private var shouldSuspendNextPause = false
     private var suspendedPause: CheckedContinuation<Void, Never>?
     private var suspendedPauseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var shouldSuspendNextStop = false
+    private var suspendedStop: CheckedContinuation<Void, Never>?
+    private var suspendedStopWaiters: [CheckedContinuation<Void, Never>] = []
     private var state: MeetingProducerState = .idle
     private var checkpointValue: MeetingProducerCheckpoint?
 
@@ -2305,6 +2476,33 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
 
     func emitSource(_ source: MeetingAudioSourceID, state: MeetingCaptureSourceState) {
         eventSink(.source(source, state))
+    }
+
+    func emitTerminalFailure(_ code: MeetingCaptureIssueCode) {
+        eventSink(.issue(MeetingCaptureIssue(
+            code: code,
+            sourceID: nil,
+            message: "fixture failure",
+            recoverable: true
+        )))
+        eventSink(.state(.failed))
+    }
+
+    func suspendNextStop() {
+        shouldSuspendNextStop = true
+    }
+
+    func waitForSuspendedStop() async {
+        if suspendedStop != nil { return }
+        await withCheckedContinuation { continuation in
+            suspendedStopWaiters.append(continuation)
+        }
+    }
+
+    func resumeSuspendedStop() {
+        let continuation = suspendedStop
+        suspendedStop = nil
+        continuation?.resume()
     }
 
     init(
@@ -2394,7 +2592,16 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
         )
     }
 
-    func stop() throws -> MeetingProducerFinalBoundary {
+    func stop() async throws -> MeetingProducerFinalBoundary {
+        if shouldSuspendNextStop {
+            shouldSuspendNextStop = false
+            await withCheckedContinuation { continuation in
+                suspendedStop = continuation
+                let waiters = suspendedStopWaiters
+                suspendedStopWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
         stopCount += 1
         if let failure = stopFailure {
             stopFailure = nil
