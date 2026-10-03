@@ -163,6 +163,32 @@ final class GeneralConfigTests: XCTestCase {
         )
     }
 
+    func testCodexResolverSelectsSol6_1Over6WithAdvertisedEfforts() throws {
+        let catalogue = """
+        {"data":[
+          {"id":"gpt-6.1-sol","defaultReasoningEffort":"low",
+           "supportedReasoningEfforts":["low","medium","high","xhigh","max","ultra"],
+           "inputModalities":["text","image"]},
+          {"id":"gpt-6-sol","defaultReasoningEffort":"medium"}
+        ]}
+        """.data(using: .utf8)!
+        let efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+
+        for family in ["sol", "gpt-6.1-sol"] {
+            for effort in ["default"] + efforts {
+                let resolution = try CodexModelResolver.resolve(
+                    family: family,
+                    effort: effort,
+                    catalogueData: catalogue
+                )
+                XCTAssertEqual(resolution.selectedFamily, "sol")
+                XCTAssertEqual(resolution.resolvedModel, "gpt-6.1-sol")
+                XCTAssertEqual(resolution.resolvedEffort, effort == "default" ? "low" : effort)
+                XCTAssertEqual(resolution.supportedReasoningEfforts, efforts)
+            }
+        }
+    }
+
     func testCodexResolverExcludesHiddenModelsAndReportsUnavailableFamilies() throws {
         XCTAssertThrowsError(
             try CodexModelResolver.resolve(

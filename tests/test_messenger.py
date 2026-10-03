@@ -57,6 +57,13 @@ CODEX_MODEL_LIST_FIXTURE = json.dumps({
                 {"reasoningEffort": "xhigh"},
             ],
         },
+        {
+            "id": "gpt-6.1-sol",
+            "model": "gpt-6.1-sol",
+            "hidden": False,
+            "defaultReasoningEffort": "low",
+            "supportedReasoningEfforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+        },
     ],
 })
 
@@ -182,8 +189,8 @@ class MessengerConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {"RELAY_CODEX_MODEL_LIST_JSON": CODEX_MODEL_LIST_FIXTURE}):
             resolved = resolve_messenger_catalog_selection(config)
 
-        self.assertEqual(resolved.model, "gpt-6.0-sol")
-        self.assertEqual(resolved.effort, "medium")
+        self.assertEqual(resolved.model, "gpt-6.1-sol")
+        self.assertEqual(resolved.effort, "low")
 
     def test_prompt_forbids_work_and_hidden_reasoning(self):
         self.assertIn("Never use tools", MESSENGER_SYSTEM_PROMPT)

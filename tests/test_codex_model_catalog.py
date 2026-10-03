@@ -90,6 +90,26 @@ class CodexModelCatalogTests(unittest.TestCase):
 
         self.assertEqual(resolve_codex_family("sol", models).launch_model, "gpt-5.7-sol")
 
+    def test_sol_6_1_resolves_over_6_and_preserves_advertised_efforts(self):
+        efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+        models = codex_models_from_model_list({"data": [
+            {
+                "id": "gpt-6.1-sol",
+                "defaultReasoningEffort": "low",
+                "supportedReasoningEfforts": efforts,
+                "inputModalities": ["text", "image"],
+            },
+            CATALOGUE["data"][1],
+        ]})
+
+        for family in ("sol", "gpt-6.1-sol"):
+            with self.subTest(family=family):
+                resolved = resolve_codex_family(family, models)
+                self.assertEqual(resolved.launch_model, "gpt-6.1-sol")
+                self.assertEqual(resolve_codex_effort("default", resolved), "low")
+                for effort in efforts:
+                    self.assertEqual(resolve_codex_effort(effort, resolved), effort)
+
     def test_hidden_models_do_not_satisfy_family(self):
         models = codex_models_from_model_list(CATALOGUE)
 

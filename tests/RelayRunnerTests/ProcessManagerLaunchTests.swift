@@ -483,11 +483,11 @@ final class ProcessManagerLaunchTests: XCTestCase {
             agentBinary: "/usr/local/bin/codex",
             config: config,
             homeDirectory: home,
-            resolvedCodexModel: "gpt-5.7-sol",
+            resolvedCodexModel: "gpt-6.1-sol",
             resolvedCodexEffort: "xhigh"
         )
 
-        XCTAssertTrue(script.contains("--model 'gpt-5.7-sol'"))
+        XCTAssertTrue(script.contains("--model 'gpt-6.1-sol'"))
         XCTAssertTrue(script.contains("model_reasoning_effort=\"xhigh\""))
     }
 

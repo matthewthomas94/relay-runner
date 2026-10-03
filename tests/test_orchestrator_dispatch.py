@@ -62,6 +62,13 @@ CODEX_MODEL_LIST_FIXTURE = json.dumps({
             ],
         },
         {
+            "id": "gpt-6.1-sol",
+            "model": "gpt-6.1-sol",
+            "hidden": False,
+            "defaultReasoningEffort": "low",
+            "supportedReasoningEfforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+        },
+        {
             "id": "gpt-6-astra",
             "model": "gpt-6-astra",
             "hidden": False,
@@ -149,7 +156,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
             command = Worker._command(worker)
 
         self.assertIn("--model", command)
-        self.assertIn("gpt-6-sol", command)
+        self.assertIn("gpt-6.1-sol", command)
         self.assertIn("--config", command)
         self.assertIn("model_reasoning_effort=high", command)
         self.assertNotIn("--effort", command)
@@ -487,7 +494,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                     log_path=Path(tmp) / "run.log",
                 )._command()
             self.assertIn("--model", command)
-            self.assertIn("gpt-6-sol", command)
+            self.assertIn("gpt-6.1-sol", command)
             self.assertIn("model_reasoning_effort=xhigh", command)
 
     def test_user_default_inherits_claude_model_and_effort(self):
@@ -573,7 +580,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                     log_path=Path(tmp) / "run.log",
                 )._command()
             self.assertIn("--model", command)
-            self.assertIn("gpt-6-sol", command)
+            self.assertIn("gpt-6.1-sol", command)
             self.assertIn("model_reasoning_effort=xhigh", command)
 
     def test_user_default_legacy_claude_defaults_migrate_to_opus_xhigh(self):
