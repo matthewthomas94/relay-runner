@@ -371,10 +371,8 @@ final class AppState {
         }
     }
     private var wasRecording = false
-    private var observedRecordingStartedSerial = 0
-    private var observedSpeechDetectedSerial = 0
-    private var observedDeliveredTranscriptSerial = 0
-    private var observedTutorialTranscriptSerial = 0
+    private var observedTutorialPracticeStartedSerial = 0
+    private var observedTutorialPracticeSentSerial = 0
     private var observedCaptureOwnerRequestedSerial = 0
     /// Caps Lock state when the session prompt was shown — any toggle dismisses it.
     private var sessionPromptCapsState = false
@@ -421,14 +419,14 @@ final class AppState {
 
     /// Session-level microphone owner policy. Command capture may run only for
     /// an active Claude or Codex voice session (embedded, external bridge, or a
-    /// bridge retained through provider reconnect) or the projectless onboarding
-    /// voice tutorial. Note Taker owns its own capture, so command capture yields.
+    /// bridge retained through provider reconnect). The onboarding tutorial
+    /// practices gestures with the microphone off, so it never grants capture.
+    /// Note Taker owns its own capture, so command capture yields.
     static func commandCaptureAllowed(
         hasActiveSession: Bool,
-        sessionControlsTutorialActive: Bool,
         noteOwnsForeground: Bool
     ) -> Bool {
-        !noteOwnsForeground && (hasActiveSession || sessionControlsTutorialActive)
+        !noteOwnsForeground && hasActiveSession
     }
 
     /// Whether a Settings reference recording may open the microphone now.
@@ -440,7 +438,6 @@ final class AppState {
         guard let engine = sttEngine else { return }
         engine.setCaptureAllowed(Self.commandCaptureAllowed(
             hasActiveSession: hasActiveSession,
-            sessionControlsTutorialActive: onboarding.isSessionControlsTutorialActive,
             noteOwnsForeground: meetingNoteSnapshot.phase.ownsForeground
         ))
     }
@@ -2019,7 +2016,6 @@ final class AppState {
     private func prepareOnboardingTutorialSpeech() -> Bool {
         guard processManager.startTutorialTTS() else { return false }
         sttEngine?.tutorialActive = true
-        syncCommandCaptureOwnership()
         stateMachine.dismissSessionPrompt()
         return true
     }
@@ -2037,7 +2033,6 @@ final class AppState {
 
     private func stopOnboardingTutorialSpeech() {
         sttEngine?.tutorialActive = false
-        syncCommandCaptureOwnership()
         processManager.stopTutorialTTS()
     }
 
@@ -2938,15 +2933,13 @@ final class AppState {
         // Poll STT engine state → state machine (STT is in-process, no socket needed)
         sttPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
             guard let self, let engine = self.sttEngine else { return }
-            // Tutorial ownership has no change hook; re-assert it each tick.
-            self.syncCommandCaptureOwnership()
 
             let nowRecording = engine.isRecording
             let justStartedRecording = nowRecording && !self.wasRecording
             let captureOwnerRequested =
                 engine.captureOwnerRequestedSerial != self.observedCaptureOwnerRequestedSerial
             self.observedCaptureOwnerRequestedSerial = engine.captureOwnerRequestedSerial
-            self.publishOnboardingTutorialSTTEvents(from: engine, includeRecordingStart: false)
+            self.publishOnboardingTutorialPracticeEvents(from: engine)
 
             if engine.boardToggleRequested {
                 let recognizedAt = engine.boardToggleRequestedAt ?? CACurrentMediaTime()
@@ -2988,13 +2981,9 @@ final class AppState {
             // Real-time check on each recording start — the cached value
             // can be stale for up to 3s after a bridge dies.
             // Also detect orphaned relay bridges (process alive but no consumer).
-            if justStartedRecording && self.onboarding.isSessionControlsTutorialActive {
-                self.publishOnboardingTutorialSTTEvents(
-                    from: engine,
-                    includeRecordingStart: true
-                )
-            } else if justStartedRecording
-                        || (captureOwnerRequested && !self.onboarding.isSessionControlsTutorialActive) {
+            // The active tutorial consumes its own gestures without a prompt.
+            if !self.onboarding.isSessionControlsTutorialActive
+                && (justStartedRecording || captureOwnerRequested) {
                 // An out-of-session gesture never opened the mic; it takes the
                 // same real-time bridge check so the session affordance matches.
                 let daemonAlive = self.processManager.bridgeAlive()
@@ -3014,9 +3003,7 @@ final class AppState {
                 switch bridgeAction {
                 case .allowRecording:
                     self.bridgeAliveCache = true
-                    if justStartedRecording {
-                        self.publishOnboardingTutorialSTTEvents(from: engine, includeRecordingStart: true)
-                    } else {
+                    if !justStartedRecording {
                         // A live bridge the watchdog hadn't cached yet: capture
                         // opens now, after the gesture, so ask for a retry.
                         self.stateMachine.showProgramStatus(
@@ -3455,30 +3442,19 @@ final class AppState {
     }
 
     private func resetObservedTutorialSTTSerials() {
-        observedRecordingStartedSerial = 0
-        observedSpeechDetectedSerial = 0
-        observedDeliveredTranscriptSerial = 0
-        observedTutorialTranscriptSerial = 0
+        observedTutorialPracticeStartedSerial = 0
+        observedTutorialPracticeSentSerial = 0
         observedCaptureOwnerRequestedSerial = 0
     }
 
-    private func publishOnboardingTutorialSTTEvents(from engine: STTEngine,
-                                                   includeRecordingStart: Bool) {
-        if includeRecordingStart && engine.recordingStartedSerial > observedRecordingStartedSerial {
-            observedRecordingStartedSerial = engine.recordingStartedSerial
-            onboarding.noteTutorialRecordingStarted()
+    private func publishOnboardingTutorialPracticeEvents(from engine: STTEngine) {
+        if engine.tutorialPracticeStartedSerial > observedTutorialPracticeStartedSerial {
+            observedTutorialPracticeStartedSerial = engine.tutorialPracticeStartedSerial
+            onboarding.noteTutorialPracticeStarted()
         }
-        if engine.speechDetectedSerial > observedSpeechDetectedSerial {
-            observedSpeechDetectedSerial = engine.speechDetectedSerial
-            onboarding.noteTutorialSpeechDetected()
-        }
-        if engine.deliveredTranscriptSerial > observedDeliveredTranscriptSerial {
-            observedDeliveredTranscriptSerial = engine.deliveredTranscriptSerial
-            _ = onboarding.noteTutorialRecordingSent()
-        }
-        if engine.tutorialTranscriptSerial > observedTutorialTranscriptSerial {
-            observedTutorialTranscriptSerial = engine.tutorialTranscriptSerial
-            if let reply = onboarding.noteTutorialRecordingSent() {
+        if engine.tutorialPracticeSentSerial > observedTutorialPracticeSentSerial {
+            observedTutorialPracticeSentSerial = engine.tutorialPracticeSentSerial
+            if let reply = onboarding.noteTutorialPracticeSent() {
                 if processManager.queueTutorialTTS(reply) {
                     onboarding.noteTutorialResponseReady(reply)
                     stateMachine.handleServiceEvent(

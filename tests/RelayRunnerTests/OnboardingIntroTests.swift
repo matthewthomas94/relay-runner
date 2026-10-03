@@ -762,9 +762,8 @@ final class OnboardingIntroTests: XCTestCase {
         beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
 
         controller.noteTutorialResponseReady("Startup greeting")
-        controller.noteTutorialRecordingStarted()
-        controller.noteTutorialSpeechDetected()
-        controller.noteTutorialRecordingSent()
+        controller.noteTutorialPracticeStarted()
+        controller.noteTutorialPracticeSent()
         controller.noteTutorialResponseReady("")
         controller.noteTutorialResponseReady("   ")
         controller.noteTutorialPlaybackRequested()
@@ -797,10 +796,9 @@ final class OnboardingIntroTests: XCTestCase {
         let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
         beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
 
-        controller.noteTutorialRecordingStarted()
-        controller.noteTutorialSpeechDetected()
+        controller.noteTutorialPracticeStarted()
         XCTAssertEqual(
-            controller.noteTutorialRecordingSent(),
+            controller.noteTutorialPracticeSent(),
             OnboardingSessionControlsTutorial.deterministicReply
         )
         controller.noteTutorialResponseReady("provider response")
@@ -820,6 +818,48 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(intro.tutorialPresentations.last?.screen, .cancellation)
     }
 
+    func testTutorialPracticeProgressesFromShortcutGesturesAloneForBothProviders() throws {
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            let intro = CapturingIntroPresenter()
+            let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
+            beginSessionControlsTutorial(controller, intro: intro, provider: provider)
+            XCTAssertTrue(controller.isSessionControlsTutorialActive)
+
+            // Start and send need no detected speech: the gestures alone advance.
+            XCTAssertNil(controller.noteTutorialPracticeSent())
+            controller.noteTutorialPracticeStarted()
+            XCTAssertEqual(intro.tutorialPresentations.last?.screen, .recordingActive)
+            let reply = try XCTUnwrap(controller.noteTutorialPracticeSent())
+            XCTAssertEqual(reply, OnboardingSessionControlsTutorial.deterministicReply)
+            XCTAssertNil(controller.noteTutorialPracticeSent())
+
+            controller.noteTutorialResponseReady(reply)
+            XCTAssertEqual(controller.noteTutorialPlaybackRequested(), .play)
+            controller.noteTutorialPlaybackStarted()
+            XCTAssertEqual(controller.noteTutorialPlaybackFinished(), reply)
+            controller.noteTutorialPlaybackStarted()
+            controller.noteTutorialCancelRequested()
+            XCTAssertEqual(intro.tutorialPresentations.last?.screen, .workspace)
+            XCTAssertTrue(controller.shouldConsumeWorkspaceToggleRequest)
+
+            controller.noteTutorialWorkspaceToggled()
+            drainMainQueue()
+            XCTAssertEqual(
+                intro.tutorialPresentations.map(\.screen),
+                [.intro, .recording, .recordingActive, .playback, .cancellation, .workspace],
+                "provider \(provider)"
+            )
+            XCTAssertFalse(controller.isSessionControlsTutorialActive)
+        }
+    }
+
     func testTutorialCancellationAcceptsWaitingOrPlayingReplayForBothProviders() throws {
         for provider in [GeneralConfig.AgentProvider.codex, .claude] {
             for playBeforeCancelling in [false, true] {
@@ -834,12 +874,11 @@ final class OnboardingIntroTests: XCTestCase {
                 let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
                 beginSessionControlsTutorial(controller, intro: intro, provider: provider)
 
-                controller.noteTutorialRecordingStarted()
+                controller.noteTutorialPracticeStarted()
                 XCTAssertEqual(intro.tutorialPresentations.map(\.screen), [.intro, .recording, .recordingActive])
                 XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecordingActive)
 
-                controller.noteTutorialSpeechDetected()
-                controller.noteTutorialRecordingSent()
+                controller.noteTutorialPracticeSent()
                 XCTAssertEqual(
                     intro.tutorialPresentations.map(\.screen),
                     [.intro, .recording, .recordingActive, .playback]
@@ -890,9 +929,8 @@ final class OnboardingIntroTests: XCTestCase {
         let intro = CapturingIntroPresenter()
         let controller = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: intro)
         beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
-        controller.noteTutorialRecordingStarted()
-        controller.noteTutorialSpeechDetected()
-        controller.noteTutorialRecordingSent()
+        controller.noteTutorialPracticeStarted()
+        controller.noteTutorialPracticeSent()
         controller.noteTutorialResponseReady("Hello, how are you?")
 
         controller.noteTutorialPlaybackRequested(playbackActive: true)
@@ -1018,9 +1056,8 @@ final class OnboardingIntroTests: XCTestCase {
         )
 
         beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
-        controller.noteTutorialRecordingStarted()
-        controller.noteTutorialSpeechDetected()
-        controller.noteTutorialRecordingSent()
+        controller.noteTutorialPracticeStarted()
+        controller.noteTutorialPracticeSent()
         controller.noteTutorialResponseReady("Hello, how are you?")
         controller.noteTutorialPlaybackRequested()
         controller.noteTutorialPlaybackStarted()
@@ -1062,9 +1099,8 @@ final class OnboardingIntroTests: XCTestCase {
         )
 
         beginSessionControlsTutorial(controller, intro: intro, provider: .codex)
-        controller.noteTutorialRecordingStarted()
-        controller.noteTutorialSpeechDetected()
-        controller.noteTutorialRecordingSent()
+        controller.noteTutorialPracticeStarted()
+        controller.noteTutorialPracticeSent()
         controller.noteTutorialResponseReady("Hello, how are you?")
         controller.noteTutorialPlaybackRequested()
         controller.noteTutorialPlaybackStarted()
@@ -2815,9 +2851,8 @@ final class OnboardingIntroTests: XCTestCase {
 
     private func completeSessionControlsTutorial(_ controller: OnboardingController) {
         drainMainQueue()
-        controller.noteTutorialRecordingStarted()
-        controller.noteTutorialSpeechDetected()
-        controller.noteTutorialRecordingSent()
+        controller.noteTutorialPracticeStarted()
+        controller.noteTutorialPracticeSent()
         controller.noteTutorialResponseReady("Hello, how are you?")
         controller.noteTutorialPlaybackRequested()
         controller.noteTutorialPlaybackStarted()
