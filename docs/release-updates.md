@@ -58,6 +58,14 @@ Sparkle compares `CFBundleVersion`, not `CFBundleShortVersionString`. Every publ
 
 `scripts/build-dmg.sh` signs the nested Sparkle framework, helper binaries, main executable, and outer app bundle, waits for app notarization, and staples the app before creating `RelayRunner.zip`. When `SIGN_IDENTITY` and `NOTARY_PROFILE` are set, CI also waits for DMG notarization and staples `RelayRunner.dmg` before publishing release assets.
 
+If Apple's notary service is unavailable (for example, an expired developer agreement returns 403), publish a pushed tag with Developer ID signing but without notarization:
+
+```bash
+gh workflow run build-dmg.yml --ref vX.Y.Z -f skip_notarization=true
+```
+
+Cancel the tag push run, which fails at the notary step. Sparkle updates install normally because the signing identity is unchanged and Sparkle clears quarantine. Fresh DMG downloads show a Gatekeeper warning until a notarized release ships.
+
 ### Preserve permissions across updates
 
 Local builds automatically select the Developer ID Application certificate for Relay Runner's release team (`QK9K4AQRNH`). Without that certificate, the build stops before replacing anything. `SIGN_IDENTITY` can select a certificate explicitly, but the resulting app must still satisfy the release identity check. Certificate renewal within that team is supported; an app version or executable hash is never part of the release requirement.

@@ -19,16 +19,25 @@ struct WorkspaceHistoryView: View {
                 messageStrip(notice, warning: false)
                     .transition(.relayElement)
             }
-            historySurface
-            .opacity(model.isLoading ? 0.65 : 1)
-            .overlay {
-                if model.isLoading {
-                    ProgressView().controlSize(.small)
-                        .accessibilityLabel("Loading Workspace history")
-                        .transition(.relayElement)
+            ZStack {
+                if model.historyLoaded {
+                    historySurface
+                    .opacity(model.isLoading ? 0.65 : 1)
+                    .overlay {
+                        if model.isLoading {
+                            ProgressView().controlSize(.small)
+                                .accessibilityLabel("Loading Workspace history")
+                                .transition(.relayElement)
+                        }
+                    }
+                    .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.isLoading)
+                    .transition(.relayReplacing(.surface))
+                } else {
+                    SkeletonLoader(layout: .history, label: "Loading Workspace history")
+                        .transition(.relayReplacing(.surface))
                 }
             }
-            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.isLoading)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.historyLoaded)
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.errorMessage)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.notice)

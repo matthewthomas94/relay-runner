@@ -13,6 +13,8 @@ enum SkeletonLoaderLayout: Equatable {
     case notes
     /// The Settings tab: categories, their settings, and the agent card.
     case settings
+    /// Workspace History: the archived tickets beside the open one.
+    case history
 }
 
 /// A placeholder shape in a skeleton loader.
@@ -140,7 +142,8 @@ final class SkeletonLoaderView: NSView {
     // MARK: Geometry
 
     /// The surfaces behind the bones: the board's columns, the Notes
-    /// library, or the Settings pane and its agent card.
+    /// library, or the Settings pane and its agent card. History sits on
+    /// its own panel, so it needs none.
     static func panels(for layout: SkeletonLoaderLayout, in bounds: CGRect) -> [CGRect] {
         switch layout {
         case .board(let top):
@@ -157,6 +160,8 @@ final class SkeletonLoaderView: NSView {
                 CGRect(x: bounds.minX, y: bounds.minY, width: paneWidth, height: bounds.height),
                 CGRect(x: bounds.maxX - cardWidth, y: bounds.minY, width: cardWidth, height: bounds.height),
             ]
+        case .history:
+            return []
         }
     }
 
@@ -190,6 +195,8 @@ final class SkeletonLoaderView: NSView {
             return notesBones(in: bounds)
         case .settings:
             return settingsBones(panels: panels(for: layout, in: bounds))
+        case .history:
+            return historyBones(in: bounds)
         }
     }
 
@@ -355,6 +362,97 @@ final class SkeletonLoaderView: NSView {
             bones.append(SkeletonBone(rect: line, radius: 5, style: .fill))
             y += 20
         }
+        return bones
+    }
+
+    static let historyListWidth: CGFloat = 330
+    private static let historyCardHeights: [CGFloat] = [98, 82, 98, 98, 82]
+
+    /// Mirrors Workspace History before a ticket is chosen: the search
+    /// field, the archive policy and the archived tickets on the left, and
+    /// the empty placeholder on the right.
+    private static func historyBones(in bounds: CGRect) -> [SkeletonBone] {
+        guard bounds.width > historyListWidth + 160, bounds.height > 240 else { return [] }
+        var bones: [SkeletonBone] = []
+
+        // The search field and its button.
+        let list = CGRect(x: bounds.minX, y: bounds.minY, width: historyListWidth, height: bounds.height)
+            .insetBy(dx: 18, dy: 18)
+        let button = SharedActionButtonMetrics.controlHeight
+        let field = ProgramTicketPanelStyle.compactFieldHeight
+        let search = CGRect(x: list.minX, y: list.minY, width: list.width - 8 - button, height: field)
+        bones.append(SkeletonBone(rect: search, radius: 8, style: .outline))
+        bones.append(SkeletonBone(
+            rect: CGRect(x: search.maxX + 8, y: search.midY - button / 2, width: button, height: button),
+            radius: 8,
+            style: .outline
+        ))
+
+        // The archive policy.
+        var y = search.maxY + 12
+        for fraction in [0.9, 0.94, 0.4] as [CGFloat] {
+            bones.append(SkeletonBone(
+                rect: CGRect(x: list.minX, y: y + 3, width: list.width * fraction, height: 8),
+                radius: 4,
+                style: .fill
+            ))
+            y += 15
+        }
+
+        // The archived tickets: an id and status, a title, then the badge.
+        y += 12
+        for height in historyCardHeights {
+            let card = CGRect(x: list.minX, y: y, width: list.width, height: height)
+            guard card.maxY <= list.maxY else { break }
+            bones.append(SkeletonBone(rect: card, radius: BoardDarkSurfaceStyle.nestedCardCornerRadius, style: .outline))
+            let inset: CGFloat = 12
+            let available = card.width - inset * 2
+            bones.append(SkeletonBone(
+                rect: CGRect(x: card.minX + inset, y: card.minY + 14, width: 52, height: 8),
+                radius: 4,
+                style: .fill
+            ))
+            bones.append(SkeletonBone(
+                rect: CGRect(x: card.maxX - inset - 36, y: card.minY + 14, width: 36, height: 8),
+                radius: 4,
+                style: .fill
+            ))
+            var lineY = card.minY + 34
+            for fraction in (height >= 98 ? [0.85, 0.5] : [0.7]) as [CGFloat] {
+                bones.append(SkeletonBone(
+                    rect: CGRect(x: card.minX + inset, y: lineY, width: available * fraction, height: 10),
+                    radius: 5,
+                    style: .fill
+                ))
+                lineY += 18
+            }
+            bones.append(SkeletonBone(
+                rect: CGRect(x: card.minX + inset, y: card.maxY - 22, width: available * 0.4, height: 8),
+                radius: 4,
+                style: .fill
+            ))
+            y = card.maxY + 8
+        }
+
+        // The placeholder: an icon over a title and a supporting line.
+        let detail = CGRect(x: bounds.minX + historyListWidth + 1, y: bounds.minY, width: bounds.width - historyListWidth - 1, height: bounds.height)
+        let top = detail.midY - (28 + 10 + 12 + 10 + 8) / 2
+        bones.append(SkeletonBone(
+            rect: CGRect(x: detail.midX - 14, y: top, width: 28, height: 28),
+            radius: 14,
+            style: .fill
+        ))
+        bones.append(SkeletonBone(
+            rect: CGRect(x: detail.midX - 80, y: top + 38, width: 160, height: 12),
+            radius: 6,
+            style: .fill
+        ))
+        let subtitleWidth = min(260, detail.width - 56)
+        bones.append(SkeletonBone(
+            rect: CGRect(x: detail.midX - subtitleWidth / 2, y: top + 60, width: subtitleWidth, height: 8),
+            radius: 4,
+            style: .fill
+        ))
         return bones
     }
 

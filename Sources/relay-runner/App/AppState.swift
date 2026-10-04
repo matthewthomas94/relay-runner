@@ -400,7 +400,7 @@ final class AppState {
             syncCommandCaptureOwnership()
         }
     }
-    private var programBoardLoading = false
+    private var programBoardLoadingState: ProgramBoardLoadingState = .idle
     private var lastBridgeRecoveryAt: Date = .distantPast
     private static let bridgeRecoveryCooldown: TimeInterval = 15
     private var bridgeRecoverySuppressedForUpdate = false
@@ -620,7 +620,8 @@ final class AppState {
             return
         }
 
-        let boardIsLoading = programBoardLoading
+        let boardIsLoading = programBoardLoadingState != .idle
+        let boardContentLoading = programBoardLoadingState == .loadingContent
         guard hasActiveSession || boardIsLoading else {
             notchStatusController.setPresentation(
                 status: .notWorking,
@@ -638,7 +639,8 @@ final class AppState {
             activeRuns: notchActivityRunStates,
             tickets: notchActivityTickets,
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
-            bridgeStartingUp: bridgeStartingUp
+            bridgeStartingUp: bridgeStartingUp,
+            boardContentLoading: boardContentLoading
         )
         let hoverActivityLabel = NotchActivityLabelPlanner.hoverLabel(
             for: stateMachine.state,
@@ -647,6 +649,7 @@ final class AppState {
             tickets: notchActivityTickets,
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
             bridgeStartingUp: bridgeStartingUp,
+            boardContentLoading: boardContentLoading,
             ticketForRun: { [notchActivityTicketsByRunKey] run in
                 let repoPath = URL(fileURLWithPath: run.repoPath).resolvingSymlinksInPath().path
                 return notchActivityTicketsByRunKey[
@@ -673,7 +676,8 @@ final class AppState {
             workingProgressLabel: hoverActivityLabel,
             pinsWorkingLabel: NotchVisualLabelAllowlist.presentation(
                 for: stateMachine.state,
-                bridgeStartingUp: bridgeStartingUp
+                bridgeStartingUp: bridgeStartingUp,
+                boardContentLoading: boardContentLoading
             ).pinsLabel
         )
     }
@@ -2915,8 +2919,8 @@ final class AppState {
         programBoardOverlay.setNoSessionHandler { [weak self] in
             self?.showSessionPromptIfAllowed()
         }
-        programBoardOverlay.setLoadingStateHandler { [weak self] isLoading in
-            self?.setProgramBoardLoading(isLoading)
+        programBoardOverlay.setLoadingStateHandler { [weak self] loadingState in
+            self?.setProgramBoardLoadingState(loadingState)
         }
         programBoardOverlay.setSettingsContentProvider { [weak self] in
             guard let self else { return nil }
@@ -3456,9 +3460,9 @@ final class AppState {
         }
     }
 
-    private func setProgramBoardLoading(_ isLoading: Bool) {
-        guard programBoardLoading != isLoading else { return }
-        programBoardLoading = isLoading
+    private func setProgramBoardLoadingState(_ loadingState: ProgramBoardLoadingState) {
+        guard programBoardLoadingState != loadingState else { return }
+        programBoardLoadingState = loadingState
         syncNotchActivitySurface()
     }
 

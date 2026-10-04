@@ -511,7 +511,8 @@ struct NotchVisualLabelPresentation: Equatable {
 enum NotchVisualLabelAllowlist {
     static func presentation(
         for state: OverlayState,
-        bridgeStartingUp: Bool = false
+        bridgeStartingUp: Bool = false,
+        boardContentLoading: Bool = false
     ) -> NotchVisualLabelPresentation {
         if bridgeStartingUp {
             return NotchVisualLabelPresentation(
@@ -549,6 +550,15 @@ enum NotchVisualLabelAllowlist {
              .programStatus, .actionGlow:
             label = nil
         }
+        // Only the Workspace's first load, while its skeleton shows; the
+        // background update checks while it is open stay unlabelled.
+        if label == nil, boardContentLoading {
+            return NotchVisualLabelPresentation(
+                labels: [BoardUpdateStatus.workingLabel],
+                hoverLabel: BoardUpdateStatus.workingLabel,
+                pinsLabel: true
+            )
+        }
         return NotchVisualLabelPresentation(
             labels: label.map { [$0] } ?? [],
             hoverLabel: label
@@ -564,11 +574,13 @@ enum NotchActivityLabelPlanner {
         tickets: [Ticket] = [],
         bridgeRecoveryInFlight: Bool = false,
         bridgeStartingUp: Bool = false,
+        boardContentLoading: Bool = false,
         now: Date = Date()
     ) -> [String] {
         NotchVisualLabelAllowlist.presentation(
             for: state,
-            bridgeStartingUp: bridgeStartingUp
+            bridgeStartingUp: bridgeStartingUp,
+            boardContentLoading: boardContentLoading
         ).labels
     }
 
@@ -579,12 +591,14 @@ enum NotchActivityLabelPlanner {
         tickets: [Ticket] = [],
         bridgeRecoveryInFlight: Bool = false,
         bridgeStartingUp: Bool = false,
+        boardContentLoading: Bool = false,
         now: Date = Date(),
         ticketForRun: ((RunState) -> Ticket?)? = nil
     ) -> String? {
         NotchVisualLabelAllowlist.presentation(
             for: state,
-            bridgeStartingUp: bridgeStartingUp
+            bridgeStartingUp: bridgeStartingUp,
+            boardContentLoading: boardContentLoading
         ).hoverLabel
     }
 

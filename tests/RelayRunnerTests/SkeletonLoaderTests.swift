@@ -65,6 +65,28 @@ final class SkeletonLoaderTests: XCTestCase {
         }
     }
 
+    func testHistorySkeletonSketchesTheListAndThePlaceholder() throws {
+        let bounds = CGRect(x: 0, y: 0, width: 940, height: 569)
+        XCTAssertEqual(SkeletonLoaderView.panels(for: .history, in: bounds), [], "History brings its own panel")
+        let bones = SkeletonLoaderView.bones(for: .history, in: bounds)
+        let listEdge = SkeletonLoaderView.historyListWidth
+        let outlines = bones.filter { $0.style == .outline }
+        XCTAssertGreaterThan(outlines.count, 4, "A search field, its button and several tickets")
+        for outline in outlines {
+            XCTAssertLessThanOrEqual(outline.rect.maxX, listEdge, "The list keeps to the left")
+        }
+        let search = try XCTUnwrap(outlines.min { $0.rect.minY < $1.rect.minY })
+        XCTAssertEqual(search.rect.height, ProgramTicketPanelStyle.compactFieldHeight)
+        let placeholder = bones.filter { $0.rect.minX > listEdge }
+        XCTAssertEqual(placeholder.count, 3, "An icon, a title and a supporting line")
+        for bone in placeholder {
+            XCTAssertEqual(bone.rect.midX, listEdge + 1 + (bounds.width - listEdge - 1) / 2, accuracy: 0.001)
+        }
+        for bone in bones {
+            XCTAssertTrue(bounds.contains(bone.rect), "\(bone.rect)")
+        }
+    }
+
     func testSettingsSkeletonSketchesTheSidebarSettingsAndAgentCard() throws {
         let bounds = CGRect(x: 0, y: 0, width: 1_400, height: 760)
         let panels = SkeletonLoaderView.panels(for: .settings, in: bounds)
@@ -96,6 +118,7 @@ final class SkeletonLoaderTests: XCTestCase {
             (.terminal, CGSize(width: 900, height: 420)),
             (.notes, CGSize(width: 1_400, height: 760)),
             (.settings, CGSize(width: 1_400, height: 760)),
+            (.history, CGSize(width: 940, height: 569)),
         ] {
             let view = SkeletonLoaderView(layout: layout, label: BoardUpdateStatus.workingLabel)
             view.frame = CGRect(origin: .zero, size: size)

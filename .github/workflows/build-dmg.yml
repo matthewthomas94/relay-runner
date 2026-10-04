@@ -18,8 +18,16 @@ on:
       - "services/**"
       - "tests/test_app_signing.py"
       - ".github/workflows/build-dmg.yml"
-  # Allow manual trigger
+  # Allow manual trigger. Dispatching on a `v*` tag ref publishes that tag;
+  # `skip_notarization` keeps Developer ID signing but skips Apple's notary
+  # service (e.g. while a developer agreement is pending), so Gatekeeper
+  # warns on fresh DMG installs. Sparkle updates are unaffected.
   workflow_dispatch:
+    inputs:
+      skip_notarization:
+        description: "Sign with Developer ID but skip notarisation"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -131,6 +139,7 @@ jobs:
       # Store notarytool credentials under a keychain profile that
       # build-dmg.sh references via NOTARY_PROFILE.
       - name: Store notarisation credentials
+        if: inputs.skip_notarization != true
         env:
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
@@ -148,7 +157,7 @@ jobs:
       - name: Build and package release artifacts
         env:
           SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
-          NOTARY_PROFILE: ${{ secrets.NOTARY_APPLE_ID != '' && 'relay-runner-notary' || '' }}
+          NOTARY_PROFILE: ${{ secrets.NOTARY_APPLE_ID != '' && inputs.skip_notarization != true && 'relay-runner-notary' || '' }}
           RELAY_ALLOW_ADHOC_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') && '0' || '1' }}
           RELAY_SKIP_APPLICATIONS_REFRESH: '1'
         run: ./scripts/build-dmg.sh
