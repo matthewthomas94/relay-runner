@@ -216,7 +216,7 @@ final class BoardRevealTransitionTests: XCTestCase {
         XCTAssertEqual(loader.frame.maxY, plan.expandedFrame.maxY)
         XCTAssertNil(loader.hitTest(CGPoint(x: loader.frame.midX, y: loader.frame.midY)))
         XCTAssertEqual(loader.skeleton, .board(columnTop: BoardSurfaceLayout.columnTopPadding - plan.fullWidthFrame.height))
-        XCTAssertEqual(loader.labelView.text, BoardUpdateStatus.workingLabel)
+        XCTAssertEqual(loader.accessibilityLabel(), BoardUpdateStatus.workingLabel)
 
         container.setLoading(false)
         waitForAnimations(RelayMotion.exitDuration + 0.25)
