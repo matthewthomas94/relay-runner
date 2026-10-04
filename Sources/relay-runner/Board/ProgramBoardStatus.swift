@@ -1547,6 +1547,9 @@ final class ProgramBoardViewModel {
     var noteItems: [ProgramBoardNoteItem] = []
     var noteQuery = ""
     var notesLoading = false
+    /// False until the first notes fetch finishes, so Notes shows a skeleton
+    /// rather than an empty library while it loads.
+    var notesLoaded = false
     var noteCaptureSnapshot = MeetingNoteCoordinatorSnapshot(
         phase: .idle,
         noteID: nil,
@@ -1792,7 +1795,9 @@ final class ProgramBoardViewModel {
         notesLoading = true
         defer { notesLoading = false }
         let result = await fetchNotes([GlobalNoteStore.repositoryPath])
-        guard !Task.isCancelled, result.errorMessage == nil else { return }
+        guard !Task.isCancelled else { return }
+        notesLoaded = true
+        guard result.errorMessage == nil else { return }
         noteItems = result.notes
         if let selectedNoteDetail {
             if let refreshed = noteItems.first(where: { $0.id == selectedNoteDetail.item.id }) {

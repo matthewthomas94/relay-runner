@@ -257,6 +257,26 @@ struct ProgramBoardOverlayView: View {
     }
 
     private var notesLibrary: some View {
+        ZStack {
+            if model.notesLoaded {
+                notesLibraryContent
+                    .transition(.relayReplacing(.surface))
+            } else {
+                SkeletonLoader(layout: .notes, label: "Loading notes")
+                    .transition(.relayReplacing(.surface))
+            }
+        }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.notesLoaded)
+        .task {
+            while !Task.isCancelled {
+                await onNotesRefresh()
+                do { try await Task.sleep(for: .seconds(10)) }
+                catch { break }
+            }
+        }
+    }
+
+    private var notesLibraryContent: some View {
         VStack(spacing: 0) {
             HStack {
                 RelaySwap(model.noteItems.count, style: .text, alignment: .leading) { count in
@@ -339,14 +359,19 @@ struct ProgramBoardOverlayView: View {
                     } else {
                         VStack(spacing: 10) {
                             Image(systemName: "note.text")
-                                .font(.system(size: 28))
+                                .font(AppTypography.symbolFont(size: 28, weight: .regular))
+                                .foregroundStyle(ProgramBoardStyle.mutedText)
                             Text("Select a note")
                                 .font(AppTypography.font(.sectionHeading))
+                                .foregroundStyle(ProgramBoardStyle.secondaryText)
                             Text("Your transcripts and summaries, all in one place.")
                                 .font(AppTypography.font(.supporting))
+                                .foregroundStyle(ProgramBoardStyle.mutedText)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 390)
                         }
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityElement(children: .combine)
                         .transition(.relayReplacing(.surface))
                     }
                 }
@@ -355,13 +380,6 @@ struct ProgramBoardOverlayView: View {
         }
         .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
         .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
-        .task {
-            while !Task.isCancelled {
-                await onNotesRefresh()
-                do { try await Task.sleep(for: .seconds(10)) }
-                catch { break }
-            }
-        }
     }
 
     private func boardContent(viewportSize: CGSize) -> some View {

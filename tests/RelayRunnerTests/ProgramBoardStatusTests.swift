@@ -1396,6 +1396,16 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(model.noteItems.isEmpty)
     }
 
+    @MainActor
+    func testNotesStayLoadingUntilTheFirstFetchFinishes() async {
+        let model = ProgramBoardViewModel()
+        XCTAssertFalse(model.notesLoaded, "An empty library before the first fetch is still loading")
+        model.setNoteFetcher { _ in ProgramBoardNoteLoadResult(notes: [], errorMessage: "Unavailable") }
+        await model.refreshNotes()
+        XCTAssertTrue(model.notesLoaded, "A failed first fetch still ends loading")
+        XCTAssertTrue(model.noteItems.isEmpty)
+    }
+
     func testNoteDetailUsesStructuredTranscriptWithoutStorageMetadata() {
         let item = noteItem(id: "RR-N1", number: 1, projectName: "Relay Runner", path: "/repo/relay-runner")
         let model = ProgramBoardViewModel()
