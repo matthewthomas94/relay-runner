@@ -550,6 +550,35 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
     }
 
+    func testWorkspaceFirstLoadPinsCheckingForUpdatesBelowStateCopy() {
+        XCTAssertEqual(
+            NotchVisualLabelAllowlist.presentation(for: .idle, boardContentLoading: true),
+            NotchVisualLabelPresentation(
+                labels: ["Checking for updates"],
+                hoverLabel: "Checking for updates",
+                pinsLabel: true
+            )
+        )
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.hoverLabel(for: .idle, boardContentLoading: true),
+            "Checking for updates"
+        )
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.labels(for: .listening, boardContentLoading: true),
+            ["Listening"],
+            "voice state copy outranks the Workspace load"
+        )
+        XCTAssertEqual(
+            NotchVisualLabelAllowlist.presentation(
+                for: .idle,
+                bridgeStartingUp: true,
+                boardContentLoading: true
+            ).labels,
+            ["Starting up..."],
+            "session startup outranks the Workspace load"
+        )
+    }
+
     func testWorkspaceLoadingIsGlyphOnlyAndIdleRemainsStatic() {
         XCTAssertEqual(
             NotchActivityLabelPlanner.labels(for: .idle),

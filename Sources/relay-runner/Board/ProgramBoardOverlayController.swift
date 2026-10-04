@@ -44,6 +44,14 @@ private struct WorkspaceLatencyProbe {
     }
 }
 
+enum ProgramBoardLoadingState: Equatable {
+    case idle
+    /// A background update check while the board already shows its content.
+    case refreshing
+    /// The first load, while the skeleton stands in for the board.
+    case loadingContent
+}
+
 final class BoardOverlayHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
@@ -93,7 +101,7 @@ final class ProgramBoardOverlayController {
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
     private var projectScopeProvider: () -> [String] = { [] }
     private var noSessionHandler: (() -> Void)?
-    private var loadingStateHandler: ((Bool) -> Void)?
+    private var loadingStateHandler: ((ProgramBoardLoadingState) -> Void)?
     private var addExistingProjectHandler: (() -> Void)?
     private var createProjectHandler: (() -> Void)?
     private var projectSelectionHandler: ((String) -> Void)?
@@ -165,7 +173,7 @@ final class ProgramBoardOverlayController {
         self.noSessionHandler = handler
     }
 
-    func setLoadingStateHandler(_ handler: @escaping (Bool) -> Void) {
+    func setLoadingStateHandler(_ handler: @escaping (ProgramBoardLoadingState) -> Void) {
         self.loadingStateHandler = handler
     }
 
@@ -703,7 +711,7 @@ final class ProgramBoardOverlayController {
         if opening.reloadsWork {
             checkForUpdates(inBackground: true)
         } else {
-            loadingStateHandler?(false)
+            loadingStateHandler?(.idle)
         }
     }
 
@@ -791,7 +799,7 @@ final class ProgramBoardOverlayController {
         updateCheckTask?.cancel()
         updateCheckTask = nil
         model.cancelReload()
-        loadingStateHandler?(false)
+        loadingStateHandler?(.idle)
         revealContainer?.setUpdateCheckActive(false)
         revealContainer?.setLoading(false)
         lastSelectedTab = workspace.selectedTab
@@ -846,7 +854,7 @@ final class ProgramBoardOverlayController {
         if workspace.showsWorkTab {
             checkForUpdates(inBackground: model.snapshot != nil)
         } else {
-            loadingStateHandler?(false)
+            loadingStateHandler?(.idle)
         }
         if let container {
             DispatchQueue.main.async {
@@ -879,7 +887,7 @@ final class ProgramBoardOverlayController {
         contentLoadBlocked = false
         revealContainer?.setLoading(false)
         revealContainer?.setUpdateCheckActive(false)
-        loadingStateHandler?(false)
+        loadingStateHandler?(.idle)
         model.endDrag()
         model.cancelCreate()
         model.cancelEdit()
@@ -969,7 +977,7 @@ final class ProgramBoardOverlayController {
             contentLoadBlocked = false
             revealContainer?.setLoading(false)
             revealContainer?.setUpdateCheckActive(false)
-            loadingStateHandler?(false)
+            loadingStateHandler?(.idle)
             return
         }
         guard !model.hasReloadInFlight else { return }
@@ -990,7 +998,7 @@ final class ProgramBoardOverlayController {
         } else {
             revealContainer?.setUpdateCheckActive(true)
         }
-        loadingStateHandler?(true)
+        loadingStateHandler?(contentLoadBlocked ? .loadingContent : .refreshing)
 
         guard let reloadTask = model.reloadIfIdle(inBackground: inBackground) else {
             return
@@ -1008,7 +1016,7 @@ final class ProgramBoardOverlayController {
             } else {
                 self.revealContainer?.setUpdateCheckActive(false)
             }
-            self.loadingStateHandler?(false)
+            self.loadingStateHandler?(.idle)
         }
     }
 
