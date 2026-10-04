@@ -44,6 +44,43 @@ final class UpdaterTests: XCTestCase {
     }
 
     @MainActor
+    func testOpeningWorkspaceQuietlyChecksForUpdateInformation() {
+        _ = NSApplication.shared
+        let workspace = ProgramBoardOverlayController(boardRouteResolver: { .unavailable })
+        workspace.setSettingsContentProvider { AnyView(Text("Settings")) }
+        defer { workspace.suspendForExternalWindow() }
+        var probes = 0
+        let updater = RelayUpdaterController(
+            installerContext: nil,
+            bundleURL: URL(fileURLWithPath: "/tmp/relay-runner"),
+            focusUpdateUI: { XCTFail("A quiet probe must not focus update UI") },
+            scheduleUpdateUIFocus: { _ in },
+            checkForUpdatesOverride: { XCTFail("A quiet probe must not start an interactive check") },
+            checkForUpdateInformationOverride: { probes += 1 }
+        )
+        workspace.setUpdater(updater)
+        let drainMainActor = {
+            let drained = self.expectation(description: "Workspace open tasks ran")
+            Task { @MainActor in drained.fulfill() }
+            self.wait(for: [drained], timeout: 2)
+        }
+
+        workspace.showSettings()
+        drainMainActor()
+        XCTAssertTrue(workspace.isVisible)
+        XCTAssertEqual(probes, 1)
+        workspace.showSettings()
+        drainMainActor()
+        XCTAssertEqual(probes, 1)
+
+        workspace.suspendForExternalWindow()
+        workspace.showSettings()
+        drainMainActor()
+        XCTAssertTrue(workspace.isVisible)
+        XCTAssertEqual(probes, 2)
+    }
+
+    @MainActor
     func testAvailableUpdateAppearsOnlyAfterSparkleFindsOneAndClearsWhenCurrent() throws {
         var checks = 0
         let controller = RelayUpdaterController(

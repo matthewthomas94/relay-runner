@@ -17,6 +17,7 @@ final class RelayUpdaterController: NSObject, SPUUpdaterDelegate {
     private let focusUpdateUI: @MainActor () -> Void
     private let scheduleUpdateUIFocus: @MainActor (@escaping @MainActor () -> Void) -> Void
     private let checkForUpdatesOverride: (@MainActor () -> Void)?
+    private let checkForUpdateInformationOverride: (@MainActor () -> Void)?
     private let scheduleRelaunchContinuation: @MainActor (@escaping @MainActor () -> Void) -> Void
     private var didPrepareForRelaunch = false
 
@@ -28,6 +29,7 @@ final class RelayUpdaterController: NSObject, SPUUpdaterDelegate {
         scheduleUpdateUIFocus: @escaping @MainActor (@escaping @MainActor () -> Void) -> Void =
             RelayUpdaterController.scheduleUpdateUIFocus,
         checkForUpdatesOverride: (@MainActor () -> Void)? = nil,
+        checkForUpdateInformationOverride: (@MainActor () -> Void)? = nil,
         scheduleRelaunchContinuation: @escaping @MainActor (@escaping @MainActor () -> Void) -> Void =
             RelayUpdaterController.scheduleRelaunchContinuation
     ) {
@@ -35,6 +37,7 @@ final class RelayUpdaterController: NSObject, SPUUpdaterDelegate {
         self.focusUpdateUI = focusUpdateUI
         self.scheduleUpdateUIFocus = scheduleUpdateUIFocus
         self.checkForUpdatesOverride = checkForUpdatesOverride
+        self.checkForUpdateInformationOverride = checkForUpdateInformationOverride
         self.scheduleRelaunchContinuation = scheduleRelaunchContinuation
         super.init()
 
@@ -69,6 +72,15 @@ final class RelayUpdaterController: NSObject, SPUUpdaterDelegate {
             standardUpdaterController?.checkForUpdates(nil)
         }
         scheduleUpdateUIFocus(focusUpdateUI)
+    }
+
+    /// Quietly refreshes `availableVersion` without showing Sparkle UI.
+    func checkForUpdateInformation() {
+        if let checkForUpdateInformationOverride {
+            checkForUpdateInformationOverride()
+        } else if let updater = standardUpdaterController?.updater, updater.automaticallyChecksForUpdates {
+            updater.checkForUpdateInformation()
+        }
     }
 
     func prepareForSparkleRelaunch() {
