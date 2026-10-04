@@ -168,6 +168,9 @@ final class WorkspaceHistoryViewModel {
     var detail: ArtifactHistoryDetailResponse?
     var dependencies: ArtifactDependencySummary?
     var isLoading = false
+    /// False until the first history fetch finishes, so History shows a
+    /// skeleton rather than an empty list while it loads.
+    var historyLoaded = false
     var errorMessage: String?
     var notice: String?
 
@@ -191,6 +194,7 @@ final class WorkspaceHistoryViewModel {
         } catch {
             errorMessage = Self.message(for: error)
         }
+        historyLoaded = true
         isLoading = false
     }
 
