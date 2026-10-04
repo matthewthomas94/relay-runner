@@ -708,6 +708,7 @@ final class ProgramBoardOverlayController {
 
         startThemePoll()
         startStatusPoll()
+        checkForReleaseUpdate()
         if opening.reloadsWork {
             checkForUpdates(inBackground: true)
         } else {
@@ -851,6 +852,7 @@ final class ProgramBoardOverlayController {
         updatePanelKeyEligibility()
         startThemePoll()
         startStatusPoll()
+        checkForReleaseUpdate()
         if workspace.showsWorkTab {
             checkForUpdates(inBackground: model.snapshot != nil)
         } else {
@@ -1017,6 +1019,14 @@ final class ProgramBoardOverlayController {
                 self.revealContainer?.setUpdateCheckActive(false)
             }
             self.loadingStateHandler?(.idle)
+        }
+    }
+
+    /// Quietly asks Sparkle whether a newer release exists each time the
+    /// Workspace opens; a hit surfaces the strip's "Update available" button.
+    private func checkForReleaseUpdate() {
+        Task { @MainActor [weak self] in
+            self?.workspace.updater?.checkForUpdateInformation()
         }
     }
 
