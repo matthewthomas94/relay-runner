@@ -3,10 +3,14 @@ import XCTest
 
 final class AppTypographyTests: XCTestCase {
     func testAppTypographyDefinesExpectedPostScriptNames() {
-        XCTAssertEqual(AppTypography.Face.ppMoriRegular.postScriptName, "PPMori-Regular")
-        XCTAssertEqual(AppTypography.Face.ppMoriSemibold.postScriptName, "PPMori-SemiBold")
-        XCTAssertEqual(AppTypography.Face.ppTelegrafRegular.postScriptName, "PPTelegraf-Regular")
+        XCTAssertEqual(AppTypography.Face.baiJamjureeRegular.postScriptName, "BaiJamjuree-Regular")
+        XCTAssertEqual(AppTypography.Face.baiJamjureeSemibold.postScriptName, "BaiJamjuree-SemiBold")
         XCTAssertNil(AppTypography.Face.system.postScriptName)
+    }
+
+    func testBundledBaiJamjureeResolvesWithoutAUserInstall() {
+        XCTAssertEqual(AppTypography.appKitFont(.ticketTitle).fontName, "BaiJamjuree-SemiBold")
+        XCTAssertEqual(AppTypography.appKitFont(.body).fontName, "BaiJamjuree-Regular")
     }
 
     func testAppTypographyUsesCompactCalibratedScale() {
@@ -39,77 +43,77 @@ final class AppTypographyTests: XCTestCase {
         XCTAssertEqual(AppTypography.definition(for: .caption).size, 9)
     }
 
-    func testSemanticRolesChoosePPFaceByWeight() {
+    func testSemanticRolesChooseBaiJamjureeFaceByWeight() {
         for role in AppTypography.Role.allCases {
             let definition = AppTypography.definition(for: role)
             let expectedFace: AppTypography.Face = switch definition.fallbackWeight {
             case .regular:
-                .ppTelegrafRegular
+                .baiJamjureeRegular
             case .medium, .semibold, .bold:
-                .ppMoriSemibold
+                .baiJamjureeSemibold
             }
 
             XCTAssertEqual(definition.face, expectedFace, "Unexpected face for \(role)")
         }
     }
 
-    func testAppTypographyPrefersInstalledPPFontsForAppContent() {
+    func testAppTypographyPrefersBaiJamjureeForAppContent() {
         let available = Set([
-            "PPMori-SemiBold",
-            "PPTelegraf-Regular",
+            "BaiJamjuree-SemiBold",
+            "BaiJamjuree-Regular",
         ])
 
         XCTAssertEqual(
             AppTypography.resolved(.workspaceHeading, availablePostScriptNames: available),
-            .init(postScriptName: "PPMori-SemiBold", size: 14, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: 14, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.projectTitle, availablePostScriptNames: available),
-            .init(postScriptName: "PPMori-SemiBold", size: 13, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: 13, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.ticketTitle, availablePostScriptNames: available),
-            .init(postScriptName: "PPMori-SemiBold", size: 13, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: 13, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.metadata, availablePostScriptNames: available),
-            .init(postScriptName: "PPTelegraf-Regular", size: 10, fallbackWeight: .regular)
+            .init(postScriptName: "BaiJamjuree-Regular", size: 10, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.action, availablePostScriptNames: available),
-            .init(postScriptName: "PPTelegraf-Regular", size: 10, fallbackWeight: .regular)
+            .init(postScriptName: "BaiJamjuree-Regular", size: 10, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.programAction, availablePostScriptNames: available),
-            .init(postScriptName: "PPTelegraf-Regular", size: 11, fallbackWeight: .regular)
+            .init(postScriptName: "BaiJamjuree-Regular", size: 11, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.menuTab, availablePostScriptNames: available),
-            .init(postScriptName: "PPMori-SemiBold", size: 13, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: 13, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.pillTitle, availablePostScriptNames: available),
-            .init(postScriptName: "PPMori-SemiBold", size: 13, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: 13, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.pillBody, availablePostScriptNames: available),
-            .init(postScriptName: "PPTelegraf-Regular", size: 14, fallbackWeight: .regular)
+            .init(postScriptName: "BaiJamjuree-Regular", size: 14, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.onboardingHero, availablePostScriptNames: available),
-            .init(postScriptName: "PPTelegraf-Regular", size: 32, fallbackWeight: .regular)
+            .init(postScriptName: "BaiJamjuree-Regular", size: 32, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.permissionButton, availablePostScriptNames: available),
-            .init(postScriptName: "PPMori-SemiBold", size: 16, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: 16, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.notchStatus, availablePostScriptNames: available),
-            .init(postScriptName: "PPMori-SemiBold", size: 12, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: 12, fallbackWeight: .semibold)
         )
     }
 
-    func testAppTypographyFallsBackToSystemFontsWhenPPFontsAreUnavailable() {
+    func testAppTypographyFallsBackToSystemFontsWhenBaiJamjureeIsUnavailable() {
         let unavailable: Set<String> = []
 
         XCTAssertEqual(

@@ -30,20 +30,17 @@ enum AppTypography {
 
     enum Face: Equatable {
         case system
-        case ppMoriRegular
-        case ppMoriSemibold
-        case ppTelegrafRegular
+        case baiJamjureeRegular
+        case baiJamjureeSemibold
 
         var postScriptName: String? {
             switch self {
             case .system:
                 return nil
-            case .ppMoriRegular:
-                return "PPMori-Regular"
-            case .ppMoriSemibold:
-                return "PPMori-SemiBold"
-            case .ppTelegrafRegular:
-                return "PPTelegraf-Regular"
+            case .baiJamjureeRegular:
+                return "BaiJamjuree-Regular"
+            case .baiJamjureeSemibold:
+                return "BaiJamjuree-SemiBold"
             }
         }
     }
@@ -149,63 +146,63 @@ enum AppTypography {
     static func definition(for role: Role) -> Definition {
         switch role {
         case .menuTab:
-            return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 13, fallbackWeight: .semibold)
         case .appTitle:
-            return Definition(face: .ppMoriSemibold, size: 22, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 22, fallbackWeight: .semibold)
         case .onboardingHero:
-            return Definition(face: .ppTelegrafRegular, size: 32, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 32, fallbackWeight: .regular)
         case .screenTitle:
-            return Definition(face: .ppMoriSemibold, size: 17, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 17, fallbackWeight: .semibold)
         case .workspaceHeading:
-            return Definition(face: .ppMoriSemibold, size: 14, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 14, fallbackWeight: .semibold)
         case .programProjectsHeading:
-            return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 13, fallbackWeight: .semibold)
         case .sectionHeading:
-            return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 13, fallbackWeight: .semibold)
         case .cardHeading:
-            return Definition(face: .ppMoriSemibold, size: 12, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 12, fallbackWeight: .semibold)
         case .controlHeading:
-            return Definition(face: .ppMoriSemibold, size: 11, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 11, fallbackWeight: .semibold)
         case .projectTitle:
-            return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 13, fallbackWeight: .semibold)
         case .ticketTitle:
-            return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 13, fallbackWeight: .semibold)
         case .pillTitle:
-            return Definition(face: .ppMoriSemibold, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 13, fallbackWeight: .semibold)
         case .pillBody:
-            return Definition(face: .ppTelegrafRegular, size: 14, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 14, fallbackWeight: .regular)
         case .notchStatus:
-            return Definition(face: .ppMoriSemibold, size: 12, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 12, fallbackWeight: .semibold)
         case .body:
-            return Definition(face: .ppTelegrafRegular, size: 12, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 12, fallbackWeight: .regular)
         case .label:
-            return Definition(face: .ppTelegrafRegular, size: 11, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 11, fallbackWeight: .regular)
         case .field:
-            return Definition(face: .ppTelegrafRegular, size: 13, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 13, fallbackWeight: .regular)
         case .metadata:
-            return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 10, fallbackWeight: .regular)
         case .supporting:
-            return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 10, fallbackWeight: .regular)
         case .settingsDescription:
-            return Definition(face: .ppTelegrafRegular, size: 11, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 11, fallbackWeight: .regular)
         case .action:
-            return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 10, fallbackWeight: .regular)
         case .programAction:
-            return Definition(face: .ppTelegrafRegular, size: 11, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 11, fallbackWeight: .regular)
         case .programEmptyState:
-            return Definition(face: .ppTelegrafRegular, size: 13, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 13, fallbackWeight: .regular)
         case .permissionButton:
-            return Definition(face: .ppMoriSemibold, size: 16, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 16, fallbackWeight: .semibold)
         case .button:
-            return Definition(face: .ppTelegrafRegular, size: 11, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 11, fallbackWeight: .regular)
         case .status:
-            return Definition(face: .ppMoriSemibold, size: 12, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: 12, fallbackWeight: .semibold)
         case .count:
-            return Definition(face: .ppTelegrafRegular, size: 10, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 10, fallbackWeight: .regular)
         case .caption:
-            return Definition(face: .ppTelegrafRegular, size: 9, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 9, fallbackWeight: .regular)
         case .smallCaption:
-            return Definition(face: .ppTelegrafRegular, size: 8, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 8, fallbackWeight: .regular)
         }
     }
 
@@ -222,9 +219,20 @@ enum AppTypography {
     }
 
     private static let installedPostScriptNames: Set<String> = {
+        registerBundledFonts()
         guard let names = CTFontManagerCopyAvailablePostScriptNames() as? [String] else {
             return []
         }
         return Set(names)
     }()
+
+    /// Bai Jamjuree ships in the resource bundle under the SIL Open Font
+    /// License. Registration is process-scoped and must precede the first
+    /// available-name lookup; a font the user already installed is left as is.
+    private static func registerBundledFonts() {
+        let urls = RelayRunnerResources.bundle.urls(forResourcesWithExtension: "ttf", subdirectory: nil) ?? []
+        for url in urls {
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        }
+    }
 }

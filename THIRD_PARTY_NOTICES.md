@@ -49,7 +49,7 @@ The developer-only local installer copies an already provisioned, trusted runtim
 
 ## Fonts, icons, and provider products
 
-Relay Runner does not bundle the optional PP Mori or PP Telegraf font binaries. If those PostScript names are already installed under the user's own font license, the app can use them; otherwise it deterministically uses macOS system fonts. Apple system fonts and SF Symbols are referenced through platform APIs and are not redistributed as repository font files.
+The app bundles the Regular and SemiBold weights of [Bai Jamjuree](https://github.com/cadsondemak/Bai-Jamjuree) (Copyright 2018 Bai Jamjuree), obtained from [Google Fonts](https://github.com/google/fonts/tree/main/ofl/baijamjuree) and licensed under the SIL Open Font License 1.1. The license ships beside the fonts as `BaiJamjuree-OFL.txt` in the app's resource bundle. If the bundled fonts cannot be registered, the app deterministically uses macOS system fonts. Apple system fonts and SF Symbols are referenced through platform APIs and are not redistributed as repository font files.
 
 The app icon, tray artwork, onboarding key illustrations, DMG artwork, and README screenshots have no separate third-party attribution marker in the repository and are covered by the project license. Contributors must not add proprietary artwork or font binaries without an explicit compatible license and notice.
 

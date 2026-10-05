@@ -8,7 +8,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(ProgramBoardContentPresentation.settingUpForegroundOpacity, 0.92, accuracy: 0.001)
         XCTAssertEqual(ProgramBoardContentPresentation.settingUpTitle, "Setting up your project...")
         let updateCheckDefinition = AppTypography.definition(for: .sectionHeading)
-        XCTAssertEqual(updateCheckDefinition.face, .ppMoriSemibold)
+        XCTAssertEqual(updateCheckDefinition.face, .baiJamjureeSemibold)
         XCTAssertEqual(updateCheckDefinition.size, 13)
         XCTAssertEqual(updateCheckDefinition.fallbackWeight, .semibold)
     }
