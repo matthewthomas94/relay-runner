@@ -2,10 +2,8 @@ import XCTest
 @testable import relay_orchestrator_mcp
 
 final class OrchestratorMCPClientInstructionsTests: XCTestCase {
-    // Digests of the release before Claude-specific payloads (3be285a2),
-    // taken from a non-Claude client. They must not change for Codex.
-    private let releasedInitializeSHA256 = "ae4e61611f610fc9ba4a21e290ab0d4559566778358f02046b1f55fd05508fb3"
-    private let releasedInstructionsSHA256 = "0393d403a3bbeac161c49c05301bd4ed2705b416d327cb938bcb102ae3c6df8e"
+    // tools/list digest of the release before Claude-specific payloads
+    // (3be285a2), taken from a non-Claude client. It must not change for Codex.
     private let releasedToolsListSHA256 = "b48fb7b52913ace373633b1bf8710573c51b54c9cb90d875907b0ce72109595d"
 
     private func initialize(_ server: MCPServer, client: String) async throws -> [String: Any] {
@@ -22,12 +20,13 @@ final class OrchestratorMCPClientInstructionsTests: XCTestCase {
         return tools.compactMap { $0["name"] as? String }
     }
 
-    func testNonClaudeClientsKeepReleasedInstructionsAndTools() async throws {
+    func testNonClaudeClientsGetFullRulesAndReleasedTools() async throws {
         for client in ["codex-mcp-client", "rr-326-probe"] {
             let server = MCPServer()
             let result = try await initialize(server, client: client)
-            XCTAssertEqual(try mcpCanonicalJSONSHA256(result), releasedInitializeSHA256, client)
-            XCTAssertEqual(mcpSHA256(try XCTUnwrap(result["instructions"] as? String)), releasedInstructionsSHA256)
+            // Codex gets the same full rules claude-code fetches on demand.
+            XCTAssertEqual(result["instructions"] as? String, Instructions.payload, client)
+            XCTAssertEqual(Instructions.payload, Instructions.claudeFull)
             let tools = try await server.dispatch(method: "tools/list", params: [:])
             XCTAssertEqual(try mcpCanonicalJSONSHA256(tools), releasedToolsListSHA256, client)
         }

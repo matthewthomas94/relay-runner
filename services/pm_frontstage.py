@@ -240,7 +240,6 @@ def default_orchestration_trace_message(
     ticket = _trace_ticket_label(ticket_id)
     run_suffix = f" run {run_id}" if run_id is not None else ""
     messages = {
-        "reasoning-summary": "Considering the next step",
         "clarification-request": "I need a little more detail",
         "reading-context": "Reading project context",
         "ticket-updating": f"Updating {ticket}",
@@ -268,6 +267,9 @@ def default_orchestration_trace_message(
         "preparing-response": "Preparing response",
         "board-change": f"Board updated for {ticket}" if ticket_id else "Board updated",
     }
+    if kind not in messages:
+        # A reasoning summary without its own message would only be generic filler.
+        raise ValueError(f"{kind} traces require a public user-facing message")
     return messages[kind]
 
 

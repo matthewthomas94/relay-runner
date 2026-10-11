@@ -27,7 +27,7 @@ The only code change for RR-53 is a focused unit test proving native session cap
 - Launch command: Claude uses `claude ... "/relay-bridge"` because Claude Code exposes relay startup as a slash command. Codex uses `codex ... 'Use the relay-bridge skill now.'` because Codex consumes the installed skill as a normal initial prompt.
 - Permission bypass flag: Claude uses `--dangerously-skip-permissions`; Codex uses `--dangerously-bypass-approvals-and-sandbox`. Both are gated by the same `general.bypass_permissions` setting.
 - CLI resolution: Claude prefers Relay Runner's installed Claude symlink path from `ClaudeAuth.claudeBinaryPath`, then falls back to `claude` on `PATH`. Codex prefers the bundled Codex app CLI, then `codex` on `PATH`.
-- Auth recovery: Claude worker auth failures require `claude /login`; Codex worker auth failures require `codex login`. This is documented in `services/instructions/recovery-401-auth.md`.
+- Auth recovery: Claude worker auth failures require `claude auth login`; Codex worker auth failures require `codex login`. This is documented in `services/instructions/subscription-only.md` (originally `recovery-401-auth.md`, since merged).
 - Interruption: Claude has no stronger hard-cancel guarantee than Codex for already-running shell commands or MCP calls. Both providers use cooperative preemption checkpoints and stale TTS suppression.
 
 ## Checks

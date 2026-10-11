@@ -190,17 +190,6 @@ class InstalledCommandTests(RelayInstallHarness):
                 if "API_KEY" in line or "API key" in line or "api key" in line.lower():
                     self.assertIn("never", line.lower(), f"{key}: {line}")
 
-    def test_workflow_text_is_current(self):
-        self.refresh()
-        for key in ("claude-workflow", "codex-workflow"):
-            text = self.path(key).read_text()
-            self.assertIn("`execution_mode`", text)
-            self.assertIn("`spike`", text)
-            self.assertIn("codex:astra", text)
-            self.assertNotIn("`max` is Claude-only", text)
-            self.assertIn("the foreground orchestrator does not perform the substantive review or merge", text)
-            self.assertNotIn("Review those branches, merge them into the working branch", text)
-
     def test_outdated_unmodified_install_is_replaced_on_upgrade(self):
         # The previous app version recorded what it wrote.
         old = (ROOT / "scripts" / "relay-bridge").read_text().replace(

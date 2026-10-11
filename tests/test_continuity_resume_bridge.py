@@ -296,7 +296,10 @@ class ContinuityResumeBridgeTests(unittest.TestCase):
                 ))
 
         restart_bridge()
-        self.assertEqual(json.loads(self.state_path.read_text()), metadata)
+        # The restarted bridge re-syncs inbox fields into the state file but
+        # must keep the authoritative command identity.
+        restored = json.loads(self.state_path.read_text())
+        self.assertEqual({key: restored.get(key) for key in metadata}, metadata)
         self.assertEqual(
             self.call({**payload, "recovery_generation": "generation-6"})["reason"],
             "stale_recovery_generation",
@@ -315,7 +318,8 @@ class ContinuityResumeBridgeTests(unittest.TestCase):
         }
         self.state_path.write_text(json.dumps(newer))
         restart_bridge()
-        self.assertEqual(json.loads(self.state_path.read_text()), newer)
+        restored = json.loads(self.state_path.read_text())
+        self.assertEqual({key: restored.get(key) for key in newer}, newer)
         self.assertEqual(self.call(payload)["reason"], "stale_recovery_generation")
 
     def test_recovered_siblings_release_in_order_after_each_acknowledgement(self):

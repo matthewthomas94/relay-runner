@@ -34,36 +34,27 @@ ACTIONS = [
     "look-at-screen-intent",
     "naming",
 ]
+# Full orchestrator rules: non-Claude clients get them as `initialize`
+# instructions, and claude-code fetches them with `get_relay_instructions`.
 ORCHESTRATOR = [
+    "subscription-only",
     "orchestration-workflow",
+    "artifact-tickets",
     "program-manager-capture",
-    "recovery-401-auth",
     "naming",
 ]
 # Claude Code keeps only the first 2048 characters (UTF-16 units) of each MCP
 # server's `initialize` instructions and appends "… [truncated]". `claude-code`
 # clients therefore get the compact payload in compact/<server>.md and fetch
 # the full rules with the server's read-only `get_relay_instructions` tool.
-# Every other client keeps the payloads above byte for byte.
 CLAUDE_INSTRUCTIONS_LIMIT = 2048
 COMPACT_SERVERS = ["relay-actions", "relay-orchestrator", "relay-vision"]
-# Full rules relay-orchestrator's `get_relay_instructions` returns to Claude.
-# relay-actions returns its ACTIONS payload unchanged.
-ORCHESTRATOR_CLAUDE = [
-    "subscription-only",
-    "orchestration-workflow",
-    "artifact-tickets",
-    "program-manager-capture",
-    "recovery-401-auth",
-    "naming",
-]
 # Order the chunks appear in CLAUDE.md's generated block.
 CLAUDE_MD = [
     "subscription-only",
     "orchestration-workflow",
     "artifact-tickets",
     "program-manager-capture",
-    "recovery-401-auth",
     "relay-actions-vs-computer-use",
     "board-hotkey",
     "look-at-screen-intent",
@@ -201,7 +192,7 @@ def main() -> None:
             swift_constant({
                 "payload": concat(ORCHESTRATOR),
                 "claudeCompact": compact("relay-orchestrator"),
-                "claudeFull": concat(ORCHESTRATOR_CLAUDE),
+                "claudeFull": concat(ORCHESTRATOR),
             }, "relay-orchestrator"),
         REPO / "Sources" / "relay-vision-mcp" / "Instructions.generated.swift":
             swift_constant({

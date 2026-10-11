@@ -12,8 +12,6 @@ If you're triggering this skill *implicitly* mid-conversation (the user didn't t
 
 ## Status checks
 
-- `mcp__relay-orchestrator__list_runs(state="Running")` — what's currently dispatched
-- `mcp__relay-orchestrator__get_run(run_id=N)` — details of one run, including `state`, `exit_code`, and `log_path`
-- `git -C <workspace_path> log --oneline <default_branch>..HEAD` from the run record — what an implementation worker actually committed (code + ticket update)
+Use the `relay-dispatch` status checks (`list_runs`, `get_run`). To see what an implementation worker actually committed (code + ticket update), run `git -C <workspace_path> log --oneline <default_branch>..HEAD` with the paths from the run record.
 
 The rules below are generated from the same source as the relay-orchestrator MCP instructions.

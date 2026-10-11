@@ -864,7 +864,7 @@ class MessengerRuntimeTests(unittest.TestCase):
             runtime.shutdown()
 
     def test_task_user_turn_generates_contextual_handoff_acknowledgement(self):
-        backend = FakeBackend(["I picked up the architecture request, and I’ll come back with the next step."])
+        backend = FakeBackend(["I'm looking into implementing the new architecture."])
         spoken: list[tuple[str, int, str]] = []
         runtime = MessengerRuntime(
             backend,
@@ -882,12 +882,13 @@ class MessengerRuntimeTests(unittest.TestCase):
             self.assertTrue(wait_until(lambda: len(spoken) == 1))
             self.assertIn("Implement the new architecture", backend.prompts[0])
             self.assertIn("brief contextual acknowledgement", backend.prompts[0])
-            self.assertIn("uses first-person singular language", backend.prompts[0])
+            self.assertIn("first-person singular language", backend.prompts[0])
+            self.assertIn("Never substitute generic filler", backend.prompts[0])
             self.assertIn("refer to the workers directly", backend.prompts[0])
             self.assertEqual(
                 spoken[0],
                 (
-                    "I picked up the architecture request, and I’ll come back with the next step.",
+                    "I'm looking into implementing the new architecture.",
                     4,
                     "cmd-4",
                 ),

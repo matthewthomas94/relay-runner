@@ -127,11 +127,19 @@ class PMFrontstageTests(unittest.TestCase):
                         message=private_detail,
                     )
 
+    def test_reasoning_summary_requires_its_own_message(self):
+        with self.assertRaisesRegex(ValueError, "require a public user-facing message"):
+            OrchestrationTraceEvent(kind="reasoning-summary")
+        event = OrchestrationTraceEvent(
+            kind="reasoning-summary",
+            message="Checking how replies reach the notch",
+        )
+        self.assertEqual(event.message, "Checking how replies reach the notch")
+
     def test_foreground_trace_kinds_cover_provider_neutral_main_agent_activity(self):
         command = RelayCommandMetadata.from_dict(relay_command(9, "cmd-9"))
 
         cases = {
-            "reasoning-summary": "Considering the next step",
             "clarification-request": "I need a little more detail",
             "reading-context": "Reading project context",
             "ticket-updating": "Updating RR-9",

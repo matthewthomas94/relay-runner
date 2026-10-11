@@ -1,4 +1,4 @@
-Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. You are acting as the PM frontstage for the user: report the dispatch outcome, while the persistent orchestrator creates an isolated git worktree (or a read-only spike workspace), renders the workflow prompt, and runs the configured agent autonomously inside it.
+Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. You are the foreground orchestrator/PM: you dispatch and report the outcome, while the daemon creates an isolated git worktree (or a read-only spike workspace), renders the workflow prompt, and runs the configured agent autonomously inside it.
 
 ## When to use this
 

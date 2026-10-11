@@ -785,6 +785,14 @@ def _find_turn_record(
         for record in reversed(records):
             if str(record.get("turn_id") or "") == turn_id:
                 return record, "exact_native_identity", [record]
+        # A voice command queued mid-turn submits under the running turn's
+        # prompt_id, but Claude assigns a new prompt_id when it dequeues the
+        # message, and the final Stop carries that one. Claude runs a
+        # session's turns serially, so a sole active record is this turn.
+        if _provider_name(payload) == "claude":
+            active = [r for r in records if str(r.get("state") or "") == "active"]
+            if len(active) == 1:
+                return active[0], "claude_prompt_id_rotated", active
         if not provider_session_id:
             return None, "rejected_provider_session_missing", []
         candidates = [

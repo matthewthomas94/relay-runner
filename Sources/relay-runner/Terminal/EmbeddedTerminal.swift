@@ -3,6 +3,7 @@ import Darwin
 import Observation
 import SwiftTerm
 import SwiftUI
+import UserNotifications
 
 struct InboxRecoveryBlocker: Codable, Equatable {
     let intent_id: String
@@ -433,10 +434,35 @@ final class EmbeddedTerminalSession {
 }
 
 final class RelayTerminalView: TerminalView {
+    /// Local-only terminal commands (Ghostty/Terminal.app defaults). None of
+    /// them write to the PTY except paste, which goes through `send`.
+    enum KeyCommand: Equatable {
+        case copy, paste, selectAll
+        case find, findNext, findPrevious
+        case clearScrollback
+        case zoomIn, zoomOut, zoomReset
+        case scrollPageUp, scrollPageDown, scrollToTop, scrollToBottom
+    }
+
+    static let baseFontSize: CGFloat = 13
+    static let fontSizeRange: ClosedRange<CGFloat> = 9...24
+    static let scrollbackLines = 10_000
+
     private(set) var isSendingTerminalResponse = false
     private(set) var isSendingNavigationShortcut = false
     private var navigationKeyMonitor: Any?
     private var rendererActivationAttempted = false
+    private var bellFlashLayer: CALayer?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL])
+    }
 
     deinit {
         uninstallNavigationKeyMonitor()
@@ -481,7 +507,7 @@ final class RelayTerminalView: TerminalView {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if handleNavigationShortcut(event) {
+        if handleNavigationShortcut(event) || handleKeyCommand(event) {
             return true
         }
         return super.performKeyEquivalent(with: event)
@@ -538,12 +564,200 @@ final class RelayTerminalView: TerminalView {
         navigationKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
             guard let self,
                   event.window === self.window,
-                  self.window?.firstResponder === self,
-                  self.handleNavigationShortcut(event) else {
+                  self.window?.firstResponder === self else {
+                return event
+            }
+            // SwiftTerm's keyDown is not overridable; set Meta per event so
+            // right Option still composes characters (e.g. UK Option-3 = #).
+            self.optionAsMetaKey = Self.optionActsAsMeta(rawModifierFlags: event.modifierFlags.rawValue)
+            guard self.handleNavigationShortcut(event) || self.handleKeyCommand(event) else {
                 return event
             }
             return nil
         }
+    }
+
+    @discardableResult
+    func handleKeyCommand(_ event: NSEvent) -> Bool {
+        guard let command = Self.keyCommand(for: event) else { return false }
+        perform(command)
+        return true
+    }
+
+    func perform(_ command: KeyCommand) {
+        switch command {
+        case .copy:
+            if selectionActive { copy(self) }
+        case .paste:
+            paste(self)
+        case .selectAll:
+            selectAll(nil)
+        case .find:
+            performFindPanelAction(Self.findMenuItem(.showFindPanel))
+        case .findNext:
+            performFindPanelAction(Self.findMenuItem(.next))
+        case .findPrevious:
+            performFindPanelAction(Self.findMenuItem(.previous))
+        case .clearScrollback:
+            // CSI 3J is parsed locally; nothing reaches the provider.
+            feed(text: "\u{1B}[3J")
+        case .zoomIn, .zoomOut, .zoomReset:
+            let size = Self.zoomedFontSize(from: font.pointSize, command: command)
+            if size != font.pointSize {
+                font = AppTypography.terminalGridFont(size: size, weight: .regular)
+            }
+        case .scrollPageUp:
+            scrollUp(lines: max(1, getTerminal().rows - 1))
+        case .scrollPageDown:
+            scrollDown(lines: max(1, getTerminal().rows - 1))
+        case .scrollToTop:
+            scrollTo(row: 0)
+        case .scrollToBottom:
+            scrollDown(lines: Int(Int32.max))
+        }
+    }
+
+    static func keyCommand(for event: NSEvent) -> KeyCommand? {
+        keyCommand(
+            keyCode: event.keyCode,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            modifierFlags: event.modifierFlags
+        )
+    }
+
+    static func keyCommand(
+        keyCode: UInt16,
+        charactersIgnoringModifiers: String?,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> KeyCommand? {
+        let flags = modifierFlags.intersection([.command, .option, .control, .shift])
+        let key = charactersIgnoringModifiers?.lowercased() ?? ""
+        switch flags {
+        case .command:
+            switch keyCode {
+            case 115: return .scrollToTop // Home
+            case 119: return .scrollToBottom // End
+            default: break
+            }
+            switch key {
+            case "c": return .copy
+            case "v": return .paste
+            case "a": return .selectAll
+            case "f": return .find
+            case "g": return .findNext
+            case "k": return .clearScrollback
+            case "=", "+": return .zoomIn
+            case "-": return .zoomOut
+            case "0": return .zoomReset
+            default: return nil
+            }
+        case [.command, .shift]:
+            switch key {
+            case "g": return .findPrevious
+            case "=", "+": return .zoomIn
+            default: return nil
+            }
+        case .shift:
+            switch keyCode {
+            case 116: return .scrollPageUp
+            case 121: return .scrollPageDown
+            default: return nil
+            }
+        default:
+            return nil
+        }
+    }
+
+    static func zoomedFontSize(from current: CGFloat, command: KeyCommand) -> CGFloat {
+        let target: CGFloat
+        switch command {
+        case .zoomIn: target = current + 1
+        case .zoomOut: target = current - 1
+        case .zoomReset: target = baseFontSize
+        default: return current
+        }
+        return min(max(target, fontSizeRange.lowerBound), fontSizeRange.upperBound)
+    }
+
+    /// Left Option is Meta (Esc-prefix); right Option alone keeps the macOS
+    /// character layer, matching Ghostty's `macos-option-as-alt = left`.
+    static func optionActsAsMeta(rawModifierFlags: UInt) -> Bool {
+        let leftOption: UInt = 0x20 // NX_DEVICELALTKEYMASK
+        let rightOption: UInt = 0x40 // NX_DEVICERALTKEYMASK
+        return !(rawModifierFlags & rightOption != 0 && rawModifierFlags & leftOption == 0)
+    }
+
+    private static func findMenuItem(_ action: NSFindPanelAction) -> NSMenuItem {
+        let item = NSMenuItem()
+        item.tag = Int(action.rawValue)
+        return item
+    }
+
+    // MARK: Visual bell
+
+    func flashBell() {
+        guard let layer else { return }
+        let flash = bellFlashLayer ?? {
+            let flash = CALayer()
+            flash.backgroundColor = NSColor.white.withAlphaComponent(0.07).cgColor
+            flash.opacity = 0
+            layer.addSublayer(flash)
+            bellFlashLayer = flash
+            return flash
+        }()
+        flash.frame = layer.bounds
+        flash.zPosition = 1_000
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1
+        fade.toValue = 0
+        fade.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.12 : 0.3
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        flash.add(fade, forKey: "bell")
+    }
+
+    // MARK: File drag-and-drop
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        Self.droppedFileURLs(sender.draggingPasteboard).isEmpty ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = Self.droppedFileURLs(sender.draggingPasteboard)
+        guard !urls.isEmpty else { return false }
+        let payload = Self.dropPayload(
+            paths: urls.map(\.path),
+            bracketedPaste: getTerminal().bracketedPasteMode
+        )
+        send(data: ArraySlice(Array(payload.utf8)))
+        window?.makeFirstResponder(self)
+        return true
+    }
+
+    private static func droppedFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
+        (pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL]) ?? []
+    }
+
+    /// Paths are shell-escaped and space-separated with a trailing space, as
+    /// Terminal.app and Ghostty insert them.
+    static func dropPayload(paths: [String], bracketedPaste: Bool) -> String {
+        let text = paths.map(shellEscapedPath).joined(separator: " ") + " "
+        return bracketedPaste ? "\u{1B}[200~" + text + "\u{1B}[201~" : text
+    }
+
+    static func shellEscapedPath(_ path: String) -> String {
+        let special: Set<Character> = [
+            "\\", " ", "\t", "'", "\"", "(", ")", "[", "]", "{", "}", "<", ">",
+            "`", "!", "#", "$", "&", ";", "|", "*", "?",
+        ]
+        var escaped = ""
+        for character in path {
+            if special.contains(character) { escaped.append("\\") }
+            escaped.append(character)
+        }
+        return escaped
     }
 
     private func configureRendererFromEnvironmentIfNeeded() {
@@ -556,6 +770,84 @@ final class RelayTerminalView: TerminalView {
         guard let navigationKeyMonitor else { return }
         NSEvent.removeMonitor(navigationKeyMonitor)
         self.navigationKeyMonitor = nil
+    }
+}
+
+/// Bell and OSC 9 / OSC 777 desktop notifications. A focused terminal gets
+/// a visual flash; otherwise a rate-limited macOS notification is posted.
+enum RelayTerminalAttention {
+    struct Notification: Equatable {
+        var title: String
+        var body: String
+    }
+
+    enum OSC9: Equatable {
+        case progress(Terminal.ProgressReport)
+        case notification(Notification)
+    }
+
+    struct RateLimiter {
+        static let minimumInterval: TimeInterval = 5
+        private var lastAllowed: Date?
+
+        mutating func allows(now: Date) -> Bool {
+            if let lastAllowed, now.timeIntervalSince(lastAllowed) < Self.minimumInterval {
+                return false
+            }
+            lastAllowed = now
+            return true
+        }
+    }
+
+    /// `OSC 777 ; notify ; title ; body`
+    static func parseOSC777(_ data: ArraySlice<UInt8>) -> Notification? {
+        let parts = String(decoding: data, as: UTF8.self)
+            .split(separator: ";", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count >= 2, parts[0] == "notify" else { return nil }
+        let title = String(parts[1])
+        let body = parts.count > 2 ? String(parts[2]) : ""
+        guard !(title.isEmpty && body.isEmpty) else { return nil }
+        return Notification(title: title.isEmpty ? "Relay session" : title, body: body)
+    }
+
+    /// `OSC 9 ; body` is an iTerm2 notification; `OSC 9 ; 4 ; state ; progress`
+    /// is a ConEmu progress report (re-dispatched, since a custom handler
+    /// replaces SwiftTerm's built-in one). Other ConEmu `OSC 9 ; n ; ...`
+    /// subcommands are ignored.
+    static func parseOSC9(_ data: ArraySlice<UInt8>) -> OSC9? {
+        let text = String(decoding: data, as: UTF8.self)
+        let parts = text.split(separator: ";", omittingEmptySubsequences: false)
+        if parts.count >= 2, let subcommand = Int(parts[0]) {
+            guard subcommand == 4,
+                  parts[1].count == 1,
+                  let rawState = Int(parts[1]),
+                  let state = Terminal.ProgressReportState(rawValue: rawState) else { return nil }
+            var progress: UInt8?
+            if parts.count >= 3, !parts[2].isEmpty {
+                guard let value = Int(parts[2]) else { return nil }
+                progress = UInt8(max(0, min(value, 100)))
+            } else if state == .set {
+                progress = 0
+            }
+            return .progress(Terminal.ProgressReport(state: state, progress: state == .remove ? nil : progress))
+        }
+        guard !text.isEmpty, Int(text) == nil else { return nil }
+        return .notification(Notification(title: "Relay session", body: text))
+    }
+
+    static func post(_ notification: Notification) {
+        // UNUserNotificationCenter traps outside an app bundle (tests, CLI).
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+        let content = UNMutableNotificationContent()
+        content.title = notification.title
+        content.body = notification.body
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: "relay-terminal-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
 }
 
@@ -2752,14 +3044,35 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         terminalView = RelayTerminalView(frame: .zero)
         terminalView.terminalDelegate = self
         terminalView.wantsLayer = true
-        terminalView.font = AppTypography.terminalGridFont(size: 13, weight: .regular)
+        terminalView.font = AppTypography.terminalGridFont(
+            size: RelayTerminalView.baseFontSize,
+            weight: .regular
+        )
 
-        let background = NSColor(srgbRed: 8 / 255, green: 10 / 255, blue: 14 / 255, alpha: 1)
+        // Same fill as the surrounding panel so the padded inset is seamless.
+        let background = BoardDarkSurfaceStyle.panelFillNSColor
         terminalView.nativeBackgroundColor = background
         terminalView.nativeForegroundColor = NSColor(srgbRed: 218 / 255, green: 225 / 255, blue: 234 / 255, alpha: 1)
         terminalView.caretColor = .controlAccentColor
         terminalView.layer?.backgroundColor = background.cgColor
-        terminalView.getTerminal().setCursorStyle(.steadyBlock)
+        terminalView.changeScrollback(RelayTerminalView.scrollbackLines)
+        let terminal = terminalView.getTerminal()
+        terminal.setCursorStyle(.steadyBlock)
+        terminal.registerOscHandler(code: 777) { [weak self] data in
+            guard let notification = RelayTerminalAttention.parseOSC777(data) else { return }
+            self?.attention(notification)
+        }
+        terminal.registerOscHandler(code: 9) { [weak self] data in
+            switch RelayTerminalAttention.parseOSC9(data) {
+            case .progress(let report)?:
+                guard let self else { return }
+                self.terminalView.progressReport(source: self.terminalView.getTerminal(), report: report)
+            case .notification(let notification)?:
+                self?.attention(notification)
+            case nil:
+                break
+            }
+        }
     }
 
     var view: NSView { terminalView }
@@ -2893,6 +3206,25 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     func setTerminalTitle(source: TerminalView, title: String) {
         onTitle?(title)
     }
+
+    func bell(source: TerminalView) {
+        attention(RelayTerminalAttention.Notification(
+            title: "Relay session",
+            body: "The session needs your attention."
+        ))
+    }
+
+    private var attentionLimiter = RelayTerminalAttention.RateLimiter()
+
+    private func attention(_ notification: RelayTerminalAttention.Notification) {
+        let window = terminalView.window
+        let focused = window?.isVisible == true && window?.isKeyWindow == true
+        if focused {
+            terminalView.flashBell()
+        } else if attentionLimiter.allows(now: Date()) {
+            RelayTerminalAttention.post(notification)
+        }
+    }
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
     func scrolled(source: TerminalView, position: Double) {}
     func clipboardCopy(source: TerminalView, content: Data) {}
@@ -2908,11 +3240,13 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     }
 
     func getWindowSize() -> winsize {
-        winsize(
+        let scale = terminalView.window?.backingScaleFactor ?? 2
+        let pixels = { (points: CGFloat) in UInt16(clamping: Int((points * scale).rounded(.down))) }
+        return winsize(
             ws_row: UInt16(max(1, terminalView.getTerminal().rows)),
             ws_col: UInt16(max(1, terminalView.getTerminal().cols)),
-            ws_xpixel: 0,
-            ws_ypixel: 0
+            ws_xpixel: pixels(terminalView.bounds.width),
+            ws_ypixel: pixels(terminalView.bounds.height)
         )
     }
 
@@ -3001,7 +3335,20 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
 }
 
 final class EmbeddedTerminalHostNSView: NSView {
+    /// Breathing room between the grid and the panel edge (Ghostty-style
+    /// window padding); the panel fill shows through.
+    static let terminalInset = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+
     private weak var installedView: NSView?
+
+    override func mouseDown(with event: NSEvent) {
+        // Clicks in the padding still focus the terminal.
+        if let installedView {
+            window?.makeFirstResponder(installedView)
+        } else {
+            super.mouseDown(with: event)
+        }
+    }
 
     func install(_ terminalView: NSView?) {
         guard installedView !== terminalView else { return }
@@ -3011,11 +3358,12 @@ final class EmbeddedTerminalHostNSView: NSView {
 
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(terminalView)
+        let inset = Self.terminalInset
         NSLayoutConstraint.activate([
-            terminalView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            terminalView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            terminalView.topAnchor.constraint(equalTo: topAnchor),
-            terminalView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            terminalView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset.left),
+            terminalView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset.right),
+            terminalView.topAnchor.constraint(equalTo: topAnchor, constant: inset.top),
+            terminalView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -inset.bottom),
         ])
         DispatchQueue.main.async { [weak self, weak terminalView] in
             guard let self, let terminalView, self.window?.isKeyWindow == true else { return }

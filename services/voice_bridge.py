@@ -4189,9 +4189,17 @@ def _run_relay(
         return False
 
     if inbox is not None:
+        # Resolve paths at call time like cleanup above; the parameter
+        # defaults were bound at import and would bypass a patched module.
         _start_intent_inbox_pump(
             inbox,
             shutdown_event,
+            command_path=VOICE_CMD_FILE,
+            meta_path=VOICE_CMD_META_FILE,
+            claimed_path=VOICE_COMMAND_CLAIM_FILE,
+            manual_ack_path=VOICE_MANUAL_CLAIM_ACK_FILE,
+            state_path=VOICE_COMMAND_STATE_FILE,
+            turns_path=VOICE_PROVIDER_TURNS_FILE,
             provider_session_ownership=provider_session_ownership,
         )
         if sidecar_lane is not None:

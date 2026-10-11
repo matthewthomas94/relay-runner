@@ -1048,6 +1048,128 @@ final class RelayTerminalViewInputOriginTests: XCTestCase {
         XCTAssertNil(RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 123, modifiers: [.option, .shift])))
         XCTAssertNil(RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 125, modifiers: .option)))
     }
+
+    func testKeyCommandsMapGhosttyStyleShortcuts() {
+        func command(_ keyCode: UInt16, _ characters: String, _ flags: NSEvent.ModifierFlags) -> RelayTerminalView.KeyCommand? {
+            RelayTerminalView.keyCommand(keyCode: keyCode, charactersIgnoringModifiers: characters, modifierFlags: flags)
+        }
+        XCTAssertEqual(command(8, "c", .command), .copy)
+        XCTAssertEqual(command(9, "v", .command), .paste)
+        XCTAssertEqual(command(0, "a", .command), .selectAll)
+        XCTAssertEqual(command(3, "f", .command), .find)
+        XCTAssertEqual(command(5, "g", .command), .findNext)
+        XCTAssertEqual(command(5, "G", [.command, .shift]), .findPrevious)
+        XCTAssertEqual(command(40, "k", .command), .clearScrollback)
+        XCTAssertEqual(command(24, "=", .command), .zoomIn)
+        XCTAssertEqual(command(24, "+", [.command, .shift]), .zoomIn)
+        XCTAssertEqual(command(27, "-", .command), .zoomOut)
+        XCTAssertEqual(command(29, "0", .command), .zoomReset)
+        XCTAssertEqual(command(116, "", .shift), .scrollPageUp)
+        XCTAssertEqual(command(121, "", .shift), .scrollPageDown)
+        XCTAssertEqual(command(115, "", .command), .scrollToTop)
+        XCTAssertEqual(command(119, "", .command), .scrollToBottom)
+        // Layout-aware: the character decides, not the physical key.
+        XCTAssertEqual(command(47, "v", .command), .paste)
+        // Plain keys, Ctrl and Option combinations stay with the provider.
+        XCTAssertNil(command(8, "c", .control))
+        XCTAssertNil(command(8, "c", []))
+        XCTAssertNil(command(8, "c", [.command, .option]))
+        XCTAssertNil(command(116, "", []))
+        XCTAssertNil(command(17, "t", .command))
+    }
+
+    func testKeyCommandsDoNotWriteToTheProvider() {
+        let view = RelayTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        let delegate = TerminalInputOriginCapturingDelegate(view: view)
+        view.terminalDelegate = delegate
+
+        for command: RelayTerminalView.KeyCommand in [
+            .selectAll, .copy, .clearScrollback, .zoomIn, .zoomOut, .zoomReset,
+            .scrollPageUp, .scrollPageDown, .scrollToTop, .scrollToBottom,
+        ] {
+            view.perform(command)
+        }
+
+        XCTAssertEqual(delegate.payloads, [])
+    }
+
+    func testZoomStepsAndClampsFontSize() {
+        XCTAssertEqual(RelayTerminalView.zoomedFontSize(from: 13, command: .zoomIn), 14)
+        XCTAssertEqual(RelayTerminalView.zoomedFontSize(from: 13, command: .zoomOut), 12)
+        XCTAssertEqual(RelayTerminalView.zoomedFontSize(from: 20, command: .zoomReset), 13)
+        XCTAssertEqual(RelayTerminalView.zoomedFontSize(from: 24, command: .zoomIn), 24)
+        XCTAssertEqual(RelayTerminalView.zoomedFontSize(from: 9, command: .zoomOut), 9)
+        XCTAssertEqual(RelayTerminalView.zoomedFontSize(from: 15, command: .copy), 15)
+    }
+
+    func testOnlyLeftOptionActsAsMeta() {
+        let option = NSEvent.ModifierFlags.option.rawValue
+        XCTAssertTrue(RelayTerminalView.optionActsAsMeta(rawModifierFlags: option | 0x20))
+        XCTAssertFalse(RelayTerminalView.optionActsAsMeta(rawModifierFlags: option | 0x40))
+        XCTAssertTrue(RelayTerminalView.optionActsAsMeta(rawModifierFlags: option | 0x20 | 0x40))
+        XCTAssertTrue(RelayTerminalView.optionActsAsMeta(rawModifierFlags: 0))
+    }
+
+    func testDroppedPathsAreShellEscapedAndBracketed() {
+        XCTAssertEqual(
+            RelayTerminalView.shellEscapedPath("/Users/me/My Files/a(1)&'b'.png"),
+            "/Users/me/My\\ Files/a\\(1\\)\\&\\'b\\'.png"
+        )
+        XCTAssertEqual(
+            RelayTerminalView.dropPayload(paths: ["/tmp/a b", "/tmp/c"], bracketedPaste: false),
+            "/tmp/a\\ b /tmp/c "
+        )
+        XCTAssertEqual(
+            RelayTerminalView.dropPayload(paths: ["/tmp/c"], bracketedPaste: true),
+            "\u{1B}[200~/tmp/c \u{1B}[201~"
+        )
+    }
+
+    func testOSC777AndOSC9Notifications() {
+        func bytes(_ text: String) -> ArraySlice<UInt8> { ArraySlice(Array(text.utf8)) }
+        typealias Attention = RelayTerminalAttention
+
+        XCTAssertEqual(
+            Attention.parseOSC777(bytes("notify;Build;Done; all green")),
+            Attention.Notification(title: "Build", body: "Done; all green")
+        )
+        XCTAssertNil(Attention.parseOSC777(bytes("other;x;y")))
+        XCTAssertNil(Attention.parseOSC777(bytes("notify;;")))
+
+        XCTAssertEqual(
+            Attention.parseOSC9(bytes("Tests finished")),
+            .notification(Attention.Notification(title: "Relay session", body: "Tests finished"))
+        )
+        XCTAssertEqual(
+            Attention.parseOSC9(bytes("4;1;42")),
+            .progress(Terminal.ProgressReport(state: .set, progress: 42))
+        )
+        XCTAssertEqual(
+            Attention.parseOSC9(bytes("4;0;")),
+            .progress(Terminal.ProgressReport(state: .remove, progress: nil))
+        )
+        XCTAssertEqual(
+            Attention.parseOSC9(bytes("4;1;250")),
+            .progress(Terminal.ProgressReport(state: .set, progress: 100))
+        )
+        XCTAssertNil(Attention.parseOSC9(bytes("9;/tmp")))
+        XCTAssertNil(Attention.parseOSC9(bytes("4;7;1")))
+        XCTAssertNil(Attention.parseOSC9(bytes("")))
+    }
+
+    func testAttentionNotificationsAreRateLimited() {
+        var limiter = RelayTerminalAttention.RateLimiter()
+        let start = Date(timeIntervalSince1970: 1_000)
+        XCTAssertTrue(limiter.allows(now: start))
+        XCTAssertFalse(limiter.allows(now: start.addingTimeInterval(4)))
+        XCTAssertTrue(limiter.allows(now: start.addingTimeInterval(5)))
+    }
+
+    func testProcessUsesLongScrollbackAndPanelBackground() {
+        let process = SwiftTermEmbeddedProcess()
+        XCTAssertEqual(process.terminalView.getTerminal().options.scrollback, RelayTerminalView.scrollbackLines)
+        XCTAssertEqual(process.terminalView.nativeBackgroundColor, BoardDarkSurfaceStyle.panelFillNSColor)
+    }
 }
 
 final class RelayVoiceCommandDeliveryTests: XCTestCase {

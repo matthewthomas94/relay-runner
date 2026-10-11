@@ -33,14 +33,6 @@ class SkillCleanupTests(unittest.TestCase):
         self.assertIn('"$SCRIPT_DIR/relay-bridge" --install-skills', script)
         self.assertIn('rm -rf "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR"', script)
 
-    def test_relay_workflow_install_uses_generated_orchestrator_rules(self):
-        script = (ROOT / "scripts" / "relay-bridge").read_text()
-        workflow = script.split("<<'WORKFLOW_MD_EOF'", 1)[1].split("\nWORKFLOW_MD_EOF\n", 1)[0]
-
-        self.assertIn("Raw Relay command captures are private metadata", workflow)
-        self.assertIn("## Subscription-only provider access", workflow)
-        self.assertNotIn("PM frontstage → persistent orchestrator → worker", workflow)
-
     def test_relay_orchestrator_health_wait_covers_cold_launch(self):
         script = (ROOT / "scripts" / "relay-orchestrator").read_text()
 

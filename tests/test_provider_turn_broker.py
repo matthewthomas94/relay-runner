@@ -571,6 +571,65 @@ class ProviderTurnBrokerTests(unittest.TestCase):
                 self.assertEqual(delivered[0]["intent_id"], "intent-2")
                 self.assertEqual(delivered[0]["text"], "latest final")
 
+    def test_claude_dequeued_prompt_with_rotated_prompt_id_still_delivers(self):
+        # A voice command queued mid-turn submits under the running prompt_id;
+        # the dequeued message's Stop then carries a fresh prompt_id. Codex
+        # keeps strict turn_id matching.
+        for provider, delivers in (("claude", True), ("codex", False)):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
+                state_path = os.path.join(temp_dir, "voice_command_state.json")
+                claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+                turns_path = os.path.join(temp_dir, "voice_provider_turns.json")
+                key = "prompt_id" if provider == "claude" else "turn_id"
+                delivered = []
+                command = {
+                    "relay_command_seq": 1,
+                    "relay_command_id": "command-1",
+                    "intent_id": "intent-1",
+                    "agent_prompt": "queued prompt",
+                    "provider": provider,
+                }
+                Path(state_path).write_text(json.dumps(command))
+                Path(claim_path).write_text(json.dumps(command))
+                with mock.patch.dict(os.environ, {
+                    "RELAY_APP_SESSION_ID": OWNERSHIP["app_session_id"],
+                    "RELAY_RECOVERY_GENERATION": OWNERSHIP["recovery_generation"],
+                    "RELAY_ACTOR_ROLE": OWNERSHIP["actor_role"],
+                    "RELAY_FOREGROUND_GATE_HANDLE": OWNERSHIP["foreground_gate_handle"],
+                    "RELAY_RUNNER_PROVIDER": provider,
+                    "RELAY_PROVIDER_SESSION_ID": f"provider-session-{provider}",
+                }):
+                    self.assertTrue(relay_completion_hook.handle_hook_payload(
+                        {
+                            "hook_event_name": "UserPromptSubmit",
+                            "session_id": "native-session",
+                            "prompt": "queued prompt",
+                            key: "running-turn",
+                        },
+                        claim_path=claim_path,
+                        state_path=state_path,
+                        turns_path=turns_path,
+                        stderr=io.StringIO(),
+                    ))
+                    for stop_id in ("dequeued-turn", "stray-turn"):
+                        relay_completion_hook.handle_hook_payload(
+                            {
+                                "hook_event_name": "Stop",
+                                "session_id": "native-session",
+                                "stop_hook_active": False,
+                                "last_assistant_message": f"final for {stop_id}",
+                                key: stop_id,
+                            },
+                            state_path=state_path,
+                            turns_path=turns_path,
+                            write_control=lambda payload: delivered.append(payload) or True,
+                            stderr=io.StringIO(),
+                        )
+                self.assertEqual(
+                    [payload.get("text") for payload in delivered],
+                    ["final for dequeued-turn"] if delivers else [],
+                )
+
     def _stop_hook_continuation(self, provider: str, *, first_stop: bool) -> list[dict]:
         """Run one turn whose final Stop is a continuation after another hook blocked."""
         with tempfile.TemporaryDirectory() as temp_dir:
