@@ -279,11 +279,9 @@ struct ProgramBoardOverlayView: View {
     private var notesLibraryContent: some View {
         VStack(spacing: 0) {
             HStack {
-                RelaySwap(model.noteItems.count, style: .text, alignment: .leading) { count in
-                    Text("\(count) \(count == 1 ? "note" : "notes")")
-                        .font(AppTypography.font(.sectionHeading))
-                        .foregroundStyle(ProgramBoardStyle.primaryText)
-                }
+                Text("Notes")
+                    .font(AppTypography.font(.sectionHeading))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
                 Spacer()
             }
             .padding(.horizontal, 22)
@@ -1510,26 +1508,15 @@ private struct ProgramProjectCard: View {
     var body: some View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
                     Text(item.project?.name ?? "Unknown project")
                         .font(AppTypography.font(.projectTitle))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    if isSelected {
-                        Text("Selected")
-                            .font(AppTypography.font(.caption))
-                            .foregroundStyle(ProgramBoardStyle.secondaryText)
-                            .lineLimit(1)
-                            .transition(.relayText)
-                    }
+                    // Reserves room for the Finder button overlaid outside the card button.
+                    Color.clear.frame(width: ProgramProjectCard.finderButtonSize, height: ProgramProjectCard.finderButtonSize)
                 }
-
-                Text(item.project?.path ?? "unknown")
-                    .font(AppTypography.font(.metadata))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
 
                 ProjectBoardOverview(item: item)
 
@@ -1574,7 +1561,20 @@ private struct ProgramProjectCard: View {
         .onHover { isHovered = isEnabled && $0 }
         .programButtonCursor(enabled: isEnabled)
         .help("Show tickets for \(item.project?.name ?? "this project")")
+        .overlay(alignment: .topTrailing) {
+            if let path = item.project?.path {
+                ProgramIconButton(
+                    systemName: "folder",
+                    help: "Open \(item.project?.name ?? "project") in Finder"
+                ) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+                }
+                .padding(16)
+            }
+        }
     }
+
+    static let finderButtonSize: CGFloat = 32
 }
 
 private struct ProjectBoardOverview: View {
@@ -1606,7 +1606,8 @@ private struct ProjectCount: View {
                 .font(AppTypography.font(.caption))
                 .foregroundStyle(ProgramBoardStyle.mutedText)
                 .lineLimit(1)
-            RelaySwap(value ?? 0, style: .text, alignment: .leading) { count in
+            Spacer(minLength: 4)
+            RelaySwap(value ?? 0, style: .text, alignment: .trailing) { count in
                 Text("\(count)")
                     .font(AppTypography.font(.count))
                     .foregroundStyle(ProgramBoardStyle.secondaryText)

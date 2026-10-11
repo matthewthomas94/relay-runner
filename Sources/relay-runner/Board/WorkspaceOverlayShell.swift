@@ -11,7 +11,7 @@ enum WorkspaceTab: String, CaseIterable, Identifiable, Equatable {
     var title: String {
         switch self {
         case .work: return "Workspace"
-        case .notes: return "Notes"
+        case .notes: return "Notetaker"
         case .terminal: return "Terminal"
         case .systemSettings: return "Settings"
         }
