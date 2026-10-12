@@ -136,7 +136,7 @@ final class SettingsAgentCardTests: XCTestCase {
         XCTAssertEqual(motion.pillDeparture, 1)
     }
 
-    func testBlobFillsTheCardAndIdleParticlesStayWhiteWithReducedMotion() throws {
+    func testBlobFillsTheCardAndIdleParticlesGradeWhiteToNavyWithReducedMotion() throws {
         for size in [CGSize(width: 220, height: 480), CGSize(width: 480, height: 683)] {
             let host = NSView(frame: CGRect(origin: .zero, size: size))
             host.wantsLayer = true
@@ -157,7 +157,9 @@ final class SettingsAgentCardTests: XCTestCase {
             XCTAssertGreaterThan(Double(maxX - minX), size.width * 0.72)
             XCTAssertLessThan(Double(maxX - minX), size.width * 0.95)
             XCTAssertLessThan(Double(maxY), size.height - 120)
-            XCTAssertTrue(pixels.allSatisfy { $0.r == $0.g && $0.g == $0.b })
+            XCTAssertTrue(pixels.contains { $0.r > 245 && $0.g > 245 && $0.b > 245 })
+            XCTAssertTrue(pixels.contains { $0.b > $0.r + 4 })
+            XCTAssertTrue(pixels.allSatisfy { $0.r <= $0.g && $0.g <= $0.b })
             XCTAssertFalse(renderer.isAnimationRunning)
             let frame = try XCTUnwrap(image.dataProvider?.data) as Data
             renderer.renderFrame(at: 100)
