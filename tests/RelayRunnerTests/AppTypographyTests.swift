@@ -89,7 +89,7 @@ final class AppTypographyTests: XCTestCase {
         )
         XCTAssertEqual(
             AppTypography.resolved(.menuTab, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-SemiBold", size: 13, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-Regular", size: 13, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.pillTitle, availablePostScriptNames: available),

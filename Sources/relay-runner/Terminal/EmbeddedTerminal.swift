@@ -3695,6 +3695,7 @@ struct EmbeddedTerminalTab: View {
     @State private var confirmsRecovery = false
     @State private var confirmedInboxBlocker: InboxRecoveryBlocker?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.workspaceTerminalSessionAction) private var sessionAction
 
     var body: some View {
         VStack(spacing: 0) {
@@ -3807,23 +3808,32 @@ struct EmbeddedTerminalTab: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "terminal")
-                .font(AppTypography.symbolFont(size: 28, weight: .regular))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
-            Text("Run the Relay session here")
-                .font(AppTypography.font(.sectionHeading))
-                .foregroundStyle(ProgramBoardStyle.secondaryText)
-            RelaySwap(emptyStateDetail, style: .text, alignment: .top) { emptyStateDetail in
-                Text(emptyStateDetail)
-                    .font(AppTypography.font(.supporting))
+        VStack(spacing: 20) {
+            VStack(spacing: 10) {
+                Image(systemName: "terminal")
+                    .font(AppTypography.symbolFont(size: 28, weight: .regular))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 390)
+                Text("Run the Relay session here")
+                    .font(AppTypography.font(.sectionHeading))
+                    .foregroundStyle(ProgramBoardStyle.secondaryText)
+                RelaySwap(emptyStateDetail, style: .text, alignment: .top) { emptyStateDetail in
+                    Text(emptyStateDetail)
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 390)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            if let sessionAction {
+                ProgramSessionPrimaryButton(
+                    presentation: sessionAction.presentation,
+                    isEnabled: sessionAction.isEnabled,
+                    action: sessionAction.action
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .combine)
     }
 
     private var visibleBanners: [Bool] {
@@ -3841,7 +3851,7 @@ struct EmbeddedTerminalTab: View {
         case .external:
             return "This Relay session is running in Terminal.app. Use the Workspace session control to end it before starting an embedded session."
         case .ended, .exited:
-            return "The previous session has ended. Start again from the toolbar when you're ready."
+            return "The previous session has ended. Start again when you're ready."
         case .failed(let message):
             return message
         default:

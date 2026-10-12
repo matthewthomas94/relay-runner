@@ -71,6 +71,7 @@ enum AppTypography {
         case programEmptyState
         case permissionButton
         case button
+        case primaryButton
         case status
         case count
         case caption
@@ -146,7 +147,7 @@ enum AppTypography {
     static func definition(for role: Role) -> Definition {
         switch role {
         case .menuTab:
-            return Definition(face: .baiJamjureeSemibold, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeRegular, size: 13, fallbackWeight: .regular)
         case .appTitle:
             return Definition(face: .baiJamjureeSemibold, size: 22, fallbackWeight: .semibold)
         case .onboardingHero:
@@ -195,6 +196,8 @@ enum AppTypography {
             return Definition(face: .baiJamjureeSemibold, size: 16, fallbackWeight: .semibold)
         case .button:
             return Definition(face: .baiJamjureeRegular, size: 11, fallbackWeight: .regular)
+        case .primaryButton:
+            return Definition(face: .baiJamjureeSemibold, size: 11, fallbackWeight: .semibold)
         case .status:
             return Definition(face: .baiJamjureeSemibold, size: 12, fallbackWeight: .semibold)
         case .count:

@@ -134,17 +134,12 @@ final class ProgramBoardStatusTests: XCTestCase {
 
     func testProgramBoardSessionToolbarMatchesWorkspaceNavigation() {
         XCTAssertEqual(
-            ProgramBoardLayout.sessionToolbarTopPadding,
-            BoardSurfaceLayout.navigationTopPadding
-        )
-        XCTAssertEqual(ProgramBoardLayout.sessionToolbarTrailingPadding, 40)
-        XCTAssertEqual(
             WorkspaceNavigationStyle.controlHeight,
             BoardSurfaceLayout.navigationHeight
         )
-        XCTAssertEqual(WorkspaceNavigationStyle.horizontalPadding, 4)
-        XCTAssertEqual(WorkspaceNavigationStyle.verticalPadding, WorkspaceNavigationStyle.horizontalPadding)
-        XCTAssertEqual(WorkspaceNavigationStyle.cornerRadius, 4)
+        XCTAssertEqual(WorkspaceNavigationStyle.horizontalPadding, 8)
+        XCTAssertEqual(WorkspaceNavigationStyle.verticalPadding, 4)
+        XCTAssertEqual(WorkspaceNavigationStyle.cornerRadius, 6)
         XCTAssertEqual(WorkspaceNavigationStyle.iconTextSpacing, 6)
         XCTAssertEqual(WorkspaceNavigationStyle.iconSize, 10)
         XCTAssertTrue(WorkspaceNavigationStyle.systemFocusEffectDisabled)
@@ -152,13 +147,6 @@ final class ProgramBoardStatusTests: XCTestCase {
             WorkspaceNavigationStyle.iconSize,
             AppTypography.definition(for: .menuTab).size
         )
-    }
-
-    func testProgramBoardSessionToolbarEndsFortyPointsFromReferenceScreenEdge() {
-        let screenWidth: CGFloat = 1_728
-        let buttonTrailingEdge = screenWidth - ProgramBoardLayout.sessionToolbarTrailingPadding
-
-        XCTAssertEqual(screenWidth - buttonTrailingEdge, 40)
     }
 
     func testProgramProjectsHeaderPresentationUsesAddProjectForRegistryV2() {

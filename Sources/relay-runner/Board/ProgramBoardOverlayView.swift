@@ -68,8 +68,6 @@ enum ProgramBoardLayout {
     static let projectCardSpacing: CGFloat = 8
     static let statePanelHeight: CGFloat = BoardSurfaceLayout.columnHeight
     static let statePanelHorizontalPadding: CGFloat = BoardSurfaceLayout.horizontalPadding
-    static let sessionToolbarTopPadding: CGFloat = BoardSurfaceLayout.navigationTopPadding
-    static let sessionToolbarTrailingPadding: CGFloat = 40
     static var workspaceContentHeight: CGFloat {
         ProgramBoardBackdropStyle.backdropHeight
     }
@@ -283,6 +281,19 @@ struct ProgramBoardOverlayView: View {
                     .font(AppTypography.font(.sectionHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                 Spacer()
+                let ownsNote = model.noteCaptureSnapshot.phase.ownsForeground
+                let note = ProgramNoteToolbarPresentation.resolve(phase: model.noteCaptureSnapshot.phase)
+                ProgramSessionPrimaryButton(
+                    presentation: ProgramSessionToolbarPresentation(
+                        title: note.title,
+                        systemName: note.systemName,
+                        help: note.help
+                    ),
+                    isEnabled: ownsNote || ProgramNoteControlPolicy.canStart(
+                        selectedProjectPath: model.selectedSessionProjectPath
+                    ),
+                    action: ownsNote ? onStopNoteTaker : onStartNoteTaker
+                )
             }
             .padding(.horizontal, 22)
             .frame(height: 60)
@@ -428,32 +439,6 @@ struct ProgramBoardOverlayView: View {
             .allowsHitTesting(!dotMatrixPresentation.isVisible)
             .zIndex(2)
 
-            HStack(spacing: 0) {
-                Spacer(minLength: 0)
-                ProgramSessionToolbarControl(
-                    hasActiveSession: model.hasActiveSession,
-                    provider: model.sessionProvider,
-                    noteSnapshot: model.noteCaptureSnapshot,
-                    canStartSession: ProgramSessionControlPolicy.canStart(
-                        hasActiveSession: model.hasActiveSession,
-                        selectedProjectPath: workspace.contextPath,
-                        requiresConfirmedProject: ProjectRegistryV2Rollout.isEnabled()
-                    ),
-                    canStartNoteTaker: ProgramNoteControlPolicy.canStart(
-                        selectedProjectPath: model.selectedSessionProjectPath
-                    ),
-                    onStartSession: onStartSession,
-                    onEndSession: onEndSession,
-                    onStartNoteTaker: onStartNoteTaker,
-                    onStopNoteTaker: onStopNoteTaker
-                )
-            }
-            .padding(.top, ProgramBoardLayout.sessionToolbarTopPadding)
-            .padding(.trailing, ProgramBoardLayout.sessionToolbarTrailingPadding)
-            .blur(radius: backgroundBlurRadius)
-            .allowsHitTesting(!dotMatrixPresentation.isVisible)
-            .zIndex(2)
-
             // Tabs, and the Workspace states within the work tab, swap as pages.
             ZStack(alignment: .topLeading) {
                 if workspace.selectedTab == .terminal,
@@ -461,6 +446,18 @@ struct ProgramBoardOverlayView: View {
                     VStack(spacing: 0) {
                         terminalContent
                             .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                            .environment(\.workspaceTerminalSessionAction, WorkspaceTerminalSessionAction(
+                                presentation: ProgramSessionToolbarPresentation.resolve(
+                                    hasActiveSession: model.hasActiveSession,
+                                    provider: model.sessionProvider
+                                ),
+                                isEnabled: ProgramSessionControlPolicy.canStart(
+                                    hasActiveSession: model.hasActiveSession,
+                                    selectedProjectPath: workspace.contextPath,
+                                    requiresConfirmedProject: ProjectRegistryV2Rollout.isEnabled()
+                                ),
+                                action: model.hasActiveSession ? onEndSession : onStartSession
+                            ))
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
@@ -499,6 +496,8 @@ struct ProgramBoardOverlayView: View {
                             onCreateProject: onCreateProject,
                             onSelectProject: onSelectProject,
                             onCreateStart: onCreateStart,
+                            onStartSession: onStartSession,
+                            onEndSession: onEndSession,
                             onNoteOpen: onNoteOpen,
                             onDrop: onDrop
                         )
@@ -1142,6 +1141,8 @@ private struct ProgramBoardContent: View {
     let onCreateProject: () -> Void
     let onSelectProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
+    let onStartSession: () -> Void
+    let onEndSession: () -> Void
     var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
@@ -1178,6 +1179,8 @@ private struct ProgramBoardContent: View {
                             theme: model.theme,
                             canCreate: !model.projectTargets.isEmpty,
                             onCreate: { onCreateStart(lane) },
+                            onStartSession: onStartSession,
+                            onEndSession: onEndSession,
                             onNoteOpen: onNoteOpen,
                             onDrop: onDrop
                         )
@@ -1627,6 +1630,8 @@ struct ProgramWorkColumnPanel: View {
     let theme: ParticleFieldRenderer.Theme?
     let canCreate: Bool
     let onCreate: () -> Void
+    let onStartSession: () -> Void
+    let onEndSession: () -> Void
     var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1638,6 +1643,8 @@ struct ProgramWorkColumnPanel: View {
         theme: ParticleFieldRenderer.Theme?,
         canCreate: Bool,
         onCreate: @escaping () -> Void,
+        onStartSession: @escaping () -> Void = {},
+        onEndSession: @escaping () -> Void = {},
         onNoteOpen: @escaping (ProgramBoardNoteItem) -> Void = { _ in },
         onDrop: @escaping (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
     ) {
@@ -1647,6 +1654,8 @@ struct ProgramWorkColumnPanel: View {
         self.theme = theme
         self.canCreate = canCreate
         self.onCreate = onCreate
+        self.onStartSession = onStartSession
+        self.onEndSession = onEndSession
         self.onNoteOpen = onNoteOpen
         self.onDrop = onDrop
     }
@@ -1677,16 +1686,20 @@ struct ProgramWorkColumnPanel: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
-                Group {
-                    RelaySwap(laneItems.count, style: .text, alignment: .trailing) { count in
-                        Text("\(count) \(count == 1 ? "Ticket" : "Tickets")")
-                            .font(AppTypography.font(.count))
-                            .foregroundStyle(ProgramBoardStyle.secondaryText)
-                            .monospacedDigit()
-                            .lineLimit(1)
-                    }
-                }
-                if canCreate {
+                if lane == .done {
+                    ProgramSessionPrimaryButton(
+                        presentation: ProgramSessionToolbarPresentation.resolve(
+                            hasActiveSession: model.hasActiveSession,
+                            provider: model.sessionProvider
+                        ),
+                        isEnabled: ProgramSessionControlPolicy.canStart(
+                            hasActiveSession: model.hasActiveSession,
+                            selectedProjectPath: model.selectedSessionProjectPath,
+                            requiresConfirmedProject: ProjectRegistryV2Rollout.isEnabled()
+                        ),
+                        action: model.hasActiveSession ? onEndSession : onStartSession
+                    )
+                } else if canCreate {
                     ProgramIconButton(
                         systemName: "plus",
                         help: "New \(lane.title.lowercased()) ticket",
@@ -4436,60 +4449,27 @@ struct ProgramNoteToolbarPresentation: Equatable {
     }
 }
 
-private struct ProgramSessionToolbarControl: View {
-    let hasActiveSession: Bool
-    let provider: GeneralConfig.AgentProvider
-    let noteSnapshot: MeetingNoteCoordinatorSnapshot
-    let canStartSession: Bool
-    let canStartNoteTaker: Bool
-    let onStartSession: () -> Void
-    let onEndSession: () -> Void
-    let onStartNoteTaker: () -> Void
-    let onStopNoteTaker: () -> Void
+/// Session start/end control the Workspace hands to the embedded terminal's
+/// empty state, so it can offer the same primary action as the board.
+struct WorkspaceTerminalSessionAction {
+    let presentation: ProgramSessionToolbarPresentation
+    let isEnabled: Bool
+    let action: () -> Void
+}
 
-    private var presentation: ProgramSessionToolbarPresentation {
-        ProgramSessionToolbarPresentation.resolve(
-            hasActiveSession: hasActiveSession,
-            provider: provider
-        )
-    }
+private struct WorkspaceTerminalSessionActionKey: EnvironmentKey {
+    static let defaultValue: WorkspaceTerminalSessionAction? = nil
+}
 
-    private var notePresentation: ProgramSessionToolbarPresentation {
-        let note = ProgramNoteToolbarPresentation.resolve(phase: noteSnapshot.phase)
-        return ProgramSessionToolbarPresentation(
-            title: note.title,
-            systemName: note.systemName,
-            help: note.help
-        )
-    }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 20) {
-            ProgramSessionButton(
-                presentation: notePresentation,
-                isEnabled: noteSnapshot.phase.ownsForeground || canStartNoteTaker
-            ) {
-                if noteSnapshot.phase.ownsForeground {
-                    onStopNoteTaker()
-                } else {
-                    onStartNoteTaker()
-                }
-            }
-            ProgramSessionButton(
-                presentation: presentation,
-                isEnabled: hasActiveSession || canStartSession
-            ) {
-                if hasActiveSession {
-                    onEndSession()
-                } else {
-                    onStartSession()
-                }
-            }
-        }
+extension EnvironmentValues {
+    var workspaceTerminalSessionAction: WorkspaceTerminalSessionAction? {
+        get { self[WorkspaceTerminalSessionActionKey.self] }
+        set { self[WorkspaceTerminalSessionActionKey.self] = newValue }
     }
 }
 
-private struct ProgramSessionButton: View {
+/// Solid white primary action, shaped like the Add project control.
+struct ProgramSessionPrimaryButton: View {
     let presentation: ProgramSessionToolbarPresentation
     let isEnabled: Bool
     let action: () -> Void
@@ -4498,40 +4478,36 @@ private struct ProgramSessionButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let shape = RoundedRectangle(
+            cornerRadius: SharedActionButtonMetrics.cornerRadius,
+            style: .continuous
+        )
         Button(action: action) {
-            HStack(spacing: WorkspaceNavigationStyle.iconTextSpacing) {
-                Image(systemName: presentation.systemName)
-                    .font(AppTypography.symbolFont(
-                        size: 14,
-                        weight: .bold
-                    ))
-                    .frame(width: 16, height: 16)
-                RelaySwap(presentation.title, style: .text, alignment: .leading) { title in
-                    Text(title)
-                        .font(AppTypography.font(.menuTab))
-                        .lineLimit(1)
-                }
+            RelaySwap(presentation.title, style: .text, alignment: .center) { title in
+                Text(title)
+                    .font(AppTypography.font(.primaryButton))
+                    .lineLimit(1)
             }
-            .foregroundStyle(isHovered || isFocused
-                ? ProgramBoardStyle.primaryText
-                : ProgramBoardStyle.secondaryText)
-            .padding(.horizontal, 4)
-            .frame(height: BoardSurfaceLayout.navigationHeight)
-            .contentShape(Rectangle())
+            .foregroundStyle(Color.black)
+            .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
+            .frame(height: SharedActionButtonMetrics.controlHeight)
+            .background(shape.fill(Color.white.opacity(isHovered || isFocused ? 0.88 : 1)))
+            .contentShape(shape)
             .animation(RelayMotion.hover, value: isHovered)
             .animation(RelayMotion.hover, value: isFocused)
         }
         .buttonStyle(.plain)
-        .focusable()
-        .focusEffectDisabled(WorkspaceNavigationStyle.systemFocusEffectDisabled)
+        .fixedSize()
+        .focusable(isEnabled)
+        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
         .focused($isFocused)
         .onHover { isHovered = $0 }
-        .accessibilityLabel(presentation.title)
-        .help(presentation.help)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.45)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isEnabled)
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: presentation)
+        .programButtonCursor(enabled: isEnabled)
+        .accessibilityLabel(presentation.title)
+        .help(presentation.help)
     }
 }
 

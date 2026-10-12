@@ -107,14 +107,13 @@ enum TrayIconAsset {
 
 enum WorkspaceNavigationStyle {
     static let controlHeight: CGFloat = BoardSurfaceLayout.navigationHeight
-    static let horizontalPadding: CGFloat = 4
-    static let verticalPadding: CGFloat = horizontalPadding
-    static let cornerRadius: CGFloat = 4
+    static let horizontalPadding: CGFloat = 8
+    static let verticalPadding: CGFloat = 4
+    static let cornerRadius: CGFloat = 6
     static let iconTextSpacing: CGFloat = 6
     static let iconSize: CGFloat = 10
     static let systemFocusEffectDisabled = true
     static let activeTextOpacity: Double = 0.98
-    static let inactiveTextOpacity: Double = 0.72
     static let selectedFillOpacity: Double = 0.08
     static let focusedFillOpacity: Double = 0.12
 }
@@ -123,9 +122,10 @@ struct WorkspaceMenuBarStrip: View {
     @Bindable var workspace: WorkspaceViewModel
     let hasActiveSession: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var selectionHighlight
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: 4) {
             RelaySwap(hasActiveSession) { hasActiveSession in
                 Image(TrayIconAsset.name(hasActiveSession: hasActiveSession), bundle: RelayRunnerResources.bundle)
                     .renderingMode(.original)
@@ -142,6 +142,20 @@ struct WorkspaceMenuBarStrip: View {
                     selected: workspace.selectedTab == tab,
                     action: { workspace.select(tab) }
                 )
+                .background {
+                    if workspace.selectedTab == tab {
+                        let shape = RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
+                        // One highlight glides between tabs; Reduce Motion
+                        // gives each tab its own id so it only crossfades.
+                        shape
+                            .fill(BoardDarkSurfaceStyle.cardActiveFill)
+                            .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1))
+                            .matchedGeometryEffect(
+                                id: reduceMotion ? AnyHashable(tab.id) : AnyHashable("selection"),
+                                in: selectionHighlight
+                            )
+                    }
+                }
                 .transition(.relayElement)
             }
             if let updater = workspace.updater, let version = updater.availableVersion {
@@ -157,6 +171,7 @@ struct WorkspaceMenuBarStrip: View {
         }
         .frame(height: BoardSurfaceLayout.navigationHeight)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.availableTabs)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.selectedTab)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.updater?.availableVersion)
         .onTapGesture { }
     }
@@ -229,21 +244,21 @@ struct WorkspaceNavigationButton: View {
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: title)
-            .foregroundStyle(
-                Color(
-                    .sRGB,
-                    red: 226 / 255,
-                    green: 232 / 255,
-                    blue: 240 / 255,
-                    opacity: foregroundOpacity
-                )
-            )
+            .foregroundStyle(foregroundColor)
             .frame(height: WorkspaceNavigationStyle.controlHeight - 2 * WorkspaceNavigationStyle.verticalPadding)
             .padding(.horizontal, WorkspaceNavigationStyle.horizontalPadding)
             .padding(.vertical, WorkspaceNavigationStyle.verticalPadding)
-            // Selection, hover, and focus show through the text colour alone.
+            // The selected fill is drawn by the strip so it can glide between tabs.
+            .background(
+                RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
+                    .fill(isHovered && !selected ? BoardDarkSurfaceStyle.cardActiveFill : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
+                    .strokeBorder(isHovered && !selected ? BoardDarkSurfaceStyle.border : Color.clear, lineWidth: 1)
+            )
             .contentShape(
-                RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius)
+                RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
             )
             .animation(RelayMotion.hover, value: isHovered)
             .animation(RelayMotion.hover, value: isFocused)
@@ -258,9 +273,13 @@ struct WorkspaceNavigationButton: View {
         .help(help)
     }
 
-    private var foregroundOpacity: Double {
-        selected || isHovered || isFocused
-            ? WorkspaceNavigationStyle.activeTextOpacity
-            : WorkspaceNavigationStyle.inactiveTextOpacity
+    private var foregroundColor: Color {
+        Color(
+            .sRGB,
+            red: 226 / 255,
+            green: 232 / 255,
+            blue: 240 / 255,
+            opacity: WorkspaceNavigationStyle.activeTextOpacity
+        )
     }
 }
