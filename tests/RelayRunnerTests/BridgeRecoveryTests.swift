@@ -396,6 +396,54 @@ final class BridgeRecoveryTests: XCTestCase {
         }
     }
 
+    func testGeneralRecoveryLaunchesForwardScopeInCleanDaemonEnvironment() throws {
+        for provider in ["codex", "claude"] {
+            let root = try makeFixture()
+            let files = root.appendingPathComponent("General files")
+            try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
+            let bridge = root.appendingPathComponent("test-bridge")
+            try Data("""
+            #!/bin/bash
+            printf '%s\\n' "$RELAY_SESSION_SCOPE" "$RELAY_GENERAL_FILES_ROOT" "$RELAY_PRESERVE_CONTEXT_AUTHORIZATION" "$RELAY_RUNNER_PROVIDER" > "$HANDOFF_FILE"
+            """.utf8).write(to: bridge)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: bridge.path)
+            let script = ProcessManager.bridgeRecoveryScript(relayBridge: bridge.path, context: .init(
+                workingDirectory: files.path, provider: provider, sessionScope: "general",
+                generalFilesRoot: files.path, preservesContextAuthorization: true))
+            XCTAssertTrue(script.contains("[ \"$RELAY_PRESERVE_CONTEXT_AUTHORIZATION\" = \"1\" ] || rm -f /tmp/voice_command_authorizations.json"))
+            let lines = script.components(separatedBy: "\n")
+            let launches = [try XCTUnwrap(lines.first { $0.contains("launchctl submit") }),
+                            try XCTUnwrap(lines.first { $0.contains("nohup /bin/bash -lc") })]
+            for (index, launch) in launches.enumerated() {
+                let handoff = root.appendingPathComponent("handoff-\(index)")
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/bash")
+                // Execute only the generated child launch command. The watchdog's real
+                // process cleanup, replay, and shared /tmp runtime paths are never run.
+                process.arguments = ["-c", """
+                launchctl() { while [ "$1" != -- ]; do shift; done; shift; /usr/bin/env -u RELAY_SESSION_SCOPE -u RELAY_GENERAL_FILES_ROOT -u RELAY_PRESERVE_CONTEXT_AUTHORIZATION "$@"; }
+                nohup() { /usr/bin/env -u RELAY_SESSION_SCOPE -u RELAY_GENERAL_FILES_ROOT -u RELAY_PRESERVE_CONTEXT_AUTHORIZATION "$@"; }
+                \(launch)
+                wait
+                """]
+                process.environment = ProcessInfo.processInfo.environment.merging([
+                    "RELAY_CWD": files.path, "RELAY_BRIDGE": bridge.path, "RELAY_PROVIDER": provider,
+                    "RELAY_PROVIDER_SESSION_ID": "transport", "RELAY_RECOVERY_GENERATION": "generation",
+                    "RELAY_CONTINUITY_RECOVERY_PENDING": "0", "RELAY_SESSION_SCOPE": "general",
+                    "RELAY_GENERAL_FILES_ROOT": files.path, "RELAY_PRESERVE_CONTEXT_AUTHORIZATION": "1",
+                    "VOICE_BRIDGE_LOG": root.appendingPathComponent("voice.log").path, "HANDOFF_FILE": handoff.path,
+                ], uniquingKeysWith: { _, supplied in supplied })
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                try process.run()
+                process.waitUntilExit()
+                XCTAssertEqual(process.terminationStatus, 0)
+                XCTAssertEqual(try String(contentsOf: handoff, encoding: .utf8).components(separatedBy: "\n"),
+                               ["general", files.path, "1", provider, ""])
+            }
+        }
+    }
+
     func testRecoveryScriptAllowsColdBridgeStartupBeforeFallingBack() {
         let script = ProcessManager.bridgeRecoveryScript(
             relayBridge: "/usr/local/bin/relay-bridge",

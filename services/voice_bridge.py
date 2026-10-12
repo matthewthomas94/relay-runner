@@ -4172,11 +4172,12 @@ def _run_relay(
         VOICE_CMD_META_FILE,
         VOICE_COMMAND_CLAIM_FILE,
         VOICE_MANUAL_CLAIM_ACK_FILE,
-        VOICE_COMMAND_AUTHORIZATION_FILE,
         VOICE_PROVIDER_TURNS_FILE,
     ]
     if os.environ.get("RELAY_CONTINUITY_RECOVERY_PENDING") != "1":
         cleanup_paths.append(VOICE_COMMAND_STATE_FILE)
+    if os.environ.get("RELAY_PRESERVE_CONTEXT_AUTHORIZATION") != "1":
+        cleanup_paths.append(VOICE_COMMAND_AUTHORIZATION_FILE)
 
     # Create TTS input FIFO
     for path in cleanup_paths:
@@ -4472,7 +4473,6 @@ def _run_relay(
             VOICE_COMMAND_STATE_FILE,
             VOICE_COMMAND_CLAIM_FILE,
             VOICE_MANUAL_CLAIM_ACK_FILE,
-            VOICE_COMMAND_AUTHORIZATION_FILE,
             VOICE_PROVIDER_TURNS_FILE,
         ]:
             try:

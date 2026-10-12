@@ -2,7 +2,24 @@
 
 This source baseline adds no inference call or dependency. Messenger still receives each turn before deterministic qualification. The bridge publishes a provisional bucket, command identity, unresolved/mixed flags, and original wording to the PM, and updates public Messenger context afterward. Both Codex and Claude use the same contract. Existing control, cancellation, inbox, and mutation ledger paths remain separate.
 
-Tasks request project implementation or explicit tracking/delegation. Actions are bounded foreground operations (including shell/API calls). Discussion covers research, feasibility, explanation and status even when read-only tools are used. Labels do not grant authority. The PM resolves references, recipients, ordered mixed requests and permission. A bare assent remains unresolved; the rules do not reconstruct dialogue from private provider traces. Explicit no-dispatch/backlog-only constraints retain ticket-authoring permissions but remove dispatch and worker-request permissions.
+Tasks request project implementation, substantial General deliverables or explicit tracking/delegation. Actions are bounded foreground operations (including shell/API calls and short local drafts). Discussion covers research, feasibility, explanation and status even when read-only tools are used. Labels do not grant authority. The PM resolves references, recipients, ordered mixed requests and permission. A bare assent remains unresolved; the rules do not reconstruct dialogue from private provider traces. Explicit no-dispatch/backlog-only constraints retain ticket-authoring permissions but remove dispatch and worker-request permissions.
+
+## General and project decision matrix
+
+| User request | Qualification | Route and authority |
+| --- | --- | --- |
+| Explain options, assess feasibility, research before deciding, or give status | Discussion | Read-only foreground response; no ticket or execution |
+| Open an app/folder or write a short local draft | Action | Bounded foreground action; save requested files under the General files root |
+| Prepare a substantial report or multi-file deliverable without source changes | Task | Refine a daemon-owned General backlog ticket; dispatch only when execution is authorized |
+| Explicitly track or delegate General research | Task | General ticket; elapsed research time alone never creates work |
+| Change a source repository | Task | Confirm project scope, then use that repository's canonical ticket writer and isolated worker |
+| Create a ticket but do not dispatch | Task, authoring only | Preserve backlog in the applicable General or project board |
+| Draft an email, then send it | Ordered effects | Draft permission does not authorize sending; resolve recipient/content and actual send authority |
+| Replace or cancel a named task | Scoped control | Target the exact item/current run; preserve unrelated accepted work |
+
+General sessions never infer project authority from their managed cwd or a remembered project. `GEN-…` identifiers resolve through `general_task`, including from a project session. The daemon stores General metadata outside source repositories and isolates each attempt under the app's `files/tasks` directory. Worker success waits for PM review: criteria evidence and local artifact hashes are verified before Done. Reviewed outputs enter the personal file catalog without granting GitHub upload consent. Interrupted runs retain output and provenance; retry is explicit and uses a new run directory.
+
+Both providers use subscription credentials and the same task/run/review contract. Codex uses non-Git `exec` with its workspace-write sandbox, ignored user/rule configuration and forced ChatGPT login. Claude uses print mode with restricted file tools, no customizations/MCP servers, `dontAsk` permissions and sandboxed Bash without an unsandboxed escape. General runs do not inherit project scope or metered API/cloud credentials. These flags differ by provider; local result validation, review, output storage and cancellation do not. A retry is a fresh attempt for both providers, not an implicit replay of an interrupted external action.
 
 ## Source evaluation
 
@@ -12,6 +29,7 @@ From this checkout, using the repository Python runtime:
 python3 scripts/evaluate-intent-qualification.py > /tmp/intent-qualification-development.json
 python3 -m unittest discover -s tests -p 'test_intent_qualification.py'
 python3 -m unittest discover -s tests -p 'test_command_actions.py'
+python3 -m unittest discover -s tests -p 'test_general_work.py'
 python3 -m unittest discover -s tests -p 'test_intent_arbitration.py'
 python3 -m unittest discover -s tests -p 'test_voice_bridge_preemption.py'
 python3 -m unittest discover -s tests -p 'test_messenger.py'

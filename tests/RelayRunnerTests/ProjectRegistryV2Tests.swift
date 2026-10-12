@@ -2,6 +2,146 @@ import XCTest
 @testable import relay_runner
 
 final class ProjectRegistryV2Tests: XCTestCase {
+    func testBuiltInGeneralTasksCreatesPrivateLocalProjectWithUsableEmptyHead() throws {
+        let root = try makeTempDirectory(named: "built-in-general-tasks")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeService(root: root, projectID: "general-tasks-id")
+
+        let project = try fixture.service.ensureGeneralTasksProject()
+        let directory = fixture.service.generalTasksDirectory
+
+        XCTAssertEqual(directory, fixture.appSupportRoot.appendingPathComponent("general-tasks", isDirectory: true))
+        XCTAssertEqual(project.displayName, "general-tasks")
+        XCTAssertEqual(project.lastResolvedPath, directory.resolvingSymlinksInPath().path)
+        XCTAssertEqual(project.remote, .localOnly)
+        XCTAssertNil(try fixture.service.load().document.activeProjectID)
+        XCTAssertEqual(try runGitOutput(["branch", "--show-current"], in: directory), "main\n")
+        XCTAssertEqual(try runGitOutput(["rev-list", "--count", "HEAD"], in: directory), "1\n")
+        XCTAssertEqual(try runGitOutput(["ls-tree", "-r", "HEAD"], in: directory), "")
+        XCTAssertEqual(try runGitOutput(["remote", "-v"], in: directory), "")
+        let permissions = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(permissions?.intValue, 0o700)
+        let token = try fixture.service.scopeToken(matching: directory.path)
+        XCTAssertTrue(fixture.service.validateScopeToken(token).isValid)
+        XCTAssertEqual(token.projectID, project.projectID)
+        try runGit(["worktree", "add", "--detach", root.appendingPathComponent("worker").path, "HEAD"], in: directory)
+    }
+
+    func testBuiltInGeneralTasksIsIdempotentAndPreservesOtherActiveProject() throws {
+        let root = try makeTempDirectory(named: "built-in-preservation")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeService(root: root, projectID: "existing-project")
+        let repository = root.appendingPathComponent("existing", isDirectory: true)
+        try makeCommittedGitRepo(at: repository)
+        let originalProject = try fixture.service.register(
+            candidate: fixture.service.inspect(selectedURL: repository), displayName: "Existing"
+        )
+        let repositoryBefore = try repositorySnapshot(repository)
+        let service = ProjectRegistryV2Service(
+            store: fixture.store,
+            validator: ProjectRegistrationValidator(relayWorktreeRoots: []),
+            accessGrants: fixture.grants,
+            appSupportRoot: fixture.appSupportRoot,
+            makeProjectID: { "built-in-project" }
+        )
+
+        let first = try service.ensureGeneralTasksProject()
+        let persistedFirst = try service.project(projectID: first.projectID)
+        let registryBefore = try Data(contentsOf: fixture.store.primaryURL)
+        let headBefore = try runGitOutput(["rev-parse", "HEAD"], in: service.generalTasksDirectory)
+        let second = try service.ensureGeneralTasksProject()
+
+        XCTAssertEqual(persistedFirst, second)
+        XCTAssertEqual(try Data(contentsOf: fixture.store.primaryURL), registryBefore)
+        XCTAssertEqual(try runGitOutput(["rev-parse", "HEAD"], in: service.generalTasksDirectory), headBefore)
+        XCTAssertEqual(try service.load().document.activeProjectID, originalProject.projectID)
+        XCTAssertEqual(try service.project(projectID: originalProject.projectID), originalProject)
+        XCTAssertEqual(try repositorySnapshot(repository), repositoryBefore)
+        XCTAssertEqual(try service.projects().count, 2)
+        XCTAssertEqual(fixture.grants.storeCount, 2)
+    }
+
+    func testBuiltInBootstrapDoesNotCommitExistingFilesIndexOrRunHooks() throws {
+        let root = try makeTempDirectory(named: "built-in-existing-files")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeService(root: root, projectID: "general-existing-files")
+        let directory = fixture.service.generalTasksDirectory
+        try makeGitRepo(at: directory)
+        let keep = directory.appendingPathComponent("keep.txt")
+        try Data("private existing content\n".utf8).write(to: keep)
+        try runGit(["add", "keep.txt"], in: directory)
+        let stagedBefore = try runGitOutput(["ls-files", "--stage"], in: directory)
+        let hooks = root.appendingPathComponent("hooks", isDirectory: true)
+        try FileManager.default.createDirectory(at: hooks, withIntermediateDirectories: true)
+        let hook = hooks.appendingPathComponent("pre-commit")
+        try Data("#!/bin/sh\nexit 99\n".utf8).write(to: hook)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: hook.path)
+        try runGit(["config", "core.hooksPath", hooks.path], in: directory)
+        try runGit(["config", "commit.gpgsign", "true"], in: directory)
+
+        _ = try fixture.service.ensureGeneralTasksProject()
+
+        XCTAssertEqual(try Data(contentsOf: keep), Data("private existing content\n".utf8))
+        XCTAssertEqual(try runGitOutput(["ls-tree", "-r", "HEAD"], in: directory), "")
+        XCTAssertEqual(try runGitOutput(["ls-files", "--stage"], in: directory), stagedBefore)
+        XCTAssertEqual(try runGitOutput(["config", "core.hooksPath"], in: directory), hooks.path + "\n")
+        XCTAssertEqual(try runGitOutput(["config", "commit.gpgsign"], in: directory), "true\n")
+    }
+
+    func testBuiltInProjectKeepsOtherOperationalFoldersBlocked() throws {
+        let root = try makeTempDirectory(named: "built-in-app-home-guard")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeService(root: root, projectID: "operational")
+        _ = try fixture.service.ensureGeneralTasksProject()
+        for component in ["files", "projects", "orchestrator", "general-tasks/nested"] {
+            let folder = fixture.appSupportRoot.appendingPathComponent(component, isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            XCTAssertThrowsError(try fixture.service.registerExistingProject(at: folder)) {
+                XCTAssertEqual($0 as? ProjectRegistryV2Service.ServiceError, .appHomeTarget(folder.path))
+            }
+        }
+        XCTAssertTrue(fixture.service.validateScopeToken(
+            try fixture.service.scopeToken(matching: fixture.service.generalTasksDirectory.path)
+        ).isValid)
+    }
+
+    func testBuiltInBootstrapRejectsSymlinkWithoutTouchingDestination() throws {
+        let root = try makeTempDirectory(named: "built-in-symlink")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeService(root: root, projectID: "symlink-built-in")
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
+        try makeCommittedGitRepo(at: outside)
+        try FileManager.default.createDirectory(at: fixture.appSupportRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: fixture.service.generalTasksDirectory, withDestinationURL: outside)
+        let before = try repositorySnapshot(outside)
+
+        XCTAssertThrowsError(try fixture.service.ensureGeneralTasksProject())
+
+        XCTAssertEqual(try repositorySnapshot(outside), before)
+        XCTAssertTrue(try fixture.service.projects().isEmpty)
+        XCTAssertEqual(fixture.grants.storeCount, 0)
+    }
+
+    func testBuiltInBootstrapFailureDoesNotRegisterOrSelectProject() throws {
+        let root = try makeTempDirectory(named: "built-in-bootstrap-failure")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = makeStore(root: root)
+        let grants = FakeAccessGrantManager()
+        let service = ProjectRegistryV2Service(
+            store: store,
+            validator: ProjectRegistrationValidator(relayWorktreeRoots: []),
+            accessGrants: grants,
+            appSupportRoot: root.appendingPathComponent("app-support"),
+            gitRunner: { _, _ in (status: 1, stderr: "bootstrap rejected") }
+        )
+
+        XCTAssertThrowsError(try service.ensureGeneralTasksProject())
+
+        XCTAssertTrue(try service.projects().isEmpty)
+        XCTAssertNil(try service.load().document.activeProjectID)
+        XCTAssertEqual(grants.storeCount, 0)
+    }
+
     func testAddExistingInitializesSelectedNonGitFolderAndRegistersIt() throws {
         let root = try makeTempDirectory(named: "add-existing")
         defer { try? FileManager.default.removeItem(at: root) }

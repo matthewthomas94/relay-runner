@@ -10,15 +10,12 @@ struct CodexModelResolution: Equatable {
 
 enum CodexModelResolver {
     enum Error: LocalizedError, Equatable {
-        case unavailable(String)
         case invalidCatalogue(String)
         case familyUnavailable(String)
         case unsupportedEffort(model: String, effort: String, supported: [String])
 
         var errorDescription: String? {
             switch self {
-            case .unavailable(let message):
-                return message
             case .invalidCatalogue(let message):
                 return "Codex model catalogue could not be read: \(message)"
             case .familyUnavailable(let family):
@@ -70,56 +67,6 @@ enum CodexModelResolver {
             defaultReasoningEffort: resolved.defaultReasoningEffort,
             supportedReasoningEfforts: resolved.supportedReasoningEfforts,
             resolvedEffort: effort
-        )
-    }
-
-    static func resolveViaService(
-        family rawFamily: String,
-        effort rawEffort: String,
-        command: String,
-        servicesDir: URL,
-        pythonPath: String
-    ) throws -> CodexModelResolution {
-        let script = servicesDir.appendingPathComponent("codex_model_catalog.py")
-        guard FileManager.default.fileExists(atPath: script.path) else {
-            throw Error.unavailable("Codex model resolver is missing at \(script.path).")
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: pythonPath)
-        process.arguments = [
-            script.path,
-            "--command", command,
-            "--family", GeneralConfig.normalizeCodexFamily(rawFamily),
-            "--effort", rawEffort,
-        ]
-
-        let output = Pipe()
-        let error = Pipe()
-        process.standardOutput = output
-        process.standardError = error
-        do {
-            try process.run()
-        } catch {
-            throw Error.unavailable("Could not run Codex model resolver with \(pythonPath): \(error.localizedDescription)")
-        }
-        process.waitUntilExit()
-        let stdout = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let stderr = String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        guard process.terminationStatus == 0 else {
-            let message = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw Error.unavailable(message.isEmpty ? "Codex model resolver exited with status \(process.terminationStatus)." : message)
-        }
-        guard let data = stdout.data(using: .utf8),
-              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw Error.invalidCatalogue("resolver returned invalid JSON")
-        }
-        return CodexModelResolution(
-            selectedFamily: string(object["selectedFamily"], default: GeneralConfig.defaultCodexModelFamily),
-            resolvedModel: string(object["resolvedModel"], default: ""),
-            defaultReasoningEffort: string(object["defaultReasoningEffort"], default: GeneralConfig.defaultReasoningEffort),
-            supportedReasoningEfforts: stringArray(object["supportedReasoningEfforts"]),
-            resolvedEffort: string(object["resolvedEffort"], default: GeneralConfig.defaultReasoningEffort)
         )
     }
 

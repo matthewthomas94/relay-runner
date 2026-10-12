@@ -40,6 +40,7 @@ METERED_ENVIRONMENT = (
     "ANTHROPIC_FOUNDRY_API_KEY",
 )
 STATUS_TIMEOUT = 15
+LOGIN_REQUIRED_REASONS = frozenset({"status_unavailable", "not_logged_in", "unknown_route", "no_subscription"})
 SIGN_IN = "Run `claude auth login` and sign in with your Claude.ai subscription account."
 THEN_SIGN_IN = "then run `claude auth login` and sign in with your Claude.ai subscription account."
 MANAGED_SETTINGS = Path("/Library/Application Support/ClaudeCode/managed-settings.json")
@@ -228,11 +229,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--binary", default="claude")
     parser.add_argument("--cwd", default=os.getcwd())
+    parser.add_argument("--signal-login-required", action="store_true")
     args = parser.parse_args(argv)
     readiness = check([args.binary], cwd=args.cwd)
     if readiness.ready:
         return 0
     print(f"[Relay Runner] {readiness.message}", file=sys.stderr)
+    if args.signal_login_required and readiness.reason in LOGIN_REQUIRED_REASONS:
+        return 77
     return 78
 
 

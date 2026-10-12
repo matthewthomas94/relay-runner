@@ -684,6 +684,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             doneItems: []
         )
         let workspace = WorkspaceViewModel()
+        workspace.isGeneralContext = false
         workspace.configure(
             showsWorkTab: true,
             showsTerminalTab: false,
@@ -839,6 +840,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         )
         model.selectedTicketDetail = ticketDetailFixture()
         let workspace = WorkspaceViewModel()
+        workspace.isGeneralContext = false
         workspace.configure(
             showsWorkTab: true,
             showsTerminalTab: false,
@@ -960,6 +962,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             doneItems: []
         )
         let workspace = WorkspaceViewModel()
+        workspace.isGeneralContext = false
         workspace.configure(
             showsWorkTab: true,
             showsTerminalTab: false,
@@ -1103,6 +1106,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             doneItems: []
         )
         let workspace = WorkspaceViewModel()
+        workspace.isGeneralContext = false
         workspace.configure(
             showsWorkTab: true,
             showsTerminalTab: false,
@@ -2137,6 +2141,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         let model = ProgramBoardViewModel()
         model.selectedTicketDetail = ticketDetailFixture()
         let workspace = WorkspaceViewModel()
+        workspace.isGeneralContext = false
         workspace.configure(
             showsWorkTab: true,
             showsTerminalTab: false,
@@ -2188,6 +2193,7 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         let detail = ticketDetailFixture()
         model.beginEdit(detail: detail)
         let workspace = WorkspaceViewModel()
+        workspace.isGeneralContext = false
         workspace.configure(
             showsWorkTab: true,
             showsTerminalTab: false,

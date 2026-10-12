@@ -36,6 +36,7 @@ final class MCPServer {
             KeyTool(),
             ScrollTool(),
             ActivateProjectTool(),
+            ActivateGeneralTool(),
             ToggleBoardTool(),
             FrontmostAppTool(),
             ListWindowsTool(),

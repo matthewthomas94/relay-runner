@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Darwin
 import Observation
 import SwiftTerm
@@ -17,6 +18,7 @@ protocol EmbeddedTerminalProcess: AnyObject {
     var isRunning: Bool { get }
     var hasFocus: Bool { get }
     var childPID: Int? { get }
+    var hasUnsubmittedInput: Bool { get }
     var onExit: ((Int32?) -> Void)? { get set }
     var onReady: (() -> Void)? { get set }
     /// The provider's interface has taken the terminal and may need the
@@ -26,12 +28,20 @@ protocol EmbeddedTerminalProcess: AnyObject {
     var onTitle: ((String) -> Void)? { get set }
     var onDeliveryBlocked: ((Bool) -> Void)? { get set }
     var onInboxRecoveryBlocked: ((InboxRecoveryBlocker?) -> Void)? { get set }
+    func submitContextContinuation(_ continuation: AssistantSessionStore.Continuation) -> Bool
+    func cancelContextContinuation(id: String)
     func requestDeliveryRecovery() -> Bool
     func skipUncertainMessage(_ blocker: InboxRecoveryBlocker) -> Bool
 
     func start(_ launch: ProcessManager.PreparedSessionLaunch) throws
     func focus()
     func terminate()
+}
+
+extension EmbeddedTerminalProcess {
+    func submitContextContinuation(_ continuation: AssistantSessionStore.Continuation) -> Bool { false }
+    func cancelContextContinuation(id: String) {}
+    var hasUnsubmittedInput: Bool { false }
 }
 
 enum EmbeddedTerminalProcessError: LocalizedError, Equatable {
@@ -102,6 +112,12 @@ final class EmbeddedTerminalSession {
     /// Unlike `isEmbeddedProcessRunning`, this remains true after `end()` has
     /// requested termination but before the child actually releases its PTY.
     var hasLiveEmbeddedProcess: Bool { process?.isRunning == true }
+    var hasUnsubmittedInput: Bool { process?.hasUnsubmittedInput == true }
+    func submitContextContinuation(_ continuation: AssistantSessionStore.Continuation) -> Bool {
+        guard phase == .running, !deliveryBlocked, inboxRecoveryBlocker == nil else { return false }
+        return process?.submitContextContinuation(continuation) == true
+    }
+    func cancelContextContinuation(id: String) { process?.cancelContextContinuation(id: id) }
     var diagnosticEventPath: String? { diagnostics?.eventsURL.path }
     /// Whether the tab shows the terminal. Once a session has ended or exited
     /// the tab returns to its empty state, even while the PTY is torn down; a
@@ -141,7 +157,7 @@ final class EmbeddedTerminalSession {
         workingDirectory: String,
         recordDiagnostics: Bool = false
     ) throws {
-        guard !phase.isActive else { throw EmbeddedTerminalProcessError.alreadyRunning }
+        guard !phase.isActive, !hasLiveEmbeddedProcess else { throw EmbeddedTerminalProcessError.alreadyRunning }
         self.providerName = providerName
         self.providerKey = providerKey
         self.workingDirectory = workingDirectory
@@ -426,7 +442,10 @@ final class EmbeddedTerminalSession {
             return "The voice bridge socket timed out before \(providerName) started. Relay Runner cleaned up the partial session; start a new session to retry."
         }
         if decodeWaitStatus(rawStatus) == ProcessManager.claudeSubscriptionGateExitCode {
-            return "Relay Runner only uses your Claude subscription and couldn't confirm this session would. Remove any ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, cloud-provider or apiKeyHelper setting from your shell profile and Claude settings, run `claude auth login` with your Claude.ai subscription account, then start a new session."
+            return "Relay Runner couldn't verify your Claude subscription. Complete sign-in or resolve the configuration issue shown in the terminal, then start a new session to retry."
+        }
+        if decodeWaitStatus(rawStatus) == ProcessManager.codexLoginGateExitCode {
+            return "Codex sign-in did not complete. Start a new session to sign in with your ChatGPT subscription and retry."
         }
         let outcome = decodeWaitStatus(rawStatus).map { " with code \($0)" } ?? ""
         return "The session launcher exited\(outcome) before \(providerName) started. Relay Runner cleaned up the partial session; start a new session to retry."
@@ -450,6 +469,8 @@ final class RelayTerminalView: TerminalView {
 
     private(set) var isSendingTerminalResponse = false
     private(set) var isSendingNavigationShortcut = false
+    private var defersFocusReports = false
+    private var deferredFocusReport: [UInt8]?
     private var navigationKeyMonitor: Any?
     private var rendererActivationAttempted = false
     private var bellFlashLayer: CALayer?
@@ -514,9 +535,25 @@ final class RelayTerminalView: TerminalView {
     }
 
     override func send(source: Terminal, data: ArraySlice<UInt8>) {
+        let bytes = Array(data)
+        if defersFocusReports,
+           bytes == [27, 91, 73] || bytes == [27, 91, 79]
+                || bytes == [155, 73] || bytes == [155, 79] {
+            deferredFocusReport = bytes
+            return
+        }
         isSendingTerminalResponse = true
         defer { isSendingTerminalResponse = false }
         super.send(source: source, data: data)
+    }
+
+    /// A focus report arriving while the provider starts or reads a paste can
+    /// become literal composer text. Other terminal replies still flow normally.
+    func deferFocusReports(_ deferred: Bool) {
+        defersFocusReports = deferred
+        guard !deferred, let report = deferredFocusReport else { return }
+        deferredFocusReport = nil
+        send(source: getTerminal(), data: ArraySlice(report))
     }
 
     @discardableResult
@@ -1136,11 +1173,18 @@ final class RelayVoiceCommandDelivery {
     private let appSessionID: String?
     private let recoveryGeneration: String?
     private let foregroundGateHandle: String?
+    private let continuationAuthority: ([String: String]) -> Bool
     private let queue = DispatchQueue(label: "relay-runner.voice-command-delivery")
     private let queueKey = DispatchSpecificKey<UUID>()
     private let queueIdentity = UUID()
     private var timer: DispatchSourceTimer?
     private var inputTracker = RelayTerminalInputTracker()
+    private var continuationInputBuffer: [[UInt8]]?
+    private let continuationCancellationLock = NSLock()
+    private var insertedContinuation: (id: String, cancelled: Bool, humanInput: [[UInt8]])?
+    typealias ContinuationCommit = (@escaping () -> Void) -> Bool
+    typealias ContinuationEnterSend = (@escaping ContinuationCommit, @escaping (Bool) -> Void) -> Void
+    private let continuationEnterSend: ContinuationEnterSend
     private var deliveryState: DeliveryState = .idle
     private var manualBoundary: ManualBoundary?
     private var bufferedManualInput: BufferedManualInput?
@@ -1178,8 +1222,16 @@ final class RelayVoiceCommandDelivery {
         provider: String? = nil,
         appSessionID: String? = nil,
         recoveryGeneration: String? = nil,
-        foregroundGateHandle: String? = nil
+        foregroundGateHandle: String? = nil,
+        continuationAuthority: @escaping ([String: String]) -> Bool = { source in
+            (try? ProcessManager.contextContinuationAuthority(operation: "check", source: source)["status"] as? String) == "ready"
+        },
+        continuationEnterSend: ContinuationEnterSend? = nil
     ) {
+        self.continuationAuthority = continuationAuthority
+        self.continuationEnterSend = continuationEnterSend ?? { commit, completion in
+            completion(commit { send(ArraySlice([13])) })
+        }
         self.paths = paths
         self.send = send
         self.transportSend = transportSend ?? { data, confirmation in
@@ -1283,13 +1335,115 @@ final class RelayVoiceCommandDelivery {
         let bytes = Array(data)
         guard !bytes.isEmpty else { return true }
         let recordedAt = now()
+        // Signal before queue.sync: canonical authority lookup can hold the
+        // delivery queue while the human types or cancels the inserted prompt.
+        continuationCancellationLock.lock()
+        if insertedContinuation != nil {
+            insertedContinuation?.cancelled = true
+            insertedContinuation?.humanInput.append(bytes)
+            continuationCancellationLock.unlock()
+            return false
+        }
+        continuationCancellationLock.unlock()
         return queue.sync {
+            if continuationInputBuffer != nil {
+                continuationCancellationLock.lock()
+                insertedContinuation?.cancelled = true
+                insertedContinuation?.humanInput.append(bytes)
+                continuationCancellationLock.unlock()
+                return false
+            }
             if let key = manualInputBufferKey {
                 bufferManualInput(bytes, key: key)
                 return false
             }
             let transition = self.inputTracker.record(data: ArraySlice(bytes))
             self.recordUserInputTransition(transition, recordedAt: recordedAt)
+            return true
+        }
+    }
+
+    func cancelContextContinuation(id: String) {
+        continuationCancellationLock.lock()
+        if insertedContinuation?.id == id { insertedContinuation?.cancelled = true }
+        continuationCancellationLock.unlock()
+    }
+
+    private func commitContinuationEnter(_ id: String, write: () -> Void) -> Bool {
+        continuationCancellationLock.lock()
+        defer { continuationCancellationLock.unlock() }
+        guard insertedContinuation?.id == id, insertedContinuation?.cancelled == false else { return false }
+        write()
+        return true
+    }
+
+    private func finishContinuationSubmission(entered: Bool) {
+        continuationCancellationLock.lock()
+        let buffered = insertedContinuation?.humanInput ?? []
+        insertedContinuation = nil
+        continuationCancellationLock.unlock()
+        continuationInputBuffer = nil
+        if entered {
+            manualBoundary = ManualBoundary(startedAt: now(), reason: .manualSubmission)
+        } else if buffered.first?.first != 3 {
+            send(ArraySlice([3]))
+        }
+        for event in buffered {
+            let transition = inputTracker.record(data: ArraySlice(event))
+            recordUserInputTransition(transition, recordedAt: now())
+            send(ArraySlice(event))
+        }
+    }
+
+    /// Uses the same native manual-submit boundary as typed input, without
+    /// claiming a second voice command or acknowledging its original intent.
+    func submitContextContinuation(_ continuation: AssistantSessionStore.Continuation) -> Bool {
+        queue.sync {
+            guard isRunning(), continuationInputBuffer == nil, openSubmission == nil,
+                  inboxRecoveryBlocker == nil, !inputTracker.hasUnsubmittedInput,
+                  pendingCommandKey() == nil, !providerTurnActive(), manualBoundary == nil,
+                  let providerSessionID, let appSessionID, let recoveryGeneration, let foregroundGateHandle,
+                  let provider = resolvedProvider else { return false }
+            let prompt = continuation.prompt
+            let payload: [String: Any] = [
+                "version": 1, "state": "pending", "submission_id": continuation.id,
+                "evidence_source": "relay_terminal_manual_submit", "observed_at": now().timeIntervalSince1970,
+                "provider": provider, "provider_session_id": providerSessionID, "app_session_id": appSessionID,
+                "recovery_generation": recoveryGeneration, "actor_role": "foreground_pm",
+                "foreground_gate_handle": foregroundGateHandle, "continuation_source": continuation.source,
+                "prompt_sha256": SHA256.hash(data: Data(prompt.utf8)).map { String(format: "%02x", $0) }.joined(),
+            ]
+            do {
+                let url = URL(fileURLWithPath: paths.manualSubmissions)
+                try JSONSerialization.data(withJSONObject: payload, options: .sortedKeys).write(to: url, options: .atomic)
+                try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            } catch { return false }
+            continuationInputBuffer = []
+            continuationCancellationLock.lock()
+            insertedContinuation = (continuation.id, false, [])
+            continuationCancellationLock.unlock()
+            promptSend(ArraySlice(prompt.utf8)) { [weak self] in
+                guard let self else { return }
+                self.performOnDeliveryQueue {
+                    self.schedule(self.submitDelay, self.queue) { [weak self] in
+                        guard let self else { return }
+                        let authorized = self.continuationAuthority(continuation.source)
+                        guard authorized, self.isRunning(), self.openSubmission == nil,
+                              self.inboxRecoveryBlocker == nil, self.pendingCommandKey() == nil,
+                              !self.providerTurnActive() else {
+                            self.finishContinuationSubmission(entered: false)
+                            return
+                        }
+                        // The actual PTY Return write commits under the cancellation
+                        // lock on its transport executor, including the main queue.
+                        self.continuationEnterSend({ [weak self] write in
+                            self?.commitContinuationEnter(continuation.id, write: write) ?? false
+                        }, { [weak self] entered in
+                            self?.performOnDeliveryQueue { self?.finishContinuationSubmission(entered: entered) }
+                        })
+                    }
+                }
+            }
             return true
         }
     }
@@ -1410,7 +1564,7 @@ final class RelayVoiceCommandDelivery {
         if completedSubmission || replayedManualInput {
             return true
         }
-        guard isRunning(), openSubmission == nil, blocker == nil else { return false }
+        guard isRunning(), openSubmission == nil, blocker == nil, continuationInputBuffer == nil else { return false }
         if deliveryState.isTerminal {
             deliveryState = .idle
         }
@@ -1641,6 +1795,12 @@ final class RelayVoiceCommandDelivery {
             if case .blocked = deliveryState { blocked = true }
         }
         return blocked
+    }
+
+    var hasUnsubmittedInput: Bool {
+        var pending = false
+        performOnDeliveryQueue { pending = inputTracker.hasUnsubmittedInput || manualInputBufferKey != nil || continuationInputBuffer != nil }
+        return pending
     }
 
     private var manualInputBufferKey: RelayCommandKey? {
@@ -3000,6 +3160,15 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     var onDeliveryBlocked: ((Bool) -> Void)?
     var onInboxRecoveryBlocked: ((InboxRecoveryBlocker?) -> Void)?
 
+    func submitContextContinuation(_ continuation: AssistantSessionStore.Continuation) -> Bool {
+        guard interactiveReady, localProcess.running else { return false }
+        return voiceDelivery?.submitContextContinuation(continuation) == true
+    }
+
+    func cancelContextContinuation(id: String) { voiceDelivery?.cancelContextContinuation(id: id) }
+
+    var hasUnsubmittedInput: Bool { voiceDelivery?.hasUnsubmittedInput == true }
+
     func skipUncertainMessage(_ blocker: InboxRecoveryBlocker) -> Bool {
         localProcess.running && voiceDelivery?.skipUncertainMessage(blocker) == true
     }
@@ -3012,6 +3181,15 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         return kill(pid_t(pid), SIGTERM) == 0
     }
     private var voiceDelivery: RelayVoiceCommandDelivery?
+    private var usesAppOwnedInput = false
+    private var appOwnedInputGeneration = 0
+    private var appOwnedWriteInFlight = false
+    private var appOwnedInputChannel: DispatchIO?
+    private var appOwnedWrites: [(
+        bytes: [UInt8],
+        commit: RelayVoiceCommandDelivery.ContinuationCommit?,
+        completion: (Bool) -> Void
+    )] = []
     private var sessionEventPath: String?
     private var readinessScheduled = false
     private var interactiveReady = false
@@ -3109,6 +3287,12 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     func start(_ launch: ProcessManager.PreparedSessionLaunch) throws {
         voiceDelivery?.stop()
         voiceDelivery = nil
+        usesAppOwnedInput = launch.voiceDelivery == .appOwned
+        appOwnedInputGeneration += 1
+        appOwnedInputChannel?.close(flags: .stop)
+        appOwnedInputChannel = nil
+        appOwnedWriteInFlight = false
+        appOwnedWrites.removeAll()
         readinessScheduled = false
         interactiveReady = false
         stableTerminalSince = nil
@@ -3116,6 +3300,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         interfaceShown = false
         sessionEventPath = launch.sessionEventPath
         awaitsProviderSessionStart = launch.target == .claude && launch.voiceDelivery == .appOwned
+        terminalView.deferFocusReports(launch.voiceDelivery == .appOwned)
         localProcess.startProcess(
             executable: launch.executable,
             args: launch.arguments,
@@ -3124,12 +3309,13 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         )
         guard localProcess.running else { throw EmbeddedTerminalProcessError.couldNotStart }
         if launch.voiceDelivery == .appOwned {
+            appOwnedInputChannel = DispatchIO(type: .stream, fileDescriptor: localProcess.childfd,
+                                             queue: .global(qos: .userInitiated)) { _ in }
             let transportSend: RelayVoiceCommandDelivery.TransportSend = { [weak self] data, confirmation in
                 let bytes = Array(data)
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.localProcess.running else { return }
-                    self.localProcess.send(data: ArraySlice(bytes))
-                    confirmation()
+                    self.writeAppOwnedInput(bytes, confirmation: confirmation)
                 }
             }
             let delivery = RelayVoiceCommandDelivery(
@@ -3148,8 +3334,8 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
                             bytes,
                             bracketedPaste: self.terminalView.getTerminal().bracketedPasteMode
                         )
-                        self.localProcess.send(data: ArraySlice(framed))
-                        confirmation()
+                        self.terminalView.deferFocusReports(true)
+                        self.writeAppOwnedInput(framed, confirmation: confirmation)
                     }
                 },
                 acknowledgementTimeout: voiceDeliveryAcknowledgementTimeout,
@@ -3166,7 +3352,13 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
                 provider: launch.target.providerMetadataValue,
                 appSessionID: launch.appSessionID,
                 recoveryGeneration: launch.recoveryGeneration,
-                foregroundGateHandle: launch.foregroundGateHandle
+                foregroundGateHandle: launch.foregroundGateHandle,
+                continuationEnterSend: { [weak self] commit, completion in
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.localProcess.running else { completion(false); return }
+                        self.commitContextContinuationReturn(commit, completion: completion)
+                    }
+                }
             )
             voiceDelivery = delivery
         }
@@ -3176,22 +3368,110 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         terminalView.window?.makeFirstResponder(terminalView)
     }
 
+    func commitContextContinuationReturn(
+        _ commit: @escaping RelayVoiceCommandDelivery.ContinuationCommit,
+        completion: @escaping (Bool) -> Void
+    ) {
+        enqueueAppOwnedInput([13], commit: commit, completion: completion)
+    }
+
+    private func writeAppOwnedInput(_ bytes: [UInt8], confirmation: @escaping () -> Void) {
+        enqueueAppOwnedInput(bytes) { written in
+            if written { confirmation() }
+        }
+    }
+
+    private func enqueueAppOwnedInput(
+        _ bytes: [UInt8],
+        commit: RelayVoiceCommandDelivery.ContinuationCommit? = nil,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard localProcess.running else { completion(false); return }
+        guard !bytes.isEmpty else { completion(true); return }
+        appOwnedWrites.append((bytes, commit, completion))
+        drainAppOwnedInput()
+    }
+
+    private func drainAppOwnedInput() {
+        guard !appOwnedWriteInFlight, !appOwnedWrites.isEmpty, localProcess.running else { return }
+        let (bytes, commit, completion) = appOwnedWrites.removeFirst()
+        let descriptor = localProcess.childfd
+        let pid = localProcess.shellPid
+        let generation = appOwnedInputGeneration
+        guard descriptor >= 0 else { completion(false); return }
+        appOwnedWriteInFlight = true
+        let finish: (Bool) -> Void = { [weak self] written in
+            guard let self, self.appOwnedInputGeneration == generation else { return }
+            self.appOwnedWriteInFlight = false
+            guard written, self.localProcess.running,
+                  self.localProcess.childfd == descriptor, self.localProcess.shellPid == pid else {
+                self.appOwnedWrites.removeAll()
+                completion(false)
+                return
+            }
+            // Resume focus reporting only after the owned boundary reaches the PTY.
+            if self.interactiveReady, bytes == [13] || bytes == [3] || bytes == [21] {
+                self.terminalView.deferFocusReports(false)
+            }
+            completion(true)
+            self.drainAppOwnedInput()
+        }
+        if let commit {
+            var written = false
+            let permitted = commit {
+                // This one-byte write must happen before the cancellation lock
+                // releases. Never block the UI or schedule Return after permission.
+                let flags = fcntl(descriptor, F_GETFL)
+                guard bytes == [13], flags >= 0, flags & O_NONBLOCK != 0 else { return }
+                written = bytes.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) == 1 }
+            }
+            finish(permitted && written)
+        } else {
+            guard let channel = appOwnedInputChannel else { finish(false); return }
+            bytes.withUnsafeBytes { pointer in
+                let data = DispatchData(bytes: pointer)
+                // The convenience write's completion waits for SwiftTerm's
+                // shared reader to close. A retained channel reports each
+                // completed write while that reader remains open.
+                channel.write(offset: 0, data: data,
+                              queue: .global(qos: .userInitiated)) { done, _, error in
+                    guard done else { return }
+                    DispatchQueue.main.async { finish(error == 0) }
+                }
+            }
+        }
+    }
+
     func terminate() {
         readinessScheduled = false
         stableTerminalSince = nil
         interactiveTerminalSince = nil
         voiceDelivery?.providerProcessTerminated(releaseReason: "app_teardown")
         voiceDelivery = nil
+        appOwnedInputGeneration += 1
+        appOwnedInputChannel?.close(flags: .stop)
+        appOwnedInputChannel = nil
+        appOwnedWrites.removeAll()
+        appOwnedWriteInFlight = false
+        let stoppedChild = localProcess.running ? childPID : nil
         localProcess.terminate()
+        if let stoppedChild {
+            AssistantManagedProviderProcess.reapExplicitlyStoppedChild(stoppedChild)
+        }
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        if !terminalView.isSendingTerminalResponse,
+        if interactiveReady,
+           !terminalView.isSendingTerminalResponse,
            !terminalView.isSendingNavigationShortcut,
            voiceDelivery?.recordUserInput(data) == false {
             return
         }
-        localProcess.send(data: data)
+        if usesAppOwnedInput {
+            writeAppOwnedInput(Array(data)) {}
+        } else {
+            localProcess.send(data: data)
+        }
     }
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
@@ -3260,6 +3540,16 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     }
 
     private func considerInteractiveReadiness(after output: ArraySlice<UInt8>) {
+        // Login can use a canonical terminal (for a pasted browser code). Show
+        // it immediately, without allowing voice delivery before provider_spawn.
+        if !output.isEmpty, !interfaceShown, localProcess.running,
+           let sessionEventPath,
+           let events = try? String(contentsOfFile: sessionEventPath, encoding: .utf8),
+           events.contains(#""stage":"provider_login""#)
+                || events.contains(#""stage": "provider_login""#) {
+            interfaceShown = true
+            onInteractive?()
+        }
         guard !output.isEmpty,
               !readinessScheduled,
               !interactiveReady,
@@ -3299,6 +3589,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
             if stableDuration >= readinessStabilityInterval {
                 readinessScheduled = false
                 interactiveReady = true
+                terminalView.deferFocusReports(false)
                 // App-owned commands must not enter the PTY while its child is
                 // still the bridge/bootstrap launcher. The foreground raw TTY
                 // is the provider-owned handoff boundary.

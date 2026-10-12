@@ -169,6 +169,7 @@ final class AppState {
         let hasSessionContext: Bool
         let pendingDeliveryState: ProcessManager.PendingVoiceCommandDeliveryState
         let stopRequested: Bool
+        let managedProviderState: (process: AssistantManagedProviderProcess, state: AssistantManagedProviderProcess.State)?
     }
 
     var config: AppConfig
@@ -238,6 +239,21 @@ final class AppState {
     let embeddedTerminal = EmbeddedTerminalSession()
     let permissions = PermissionsManager()
     var customVoiceNotice: String?
+    private(set) var activeContext = AssistantSessionContext.general
+    private(set) var conversationHistory: [AssistantConversationEntry] = []
+    private(set) var conversationID = ""
+    private(set) var contextSwitchMessage: String?
+    var contextHistory: [AssistantConversationEntry] {
+        conversationHistory.filter { $0.contextID == activeContext.id }
+    }
+    @ObservationIgnored private let assistantSessionStore = AssistantSessionStore()
+    @ObservationIgnored private var pendingContextSelection: AssistantSessionContext?
+    @ObservationIgnored private var continuationSourceReady = false
+    @ObservationIgnored private var locallyCancelledContinuationID: String?
+    @ObservationIgnored private var continuationDestinationOwner: [String: String]?
+    var canClearContextContinuation: Bool { assistantSessionStore.pendingContinuation != nil }
+    @ObservationIgnored private var idleSessionSaved = false
+    @ObservationIgnored private var lastContextReconciliation = Date.distantPast
 
     var settingsAudioBusy: Bool {
         if meetingNoteSnapshot.phase.ownsForeground { return true }
@@ -370,6 +386,14 @@ final class AppState {
             syncCommandCaptureOwnership()
         }
     }
+    private var bridgeManagedProviderState: (process: AssistantManagedProviderProcess, state: AssistantManagedProviderProcess.State)? {
+        didSet {
+            guard oldValue?.process != bridgeManagedProviderState?.process
+                    || oldValue?.state != bridgeManagedProviderState?.state else { return }
+            syncNotchStatusSurface()
+            syncCommandCaptureOwnership()
+        }
+    }
     private var wasRecording = false
     private var onboardingTutorialSpeechActive = false
     private var observedRecordingStartedSerial = 0
@@ -418,7 +442,49 @@ final class AppState {
     /// (the /relay-bridge slash command). The watchdog flips bridgeAliveCache
     /// within ~3 seconds of an external bridge coming up, so /relay-bridge
     /// users see the menu reflect their session promptly.
-    var hasActiveSession: Bool { menuSessionActive || bridgeAliveCache || bridgeRecoveryInFlight }
+    var hasActiveSession: Bool {
+        let binding = assistantSessionStore.binding(for: activeContext)
+        return Self.voiceSessionIsActive(
+            menuSessionActive: menuSessionActive,
+            bridgeAlive: bridgeAliveCache,
+            bridgeMatchesContext: bridgeMatchesActiveContext,
+            bridgeRecoveryInFlight: bridgeRecoveryInFlight,
+            embeddedPhase: embeddedTerminal.phase,
+            managedBinding: binding,
+            managedProviderState: bridgeManagedProviderState.flatMap { $0.process == binding?.managedProcess ? $0.state : nil },
+            bridgeProviderSessionID: ProcessManager.currentProviderSessionID()
+        )
+    }
+
+    static func voiceSessionIsActive(
+        menuSessionActive: Bool,
+        bridgeAlive: Bool,
+        bridgeMatchesContext: Bool,
+        bridgeRecoveryInFlight: Bool,
+        embeddedPhase: EmbeddedTerminalSession.Phase,
+        managedBinding: AssistantSessionStore.Binding?,
+        managedProviderState: AssistantManagedProviderProcess.State?,
+        bridgeProviderSessionID: String?
+    ) -> Bool {
+        if menuSessionActive || bridgeRecoveryInFlight { return true }
+        guard bridgeAlive, bridgeMatchesContext else { return false }
+        // A surviving app-owned bridge cannot reconnect its interrupted
+        // provider by itself. Keep Start available for explicit recovery;
+        // unrelated standalone bridges retain their existing session behavior.
+        if !embeddedPhase.isActive, managedBinding?.lifecycle == .interrupted,
+           let transport = managedBinding?.transportSessionID, !transport.isEmpty,
+           transport == bridgeProviderSessionID {
+            // An app-launched external Terminal provider may survive a restart.
+            // A live or unverifiable owner remains active until proven absent.
+            return managedProviderState != .exited && managedProviderState != .stale
+        }
+        return true
+    }
+
+    private var bridgeMatchesActiveContext: Bool {
+        guard let bridge = processManager.bridgeRecoveryContext() else { return false }
+        return AssistantSessionStore.samePath(bridge.workingDirectory, activeContext.workingDirectory)
+    }
 
     /// Session-level microphone owner policy. Command capture may run only for
     /// an active Claude or Codex voice session (embedded, external bridge, or a
@@ -622,7 +688,7 @@ final class AppState {
 
         let boardIsLoading = programBoardLoadingState != .idle
         let boardContentLoading = programBoardLoadingState == .loadingContent
-        guard hasActiveSession || boardIsLoading else {
+        guard hasActiveSession || boardIsLoading || stateMachine.storyboardDemoEnabled else {
             notchStatusController.setPresentation(
                 status: .notWorking,
                 activityLabels: [],
@@ -718,6 +784,27 @@ final class AppState {
         )
         EmbeddedAgentDiagnostics.finalizeInterruptedSessionIfNeeded()
         self.config = ConfigManager.shared.load()
+        do {
+            if let registry = projectRegistryV2 {
+                let generalTasks = try registry.ensureGeneralTasksProject()
+                if assistantSessionStore.activeContext.isGeneral {
+                    let token = try registry.confirmProject(projectID: generalTasks.projectID)
+                    try assistantSessionStore.select(.project(token), provider: config.general.provider.rawValue,
+                                                     model: config.general.model)
+                }
+            }
+        } catch {
+            NSLog("[relay-runner] could not prepare general-tasks: \(error)")
+        }
+        activeContext = assistantSessionStore.activeContext
+        conversationID = assistantSessionStore.conversationID
+        conversationHistory = assistantSessionStore.document.history
+        contextSwitchMessage = assistantSessionStore.pendingContinuation?.message ?? assistantSessionStore.loadError
+        if let binding = assistantSessionStore.binding(for: activeContext), binding.lifecycle == .interrupted {
+            contextSwitchMessage = "Conversation restored. Start Session to reconnect \(activeContext.displayName); saved actions are not replayed."
+        }
+        programBoardOverlay.setGeneralContextProvider { [weak self] in self?.activeContext.isGeneral ?? true }
+        programBoardOverlay.setContextPathProvider { [weak self] in self?.activeContext.repositoryPath }
         programBoardOverlay.setWorkerSizingDefaultsProvider { [weak self] in
             guard let self else { return nil }
             return TicketWriter.WorkerSizingDefaults.from(self.config.general)
@@ -768,7 +855,14 @@ final class AppState {
             )
         }
         programBoardOverlay.setBoardRouteResolver { [weak self] in
-            self?.workspaceActivitySnapshot.route ?? .unavailable
+            guard let self else { return .unavailable }
+            if let path = self.activeContext.repositoryPath {
+                return .project(ProjectResolver.LinkedProject(
+                    repoPath: URL(fileURLWithPath: path, isDirectory: true),
+                    projectID: self.activeContext.projectID
+                ))
+            }
+            return self.workspaceActivitySnapshot.route
         }
         programBoardOverlay.setProjectScopeProvider { [weak self] in
             self?.workspaceActivitySnapshot.projects.map(\.repoPath.path) ?? []
@@ -778,13 +872,7 @@ final class AppState {
             create: { [weak self] in self?.createProject() }
         )
         programBoardOverlay.setProjectSelectionHandler { [weak self] repoPath in
-            guard let self, let projectRegistryV2 = self.projectRegistryV2 else { return }
-            do {
-                _ = try projectRegistryV2.confirmProject(matching: repoPath)
-                self.refreshWorkspaceActivity(invalidateRoute: true)
-            } catch {
-                self.surfaceProjectScopeFailure(String(describing: error))
-            }
+            _ = self?.selectProjectContext(repositoryPath: repoPath)
         }
         programBoardOverlay.setRequiresConfirmedProjectProvider { [weak self] in
             self?.projectRegistryV2 != nil
@@ -1070,6 +1158,9 @@ final class AppState {
 
     /// End the active voice session and revert to awareness mode.
     func endSession() {
+        saveAssistantSession(lifecycle: .saved)
+        pendingContextSelection = nil
+        try? assistantSessionStore.cancelContinuation()
         embeddedTerminal.end()
         resetActiveSessionState()
     }
@@ -1469,6 +1560,7 @@ final class AppState {
     }
 
     private func embeddedTerminalDidExit(exitCode: Int32?) {
+        saveAssistantSession(lifecycle: .interrupted)
         if userDeliveryRecoveryPending {
             userDeliveryRecoveryPending = false
             if let launch = activeSessionLaunchConfig,
@@ -1532,6 +1624,7 @@ final class AppState {
 
     /// Full shutdown (for app quit).
     func stopServices() {
+        saveAssistantSession(lifecycle: .saved)
         pendingSessionLaunchID = nil
         stopMeetingNoteOptionGesture()
         guard isRunning else {
@@ -1566,6 +1659,7 @@ final class AppState {
     }
 
     func prepareForSparkleRelaunch() {
+        saveAssistantSession(lifecycle: .saved)
         pendingSessionLaunchID = nil
         workspaceDiscoveryTask?.cancel()
         workspaceDiscoveryTask = nil
@@ -1684,6 +1778,238 @@ final class AppState {
     }
 
     @discardableResult
+    func selectGeneralContext() -> Bool {
+        do {
+            guard let registry = projectRegistryV2 else { return false }
+            let project = try registry.ensureGeneralTasksProject()
+            return selectProjectContext(repositoryPath: project.lastResolvedPath)
+        } catch {
+            contextSwitchMessage = "general-tasks could not be opened: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
+    func selectProjectContext(repositoryPath: String) -> Bool {
+        do {
+            let context: AssistantSessionContext
+            if let registry = projectRegistryV2 {
+                let token = try registry.scopeToken(matching: repositoryPath)
+                guard registry.validateScopeToken(token).isValid else {
+                    throw ProjectRegistryV2Service.ServiceError.staleScope(token.projectID)
+                }
+                context = .project(token)
+            } else {
+                let path = WorkspaceFolder.url(from: repositoryPath).resolvingSymlinksInPath().path
+                context = AssistantSessionContext(kind: .project, projectID: path, repositoryPath: path)
+            }
+            return requestContextSelection(context)
+        } catch {
+            contextSwitchMessage = "This project's history is retained. Resolve its location before running work: \(error.localizedDescription)"
+            surfaceProjectScopeFailure(String(describing: error))
+            return false
+        }
+    }
+
+    private var canReplaceContextProvider: Bool {
+        let delivery = processManager.pendingVoiceCommandDeliveryState()
+        let approval: Bool
+        if case .actionGlow(let pending) = stateMachine.state { approval = pending != nil }
+        else { approval = false }
+        return AssistantSessionStore.canReplace(
+            recording: sttEngine?.isRecording == true,
+            noteCapture: meetingNoteSnapshot.phase.ownsForeground,
+            foregroundTurn: ProcessManager.foregroundProviderTurnActive(),
+            pendingCommand: delivery == .waiting || delivery == .claimed || delivery == .timedOut
+                || embeddedTerminal.hasUnsubmittedInput || stateMachine.state == .speaking || stateMachine.state == .preparing,
+            approval: approval || embeddedTerminal.deliveryBlocked || embeddedTerminal.inboxRecoveryBlocker != nil,
+            launching: pendingSessionLaunchID != nil
+        )
+    }
+
+    func clearContextContinuation() {
+        do {
+            let pendingID = assistantSessionStore.pendingContinuation?.id
+            locallyCancelledContinuationID = pendingID
+            if let pendingID { embeddedTerminal.cancelContextContinuation(id: pendingID) }
+            try assistantSessionStore.cancelContinuation()
+            pendingContextSelection = nil
+            contextSwitchMessage = nil
+        } catch { contextSwitchMessage = "Continuation could not be cleared: \(error.localizedDescription)" }
+    }
+
+    private func requestContextSelection(_ context: AssistantSessionContext, continuationID: String? = nil) -> Bool {
+        if continuationID == nil {
+            do {
+                let pending = assistantSessionStore.pendingContinuation
+                if let pending, pending.destination != context {
+                    locallyCancelledContinuationID = pending.id
+                    embeddedTerminal.cancelContextContinuation(id: pending.id)
+                }
+                try assistantSessionStore.cancelContinuation(unless: context)
+            }
+            catch { contextSwitchMessage = "Continuation could not be saved: \(error.localizedDescription)"; return false }
+        }
+        if continuationID != nil || (!canReplaceContextProvider && (context != activeContext || meetingNoteSnapshot.phase.ownsForeground)) {
+            pendingContextSelection = context
+            contextSwitchMessage = "Switching to \(context.displayName) after the current recording, command or approval finishes."
+            return true
+        }
+        pendingContextSelection = nil
+        return newSession(workingDirectory: context.repositoryPath)
+    }
+
+    private func reserveContextContinuation(_ request: [String: String], destination: AssistantSessionContext) throws -> String {
+        try assistantSessionStore.reconcile(context: activeContext, activeRunIDs: assistantRunIDs(for: activeContext), pendingIntentIDs: assistantPendingIntentIDs())
+        guard destination != activeContext, let text = request["text"],
+              request["source_context_id"] == activeContext.id,
+              let binding = assistantSessionStore.binding(for: activeContext),
+              binding.transportSessionID == request["provider_session_id"],
+              binding.nativeSessionID == request["native_session_id"] else {
+            throw NSError(domain: "RelayContinuation", code: 6, userInfo: [NSLocalizedDescriptionKey: "Continuation requires a different confirmed destination and the current native request."])
+        }
+        let reply = try ProcessManager.contextContinuationAuthority(operation: "capture", source: request)
+        guard reply["status"] as? String == "active", var source = reply["source"] as? [String: String] else {
+            throw NSError(domain: "RelayContinuation", code: 7, userInfo: [NSLocalizedDescriptionKey: reply["message"] as? String ?? "The source request is not active."])
+        }
+        source["source_context_id"] = activeContext.id
+        let pending = try assistantSessionStore.reserveContinuation(source: source, destination: destination, text: text)
+        guard pending.state == .queued else {
+            throw NSError(domain: "RelayContinuation", code: 8, userInfo: [NSLocalizedDescriptionKey: "This continuation was already submitted or needs review; it will not be replayed."])
+        }
+        continuationSourceReady = false
+        return pending.id
+    }
+
+    private func reconcileContextContinuation(now: Date = Date()) {
+        guard let continuation = assistantSessionStore.pendingContinuation else { return }
+        if locallyCancelledContinuationID == continuation.id {
+            contextSwitchMessage = "Continuation cancelled locally. Clear it to save that decision; it will not be submitted."
+            return
+        }
+        if continuation.state == .recoveryRequired {
+            contextSwitchMessage = continuation.message
+            return
+        }
+        do {
+            let operation = continuation.state == .submitting ? "ack" : "check"
+            let reply = try ProcessManager.contextContinuationAuthority(operation: operation, source: continuation.source,
+                submissionID: continuation.id, destination: continuation.destinationOwner)
+            let status = reply["status"] as? String
+            if status == "blocked" {
+                try assistantSessionStore.updateContinuation(continuation.id, state: .recoveryRequired,
+                    message: reply["message"] as? String ?? "Continuation was blocked. Clear it and issue a new request.")
+                pendingContextSelection = nil
+                contextSwitchMessage = assistantSessionStore.pendingContinuation?.message
+                return
+            }
+            if continuation.state == .submitting {
+                if status == "consumed" {
+                    try assistantSessionStore.updateContinuation(continuation.id, state: .consumed)
+                    contextSwitchMessage = nil
+                } else if now.timeIntervalSince(continuation.submittedAt ?? .distantPast) > RelayVoiceCommandDelivery.manualSubmitHookTimeout {
+                    try assistantSessionStore.updateContinuation(continuation.id, state: .recoveryRequired,
+                        message: "Continuation delivery is uncertain. Clear it and issue a new request after checking the conversation; it will not be resent.")
+                    contextSwitchMessage = assistantSessionStore.pendingContinuation?.message
+                }
+                return
+            }
+            continuationSourceReady = status == "ready"
+            guard continuationSourceReady else { return }
+            guard activeContext == continuation.destination else { return }
+            guard embeddedTerminal.phase == .running, canReplaceContextProvider,
+                  let binding = assistantSessionStore.binding(for: activeContext), let native = binding.nativeSessionID,
+                  var owner = continuationDestinationOwner,
+                  owner["provider_session_id"] == binding.transportSessionID,
+                  binding.context == continuation.destination else { return }
+            if let registry = projectRegistryV2, let path = continuation.destination.repositoryPath {
+                let token = try registry.scopeToken(matching: path)
+                guard registry.validateScopeToken(token).isValid, AssistantSessionContext.project(token) == continuation.destination else {
+                    throw ProjectRegistryV2Service.ServiceError.staleScope(continuation.destination.projectID ?? path)
+                }
+            }
+            owner["native_session_id"] = native
+            // Durable submitting wins before the first PTY byte. No timer,
+            // restart or duplicate activation may replay an uncertain paste.
+            guard let deliverable = try assistantSessionStore.prepareContinuationDelivery(sourceStatus: status, context: activeContext,
+                ready: embeddedTerminal.phase == .running, clearToSend: canReplaceContextProvider, owner: owner, now: now) else { return }
+            guard embeddedTerminal.submitContextContinuation(deliverable) else {
+                try assistantSessionStore.updateContinuation(continuation.id, state: .recoveryRequired,
+                    message: "Continuation was not submitted. Clear it and issue a new request; no automatic retry will occur.")
+                contextSwitchMessage = assistantSessionStore.pendingContinuation?.message
+                return
+            }
+            contextSwitchMessage = "Forwarding the explicit request to \(activeContext.displayName); waiting for its native acknowledgement."
+        } catch {
+            contextSwitchMessage = "Continuation needs review: \(error.localizedDescription). It will not be replayed automatically."
+        }
+    }
+
+    private func publishConversationState() {
+        activeContext = assistantSessionStore.activeContext
+        conversationHistory = assistantSessionStore.document.history.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private func assistantRunIDs(for context: AssistantSessionContext) -> [Int] {
+        Self.assistantRunIDs(for: context, runs: notchActivityRunStates)
+    }
+
+    static func assistantRunIDs(for context: AssistantSessionContext, runs: [RunState]) -> [Int] {
+        guard let repository = context.repositoryPath else { return [] }
+        return runs.filter {
+            AssistantSessionStore.samePath($0.repoPath, repository)
+                && !["Merged", "Failed", "Canceled", "SpikeCompleted"].contains($0.state)
+        }.map(\.runId)
+    }
+
+    private func assistantPendingIntentIDs() -> [String] {
+        let pending = processManager.pendingVoiceCommandDeliveryState()
+        guard pending == .claimed || pending == .waiting || pending == .timedOut else { return [] }
+        return [ProcessManager.currentRelayClaimIdentity()?["intent_id"] as? String].compactMap { $0 }
+    }
+
+    private func saveAssistantSession(lifecycle: AssistantSessionStore.Lifecycle) {
+        do {
+            try assistantSessionStore.reconcile(context: activeContext, activeRunIDs: assistantRunIDs(for: activeContext),
+                                                pendingIntentIDs: assistantPendingIntentIDs())
+            try assistantSessionStore.importPublicHistory(context: activeContext)
+            try assistantSessionStore.mark(lifecycle, context: activeContext)
+            publishConversationState()
+        } catch {
+            contextSwitchMessage = "Conversation could not be saved: \(error.localizedDescription)"
+        }
+    }
+
+    /// Reconcile links only; canonical daemon intent/run state is the recovery
+    /// authority. A saved history entry is never submitted as another action.
+    private func reconcileAssistantContext(now: Date = Date()) {
+        guard now.timeIntervalSince(lastContextReconciliation) >= 3 else { return }
+        lastContextReconciliation = now
+        do {
+            try assistantSessionStore.reconcile(context: activeContext, activeRunIDs: assistantRunIDs(for: activeContext),
+                                                pendingIntentIDs: assistantPendingIntentIDs())
+            try assistantSessionStore.importPublicHistory(context: activeContext)
+            publishConversationState()
+            reconcileContextContinuation(now: now)
+            if let selection = pendingContextSelection, canReplaceContextProvider,
+               assistantSessionStore.pendingContinuation == nil || continuationSourceReady {
+                pendingContextSelection = nil
+                _ = newSession(workingDirectory: selection.repositoryPath)
+                return
+            }
+            if try assistantSessionStore.saveIfIdle(context: activeContext, now: now,
+                eligible: menuSessionActive && embeddedTerminal.phase == .running && canReplaceContextProvider
+                    && assistantSessionStore.pendingContinuation == nil,
+                end: { embeddedTerminal.end(); resetActiveSessionState() }) {
+                idleSessionSaved = true
+                contextSwitchMessage = "\(activeContext.displayName) saved after 30 minutes idle. Start Session to resume."
+            }
+        } catch {
+            contextSwitchMessage = "Conversation could not be saved. The active session was retained: \(error.localizedDescription)"
+        }
+    }
+
+    @discardableResult
     func newSession(
         workingDirectory: String? = nil,
         destination: SessionLaunchDestination = .embedded,
@@ -1705,7 +2031,6 @@ final class AppState {
                 preservesVoiceBridge: preservesVoiceBridge
             )
         }
-        guard pendingSessionLaunchID == nil else { return false }
         if !preservesVoiceBridge {
             pendingContinuityProviderReady = nil
         }
@@ -1721,30 +2046,65 @@ final class AppState {
             return false
         }
         let projectScopeToken: ConfirmedProjectScopeToken?
-        if let projectRegistryV2 {
-            let requestedProject = workingDirectory?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !requestedProject.isEmpty else {
-                surfaceProjectScopeFailure("Select an available project in Workspace before starting a session.")
-                return false
-            }
-            do {
-                let token = try projectRegistryV2.confirmProject(matching: requestedProject)
-                guard projectRegistryV2.validateScopeToken(token).isValid else {
-                    throw ProjectRegistryV2Service.ServiceError.staleScope(token.projectID)
-                }
-                projectScopeCoordinator.confirm(token)
-                projectScopeToken = token
-            } catch {
+        let context: AssistantSessionContext
+        let contextWorkingDirectory: String
+        let requestedProject = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        do {
+            let preparedContext = try Self.prepareSessionContext(workingDirectory: workingDirectory, registry: projectRegistryV2)
+            projectScopeToken = preparedContext.projectScopeToken
+            context = preparedContext.context
+            contextWorkingDirectory = preparedContext.workingDirectory
+        } catch {
+            if requestedProject.isEmpty || AssistantSessionStore.samePath(requestedProject, AssistantSessionStore.filesDirectory.path) {
+                contextSwitchMessage = "general-tasks could not be opened: \(error.localizedDescription)"
+                statusText = "general-tasks unavailable"
+            } else {
                 surfaceProjectScopeFailure(String(describing: error))
-                return false
             }
-        } else {
-            projectScopeToken = nil
+            return false
+        }
+        if !preservesVoiceBridge, context == activeContext,
+           activeSessionLaunchConfig?.general.provider == config.general.provider,
+           activeSessionLaunchConfig?.general.model == config.general.model,
+           embeddedTerminal.phase.isActive {
+            embeddedTerminal.focus()
+            if showsWorkspaceOnLaunch { programBoardOverlay.showTerminal() }
+            return true
+        }
+        guard pendingSessionLaunchID == nil else { return false }
+        let previousContext = activeContext
+        var previousProcesses: [AssistantManagedProviderProcess] = []
+        do {
+            try assistantSessionStore.reconcile(context: previousContext, activeRunIDs: assistantRunIDs(for: previousContext),
+                                                pendingIntentIDs: assistantPendingIntentIDs())
+            try assistantSessionStore.importPublicHistory(context: previousContext)
+            // A crash can leave the source process alive after the destination
+            // selection was saved. Reconcile every app-owned foreground binding;
+            // detached daemon workers have separate ownership and are excluded.
+            for binding in assistantSessionStore.document.bindings.values {
+                try assistantSessionStore.reconcile(context: binding.context, activeRunIDs: binding.activeRunIDs,
+                                                    pendingIntentIDs: binding.pendingIntentIDs)
+            }
+            previousProcesses = assistantSessionStore.managedProviderProcesses
+            if !preservesVoiceBridge, AssistantSessionStore.shouldDeferReplacement(
+                hasEmbeddedProvider: embeddedTerminal.phase.isActive,
+                managedProcessStates: previousProcesses.map { $0.state() },
+                canReplace: canReplaceContextProvider
+            ) {
+                pendingContextSelection = context
+                contextSwitchMessage = "Switching to \(context.displayName) after the current command or approval finishes."
+                return true
+            }
+            try assistantSessionStore.select(context, provider: config.general.provider.rawValue,
+                                             model: config.general.model, savingPreviousContext: true)
+            publishConversationState()
+        } catch {
+            contextSwitchMessage = "Could not save the conversation. The existing context was retained: \(error.localizedDescription)"
+            return false
         }
         let request = Self.sessionLaunchRequest(
             from: config,
-            workingDirectory: projectScopeToken?.repositoryPath ?? workingDirectory,
+            workingDirectory: contextWorkingDirectory,
             destination: destination
         )
         let launchConfig = request.config
@@ -1771,6 +2131,13 @@ final class AppState {
         sessionPromptGate.reset()
         activeSessionLaunchConfig = launchConfig
         activeSessionProjectScopeToken = projectScopeToken
+        if let projectScopeToken {
+            projectScopeCoordinator.confirm(projectScopeToken)
+        } else if context.isGeneral {
+            projectScopeCoordinator.cancel()
+        }
+        contextSwitchMessage = nil
+        idleSessionSaved = false
         // Bridge is about to launch — assume alive until watchdog says otherwise
         bridgeAliveCache = true
         refreshWorkspaceActivity(invalidateRoute: true)
@@ -1789,6 +2156,23 @@ final class AppState {
                 if pendingSessionLaunchID == launchID { pendingSessionLaunchID = nil }
             }
             do {
+                for process in previousProcesses {
+                    guard process.requestTermination() else {
+                        throw EmbeddedTerminalProcessError.alreadyRunning
+                    }
+                }
+                let teardownDeadline = Date().addingTimeInterval(5)
+                func previousProcessStillLives() -> Bool {
+                    previousProcesses.contains { [.matching, .unknown].contains($0.state()) }
+                }
+                while embeddedTerminal.hasLiveEmbeddedProcess || previousProcessStillLives(), Date() < teardownDeadline {
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                    guard pendingSessionLaunchID == launchID else { return }
+                }
+                guard !embeddedTerminal.hasLiveEmbeddedProcess, !previousProcessStillLives() else {
+                    contextSwitchMessage = "The previous provider is still running. No replacement was launched; close that session and try again."
+                    throw EmbeddedTerminalProcessError.alreadyRunning
+                }
                 try embeddedTerminal.beginPreparing(
                     providerName: launchConfig.general.provider.displayName,
                     providerKey: launchConfig.general.provider.rawValue,
@@ -1810,8 +2194,22 @@ final class AppState {
                     projectScopeToken: projectScopeToken,
                     recoveryGeneration: recoveryGeneration,
                     startsVoiceBridge: !preservesVoiceBridge,
-                    updatedAgentBinary: updatedAgentBinary
+                    updatedAgentBinary: updatedAgentBinary,
+                    sessionContext: context,
+                    conversationID: conversationID,
+                    transportSessionID: launchID.uuidString.lowercased(),
+                    nativeResumeID: assistantSessionStore.binding(for: context).flatMap {
+                        $0.provider == launchConfig.general.provider.rawValue && $0.model == launchConfig.general.model ? $0.resumableNativeSessionID : nil
+                    },
+                    providerBindingPath: assistantSessionStore.bindingURL(transportSessionID: launchID.uuidString.lowercased()).path,
+                    publicHandoff: assistantSessionStore.publicHandoff(for: context),
+                    preservesContextAuthorization: assistantSessionStore.pendingContinuation.map { $0.state == .queued && $0.destination == context } == true
                 )
+                try assistantSessionStore.begin(context: context, provider: launchConfig.general.provider.rawValue,
+                                               model: launchConfig.general.model, transportSessionID: launchID.uuidString.lowercased())
+                continuationDestinationOwner = ["provider": prepared.target.providerMetadataValue,
+                    "provider_session_id": prepared.providerSessionID ?? "", "app_session_id": prepared.appSessionID ?? "",
+                    "recovery_generation": prepared.recoveryGeneration ?? "", "foreground_gate_handle": prepared.foregroundGateHandle ?? ""]
                 if preservesVoiceBridge {
                     guard let context = pendingContinuityProviderReady,
                           let authorized = context.authorizingReplacement(
@@ -1845,6 +2243,7 @@ final class AppState {
                 }
             } catch {
                 guard pendingSessionLaunchID == launchID else { return }
+                saveAssistantSession(lifecycle: .interrupted)
                 pendingContinuityProviderReady = nil
                 if !preservesVoiceBridge {
                     continuityRecoveryGenerationBySession.removeValue(
@@ -1907,7 +2306,8 @@ final class AppState {
         guard let coordinator = meetingNoteCoordinator else { return false }
         // The destination path is captured now. Later Workspace selection
         // changes cannot redirect the source note or this requested session.
-        let destinationProject = (workingDirectory ?? config.general.working_directory)
+        let destinationProject = (workingDirectory ?? projectRegistryV2?.generalTasksDirectory.path
+            ?? AssistantSessionStore.filesDirectory.path)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let pendingStartTask = meetingNoteStartTask
         let pendingRecoveryTask = meetingNoteRecoveryTask
@@ -2051,6 +2451,33 @@ final class AppState {
         sttEngine?.tutorialActive = false
         syncCommandCaptureOwnership()
         processManager.stopTutorialTTS()
+    }
+
+    static func prepareSessionContext(
+        workingDirectory: String?,
+        registry: ProjectRegistryV2Service?,
+        filesDirectory: URL = AssistantSessionStore.filesDirectory
+    ) throws -> (context: AssistantSessionContext, projectScopeToken: ConfirmedProjectScopeToken?, workingDirectory: String) {
+        var requestedProject = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if requestedProject.isEmpty || AssistantSessionStore.samePath(requestedProject, filesDirectory.path) {
+            if let registry {
+                requestedProject = try registry.ensureGeneralTasksProject().lastResolvedPath
+            } else {
+                try FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                return (.general, nil, filesDirectory.resolvingSymlinksInPath().path)
+            }
+        }
+        if let registry {
+            let token = try registry.scopeToken(matching: requestedProject)
+            guard registry.validateScopeToken(token).isValid else {
+                throw ProjectRegistryV2Service.ServiceError.staleScope(token.projectID)
+            }
+            let context = AssistantSessionContext.project(token)
+            return (context, token, context.workingDirectory)
+        }
+        let path = WorkspaceFolder.url(from: requestedProject).resolvingSymlinksInPath().path
+        return (AssistantSessionContext(kind: .project, projectID: path, repositoryPath: path), nil, path)
     }
 
     static func sessionLaunchRequest(
@@ -2348,7 +2775,8 @@ final class AppState {
         syncNotchActivitySurface()
     }
 
-    func activateProject(pathOrAlias: String, provider: String?) async -> ProjectActivationReply {
+    @MainActor
+    func activateProject(pathOrAlias: String, provider: String?, continuation: [String: String]? = nil) async -> ProjectActivationReply {
         let reply = await Task.detached(priority: .utility) {
             do {
                 let project = try ProjectResolver.activateProject(
@@ -2360,10 +2788,53 @@ final class AppState {
                 return ProjectActivationReply.failed(message: "\(error)")
             }
         }.value
-        if case .activated = reply {
+        if case .activated(let repoPath) = reply {
+            let selected: Bool
+            do {
+                if let continuation {
+                    guard let registry = projectRegistryV2 else { throw CocoaError(.fileNoSuchFile) }
+                    let token = try registry.scopeToken(matching: repoPath)
+                    guard registry.validateScopeToken(token).isValid else { throw ProjectRegistryV2Service.ServiceError.staleScope(token.projectID) }
+                    let destination = AssistantSessionContext.project(token)
+                    let id = try reserveContextContinuation(continuation, destination: destination)
+                    selected = requestContextSelection(destination, continuationID: id)
+                } else { selected = selectProjectContext(repositoryPath: repoPath) }
+            } catch { return .failed(message: error.localizedDescription) }
+            guard selected else {
+                return .failed(message: contextSwitchMessage ?? "Project context could not be selected.")
+            }
             refreshWorkspaceActivity(invalidateRoute: true)
+            if pendingContextSelection != nil {
+                return .queued(repoPath: repoPath, message: "\(contextSwitchMessage ?? "Project switch queued.") Finish the current reply; wait for the selected session to be ready before project work.")
+            }
         }
         return reply
+    }
+
+    @MainActor
+    func activateGeneral(continuation: [String: String]? = nil) -> GeneralActivationReply {
+        let selected: Bool
+        do {
+            guard let registry = projectRegistryV2 else { throw CocoaError(.fileNoSuchFile) }
+            let project = try registry.ensureGeneralTasksProject()
+            let token = try registry.scopeToken(matching: project.lastResolvedPath)
+            guard registry.validateScopeToken(token).isValid else {
+                throw ProjectRegistryV2Service.ServiceError.staleScope(token.projectID)
+            }
+            if let continuation {
+                let destination = AssistantSessionContext.project(token)
+                let id = try reserveContextContinuation(continuation, destination: destination)
+                selected = requestContextSelection(destination, continuationID: id)
+            } else { selected = selectGeneralContext() }
+        } catch { return .failed(message: error.localizedDescription) }
+        guard selected else {
+            return .failed(message: contextSwitchMessage ?? "general-tasks could not be selected.")
+        }
+        refreshWorkspaceActivity(invalidateRoute: true)
+        let message = pendingContextSelection != nil
+            ? "\(contextSwitchMessage ?? "general-tasks selection queued.") Finish the current reply; wait for general-tasks to be ready before new work."
+            : "general-tasks selected. Wait for its session to be ready before new work."
+        return .selected(message: message)
     }
 
     // MARK: - Bridge watchdog
@@ -2385,6 +2856,9 @@ final class AppState {
         guard isRunning, bridgeWatchdogTask == nil else { return }
         let processManager = processManager
         let fallbackConfig = bridgeRecoveryFallbackConfig
+        let binding = assistantSessionStore.binding(for: activeContext)
+        let managedProvider = !menuSessionActive && !embeddedTerminal.phase.isActive && binding?.lifecycle == .interrupted
+            ? binding?.managedProcess : nil
         bridgeWatchdogTask = Task { @MainActor [weak self] in
             let sample = await Task.detached(priority: .utility) {
                 let daemonAlive = processManager.bridgeAlive()
@@ -2396,7 +2870,8 @@ final class AppState {
                         fallbackConfig: fallbackConfig
                     ) != nil,
                     pendingDeliveryState: processManager.pendingVoiceCommandDeliveryState(),
-                    stopRequested: processManager.bridgeStopRequested()
+                    stopRequested: processManager.bridgeStopRequested(),
+                    managedProviderState: managedProvider.map { (process: $0, state: $0.state()) }
                 )
             }.value
             guard let self else { return }
@@ -2409,6 +2884,15 @@ final class AppState {
     private func applyBridgeWatchdogSample(_ sample: BridgeWatchdogSample) {
         // The update preflight can take longer than the bridge launch grace.
         guard pendingSessionLaunchID == nil else { return }
+        bridgeManagedProviderState = sample.managedProviderState
+        reconcileAssistantContext()
+        guard pendingSessionLaunchID == nil, !idleSessionSaved else { return }
+        // A stale/external bridge cannot silently choose the conversation's
+        // project. The chooser or Start Session establishes that authority.
+        if !menuSessionActive, sample.daemonAlive, !bridgeMatchesActiveContext {
+            bridgeAliveCache = false
+            return
+        }
         let daemonAlive = sample.daemonAlive
         let consumerAlive = sample.consumerAlive
         let hasSessionContext = sample.hasSessionContext
@@ -2650,6 +3134,7 @@ final class AppState {
         guard let baseContext = processManager.bridgeRecoveryContext(fallbackConfig: bridgeRecoveryFallbackConfig) else {
             return false
         }
+        guard AssistantSessionStore.samePath(baseContext.workingDirectory, activeContext.workingDirectory) else { return false }
         let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
             repositoryPath: baseContext.workingDirectory
         )
@@ -2657,7 +3142,10 @@ final class AppState {
             workingDirectory: baseContext.workingDirectory,
             provider: baseContext.provider,
             recoveryGeneration: continuityRecoveryGenerationBySession[sessionID],
-            continuityRecoveryPending: reason.hasPrefix("continuity-")
+            continuityRecoveryPending: reason.hasPrefix("continuity-"),
+            sessionScope: activeContext.kind.rawValue,
+            generalFilesRoot: AssistantSessionStore.filesDirectory.path,
+            preservesContextAuthorization: true
         )
         let now = Date()
         if now.timeIntervalSince(lastBridgeRecoveryAt) < Self.bridgeRecoveryCooldown {
@@ -2877,11 +3365,15 @@ final class AppState {
                     _ = self.toggleBoard(recognizedAt: CACurrentMediaTime())
                 }
             },
-            onActivateProject: { [weak self] pathOrAlias, provider in
+            onActivateProject: { [weak self] pathOrAlias, provider, continuation in
                 guard let self else {
                     return .failed(message: "Relay Runner app state is unavailable.")
                 }
-                return await self.activateProject(pathOrAlias: pathOrAlias, provider: provider)
+                return await self.activateProject(pathOrAlias: pathOrAlias, provider: provider, continuation: continuation)
+            },
+            onActivateGeneral: { [weak self] continuation in
+                guard let self else { return .failed(message: "Relay Runner app state is unavailable.") }
+                return self.activateGeneral(continuation: continuation)
             },
             onHostedToolPermissionMissing: { [weak self] kind, purpose in
                 guard let appState = self else { return }
@@ -2985,7 +3477,7 @@ final class AppState {
                     engine.playDetectedAt = nil
                     self.onboarding.noteTutorialPlaybackRequested()
                     self.stateMachine.dismissSessionPrompt()
-                    self.newSession()
+                    self.newSession(workingDirectory: self.activeContext.workingDirectory)
                 } else if CapsLockGesture.isCapsLockOn() != self.sessionPromptCapsState {
                     // Any Caps Lock toggle → dismiss prompt immediately
                     if engine.isRecording { engine.cancelRecording() }
@@ -3009,7 +3501,7 @@ final class AppState {
                         || (captureOwnerRequested && !self.onboarding.isSessionControlsTutorialActive) {
                 // An out-of-session gesture never opened the mic; it takes the
                 // same real-time bridge check so the session affordance matches.
-                let daemonAlive = self.processManager.bridgeAlive()
+                let daemonAlive = self.processManager.bridgeAlive() && self.bridgeMatchesActiveContext
                 let pendingDeliveryState = self.processManager.pendingVoiceCommandDeliveryState()
                 let consumerAlive = daemonAlive && self.processManager.bridgeConsumerAlive()
                 let hasSessionContext = self.processManager.bridgeRecoveryContext(
@@ -3424,6 +3916,9 @@ final class AppState {
     }
 
     private func embeddedTerminalDidBecomeReady() {
+        do { try assistantSessionStore.mark(.running, context: activeContext) }
+        catch { contextSwitchMessage = "Conversation could not be saved: \(error.localizedDescription)" }
+        reconcileContextContinuation()
         guard let context = pendingContinuityProviderReady else { return }
         pendingContinuityProviderReady = nil
         guard let launch = activeSessionLaunchConfig else { return }

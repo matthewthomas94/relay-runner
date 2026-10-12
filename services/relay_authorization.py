@@ -43,7 +43,7 @@ _NATURAL_CANCEL_RE = re.compile(
     r"\b(cancel|stop|abort|scratch\s+that|never\s+mind|nevermind)\b",
     re.IGNORECASE,
 )
-_TICKET_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
+_TICKET_ID_RE = re.compile(r"\b(GEN-[A-Fa-f0-9]{16}|[A-Za-z][A-Za-z0-9]*-\d+)\b")
 
 
 @contextmanager

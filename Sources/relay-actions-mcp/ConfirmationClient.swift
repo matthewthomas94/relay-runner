@@ -33,6 +33,13 @@ enum BoardToggleOutcome {
 
 enum ProjectActivationOutcome {
     case activated(repoPath: String)
+    case queued(repoPath: String, message: String)
+    case failed(message: String)
+    case menuBarUnavailable
+}
+
+enum GeneralActivationOutcome {
+    case selected(message: String)
     case failed(message: String)
     case menuBarUnavailable
 }
@@ -91,12 +98,36 @@ enum ConfirmationClient {
         return .delivered
     }
 
-    static func requestProjectActivation(project: String, provider: String?) -> ProjectActivationOutcome {
+    /// The model supplies only public text. Transport/native ownership comes
+    /// from this MCP process's inherited app launch, never tool arguments.
+    static func continuationSource(text: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String]? {
+        guard let path = environment["RELAY_SESSION_BINDING_PATH"],
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let binding = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let native = binding["native_session_id"] as? String, !native.isEmpty else { return nil }
+        let mapping = ["provider": "RELAY_RUNNER_PROVIDER", "provider_session_id": "RELAY_PROVIDER_SESSION_ID",
+                       "app_session_id": "RELAY_APP_SESSION_ID", "recovery_generation": "RELAY_RECOVERY_GENERATION",
+                       "foreground_gate_handle": "RELAY_FOREGROUND_GATE_HANDLE", "source_context_id": "RELAY_CONTEXT_ID"]
+        var source = ["text": text, "native_session_id": native]
+        for (key, variable) in mapping {
+            guard let value = environment[variable], !value.isEmpty else { return nil }
+            source[key] = value
+        }
+        guard binding["provider_session_id"] as? String == source["provider_session_id"],
+              binding["context_id"] as? String == source["source_context_id"] else { return nil }
+        return source
+    }
+
+    static func requestProjectActivation(project: String, provider: String?, continuation: String? = nil) -> ProjectActivationOutcome {
         var payload: [String: Any] = ["type": "activate_project", "project": project]
         if let provider {
             payload["provider"] = provider
         }
 
+        if let continuation {
+            guard let source = continuationSource(text: continuation) else { return .failed(message: "Continuation requires an app-managed native user turn.") }
+            payload["continuation"] = source
+        }
         guard let fd = openSocket() else { return .menuBarUnavailable }
         defer { close(fd) }
 
@@ -112,11 +143,32 @@ enum ConfirmationClient {
         }
 
         if result == "ok", let repoPath = json["repo_path"] as? String {
+            if json["pending"] as? Bool == true {
+                return .queued(repoPath: repoPath, message: json["message"] as? String ?? "Project context switch queued. Finish the current reply before switching.")
+            }
             return .activated(repoPath: repoPath)
         }
         if result == "error" {
             return .failed(message: json["message"] as? String ?? "Project activation failed.")
         }
+        return .menuBarUnavailable
+    }
+
+    static func requestGeneralActivation(continuation: String? = nil) -> GeneralActivationOutcome {
+        var payload: [String: Any] = ["type": "activate_general"]
+        if let continuation {
+            guard let source = continuationSource(text: continuation) else { return .failed(message: "Continuation requires an app-managed native user turn.") }
+            payload["continuation"] = source
+        }
+        guard let fd = openSocket() else { return .menuBarUnavailable }
+        defer { close(fd) }
+        guard sendJSONLine(fd: fd, payload: payload) else { return .menuBarUnavailable }
+        setShortReadTimeout(fd: fd)
+        guard let line = readLine(fd: fd),
+              let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let result = json["result"] as? String else { return .menuBarUnavailable }
+        if result == "ok", let message = json["message"] as? String { return .selected(message: message) }
+        if result == "error" { return .failed(message: json["message"] as? String ?? "General context selection failed.") }
         return .menuBarUnavailable
     }
 

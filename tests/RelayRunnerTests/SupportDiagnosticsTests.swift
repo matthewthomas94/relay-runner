@@ -312,7 +312,7 @@ final class SupportDiagnosticsTests: XCTestCase {
             )
             try writeExecutable("#!/bin/bash\nexit 0\n", to: bridge)
             try writeExecutable(
-                "#!/bin/bash\n[ \"$1\" = auth ] && echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"apiProvider\":\"firstParty\",\"subscriptionType\":\"max\"}'\nexit 0\n",
+                "#!/bin/bash\n[ \"$1\" = auth ] && echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"apiProvider\":\"firstParty\",\"subscriptionType\":\"max\"}'\n[ \"$1\" = -c ] && echo 'Logged in using ChatGPT'\nexit 0\n",
                 to: agent
             )
             var config = AppConfig()
@@ -325,7 +325,9 @@ final class SupportDiagnosticsTests: XCTestCase {
                 agentBinary: agent.path,
                 config: config,
                 voiceDelivery: .agentSkill,
-                homeDirectory: root
+                homeDirectory: root,
+                resolvedCodexModel: provider == .codex ? "gpt-6-sol" : nil,
+                resolvedCodexEffort: provider == .codex ? "medium" : nil
             )
             try writeExecutable(script, to: launcher)
 

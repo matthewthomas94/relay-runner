@@ -4,7 +4,11 @@ Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ti
 
 The user said something like "work on RR-6" or "have an agent take RR-6". This command picks up the ticket and starts a run; it does not wait for the worker to finish (check `list_runs` later).
 
-## Steps
+## General tasks
+
+The preinstalled `general-tasks` project uses the same ticket, worktree, dispatch and review workflow as other projects. Small bounded actions and drafts need no ticket. GitHub storage is optional and publication requires its own authorization.
+
+## Project steps
 
 1. **Identify the ticket.** Extract the ticket id (e.g. `RR-6`) from the user's message. If multiple are mentioned, dispatch each via separate calls.
 2. **Resolve the repo path.** The orchestrator needs the absolute path of the repo whose `.orchestrator/` board owns the ticket — normally `git rev-parse --show-toplevel` from the current working directory. Confirm `<repo>/.orchestrator/<ticket_id>.md` exists before dispatching.

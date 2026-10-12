@@ -93,6 +93,79 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         )
     }
 
+    func testRegistryInvalidationFollowsCommittedContextThroughPendingCancellationAndCommit() {
+        let source = "/repo/source"
+        let destination = "/repo/destination"
+        let paths = [source, destination]
+        let route = ProjectResolver.BoardRoute.project(.init(repoPath: URL(fileURLWithPath: destination)))
+        let model = ProgramBoardViewModel(fetchDashboard: { _ in .empty() })
+        model.setProjectScope(paths, selectedProjectPath: source)
+
+        func refresh(committedContext: String) {
+            let selected = ProgramBoardOverlayController.refreshedProjectSelection(
+                route: route,
+                currentSelection: model.selectedProjectPath,
+                projectScope: paths,
+                committedContextPath: committedContext,
+                preserveProjectSelection: false
+            )
+            model.setProjectScope(paths, selectedProjectPath: selected)
+        }
+
+        // Registry preference has changed, but the source reply is still finishing.
+        refresh(committedContext: source)
+        XCTAssertEqual(model.selectedProjectPath, source)
+        // Clearing the pending switch leaves the registry preference unchanged.
+        refresh(committedContext: source)
+        XCTAssertEqual(model.selectedProjectPath, source)
+        // Only a committed context transition selects the destination board.
+        refresh(committedContext: destination)
+        XCTAssertEqual(model.selectedProjectPath, destination)
+    }
+
+    func testContextAwareRefreshPreservesAllProjectsAndOrdinaryProjectInspection() {
+        let committed = "/repo/committed"
+        let inspected = "/repo/inspected"
+        let route = ProjectResolver.BoardRoute.project(.init(repoPath: URL(fileURLWithPath: inspected)))
+        let paths = [committed, inspected]
+        let model = ProgramBoardViewModel(fetchDashboard: { _ in .empty() })
+        model.setProjectScope(paths, selectedProjectPath: committed)
+        model.selectAllProjects()
+
+        for preserveSelection in [true, false] {
+            let selected = ProgramBoardOverlayController.refreshedProjectSelection(
+                route: route,
+                currentSelection: model.selectedProjectPath,
+                projectScope: paths,
+                committedContextPath: committed,
+                preserveProjectSelection: preserveSelection
+            )
+            model.setProjectScope(paths, selectedProjectPath: selected)
+            XCTAssertNil(model.selectedProjectPath)
+        }
+
+        model.selectProject(path: inspected)
+        XCTAssertEqual(
+            ProgramBoardOverlayController.refreshedProjectSelection(
+                route: route,
+                currentSelection: model.selectedProjectPath,
+                projectScope: paths,
+                committedContextPath: committed
+            ),
+            inspected
+        )
+        XCTAssertEqual(
+            ProgramBoardOverlayController.refreshedProjectSelection(
+                route: route,
+                currentSelection: inspected,
+                projectScope: [inspected],
+                committedContextPath: committed,
+                preserveProjectSelection: false
+            ),
+            inspected
+        )
+    }
+
     func testRegistryInvalidationWiresImmediateVisibleWorkspaceScopeRefresh() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -110,9 +183,11 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertTrue(appState.contains("programBoardOverlay.refreshProjectScopeAfterRegistryChange()"))
         XCTAssertTrue(controller.contains("func refreshProjectScopeAfterRegistryChange()"))
         XCTAssertTrue(controller.contains("preserveProjectSelection: false"))
+        XCTAssertTrue(controller.contains("committedContextPath: workspace.contextPath"))
+        XCTAssertTrue(controller.contains("currentSelection: model.selectedProjectPath"))
     }
 
-    func testProjectCardSelectionPersistsTheRegistryPreference() throws {
+    func testProjectCardSelectionValidatesScopeBeforeCommittedConfirmation() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -134,7 +209,22 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertTrue(controller.contains("projectSelectionHandler?(repoPath)"))
         XCTAssertTrue(overlayView.contains("onSelectProject: onSelectProject"))
         XCTAssertTrue(appState.contains("programBoardOverlay.setProjectSelectionHandler"))
-        XCTAssertTrue(appState.contains("projectRegistryV2.confirmProject(matching: repoPath)"))
+        XCTAssertTrue(appState.contains("selectProjectContext(repositoryPath: repoPath)"))
+        let launch = try XCTUnwrap(appState.range(of: "    func newSession("))
+        let resolution = try XCTUnwrap(appState.range(of: "Self.prepareSessionContext(workingDirectory: workingDirectory, registry: projectRegistryV2)", range: launch.upperBound..<appState.endIndex))
+        let commit = try XCTUnwrap(appState.range(of: "try assistantSessionStore.select(", range: resolution.upperBound..<appState.endIndex))
+        let confirm = try XCTUnwrap(appState.range(of: "projectScopeCoordinator.confirm(projectScopeToken)", range: commit.upperBound..<appState.endIndex))
+        let helper = try XCTUnwrap(appState.range(of: "    static func prepareSessionContext("))
+        let helperEnd = try XCTUnwrap(appState.range(of: "    static func sessionLaunchRequest(", range: helper.upperBound..<appState.endIndex))
+        let validation = appState[helper.lowerBound..<helperEnd.lowerBound]
+        XCTAssertTrue(validation.contains("registry.scopeToken(matching: requestedProject)"))
+        XCTAssertTrue(validation.contains("registry.validateScopeToken(token).isValid"))
+        XCTAssertFalse(validation.contains("confirmProject("))
+        XCTAssertFalse(validation.contains("projectScopeCoordinator"))
+        XCTAssertFalse(appState[launch.lowerBound..<commit.lowerBound].contains("confirmProject(matching:"))
+        XCTAssertFalse(appState[launch.lowerBound..<commit.lowerBound].contains("projectScopeCoordinator.confirm("))
+        XCTAssertTrue(appState[commit.lowerBound..<confirm.lowerBound].contains("savingPreviousContext: true"))
+        XCTAssertTrue(appState[commit.lowerBound..<confirm.lowerBound].contains("activeSessionProjectScopeToken = projectScopeToken"))
         XCTAssertTrue(appState.contains("refreshWorkspaceActivity(invalidateRoute: true)"))
     }
 
@@ -172,7 +262,7 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(opening?.reloadsWork, true)
     }
 
-    func testUtilityOnlyOpeningDoesNotStartBlockingRevealLoading() {
+    func testGeneralOpeningDoesNotStartBlockingRevealLoading() {
         let opening = ProgramBoardOverlayController.workspaceOpening(
             route: .unavailable,
             initialTab: .work,
@@ -182,8 +272,8 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             activityProjectPaths: []
         )
 
-        XCTAssertEqual(opening?.showsWorkTab, false)
-        XCTAssertEqual(opening?.initialTab, .terminal)
+        XCTAssertEqual(opening?.showsWorkTab, true)
+        XCTAssertEqual(opening?.initialTab, .work)
         XCTAssertEqual(opening?.projectScope, [])
         XCTAssertNil(opening?.selectedProjectPath)
         XCTAssertEqual(opening?.startsLoading, false)
@@ -192,9 +282,32 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
     }
 
     func testNotesTabFollowsWorkspaceAndAcceptsSearchFocus() {
+        XCTAssertEqual(WorkspaceTab.allCases, [.work, .notes, .terminal, .systemSettings])
         XCTAssertEqual(WorkspaceViewModel.availableTabs(showsWorkTab: true, showsTerminalTab: true, showsSettingsTab: true), [.work, .notes, .terminal, .systemSettings])
         XCTAssertEqual(WorkspaceViewModel.availableTabs(showsWorkTab: false, showsTerminalTab: false, showsSettingsTab: false), [.notes])
+        XCTAssertFalse(WorkspaceTab.work.requiresKeyWindow)
         XCTAssertTrue(WorkspaceTab.notes.requiresKeyWindow)
+    }
+
+    func testWorkspaceUsesExistingProjectsBoardWithoutAddedContextSurfaces() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayView.swift"),
+            encoding: .utf8
+        )
+        let shell = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Board/WorkspaceOverlayShell.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(view.contains("ProgramBoardContent("))
+        XCTAssertFalse(view.contains("GeneralWorkView("))
+        XCTAssertFalse(view.contains("PersonalFileStorageFilesView("))
+        XCTAssertFalse(view.contains("workspace.selectedTab == .conversation"))
+        XCTAssertFalse(shell.contains("WorkspaceContextMenu("))
     }
 
     func testNotesOpenWithoutProjectOrUtilityContent() {
@@ -207,7 +320,7 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             activityProjectPaths: []
         )
 
-        XCTAssertEqual(opening?.initialTab, .notes)
+        XCTAssertEqual(opening?.initialTab, .work)
         XCTAssertEqual(opening?.contentLoadBlocked, false)
     }
 
@@ -275,8 +388,8 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(action, .end)
     }
 
-    func testRegistryV2SessionControlRequiresAnExplicitProjectButStillAllowsEnd() {
-        XCTAssertFalse(ProgramSessionControlPolicy.canStart(
+    func testRegistryV2SessionControlAllowsGeneralWithoutAProject() {
+        XCTAssertTrue(ProgramSessionControlPolicy.canStart(
             hasActiveSession: false,
             selectedProjectPath: nil,
             requiresConfirmedProject: true

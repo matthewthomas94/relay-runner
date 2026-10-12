@@ -2,12 +2,6 @@ import XCTest
 @testable import relay_actions_mcp
 
 final class ActionsMCPClientInstructionsTests: XCTestCase {
-    // Digests of the release before Claude-specific payloads (3be285a2),
-    // taken from a non-Claude client. They must not change for Codex.
-    private let releasedInitializeSHA256 = "ca4a74a31f6dd7e7a063d25c3e92d3504a92ac7a9cb993bda9809413b7f41590"
-    private let releasedInstructionsSHA256 = "b7ca634499dee2dd65691c83fce4bd7fb5afd41c3438167f5f17703ab242f3f0"
-    private let releasedToolsListSHA256 = "a56d224b66dd107c4eeac4dc40d09adac3908a2564083dc96cc5553540e23c21"
-
     private func initialize(_ server: MCPServer, client: String) async throws -> [String: Any] {
         let result = try await server.dispatch(
             method: "initialize",
@@ -22,14 +16,15 @@ final class ActionsMCPClientInstructionsTests: XCTestCase {
         return Dictionary(uniqueKeysWithValues: tools.map { ($0["name"] as? String ?? "", $0) })
     }
 
-    func testNonClaudeClientsKeepReleasedInstructionsAndTools() async throws {
+    func testNonClaudeClientsReceiveCurrentInstructionsAndBothContextTools() async throws {
         for client in ["codex-mcp-client", "rr-326-probe"] {
             let server = MCPServer()
             let result = try await initialize(server, client: client)
-            XCTAssertEqual(try mcpCanonicalJSONSHA256(result), releasedInitializeSHA256, client)
-            XCTAssertEqual(mcpSHA256(try XCTUnwrap(result["instructions"] as? String)), releasedInstructionsSHA256)
-            let list = try await server.dispatch(method: "tools/list", params: [:])
-            XCTAssertEqual(try mcpCanonicalJSONSHA256(list), releasedToolsListSHA256, client)
+            XCTAssertEqual(result["instructions"] as? String, Instructions.payload, client)
+            let byName = try await tools(server)
+            XCTAssertEqual(Set(byName.keys), Set(["click", "type", "key", "scroll", "activate_project", "activate_general", "toggle_board", "frontmost_app", "list_windows", "propose_action"]), client)
+            XCTAssertEqual(byName["activate_general"]?["inputSchema"] as? NSDictionary, ActivateGeneralTool().inputSchema as NSDictionary)
+            XCTAssertEqual(byName["activate_project"]?["description"] as? String, ActivateProjectTool().description)
         }
     }
 
@@ -43,6 +38,8 @@ final class ActionsMCPClientInstructionsTests: XCTestCase {
 
         let byName = try await tools(server)
         XCTAssertNotNil(byName["get_relay_instructions"])
+        XCTAssertNotNil(byName["activate_general"])
+        XCTAssertNotNil(byName["activate_project"])
         let call = try await server.dispatch(
             method: "tools/call",
             params: ["name": "get_relay_instructions", "arguments": [String: Any]()]
@@ -68,4 +65,69 @@ final class ActionsMCPClientInstructionsTests: XCTestCase {
         let result = try await MCPServer().dispatch(method: "ping", params: [:]) as? [String: Any]
         XCTAssertEqual(result?.isEmpty, true)
     }
+
+    func testGeneralSelectionForwardsQueuedResultWithoutClaimingReady() async throws {
+        var requested = false
+        let message = "General switch queued. Finish the current reply."
+        let tool = ActivateGeneralTool(notify: { true }, activate: { _ in requested = true; return .selected(message: message) })
+        let content = try await tool.call(arguments: [:])
+        XCTAssertTrue(requested)
+        XCTAssertEqual(content.first?["text"] as? String, message)
+    }
+
+    func testGeneralSelectionRejectsArgumentsAndUnavailableAppWithoutDispatch() async throws {
+        var requested = false
+        let tool = ActivateGeneralTool(notify: { false }, activate: { _ in requested = true; return .selected(message: "unexpected") })
+        let invalidRequests: [[String: Any]] = [[:], ["project": "/repo"]]
+        for arguments in invalidRequests {
+            do {
+                _ = try await tool.call(arguments: arguments)
+                XCTFail("Expected General selection to fail")
+            } catch { XCTAssertFalse(requested) }
+        }
+    }
+
+    func testProjectSelectionPassesExactPathAndProviderAndPreservesQueuedStatus() async throws {
+        let tool = ActivateProjectTool(notify: { true }, activate: { project, provider, continuation in
+            XCTAssertNil(continuation)
+            XCTAssertEqual(project, "/registered/project")
+            XCTAssertEqual(provider, "claude")
+            return .queued(repoPath: project, message: "Project switch queued until this reply finishes.")
+        })
+        let content = try await tool.call(arguments: ["project": "/registered/project", "provider": "claude"])
+        XCTAssertEqual(content.first?["text"] as? String, "Project switch queued until this reply finishes.")
+    }
+    func testExplicitContinuationValidatesPublicTextAndDoesNotManufactureNavigationWork() async throws {
+        var forwarded: [String?] = []
+        let general = ActivateGeneralTool(notify: { true }, activate: { forwarded.append($0); return .selected(message: "queued") })
+        _ = try await general.call(arguments: [:])
+        _ = try await general.call(arguments: ["continuation": "Finish Y in General"])
+        XCTAssertNil(forwarded[0]); XCTAssertEqual(forwarded[1], "Finish Y in General")
+        for invalid in ["", "bad\rsubmit", "\u{1b}[2J", "\u{9b}2J"] {
+            do { _ = try await general.call(arguments: ["continuation": invalid]); XCTFail("Expected control rejection") }
+            catch { XCTAssertTrue((error as? MCPToolError)?.message.contains("continuation") == true) }
+        }
+        XCTAssertEqual(forwarded.count, 2)
+        let project = ActivateProjectTool(notify: { true }, activate: { path, _, text in
+            XCTAssertEqual(path, "/confirmed"); XCTAssertEqual(text, "Finish Y in project"); return .queued(repoPath: path, message: "queued")
+        })
+        _ = try await project.call(arguments: ["project": "/confirmed", "continuation": "Finish Y in project"])
+    }
+
+    func testContinuationSourceComesOnlyFromExactInheritedNativeBinding() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("binding.json")
+        let environment = ["RELAY_SESSION_BINDING_PATH": path.path, "RELAY_RUNNER_PROVIDER": "claude", "RELAY_PROVIDER_SESSION_ID": "source", "RELAY_APP_SESSION_ID": "app", "RELAY_RECOVERY_GENERATION": "generation", "RELAY_FOREGROUND_GATE_HANDLE": "gate", "RELAY_CONTEXT_ID": "general"]
+        try JSONSerialization.data(withJSONObject: ["native_session_id": "native", "provider_session_id": "source", "context_id": "general"]).write(to: path)
+        let captured = ConfirmationClient.continuationSource(text: "Y", environment: environment)
+        XCTAssertEqual(captured?["text"], "Y"); XCTAssertEqual(captured?["native_session_id"], "native")
+        XCTAssertEqual(captured?["app_session_id"], "app")
+        var stale = environment; stale["RELAY_PROVIDER_SESSION_ID"] = "foreign"
+        XCTAssertNil(ConfirmationClient.continuationSource(text: "Y", environment: stale))
+        stale = environment; stale.removeValue(forKey: "RELAY_FOREGROUND_GATE_HANDLE")
+        XCTAssertNil(ConfirmationClient.continuationSource(text: "Y", environment: stale))
+    }
+
 }

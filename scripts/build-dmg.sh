@@ -4,6 +4,7 @@
 # Usage:
 #   ./scripts/build-dmg.sh              # Release build + DMG + Sparkle zip
 #   ./scripts/build-dmg.sh --debug      # Debug build + DMG + Sparkle zip
+#   ./scripts/build-dmg.sh --app-only   # Signed local app; no archives or install
 #
 # Signing uses Relay Runner's Developer ID certificate automatically so local
 # updates keep the same macOS permission identity as distributed releases:
@@ -32,9 +33,13 @@ DMG_NAME="RelayRunner"
 SPARKLE_ZIP_NAME="RelayRunner"
 
 CONFIG="release"
-if [[ "${1:-}" == "--debug" ]]; then
-    CONFIG="debug"
-fi
+APP_ONLY=false
+for argument in "$@"; do
+    case "$argument" in
+        --debug) CONFIG="debug" ;;
+        --app-only) APP_ONLY=true ;;
+    esac
+done
 
 BUILD_DIR="$PROJECT_ROOT/.build/$CONFIG"
 DIST_DIR="$PROJECT_ROOT/dist"
@@ -241,7 +246,7 @@ fi
 for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py intent_qualification.py continuity_incidents.py continuity_agent.py continuity_recovery.py continuity_reports.py continuity_resume.py relay_authorization.py intent_arbitration.py intent_inbox.py provider_turn_broker.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py claude_subscription.py harness_update.py \
          custom_voice.py custom_voice_worker.py custom_voice_install.py voice_audio_lease.py \
          artifact_lifecycle.py artifact_migration.py artifact_migration_cli.py artifact_history_cli.py automatic_retention.py \
-         artifact_catalog.py artifact_retention.py artifact_rollout.py artifact_rollout_cli.py artifact_store.py artifact_sync.py note_contract.py project_notes.py global_notes.py note_metadata.py \
+         artifact_catalog.py artifact_retention.py artifact_rollout.py artifact_rollout_cli.py artifact_store.py artifact_sync.py note_contract.py project_notes.py global_notes.py general_work.py personal_file_storage.py personal_notes.py note_metadata.py \
          artifact_verification.py artifact_verification_cli.py app_signing.py fresh_install.py fresh_install_cli.py \
          followup_tickets.py graphify_core.py graphify_ingest.py orchestrator.py orchestrator_artifact_workflow.md orchestrator_workflow.md \
          program_artifacts.py program_status.py requirements.txt session_capture.py support_diagnostics.py tickets.py toml_compat.py; do
@@ -354,6 +359,11 @@ fi
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 if [ -n "$SIGN_IDENTITY" ]; then
     python3 "$PROJECT_ROOT/services/app_signing.py" verify "$APP_DIR"
+fi
+
+if [ "$APP_ONLY" = true ]; then
+    echo "==> Local app ready: $APP_DIR"
+    exit 0
 fi
 
 # Notarise and staple the app bundle before creating the Sparkle archive.

@@ -158,6 +158,50 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
         XCTAssertEqual(session.phase, .running)
     }
 
+    func testLoginScreenIsVisibleWithoutStartingVoiceDeliveryForBothProviders() throws {
+        for (provider, target) in [("Codex", ProcessManager.AgentTarget.codex), ("Claude", .claude)] {
+            let fixture = try makeRealPTYFixture()
+            try "{\"stage\":\"provider_login\",\"outcome\":\"started\"}\n".write(
+                to: fixture.events, atomically: true, encoding: .utf8
+            )
+            var paths = deliveryPaths(in: fixture.directory)
+            paths.manualSubmissions = fixture.directory.appendingPathComponent("manual-submissions").path
+            try "queued voice command".write(toFile: paths.command, atomically: true, encoding: .utf8)
+            let process = SwiftTermEmbeddedProcess(
+                readinessStabilityInterval: 0.05, readinessPollInterval: 0.01,
+                voiceDeliveryPaths: paths
+            )
+            let session = EmbeddedTerminalSession(processFactory: { process })
+            try session.beginPreparing(providerName: provider, providerKey: provider.lowercased(), workingDirectory: fixture.directory.path)
+            try session.start(ProcessManager.PreparedSessionLaunch(
+                executable: "/bin/bash",
+                arguments: ["-c", """
+                    printf 'Sign in using your browser, or paste the code here:\\r\\n'
+                    sleep 0.6
+                    printf '%s\\n' '{"stage":"provider_spawn","outcome":"started"}' '{"stage":"provider_session_start","outcome":"ready"}' >> '\(fixture.events.path)'
+                    stty -icanon -echo
+                    printf 'Provider ready\\r\\n'
+                    sleep 5
+                    """],
+                launcherPath: "/bin/bash", workingDirectory: fixture.directory.path,
+                target: target, voiceDelivery: .appOwned,
+                sessionEventPath: fixture.events.path, providerSessionID: "login-\(provider)",
+                appSessionID: "login-app", recoveryGeneration: "login-generation",
+                foregroundGateHandle: "login-gate"
+            ))
+            defer { session.end() }
+            waitOnMainQueue(0.25)
+            XCTAssertTrue(session.providerInterfaceShown, provider)
+            XCTAssertNil(session.loadingStatus, "Login instructions remain visible in a canonical terminal")
+            XCTAssertEqual(session.phase, .starting, "Login is not provider readiness")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: paths.command), "Voice must not enter the login prompt")
+            process.send(source: process.terminalView, data: ArraySlice(Array("login-code\r".utf8)))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: paths.manualSubmissions), "Login input is not a work turn")
+            waitOnMainQueue(0.65)
+            XCTAssertEqual(session.phase, .running, provider)
+        }
+    }
+
     private func drainMainQueue() {
         let drained = expectation(description: "main queue drained")
         DispatchQueue.main.async { drained.fulfill() }
@@ -613,6 +657,126 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
         XCTAssertNil(process.view.superview)
     }
 
+    func testAppOwnedPasteAndReturnExcludeConcurrentNativeFocusReportsForBothProviders() throws {
+        for target in [ProcessManager.AgentTarget.codex, .claude] {
+            let fixture = try makeRealPTYFixture()
+            var paths = deliveryPaths(in: fixture.directory)
+            paths.manualSubmissions = fixture.directory.appendingPathComponent("manual-submissions").path
+            let prompt = "Reply with exactly FOCUS_BOUNDARY_TEST"
+            let provider = target == .codex ? "codex" : "claude"
+            try "\(prompt)\n".write(toFile: paths.command, atomically: true, encoding: .utf8)
+            let metadata = """
+            {"provider":"\(provider)","relay_command_id":"focus-test","relay_command_seq":1}
+            """
+            try metadata.write(toFile: paths.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(toFile: paths.commandState, atomically: true, encoding: .utf8)
+            let received = fixture.directory.appendingPathComponent("received")
+            let process = SwiftTermEmbeddedProcess(
+                readinessStabilityInterval: 0.2, readinessPollInterval: 0.01,
+                voiceDeliveryPaths: paths
+            )
+            let session = EmbeddedTerminalSession(processFactory: { process })
+            try session.beginPreparing(providerName: provider, workingDirectory: fixture.directory.path)
+            try session.start(ProcessManager.PreparedSessionLaunch(
+                executable: "/bin/bash", arguments: ["-c", """
+                    stty raw -echo
+                    printf '\\033[?1004h\\033[?2004hready\\r\\n'
+                    /usr/bin/perl -e 'open(my $out, ">", "received") or die $!; binmode($out); while (sysread(STDIN, my $byte, 1)) { print $out $byte; last if ord($byte) == 13; } close($out);'
+                    sleep 5
+                    """], launcherPath: "/bin/bash", workingDirectory: fixture.directory.path,
+                target: target, voiceDelivery: .appOwned, sessionEventPath: fixture.events.path,
+                providerSessionID: "focus-\(provider)"
+            ))
+            defer { session.end() }
+            process.send(source: process.terminalView, data: [])
+            // Real SwiftTerm focus notifications, including DECSET's initial
+            // report, race startup, the automatic paste, and its delayed Return.
+            for index in 0..<100 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.005) {
+                    process.terminalView.getTerminal().setTerminalFocus(index.isMultiple(of: 2))
+                }
+            }
+            let receivedReturn = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in (try? Data(contentsOf: received))?.last == 13 },
+                object: nil
+            )
+            wait(for: [receivedReturn], timeout: 4)
+            XCTAssertEqual(session.phase, .running, provider)
+            let bytes = Array(try Data(contentsOf: received))
+            let framed = SwiftTermEmbeddedProcess.promptBytes(Array(prompt.utf8), bracketedPaste: true)
+            let data = Data(bytes)
+            let range = try XCTUnwrap(data.range(of: Data(framed)), provider)
+            XCTAssertEqual(Array(data[range.upperBound...]), [13], provider)
+            let prefix = Array(data[..<range.lowerBound])
+            XCTAssertFalse(prefix.isEmpty, "Startup focus reporting resumes before the paste")
+            XCTAssertEqual(prefix.count % 3, 0, provider)
+            for offset in stride(from: 0, to: prefix.count, by: 3) {
+                XCTAssertTrue(
+                    Array(prefix[offset..<(offset + 3)]) == [27, 91, 73]
+                        || Array(prefix[offset..<(offset + 3)]) == [27, 91, 79], provider
+                )
+            }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: paths.claimed), provider)
+        }
+    }
+
+    func testContinuationReturnReachesRealPTYInsidePermissionAndCancellationSendsNoReturn() throws {
+        for target in [ProcessManager.AgentTarget.codex, .claude] {
+            for permitted in [true, false] {
+                let fixture = try makeRealPTYFixture()
+                let received = fixture.directory.appendingPathComponent("received")
+                let process = SwiftTermEmbeddedProcess(
+                    readinessStabilityInterval: 0.05, readinessPollInterval: 0.01,
+                    voiceDeliveryPaths: deliveryPaths(in: fixture.directory)
+                )
+                let ready = expectation(description: "Real PTY ready")
+                process.onReady = { ready.fulfill() }
+                try process.start(ProcessManager.PreparedSessionLaunch(
+                    executable: "/bin/bash", arguments: ["-c", """
+                        stty raw -echo
+                        printf 'ready\\r\\n'
+                        /usr/bin/perl -e 'open(my $out, ">", "received") or die $!; binmode($out); select($out); $| = 1; while (sysread(STDIN, my $byte, 1)) { print $out $byte; last if ord($byte) == 13; } close($out);'
+                        sleep 5
+                        """], launcherPath: "/bin/bash", workingDirectory: fixture.directory.path,
+                    target: target, voiceDelivery: .appOwned, sessionEventPath: fixture.events.path
+                ))
+                defer { process.terminate() }
+                wait(for: [ready], timeout: 2)
+                let flags = fcntl(process.localProcess.childfd, F_GETFL)
+                XCTAssertGreaterThanOrEqual(flags, 0)
+                XCTAssertNotEqual(flags & O_NONBLOCK, 0)
+                process.send(source: process.terminalView, data: [])
+                process.send(source: process.terminalView, data: [65])
+                let completed = expectation(description: "Return write completed")
+                var observedInsidePermission = false
+                process.commitContextContinuationReturn({ write in
+                    guard permitted else { return false }
+                    write()
+                    let deadline = Date().addingTimeInterval(1)
+                    while Date() < deadline {
+                        if (try? Data(contentsOf: received)) == Data([65, 13]) {
+                            observedInsidePermission = true
+                            break
+                        }
+                        Thread.sleep(forTimeInterval: 0.005)
+                    }
+                    return true
+                }, completion: { written in
+                    XCTAssertEqual(written, permitted)
+                    completed.fulfill()
+                })
+                wait(for: [completed], timeout: 2)
+                XCTAssertEqual(observedInsidePermission, permitted)
+                let expected = Data(permitted ? [65, 13] : [65])
+                let deadline = Date().addingTimeInterval(1)
+                while Date() < deadline, (try? Data(contentsOf: received)) != expected {
+                    Thread.sleep(forTimeInterval: 0.005)
+                }
+                XCTAssertEqual(try Data(contentsOf: received), expected)
+            }
+        }
+    }
+
     func testPreviousHostDetachDoesNotRemoveReparentedTerminalView() {
         let terminalView = NSView()
         let firstHost = EmbeddedTerminalHostNSView()
@@ -1011,6 +1175,38 @@ final class RelayTerminalViewInputOriginTests: XCTestCase {
         view.send(data: ArraySlice(Array("typed".utf8)))
 
         XCTAssertEqual(delegate.terminalResponseFlags, [true, false])
+    }
+
+    func testNativeFocusReportsCoalesceOnlyInsideProtectedBoundaries() {
+        let view = RelayTerminalView(frame: .zero)
+        let delegate = TerminalInputOriginCapturingDelegate(view: view)
+        view.terminalDelegate = delegate
+        view.deferFocusReports(true)
+        view.getTerminal().feed(text: "\u{1B}[?1004h")
+        view.getTerminal().setTerminalFocus(false)
+        view.getTerminal().setTerminalFocus(true)
+        XCTAssertTrue(delegate.payloads.isEmpty)
+
+        view.send(source: view.getTerminal(), data: ArraySlice([27, 91, 49, 59, 49, 82]))
+        view.send(data: ArraySlice([27, 91, 73]))
+        XCTAssertEqual(delegate.payloads, [[27, 91, 49, 59, 49, 82], [27, 91, 73]])
+        XCTAssertEqual(delegate.terminalResponseFlags, [true, false], "Literal user input and other replies are preserved")
+        view.deferFocusReports(false)
+        view.getTerminal().setTerminalFocus(false)
+        XCTAssertEqual(Array(delegate.payloads.suffix(2)), [[27, 91, 73], [27, 91, 79]])
+
+        // A paste can defer again; only the latest actual focus is replayed
+        // when Return or cancellation has completed its transport write.
+        view.deferFocusReports(true)
+        view.getTerminal().setTerminalFocus(true)
+        view.getTerminal().setTerminalFocus(false)
+        let beforeReturn = delegate.payloads.count
+        view.send(data: ArraySlice([13]))
+        XCTAssertEqual(delegate.payloads.count, beforeReturn + 1)
+        view.deferFocusReports(false)
+        XCTAssertEqual(Array(delegate.payloads.suffix(2)), [[13], [27, 91, 79]])
+        view.getTerminal().setTerminalFocus(true)
+        XCTAssertEqual(delegate.payloads.last, [27, 91, 73], "Normal focus reporting resumes")
     }
 
     func testNavigationShortcutsAreMarkedAsNonPromptInput() {

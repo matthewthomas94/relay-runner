@@ -301,6 +301,36 @@ actor StateEventBus {
                 else { continue }
 
                 let text = json["text"] as? String
+                if source == "storyboard_demo", state == "probe" {
+                    if let replyPath = json["reply_path"] as? String,
+                       replyPath.range(
+                           of: #"^/tmp/relay_storyboard_probe_[0-9a-f]{32}\.sock$"#,
+                           options: .regularExpression
+                       ) != nil {
+                        let enabled = ProcessInfo.processInfo.arguments.contains("--storyboard-demo")
+                        let reply = Data("{\"enabled\":\(enabled)}".utf8)
+                        let replyFD = socket(AF_UNIX, SOCK_DGRAM, 0)
+                        if replyFD >= 0 {
+                            var address = sockaddr_un()
+                            address.sun_family = sa_family_t(AF_UNIX)
+                            withUnsafeMutablePointer(to: &address.sun_path) { pointer in
+                                replyPath.withCString { path in
+                                    _ = memcpy(pointer, path, strlen(path) + 1)
+                                }
+                            }
+                            reply.withUnsafeBytes { bytes in
+                                withUnsafePointer(to: &address) { pointer in
+                                    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                                        _ = sendto(replyFD, bytes.baseAddress, bytes.count, 0, $0,
+                                                   socklen_t(MemoryLayout<sockaddr_un>.size))
+                                    }
+                                }
+                            }
+                            close(replyFD)
+                        }
+                    }
+                    continue
+                }
                 let tutorial = json["tutorial"] as? Bool ?? false
                 let autoDismiss = json["auto_dismiss_seconds"] as? Double
                 let presentation = SpeechPresentation(json)

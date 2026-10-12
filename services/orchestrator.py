@@ -113,6 +113,8 @@ except ModuleNotFoundError:  # Installed direct-script layout.
     from global_notes import GlobalNoteLibrary
     from note_metadata import NoteMetadataGenerator, NoteMetadataQueue
     from note_contract import NoteUpdate, note_source
+from general_work import GeneralWorkStore, general_worker_environment
+from personal_file_storage import PersonalFileStorage, StorageError, handle_personal_storage_request
 from command_actions import refined_command_summary, refined_ticket_title, resolve_command_action
 from continuity_incidents import (
     ContinuityIncidentDetector,
@@ -5168,6 +5170,13 @@ class Daemon:
         self._artifact_lifecycles: dict[str, ArtifactLifecycleCoordinator] = {}
         self._artifact_lifecycles_lock = threading.Lock()
         self.global_notes = GlobalNoteLibrary(app_support_root, self._artifact_device_id, self._legacy_note_sources)
+        self.personal_storage = PersonalFileStorage(app_support_root)
+        self.personal_storage.attach_notes(self.global_notes)
+        self.general_work = GeneralWorkStore(
+            app_support_root, command_factory=self._general_worker_command,
+            preflight=self._general_worker_preflight,
+            personal_storage=self.personal_storage,
+        )
 
         # MVP: single concurrency. Held during the dispatch claim → spawn window
         # (release immediately after spawn — the worker runs in its own thread).
@@ -6775,6 +6784,53 @@ Title: {ticket['title']}
 
 {context}
 """
+
+    def _general_worker_command(self, requested_provider=None):
+        provider, binary, general = self._effective_worker_agent()
+        if requested_provider is not None:
+            if requested_provider not in {"codex", "claude"}:
+                raise ValueError("provider must be codex or claude")
+            if requested_provider != provider:
+                provider, binary = requested_provider, _find_agent_bin(requested_provider)
+                general = {}
+        run = {"model_alias": str(general.get("model") or ""),
+               "worker_effort": str(general.get("orchestrator_effort") or "")}
+        command = _agent_command(agent_kind=provider, agent_bin=binary, run=run)
+        if provider == "codex":
+            command = [arg for arg in command if arg not in {
+                "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"}]
+            command.extend(["--sandbox", "workspace-write", "--skip-git-repo-check",
+                            "--ignore-user-config", "--ignore-rules",
+                            "--config", 'approval_policy="never"',
+                            "--config", 'sandbox_workspace_write.writable_roots=[]',
+                            "--config", 'forced_login_method="chatgpt"'])
+        else:
+            command.remove("--dangerously-skip-permissions")
+            tools = "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch"
+            command.extend(["--permission-mode", "dontAsk", "--tools", tools,
+                            "--allowedTools", "Read(./**),Edit(./**),Glob(./**),Grep,Bash,WebSearch,WebFetch",
+                            "--restricted", "--safe-mode", "--no-chrome", "--no-session-persistence", "--disable-slash-commands",
+                            "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+                            # --restricted confines file tools. Repeating that boundary in
+                            # permissions alongside sandbox settings stalls Claude startup.
+                            "--settings", json.dumps({"sandbox": {"enabled": True,
+                                "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False}})])
+        return provider, command
+
+    @staticmethod
+    def _general_worker_preflight(provider, command, workspace):
+        if provider == "codex":
+            try:
+                status = subprocess.run([command[0], "--config", 'forced_login_method="chatgpt"', "login", "status"],
+                    cwd=workspace, env=general_worker_environment(), capture_output=True, text=True, timeout=15)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                raise ValueError("Relay Runner could not verify your ChatGPT subscription. Sign in to Codex and retry.") from error
+            if status.returncode or "Logged in using ChatGPT" not in status.stdout + status.stderr:
+                raise ValueError("Sign in to Codex with your ChatGPT subscription before starting this General task.")
+            return
+        error = _claude_subscription_error(provider, command, str(workspace), general_worker_environment())
+        if error:
+            raise ValueError(error)
 
     def _effective_worker_agent(self) -> tuple[str, str, dict[str, Any]]:
         orch_cfg = self.cfg.get("orchestrator", {}) if isinstance(self.cfg.get("orchestrator"), dict) else {}
@@ -11682,6 +11738,46 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and segments == ["v1", "health"]:
                 return 200, {"ok": True, "version": self.server_version}
 
+            if segments[:2] == ["v1", "personal-storage"]:
+                payload = _read_body(self) if method == "POST" else {
+                    key: values[0] for key, values in query.items()}
+                result = handle_personal_storage_request(self.daemon.personal_storage, method, parsed.path, payload)
+                if result is not None:
+                    return 200, result
+
+            if segments[:3] == ["v1", "general", "tasks"]:
+                store = self.daemon.general_work
+                if method == "GET" and len(segments) == 3:
+                    return 200, store.list(limit=int((query.get("limit") or ["100"])[0]))
+                if method == "GET" and len(segments) == 4:
+                    return 200, store.get(unquote(segments[3]))
+                if method == "POST":
+                    body = _read_body(self)
+                    operation = "create" if len(segments) == 3 else (segments[4] if len(segments) == 5 else "")
+                    task_id = unquote(segments[3]) if len(segments) >= 4 else None
+                    mutation = None
+                    if operation in {"create", "review"}:
+                        mutation = _relay_mutation_metadata("orchestrator_action", ticket_id=task_id,
+                            action_kind="create_ticket" if operation == "create" else "edit_ticket",
+                            request_id=body.get("request_id"))
+                    elif operation == "dispatch":
+                        mutation = _relay_mutation_metadata("dispatch_ticket", ticket_id=task_id)
+                    _validate_relay_command(body.get("relay_command_seq"), body.get("relay_command_id"),
+                        relay_intent_id=body.get("relay_intent_id"), mutation=mutation)
+                    if operation == "create":
+                        return 201, store.create(title=body.get("title"), description=body.get("description"),
+                            acceptance_criteria=body.get("acceptance_criteria"), request_id=body.get("request_id"))
+                    if operation == "dispatch":
+                        return 202, store.dispatch(task_id, provider=body.get("provider"))
+                    if operation == "review":
+                        return 200, store.review(task_id, run_id=body.get("run_id"),
+                            approve=body.get("approve"), summary=body.get("summary"))
+                    if operation == "cancel":
+                        return 200, store.cancel(task_id, run_id=body.get("run_id"))
+                    if operation == "artifact":
+                        return 200, store.artifact(task_id, run_id=body.get("run_id"), artifact_id=body.get("artifact_id"))
+                    raise ValueError("Unsupported General task operation")
+
             if method == "GET" and segments == ["v1", "artifacts", "rollout"]:
                 return 200, self.daemon.artifact_rollout_status()
 
@@ -12257,6 +12353,8 @@ class Handler(BaseHTTPRequestHandler):
             return 409, {"error": str(e), "retryable": False}
         except ArtifactValidationError as e:
             return 422, {"error": str(e)}
+        except StorageError as e:
+            return 409, {"error": str(e), "state": e.state}
         except ValueError as e:
             return 400, {"error": str(e)}
         except ProgramRefreshUnavailable as e:
@@ -12554,6 +12652,18 @@ def serve(daemon: Daemon) -> None:
             stop.wait(2)
 
     threading.Thread(target=_retention_loop, name="ticket-retention", daemon=True).start()
+
+    def _personal_storage_loop():
+        while not stop.wait(60):
+            try:
+                if daemon.personal_storage.status()["connected"]:
+                    # Retries previously approved files only; never provisions a repo
+                    # or approves newly created files/migrations in the background.
+                    daemon.personal_storage.sync()
+            except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+                print(f"[orchestrator] personal storage retry failed: {error}", file=sys.stderr)
+
+    threading.Thread(target=_personal_storage_loop, name="personal-file-storage", daemon=True).start()
 
     try:
         server.serve_forever(poll_interval=0.5)

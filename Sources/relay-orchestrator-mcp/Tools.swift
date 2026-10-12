@@ -25,7 +25,43 @@ private func optionalInt(_ value: Any?) -> Int? {
     return nil
 }
 
+enum ContextContinuationLineage: Equatable {
+    case typed
+    case voice(seq: Int, id: String, intentID: String?)
+}
+
+func contextContinuationLineage(environment: [String: String], binding: [String: Any], projection: [String: Any]) -> ContextContinuationLineage? {
+    guard let native = binding["native_session_id"] as? String,
+          let turns = projection["records"] as? [[String: Any]] else { return nil }
+    let current = turns.filter {
+        $0["provider_session_id"] as? String == environment["RELAY_PROVIDER_SESSION_ID"]
+            && $0["session_id"] as? String == native
+            && $0["app_session_id"] as? String == environment["RELAY_APP_SESSION_ID"]
+            && $0["recovery_generation"] as? String == environment["RELAY_RECOVERY_GENERATION"]
+            && $0["foreground_gate_handle"] as? String == environment["RELAY_FOREGROUND_GATE_HANDLE"]
+    }.max { ($0["created_at"] as? Double ?? 0) < ($1["created_at"] as? Double ?? 0) }
+    guard let current, (current["manual_submission_id"] as? String)?.hasPrefix("continuation-") == true else { return nil }
+    // Preserve revoked parents too: the daemon must reject them instead of
+    // silently converting a cancelled voice request to unrestricted typed work.
+    if let seq = optionalInt(current["relay_command_seq"]), let id = current["relay_command_id"] as? String {
+        return .voice(seq: seq, id: id, intentID: current["intent_id"] as? String)
+    }
+    return .typed
+}
+
 private func claimedRelayCommand() -> (seq: Int, id: String, intentID: String?)? {
+    let env = ProcessInfo.processInfo.environment
+    if let bindingPath = env["RELAY_SESSION_BINDING_PATH"],
+       let bindingData = try? Data(contentsOf: URL(fileURLWithPath: bindingPath)),
+       let binding = (try? JSONSerialization.jsonObject(with: bindingData)) as? [String: Any],
+       let data = try? Data(contentsOf: URL(fileURLWithPath: "/tmp/voice_provider_turns_v2.json")),
+       let projection = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+       let lineage = contextContinuationLineage(environment: env, binding: binding, projection: projection) {
+        switch lineage {
+        case .voice(let seq, let id, let intentID): return (seq, id, intentID)
+        case .typed: return nil
+        }
+    }
     let url = URL(fileURLWithPath: "/tmp/voice_cmd_claimed.json")
     guard FileManager.default.fileExists(atPath: "/tmp/voice_command_state.json"),
           let data = try? Data(contentsOf: url),

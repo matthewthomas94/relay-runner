@@ -436,7 +436,7 @@ struct ProgramBoardOverlayView: View {
                     noteSnapshot: model.noteCaptureSnapshot,
                     canStartSession: ProgramSessionControlPolicy.canStart(
                         hasActiveSession: model.hasActiveSession,
-                        selectedProjectPath: model.selectedSessionProjectPath,
+                        selectedProjectPath: workspace.contextPath,
                         requiresConfirmedProject: ProjectRegistryV2Rollout.isEnabled()
                     ),
                     canStartNoteTaker: ProgramNoteControlPolicy.canStart(
@@ -457,7 +457,7 @@ struct ProgramBoardOverlayView: View {
             // Tabs, and the Workspace states within the work tab, swap as pages.
             ZStack(alignment: .topLeading) {
                 if workspace.selectedTab == .terminal,
-                   let terminalContent = terminalContent(model.selectedSessionProjectPath) {
+                   let terminalContent = terminalContent(workspace.isGeneralContext ? nil : workspace.contextPath) {
                     VStack(spacing: 0) {
                         terminalContent
                             .padding(.top, BoardSurfaceLayout.columnTopPadding)
@@ -2589,8 +2589,7 @@ private struct ProgramNoteDetailPanel: View {
 
     private var noteFileURL: URL? {
         guard detail.item.card.materialized, !detail.item.isArchived else { return nil }
-        let url = URL(fileURLWithPath: detail.item.projectPath)
-            .appendingPathComponent(detail.item.card.reference.path)
+        let url = detail.item.card.reference.materializedFileURL(repositoryPath: detail.item.projectPath)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
@@ -4407,7 +4406,7 @@ enum ProgramSessionControlPolicy {
         selectedProjectPath: String?,
         requiresConfirmedProject: Bool
     ) -> Bool {
-        hasActiveSession || !requiresConfirmedProject || selectedProjectPath != nil
+        true // General sessions have no repository prerequisite.
     }
 }
 

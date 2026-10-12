@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
 import re
 
 from config import load_config
@@ -32,7 +33,7 @@ CONTROL_COMMANDS = {
     "__CANCEL__": "cancel",
 }
 
-TICKET_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
+TICKET_ID_RE = re.compile(r"\b(GEN-[A-Fa-f0-9]{16}|[A-Za-z][A-Za-z0-9]*-\d+)\b")
 INSPECT_RE = re.compile(
     r"\b(status|state|how'?s|how\s+is|what'?s|what\s+is|show|summarize|check)\b",
     re.IGNORECASE,
@@ -280,6 +281,7 @@ class CommandAction:
     kind: str
     source_text: str
     requires_ticket: bool = False
+    scope: str | None = None
     ticket_id: str | None = None
     ticket_path: str | None = None
     repo_path: str | None = None
@@ -292,7 +294,7 @@ class CommandAction:
         if self.kind == "create_ticket" and self.ticket_id:
             return f"created ticket {self.ticket_id}"
         if self.kind == "create_ticket":
-            return "project work needs refined ticket"
+            return "general work needs refined ticket" if self.scope == "general" else "project work needs refined ticket"
         if self.kind == "dispatch_ticket" and self.ticket_id:
             return f"dispatch ticket {self.ticket_id}"
         if self.kind == "update_ticket" and self.ticket_id:
@@ -431,6 +433,14 @@ def classify_command(text: str) -> CommandAction:
     if mixed_bucket_request(source):
         return CommandAction(kind="conversation", source_text=source, reason="mixed_scope_resolution")
 
+    if re.search(r"^\s*(?:please\s+)?(?:create|write|draft)\s+(?:a\s+)?"
+                 r"(?:(?:short|brief|one[- ]paragraph)\s+)+(?:local\s+)?(?:draft|note|text)\b", source, re.IGNORECASE):
+        return CommandAction(kind="direct_action", source_text=source, scope="general", reason="bounded_local_draft")
+
+    if re.search(r"^\s*(?:please\s+)?prepare\s+(?:a\s+)?(?:multi[- ]file\s+|detailed\s+)?"
+                 r"(?:report|research package|presentation|document set)\b", source, re.IGNORECASE):
+        return CommandAction(kind="create_ticket", source_text=source, requires_ticket=True)
+
     if SCREEN_OBSERVATION_RE.search(source):
         return CommandAction(
             kind="direct_action",
@@ -519,14 +529,27 @@ def resolve_command_action(
     relay_command: dict | None = None,
 ) -> CommandAction:
     action = classify_command(text)
+    root = os.environ.get("RELAY_GENERAL_FILES_ROOT")
+    managed_general = os.environ.get("RELAY_SESSION_SCOPE") == "general" and (
+        repo_path is None or (root and Path(repo_path).expanduser().resolve() == Path(root).expanduser().resolve()))
+    if action.ticket_id and action.ticket_id.startswith("GEN-"):
+        return CommandAction(**{**action.__dict__, "scope": "general", **_relay_fields(relay_command)})
     if action.kind != "create_ticket":
-        return _with_relay(_with_repo(action, repo_path), relay_command)
-
-    repo = Path(repo_path or Path.cwd()).expanduser().resolve()
+        return _with_relay(_with_repo(action, None if managed_general else repo_path), relay_command)
+    if repo_path is None or managed_general:
+        # A General cwd is storage, never implicit project-mutation authority.
+        project_request = re.search(r"\b(?:repo(?:sitory)?|codebase|source[- ]code|pull request|bug|unit tests?|test suite|compiler)\b"
+                                    r"|\b[A-Za-z0-9_-]+\.(?:swift|py|js|ts|tsx|rs|go)\b", text, re.IGNORECASE)
+        if project_request or (action.ticket_id and not action.ticket_id.startswith("GEN-")):
+            return CommandAction(kind="needs_project", source_text=action.source_text, requires_ticket=True,
+                                 reason="Project implementation needs a confirmed target repository",
+                                 **_relay_fields(relay_command))
+        return CommandAction(kind="create_ticket", source_text=action.source_text, requires_ticket=True,
+                             scope="general", reason="Substantial or explicitly tracked general work needs a refined General ticket",
+                             **_relay_fields(relay_command))
+    repo = Path(repo_path).expanduser().resolve()
     return CommandAction(
-        kind="create_ticket",
-        source_text=action.source_text,
-        requires_ticket=True,
+        kind="create_ticket", source_text=action.source_text, requires_ticket=True, scope="project",
         repo_path=str(repo),
         reason="project work needs a refined visible ticket before dispatch; keep raw Relay transcript private",
         **_relay_fields(relay_command),
@@ -613,6 +636,18 @@ def format_command_for_agent(action: CommandAction, disposition: dict | None = N
                 "durable mutation authority; do not discard separately authorized work."
             )
         return _append_work_disposition(prompt, disposition)
+
+    if action.scope == "general" and (action.ticket_id or action.requires_ticket):
+        return _append_work_disposition(
+            f"{action.source_text}\n\nRelay Runner General work contract:\n"
+            f"- action: {action.kind}\n- scope: general\n- ticket_id: {action.ticket_id or 'null'}\n"
+            + _relay_prompt_lines(action)
+            + "- Use the daemon general_task tool for canonical General tickets; never invent a source repository.\n"
+              "- Refine substantial work into title, description and acceptance criteria. Create is backlog only; dispatch only with execution authority.\n"
+              "- Respect no-dispatch/backlog-only instructions. Discussion and elapsed research time never authorize work.\n"
+              "- Review exact output files and acceptance evidence before approving the current run. Preserve run provenance and report failures precisely.\n"
+              "- A task label does not grant permission to send, publish, purchase or delete. Keep ordered mixed intents and cancel only the requested task/run.\n"
+              "- Project mutation requires a separately confirmed repository scope. Messenger remains tool-free.", disposition)
 
     if action.kind == "direct_action":
         lines = [

@@ -14,4 +14,6 @@ If you're triggering this skill *implicitly* mid-conversation (the user didn't t
 
 Use the `relay-dispatch` status checks (`list_runs`, `get_run`). To see what an implementation worker actually committed (code + ticket update), run `git -C <workspace_path> log --oneline <default_branch>..HEAD` with the paths from the run record.
 
+General work uses the preinstalled `general-tasks` project and its ordinary local board; use the same ticket and run status checks as other projects.
+
 The rules below are generated from the same source as the relay-orchestrator MCP instructions.

@@ -99,6 +99,22 @@ class ArtifactLifecycleTests(unittest.TestCase):
 
         self.assertEqual(validated.repository_path, str(self.store.repo_path))
 
+    def test_registered_general_tasks_project_under_application_support_uses_normal_scope(self):
+        managed = self.state / "general-tasks"
+        self.repo.rename(managed)
+        self.repo = managed
+        self.store = ArtifactStore(managed, "lifecycle-project", self.state, enabled=True)
+        registry = json.loads(self.registry.read_text())
+        registry["projects"][0].update(selected_path=str(managed), last_resolved_path=str(managed))
+        self.registry.write_text(json.dumps(registry))
+        coordinator = ArtifactLifecycleCoordinator(self.store, registry_path=self.registry, device_id="daemon-device")
+        validated = coordinator.validate_scope(self.scope_token())
+        self.assertEqual(validated.repository_path, str(managed.resolve()))
+        with self.assertRaisesRegex(Exception, "stale repositoryPath"):
+            coordinator.validate_scope(self.scope_token(repository_path=str(self.state)))
+        with self.assertRaisesRegex(Exception, "stale gitCommonDirectoryFingerprint"):
+            coordinator.validate_scope(self.scope_token(fingerprint="another-project"))
+
     def test_claim_materializes_only_immutable_ticket_dependencies_and_owned_attachments(self):
         self.write_ticket("RR-1", "Done dependency", status="done")
         self.write_ticket("RR-2", "Assigned", depends_on=("RR-1",))

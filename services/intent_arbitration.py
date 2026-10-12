@@ -79,7 +79,7 @@ _GLOBAL_CANCEL_RE = re.compile(
     r"everything|every\s+(?:task|ticket|item)|the\s+whole\s+(?:queue|turn))\b",
     re.IGNORECASE,
 )
-_TICKET_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
+_TICKET_ID_RE = re.compile(r"\b(GEN-[A-Fa-f0-9]{16}|[A-Za-z][A-Za-z0-9]*-\d+)\b")
 _ITEM_START = (
     r"add|build|cancel|change|click|create|debug|delete|design|dispatch|drag|edit|fix|"
     r"focus|implement|install|launch|merge|never\s+mind|nevermind|open|press|redirect|"

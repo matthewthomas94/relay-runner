@@ -50,7 +50,8 @@ actor ActionsConfirmBus {
     /// from "user actually started voice."
     private let onParentPermissionRevoked: ((String, String) async -> Void)?
     private let onToggleBoard: (() async -> Void)?
-    private let onActivateProject: ((String, String?) async -> ProjectActivationReply)?
+    private let onActivateProject: (@MainActor (String, String?, [String: String]?) async -> ProjectActivationReply)?
+    private let onActivateGeneral: (@MainActor ([String: String]?) async -> GeneralActivationReply)?
     private let onHostedToolPermissionMissing: ((PermissionKind, String) async -> Void)?
 
     /// Outstanding `propose_action` requests, keyed by request id. Value is
@@ -78,12 +79,14 @@ actor ActionsConfirmBus {
     init(stateMachine: StateMachine,
          onParentPermissionRevoked: ((String, String) async -> Void)? = nil,
          onToggleBoard: (() async -> Void)? = nil,
-         onActivateProject: ((String, String?) async -> ProjectActivationReply)? = nil,
+         onActivateProject: (@MainActor (String, String?, [String: String]?) async -> ProjectActivationReply)? = nil,
+         onActivateGeneral: (@MainActor ([String: String]?) async -> GeneralActivationReply)? = nil,
          onHostedToolPermissionMissing: ((PermissionKind, String) async -> Void)? = nil) {
         self.stateMachine = stateMachine
         self.onParentPermissionRevoked = onParentPermissionRevoked
         self.onToggleBoard = onToggleBoard
         self.onActivateProject = onActivateProject
+        self.onActivateGeneral = onActivateGeneral
         self.onHostedToolPermissionMissing = onHostedToolPermissionMissing
     }
 
@@ -179,7 +182,7 @@ actor ActionsConfirmBus {
 
     // MARK: - Connection handling
 
-    private func handleConnection(fd: Int32) async {
+    func handleConnection(fd: Int32) async {
         // Read one JSON line, dispatch, then either close (tool_fired) or
         // hold open (propose) until resolve() is called.
         guard validatePeer(fd: fd) else {
@@ -231,6 +234,14 @@ actor ActionsConfirmBus {
             writeReply(fd: fd, requestId: "", result: "ok")
             close(fd)
 
+        case "activate_project" where json["continuation"] != nil && !(json["continuation"] is [String: String]):
+            writePayload(fd: fd, payload: ["result": "error", "message": "Invalid continuation identity."])
+            close(fd)
+
+        case "activate_general" where json["continuation"] != nil && !(json["continuation"] is [String: String]):
+            writePayload(fd: fd, payload: ["result": "error", "message": "Invalid continuation identity."])
+            close(fd)
+
         case "activate_project":
             guard let project = json["project"] as? String else {
                 writePayload(fd: fd, payload: [
@@ -241,12 +252,24 @@ actor ActionsConfirmBus {
                 return
             }
             let provider = json["provider"] as? String
-            let reply = await onActivateProject?(project, provider) ?? .failed(
+            let reply = await onActivateProject?(project, provider, json["continuation"] as? [String: String]) ?? .failed(
                 message: "Relay Runner cannot activate projects right now."
             )
             switch reply {
             case .activated(let repoPath):
                 writePayload(fd: fd, payload: ["result": "ok", "repo_path": repoPath])
+            case .queued(let repoPath, let message):
+                writePayload(fd: fd, payload: ["result": "ok", "repo_path": repoPath, "pending": true, "message": message])
+            case .failed(let message):
+                writePayload(fd: fd, payload: ["result": "error", "message": message])
+            }
+            close(fd)
+
+        case "activate_general":
+            let reply = await onActivateGeneral?(json["continuation"] as? [String: String]) ?? .failed(message: "Relay Runner cannot select General right now.")
+            switch reply {
+            case .selected(let message):
+                writePayload(fd: fd, payload: ["result": "ok", "message": message])
             case .failed(let message):
                 writePayload(fd: fd, payload: ["result": "error", "message": message])
             }
@@ -437,5 +460,11 @@ actor ActionsConfirmBus {
 
 enum ProjectActivationReply {
     case activated(repoPath: String)
+    case queued(repoPath: String, message: String)
+    case failed(message: String)
+}
+
+enum GeneralActivationReply {
+    case selected(message: String)
     case failed(message: String)
 }

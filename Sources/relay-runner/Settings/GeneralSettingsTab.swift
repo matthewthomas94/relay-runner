@@ -2,8 +2,8 @@ import SwiftUI
 
 struct GeneralSettingsTab: View {
     static let workspaceFolderLabel = "Workspace folder"
-    static let workspaceFolderHelpText = "Start sessions in this folder. Program Manager discovers child git repositories when this is a workspace."
-    static let workspaceFolderPanelMessage = "Choose the workspace folder where Relay Runner should start sessions"
+    static let workspaceFolderHelpText = "General sessions start immediately. Select a project in Workspace when you want to work in a repository."
+    static let workspaceFolderPanelMessage = "Choose a project workspace folder"
     static let orchestratorModelLabel = "Orchestrator Model"
     static let orchestratorEffortLabel = "Orchestrator Effort"
     static let subagentSizingLabel = "Sub-agent sizing"
@@ -99,6 +99,8 @@ struct GeneralSettingsTab: View {
                     }
                 }
             }
+
+            PersonalFileStorageSettingsView()
 
             SettingsSection("Startup") {
                 SettingsControlRow("Auto-start services on app launch") {
@@ -297,7 +299,7 @@ private struct RegisteredProjectsSettingsView: View {
             SettingsRow {
                 SettingsRowLabel(
                     "Registered projects",
-                    description: "Sessions start only from an available project selected in Workspace. Relay Runner never uses its application-support folder as an agent workspace."
+                    description: "Start immediately in general-tasks. Choose a project in Workspace to work in its repository and keep tickets with that project."
                 )
                 Spacer(minLength: 16)
                 HStack(spacing: 8) {

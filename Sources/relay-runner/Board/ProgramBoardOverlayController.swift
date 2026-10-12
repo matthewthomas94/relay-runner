@@ -100,6 +100,8 @@ final class ProgramBoardOverlayController {
     private let workspace = WorkspaceViewModel()
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
     private var projectScopeProvider: () -> [String] = { [] }
+    private var generalContextProvider: () -> Bool = { true }
+    private var contextPathProvider: () -> String? = { nil }
     private var noSessionHandler: (() -> Void)?
     private var loadingStateHandler: ((ProgramBoardLoadingState) -> Void)?
     private var addExistingProjectHandler: (() -> Void)?
@@ -164,6 +166,9 @@ final class ProgramBoardOverlayController {
     func setProjectScopeProvider(_ provider: @escaping () -> [String]) {
         projectScopeProvider = provider
     }
+
+    func setGeneralContextProvider(_ provider: @escaping () -> Bool) { generalContextProvider = provider }
+    func setContextPathProvider(_ provider: @escaping () -> String?) { contextPathProvider = provider }
 
     func setBoardRouteResolver(_ resolver: @escaping () -> ProjectResolver.BoardRoute) {
         boardRouteResolver = resolver
@@ -336,7 +341,8 @@ final class ProgramBoardOverlayController {
         hasSettingsTab: Bool,
         hasCachedSnapshot: Bool,
         activityProjectPaths: [String],
-        showsRegisteredProjectCatalog: Bool = false
+        showsRegisteredProjectCatalog: Bool = false,
+        generalContext: Bool = false
     ) -> WorkspaceOpening? {
         let showsWorkTab: Bool
         let projectScope: [String]
@@ -360,10 +366,10 @@ final class ProgramBoardOverlayController {
             selectedProjectPath = nil
             requestedTab = initialTab
         case .unavailable:
-            showsWorkTab = false
-            projectScope = []
+            showsWorkTab = true
+            projectScope = activityProjectPaths
             selectedProjectPath = nil
-            requestedTab = initialTab == .work ? (hasTerminalTab ? .terminal : .notes) : initialTab
+            requestedTab = initialTab
         }
 
         let normalizedTab = WorkspaceViewModel.normalized(
@@ -372,7 +378,10 @@ final class ProgramBoardOverlayController {
             showsTerminalTab: hasTerminalTab,
             showsSettingsTab: hasSettingsTab
         )
-        let blocksContent = normalizedTab == .work && showsWorkTab && !hasCachedSnapshot
+        let hasProjectRoute: Bool
+        if case .unavailable = route { hasProjectRoute = false } else { hasProjectRoute = true }
+        let reloadsWork = hasProjectRoute && !generalContext
+        let blocksContent = normalizedTab == .work && reloadsWork && !hasCachedSnapshot
         return WorkspaceOpening(
             showsWorkTab: showsWorkTab,
             showsTerminalTab: hasTerminalTab,
@@ -382,7 +391,7 @@ final class ProgramBoardOverlayController {
             selectedProjectPath: selectedProjectPath,
             startsLoading: blocksContent,
             contentLoadBlocked: blocksContent,
-            reloadsWork: showsWorkTab
+            reloadsWork: reloadsWork
         )
     }
 
@@ -497,7 +506,8 @@ final class ProgramBoardOverlayController {
             hasSettingsTab: settingsContent != nil,
             hasCachedSnapshot: hasCachedSnapshot,
             activityProjectPaths: activityProjectPaths,
-            showsRegisteredProjectCatalog: showsRegisteredProjectCatalog
+            showsRegisteredProjectCatalog: showsRegisteredProjectCatalog,
+            generalContext: generalContextProvider()
         ) else {
             noSessionHandler?()
             return false
@@ -532,12 +542,22 @@ final class ProgramBoardOverlayController {
     static func refreshedProjectSelection(
         route: ProjectResolver.BoardRoute,
         currentSelection: String?,
-        projectScope: [String]
+        projectScope: [String],
+        committedContextPath: String? = nil,
+        preserveProjectSelection: Bool = true
     ) -> String? {
         let projectScope = ProgramBoardProjectPath.deduplicated(projectScope)
-        if let currentSelection,
+        // Nil is an explicit All Projects inspection, independent of execution context.
+        guard let currentSelection else { return nil }
+        if preserveProjectSelection,
            let scopedPath = projectScope.first(where: {
                ProgramBoardProjectPath.matches($0, currentSelection)
+           }) {
+            return scopedPath
+        }
+        if let committedContextPath,
+           let scopedPath = projectScope.first(where: {
+               ProgramBoardProjectPath.matches($0, committedContextPath)
            }) {
             return scopedPath
         }
@@ -600,6 +620,8 @@ final class ProgramBoardOverlayController {
         }
 
         model.setProjectScope(opening.projectScope, selectedProjectPath: opening.selectedProjectPath)
+        refreshContextPresentation()
+        if !workspace.isGeneralContext, let path = workspace.contextPath { model.selectProject(path: path) }
         contentLoadBlocked = opening.contentLoadBlocked
         model.prepareForOpening()
         model.theme = themeResolver?()
@@ -840,7 +862,8 @@ final class ProgramBoardOverlayController {
         lastSelectedTab = workspace.selectedTab
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
-        contentLoadBlocked = workspace.selectedTab == .work && workspace.showsWorkTab && model.snapshot == nil
+        refreshContextPresentation()
+        contentLoadBlocked = workspace.selectedTab == .work && !workspace.isGeneralContext && model.snapshot == nil
         // Even after an instant suspend, the Workspace returns with its
         // reveal rather than popping back in.
         let container = revealContainer ?? panel.contentView as? BoardRevealContainerView
@@ -927,6 +950,13 @@ final class ProgramBoardOverlayController {
         stopThemePoll()
         themePollTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self, self.isVisible else { return }
+            let previousContext = self.workspace.contextPath
+            let wasGeneral = self.workspace.isGeneralContext
+            self.refreshContextPresentation()
+            if wasGeneral != self.workspace.isGeneralContext || previousContext != self.workspace.contextPath {
+                if let path = self.workspace.contextPath { self.model.selectProject(path: path) }
+                self.checkForUpdates(inBackground: self.model.snapshot != nil)
+            }
             let next = self.themeResolver?()
             if next != self.model.theme {
                 self.model.theme = next
@@ -975,7 +1005,8 @@ final class ProgramBoardOverlayController {
         inBackground: Bool,
         preserveProjectSelection: Bool = true
     ) {
-        guard workspace.showsWorkTab else {
+        refreshContextPresentation()
+        guard workspace.showsWorkTab, !workspace.isGeneralContext else {
             contentLoadBlocked = false
             revealContainer?.setLoading(false)
             revealContainer?.setUpdateCheckActive(false)
@@ -991,8 +1022,10 @@ final class ProgramBoardOverlayController {
         )
         let selectedProjectPath = Self.refreshedProjectSelection(
             route: route,
-            currentSelection: preserveProjectSelection ? model.selectedProjectPath : nil,
-            projectScope: nextScope
+            currentSelection: model.selectedProjectPath,
+            projectScope: nextScope,
+            committedContextPath: workspace.contextPath,
+            preserveProjectSelection: preserveProjectSelection
         )
         model.setProjectScope(nextScope, selectedProjectPath: selectedProjectPath)
         if contentLoadBlocked {
@@ -1031,16 +1064,21 @@ final class ProgramBoardOverlayController {
     }
 
     private func selectProject(_ repoPath: String) {
-        model.selectProject(path: repoPath)
         projectSelectionHandler?(repoPath)
+        refreshContextPresentation()
+        if let path = workspace.contextPath { model.selectProject(path: path) }
         selectWorkspaceTab(.work)
+        checkForUpdates(inBackground: model.snapshot != nil)
+    }
+
+    private func refreshContextPresentation() {
+        workspace.isGeneralContext = generalContextProvider()
+        workspace.contextPath = contextPathProvider()
     }
 
     private func startSession() {
         guard !model.hasActiveSession else { return }
-        guard !requiresConfirmedProjectProvider()
-                || model.selectedSessionProjectPath != nil else { return }
-        startSessionHandler?(model.selectedSessionProjectPath)
+        startSessionHandler?(workspace.isGeneralContext ? nil : workspace.contextPath)
         model.hasActiveSession = sessionActiveProvider()
     }
 

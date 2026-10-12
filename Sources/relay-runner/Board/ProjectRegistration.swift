@@ -360,6 +360,73 @@ final class ProjectRegistryV2Service {
         try store.load().document.projects
     }
 
+    var generalTasksDirectory: URL {
+        appSupportRoot.appendingPathComponent("general-tasks", isDirectory: true)
+            .standardizedFileURL
+    }
+
+    /// The built-in project uses the ordinary local project/worker machinery.
+    /// Its initial commit is empty: existing user files and the index stay intact.
+    @discardableResult
+    func ensureGeneralTasksProject() throws -> RegisteredProjectV2 {
+        let directory = generalTasksDirectory
+        let expectedPath = appSupportRoot.standardizedFileURL.resolvingSymlinksInPath()
+            .appendingPathComponent("general-tasks", isDirectory: true).path
+        guard (try? fileManager.destinationOfSymbolicLink(atPath: directory.path)) == nil,
+              directory.resolvingSymlinksInPath().path == expectedPath else {
+            throw ServiceError.appHomeTarget(directory.path)
+        }
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let gitDirectory = directory.appendingPathComponent(".git", isDirectory: true)
+        guard (try? fileManager.destinationOfSymbolicLink(atPath: gitDirectory.path)) == nil else {
+            throw ServiceError.createFailed("general-tasks must own its local Git directory")
+        }
+        let gitArguments = ["--git-dir=\(gitDirectory.path)", "--work-tree=\(directory.path)"]
+        if fileManager.fileExists(atPath: gitDirectory.path) {
+            let values = try gitDirectory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else {
+                throw ServiceError.createFailed("general-tasks must own its local Git directory")
+            }
+        } else {
+            let initialized = try gitRunner(gitArguments + [
+                "-c", "core.hooksPath=/dev/null", "-c", "init.templateDir=",
+                "init", "--initial-branch=main",
+            ], directory)
+            guard initialized.status == 0 else {
+                throw ServiceError.createFailed(initialized.stderr)
+            }
+        }
+        let head = try gitRunner(gitArguments + ["rev-parse", "--verify", "HEAD"], directory)
+        if head.status != 0 {
+            let committed = try gitRunner(gitArguments + [
+                "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                "-c", "user.name=Relay Runner", "-c", "user.email=relay-runner@localhost",
+                "commit", "--allow-empty", "--only", "-m", "Initialize general tasks",
+            ], directory)
+            guard committed.status == 0 else {
+                throw ServiceError.createFailed(committed.stderr)
+            }
+        }
+        let candidate = try inspect(selectedURL: directory)
+        guard candidate.repoPath.path == expectedPath else {
+            throw ServiceError.appHomeTarget(candidate.repoPath.path)
+        }
+        if let duplicate = candidate.duplicates.first {
+            let existing = try project(projectID: duplicate.existingProjectID)
+            guard normalizedPath(existing.lastResolvedPath) == expectedPath,
+                  existing.gitCommonDirectoryFingerprint == candidate.gitCommonDirectoryFingerprint else {
+                throw ServiceError.identityMismatch(expected: existing.projectID, found: candidate.committedProjectID)
+            }
+            return existing
+        }
+        return try register(candidate: candidate, displayName: "general-tasks", selectAsActive: false)
+    }
+
     func project(projectID: String) throws -> RegisteredProjectV2 {
         let document = try store.load().document
         guard let project = document.projects.first(where: { $0.projectID == projectID }) else {
@@ -549,7 +616,8 @@ final class ProjectRegistryV2Service {
     func register(
         candidate: ProjectRegistrationCandidate,
         displayName: String,
-        remote: ProjectRemoteMetadata = .localOnly
+        remote: ProjectRemoteMetadata = .localOnly,
+        selectAsActive: Bool = true
     ) throws -> RegisteredProjectV2 {
         var document = try store.load().document
         let candidate = try validator.validate(
@@ -594,7 +662,9 @@ final class ProjectRegistryV2Service {
         )
         document.projects.append(record)
         document.projects.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-        document.activeProjectID = projectID
+        if selectAsActive {
+            document.activeProjectID = projectID
+        }
         do {
             try store.save(document)
         } catch {
@@ -840,6 +910,10 @@ final class ProjectRegistryV2Service {
     private func isAppHomeTarget(_ rawPath: String) -> Bool {
         let candidate = normalizedPath(rawPath)
         let root = appSupportRoot.standardizedFileURL.resolvingSymlinksInPath().path
+        if candidate == URL(fileURLWithPath: root, isDirectory: true)
+            .appendingPathComponent("general-tasks", isDirectory: true).path {
+            return false
+        }
         let prefix = root.hasSuffix("/") ? root : root + "/"
         return candidate == root || candidate.hasPrefix(prefix)
     }

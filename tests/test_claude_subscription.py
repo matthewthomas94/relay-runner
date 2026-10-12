@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import contextlib
+import io
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(ROOT, "services"))
@@ -20,6 +23,16 @@ SECRET = "sk-ant-api03-SECRET-VALUE"
 
 
 class EvaluateTests(unittest.TestCase):
+    def test_foreground_gate_distinguishes_sign_in_from_configuration_blockers(self):
+        for reason in (*claude_subscription.LOGIN_REQUIRED_REASONS, "metered_environment", "api_key_helper", "oauth_token_unverified"):
+            readiness = claude_subscription.ClaudeSubscriptionReadiness("unverified", reason, "Sign in.")
+            with patch("claude_subscription.check", return_value=readiness), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(claude_subscription.main([]), 78)
+                self.assertEqual(
+                    claude_subscription.main(["--signal-login-required"]),
+                    77 if reason in claude_subscription.LOGIN_REQUIRED_REASONS else 78,
+                )
+
     def assertBlocked(self, readiness, reason, state="blocked"):
         self.assertFalse(readiness.ready)
         self.assertEqual((readiness.state, readiness.reason), (state, reason))

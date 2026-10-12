@@ -9,13 +9,20 @@ prompt text, final response text, transcript paths, summaries, or raw payloads.
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import errno
+import fcntl
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
+import sqlite3
+import subprocess
 import sys
 import time
+import uuid
 from typing import Callable, TextIO
 
 from provider_turn_broker import ProviderTurnBroker
@@ -524,6 +531,14 @@ def _manual_submission_evidence(
     submission_id = str(evidence.get("submission_id") or "").strip()
     if not submission_id:
         return evidence, "quarantined_provider_continuation_missing_nonce"
+    continuation = evidence.get("continuation_source")
+    if continuation is not None:
+        prompt = payload.get("prompt")
+        if not prompt or hashlib.sha256(prompt.encode("utf-8")).hexdigest() != evidence.get("prompt_sha256"):
+            return evidence, "quarantined_context_continuation_prompt_mismatch"
+        authority = context_continuation_authority({"operation": "check", "source": continuation})
+        if authority.get("status") != "ready":
+            return evidence, "quarantined_context_continuation_parent_revoked"
     return evidence, "accepted_terminal_manual_submit"
 
 
@@ -1090,6 +1105,11 @@ def _bind_prompt_submit(
             "manual_submission_id": evidence["submission_id"],
             "manual_submit_evidence_source": evidence["evidence_source"],
         }
+        parent = evidence.get("continuation_source")
+        if isinstance(parent, dict) and parent.get("intent_id"):
+            record.update({"intent_id": parent["intent_id"],
+                           "relay_command_seq": int(parent["command_seq"]),
+                           "relay_command_id": parent["command_id"]})
         turn_id = _turn_id(payload)
         if turn_id:
             record["turn_id"] = turn_id
@@ -1187,7 +1207,7 @@ def _complete_turn(
         print("[relay_completion_hook] ignored duplicate provider completion", file=stderr)
         return False
     identity_reconciled = correlation == "provider_identity_reconciled"
-    if _relay_command_key(record) is None:
+    if record.get("origin") == "manual" or _relay_command_key(record) is None:
         event = _hook_event_name(payload)
         completed = (
             _annotate_identity_reconciliation(record, payload, now=now)
@@ -1405,7 +1425,240 @@ def handle_hook_payload(
             broker.close()
 
 
+def record_session_binding(payload: dict, *, process_only: bool = False,
+                           expected_binding: dict | None = None) -> bool:
+    """Bind an exact native session to this app launch; never discover by cwd.
+
+    This small private sidecar is operational state, outside the user archive.
+    No prompt, reasoning, tool output or transcript contents are copied here.
+    """
+    destination = os.environ.get("RELAY_SESSION_BINDING_PATH", "")
+    context_id = os.environ.get("RELAY_CONTEXT_ID", "")
+    transport_id = os.environ.get("RELAY_PROVIDER_SESSION_ID", "")
+    expected_cwd = os.environ.get("RELAY_CONTEXT_WORKING_DIRECTORY", "")
+    provider = os.environ.get("RELAY_RUNNER_PROVIDER", "")
+    if not destination or not context_id or not expected_cwd or provider not in {"codex", "claude"}:
+        return False
+    native_id = _session_id(payload)
+    try:
+        if not process_only:
+            uuid.UUID(native_id)
+        uuid.UUID(transport_id)
+    except (ValueError, AttributeError):
+        return False
+    path = Path(destination)
+    if path.parent.name != "bindings" or path.name != f"{transport_id}.json":
+        return False
+    actual_cwd = str(payload.get("cwd") or os.getcwd())
+    if Path(actual_cwd).resolve() != Path(expected_cwd).resolve():
+        return False
+    transcript = str(payload.get("transcript_path") or "")
+    binding = {
+        "schema_version": 1,
+        "context_id": context_id,
+        "provider": provider,
+        "provider_session_id": transport_id,
+        "native_session_id": None if process_only else native_id,
+        "working_directory": str(Path(expected_cwd).resolve()),
+        "transcript_path": transcript or None,
+    }
+    raw_pid = os.environ.get("RELAY_PROVIDER_PROCESS_ID", "")
+    if raw_pid.isdecimal() and int(raw_pid) > 1:
+        pid = int(raw_pid)
+        if not process_only or pid == os.getppid():
+            identity = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "lstart=", "-o", "uid=", "-o", "pgid="],
+                                      capture_output=True, text=True, check=False, timeout=2)
+            if identity.returncode == 0 and identity.stdout.strip():
+                binding["provider_pid"] = pid
+                binding["provider_process_identity"] = identity.stdout.strip()
+    if process_only and "provider_pid" not in binding:
+        raise ValueError("Provider process identity unavailable")
+    if expected_binding is not None and binding.get("provider_process_identity") != expected_binding.get("provider_process_identity"):
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_suffix(f".{os.getpid()}.tmp")
+    with path.with_suffix(".lock").open("a") as guard:
+        path.with_suffix(".lock").chmod(0o600)
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        if expected_binding is not None and _read_json_file(str(path)) != expected_binding:
+            return False
+        try:
+            with temporary.open("w", encoding="utf-8") as stream:
+                json.dump(binding, stream, sort_keys=True)
+            temporary.chmod(0o600)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return True
+
+
+def record_codex_startup_binding(*, wait_seconds: float = 120) -> bool:
+    """Observe only this launch's native writer; never search sessions by cwd.
+
+    Codex can hold an empty native thread before running any lifecycle hook or
+    creating a transcript. Its exclusive writer lock supplies the real UUID;
+    the first real prompt hook later supplies the transcript path.
+    """
+    if os.environ.get("RELAY_RUNNER_PROVIDER") != "codex":
+        return False
+    path = Path(os.environ.get("RELAY_SESSION_BINDING_PATH", ""))
+    binary = os.environ.get("RELAY_PROVIDER_BINARY", "")
+    if not binary or not Path(binary).is_absolute():
+        return False
+    expected = _read_json_file(str(path)) or {}
+    pid = expected.get("provider_pid")
+    identity = expected.get("provider_process_identity")
+    if not isinstance(pid, int) or pid <= 1 or not identity or str(pid) != os.environ.get("RELAY_PROVIDER_PROCESS_ID"):
+        return False
+    if (expected.get("provider") != "codex"
+            or expected.get("provider_session_id") != os.environ.get("RELAY_PROVIDER_SESSION_ID")
+            or expected.get("context_id") != os.environ.get("RELAY_CONTEXT_ID")
+            or Path(expected.get("working_directory") or "").resolve() != Path(os.environ.get("RELAY_CONTEXT_WORKING_DIRECTORY", "")).resolve()):
+        return False
+    native_root = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").resolve()
+
+    def current_identity() -> str:
+        result = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "lstart=", "-o", "uid=", "-o", "pgid="],
+                                capture_output=True, text=True, check=False, timeout=2)
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        if current_identity() != identity:
+            return False
+        current = _read_json_file(str(path)) or {}
+        if any(current.get(k) != expected.get(k) for k in expected if k != "native_session_id" and k != "transcript_path"):
+            return False
+        if current.get("native_session_id"):
+            return True  # A native lifecycle hook already supplied richer state.
+        result = subprocess.run(["/usr/sbin/lsof", "-n", "-P", "-a", "-p", str(pid), "-Fftln"],
+                                capture_output=True, text=True, check=False, timeout=2)
+        files, entry = [], {}
+        for line in result.stdout.splitlines():
+            if line.startswith("f"):
+                if entry:
+                    files.append(entry)
+                entry = {"f": line[1:]}
+            elif line and line[0] in "tln":
+                entry[line[0]] = line[1:]
+        if entry:
+            files.append(entry)
+        # macOS lsof supplies descriptor paths but omits file/lock types. Test
+        # the one exact owned file instead; never acquire or create its lock.
+        locks = {Path(f["n"]).resolve() for f in files if f.get("f", "").isdigit()
+                 and "n" in f and Path(f["n"]).parent.resolve() == native_root / "thread-writer-locks"}
+        cwd_matches = any(f.get("f") == "cwd" and Path(f.get("n", "")).resolve() == Path(expected["working_directory"]).resolve() for f in files)
+        binary_matches = any(f.get("f") == "txt" and Path(f.get("n", "")).resolve() == Path(binary).resolve() for f in files)
+        if result.returncode == 0 and len(locks) == 1 and cwd_matches and binary_matches:
+            lock = next(iter(locks))
+            try:
+                native_id = str(uuid.UUID(lock.stem)) if lock.suffix == ".lock" else ""
+            except ValueError:
+                return False
+            held = False
+            if native_id and lock.is_file():
+                with lock.open("rb") as handle:
+                    try:
+                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        held = True
+                    else:
+                        fcntl.flock(handle, fcntl.LOCK_UN)
+            if held and current_identity() == identity:
+                # Recheck the sidecar immediately before publication. Never
+                # replace an already-enriched native hook binding.
+                latest = _read_json_file(str(path)) or {}
+                if latest.get("native_session_id"):
+                    return True
+                if latest == expected:
+                    return record_session_binding({"session_id": native_id, "cwd": expected["working_directory"]}, expected_binding=expected)
+                return False
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.2)
+    return False
+
+
+def context_continuation_authority(request: dict, *, database_path: str = VOICE_INTENT_INBOX,
+                                   authorization_path: str = "/tmp/voice_command_authorizations.json") -> dict:
+    """Read canonical turn/intent authority without creating a lease or replaying it."""
+    source = request.get("source") or {}
+    owner_fields = ("provider", "provider_session_id", "native_session_id", "app_session_id",
+                    "recovery_generation", "foreground_gate_handle")
+    if not isinstance(source, dict) or any(not str(source.get(k) or "") for k in owner_fields):
+        return {"status": "blocked", "message": "The exact source request identity is unavailable."}
+    try:
+        with closing(sqlite3.connect(Path(database_path).as_uri() + "?mode=ro", uri=True, timeout=0.25)) as db:
+            db.row_factory = sqlite3.Row
+            query = " AND ".join(f"{k}=?" for k in owner_fields)
+            rows = db.execute(f"SELECT * FROM provider_turns WHERE {query} AND actor_role='foreground_pm' ORDER BY created_at DESC, updated_at DESC",
+                              tuple(source[k] for k in owner_fields)).fetchall()
+            operation = request.get("operation")
+            if operation == "capture":
+                if not rows or rows[0]["state"] != "active":
+                    return {"status": "blocked", "message": "Continuation requires the current native user turn."}
+                identity_fields = (*owner_fields, "turn_id", "native_turn_id", "local_turn_seq", "owner_id", "origin",
+                                   "intent_id", "command_seq", "command_id", "manual_submission_id")
+                source = {k: str(rows[0][k]) for k in identity_fields if rows[0][k] is not None}
+                source["canonical_turn_id"] = source.pop("turn_id")
+            else:
+                rows = [r for r in rows if r["turn_id"] == source.get("canonical_turn_id")]
+                if not rows:
+                    return {"status": "blocked", "message": "The source request is no longer canonical."}
+                newer = db.execute("SELECT origin FROM provider_turns WHERE owner_id=? AND provider_session_id=? AND created_at>?",
+                                   (rows[0]["owner_id"], source["provider_session_id"], rows[0]["created_at"])).fetchall()
+                if newer and (not source.get("intent_id") or any(r["origin"] == "manual" for r in newer)):
+                    return {"status": "blocked", "message": "A newer native request superseded this continuation."}
+            row = rows[0]
+            if row["state"] not in ("active", "completed_final", "completed_manual"):
+                return {"status": "blocked", "message": "The source request was cancelled or did not finish successfully."}
+            if source.get("intent_id"):
+                intent = db.execute("SELECT * FROM intents WHERE intent_id=? AND command_seq=? AND command_id=?",
+                                    (source["intent_id"], source.get("command_seq"), source.get("command_id"))).fetchone()
+                if not intent or intent["state"] != "acked":
+                    return {"status": "blocked", "message": "The parent voice intent is not acknowledged or was cancelled."}
+                ledger = _read_json_file(authorization_path) or {}
+                allowed = [a for a in ledger.get("authorizations", [])
+                           if str(a.get("intent_id") or "") == source["intent_id"]
+                           and str(a.get("relay_command_seq")) == str(source.get("command_seq"))
+                           and a.get("relay_command_id") == source.get("command_id")]
+                # Conversation-only voice turns have no mutation grant. Keep them
+                # bounded by their canonical intent; never manufacture a grant.
+                if allowed and not any(a.get("status") == "active" for a in allowed):
+                    return {"status": "blocked", "message": "The parent voice authorization was revoked."}
+            if operation == "ack":
+                destination = request.get("destination") or {}
+                if any(not destination.get(k) for k in owner_fields):
+                    return {"status": "blocked", "message": "Destination identity is unavailable."}
+                ack = db.execute(f"SELECT 1 FROM provider_turns WHERE {query} AND actor_role='foreground_pm' AND manual_submission_id=?",
+                                 (*[destination[k] for k in owner_fields], request.get("submission_id"))).fetchone()
+                return {"status": "consumed" if ack else "waiting"}
+            return {"status": "active" if row["state"] == "active" else "ready", "source": source}
+    except (OSError, sqlite3.Error, ValueError, KeyError):
+        return {"status": "blocked", "message": "Canonical continuation authority is unavailable."}
+
+
 def main() -> int:
+    if sys.argv[1:] == ["--record-codex-startup"]:
+        try:
+            return 0 if record_codex_startup_binding() else 1
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return 1
+    if sys.argv[1:] == ["--context-continuation"]:
+        try:
+            request = json.load(sys.stdin)
+            result = context_continuation_authority(request) if isinstance(request, dict) else {"status": "blocked"}
+        except (ValueError, OSError):
+            result = {"status": "blocked", "message": "Invalid continuation request."}
+        print(json.dumps(result, separators=(",", ":")))
+        return 0
+    if sys.argv[1:] == ["--record-process"]:
+        try:
+            if not record_session_binding({}, process_only=True):
+                return 1
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return 1
+        return 0
     try:
         payload = json.load(sys.stdin)
     except json.JSONDecodeError:
@@ -1413,6 +1666,10 @@ def main() -> int:
         return 0
     if not isinstance(payload, dict):
         return 0
+    try:
+        record_session_binding(payload)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        print("[relay_completion_hook] session binding unavailable", file=sys.stderr)
     try:
         handle_hook_payload(payload)
     except Exception as exc:

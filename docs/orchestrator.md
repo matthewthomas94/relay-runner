@@ -1,5 +1,7 @@
 # Relay Runner Orchestrator
 
+Start Session defaults to the preinstalled **general-tasks** project in `~/Library/Application Support/relay-runner/general-tasks`. Use the existing Projects list to select it or another repository. Every project retains its own ordinary ticket board. Optional private GitHub file storage can be connected later in Settings. See [Assistant contexts and personal files](specs/assistant-contexts.md).
+
 The opt-in project artifact writer, exact-ref synchronization, and bounded history contracts are documented in [Project-owned Relay artifact store](architecture/artifact-store.md), [Relay artifact synchronization](architecture/artifact-sync.md), and [Relay artifact retention and history](architecture/artifact-retention.md). These are RR-273 phases 3–5; the legacy worker-ticket lifecycle described below remains the compatibility path until the later lifecycle and migration gates are enabled.
 
 Saved notes are global, provider-neutral context, independent of the selected project. Codex and
@@ -26,7 +28,11 @@ scripts/relay-orchestrator --status
 
 You should see a running daemon, a port file, and an installed plist.
 
-### 1. Open a `/relay-bridge` agent session in a repo or workspace folder
+### 1. Start a session and choose a context
+
+Use Start Session for general-tasks. Select a registered repository, add an existing project or create one through the existing Projects list. Project changes save the prior provider session and resume the destination's exact native session when available; saved commands are never replayed.
+
+The following `/relay-bridge` path remains available for manually hosted sessions:
 
 The board is scoped to whichever project or workspace folder your active `/relay-bridge` agent session is rooted in. From a Codex or Claude session whose cwd is the repo or workspace you want to work on:
 
@@ -184,15 +190,11 @@ Tickets live as version-controlled markdown under `<repo>/.orchestrator/`. Reads
 
 ## Which board you see
 
-The active `/relay-bridge` agent session remains the common project picker: when the bridge starts, it writes its launching cwd to `/tmp/voice_bridge.cwd`; the menu-bar Board reads that file (gated on `/tmp/voice_bridge.sock` as liveness check) and classifies it through the active project registry.
+The existing Projects list includes general-tasks and registered repositories. Selecting one shows its ordinary board; each ticket stays allocated to its owning project. Notes remain centralized. Workspace, Notes, Terminal and Settings are the available tabs.
 
-If the bridge cwd is a workspace folder with child git repos, the registry stores the workspace root and discovered projects, then the Workspace opens the read-only Program Workspace. The workspace root does not get a parent `.orchestrator/`, and discovered child repos are not initialized just because they were discovered.
+Start Session defaults to the app-owned general-tasks directory, without adopting a stale configured repository. Registered projects require current scope validation before execution. Missing or replaced repositories retain their history and require location or identity repair before new work can run.
 
-If the bridge cwd is a single git repo, the registry activates that repo and renders the repo's `.orchestrator/` board. For a fresh git repo, first activation creates `.orchestrator/config.toml` and renders an empty board. If the cwd is not a git repo and contains no child git repos, activation is refused instead of running `git init`; initialize the folder explicitly first.
-
-The General setting is still stored as `working_directory` in `config.toml` for compatibility, but the UI now treats it as the workspace folder. Existing users migrate through the same resolver on app launch, provider change, or saved setting change: a legacy repo path scopes the Workspace Work tab to that repo, while a legacy parent folder such as `/Users/example/dev` becomes a workspace root if it contains child repos. Start Session launches both Codex and Claude from that configured folder and writes the same provider metadata shape (`codex` or `claude`) for Workspace routing.
-
-Programmatic callers can activate a project by repo path or registered alias, and the Relay Actions MCP exposes the same path as `activate_project`, giving Codex, Claude, MCP, and UI code a provider-neutral activation model. With no live bridge or explicit activation, Workspace opens without a Work tab and keeps Terminal/System Settings available; recording still shows the standard "No session running" pill. Switch projects by stopping one bridge (or `/relay-stop`) and starting another from the new repo or workspace cwd, or by explicitly activating another registered repo.
+Project changes wait for an active recording, accepted foreground command or approval to finish. Detached workers retain their canonical project ownership. A workspace folder can expose child boards without creating a parent repository.
 
 The full file format is documented at [docs/specs/orchestrator-tickets.md](specs/orchestrator-tickets.md).
 

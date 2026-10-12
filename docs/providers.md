@@ -7,7 +7,7 @@ Relay Runner supports Codex and Claude Code as equivalent session providers. The
 | | Codex | Claude Code |
 | --- | --- | --- |
 | Executable discovery | Bundled Codex executable in ChatGPT.app or Codex.app, followed by configured command resolution. | Configured command, then `~/.local/bin/claude`, `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`, the npm global prefix, and `claude` on the PATH your shell profile sets. Setup runs Claude's official installer when Claude is selected and missing, or when neither supported CLI is present. |
-| Authentication check | Presence of `~/.codex/auth.json`. | Onboarding, Settings and every launch use the [subscription-only gate](#subscription-only-authentication). A keychain login or `loggedIn` status alone is not enough. Setup can finish without sign-in; Claude sessions stay unavailable until the gate passes. |
+| Authentication check | Onboarding and Settings check for `~/.codex/auth.json`. Session startup verifies a ChatGPT login with `codex login status` and starts sign-in when needed. | Onboarding, Settings and every launch use the [subscription-only gate](#subscription-only-authentication). A keychain login or `loggedIn` status alone is not enough. Setup can finish without sign-in; session startup starts sign-in when needed and rechecks the gate. |
 | Manual sign-in | `codex login` | `claude auth login` with your Claude.ai subscription account |
 | Relay install | Relay skills and the Relay Actions, Relay Vision, and orchestrator MCP helpers are registered for the available CLI. | Same. |
 
@@ -34,13 +34,13 @@ Claude Code accepts several credentials, and `claude auth status` alone does not
 - an active Anthropic workload-identity-federation profile, which blocks it;
 - `claude auth status --json`, run with that environment and working directory: it must report a first-party claude.ai login with a Pro, Max, Team or Enterprise plan and no API-key source.
 
-Anything else fails closed with the fix to make and no credential values. The foreground launcher stops before Claude starts; background work records the message on the run. Relay Runner does not strip the user's credentials to get past the gate.
+Anything else fails closed with the fix to make and no credential values. When foreground startup needs sign-in, Relay runs `claude auth login --claudeai` in the same terminal and rechecks before starting Claude. Configuration that selects API or cloud billing still stops startup with the required fix; background work records the message on the run. Relay Runner does not strip the user's credentials to get past the gate.
 
 A long-lived `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` is a subscription credential per Anthropic's documentation, but Claude Code 2.1.239 reports no plan for it, so the gate treats it as unverified and asks for a `claude auth login` sign-in instead. It passes automatically if a future Claude Code reports its plan.
 
 ### Codex
 
-Codex sessions sign in with ChatGPT (`codex login`; `codex login status` reports `Logged in using ChatGPT`). Relay Runner no longer forwards `OPENAI_API_KEY` to the continuity agent or note summaries. Workers, reviews, the messenger and the foreground session still inherit the launching environment. Codex 0.151.0 can store an API-key login (`codex login --with-api-key`) and its binary reads `CODEX_API_KEY` and `OPENAI_API_KEY`, with undocumented precedence, so a Codex launch gate equivalent to Claude's is still owed before Relay Runner as a whole can claim to be subscription-only.
+Foreground Codex startup checks that `codex login status` reports `Logged in using ChatGPT`. If needed, it runs `codex login` in the same terminal with `forced_login_method="chatgpt"`, rechecks, then resolves the selected model family and starts the session with the same login restriction. Relay Runner no longer forwards `OPENAI_API_KEY` to the continuity agent or note summaries. Workers, reviews and the messenger still inherit the launching environment, so equivalent Codex launch gates for those processes are still owed before Relay Runner as a whole can claim to be subscription-only.
 
 ## Models and effort
 
@@ -90,6 +90,8 @@ Claude spikes expose only `Read`, `Glob`, `Grep`, `WebSearch`, and `WebFetch` in
 ## Session entry points
 
 The supported default is **Start Session** in Workspace. It launches the selected provider inside the embedded terminal, starts the app-owned voice bridge, binds the selected project scope, and keeps the provider's visible terminal output available.
+
+If sign-in is needed, Start Session opens the selected provider's login flow automatically. Complete the browser sign-in or paste the code into the terminal; startup continues after authentication succeeds. Queued voice prompts wait until the provider is ready. Canceling or failing sign-in ends startup with a retry message. The external Terminal.app compatibility route uses the same login behavior.
 
 For a terminal you launched yourself, install Relay Skills from **Settings → General**, then invoke the relay-bridge skill from the active Codex or Claude session. `relay-stop` ends that manual bridge. Directly running `services/voice_bridge.py` is an implementation path, not a supported user entry point.
 

@@ -150,18 +150,25 @@ final class StateMachine: @unchecked Sendable {
     private(set) var workingProgressUpdatedAt: Date?
 
     private let now: () -> Date
+    let storyboardDemoEnabled: Bool
+    private var storyboardRecording = false
     private var stateBeforeIdle: OverlayState = .idle
     private var lastIdleTransitionTime: Date = .distantPast
     private var sentEnteredAt: Date?
     private var pendingAcknowledgement: PendingAcknowledgement?
     private var presentedDeliveryIDs: [String] = []
 
-    init(now: @escaping () -> Date = Date.init) {
+    init(
+        now: @escaping () -> Date = Date.init,
+        storyboardDemoEnabled: Bool = ProcessInfo.processInfo.arguments.contains("--storyboard-demo")
+    ) {
         self.now = now
+        self.storyboardDemoEnabled = storyboardDemoEnabled
     }
 
     /// Called by AppState when STT engine state changes.
     func updateSTT(isRecording: Bool, partial: String) {
+        guard !storyboardRecording else { return }
         partialTranscription = partial
 
         if isRecording {
@@ -183,6 +190,23 @@ final class StateMachine: @unchecked Sendable {
         autoDismiss: TimeInterval? = nil,
         presentation: SpeechPresentation? = nil
     ) {
+        if source == "storyboard_demo" {
+            guard storyboardDemoEnabled else { return }
+            switch newState {
+            case "recording":
+                storyboardRecording = true
+                partialTranscription = text ?? ""
+                state = .recording
+            case "sent":
+                storyboardRecording = false
+                updateSTT(isRecording: false, partial: "")
+            case "idle":
+                reset()
+            default:
+                break
+            }
+            return
+        }
         switch (source, newState) {
         case ("tts", "message_waiting"):
             guard canApplyWaitingPresentation(presentation) else { break }
@@ -516,6 +540,7 @@ final class StateMachine: @unchecked Sendable {
 
     /// Reset to idle (services stopped).
     func reset() {
+        storyboardRecording = false
         state = .idle
         partialTranscription = ""
         messagePreview = nil

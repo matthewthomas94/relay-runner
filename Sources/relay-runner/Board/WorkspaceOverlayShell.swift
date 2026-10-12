@@ -33,6 +33,8 @@ final class WorkspaceViewModel {
     var showsTerminalTab = true
     var showsSettingsTab = false
     var updater: RelayUpdaterController?
+    var isGeneralContext = true
+    var contextPath: String?
 
     var availableTabs: [WorkspaceTab] {
         WorkspaceViewModel.availableTabs(

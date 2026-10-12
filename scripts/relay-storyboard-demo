@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""Replay the six-frame localhost storyboard through Relay's native overlays."""
+
+import argparse
+import functools
+import json
+import mimetypes
+import socket
+import subprocess
+import sys
+import threading
+import time
+import uuid
+import wave
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+ROOT = Path(__file__).resolve().parents[1]
+WORK = Path('/tmp/relay-storyboard-demo')
+URL = 'http://localhost:3000'
+PROMPT = 'Hey, is the dev server running? I have Chrome on localhost but nothing is rendering.'
+LINES = [
+    'The dev server is definitely running, let me bring up Chrome and take a look.',
+    'Okay, seems to be a rendering issue on the front end. I’m investigating the issue now.',
+    'You should see the video rendering now',
+]
+PAGE = b'''<!doctype html><html><head><meta charset="utf-8"><title>localhost</title>
+<style>html,body{margin:0;width:100%;height:100%;background:#fff;overflow:hidden}
+iframe,img,video{border:0;width:100%;height:100%;object-fit:contain;background:#000}</style>
+</head><body><script>
+let shown=false;
+setInterval(async()=>{let s=await(await fetch('/__demo/state',{cache:'no-store'})).json();
+if(!s.revealed){if(shown){document.querySelectorAll('video').forEach(v=>v.pause());
+document.body.replaceChildren();shown=false}return}
+if(shown)return;shown=true;let e=document.createElement(s.kind);e.src=s.url;
+if(s.kind==='video'){e.autoplay=true;e.loop=!s.loop_url;e.muted=true;e.playsInline=true}
+document.body.replaceChildren(e);
+if(s.loop_url){let loop=document.createElement('video');loop.src=s.loop_url;
+loop.preload='auto';loop.loop=true;loop.muted=true;loop.playsInline=true;
+loop.style.display='none';document.body.append(loop);
+loop.addEventListener('playing',()=>fetch('/__demo/looping',{method:'POST'}),{once:true});
+e.addEventListener('ended',()=>{e.style.display='none';loop.style.display='';loop.play()},{once:true})}
+},100);
+</script></body></html>'''
+
+
+def event(source, state, **fields):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+        client.sendto(json.dumps(dict(source=source, state=state, **fields)).encode(),
+                      '/tmp/voice_state.sock')
+
+
+def probe():
+    path = f'/tmp/relay_storyboard_probe_{uuid.uuid4().hex}.sock'
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+            client.bind(path)
+            client.settimeout(2)
+            event('storyboard_demo', 'probe', reply_path=path)
+            if not json.loads(client.recv(1024))['enabled']:
+                raise RuntimeError('Launch the demo app with --storyboard-demo first.')
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def audio_settings():
+    sys.path.insert(0, str(ROOT / 'services'))
+    from config import load_config
+    settings = load_config()['tts']
+    return settings['voice'], float(settings['rate'])
+
+
+def prepare():
+    import numpy as np
+    from kokoro_onnx import Kokoro
+    voice, rate = audio_settings()
+    models = Path.home() / '.local/share/kokoro'
+    kokoro = Kokoro(str(models / 'kokoro-v1.0.onnx'), str(models / 'voices-v1.0.bin'))
+    WORK.mkdir(exist_ok=True)
+    for index, text in enumerate(LINES):
+        samples, sample_rate = kokoro.create(text, voice=voice, speed=1.0, lang='en-us')
+        with wave.open(str(WORK / f'{index}.wav'), 'wb') as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(sample_rate)
+            output.writeframes((np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes())
+    (WORK / 'speech.json').write_text(json.dumps(dict(lines=LINES, voice=voice, rate=rate)))
+    print(f'Prepared {len(LINES)} spoken lines using {voice}, playback rate {rate}.')
+
+
+def serve(asset, loop_asset=None):
+    asset = asset.resolve() if asset else None
+    loop_asset = loop_asset.resolve() if loop_asset else None
+    if loop_asset and (not asset or not all(
+            item.is_file() and (mimetypes.guess_type(str(item))[0] or '').startswith('video/')
+            for item in (asset, loop_asset))):
+        raise RuntimeError('--loop-asset requires two existing video files.')
+    if asset and not asset.exists():
+        raise RuntimeError(f'Asset does not exist: {asset}')
+    if asset and asset.is_dir() and not (asset / 'index.html').is_file():
+        raise RuntimeError('An HTML asset folder must contain index.html.')
+    directory = asset if asset and asset.is_dir() else asset.parent if asset else WORK
+    state = dict(revealed=False, ready=asset is not None, kind='iframe', url='',
+                 loop_url='', playback='blank')
+    if asset:
+        mime = mimetypes.guess_type(str(asset))[0] or ''
+        state['kind'] = 'img' if mime.startswith('image/') else 'video' if mime.startswith('video/') else 'iframe'
+        state['url'] = '/asset/' if asset.is_dir() else '/asset/' + quote(asset.name)
+    clips = {}
+    if loop_asset:
+        state.update(url='/asset/intro.mp4', loop_url='/asset/loop.mp4')
+        clips = {state['url']: asset, state['loop_url']: loop_asset}
+
+    class Handler(SimpleHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_GET(self):
+            if self.path == '/':
+                data, content_type = PAGE, 'text/html'
+            elif self.path == '/__demo/state':
+                data, content_type = json.dumps(state).encode(), 'application/json'
+            elif self.path in clips:
+                clip = clips[self.path]
+                self.path = '/' + quote(clip.name)
+                self.directory = str(clip.parent)
+                return super().do_GET()
+            elif self.path.startswith('/asset/') and asset:
+                self.path = self.path.removeprefix('/asset')
+                return super().do_GET()
+            elif asset and not self.path.startswith('/__demo/'):
+                return super().do_GET()
+            else:
+                return self.send_error(404)
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self):
+            if self.path == '/__demo/looping' and state['revealed'] and loop_asset:
+                state['playback'] = 'loop'
+                self.send_response(204)
+                return self.end_headers()
+            if self.path not in ('/__demo/reset', '/__demo/reveal'):
+                return self.send_error(404)
+            if self.path.endswith('reveal') and not state['ready']:
+                return self.send_error(409, 'Supply the final asset first.')
+            state['revealed'] = self.path.endswith('reveal')
+            state['playback'] = 'intro' if state['revealed'] else 'blank'
+            self.send_response(204)
+            self.end_headers()
+
+    WORK.mkdir(exist_ok=True)
+    server = ThreadingHTTPServer(('127.0.0.1', 3000), functools.partial(Handler, directory=str(directory)))
+    print(f'Blank demo page ready at {URL}. Asset: {asset or "pending"}'
+          + (f'; then loop {loop_asset}' if loop_asset else ''), flush=True)
+    server.serve_forever()
+
+
+def request(path, method='GET'):
+    with urlopen(Request(URL + path, method=method), timeout=3) as response:
+        return response.read()
+
+
+def view_screen():
+    # Invoke the actual Relay Vision MCP helper; successful capture pulses ActionGlow.
+    call = dict(jsonrpc='2.0', id=1, method='tools/call',
+                params=dict(name='screenshot', arguments=dict(display_index=0)))
+    helper = str(ROOT / 'dist/Relay Runner.app/Contents/MacOS/relay-vision-mcp')
+    result = subprocess.run([helper], input=json.dumps(call) + '\n', text=True,
+                            capture_output=True, check=True, timeout=35)
+    reply = json.loads(result.stdout.strip())
+    if 'error' in reply or reply.get('result', {}).get('isError'):
+        raise RuntimeError('Relay Vision capture failed: ' + str(reply))
+    if not any(item['type'] == 'image' for item in reply['result']['content']):
+        raise RuntimeError('Relay Vision returned no screenshot.')
+
+
+def run(lead_in):
+    if Path('/tmp/voice_bridge.sock').exists():
+        raise RuntimeError('Stop the active voice session before scripted playback.')
+    probe()
+    if not json.loads(request('/__demo/state'))['ready']:
+        raise RuntimeError('The final asset is pending; restart serve with --asset PATH.')
+    voice, rate = audio_settings()
+    cached = json.loads((WORK / 'speech.json').read_text())
+    if cached != dict(lines=LINES, voice=voice, rate=rate):
+        raise RuntimeError('Voice settings changed; run prepare again.')
+    for index in range(len(LINES)):
+        with wave.open(str(WORK / f'{index}.wav')) as audio:
+            if audio.getnframes() == 0:
+                raise RuntimeError('Empty speech audio; run prepare again.')
+    request('/__demo/reset', 'POST')
+    # Binding without unlinking preserves any other playback owner's socket.
+    control = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    control.bind('/tmp/tts_control.sock')
+    control.settimeout(.1)
+    cancelled = threading.Event()
+    finished = threading.Event()
+    playback = None
+
+    def listen():
+        while not finished.is_set():
+            try:
+                if control.recv(256).decode().strip() in ('skip', 'stop'):
+                    cancelled.set()
+            except socket.timeout:
+                pass
+
+    def pause(seconds):
+        if cancelled.wait(seconds):
+            raise InterruptedError('Demo cancelled.')
+
+    def speak(index):
+        nonlocal playback
+        event('tts', 'speaking', text=LINES[index])
+        playback = subprocess.Popen(['/usr/bin/afplay', '-r', str(rate), str(WORK / f'{index}.wav')])
+        while playback.poll() is None:
+            pause(.05)
+        if playback.returncode:
+            raise RuntimeError('Audio playback failed.')
+        event('tts', 'idle')
+        pause(.6)
+
+    listener = threading.Thread(target=listen, daemon=True)
+    listener.start()
+    try:
+        print(f'Demo starts in {lead_in:g} seconds.', flush=True)
+        pause(lead_in)
+        event('storyboard_demo', 'recording')
+        pause(1)
+        words = PROMPT.split()
+        for count in range(1, len(words) + 1):
+            event('storyboard_demo', 'recording', text=' '.join(words[:count]))
+            pause(.2)
+        pause(2)
+        event('storyboard_demo', 'sent')
+        pause(.5)
+        speak(0)
+        subprocess.run(['/usr/bin/osascript', '-e',
+                        'tell application "Google Chrome"\n'
+                        'make new window\n'
+                        f'set URL of active tab of front window to "{URL}"\n'
+                        'activate\nend tell'], check=True, capture_output=True)
+        pause(2)
+        view_screen()
+        pause(3)
+        speak(1)
+        pause(.5)
+        request('/__demo/reveal', 'POST')
+        pause(.75)
+        speak(2)
+        if json.loads(request('/__demo/state'))['loop_url']:
+            deadline = time.monotonic() + 60
+            while json.loads(request('/__demo/state'))['playback'] != 'loop':
+                if time.monotonic() > deadline:
+                    raise RuntimeError('The intro video did not finish in the browser.')
+                pause(.1)
+        pause(2)
+        print('Storyboard complete.', flush=True)
+    finally:
+        if playback and playback.poll() is None:
+            playback.terminate()
+            playback.wait()
+        finished.set()
+        listener.join()
+        control.close()
+        Path('/tmp/tts_control.sock').unlink(missing_ok=True)
+        event('storyboard_demo', 'idle')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('prepare', help='Pre-render speech; no playback or UI changes.')
+    serving = commands.add_parser('serve', help='Serve the blank page and supplied asset.')
+    serving.add_argument('--asset', type=Path, help='HTML folder, HTML file, image, or video.')
+    serving.add_argument('--loop-asset', type=Path, help='Video to loop after --asset plays once.')
+    playing = commands.add_parser('run', help='Replay all six storyboard beats.')
+    playing.add_argument('--lead-in', type=float, default=5)
+    args = parser.parse_args()
+    try:
+        if args.command == 'prepare':
+            prepare()
+        elif args.command == 'serve':
+            serve(args.asset, args.loop_asset)
+        else:
+            run(args.lead_in)
+    except (OSError, RuntimeError, ValueError, KeyError, InterruptedError) as error:
+        parser.exit(1, f'{error}\n')
+    except KeyboardInterrupt:
+        parser.exit(130, 'Demo stopped.\n')
+
+
+if __name__ == '__main__':
+    main()

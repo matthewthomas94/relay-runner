@@ -151,7 +151,7 @@ def format_qualification_for_agent(qualification: IntentQualification) -> str:
         f"- command_id: {qualification.command_id}\n"
         f"- command_seq: {qualification.command_seq}\n"
         "- The PM qualifies the full original turn and may correct this hint. "
-        "Task means authorized project/tracked work; Action means a bounded foreground operation; "
+        "Task means authorized project, substantial General or tracked work; Action means a bounded foreground operation; "
         "Discussion includes research and status with read-only tools.\n"
         "- This bucket does not authorize any effect. Apply whole-turn negations and corrections. "
         "Resolve references and mixed scope from conversation; preserve ordered requests and existing accepted work. "

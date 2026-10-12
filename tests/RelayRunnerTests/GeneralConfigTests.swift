@@ -345,9 +345,10 @@ final class GeneralConfigTests: XCTestCase {
         )
     }
 
-    func testWorkspaceFolderSettingsCopyAvoidsProjectOnlyLanguage() {
+    func testWorkspaceFolderSettingsExplainsGeneralStartupAndExplicitProjects() {
         XCTAssertEqual(GeneralSettingsTab.workspaceFolderLabel, "Workspace folder")
-        XCTAssertTrue(GeneralSettingsTab.workspaceFolderHelpText.contains("child git repositories"))
+        XCTAssertTrue(GeneralSettingsTab.workspaceFolderHelpText.contains("General sessions start immediately"))
+        XCTAssertTrue(GeneralSettingsTab.workspaceFolderHelpText.contains("Select a project in Workspace"))
         XCTAssertTrue(OnboardingView.workspaceFolderHelpText.contains("child git repositories"))
         XCTAssertFalse(GeneralSettingsTab.workspaceFolderHelpText.contains("always a project"))
         XCTAssertFalse(OnboardingView.workspaceFolderHelpText.contains("always a project"))

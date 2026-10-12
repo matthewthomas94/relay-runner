@@ -29,6 +29,9 @@ final class OrchestratorMCPClientInstructionsTests: XCTestCase {
             XCTAssertEqual(Instructions.payload, Instructions.claudeFull)
             let tools = try await server.dispatch(method: "tools/list", params: [:])
             XCTAssertEqual(try mcpCanonicalJSONSHA256(tools), releasedToolsListSHA256, client)
+            let names = try await toolNames(server)
+            XCTAssertFalse(names.contains("general_task"))
+            assertGeneralRules(try XCTUnwrap(result["instructions"] as? String))
         }
     }
 
@@ -56,6 +59,7 @@ final class OrchestratorMCPClientInstructionsTests: XCTestCase {
         let names = try await toolNames(server)
         XCTAssertTrue(names.contains("get_relay_instructions"))
         XCTAssertTrue(names.contains("dispatch_ticket"))
+        XCTAssertFalse(names.contains("general_task"))
 
         let call = try await server.dispatch(
             method: "tools/call",
@@ -68,6 +72,15 @@ final class OrchestratorMCPClientInstructionsTests: XCTestCase {
         XCTAssertTrue(text.contains("## Subscription-only provider access"))
         XCTAssertTrue(text.contains("artifact-backed ticket writer"))
         XCTAssertTrue(text.contains("### Worker sizing"))
+        assertGeneralRules(text)
+    }
+
+    private func assertGeneralRules(_ text: String, file: StaticString = #filePath, line: UInt = #line) {
+        for rule in ["general-tasks", "Application Support/relay-runner/general-tasks", "existing Projects list",
+                     "Every project's tickets", "Task / Action / Discussion", "Small bounded actions",
+                     "GitHub storage is optional", "confirmed source repository"] {
+            XCTAssertTrue(text.contains(rule), "Missing General rule: \(rule)", file: file, line: line)
+        }
     }
 
     func testPingReturnsEmptyResult() async throws {

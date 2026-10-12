@@ -3,6 +3,30 @@ import XCTest
 
 final class ProcessManagerLaunchTests: XCTestCase {
 
+    func testOnlyManagedCodexLaunchObservesExactNativeStartupIdentityBeforeExec() throws {
+        for target in [ProcessManager.AgentTarget.codex, .claude] {
+            var config = AppConfig()
+            config.general.provider = target == .codex ? .codex : .claude
+            for context in [AssistantSessionContext?.none, .some(.general)] {
+                let script = ProcessManager.launchScript(relayBridge: "/Relay Runner/scripts/relay-bridge", target: target,
+                    agentBinary: "/Native Provider/bin/provider", config: config, voiceDelivery: .appOwned,
+                    sessionContext: context, providerBindingPath: "/private/bindings/transport.json")
+                if target == .codex && context != nil {
+                    let process = try XCTUnwrap(script.range(of: " --record-process"))
+                    let binary = try XCTUnwrap(script.range(of: "export RELAY_PROVIDER_BINARY='/Native Provider/bin/provider'"))
+                    let observation = try XCTUnwrap(script.range(of: " --record-codex-startup </dev/null >/dev/null 2>&1 &"))
+                    let execution = try XCTUnwrap(script.range(of: "exec '/Native Provider/bin/provider'"))
+                    XCTAssertLessThan(process.lowerBound, binary.lowerBound)
+                    XCTAssertLessThan(binary.lowerBound, observation.lowerBound)
+                    XCTAssertLessThan(observation.lowerBound, execution.lowerBound)
+                    XCTAssertFalse(script.contains("hooks.SessionStart="), "The configured native Codex does not emit this before its first turn")
+                } else {
+                    XCTAssertFalse(script.contains(" --record-codex-startup"))
+                }
+            }
+        }
+    }
+
     func testLaunchScriptUsesWorkspaceFolderForCodexAndClaude() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
 
@@ -14,7 +38,9 @@ final class ProcessManagerLaunchTests: XCTestCase {
             target: .codex,
             agentBinary: "/usr/local/bin/codex",
             config: codexConfig,
-            homeDirectory: home
+            homeDirectory: home,
+            resolvedCodexModel: "gpt-6.1-sol",
+            resolvedCodexEffort: "xhigh"
         )
 
         XCTAssertTrue(codexScript.contains("'/Relay Runner/relay-bridge' --venv-only"))
@@ -125,8 +151,127 @@ final class ProcessManagerLaunchTests: XCTestCase {
             rawStatus: ProcessManager.claudeSubscriptionGateExitCode << 8,
             bridgeSocketOutcome: nil
         )
-        XCTAssertTrue(message.contains("only uses your Claude subscription"))
-        XCTAssertTrue(message.contains("claude auth login"))
+        XCTAssertTrue(message.contains("Claude subscription"))
+        XCTAssertTrue(message.contains("configuration issue shown in the terminal"))
+    }
+
+    func testProviderLoginRunsOnceAndRechecksBeforeLaunchForBothProviders() throws {
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        for target in [ProcessManager.AgentTarget.claude, .codex] {
+            for scenario in ["ready", "login", "cancel", "still_missing", "api"] {
+                if target == .claude && scenario == "api" { continue }
+                let temp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("relay-login-\(UUID().uuidString)")
+                try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+                defer { try? FileManager.default.removeItem(at: temp) }
+                let agent = temp.appendingPathComponent("agent")
+                let ready = target == .claude
+                    ? #"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}"#
+                    : "Logged in using ChatGPT"
+                let missing = target == .claude ? #"{"loggedIn":false}"# : "Not logged in"
+                try (scenario == "ready" ? ready : (scenario == "api" ? "Logged in using an API key: SECRET" : missing))
+                    .write(to: temp.appendingPathComponent("status"), atomically: true, encoding: .utf8)
+                try ready.write(to: temp.appendingPathComponent("ready"), atomically: true, encoding: .utf8)
+                try """
+                #!/bin/bash
+                cd "$(dirname "$0")"
+                printf '%s\\n' "$*" >> calls
+                [ "$1" = -c ] && shift 2
+                if [ "$1 $2" = 'auth status' ] || [ "$1 $2" = 'login status' ]; then
+                    cat status
+                    exit 0
+                fi
+                [ "\(scenario)" = cancel ] && exit 1
+                [ "\(scenario)" != still_missing ] && cp ready status
+                exit 0
+                """.write(to: agent, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: agent.path)
+                let gate = target == .claude
+                    ? ProcessManager.claudeSubscriptionGate(
+                        relayBridge: repo.appendingPathComponent("scripts/relay-bridge").path,
+                        target: target, agentBinary: agent.path
+                    )
+                    : ProcessManager.codexLoginGate(target: target, agentBinary: agent.path)
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/bash")
+                process.arguments = ["-e", "-c", """
+                    relay_record_session_event() { printf '%s %s\\n' "$1" "$2"; }
+                    cd '\(temp.path)'
+                    \(gate)
+                    echo launched
+                    """]
+                process.environment = ["HOME": temp.path, "PATH": "/usr/bin:/bin"]
+                let output = Pipe()
+                process.standardOutput = output
+                process.standardError = output
+                try process.run()
+                process.waitUntilExit()
+                let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                let calls = try String(contentsOf: temp.appendingPathComponent("calls"), encoding: .utf8)
+                    .split(separator: "\n").map(String.init)
+                let loginCalls = calls.filter { !$0.contains("status") }
+                XCTAssertEqual(loginCalls.count, scenario == "ready" ? 0 : 1, "\(target) \(scenario): \(calls)")
+                if let login = loginCalls.first {
+                    XCTAssertTrue(target == .claude ? login == "auth login --claudeai" : login.contains("forced_login_method=\"chatgpt\" login"))
+                }
+                let succeeds = ["ready", "login", "api"].contains(scenario)
+                XCTAssertEqual(process.terminationStatus, succeeds ? 0 : (target == .claude ? 78 : 79), text)
+                XCTAssertEqual(text.contains("launched"), succeeds, "\(target) \(scenario): \(text)")
+                XCTAssertEqual(calls.filter { $0.contains("status") }.count, ["ready", "cancel"].contains(scenario) ? 1 : 2)
+                XCTAssertFalse(text.contains("SECRET"))
+            }
+        }
+    }
+
+    func testCodexResolvesSelectedModelAfterLoginAndBeforeBridge() throws {
+        var config = AppConfig()
+        config.general.provider = .codex
+        config.general.model = "astra"
+        config.general.orchestrator_effort = "ultra"
+        let script = ProcessManager.launchScript(
+            relayBridge: "/App/scripts/relay-bridge", target: .codex,
+            agentBinary: "/usr/local/bin/codex", config: config, voiceDelivery: .appOwned
+        )
+        let login = try XCTUnwrap(script.range(of: "login ||"))
+        let resolver = try XCTUnwrap(script.range(of: "services/codex_model_catalog.py"))
+        let bridge = try XCTUnwrap(script.range(of: "--start-daemon"))
+        XCTAssertLessThan(login.lowerBound, resolver.lowerBound)
+        XCTAssertLessThan(resolver.lowerBound, bridge.lowerBound)
+        XCTAssertTrue(script.contains("--family 'astra' --effort 'ultra'"))
+        XCTAssertTrue(script.contains("--model \"$relay_codex_model\""))
+    }
+
+    func testCodexLauncherResolvesCatalogueAndStopsOnUnavailableFamily() throws {
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        var config = AppConfig()
+        config.general.model = "astra"
+        config.general.orchestrator_effort = "ultra"
+        for available in [true, false] {
+            let catalogue = available ? #"{"data":[{"id":"gpt-6-astra","defaultReasoningEffort":"high","supportedReasoningEfforts":["ultra"]}]}"# : #"{"data":[]}"#
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", """
+                \(ProcessManager.codexModelResolutionScript(
+                    relayBridge: repo.appendingPathComponent("scripts/relay-bridge").path,
+                    agentBinary: "/unused/codex", config: config
+                ))
+                printf '%s\\n' "$relay_codex_model" "$relay_codex_effort"
+                """]
+            process.environment = ["PATH": "/usr/bin:/bin", "RELAY_CODEX_MODEL_LIST_JSON": catalogue]
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = output
+            try process.run()
+            process.waitUntilExit()
+            let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            XCTAssertEqual(process.terminationStatus, available ? 0 : 1, text)
+            if available {
+                XCTAssertEqual(text, "gpt-6-astra\nultra\n")
+            } else {
+                XCTAssertTrue(text.contains("family 'astra' is unavailable"))
+            }
+        }
     }
 
     func testEmbeddedLaunchScriptStartsBridgeDaemonAndLeavesProviderPromptUsable() {
@@ -527,7 +672,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         )
 
         XCTAssertTrue(script.contains(
-            "'/usr/local/bin/codex' --model 'gpt-5.7-sol' -c 'model_reasoning_effort=\"ultra\"' --search --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
+            "'/usr/local/bin/codex' --model 'gpt-5.7-sol' -c 'model_reasoning_effort=\"ultra\"' -c 'forced_login_method=\"chatgpt\"' --search --dangerously-bypass-approvals-and-sandbox 'Use the relay-bridge skill now.'"
         ))
     }
 

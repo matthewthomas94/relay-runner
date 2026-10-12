@@ -176,6 +176,14 @@ struct RelayProjectNoteReference: Codable, Equatable, Sendable {
     let verified: Bool
     let catalogCommit: String
 
+    func materializedFileURL(repositoryPath: String) -> URL {
+        let repository = URL(fileURLWithPath: repositoryPath)
+        let root = artifactRef == "personal/files"
+            ? repository.deletingLastPathComponent().appendingPathComponent("files")
+            : repository
+        return root.appendingPathComponent(path)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case path, commit, revision, verified
         case artifactRef = "artifact_ref"
