@@ -42,7 +42,7 @@ class PublicReleaseDocumentationTests(unittest.TestCase):
 
     def test_readme_has_sanitized_product_images_and_routes(self):
         readme = (PROJECT_ROOT / "README.md").read_text()
-        self.assertIn("docs/images/relay-runner-message-playing.png", readme)
+        self.assertIn("docs/images/relay-runner-demo.gif", readme)
         self.assertIn("docs/images/relay-runner-workspace.png", readme)
         self.assertNotIn("Permission is hereby granted", readme)
         for relative in (

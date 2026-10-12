@@ -14,9 +14,9 @@
 
 </div>
 
-![Relay Runner playing a spoken response while the session overlay stays out of the way](docs/images/relay-runner-message-playing.png)
+![Relay Runner taking a spoken request, investigating a front-end rendering issue, and speaking its reply](docs/images/relay-runner-demo.gif)
 
-*A response plays locally while the notch and perimeter animation show session state without covering the work underneath.*
+*Speak a request, watch the agent work, and hear the reply while the notch and perimeter animation show session state without covering the work underneath.*
 
 Relay Runner adds a voice and coordination layer to the coding agents you already use. Speak a request, keep the full interactive provider session available, and move into Workspace when the work needs a project, a ticket, or a worker you can follow.
 
