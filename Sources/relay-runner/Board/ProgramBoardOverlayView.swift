@@ -1507,7 +1507,7 @@ private struct ProgramProjectCard: View {
 
     var body: some View {
         Button(action: onSelect) {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .center, spacing: 8) {
                     Text(item.project?.name ?? "Unknown project")
                         .font(AppTypography.font(.projectTitle))
@@ -1541,7 +1541,7 @@ private struct ProgramProjectCard: View {
                 }
             }
             .padding(16)
-            .frame(maxWidth: .infinity, minHeight: ProgramBoardLayout.projectCardHeight, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: ProgramBoardLayout.projectCardHeight, alignment: .topLeading)
             .background(
                 ProgramBoardInteractiveBackground(
                     shape: .rounded(BoardDarkSurfaceStyle.nestedCardCornerRadius),
@@ -1581,12 +1581,12 @@ private struct ProjectBoardOverview: View {
     let item: ProgramStatusItem
 
     private let columns = [
-        GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 24),
+        GridItem(.flexible(), spacing: 24),
     ]
 
     var body: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
             ProjectCount(label: "Backlog", value: item.backlogTickets ?? item.openTickets)
             ProjectCount(label: "Queued", value: item.readyTickets)
             ProjectCount(label: "Done", value: item.doneTickets)
