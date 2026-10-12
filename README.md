@@ -4,6 +4,12 @@
 
 **Talk to Codex or Claude while a native macOS workspace keeps your sessions, project tickets, and agent progress in view.**
 
+[![Latest release](https://img.shields.io/github/v/release/matthewthomas94/relay-runner?label=release)](https://github.com/matthewthomas94/relay-runner/releases/latest)
+[![Build DMG](https://github.com/matthewthomas94/relay-runner/actions/workflows/build-dmg.yml/badge.svg?branch=main)](https://github.com/matthewthomas94/relay-runner/actions/workflows/build-dmg.yml)
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)](#get-started)
+[![Swift 5.9](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)](Package.swift)
+[![License: MIT](https://img.shields.io/github/license/matthewthomas94/relay-runner)](LICENSE)
+
 [Get started](#get-started) · [See the product](#a-voice-layer-and-a-workspace) · [Privacy](#what-stays-local) · [Documentation](#go-further) · [Contribute](CONTRIBUTING.md)
 
 </div>
@@ -58,9 +64,13 @@ For faster code iteration, use `swift build` and `swift test`. See [Contributing
 
 The voice layer captures audio, transcribes it with Parakeet, delivers text to the configured agent session, and speaks replies with Kokoro. Listening and playback have visible states, and the overlay recedes when it has nothing to say.
 
+![Relay Runner viewing the screen through Relay Vision with the halftone perimeter glow active](docs/images/relay-runner-viewing-screen.png)
+
+*When you ask the agent to look, Relay Vision captures the screen and the notch and perimeter glow show that it is viewing.*
+
 Workspace is the project side of the same session. Select a registered local repository, start a project-scoped Codex or Claude terminal, create or inspect tickets, and follow orchestration and worker progress without treating the app's support directory as a project.
 
-![Relay Runner Workspace with one local project and visible ticket progress](docs/images/relay-runner-workspace.png)
+![Relay Runner Workspace with projects, backlog, queued, in-progress, and done columns](docs/images/relay-runner-workspace.png)
 
 *Workspace keeps project selection, the active session, tickets, orchestration, and worker review in one native surface.*
 
