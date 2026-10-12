@@ -329,7 +329,11 @@ final class ParticleFieldRenderer {
     private func buildOrbGrid(theme: Theme, size: CGSize, elapsed: Double, now: CFTimeInterval) -> [Dot] {
         let color = NSColor(hue: theme.baseHue, saturation: theme.baseSaturation,
                             brightness: 1, alpha: 1).usingColorSpace(.sRGB)!
-        let target = SIMD3(Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent))
+        // The monochrome orb fades from a white core to the card's navy
+        // (#11161D) at its sparse edge instead of staying flat white.
+        let target = theme.baseSaturation == 0
+            ? SIMD3(17.0 / 255, 22.0 / 255, 29.0 / 255)
+            : SIMD3(Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent))
         let progress = reduceMotion ? 1 : max(0, min(1, (now - orbColorStartedAt) / 0.3))
         let blend = progress * progress * (3 - 2 * progress)
         let previous = previousOrbColor ?? target
