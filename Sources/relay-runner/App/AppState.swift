@@ -872,7 +872,10 @@ final class AppState {
             create: { [weak self] in self?.createProject() }
         )
         programBoardOverlay.setProjectSelectionHandler { [weak self] repoPath in
-            _ = self?.selectProjectContext(repositoryPath: repoPath)
+            guard let self else { return }
+            // Browsing boards must not launch a session; only an already
+            // running session follows the selected project.
+            _ = self.selectProjectContext(repositoryPath: repoPath, startsSession: self.hasActiveSession)
         }
         programBoardOverlay.setRequiresConfirmedProjectProvider { [weak self] in
             self?.projectRegistryV2 != nil
@@ -1790,7 +1793,7 @@ final class AppState {
     }
 
     @discardableResult
-    func selectProjectContext(repositoryPath: String) -> Bool {
+    func selectProjectContext(repositoryPath: String, startsSession: Bool = true) -> Bool {
         do {
             let context: AssistantSessionContext
             if let registry = projectRegistryV2 {
@@ -1802,6 +1805,11 @@ final class AppState {
             } else {
                 let path = WorkspaceFolder.url(from: repositoryPath).resolvingSymlinksInPath().path
                 context = AssistantSessionContext(kind: .project, projectID: path, repositoryPath: path)
+            }
+            guard startsSession else {
+                try assistantSessionStore.select(context, provider: config.general.provider.rawValue, model: config.general.model)
+                publishConversationState()
+                return true
             }
             return requestContextSelection(context)
         } catch {
