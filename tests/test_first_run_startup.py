@@ -124,10 +124,10 @@ class FirstRunStartupTests(unittest.TestCase):
             (services / "requirements.txt").write_text("placeholder\n")
 
             for relative in (
-                ".claude/commands/relay-bridge.md",
-                ".claude/commands/relay-stop.md",
-                ".claude/commands/relay-dispatch.md",
-                ".claude/commands/relay-workflow.md",
+                ".claude/skills/relay-bridge/SKILL.md",
+                ".claude/skills/relay-stop/SKILL.md",
+                ".claude/skills/relay-dispatch/SKILL.md",
+                ".claude/skills/relay-workflow/SKILL.md",
                 ".codex/skills/relay-bridge/SKILL.md",
                 ".codex/skills/relay-stop/SKILL.md",
                 ".codex/skills/relay-dispatch/SKILL.md",
@@ -217,10 +217,10 @@ exit 0
                 (services / "requirements.txt").write_text("placeholder\n")
 
                 for relative in (
-                    ".claude/commands/relay-bridge.md",
-                    ".claude/commands/relay-stop.md",
-                    ".claude/commands/relay-dispatch.md",
-                    ".claude/commands/relay-workflow.md",
+                    ".claude/skills/relay-bridge/SKILL.md",
+                    ".claude/skills/relay-stop/SKILL.md",
+                    ".claude/skills/relay-dispatch/SKILL.md",
+                    ".claude/skills/relay-workflow/SKILL.md",
                     ".codex/skills/relay-bridge/SKILL.md",
                     ".codex/skills/relay-stop/SKILL.md",
                     ".codex/skills/relay-dispatch/SKILL.md",

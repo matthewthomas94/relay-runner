@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Bake the Relay behavioral-rule chunks into the MCP servers and CLAUDE.md.
+"""Bake the Relay behavioral-rule chunks into the MCP servers, CLAUDE.md and AGENTS.md.
 
 Single source of truth lives in `services/instructions/*.md`. This script:
 
   1. Concatenates the relevant chunks per MCP server and writes a Swift
      constant (`Instructions.generated.swift`) into each target so the rules
      ship inside the binary — no filesystem dependency at runtime.
-  2. Regenerates the behavioral block of the repo-root `CLAUDE.md` between
-     the BEGIN/END GENERATED markers, leaving the hand-edited preamble and
-     postamble untouched.
+  2. Regenerates the behavioral block of the repo-root `CLAUDE.md` (Claude)
+     and `AGENTS.md` (Codex) between the BEGIN/END GENERATED markers, leaving
+     each file's hand-edited preamble and postamble untouched.
   3. Bakes the compact `claude-code` payloads from
      `services/instructions/compact/` and fails if any exceeds Claude Code's
      2048-character MCP instruction cap.
-  4. Regenerates the relay-workflow and relay-dispatch command/skill bodies
+  4. Regenerates the relay-workflow and relay-dispatch skill bodies
      that `scripts/relay-bridge` installs for Claude and Codex.
 
 Run it after editing any chunk. It is idempotent. Checked-in generated
@@ -49,7 +49,7 @@ ORCHESTRATOR = [
 # the full rules with the server's read-only `get_relay_instructions` tool.
 CLAUDE_INSTRUCTIONS_LIMIT = 2048
 COMPACT_SERVERS = ["relay-actions", "relay-orchestrator", "relay-vision"]
-# Order the chunks appear in CLAUDE.md's generated block.
+# Order the chunks appear in the CLAUDE.md and AGENTS.md generated blocks.
 CLAUDE_MD = [
     "subscription-only",
     "orchestration-workflow",
@@ -62,7 +62,7 @@ CLAUDE_MD = [
     "naming",
 ]
 
-# Installed Relay commands: Claude's ~/.claude/commands/<name>.md and Codex's
+# Installed Relay skills: Claude's ~/.claude/skills/<name>/SKILL.md and Codex's
 # ~/.codex/skills/<name>/SKILL.md share one body. They ship as quoted heredocs
 # in scripts/relay-bridge, keyed here by delimiter.
 COMMANDS = {
@@ -73,6 +73,10 @@ COMMANDS = {
         "artifact-tickets",
     ],
     "relay-dispatch": ["commands/relay-dispatch", "subscription-only"],
+}
+CLAUDE_DESCRIPTIONS = {
+    "relay-workflow": "Use on the first turn of any session where relay-orchestrator MCP tools are registered, and whenever the user discusses concrete work, mentions tickets/backlog/board, or asks to dispatch/delegate/check an agent run. Primes Relay Runner orchestrator mode.",
+    "relay-dispatch": "Use when the user says to work on, hand off, delegate, dispatch, or check an RR-style ticket. Dispatches a ticket from the current repo's local Relay Runner kanban board to a sub-agent.",
 }
 CODEX_DESCRIPTIONS = {
     "relay-workflow": "Prime Relay Runner orchestrator mode in Codex. Use when relay-orchestrator MCP tools are present, when the user discusses concrete work, mentions tickets/backlog/board, or asks to dispatch/delegate/check an agent run.",
@@ -88,6 +92,7 @@ COMMAND_INSTALLER = REPO / "scripts" / "relay-bridge"
 
 BEGIN = "<!-- BEGIN GENERATED: relay behavioral rules — edit services/instructions/, not here -->"
 END = "<!-- END GENERATED -->"
+GUIDANCE_FILES = ["CLAUDE.md", "AGENTS.md"]
 
 
 def load(name: str) -> str:
@@ -141,7 +146,7 @@ def command_file(name: str, provider: str) -> str:
             f"---\nname: {name}\ndescription: {CODEX_DESCRIPTIONS[name]}\n---\n\n"
             f"# {name}\n\n{body}"
         )
-    return body
+    return f"---\nname: {name}\ndescription: {CLAUDE_DESCRIPTIONS[name]}\n---\n\n{body}"
 
 
 def installer_with_commands(text: str) -> str:
@@ -165,15 +170,12 @@ def write_if_changed(path: Path, content: str) -> bool:
     return True
 
 
-def regen_claude_md(block: str) -> bool:
-    path = REPO / "CLAUDE.md"
-    text = path.read_text()
+def with_generated_block(name: str, text: str, block: str) -> str:
     if BEGIN not in text or END not in text:
-        sys.exit("CLAUDE.md is missing the BEGIN/END GENERATED markers")
+        sys.exit(f"{name} is missing the BEGIN/END GENERATED markers")
     pre, rest = text.split(BEGIN, 1)
     _, post = rest.split(END, 1)
-    new = f"{pre}{BEGIN}\n\n{block}\n{END}{post}"
-    return write_if_changed(path, new)
+    return f"{pre}{BEGIN}\n\n{block}\n{END}{post}"
 
 
 def main() -> None:
@@ -214,22 +216,22 @@ def main() -> None:
     elif write_if_changed(COMMAND_INSTALLER, installer_with_commands(installer)):
         print(f"wrote {COMMAND_INSTALLER.relative_to(REPO)} (command bodies)")
 
-    claude_block = concat(CLAUDE_MD).rstrip() + "\n"
+    block = concat(CLAUDE_MD).rstrip() + "\n"
+    for name in GUIDANCE_FILES:
+        path = REPO / name
+        text = path.read_text()
+        if check:
+            if BEGIN not in text or END not in text:
+                drifted.append(f"{name} (markers missing)")
+            elif with_generated_block(name, text, block) != text:
+                drifted.append(name)
+        elif write_if_changed(path, with_generated_block(name, text, block)):
+            print(f"wrote {name} (generated block)")
     if check:
-        text = (REPO / "CLAUDE.md").read_text()
-        if BEGIN in text and END in text:
-            current = text.split(BEGIN, 1)[1].split(END, 1)[0].strip()
-            if current != claude_block.strip():
-                drifted.append("CLAUDE.md")
-        else:
-            drifted.append("CLAUDE.md (markers missing)")
         if drifted:
             print("DRIFT — run scripts/build-instructions:\n  " + "\n  ".join(drifted))
             sys.exit(1)
         print("instructions in sync")
-    else:
-        if regen_claude_md(claude_block):
-            print("wrote CLAUDE.md (generated block)")
 
 
 if __name__ == "__main__":

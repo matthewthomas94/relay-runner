@@ -25,14 +25,19 @@ EXPECTED_MCP = "relay-orchestrator-mcp"
 OLD_MCP = "/Applications/Old Relay Runner.app/Contents/MacOS/relay-orchestrator-mcp"
 
 COMMAND_FILES = {
-    "claude-workflow": ".claude/commands/relay-workflow.md",
-    "claude-dispatch": ".claude/commands/relay-dispatch.md",
+    "claude-workflow": ".claude/skills/relay-workflow/SKILL.md",
+    "claude-dispatch": ".claude/skills/relay-dispatch/SKILL.md",
     "codex-workflow": ".codex/skills/relay-workflow/SKILL.md",
     "codex-dispatch": ".codex/skills/relay-dispatch/SKILL.md",
-    "claude-bridge": ".claude/commands/relay-bridge.md",
-    "claude-stop": ".claude/commands/relay-stop.md",
+    "claude-bridge": ".claude/skills/relay-bridge/SKILL.md",
+    "claude-stop": ".claude/skills/relay-stop/SKILL.md",
     "codex-bridge": ".codex/skills/relay-bridge/SKILL.md",
     "codex-stop": ".codex/skills/relay-stop/SKILL.md",
+}
+# Where Claude's copies lived before they moved to ~/.claude/skills.
+LEGACY_CLAUDE_COMMANDS = {
+    name: f".claude/commands/relay-{name}.md"
+    for name in ("workflow", "dispatch", "bridge", "stop")
 }
 
 FAKE_CLAUDE = r"""#!/bin/bash
@@ -236,7 +241,7 @@ class InstalledCommandTests(RelayInstallHarness):
         for name in ("relay-bridge", "relay-orchestrator"):
             result = self.run_script(name, "--install-skills")
             self.assertEqual(result.returncode, 0, result.stderr)
-        stale_workflow = self.path("claude-workflow").read_text()
+        stale_workflow = (self.home / LEGACY_CLAUDE_COMMANDS["workflow"]).read_text()
         self.assertIn("`max` is Claude-only", stale_workflow)
         # A user edit that keeps all of Relay's text is still a user edit.
         edited = self.path("codex-dispatch").read_text() + "Always ping me first.\n"
@@ -255,6 +260,9 @@ class InstalledCommandTests(RelayInstallHarness):
             build.command_file("relay-workflow", "codex"),
         )
         self.assertEqual(self.path("codex-dispatch").read_text(), edited)
+        # The legacy Claude commands the previous version wrote are retired.
+        for legacy in LEGACY_CLAUDE_COMMANDS.values():
+            self.assertFalse((self.home / legacy).exists(), legacy)
         # The bridge commands the previous version wrote are recognised too.
         self.assertIn(str(self.path("claude-bridge")), self.manifest.read_text())
         self.assertIn(str(self.path("codex-stop")), self.manifest.read_text())
@@ -266,14 +274,48 @@ class InstalledCommandTests(RelayInstallHarness):
             self.skipTest("older relay-bridge unavailable in this checkout")
         self.install_script("relay-bridge", old_bridge)
         self.assertEqual(self.run_script("relay-bridge", "--install-skills").returncode, 0)
-        before = self.path("claude-bridge").read_text()
+        legacy_bridge = self.home / LEGACY_CLAUDE_COMMANDS["bridge"]
+        before = legacy_bridge.read_text()
         self.assertIn(str(self.scripts / "relay-bridge"), before)
 
         self.install_script("relay-bridge", (ROOT / "scripts" / "relay-bridge").read_text())
         result = self.refresh()
         self.assertNotIn("Kept your edited", result.stderr)
+        self.assertFalse(legacy_bridge.exists())
         self.assertNotEqual(self.path("claude-bridge").read_text(), before)
         self.assertNotEqual(self.path("codex-bridge").read_text(), before)
+
+    def test_claude_skills_have_trigger_first_frontmatter(self):
+        self.refresh()
+        for name in ("workflow", "dispatch", "bridge", "stop"):
+            text = self.path(f"claude-{name}").read_text()
+            self.assertTrue(text.startswith(f"---\nname: relay-{name}\ndescription: Use "), name)
+
+    def test_unmodified_legacy_claude_commands_are_retired_and_edits_kept(self):
+        # A previous version installed Claude's copies as commands.
+        old = (ROOT / "scripts" / "relay-bridge").read_text()
+        old = old.replace('claude_skills_dir="$HOME/.claude/skills"', 'claude_skills_dir="$HOME/.claude/legacy"')
+        old = old.replace('"$claude_skills_dir/relay-bridge/SKILL.md"', '"$cmds_dir/relay-bridge.md"')
+        old = old.replace('"$claude_skills_dir/relay-stop/SKILL.md"', '"$cmds_dir/relay-stop.md"')
+        old = old.replace('"$claude_skills_dir/relay-dispatch/SKILL.md"', '"$cmds_dir/relay-dispatch.md"')
+        old = old.replace('"$claude_skills_dir/relay-workflow/SKILL.md"', '"$cmds_dir/relay-workflow.md"')
+        old = old.replace('retire_relay_command "$cmds_dir/$legacy_name.md"', ':')
+        self.install_script("relay-bridge", old)
+        self.refresh()
+        legacy = {name: self.home / path for name, path in LEGACY_CLAUDE_COMMANDS.items()}
+        for path in legacy.values():
+            self.assertTrue(path.exists(), path)
+        legacy["stop"].write_text("my own stop command\n")
+
+        self.install_script("relay-bridge", (ROOT / "scripts" / "relay-bridge").read_text())
+        result = self.refresh()
+        for name in ("workflow", "dispatch", "bridge"):
+            self.assertFalse(legacy[name].exists(), name)
+            self.assertNotIn(str(legacy[name]), self.manifest.read_text())
+        self.assertEqual(legacy["stop"].read_text(), "my own stop command\n")
+        self.assertIn(f"Kept your edited {legacy['stop']}", result.stderr)
+        for key in COMMAND_FILES:
+            self.assertTrue(self.path(key).exists(), key)
 
     def test_legacy_pm_sync_cleanup_only_removes_recorded_relay_installs(self):
         user_md = self.home / ".claude" / "commands" / "pm-sync.md"

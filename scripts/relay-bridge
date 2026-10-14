@@ -460,8 +460,23 @@ remove_relay_command() {
     fi
 }
 
-# Write Relay Runner command/skill files into ~/.claude/commands and
-# ~/.codex/skills. Mode "refresh" (default) installs missing files and brings
+# Retire a Claude command that moved to ~/.claude/skills: remove it when it is
+# still exactly what Relay installed (recorded, or a pre-record shipped
+# version); keep a user edit and say so, since the skill now shadows it.
+retire_relay_command() {
+    local path="$1" recorded
+    [ -f "$path" ] || return 0
+    recorded="$(recorded_command_hash "$path")"
+    if { [ -n "$recorded" ] && [ "$(relay_command_hash "$path")" = "$recorded" ]; } \
+       || { [ -z "$recorded" ] && legacy_relay_command "$path"; }; then
+        rm -f "$path"
+        record_command_hash "$path" ""
+    else
+        echo "[relay-bridge] Kept your edited $path. Relay now installs this as a skill under ~/.claude/skills, which takes precedence; delete the old file once you've moved your changes." >&2
+    fi
+}
+
+# Write Relay Runner skill files into ~/.claude/skills and ~/.codex/skills. Mode "refresh" (default) installs missing files and brings
 # unmodified Relay installs up to the shipped version while keeping user
 # edits; it runs on every Start Session, so an app upgrade takes effect on the
 # next launch. Mode "force" always overwrites — used by the explicit
@@ -474,10 +489,11 @@ remove_relay_command() {
 install_skills() {
     local mode="${1:-refresh}"
     local cmds_dir="$HOME/.claude/commands"
-    local bridge_md="$cmds_dir/relay-bridge.md"
-    local stop_md="$cmds_dir/relay-stop.md"
-    local dispatch_md="$cmds_dir/relay-dispatch.md"
-    local workflow_md="$cmds_dir/relay-workflow.md"
+    local claude_skills_dir="$HOME/.claude/skills"
+    local bridge_md="$claude_skills_dir/relay-bridge/SKILL.md"
+    local stop_md="$claude_skills_dir/relay-stop/SKILL.md"
+    local dispatch_md="$claude_skills_dir/relay-dispatch/SKILL.md"
+    local workflow_md="$claude_skills_dir/relay-workflow/SKILL.md"
     local legacy_link_md="$cmds_dir/relay-link-project.md"
     local legacy_orchestrate_md="$cmds_dir/relay-orchestrate.md"
     local legacy_pm_sync_md="$cmds_dir/pm-sync.md"
@@ -495,7 +511,8 @@ install_skills() {
     local relay_reply_helper_path="$SERVICES_BUNDLE/relay_reply.py"
     local staged
 
-    mkdir -p "$cmds_dir"
+    mkdir -p "$(dirname "$bridge_md")" "$(dirname "$stop_md")" \
+        "$(dirname "$dispatch_md")" "$(dirname "$workflow_md")"
     mkdir -p "$codex_bridge_dir" "$codex_stop_dir" "$codex_dispatch_dir" "$codex_workflow_dir"
 
     # Relay-named launchers from earlier releases (the project-linking flow
@@ -507,11 +524,23 @@ install_skills() {
     remove_relay_command "$legacy_pm_sync_md"
     remove_relay_command "$legacy_codex_pm_sync_dir/SKILL.md"
     rmdir "$legacy_codex_pm_sync_dir" 2>/dev/null || true
+    # Claude's Relay commands moved from ~/.claude/commands/<name>.md to
+    # ~/.claude/skills/<name>/SKILL.md so they carry name/description
+    # frontmatter like the Codex skills.
+    local legacy_name
+    for legacy_name in relay-bridge relay-stop relay-dispatch relay-workflow; do
+        retire_relay_command "$cmds_dir/$legacy_name.md"
+    done
 
     # Quoted heredocs — no $-expansion. Bridge path placeholders get
     # sed-substituted after staging so they land in the .md verbatim.
     staged="$bridge_md.relay-new"
     cat > "$staged" <<'BRIDGE_MD_EOF'
+---
+name: relay-bridge
+description: Use when the user runs /relay-bridge or asks to connect Relay Runner voice I/O to this Claude session manually. Not needed for Relay Runner Start Session, which manages its own voice transport.
+---
+
 Connect voice I/O to this Claude session when invoked manually. Relay Runner's menu-bar Start Session path owns a nonblocking app-managed transport instead of running this foreground loop.
 
 ## Setup
@@ -796,6 +825,11 @@ BRIDGE_MD_EOF
 
     staged="$stop_md.relay-new"
     cat > "$staged" <<'STOP_MD_EOF'
+---
+name: relay-stop
+description: Use when the user runs /relay-stop or asks to end the Relay Runner voice session for this Claude session. Stops the voice bridge cleanly without exiting Claude Code.
+---
+
 Stop the voice I/O bridge for this Claude session. Use this to end a `/relay-bridge` voice session cleanly without exiting Claude Code.
 
 ## Steps
@@ -1116,6 +1150,11 @@ CODEX_STOP_MD_EOF
     # scripts/build-instructions from services/instructions/ — edit there.
     staged="$workflow_md.relay-new"
     cat > "$staged" <<'WORKFLOW_MD_EOF'
+---
+name: relay-workflow
+description: Use on the first turn of any session where relay-orchestrator MCP tools are registered, and whenever the user discusses concrete work, mentions tickets/backlog/board, or asks to dispatch/delegate/check an agent run. Primes Relay Runner orchestrator mode.
+---
+
 **MANDATORY orchestrator-mode prime.** Invoke this skill on the FIRST conversational turn of any session where the `mcp__relay-orchestrator__*` tools are registered — the user installed relay-runner specifically so that this is the default operating mode. The Relay Runner loop is foreground orchestrator/PM ticket management → worker execution → daemon-dispatched review and integration. The user should not have to ask for it, mention "dispatch", or invoke any slash command — having relay-runner installed *is* the request to operate this way.
 
 Also re-trigger when the user discusses concrete work to be done ("let's tackle…", "what should we work on", "I need to fix…", "we should add…"), mentions tickets / issues / the backlog / the board, says "dispatch / hand off / delegate / kick off / spin up an agent", references a ticket id like RR-6, or asks "what are the agents doing" / "how's RR-6" / "stop RR-6".
@@ -1240,6 +1279,11 @@ WORKFLOW_MD_EOF
 
     staged="$dispatch_md.relay-new"
     cat > "$staged" <<'DISPATCH_MD_EOF'
+---
+name: relay-dispatch
+description: Use when the user says to work on, hand off, delegate, dispatch, or check an RR-style ticket. Dispatches a ticket from the current repo's local Relay Runner kanban board to a sub-agent.
+---
+
 Dispatch a ticket from the current repo's local kanban board (`.orchestrator/<ticket_id>.md`) to a relay-runner sub-agent. You are the foreground orchestrator/PM: you dispatch and report the outcome, while the daemon creates an isolated git worktree (or a read-only spike workspace), renders the workflow prompt, and runs the configured agent autonomously inside it.
 
 ## When to use this
@@ -1918,13 +1962,13 @@ if [ "${RELAY_RUNNER_PROVIDER:-}" = claude ]; then
 else
     { $CLAUDE_CLI_OK || $CODEX_CLI_OK; } && AGENT_CLI_OK=true
 fi
-# Relay voice commands/skills live under ~/.claude/commands for Claude
+# Relay voice skills live under ~/.claude/skills for Claude
 # Code and ~/.codex/skills for Codex. They're how the user invokes a
 # voice loop from inside an existing agent session — without them, voice
 # input only works via the menu bar's Start Session path.
 RELAY_SKILLS_OK=false
-[ -f "$HOME/.claude/commands/relay-bridge.md" ] \
-    && [ -f "$HOME/.claude/commands/relay-stop.md" ] \
+[ -f "$HOME/.claude/skills/relay-bridge/SKILL.md" ] \
+    && [ -f "$HOME/.claude/skills/relay-stop/SKILL.md" ] \
     && [ -f "$HOME/.codex/skills/relay-bridge/SKILL.md" ] \
     && [ -f "$HOME/.codex/skills/relay-stop/SKILL.md" ] \
     && RELAY_SKILLS_OK=true
@@ -1946,8 +1990,8 @@ available_agents_have_mcp relay-vision relay-vision-mcp && RELAY_VISION_MCP_OK=t
 # registration, and the launchd plist that keeps the daemon alive.
 # Uses the same all-available-agents MCP probe used for relay-actions.
 ORCH_OK=false
-if [ -f "$HOME/.claude/commands/relay-dispatch.md" ] \
-   && [ -f "$HOME/.claude/commands/relay-workflow.md" ] \
+if [ -f "$HOME/.claude/skills/relay-dispatch/SKILL.md" ] \
+   && [ -f "$HOME/.claude/skills/relay-workflow/SKILL.md" ] \
    && [ -f "$HOME/.codex/skills/relay-dispatch/SKILL.md" ] \
    && [ -f "$HOME/.codex/skills/relay-workflow/SKILL.md" ] \
    && [ -f "$HOME/Library/LaunchAgents/com.relay.orchestrator.plist" ]; then

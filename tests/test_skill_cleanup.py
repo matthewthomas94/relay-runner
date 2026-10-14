@@ -31,7 +31,10 @@ class SkillCleanupTests(unittest.TestCase):
         self.assertNotIn("<<'WORKFLOW_MD_EOF'", script)
         self.assertIn('"$SCRIPT_DIR/relay-bridge" --refresh-skills', script)
         self.assertIn('"$SCRIPT_DIR/relay-bridge" --install-skills', script)
-        self.assertIn('rm -rf "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR"', script)
+        self.assertIn(
+            'rm -rf "$CLAUDE_DISPATCH_DIR" "$CLAUDE_WORKFLOW_DIR" "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR"',
+            script,
+        )
 
     def test_relay_orchestrator_health_wait_covers_cold_launch(self):
         script = (ROOT / "scripts" / "relay-orchestrator").read_text()

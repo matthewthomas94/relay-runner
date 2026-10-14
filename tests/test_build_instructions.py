@@ -87,13 +87,47 @@ class BuildInstructionsTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 1)
         self.assertIn("relay-bridge", out.getvalue())
 
-    def test_claude_block_uses_artifact_writer_like_agents_md(self):
+    def test_claude_block_uses_artifact_writer(self):
         block = self.module.concat(self.module.CLAUDE_MD)
         self.assertIn("Use the daemon's artifact-backed ticket writer", block)
         self.assertIn("replaces step 2's direct ticket-file write", block)
         self.assertIn("scripts/relay-ticket-history search", block)
+
+    def generated_block(self, name):
+        text = (ROOT / name).read_text()
+        return text.split(self.module.BEGIN, 1)[1].split(self.module.END, 1)[0]
+
+    def test_agents_md_carries_the_same_generated_block_as_claude_md(self):
+        self.assertEqual(self.generated_block("AGENTS.md"), self.generated_block("CLAUDE.md"))
+        block = self.generated_block("AGENTS.md")
+        for heading in (
+            "## Subscription-only provider access",
+            "### Command action contract",
+            "### Worker sizing",
+            "### Voice turns",
+            "### Spike follow-ups and recovery tools",
+            "### Saved project notes",
+        ):
+            self.assertIn(heading, block)
         agents = (ROOT / "AGENTS.md").read_text()
-        self.assertIn("Use the daemon's artifact-backed ticket writer", agents)
+        self.assertIn("~/.codex/AGENTS.md", agents.split(self.module.END, 1)[1])
+
+    def test_check_fails_when_agents_md_block_drifts(self):
+        agents = (ROOT / "AGENTS.md").read_text()
+        stale = agents.replace("## Subscription-only provider access", "## Old heading", 1)
+        self.assertNotEqual(stale, agents)
+        with tempfile.TemporaryDirectory() as temp:
+            copy = Path(temp) / "AGENTS.md"
+            copy.write_text(stale)
+            out = io.StringIO()
+            with mock.patch.object(self.module, "GUIDANCE_FILES", ["CLAUDE.md", str(copy)]), \
+                    mock.patch.object(sys, "argv", ["build-instructions", "--check"]), \
+                    contextlib.redirect_stdout(out), \
+                    self.assertRaises(SystemExit) as raised:
+                self.module.main()
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("AGENTS.md", out.getvalue())
+        self.assertNotIn("CLAUDE.md", out.getvalue())
 
 
 if __name__ == "__main__":

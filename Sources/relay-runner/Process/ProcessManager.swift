@@ -2094,27 +2094,8 @@ final class ProcessManager {
 
     // MARK: - Relay skill install
 
-    private static let claudeSkillDir: URL = {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/commands")
-    }()
-
-    private static let codexSkillDir: URL = {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/skills")
-    }()
-
-    private static let claudeBridgeSkillPath: URL = claudeSkillDir.appendingPathComponent("relay-bridge.md")
-    private static let claudeStopSkillPath: URL = claudeSkillDir.appendingPathComponent("relay-stop.md")
-    private static let codexBridgeSkillPath: URL = codexSkillDir.appendingPathComponent("relay-bridge/SKILL.md")
-    private static let codexStopSkillPath: URL = codexSkillDir.appendingPathComponent("relay-stop/SKILL.md")
-
     var isSkillInstalled: Bool {
-        let fm = FileManager.default
-        return fm.fileExists(atPath: Self.claudeBridgeSkillPath.path)
-            && fm.fileExists(atPath: Self.claudeStopSkillPath.path)
-            && fm.fileExists(atPath: Self.codexBridgeSkillPath.path)
-            && fm.fileExists(atPath: Self.codexStopSkillPath.path)
+        RelaySkillFiles.allInstalled()
     }
 
     /// Install the Relay command/skill files (relay-bridge, relay-stop,

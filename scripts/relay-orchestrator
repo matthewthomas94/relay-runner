@@ -46,14 +46,18 @@ LAUNCHCTL_SERVICE="gui/$(id -u)/${PLIST_LABEL}"
 # relay-dispatch / relay-workflow command and skill files. relay-bridge
 # installs them (with its edit-preserving refresh); uninstall removes them.
 CMDS_DIR="$HOME/.claude/commands"
-DISPATCH_MD="$CMDS_DIR/relay-dispatch.md"
-WORKFLOW_MD="$CMDS_DIR/relay-workflow.md"
+CLAUDE_SKILLS_DIR="$HOME/.claude/skills"
+CLAUDE_DISPATCH_DIR="$CLAUDE_SKILLS_DIR/relay-dispatch"
+CLAUDE_WORKFLOW_DIR="$CLAUDE_SKILLS_DIR/relay-workflow"
 CODEX_SKILLS_DIR="$HOME/.codex/skills"
 CODEX_DISPATCH_DIR="$CODEX_SKILLS_DIR/relay-dispatch"
 CODEX_WORKFLOW_DIR="$CODEX_SKILLS_DIR/relay-workflow"
 # Legacy Relay slash commands: relay-link-project.md is from the prior
 # project-linking flow; relay-orchestrate.md is from before the
-# relay-orchestrate → relay-dispatch rename.
+# relay-orchestrate → relay-dispatch rename; relay-dispatch.md and
+# relay-workflow.md are from before Claude's copies moved to skills.
+LEGACY_DISPATCH_MD="$CMDS_DIR/relay-dispatch.md"
+LEGACY_WORKFLOW_MD="$CMDS_DIR/relay-workflow.md"
 LEGACY_LINK_MD="$CMDS_DIR/relay-link-project.md"
 LEGACY_ORCHESTRATE_MD="$CMDS_DIR/relay-orchestrate.md"
 
@@ -289,9 +293,9 @@ install_skills() {
 }
 
 uninstall_skills() {
-    rm -f "$DISPATCH_MD" "$WORKFLOW_MD" "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD"
-    rm -rf "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR"
-    echo "[relay-orchestrator] removed slash command files."
+    rm -f "$LEGACY_DISPATCH_MD" "$LEGACY_WORKFLOW_MD" "$LEGACY_LINK_MD" "$LEGACY_ORCHESTRATE_MD"
+    rm -rf "$CLAUDE_DISPATCH_DIR" "$CLAUDE_WORKFLOW_DIR" "$CODEX_DISPATCH_DIR" "$CODEX_WORKFLOW_DIR"
+    echo "[relay-orchestrator] removed Relay skill files."
 }
 
 register_mcp() {

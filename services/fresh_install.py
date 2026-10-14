@@ -817,6 +817,11 @@ def _profile_resources(
             ("codex-relay-stop-skill", home_root / ".codex/skills/relay-stop"),
             ("codex-relay-dispatch-skill", home_root / ".codex/skills/relay-dispatch"),
             ("codex-relay-workflow-skill", home_root / ".codex/skills/relay-workflow"),
+            ("claude-relay-bridge-skill", home_root / ".claude/skills/relay-bridge"),
+            ("claude-relay-stop-skill", home_root / ".claude/skills/relay-stop"),
+            ("claude-relay-dispatch-skill", home_root / ".claude/skills/relay-dispatch"),
+            ("claude-relay-workflow-skill", home_root / ".claude/skills/relay-workflow"),
+            # Legacy Claude command files from before the move to skills.
             ("claude-relay-bridge-command", home_root / ".claude/commands/relay-bridge.md"),
             ("claude-relay-stop-command", home_root / ".claude/commands/relay-stop.md"),
             ("claude-relay-dispatch-command", home_root / ".claude/commands/relay-dispatch.md"),

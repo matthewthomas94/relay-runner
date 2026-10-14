@@ -177,10 +177,7 @@ final class VenvInstaller {
         return fm.isExecutableFile(atPath: userVenvPython)
             && fm.fileExists(atPath: kokoroModelPath)
             && fm.fileExists(atPath: kokoroVoicesPath)
-            && fm.fileExists(atPath: bridgeSkillPath)
-            && fm.fileExists(atPath: stopSkillPath)
-            && fm.fileExists(atPath: codexBridgeSkillPath)
-            && fm.fileExists(atPath: codexStopSkillPath)
+            && RelaySkillFiles.allInstalled(fileManager: fm)
             && orchestratorReady
     }
 
@@ -202,25 +199,6 @@ final class VenvInstaller {
         "/Applications/ChatGPT.app/Contents/Resources/codex",
         "/Applications/Codex.app/Contents/Resources/codex",
     ]
-    /// Match relay-bridge's RELAY_SKILLS_OK gate — both command/skill files
-    /// must exist for the install to be considered complete.
-    private static var bridgeSkillPath: String {
-        (NSHomeDirectory() as NSString)
-            .appendingPathComponent(".claude/commands/relay-bridge.md")
-    }
-    private static var stopSkillPath: String {
-        (NSHomeDirectory() as NSString)
-            .appendingPathComponent(".claude/commands/relay-stop.md")
-    }
-    private static var codexBridgeSkillPath: String {
-        (NSHomeDirectory() as NSString)
-            .appendingPathComponent(".codex/skills/relay-bridge/SKILL.md")
-    }
-    private static var codexStopSkillPath: String {
-        (NSHomeDirectory() as NSString)
-            .appendingPathComponent(".codex/skills/relay-stop/SKILL.md")
-    }
-
     private static var orchestratorReady: Bool {
         let fm = FileManager.default
         let plist = (NSHomeDirectory() as NSString)
