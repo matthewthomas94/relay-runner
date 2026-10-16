@@ -506,3 +506,38 @@ def mark_mutations_canceled(
     record["updated_at"] = now
     ledger["updated_at"] = now
     _atomic_write_json(path, ledger)
+
+
+@_serialized_ledger_mutation
+def transfer_session_authorizations(
+    path: str | Path,
+    from_session_key: str,
+    to_session_key: str,
+    *,
+    now: float | None = None,
+) -> int:
+    """Move an ended session's active grants to the session inheriting its work.
+
+    A queued command handed off to another session must keep its bounds under
+    the session key the receiving provider presents.
+    """
+    if not from_session_key or from_session_key == to_session_key:
+        return 0
+    now = time.time() if now is None else now
+    ledger = _load_ledger(path)
+    moved = 0
+    for record in ledger["authorizations"]:
+        if str(record.get("status") or "") != "active":
+            continue
+        if _record_session_key(record) != from_session_key:
+            continue
+        if to_session_key:
+            record["relay_session_key"] = to_session_key
+        else:
+            record.pop("relay_session_key", None)
+        record["updated_at"] = now
+        moved += 1
+    if moved:
+        ledger["updated_at"] = now
+        _atomic_write_json(path, ledger)
+    return moved

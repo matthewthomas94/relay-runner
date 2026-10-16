@@ -258,9 +258,12 @@ final class AppState {
     @ObservationIgnored private var continuationDestinationOwners: [String: [String: String]] = [:]
     var canClearContextContinuation: Bool { assistantSessionStore.pendingContinuation != nil }
     @ObservationIgnored private var idleSessionSaved = false
-    /// RR-394: the context whose spool the shared voice bridge publishes into
-    /// (the latest launch). Voice delivery and continuity recovery act on it.
+    /// RR-394: the context whose spool the shared voice bridge publishes into.
+    /// RR-398: it follows the focused live context via `__FOCUS__`. Voice
+    /// delivery and continuity recovery act on it.
     @ObservationIgnored private var voiceContextID: String?
+    /// The `__FOCUS__` datagrams the running bridge last accepted.
+    @ObservationIgnored private var sentVoiceFocus: [String] = []
     private var voiceContext: AssistantSessionContext {
         voiceContextID.flatMap { assistantSessionStore.document.bindings[$0]?.context } ?? activeContext
     }
@@ -396,6 +399,8 @@ final class AppState {
     /// Cached by the watchdog so the 20fps poll timer avoids spawning pgrep.
     private var bridgeAliveCache = false {
         didSet {
+            // A restarted bridge forgets every target but its startup session.
+            if bridgeAliveCache { syncVoiceFocus() } else { sentVoiceFocus = [] }
             syncNotchStatusSurface()
             syncCommandCaptureOwnership()
         }
@@ -713,6 +718,7 @@ final class AppState {
 
         let foregroundActivityLabel =
             NotchActivityLabelPlanner.label(forWorkingProgress: stateMachine.currentWorkingProgress())
+        let voiceTargetName = listeningVoiceTargetName
         let labels = NotchActivityLabelPlanner.labels(
             for: stateMachine.state,
             foregroundActivity: foregroundActivityLabel,
@@ -720,7 +726,8 @@ final class AppState {
             tickets: notchActivityTickets,
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
             bridgeStartingUp: bridgeStartingUp,
-            boardContentLoading: boardContentLoading
+            boardContentLoading: boardContentLoading,
+            voiceTargetName: voiceTargetName
         )
         let hoverActivityLabel = NotchActivityLabelPlanner.hoverLabel(
             for: stateMachine.state,
@@ -730,6 +737,7 @@ final class AppState {
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
             bridgeStartingUp: bridgeStartingUp,
             boardContentLoading: boardContentLoading,
+            voiceTargetName: voiceTargetName,
             ticketForRun: { [notchActivityTicketsByRunKey] run in
                 let repoPath = URL(fileURLWithPath: run.repoPath).resolvingSymlinksInPath().path
                 return notchActivityTicketsByRunKey[
@@ -1254,6 +1262,15 @@ final class AppState {
             return
         }
         voiceContextID = targetID
+        // RR-398: a running bridge moves with `__FOCUS__` and keeps its pid. It
+        // hands the ended spool's queued command over before the spool goes.
+        if processManager.bridgeAlive(), syncVoiceFocus(force: true) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.endedSpoolHandoffGrace) {
+                endedSpool?.remove()
+            }
+            return
+        }
+        sentVoiceFocus = []
         let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
             repositoryPath: binding.context.workingDirectory
         )
@@ -1289,6 +1306,90 @@ final class AppState {
                 NSLog("[AppState] Voice bridge retarget failed")
             }
         }
+    }
+
+    static let endedSpoolHandoffGrace: TimeInterval = 2
+
+    /// RR-398: point the shared voice bridge at the focused live session
+    /// without relaunching it. Every live session is registered, one datagram
+    /// each with the focused one last, so the bridge can prune ended sessions;
+    /// the next recording is stamped with the focused session's key.
+    @discardableResult
+    private func syncVoiceFocus(force: Bool = false) -> Bool {
+        let live = sessionRegistry.liveContextIDs.filter { sessionRegistry.spool(for: $0)?.key != nil }
+        guard let focusedID = [activeContext.id, voiceContextID].compactMap({ $0 }).first(where: live.contains)
+                ?? live.first,
+              let focusedKey = sessionRegistry.spool(for: focusedID)?.key else { return false }
+        voiceContextID = focusedID
+        sttEngine?.voiceTargetSessionKey = focusedKey
+        let liveKeys = live.compactMap { sessionRegistry.spool(for: $0)?.key }
+        let messages = (live.filter { $0 != focusedID } + [focusedID]).compactMap { contextID -> String? in
+            guard let binding = assistantSessionStore.document.bindings[contextID],
+                  let spool = sessionRegistry.spool(for: contextID), let key = spool.key else { return nil }
+            let owner = continuationDestinationOwners[contextID] ?? [:]
+            let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
+                repositoryPath: binding.context.workingDirectory
+            )
+            return Self.voiceFocusMessage(
+                sessionKey: key,
+                provider: owner["provider"] ?? binding.provider,
+                providerSessionID: owner["provider_session_id"] ?? "",
+                workingDirectory: binding.context.workingDirectory,
+                spoolDirectory: spool.directory,
+                appSessionID: owner["app_session_id"] ?? "",
+                recoveryGeneration: continuityRecoveryGenerationBySession[sessionID] ?? owner["recovery_generation"] ?? "",
+                projectName: binding.context.displayName,
+                focus: contextID == focusedID,
+                liveSessionKeys: liveKeys
+            )
+        }
+        guard force || messages != sentVoiceFocus else { return true }
+        var delivered = true
+        for message in messages where !SocketClient.bridgeSend(message) { delivered = false }
+        sentVoiceFocus = delivered ? messages : []
+        return delivered
+    }
+
+    /// One `__FOCUS__` control datagram for the shared voice bridge.
+    static func voiceFocusMessage(
+        sessionKey: String,
+        provider: String,
+        providerSessionID: String,
+        workingDirectory: String,
+        spoolDirectory: String,
+        appSessionID: String,
+        recoveryGeneration: String,
+        projectName: String,
+        focus: Bool,
+        liveSessionKeys: [String]
+    ) -> String? {
+        let payload: [String: Any] = [
+            "session_key": sessionKey,
+            "provider": provider,
+            "provider_session_id": providerSessionID,
+            "cwd": workingDirectory,
+            "spool_dir": spoolDirectory,
+            "app_session_id": appSessionID,
+            "recovery_generation": recoveryGeneration,
+            "project_name": projectName,
+            "focus": focus,
+            "live_session_keys": liveSessionKeys,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else { return nil }
+        return "__FOCUS__:" + json
+    }
+
+    /// The project a recording is delivered to, shown while several sessions
+    /// share the bridge.
+    private var listeningVoiceTargetName: String? {
+        let live = sessionRegistry.liveContextIDs
+        guard live.count > 1, let sttEngine else { return nil }
+        let key = sttEngine.isRecording
+            ? sttEngine.recordingVoiceTargetSessionKey
+            : sttEngine.voiceTargetSessionKey
+        let contextID = live.first { key != nil && sessionRegistry.spool(for: $0)?.key == key } ?? voiceContextID
+        return contextID.flatMap { assistantSessionStore.document.bindings[$0]?.context.displayName }
     }
 
     /// Save the focused context and every other context with a live session.
@@ -2120,6 +2221,7 @@ final class AppState {
         conversationHistory = assistantSessionStore.document.history.sorted { $0.createdAt < $1.createdAt }
         // The Workspace terminal always shows the active context's session.
         sessionRegistry.focus(contextID: activeContext.id)
+        syncVoiceFocus()
     }
 
     private func assistantRunIDs(for context: AssistantSessionContext) -> [Int] {
@@ -2383,6 +2485,11 @@ final class AppState {
                 }.value
                 guard pendingSessionLaunchID == launchID,
                       session.phase == .preparing else { return }
+                // RR-398: one shared bridge serves every session; a second
+                // session joins it instead of restarting it.
+                let joinsVoiceBridge = !preservesVoiceBridge
+                    && sessionRegistry.liveContextIDs.contains { $0 != context.id }
+                    && processManager.bridgeAlive()
                 let prepared = try processManager.prepareNewSession(
                     config: launchConfig,
                     voiceDelivery: voiceDelivery,
@@ -2391,6 +2498,7 @@ final class AppState {
                     projectScopeToken: projectScopeToken,
                     recoveryGeneration: recoveryGeneration,
                     startsVoiceBridge: !preservesVoiceBridge,
+                    joinsRunningVoiceBridge: joinsVoiceBridge,
                     updatedAgentBinary: updatedAgentBinary,
                     sessionContext: context,
                     conversationID: conversationID,
@@ -2440,6 +2548,7 @@ final class AppState {
                     )
                 }
                 voiceContextID = context.id
+                syncVoiceFocus(force: joinsVoiceBridge)
             } catch {
                 guard pendingSessionLaunchID == launchID else { return }
                 saveAssistantSession(lifecycle: .interrupted, context: context)
@@ -3370,6 +3479,7 @@ final class AppState {
 
         bridgeRecoveryInFlight = true
         lastBridgeRecoveryAt = now
+        sentVoiceFocus = []
         statusText = "Session reconnecting"
         NSLog("[AppState] Relaunching voice bridge daemon for \(context.workingDirectory) reason=\(reason)")
 

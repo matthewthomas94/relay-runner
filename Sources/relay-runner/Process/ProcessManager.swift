@@ -1007,6 +1007,7 @@ final class ProcessManager {
         projectScopeToken: ConfirmedProjectScopeToken? = nil,
         recoveryGeneration: String? = nil,
         startsVoiceBridge: Bool = true,
+        joinsRunningVoiceBridge: Bool = false,
         updatedAgentBinary: String? = nil,
         sessionContext: AssistantSessionContext? = nil,
         conversationID: String? = nil,
@@ -1114,6 +1115,7 @@ final class ProcessManager {
             foregroundGateHandle: foregroundGateHandle,
             projectScopeToken: projectScopeToken,
             startsVoiceBridge: startsVoiceBridge,
+            joinsRunningVoiceBridge: joinsRunningVoiceBridge,
             sessionContext: sessionContext,
             conversationID: conversationID,
             nativeResumeID: nativeResumeID,
@@ -1202,6 +1204,7 @@ final class ProcessManager {
         resolvedCodexEffort: String? = nil,
         projectScopeToken: ConfirmedProjectScopeToken? = nil,
         startsVoiceBridge: Bool = true,
+        joinsRunningVoiceBridge: Bool = false,
         sessionContext: AssistantSessionContext? = nil,
         conversationID: String? = nil,
         nativeResumeID: String? = nil,
@@ -1241,7 +1244,8 @@ final class ProcessManager {
             relayBridge: relayBridge,
             voiceDelivery: voiceDelivery,
             suppressStartupGreeting: suppressStartupGreeting,
-            startsVoiceBridge: startsVoiceBridge
+            startsVoiceBridge: startsVoiceBridge,
+            joinsRunningVoiceBridge: joinsRunningVoiceBridge
         )
         let launchLine = Self.agentLaunchLine(
             binary: agentBinary,
@@ -2122,12 +2126,18 @@ final class ProcessManager {
         relayBridge: String,
         voiceDelivery: SessionVoiceDelivery,
         suppressStartupGreeting: Bool,
-        startsVoiceBridge: Bool
+        startsVoiceBridge: Bool,
+        joinsRunningVoiceBridge: Bool = false
     ) -> String {
         switch voiceDelivery {
         case .appOwned:
             guard startsVoiceBridge else {
                 return ": # Preserve the active Relay voice bridge during provider recovery."
+            }
+            // RR-398: the shared bridge outlives each session; the app moves
+            // it here with `__FOCUS__` instead of restarting it.
+            guard !joinsRunningVoiceBridge else {
+                return ": # Join the running shared Relay voice bridge."
             }
             let greetingFlag = suppressStartupGreeting
                 ? " --suppress-startup-greeting"
