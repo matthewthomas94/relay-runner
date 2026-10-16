@@ -585,5 +585,171 @@ class IntentInboxTests(unittest.TestCase):
             )
 
 
+def session_metadata(seq: int, session: str, **extra) -> dict:
+    return {
+        **metadata(seq, f"{session}-{seq}"),
+        "intent_id": f"{session}-intent-{seq}",
+        "voice_target_session_key": session,
+        **extra,
+    }
+
+
+class SessionScopedInboxTests(unittest.TestCase):
+    def setUp(self):
+        self._directory = tempfile.TemporaryDirectory()
+        self.root = Path(self._directory.name)
+        self.mailboxes = {}
+        for session in ("a", "b"):
+            spool = self.root / session
+            spool.mkdir()
+            self.mailboxes[session] = (str(spool / "ready"), str(spool / "ready.meta"))
+
+    def tearDown(self):
+        self._directory.cleanup()
+
+    def paths_for(self, item: dict):
+        return self.mailboxes.get(item.get("voice_target_session_key"))
+
+    def materialize(self, inbox: IntentInbox):
+        return inbox.materialize_next(
+            command_path=str(self.root / "ready"),
+            metadata_path=str(self.root / "ready.meta"),
+            transport="test",
+            paths_for=self.paths_for,
+        )
+
+    def test_rows_record_session_key_and_existing_database_migrates(self):
+        path = self.root / "inbox.sqlite3"
+        connection = sqlite3.connect(path)
+        connection.executescript(
+            """
+            CREATE TABLE intents (
+                ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_id TEXT NOT NULL UNIQUE,
+                command_seq INTEGER NOT NULL,
+                command_id TEXT NOT NULL,
+                within_turn_order INTEGER NOT NULL DEFAULT 1,
+                prompt TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                route TEXT NOT NULL,
+                state TEXT NOT NULL,
+                delivery_id TEXT NOT NULL UNIQUE,
+                claim_id TEXT,
+                ack_id TEXT,
+                created_at REAL NOT NULL,
+                delivered_at REAL,
+                claimed_at REAL,
+                acked_at REAL,
+                cancelled_at REAL,
+                transport TEXT,
+                lease_attempts INTEGER NOT NULL DEFAULT 0,
+                recovered_at REAL,
+                recovery_generation TEXT NOT NULL DEFAULT '0',
+                recovery_decision TEXT
+            );
+            """
+        )
+        for seq, stored in ((1, session_metadata(1, "a")), (2, metadata(2, "legacy"))):
+            connection.execute(
+                "INSERT INTO intents(intent_id, command_seq, command_id, prompt, "
+                "metadata_json, route, state, delivery_id, created_at) "
+                "VALUES(?, ?, ?, ?, ?, 'continue_current', 'acked', ?, 0)",
+                (stored["intent_id"], seq, stored["relay_command_id"], f"prompt {seq}",
+                 json.dumps(stored), f"delivery-{seq}"),
+            )
+        connection.commit()
+        connection.close()
+
+        inbox = IntentInbox(path)
+        inbox.enqueue("b", session_metadata(3, "b"), "continue_current")
+
+        self.assertEqual(
+            [(r["intent_id"], r["session_key"], r["prompt"]) for r in inbox.records()],
+            [("a-intent-1", "a", "prompt 1"), ("intent-2", "", "prompt 2"),
+             ("b-intent-3", "b", "b")],
+        )
+        inbox.close()
+
+    def test_retire_stale_foreground_for_a_never_cancels_b(self):
+        inbox = IntentInbox(self.root / "inbox.sqlite3")
+        inbox.enqueue("a old", session_metadata(1, "a", recovery_generation="a-old"), "continue_current")
+        inbox.enqueue("b live", session_metadata(2, "b", recovery_generation="b-live"), "continue_current")
+        command, meta = self.mailboxes["b"]
+        Path(command).write_text("b live")
+        Path(meta).write_text(json.dumps({"intent_id": "b-intent-2"}))
+
+        retired = inbox.retire_stale_foreground(
+            "a-new", command_path=command, metadata_path=meta, session_key="a",
+        )
+
+        self.assertEqual(retired, 1)
+        self.assertEqual([r["state"] for r in inbox.records()], ["cancelled", "pending"])
+        self.assertTrue(Path(command).exists())
+        inbox.close()
+
+    def test_unacknowledged_item_in_a_does_not_block_b(self):
+        inbox = IntentInbox(self.root / "inbox.sqlite3")
+        first = inbox.enqueue("a first", session_metadata(1, "a"), "continue_current")
+        inbox.enqueue("a second", session_metadata(2, "a"), "continue_current")
+        inbox.enqueue("b first", session_metadata(3, "b"), "continue_current")
+        self.assertEqual(self.materialize(inbox)["intent_id"], "a-intent-1")
+        inbox.observe_claim(first, provider_turn_seen=False)
+        os.unlink(self.mailboxes["a"][0])
+        os.unlink(self.mailboxes["a"][1])
+
+        delivered = self.materialize(inbox)
+
+        self.assertEqual(delivered["intent_id"], "b-intent-3")
+        self.assertEqual(Path(self.mailboxes["b"][0]).read_text(), "b first")
+        self.assertFalse(Path(self.mailboxes["a"][0]).exists())
+        self.assertIsNone(self.materialize(inbox))
+        inbox.observe_claim(first, provider_turn_seen=True)
+        self.assertEqual(self.materialize(inbox)["intent_id"], "a-intent-2")
+        self.assertEqual(Path(self.mailboxes["a"][0]).read_text(), "a second")
+        inbox.close()
+
+    def test_ended_session_work_waits_for_focused_mailbox_turn(self):
+        inbox = IntentInbox(self.root / "inbox.sqlite3")
+        first = inbox.enqueue("a first", session_metadata(1, "a"), "continue_current")
+        inbox.enqueue("ended", session_metadata(2, "ended"), "continue_current")
+        paths_for = lambda item: self.mailboxes.get(  # noqa: E731
+            item.get("voice_target_session_key"), self.mailboxes["a"],
+        )
+        materialize = lambda: inbox.materialize_next(  # noqa: E731
+            command_path="unused", metadata_path="unused", transport="test",
+            paths_for=paths_for,
+        )
+        self.assertEqual(materialize()["intent_id"], "a-intent-1")
+        inbox.observe_claim(first, provider_turn_seen=False)
+        os.unlink(self.mailboxes["a"][0])
+        os.unlink(self.mailboxes["a"][1])
+
+        self.assertIsNone(materialize())
+        inbox.observe_claim(first, provider_turn_seen=True)
+        self.assertEqual(materialize()["intent_id"], "ended-intent-2")
+        inbox.close()
+
+    def test_all_work_cancellation_is_limited_to_issuing_session(self):
+        inbox = IntentInbox(self.root / "inbox.sqlite3")
+        a_item = inbox.enqueue("a", session_metadata(1, "a"), "continue_current")
+        b_item = inbox.enqueue("b", session_metadata(2, "b"), "continue_current")
+        inbox.observe_claim(b_item, provider_turn_seen=True)
+        self.assertEqual(self.materialize(inbox)["intent_id"], "a-intent-1")
+
+        cancelled = inbox.cancel_scoped(
+            session_metadata(3, "a", cancellation_scope="all_work"),
+            command_path=self.mailboxes["a"][0],
+            metadata_path=self.mailboxes["a"][1],
+        )
+
+        self.assertEqual(cancelled, [a_item["intent_id"]])
+        self.assertEqual(
+            {r["intent_id"]: r["state"] for r in inbox.records()},
+            {"a-intent-1": "cancelled", "b-intent-2": "acked"},
+        )
+        self.assertFalse(Path(self.mailboxes["a"][0]).exists())
+        inbox.close()
+
+
 if __name__ == "__main__":
     unittest.main()

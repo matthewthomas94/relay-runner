@@ -564,16 +564,21 @@ def _start_target_orchestrator(cfg: dict, target: VoiceTarget) -> dict | None:
         _CONTINUITY_SESSION_NATIVE_ID = native_id
 
 
+def _startup_voice_session_key() -> str:
+    spool = os.environ.get("RELAY_SESSION_SPOOL_DIR", "").strip()
+    return (
+        os.environ.get("RELAY_SESSION_KEY", "").strip()
+        or os.path.basename(spool.rstrip("/"))
+        or "legacy"
+    )
+
+
 def _install_startup_voice_target(provider_session_ownership=None) -> VoiceTarget:
     """Register the session this bridge launched with, from current module paths."""
     global _VOICE_TARGET_KEY, _VOICE_STARTUP_KEY, _VOICE_LEDGER_STATE_FILE
     spool = os.environ.get("RELAY_SESSION_SPOOL_DIR", "").strip()
     target = VoiceTarget(
-        session_key=(
-            os.environ.get("RELAY_SESSION_KEY", "").strip()
-            or os.path.basename(spool.rstrip("/"))
-            or "legacy"
-        ),
+        session_key=_startup_voice_session_key(),
         provider=os.environ.get("RELAY_RUNNER_PROVIDER", "").strip(),
         provider_session_id=PROVIDER_SESSION_ID,
         cwd=os.getcwd(),
@@ -2258,6 +2263,7 @@ def _publish_command(
             command_path=command_path,
             metadata_path=meta_path,
             before_command_seq=int(published_metadata["relay_command_seq"]),
+            session_key=str(published_metadata.get("voice_target_session_key") or ""),
         )
     if inbox is not None and route == IntentRoute.REPLACE_CURRENT.value:
         if not published_metadata.get("cancellation_scope") and not (
@@ -5080,10 +5086,12 @@ def main():
             ),
         )
         if os.environ.get("RELAY_RECOVERY_GENERATION"):
+            # Other live sessions on this shared inbox keep their own work.
             intent_inbox.retire_stale_foreground(
                 os.environ["RELAY_RECOVERY_GENERATION"],
                 command_path=VOICE_CMD_FILE,
                 metadata_path=VOICE_CMD_META_FILE,
+                session_key=_startup_voice_session_key(),
             )
         if projection_path is not None:
             provider_turn_broker = ProviderTurnBroker(
