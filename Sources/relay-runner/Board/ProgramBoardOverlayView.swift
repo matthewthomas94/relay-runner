@@ -1159,6 +1159,7 @@ private struct ProgramBoardContent: View {
                         snapshot: snapshot,
                         projectTargets: model.projectTargets,
                         selectedProjectPath: model.selectedProjectPath,
+                        runningSessionPaths: model.runningSessionPaths,
                         errorMessage: model.errorMessage,
                         isDiagnosticsExporting: model.isDiagnosticsExporting,
                         theme: model.theme,
@@ -1236,6 +1237,7 @@ private struct ProgramOverviewColumn: View {
     let snapshot: ProgramDashboardSnapshot
     let projectTargets: [ProgramBoardProjectTarget]
     let selectedProjectPath: String?
+    let runningSessionPaths: [String]
     let errorMessage: String?
     let isDiagnosticsExporting: Bool
     let theme: ParticleFieldRenderer.Theme?
@@ -1284,6 +1286,9 @@ private struct ProgramOverviewColumn: View {
                             item: item,
                             isSelected: scopedPath.map {
                                 ProgramBoardProjectPath.matches(selectedProjectPath, $0)
+                            } ?? false,
+                            hasSession: scopedPath.map { path in
+                                runningSessionPaths.contains { ProgramBoardProjectPath.matches($0, path) }
                             } ?? false,
                             onSelect: {
                                 if let path = scopedPath {
@@ -1488,6 +1493,7 @@ private struct ProgramAddProjectMenu: View {
 private struct ProgramProjectCard: View {
     let item: ProgramStatusItem
     let isSelected: Bool
+    let hasSession: Bool
     let onSelect: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isFocused: Bool
@@ -1516,6 +1522,14 @@ private struct ProgramProjectCard: View {
                         .font(AppTypography.font(.projectTitle))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                         .lineLimit(1)
+                    if hasSession {
+                        Circle()
+                            .fill(ProgramBoardStyle.green)
+                            .frame(width: 8, height: 8)
+                            .transition(.relayElement)
+                            .accessibilityLabel("Session running")
+                            .help("Session running")
+                    }
                     Spacer(minLength: 0)
                     // Reserves room for the Finder button overlaid outside the card button.
                     Color.clear.frame(width: ProgramProjectCard.finderButtonSize, height: ProgramProjectCard.finderButtonSize)
