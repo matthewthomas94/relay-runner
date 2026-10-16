@@ -851,7 +851,10 @@ final class AppState {
             }
         )
         programBoardOverlay.setSessionActiveProvider { [weak self] in
-            self?.hasActiveSession ?? false
+            self?.shownContextHasSession ?? false
+        }
+        programBoardOverlay.setRunningSessionPathsProvider { [weak self] in
+            self?.runningSessionProjectPaths ?? []
         }
         programBoardOverlay.setSessionProvider { [weak self] in
             self?.config.general.provider ?? .codex
@@ -886,9 +889,10 @@ final class AppState {
         )
         programBoardOverlay.setProjectSelectionHandler { [weak self] repoPath in
             guard let self else { return }
-            // Browsing boards must not launch a session; only an already
-            // running session follows the selected project.
-            _ = self.selectProjectContext(repositoryPath: repoPath, startsSession: self.hasActiveSession)
+            // RR-396: a card focuses its project's running session, or only
+            // browses its tickets; Start session is the one way to launch.
+            let runs = self.runningSessionProjectPaths.contains { AssistantSessionStore.samePath($0, repoPath) }
+            _ = self.selectProjectContext(repositoryPath: repoPath, startsSession: runs)
         }
         programBoardOverlay.setRequiresConfirmedProjectProvider { [weak self] in
             self?.projectRegistryV2 != nil
@@ -1181,6 +1185,17 @@ final class AppState {
         try? assistantSessionStore.cancelContinuation()
         sessionRegistry.endAll()
         resetActiveSessionState()
+    }
+
+    /// RR-396: repository paths of projects with a live embedded session.
+    var runningSessionProjectPaths: [String] {
+        sessionRegistry.liveContextIDs.compactMap { assistantSessionStore.document.bindings[$0]?.context.repositoryPath }
+    }
+
+    /// RR-396: whether the context the board shows has its own session. With
+    /// no embedded session live, an external bridge session still counts.
+    var shownContextHasSession: Bool {
+        sessionRegistry.hasLiveSessions ? sessionRegistry.isLive(activeContext.id) : hasActiveSession
     }
 
     /// RR-395: one Workspace terminal tab per live session, labelled with its context.
@@ -1943,6 +1958,7 @@ final class AppState {
             }
             guard startsSession else {
                 try assistantSessionStore.select(context, provider: config.general.provider.rawValue, model: config.general.model)
+                sessionRegistry.focus(contextID: context.id)
                 publishConversationState()
                 return true
             }

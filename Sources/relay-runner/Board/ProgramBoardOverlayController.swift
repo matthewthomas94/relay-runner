@@ -117,6 +117,7 @@ final class ProgramBoardOverlayController {
     )?
     private var resumeRecoveredNoteHandler: (() async throws -> MeetingNoteCoordinatorSnapshot)?
     private var sessionActiveProvider: () -> Bool = { false }
+    private var runningSessionPathsProvider: () -> [String] = { [] }
     private var sessionProvider: () -> GeneralConfig.AgentProvider = { .codex }
     private var noteCaptureSnapshotProvider: () -> MeetingNoteCoordinatorSnapshot = {
         MeetingNoteCoordinatorSnapshot(
@@ -225,6 +226,10 @@ final class ProgramBoardOverlayController {
 
     func setSessionActiveProvider(_ provider: @escaping () -> Bool) {
         self.sessionActiveProvider = provider
+    }
+
+    func setRunningSessionPathsProvider(_ provider: @escaping () -> [String]) {
+        self.runningSessionPathsProvider = provider
     }
 
     func setSessionProvider(_ provider: @escaping () -> GeneralConfig.AgentProvider) {
@@ -626,6 +631,7 @@ final class ProgramBoardOverlayController {
         model.prepareForOpening()
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
+        model.runningSessionPaths = runningSessionPathsProvider()
         model.sessionProvider = sessionProvider()
         model.noteCaptureSnapshot = noteCaptureSnapshotProvider()
 
@@ -862,6 +868,7 @@ final class ProgramBoardOverlayController {
         lastSelectedTab = workspace.selectedTab
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
+        model.runningSessionPaths = runningSessionPathsProvider()
         refreshContextPresentation()
         contentLoadBlocked = workspace.selectedTab == .work && !workspace.isGeneralContext && model.snapshot == nil
         // Even after an instant suspend, the Workspace returns with its
@@ -964,6 +971,10 @@ final class ProgramBoardOverlayController {
             let hasActiveSession = self.sessionActiveProvider()
             if hasActiveSession != self.model.hasActiveSession {
                 self.model.hasActiveSession = hasActiveSession
+            }
+            let runningPaths = self.runningSessionPathsProvider()
+            if runningPaths != self.model.runningSessionPaths {
+                self.model.runningSessionPaths = runningPaths
             }
             let sessionProvider = self.sessionProvider()
             if sessionProvider != self.model.sessionProvider {
@@ -1080,17 +1091,20 @@ final class ProgramBoardOverlayController {
         guard !model.hasActiveSession else { return }
         startSessionHandler?(workspace.isGeneralContext ? nil : workspace.contextPath)
         model.hasActiveSession = sessionActiveProvider()
+        model.runningSessionPaths = runningSessionPathsProvider()
     }
 
     private func endSession() {
         guard model.hasActiveSession else { return }
         endSessionHandler?()
         model.hasActiveSession = sessionActiveProvider()
+        model.runningSessionPaths = runningSessionPathsProvider()
     }
 
     private func startNoteTaker() {
         _ = startNoteTakerHandler?(GlobalNoteStore.repositoryPath)
         model.hasActiveSession = sessionActiveProvider()
+        model.runningSessionPaths = runningSessionPathsProvider()
         model.noteCaptureSnapshot = noteCaptureSnapshotProvider()
     }
 
