@@ -227,6 +227,10 @@ def _find_record(
     return None
 
 
+def _record_session_key(record: dict[str, Any]) -> str:
+    return str(record.get("relay_session_key") or "")
+
+
 def _prune_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     active = [record for record in records if str(record.get("status") or "") == "active"]
     inactive = [record for record in records if str(record.get("status") or "") != "active"]
@@ -240,9 +244,15 @@ def record_command_authorization(
     *,
     relationship: str | None = None,
     allowed_mutations: list[dict[str, Any]] | None = None,
+    session_key: str | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """Apply a turn's explicit supersession relationship to the auth ledger."""
+    """Apply a turn's explicit supersession relationship to the auth ledger.
+
+    ``session_key`` names the app-owned session spool the turn belongs to
+    (empty for manual single-session bridges). A turn only revokes records
+    of its own session, so ``all_work`` never preempts another session.
+    """
     key = relay_command_key(metadata)
     if key is None:
         return _load_ledger(path)
@@ -269,6 +279,8 @@ def record_command_authorization(
             if relay_command_key(record) == key and str(record.get("intent_id") or "") == (intent_id or ""):
                 continue
             if str(record.get("status") or "") != "active":
+                continue
+            if _record_session_key(record) != (session_key or ""):
                 continue
             if scope in {"item", "ticket"}:
                 record_intent = str(record.get("intent_id") or "")
@@ -308,6 +320,8 @@ def record_command_authorization(
         for field in ("intent_id", "within_turn_order", "target", "disposition", "cancellation_scope"):
             if metadata.get(field) is not None:
                 record[field] = metadata[field]
+        if session_key:
+            record["relay_session_key"] = session_key
 
     ledger["authorizations"] = _prune_records(records)
     ledger["updated_at"] = now
@@ -315,14 +329,28 @@ def record_command_authorization(
     return ledger
 
 
-def authorization_exists(path: str | Path, relay_command_seq: Any, relay_command_id: Any) -> bool:
+def _session_records(records: list[dict[str, Any]], session_key: str | None) -> list[dict[str, Any]]:
+    """A keyed request may only use records registered for its own session."""
+    if not session_key:
+        return records
+    return [record for record in records if _record_session_key(record) == session_key]
+
+
+def authorization_exists(
+    path: str | Path,
+    relay_command_seq: Any,
+    relay_command_id: Any,
+    *,
+    session_key: str | None = None,
+) -> bool:
     key = relay_command_key({
         "relay_command_seq": relay_command_seq,
         "relay_command_id": relay_command_id,
     })
     if key is None:
         return False
-    return _find_record(_load_ledger(path)["authorizations"], key) is not None
+    records = _session_records(_load_ledger(path)["authorizations"], session_key)
+    return _find_record(records, key) is not None
 
 
 def _ticket_allowed(allowed: dict[str, Any], ticket_id: str) -> bool:
@@ -376,6 +404,7 @@ def validate_and_mark_mutation(
     mutation: dict[str, Any],
     *,
     relay_intent_id: str | None = None,
+    session_key: str | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Validate an active authorization and mark one bounded mutation started."""
@@ -390,7 +419,7 @@ def validate_and_mark_mutation(
     ledger = _load_ledger(path)
     matching_records = [
         record
-        for record in reversed(ledger["authorizations"])
+        for record in reversed(_session_records(ledger["authorizations"], session_key))
         if relay_command_key(record) == key
         and (
             not relay_intent_id

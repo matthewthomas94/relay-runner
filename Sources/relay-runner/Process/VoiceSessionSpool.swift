@@ -11,9 +11,9 @@ import Foundation
 /// Shared, process-wide surfaces stay in /tmp: `voice_in.fifo`,
 /// `voice_bridge.sock`, `tts_in.fifo`, `tts_control.sock`, `voice_state.sock`,
 /// the provider-turn projection, the heartbeat, and the daemon. The command
-/// authorization ledger also stays shared until the orchestrator daemon
-/// resolves per-session spools (slice H); command seq/id are globally unique,
-/// so sharing it cannot cross-authorize sessions.
+/// authorization ledger also stays shared: each record carries its session
+/// key, and the daemon resolves a keyed mutation against that session's spool
+/// and records only (RR-399).
 ///
 /// `services/voice_bridge.py` resolves the same file names from
 /// `RELAY_SESSION_SPOOL_DIR`, falling back to `/tmp` like `legacy`.
