@@ -1183,6 +1183,31 @@ final class AppState {
         resetActiveSessionState()
     }
 
+    /// RR-395: one Workspace terminal tab per live session, labelled with its context.
+    var workspaceSessionTabs: [(id: String, name: String)] {
+        sessionRegistry.liveContextIDs.map { id in
+            (id, assistantSessionStore.document.bindings[id]?.context.displayName ?? id)
+        }
+    }
+
+    /// RR-395: a Workspace terminal tab was selected; focus that context's
+    /// live session (which also routes voice there).
+    func focusSessionTab(contextID: String) {
+        guard contextID != activeContext.id,
+              let context = assistantSessionStore.document.bindings[contextID]?.context else { return }
+        if context.isGeneral {
+            selectGeneralContext()
+        } else if let path = context.repositoryPath {
+            selectProjectContext(repositoryPath: path)
+        }
+    }
+
+    /// RR-395: closing a tab stops only that context's session, like Stop.
+    func closeSessionTab(contextID: String) {
+        guard let context = assistantSessionStore.document.bindings[contextID]?.context else { return }
+        endSession(context: context)
+    }
+
     /// RR-394: end only `context`'s session, PTY and spool. Other contexts keep
     /// running; the shared bridge stops only with the last live session.
     func endSession(context: AssistantSessionContext) {
