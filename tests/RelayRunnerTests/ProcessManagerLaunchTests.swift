@@ -298,7 +298,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(script.contains("developer_instructions="))
         XCTAssertTrue(script.contains("export RELAY_PROVIDER_SESSION_ID='embedded-provider-session'"))
         XCTAssertTrue(script.contains(
-            "printf '%s\\n' \"$RELAY_PROVIDER_SESSION_ID\" > /tmp/voice_provider_session_id"
+            "printf '%s\\n' \"$RELAY_PROVIDER_SESSION_ID\" > \"${RELAY_SESSION_SPOOL_DIR:-/tmp}\"/voice_provider_session_id"
         ))
         XCTAssertTrue(script.contains("exec '/usr/local/bin/codex'"))
         XCTAssertTrue(script.contains("--search"))

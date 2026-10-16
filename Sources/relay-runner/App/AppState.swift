@@ -236,7 +236,10 @@ final class AppState {
 
     let configManager = ConfigManager.shared
     let processManager = ProcessManager()
-    let embeddedTerminal = EmbeddedTerminalSession()
+    /// RR-394: one embedded session per context; see `EmbeddedSessionRegistry`.
+    let sessionRegistry = EmbeddedSessionRegistry()
+    /// The focused context's session; a placeholder before any session starts.
+    var embeddedTerminal: EmbeddedTerminalSession { sessionRegistry.focused }
     let permissions = PermissionsManager()
     var customVoiceNotice: String?
     private(set) var activeContext = AssistantSessionContext.general
@@ -253,6 +256,15 @@ final class AppState {
     @ObservationIgnored private var continuationDestinationOwner: [String: String]?
     var canClearContextContinuation: Bool { assistantSessionStore.pendingContinuation != nil }
     @ObservationIgnored private var idleSessionSaved = false
+    /// RR-394: the context whose spool the shared voice bridge publishes into
+    /// (the latest launch). Voice delivery and continuity recovery act on it.
+    @ObservationIgnored private var voiceContextID: String?
+    private var voiceContext: AssistantSessionContext {
+        voiceContextID.flatMap { assistantSessionStore.document.bindings[$0]?.context } ?? activeContext
+    }
+    private var voiceSession: EmbeddedTerminalSession {
+        voiceContextID.flatMap { sessionRegistry.sessions[$0] } ?? embeddedTerminal
+    }
     @ObservationIgnored private var lastContextReconciliation = Date.distantPast
 
     var settingsAudioBusy: Bool {
@@ -443,13 +455,13 @@ final class AppState {
     /// within ~3 seconds of an external bridge coming up, so /relay-bridge
     /// users see the menu reflect their session promptly.
     var hasActiveSession: Bool {
-        let binding = assistantSessionStore.binding(for: activeContext)
+        let binding = assistantSessionStore.binding(for: voiceContext)
         return Self.voiceSessionIsActive(
             menuSessionActive: menuSessionActive,
             bridgeAlive: bridgeAliveCache,
             bridgeMatchesContext: bridgeMatchesActiveContext,
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
-            embeddedPhase: embeddedTerminal.phase,
+            embeddedPhase: voiceSession.phase,
             managedBinding: binding,
             managedProviderState: bridgeManagedProviderState.flatMap { $0.process == binding?.managedProcess ? $0.state : nil },
             bridgeProviderSessionID: ProcessManager.currentProviderSessionID()
@@ -483,7 +495,7 @@ final class AppState {
 
     private var bridgeMatchesActiveContext: Bool {
         guard let bridge = processManager.bridgeRecoveryContext() else { return false }
-        return AssistantSessionStore.samePath(bridge.workingDirectory, activeContext.workingDirectory)
+        return AssistantSessionStore.samePath(bridge.workingDirectory, voiceContext.workingDirectory)
     }
 
     /// Session-level microphone owner policy. Command capture may run only for
@@ -813,7 +825,8 @@ final class AppState {
             self?.newSession(workingDirectory: projectPath)
         }
         programBoardOverlay.setEndSessionHandler { [weak self] in
-            self?.endSession()
+            guard let self else { return }
+            self.endSession(context: self.activeContext)
         }
         programBoardOverlay.setNoteTakerHandlers(
             start: { [weak self] projectPath in
@@ -884,12 +897,14 @@ final class AppState {
             guard let registry = self?.projectRegistryV2 else { return nil }
             return try? registry.scopeToken(matching: repoPath).encodedValue
         }
-        embeddedTerminal.setExitHandler { [weak self] exitCode in
-            self?.embeddedTerminalDidExit(exitCode: exitCode)
-        }
-        embeddedTerminal.setReadyHandler { [weak self] in
-            self?.embeddedTerminalDidBecomeReady()
-        }
+        sessionRegistry.setHandlers(
+            exit: { [weak self] contextID, exitCode in
+                self?.embeddedTerminalDidExit(contextID: contextID, exitCode: exitCode)
+            },
+            ready: { [weak self] contextID in
+                self?.embeddedTerminalDidBecomeReady(contextID: contextID)
+            }
+        )
         notchStatusController.setGlyphClickHandler { [weak self] in
             self?.toggleBoard()
         }
@@ -1124,7 +1139,7 @@ final class AppState {
     /// Explicit user recovery preserves the bridge and waits for provider exit.
     func recoverBlockedVoiceDelivery() {
         guard !userDeliveryRecoveryPending else { return }
-        guard embeddedTerminal.deliveryBlocked,
+        guard voiceSession.deliveryBlocked,
               let launch = activeSessionLaunchConfig,
               processManager.bridgeAlive(),
               let claim = ProcessManager.currentRelayClaimIdentity(),
@@ -1136,7 +1151,7 @@ final class AppState {
               ],
               let previousSessionID = ProcessManager.currentProviderSessionID()
         else {
-            embeddedTerminal.deliveryRecoveryMessage = "Session delivery blocked. Recovery ownership is unavailable; the session and queued messages were left untouched."
+            voiceSession.deliveryRecoveryMessage = "Session delivery blocked. Recovery ownership is unavailable; the session and queued messages were left untouched."
             return
         }
         pendingContinuityProviderReady = ContinuityProviderReadyContext(
@@ -1151,21 +1166,57 @@ final class AppState {
         )
         userDeliveryRecoveryPending = true
         pendingContinuityProviderReady?.discardUnacknowledgedClaim = true
-        embeddedTerminal.deliveryRecoveryMessage = "Restart requested. Waiting for the old provider to exit; queued messages are preserved."
-        if !embeddedTerminal.requestDeliveryRecovery() {
+        voiceSession.deliveryRecoveryMessage = "Restart requested. Waiting for the old provider to exit; queued messages are preserved."
+        if !voiceSession.requestDeliveryRecovery() {
             userDeliveryRecoveryPending = false
             pendingContinuityProviderReady = nil
-            embeddedTerminal.deliveryRecoveryMessage = "The blocked session could not be stopped. No replacement was launched; queued messages are preserved."
+            voiceSession.deliveryRecoveryMessage = "The blocked session could not be stopped. No replacement was launched; queued messages are preserved."
         }
     }
 
-    /// End the active voice session and revert to awareness mode.
+    /// End every context's session and revert to awareness mode.
     func endSession() {
-        saveAssistantSession(lifecycle: .saved)
+        saveLiveAssistantSessions()
         pendingContextSelection = nil
         try? assistantSessionStore.cancelContinuation()
-        embeddedTerminal.end()
+        sessionRegistry.endAll()
         resetActiveSessionState()
+    }
+
+    /// RR-394: end only `context`'s session, PTY and spool. Other contexts keep
+    /// running; the shared bridge stops only with the last live session.
+    func endSession(context: AssistantSessionContext) {
+        guard sessionRegistry.liveContextIDs.contains(where: { $0 != context.id }) else {
+            endSession()
+            return
+        }
+        saveAssistantSession(lifecycle: .saved, context: context)
+        if pendingContextSelection == context { pendingContextSelection = nil }
+        sessionRegistry.end(contextID: context.id)
+        if context == activeContext { focusNextLiveContext() }
+        refreshWorkspaceActivity(invalidateRoute: true)
+    }
+
+    /// Save the focused context and every other context with a live session.
+    private func saveLiveAssistantSessions() {
+        for contextID in sessionRegistry.liveContextIDs where contextID != activeContext.id {
+            if let context = assistantSessionStore.document.bindings[contextID]?.context {
+                saveAssistantSession(lifecycle: .saved, context: context)
+            }
+        }
+        saveAssistantSession(lifecycle: .saved)
+    }
+
+    /// After the focused context ends, show another live context's session.
+    private func focusNextLiveContext() {
+        guard let contextID = sessionRegistry.liveContextIDs.first,
+              let binding = assistantSessionStore.document.bindings[contextID] else { return }
+        do {
+            try assistantSessionStore.select(binding.context, provider: binding.provider, model: binding.model)
+            publishConversationState()
+        } catch {
+            contextSwitchMessage = "Could not save the conversation: \(error.localizedDescription)"
+        }
     }
 
     /// Ends the existing work session, then starts project-independent note capture.
@@ -1252,7 +1303,7 @@ final class AppState {
 
     private func waitForWorkSessionTeardownBeforeNote() async throws {
         let deadline = Date().addingTimeInterval(5)
-        while embeddedTerminal.hasLiveEmbeddedProcess || processManager.bridgeAlive() {
+        while sessionRegistry.hasLiveSessions || processManager.bridgeAlive() {
             guard Date() < deadline else {
                 throw MeetingNoteForegroundTransitionError.teardownTimedOut
             }
@@ -1562,8 +1613,13 @@ final class AppState {
         )
     }
 
-    private func embeddedTerminalDidExit(exitCode: Int32?) {
-        saveAssistantSession(lifecycle: .interrupted)
+    private func embeddedTerminalDidExit(contextID: String, exitCode: Int32?) {
+        // RR-394: an exit marks only its own context. The shared voice state
+        // resets only when the bridge's session exits and none remain live.
+        if let exitedContext = assistantSessionStore.document.bindings[contextID]?.context {
+            saveAssistantSession(lifecycle: .interrupted, context: exitedContext)
+        }
+        if contextID != voiceContextID, sessionRegistry.hasLiveSessions { return }
         if userDeliveryRecoveryPending {
             userDeliveryRecoveryPending = false
             if let launch = activeSessionLaunchConfig,
@@ -1583,8 +1639,9 @@ final class AppState {
             }
             return
         }
+        if sessionRegistry.hasLiveSessions { return }
         let earlyFailureMessage: String?
-        if case .failed(let message) = embeddedTerminal.phase {
+        if case .failed(let message) = sessionRegistry.sessions[contextID]?.phase {
             earlyFailureMessage = message
         } else {
             earlyFailureMessage = nil
@@ -1603,6 +1660,7 @@ final class AppState {
 
     private func resetActiveSessionState() {
         pendingSessionLaunchID = nil
+        voiceContextID = nil
         userDeliveryRecoveryPending = false
         processManager.killBridge(stopRequested: true)
         menuSessionActive = false
@@ -1627,7 +1685,7 @@ final class AppState {
 
     /// Full shutdown (for app quit).
     func stopServices() {
-        saveAssistantSession(lifecycle: .saved)
+        saveLiveAssistantSessions()
         pendingSessionLaunchID = nil
         stopMeetingNoteOptionGesture()
         guard isRunning else {
@@ -1638,7 +1696,7 @@ final class AppState {
             return
         }
         stopBridgeWatchdog()
-        embeddedTerminal.shutdown()
+        sessionRegistry.shutdownAll()
         menuSessionActive = false
         activeSessionLaunchConfig = nil
         activeSessionProjectScopeToken = nil
@@ -1662,7 +1720,7 @@ final class AppState {
     }
 
     func prepareForSparkleRelaunch() {
-        saveAssistantSession(lifecycle: .saved)
+        saveLiveAssistantSessions()
         pendingSessionLaunchID = nil
         workspaceDiscoveryTask?.cancel()
         workspaceDiscoveryTask = nil
@@ -1670,7 +1728,7 @@ final class AppState {
         stopSleepPreventionMonitoring(releaseReason: "update-relaunch")
         bridgeRecoverySuppressedForUpdate = true
         stopBridgeWatchdog()
-        embeddedTerminal.shutdown()
+        sessionRegistry.shutdownAll()
         menuSessionActive = false
         activeSessionLaunchConfig = nil
         activeSessionProjectScopeToken = nil
@@ -1858,7 +1916,9 @@ final class AppState {
             }
             catch { contextSwitchMessage = "Continuation could not be saved: \(error.localizedDescription)"; return false }
         }
-        if continuationID != nil || (!canReplaceContextProvider && (context != activeContext || meetingNoteSnapshot.phase.ownsForeground)) {
+        // RR-394: another context's session starts beside this one, so only a
+        // forwarded continuation or a busy note capture waits.
+        if continuationID != nil || (!canReplaceContextProvider && meetingNoteSnapshot.phase.ownsForeground) {
             pendingContextSelection = context
             contextSwitchMessage = "Switching to \(context.displayName) after the current recording, command or approval finishes."
             return true
@@ -1956,6 +2016,8 @@ final class AppState {
     private func publishConversationState() {
         activeContext = assistantSessionStore.activeContext
         conversationHistory = assistantSessionStore.document.history.sorted { $0.createdAt < $1.createdAt }
+        // The Workspace terminal always shows the active context's session.
+        sessionRegistry.focus(contextID: activeContext.id)
     }
 
     private func assistantRunIDs(for context: AssistantSessionContext) -> [Int] {
@@ -1976,12 +2038,13 @@ final class AppState {
         return [ProcessManager.currentRelayClaimIdentity()?["intent_id"] as? String].compactMap { $0 }
     }
 
-    private func saveAssistantSession(lifecycle: AssistantSessionStore.Lifecycle) {
+    private func saveAssistantSession(lifecycle: AssistantSessionStore.Lifecycle, context: AssistantSessionContext? = nil) {
+        let context = context ?? activeContext
         do {
-            try assistantSessionStore.reconcile(context: activeContext, activeRunIDs: assistantRunIDs(for: activeContext),
+            try assistantSessionStore.reconcile(context: context, activeRunIDs: assistantRunIDs(for: context),
                                                 pendingIntentIDs: assistantPendingIntentIDs())
-            try assistantSessionStore.importPublicHistory(context: activeContext)
-            try assistantSessionStore.mark(lifecycle, context: activeContext)
+            try assistantSessionStore.importPublicHistory(context: context)
+            try assistantSessionStore.mark(lifecycle, context: context)
             publishConversationState()
         } catch {
             contextSwitchMessage = "Conversation could not be saved: \(error.localizedDescription)"
@@ -2008,7 +2071,7 @@ final class AppState {
             if try assistantSessionStore.saveIfIdle(context: activeContext, now: now,
                 eligible: menuSessionActive && embeddedTerminal.phase == .running && canReplaceContextProvider
                     && assistantSessionStore.pendingContinuation == nil,
-                end: { embeddedTerminal.end(); resetActiveSessionState() }) {
+                end: { endSession(context: activeContext) }) {
                 idleSessionSaved = true
                 contextSwitchMessage = "\(activeContext.displayName) saved after 30 minutes idle. Start Session to resume."
             }
@@ -2071,16 +2134,36 @@ final class AppState {
             }
             return false
         }
-        if !preservesVoiceBridge, context == activeContext,
-           activeSessionLaunchConfig?.general.provider == config.general.provider,
-           activeSessionLaunchConfig?.general.model == config.general.model,
-           embeddedTerminal.phase.isActive {
+        // RR-394: a context with a live session is focused, never replaced or
+        // duplicated; other contexts' sessions keep running.
+        if !preservesVoiceBridge, sessionRegistry.isLive(context.id) {
+            do {
+                try assistantSessionStore.select(context, provider: config.general.provider.rawValue,
+                                                 model: config.general.model, savingPreviousContext: true)
+                publishConversationState()
+            } catch {
+                contextSwitchMessage = "Could not save the conversation. The existing context was retained: \(error.localizedDescription)"
+                return false
+            }
+            contextSwitchMessage = nil
             embeddedTerminal.focus()
             if showsWorkspaceOnLaunch { programBoardOverlay.showTerminal() }
             return true
         }
         guard pendingSessionLaunchID == nil else { return false }
         let previousContext = activeContext
+        let session: EmbeddedTerminalSession
+        switch sessionRegistry.admit(contextID: context.id) {
+        case .start(let admitted):
+            session = admitted
+        case .focusedExisting:
+            // Recovery relaunches only an exited provider.
+            return false
+        case .refused(let message):
+            contextSwitchMessage = message
+            stateMachine.showProgramStatus(title: "Session limit reached", body: message)
+            return false
+        }
         var previousProcesses: [AssistantManagedProviderProcess] = []
         do {
             try assistantSessionStore.reconcile(context: previousContext, activeRunIDs: assistantRunIDs(for: previousContext),
@@ -2093,12 +2176,17 @@ final class AppState {
                 try assistantSessionStore.reconcile(context: binding.context, activeRunIDs: binding.activeRunIDs,
                                                     pendingIntentIDs: binding.pendingIntentIDs)
             }
-            previousProcesses = assistantSessionStore.managedProviderProcesses
+            // Only leftovers of contexts without a live session are stopped.
+            previousProcesses = assistantSessionStore.document.bindings.values
+                .filter { !sessionRegistry.isLive($0.context.id) }
+                .compactMap(\.managedProcess)
+            // A crash survivor mid-turn is never killed to make room.
             if !preservesVoiceBridge, AssistantSessionStore.shouldDeferReplacement(
-                hasEmbeddedProvider: embeddedTerminal.phase.isActive,
+                hasEmbeddedProvider: false,
                 managedProcessStates: previousProcesses.map { $0.state() },
                 canReplace: canReplaceContextProvider
             ) {
+                sessionRegistry.focus(contextID: previousContext.id)
                 pendingContextSelection = context
                 contextSwitchMessage = "Switching to \(context.displayName) after the current command or approval finishes."
                 return true
@@ -2107,6 +2195,7 @@ final class AppState {
                                              model: config.general.model, savingPreviousContext: true)
             publishConversationState()
         } catch {
+            sessionRegistry.focus(contextID: previousContext.id)
             contextSwitchMessage = "Could not save the conversation. The existing context was retained: \(error.localizedDescription)"
             return false
         }
@@ -2124,13 +2213,11 @@ final class AppState {
         // up so they can retry without onboarding nagging them again.
         onboarding.markSessionRun()
         // A confirmed-dead provider can be replaced without interrupting the
-        // detached bridge that still owns the active voice session.
+        // detached bridge that still owns the active voice session. Otherwise
+        // the shared bridge is torn down only when no other session uses it.
         if !preservesVoiceBridge {
             processManager.clearBridgeStopRequested()
-            processManager.killBridge()
-        }
-        if embeddedTerminal.phase.isActive || embeddedTerminal.isEmbeddedProcessRunning {
-            embeddedTerminal.end()
+            if !sessionRegistry.hasLiveSessions { processManager.killBridge() }
         }
         menuSessionActive = true
         sessionStartTime = Date()
@@ -2173,15 +2260,15 @@ final class AppState {
                 func previousProcessStillLives() -> Bool {
                     previousProcesses.contains { [.matching, .unknown].contains($0.state()) }
                 }
-                while embeddedTerminal.hasLiveEmbeddedProcess || previousProcessStillLives(), Date() < teardownDeadline {
+                while session.hasLiveEmbeddedProcess || previousProcessStillLives(), Date() < teardownDeadline {
                     try await Task.sleep(nanoseconds: 50_000_000)
                     guard pendingSessionLaunchID == launchID else { return }
                 }
-                guard !embeddedTerminal.hasLiveEmbeddedProcess, !previousProcessStillLives() else {
+                guard !session.hasLiveEmbeddedProcess, !previousProcessStillLives() else {
                     contextSwitchMessage = "The previous provider is still running. No replacement was launched; close that session and try again."
                     throw EmbeddedTerminalProcessError.alreadyRunning
                 }
-                try embeddedTerminal.beginPreparing(
+                try session.beginPreparing(
                     providerName: launchConfig.general.provider.displayName,
                     providerKey: launchConfig.general.provider.rawValue,
                     workingDirectory: sessionDirectory,
@@ -2193,12 +2280,12 @@ final class AppState {
                     try ProcessManager.updateHarness(config: launchConfig)
                 }.value
                 guard pendingSessionLaunchID == launchID,
-                      embeddedTerminal.phase == .preparing else { return }
+                      session.phase == .preparing else { return }
                 let prepared = try processManager.prepareNewSession(
                     config: launchConfig,
                     voiceDelivery: voiceDelivery,
                     suppressStartupGreeting: suppressesStartupGreeting,
-                    sessionEventPath: embeddedTerminal.diagnosticEventPath,
+                    sessionEventPath: session.diagnosticEventPath,
                     projectScopeToken: projectScopeToken,
                     recoveryGeneration: recoveryGeneration,
                     startsVoiceBridge: !preservesVoiceBridge,
@@ -2239,19 +2326,21 @@ final class AppState {
                 sessionStartTime = Date()
                 switch request.destination {
                 case .embedded:
-                    try embeddedTerminal.start(prepared)
+                    sessionRegistry.setSpool(prepared.spool, for: context.id)
+                    try session.start(prepared)
                 case .externalTerminal:
                     guard processManager.launchPreparedSessionInTerminal(prepared) else {
                         throw ProcessManager.SessionLaunchPreparationError.externalTerminalLaunch
                     }
-                    embeddedTerminal.markExternal(
+                    session.markExternal(
                         providerName: launchConfig.general.provider.displayName,
                         workingDirectory: prepared.workingDirectory
                     )
                 }
+                voiceContextID = context.id
             } catch {
                 guard pendingSessionLaunchID == launchID else { return }
-                saveAssistantSession(lifecycle: .interrupted)
+                saveAssistantSession(lifecycle: .interrupted, context: context)
                 pendingContinuityProviderReady = nil
                 if !preservesVoiceBridge {
                     continuityRecoveryGenerationBySession.removeValue(
@@ -2260,11 +2349,13 @@ final class AppState {
                         )
                     )
                 }
-                embeddedTerminal.markFailed(error)
+                session.markFailed(error)
                 if preservesVoiceBridge {
                     bridgeAliveCache = processManager.bridgeAlive()
                     menuSessionActive = bridgeAliveCache
                     statusText = bridgeAliveCache ? "Session reconnecting" : "Ready"
+                } else if sessionRegistry.hasLiveSessions {
+                    // Other contexts keep their sessions and the shared bridge.
                 } else {
                     processManager.killBridge(stopRequested: true)
                     menuSessionActive = false
@@ -2864,8 +2955,8 @@ final class AppState {
         guard isRunning, bridgeWatchdogTask == nil else { return }
         let processManager = processManager
         let fallbackConfig = bridgeRecoveryFallbackConfig
-        let binding = assistantSessionStore.binding(for: activeContext)
-        let managedProvider = !menuSessionActive && !embeddedTerminal.phase.isActive && binding?.lifecycle == .interrupted
+        let binding = assistantSessionStore.binding(for: voiceContext)
+        let managedProvider = !menuSessionActive && !sessionRegistry.hasLiveSessions && binding?.lifecycle == .interrupted
             ? binding?.managedProcess : nil
         bridgeWatchdogTask = Task { @MainActor [weak self] in
             let sample = await Task.detached(priority: .utility) {
@@ -3040,7 +3131,7 @@ final class AppState {
     }
 
     private var activeProviderInteractiveReady: Bool {
-        switch embeddedTerminal.phase {
+        switch voiceSession.phase {
         case .running, .external:
             return true
         default:
@@ -3142,7 +3233,7 @@ final class AppState {
         guard let baseContext = processManager.bridgeRecoveryContext(fallbackConfig: bridgeRecoveryFallbackConfig) else {
             return false
         }
-        guard AssistantSessionStore.samePath(baseContext.workingDirectory, activeContext.workingDirectory) else { return false }
+        guard AssistantSessionStore.samePath(baseContext.workingDirectory, voiceContext.workingDirectory) else { return false }
         let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
             repositoryPath: baseContext.workingDirectory
         )
@@ -3151,9 +3242,10 @@ final class AppState {
             provider: baseContext.provider,
             recoveryGeneration: continuityRecoveryGenerationBySession[sessionID],
             continuityRecoveryPending: reason.hasPrefix("continuity-"),
-            sessionScope: activeContext.kind.rawValue,
+            sessionScope: voiceContext.kind.rawValue,
             generalFilesRoot: AssistantSessionStore.filesDirectory.path,
-            preservesContextAuthorization: true
+            preservesContextAuthorization: true,
+            spoolDirectory: baseContext.spoolDirectory
         )
         let now = Date()
         if now.timeIntervalSince(lastBridgeRecoveryAt) < Self.bridgeRecoveryCooldown {
@@ -3227,8 +3319,8 @@ final class AppState {
     }
 
     private func surfaceBridgeRecoveryFailure(reason: String) {
-        if embeddedTerminal.phase == .running {
-            embeddedTerminal.end()
+        if voiceSession.phase == .running {
+            voiceSession.end()
         }
         let presentation = Self.bridgeRecoveryFailurePresentation(reason: reason)
         statusText = presentation.statusText
@@ -3788,7 +3880,7 @@ final class AppState {
             && (
                 releasedContinuityProviderTargets.contains(providerTargetKey)
                 || (
-                    embeddedTerminal.isEmbeddedProcessRunning
+                    voiceSession.isEmbeddedProcessRunning
                     && ProcessManager.stalledForegroundProviderTurnOwned(
                         commandID: request.commandID,
                         provider: request.provider,
@@ -3804,8 +3896,8 @@ final class AppState {
             provider: activeSessionLaunchConfig?.general.provider.rawValue
                 ?? config.general.provider.rawValue,
             liveWorkActive: liveWorkActive,
-            providerProcessRunning: embeddedTerminal.phase.isActive
-                || embeddedTerminal.isEmbeddedProcessRunning,
+            providerProcessRunning: voiceSession.phase.isActive
+                || voiceSession.isEmbeddedProcessRunning,
             stalledProviderTargetOwned: stalledProviderTargetOwned,
             bridgeAlive: processManager.bridgeAlive(),
             idempotencyAlreadyApplied: appliedContinuityRecoveryKeys.contains(
@@ -3852,11 +3944,11 @@ final class AppState {
                     return .failed("stalled_provider_ownership_not_proven")
                 }
             } else {
-                guard !embeddedTerminal.phase.isActive,
+                guard !voiceSession.phase.isActive,
                       !ProcessManager.foregroundProviderTurnActive()
                 else { return .failed("live_provider_must_not_be_killed") }
             }
-            embeddedTerminal.end()
+            voiceSession.end()
             releasedContinuityProviderTargets.insert(providerTargetKey)
             applied = true
         case .launchForegroundProvider:
@@ -3868,13 +3960,13 @@ final class AppState {
                 guard stalledProviderTargetOwned else {
                     return .failed("stalled_provider_ownership_not_proven")
                 }
-                if embeddedTerminal.phase.isActive || embeddedTerminal.isEmbeddedProcessRunning {
-                    embeddedTerminal.end()
+                if voiceSession.phase.isActive || voiceSession.isEmbeddedProcessRunning {
+                    voiceSession.end()
                     releasedContinuityProviderTargets.insert(providerTargetKey)
                 }
             } else {
-                guard !embeddedTerminal.phase.isActive,
-                      !embeddedTerminal.isEmbeddedProcessRunning,
+                guard !voiceSession.phase.isActive,
+                      !voiceSession.isEmbeddedProcessRunning,
                       !ProcessManager.foregroundProviderTurnActive()
                 else { return .failed("live_session_must_not_be_replaced") }
             }
@@ -3923,11 +4015,13 @@ final class AppState {
         return .applied()
     }
 
-    private func embeddedTerminalDidBecomeReady() {
-        do { try assistantSessionStore.mark(.running, context: activeContext) }
-        catch { contextSwitchMessage = "Conversation could not be saved: \(error.localizedDescription)" }
+    private func embeddedTerminalDidBecomeReady(contextID: String) {
+        if let readyContext = assistantSessionStore.document.bindings[contextID]?.context {
+            do { try assistantSessionStore.mark(.running, context: readyContext) }
+            catch { contextSwitchMessage = "Conversation could not be saved: \(error.localizedDescription)" }
+        }
         reconcileContextContinuation()
-        guard let context = pendingContinuityProviderReady else { return }
+        guard contextID == voiceContextID, let context = pendingContinuityProviderReady else { return }
         pendingContinuityProviderReady = nil
         guard let launch = activeSessionLaunchConfig else { return }
         let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(

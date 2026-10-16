@@ -3235,6 +3235,42 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         )
     }
 
+    func testSessionSpoolDeliveriesNeverClaimEachOthersCommandForBothProviders() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let spoolA = VoiceSessionSpool(key: "session-a", rootDirectory: fixture.root.path)
+            let spoolB = VoiceSessionSpool(key: "session-b", rootDirectory: fixture.root.path)
+            try spoolA.prepare()
+            try spoolB.prepare()
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-a\",\"relay_command_seq\":7}"
+            try "Only for A\n".write(toFile: spoolA.command, atomically: true, encoding: .utf8)
+            try metadata.write(toFile: spoolA.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(toFile: spoolA.commandState, atomically: true, encoding: .utf8)
+            var sentA: [String] = [], sentB: [String] = []
+            var scheduled: [() -> Void] = []
+            func delivery(_ spool: VoiceSessionSpool, _ sink: @escaping (String) -> Void) -> RelayVoiceCommandDelivery {
+                RelayVoiceCommandDelivery(
+                    paths: spool.deliveryPaths(sharing: fixture.paths),
+                    send: { sink(String(decoding: $0, as: UTF8.self)) },
+                    schedule: { _, _, work in scheduled.append(work) },
+                    isRunning: { true }, provider: provider
+                )
+            }
+            let deliveryA = delivery(spoolA) { sentA.append($0) }
+            let deliveryB = delivery(spoolB) { sentB.append($0) }
+
+            XCTAssertFalse(deliveryB.claimAndSendIfPossible(), provider)
+            XCTAssertTrue(sentB.isEmpty, provider)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: spoolA.command), provider)
+            XCTAssertTrue(deliveryA.claimAndSendIfPossible(), provider)
+            scheduled.forEach { $0() }
+            XCTAssertEqual(sentA, ["Only for A", "\r"], provider)
+            XCTAssertTrue(sentB.isEmpty, provider)
+            XCTAssertEqual(try String(contentsOfFile: spoolA.claimed), metadata, provider)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: spoolB.claimed), provider)
+        }
+    }
+
     private func makeFixture() throws -> (
         root: URL,
         command: URL,
@@ -3435,5 +3471,201 @@ private final class FakeEmbeddedTerminalProcess: EmbeddedTerminalProcess {
     func emitExit(rawStatus: Int32?) {
         isRunning = false
         onExit?(rawStatus)
+    }
+}
+
+final class EmbeddedSessionRegistryTests: XCTestCase {
+    private var processes: [FakeEmbeddedTerminalProcess] = []
+
+    private func makeRegistry() -> EmbeddedSessionRegistry {
+        EmbeddedSessionRegistry(makeSession: { [unowned self] in
+            EmbeddedTerminalSession(processFactory: {
+                let process = FakeEmbeddedTerminalProcess()
+                self.processes.append(process)
+                return process
+            })
+        })
+    }
+
+    private func launch(_ registry: EmbeddedSessionRegistry, _ contextID: String, provider: String = "Codex") throws -> EmbeddedTerminalSession {
+        guard case .start(let session) = registry.admit(contextID: contextID) else {
+            XCTFail("\(contextID) was not admitted")
+            throw CancellationError()
+        }
+        try session.beginPreparing(providerName: provider, workingDirectory: "/repo/\(contextID)")
+        try session.start(ProcessManager.PreparedSessionLaunch(
+            executable: "/bin/bash", arguments: [], launcherPath: "/tmp/launcher",
+            workingDirectory: "/repo/\(contextID)", target: provider == "Codex" ? .codex : .claude,
+            voiceDelivery: .appOwned
+        ))
+        return session
+    }
+
+    func testStartingOrFocusingAnotherContextNeverEndsTheFirst() throws {
+        let registry = makeRegistry()
+        let a = try launch(registry, "a")
+        let b = try launch(registry, "b", provider: "Claude")
+        XCTAssertEqual(registry.focusedContextID, "b")
+        XCTAssertTrue(registry.focused === b)
+        XCTAssertEqual(a.phase, .running)
+        registry.focus(contextID: "a")
+        XCTAssertTrue(registry.focused === a)
+        XCTAssertEqual(b.phase, .running)
+        XCTAssertEqual(registry.liveContextIDs, ["a", "b"])
+        XCTAssertEqual(processes.map(\.terminateCount), [0, 0])
+    }
+
+    func testLiveContextIsFocusedInsteadOfStartedTwice() throws {
+        let registry = makeRegistry()
+        let a = try launch(registry, "a")
+        _ = try launch(registry, "b")
+        guard case .focusedExisting(let existing) = registry.admit(contextID: "a") else {
+            return XCTFail("A live context must not start a second process")
+        }
+        XCTAssertTrue(existing === a)
+        XCTAssertEqual(registry.focusedContextID, "a")
+        XCTAssertEqual(processes.count, 2)
+        XCTAssertEqual(processes[0].startCount, 1)
+    }
+
+    func testEndingOneContextStopsOnlyItsSessionAndSpool() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("rr-registry-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let registry = makeRegistry()
+        let a = try launch(registry, "a")
+        let b = try launch(registry, "b")
+        let spoolA = VoiceSessionSpool(key: "a", rootDirectory: root.path)
+        let spoolB = VoiceSessionSpool(key: "b", rootDirectory: root.path)
+        try spoolA.prepare(); try spoolB.prepare()
+        registry.setSpool(spoolA, for: "a")
+        registry.setSpool(spoolB, for: "b")
+
+        registry.end(contextID: "a")
+        XCTAssertEqual(a.phase, .ended)
+        XCTAssertEqual(b.phase, .running)
+        XCTAssertEqual(processes.map(\.terminateCount), [1, 0])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: spoolA.directory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: spoolB.directory))
+        XCTAssertEqual(registry.liveContextIDs, ["b"])
+        XCTAssertTrue(registry.hasLiveSessions)
+    }
+
+    func testExitAndReadyCallbacksCarryTheirOwnContext() throws {
+        let registry = makeRegistry()
+        var exits: [String] = [], readies: [String] = []
+        let exited = expectation(description: "exit handled")
+        registry.setHandlers(exit: { id, _ in exits.append(id); exited.fulfill() }, ready: { readies.append($0) })
+        let a = try launch(registry, "a")
+        let b = try launch(registry, "b")
+        let drained = expectation(description: "ready drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1)
+        XCTAssertEqual(readies, ["a", "b"])
+
+        processes[0].emitExit(rawStatus: 0)
+        wait(for: [exited], timeout: 1)
+        XCTAssertEqual(exits, ["a"])
+        XCTAssertFalse(a.phase.isActive)
+        XCTAssertEqual(b.phase, .running)
+        XCTAssertEqual(registry.liveContextIDs, ["b"])
+    }
+
+    func testFifthConcurrentSessionIsRefusedWithTheCap() throws {
+        let registry = makeRegistry()
+        for id in ["a", "b", "c", "d"] { _ = try launch(registry, id) }
+        guard case .refused(let message) = registry.admit(contextID: "e") else {
+            return XCTFail("A fifth session must be refused")
+        }
+        XCTAssertTrue(message.contains("\(EmbeddedSessionRegistry.maxConcurrentSessions)"))
+        XCTAssertEqual(EmbeddedSessionRegistry.maxConcurrentSessions, 4)
+        XCTAssertEqual(registry.focusedContextID, "d", "A refusal changes nothing")
+        XCTAssertNil(registry.sessions["e"])
+
+        registry.end(contextID: "b")
+        guard case .start = registry.admit(contextID: "e") else {
+            return XCTFail("Ending a session frees a slot")
+        }
+    }
+
+    func testShutdownAllEndsEverySessionAndSpool() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("rr-registry-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let registry = makeRegistry()
+        _ = try launch(registry, "a")
+        _ = try launch(registry, "b")
+        let spool = VoiceSessionSpool(key: "a", rootDirectory: root.path)
+        try spool.prepare()
+        registry.setSpool(spool, for: "a")
+        registry.shutdownAll()
+        XCTAssertEqual(processes.map(\.terminateCount), [1, 1])
+        XCTAssertFalse(registry.hasLiveSessions)
+        XCTAssertNil(registry.focusedContextID)
+        XCTAssertTrue(registry.focused === registry.placeholder)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: spool.directory))
+    }
+}
+
+final class VoiceSessionSpoolTests: XCTestCase {
+    func testSpoolPathsAndEnvironmentArePerSession() {
+        let spool = VoiceSessionSpool(key: "ABC-123/../x", rootDirectory: "/tmp/relay-sessions")
+        XCTAssertEqual(spool.key, "abc-123x")
+        XCTAssertEqual(spool.directory, "/tmp/relay-sessions/abc-123x")
+        XCTAssertEqual(spool.command, "/tmp/relay-sessions/abc-123x/voice_cmd_ready")
+        XCTAssertEqual(spool.claimed, "/tmp/relay-sessions/abc-123x/voice_cmd_claimed.json")
+        XCTAssertEqual(spool.commandState, "/tmp/relay-sessions/abc-123x/voice_command_state.json")
+        XCTAssertEqual(spool.launcher, "/tmp/relay-sessions/abc-123x/voice_bridge_launch.command")
+        XCTAssertEqual(spool.authorizations, VoiceSessionSpool.sharedAuthorizationsPath)
+        let environment = Dictionary(uniqueKeysWithValues: spool.environment.map { ($0.name, $0.value) })
+        XCTAssertEqual(environment["RELAY_SESSION_KEY"], "abc-123x")
+        XCTAssertEqual(environment["RELAY_SESSION_SPOOL_DIR"], spool.directory)
+        XCTAssertEqual(environment["VOICE_COMMAND_CLAIM_FILE"], spool.claimed)
+        XCTAssertEqual(Set(VoiceSessionSpool.environmentNames), Set(environment.keys))
+        XCTAssertEqual(VoiceSessionSpool(key: "///").key, "session")
+
+        let other = VoiceSessionSpool(key: "other")
+        let a = spool.deliveryPaths(), b = other.deliveryPaths()
+        XCTAssertNotEqual(a.command, b.command)
+        XCTAssertNotEqual(a.claimed, b.claimed)
+        XCTAssertNotEqual(a.commandState, b.commandState)
+        XCTAssertEqual(a.voiceInput, b.voiceInput, "The voice FIFO stays shared")
+        XCTAssertEqual(a.providerTurns, b.providerTurns)
+
+        XCTAssertEqual(VoiceSessionSpool.legacy.command, "/tmp/voice_cmd_ready")
+        XCTAssertEqual(VoiceSessionSpool.legacy.deliveryPaths(), RelayVoiceCommandDelivery.Paths())
+    }
+
+    func testBridgeTargetAcceptsOnlyADirectChildOfTheRoot() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("rr-spool-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("target").path
+        func resolve(_ contents: String?) throws -> VoiceSessionSpool {
+            if let contents { try contents.write(toFile: target, atomically: true, encoding: .utf8) }
+            else { try? FileManager.default.removeItem(atPath: target) }
+            return VoiceSessionSpool.bridgeTarget(targetFile: target, rootDirectory: root.path)
+        }
+        XCTAssertEqual(try resolve(nil), .legacy)
+        XCTAssertEqual(try resolve(root.appendingPathComponent("abc").path + "\n"),
+                       VoiceSessionSpool(key: "abc", rootDirectory: root.path))
+        XCTAssertEqual(try resolve("/tmp"), .legacy)
+        XCTAssertEqual(try resolve(root.appendingPathComponent("a/b").path), .legacy)
+        XCTAssertEqual(try resolve(root.appendingPathComponent("ABC").path), .legacy)
+    }
+
+    func testPrepareIsPrivateAndRemoveDeletesOnlyThatSpool() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("rr-spool-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let a = VoiceSessionSpool(key: "a", rootDirectory: root.path)
+        let b = VoiceSessionSpool(key: "b", rootDirectory: root.path)
+        try a.prepare(); try b.prepare()
+        let mode = try FileManager.default.attributesOfItem(atPath: a.directory)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(mode?.intValue, 0o700)
+        a.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: a.directory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: b.directory))
+
+        let planted = VoiceSessionSpool(key: "planted", rootDirectory: root.path)
+        try FileManager.default.createSymbolicLink(atPath: planted.directory, withDestinationPath: b.directory)
+        XCTAssertThrowsError(try planted.prepare())
     }
 }

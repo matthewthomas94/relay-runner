@@ -37,6 +37,36 @@ final class AssistantSessionStoreTests: XCTestCase {
         }
     }
 
+    func testSelectKeepsRunningBindingsAndSavesOnlyStoppedOnes() throws {
+        let directory = try temporaryDirectory()
+        let store = AssistantSessionStore(directory: directory)
+        let codex = AssistantSessionContext(kind: .project, projectID: "codex-project", repositoryPath: "/repo/a")
+        let claude = AssistantSessionContext(kind: .project, projectID: "claude-project", repositoryPath: "/repo/b")
+        try store.begin(context: codex, provider: "codex", model: "sol", transportSessionID: "codex-transport")
+        try store.mark(.running, context: codex)
+        try store.begin(context: claude, provider: "claude", model: "sonnet", transportSessionID: "claude-transport")
+        try store.mark(.running, context: claude)
+
+        // Focusing another context never implies the previous one stopped.
+        try store.select(codex, provider: "codex", model: "sol", savingPreviousContext: true)
+        XCTAssertEqual(store.binding(for: claude)?.lifecycle, .running)
+        XCTAssertEqual(store.binding(for: codex)?.lifecycle, .running)
+
+        // A process exit marks only its own context; switching away then saves it.
+        try store.mark(.interrupted, context: codex)
+        XCTAssertEqual(store.binding(for: claude)?.lifecycle, .running)
+        try store.select(claude, provider: "claude", model: "sonnet", savingPreviousContext: true)
+        XCTAssertEqual(store.binding(for: codex)?.lifecycle, .saved)
+        XCTAssertEqual(store.binding(for: claude)?.lifecycle, .running)
+
+        // Both bindings persist and resume with their own provider.
+        let restored = AssistantSessionStore(directory: directory)
+        XCTAssertEqual(restored.binding(for: codex)?.provider, "codex")
+        XCTAssertEqual(restored.binding(for: codex)?.transportSessionID, "codex-transport")
+        XCTAssertEqual(restored.binding(for: claude)?.provider, "claude")
+        XCTAssertEqual(restored.binding(for: claude)?.transportSessionID, "claude-transport")
+    }
+
     func testFailedContextTransitionRetainsSourceProviderAndCompleteDocument() throws {
         let directory = try temporaryDirectory()
         let store = AssistantSessionStore(directory: directory)
@@ -73,7 +103,8 @@ final class AssistantSessionStoreTests: XCTestCase {
 
         try store.select(destination, provider: "claude", model: "sonnet", savingPreviousContext: true)
         XCTAssertEqual(store.activeContext, destination)
-        XCTAssertEqual(store.binding(for: .general)?.lifecycle, .saved)
+        // RR-394: the source session keeps running beside the destination.
+        XCTAssertEqual(store.binding(for: .general)?.lifecycle, .starting)
         XCTAssertEqual(store.binding(for: .general)?.nativeSessionID, native)
         XCTAssertEqual(store.binding(for: .general)?.activeRunIDs, [7])
         XCTAssertEqual(store.history(for: destination).map(\.text), ["Switched to repo"])

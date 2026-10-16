@@ -57,6 +57,27 @@ final class ProviderMCPEnvironmentTests: XCTestCase {
         }
     }
 
+    func testEachAppOwnedLaunchExportsItsOwnSpoolForBothProviders() {
+        let spool = VoiceSessionSpool(key: "transport-a")
+        for target in [ProcessManager.AgentTarget.codex, .claude] {
+            var config = AppConfig()
+            config.general.provider = target == .codex ? .codex : .claude
+            let script = ProcessManager.launchScript(relayBridge: "/App/scripts/relay-bridge", target: target, agentBinary: "/agent", config: config, voiceDelivery: .appOwned, resolvedCodexModel: "gpt-6.1-sol", spool: spool)
+            XCTAssertTrue(script.contains("export RELAY_SESSION_KEY='transport-a'"))
+            XCTAssertTrue(script.contains("export RELAY_SESSION_SPOOL_DIR='\(spool.directory)'"))
+            XCTAssertTrue(script.contains("export VOICE_COMMAND_CLAIM_FILE='\(spool.claimed)'"))
+            XCTAssertTrue(script.contains("export VOICE_COMMAND_STATE_FILE='\(spool.commandState)'"))
+            let manual = ProcessManager.launchScript(relayBridge: "/App/scripts/relay-bridge", target: target, agentBinary: "/agent", config: config, voiceDelivery: .agentSkill, resolvedCodexModel: "gpt-6.1-sol", spool: spool)
+            XCTAssertFalse(manual.contains("export RELAY_SESSION_SPOOL_DIR"), "Manual sessions keep the /tmp files")
+            let flag = ProcessManager.appOwnedMCPEnvironmentFlag(target: target, voiceDelivery: .appOwned)
+            if target == .codex {
+                for name in VoiceSessionSpool.environmentNames { XCTAssertTrue(flag.contains(name), name) }
+            } else {
+                XCTAssertTrue(flag.isEmpty, "Claude's MCP children inherit the exported spool")
+            }
+        }
+    }
+
     func testOnlyAppOwnedCodexLaunchesAddPerSessionMCPAllowlists() {
         for target in [ProcessManager.AgentTarget.codex, .claude] {
             XCTAssertTrue(ProcessManager.appOwnedMCPEnvironmentFlag(target: target, voiceDelivery: .agentSkill).isEmpty)
