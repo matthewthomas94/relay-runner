@@ -3318,8 +3318,12 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
                     self.writeAppOwnedInput(bytes, confirmation: confirmation)
                 }
             }
+            // RR-394: each session claims only from its own spool and writes
+            // only to this PTY, so concurrent sessions never cross-claim.
             let delivery = RelayVoiceCommandDelivery(
-                paths: voiceDeliveryPaths,
+                paths: launch.spool.isLegacy
+                    ? voiceDeliveryPaths
+                    : launch.spool.deliveryPaths(sharing: voiceDeliveryPaths),
                 send: { data in
                     transportSend(data) {}
                 },

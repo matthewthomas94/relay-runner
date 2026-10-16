@@ -46,7 +46,7 @@ from intent_arbitration import (
     normalize_voice_work_items,
     resolve_intent_disposition,
 )
-from intent_inbox import IntentInbox, sync_deliverable_state
+from intent_inbox import IntentInbox, sync_deliverable_state as _sync_inbox_deliverable_state
 from intent_qualification import (
     format_qualification_for_agent,
     qualify_intent,
@@ -366,13 +366,49 @@ class LegacyDirectVoiceBridge:
             self.tts_queue.put(response_text)
 
 
-VOICE_CMD_FILE = "/tmp/voice_cmd_ready"
-VOICE_CMD_META_FILE = "/tmp/voice_cmd_ready.meta"
-VOICE_COMMAND_STATE_FILE = "/tmp/voice_command_state.json"
-VOICE_COMMAND_CLAIM_FILE = "/tmp/voice_cmd_claimed.json"
-VOICE_MANUAL_CLAIM_ACK_FILE = os.environ.get(
-    "VOICE_MANUAL_CLAIM_ACK_FILE",
-    "/tmp/voice_cmd_manual_ack.json",
+def _session_spool_path(name: str, override_env: str | None = None) -> str:
+    """Resolve a per-session voice file, matching Swift's VoiceSessionSpool.
+
+    An explicit env override wins; otherwise app-owned sessions publish into
+    ``$RELAY_SESSION_SPOOL_DIR`` and manual sessions keep the legacy /tmp path.
+    """
+    if override_env:
+        explicit = os.environ.get(override_env, "").strip()
+        if explicit:
+            return explicit
+    spool = os.environ.get("RELAY_SESSION_SPOOL_DIR", "").strip()
+    return os.path.join(spool or "/tmp", name)
+
+
+def _ensure_session_spool_dir() -> None:
+    """Recreate a targeted session spool removed while the bridge still runs.
+
+    The app removes an ended session's spool after retargeting the bridge; a
+    publish racing that retarget must not crash the relay loop.
+    """
+    spool = os.environ.get("RELAY_SESSION_SPOOL_DIR", "").strip()
+    if not spool or os.path.isdir(spool):
+        return
+    try:
+        os.makedirs(spool, mode=0o700, exist_ok=True)
+    except OSError as exc:
+        print(f"[voice_bridge] Could not recreate session spool {spool}: {exc}", file=sys.stderr)
+
+
+VOICE_CMD_FILE = _session_spool_path("voice_cmd_ready", "VOICE_CMD_FILE")
+VOICE_CMD_META_FILE = VOICE_CMD_FILE + ".meta"
+VOICE_COMMAND_STATE_FILE = _session_spool_path("voice_command_state.json", "VOICE_COMMAND_STATE_FILE")
+VOICE_COMMAND_CLAIM_FILE = _session_spool_path("voice_cmd_claimed.json", "VOICE_COMMAND_CLAIM_FILE")
+VOICE_MANUAL_CLAIM_ACK_FILE = _session_spool_path("voice_cmd_manual_ack.json", "VOICE_MANUAL_CLAIM_ACK_FILE")
+# The orchestrator daemon still validates freshness against the legacy state
+# path until it resolves per-session spools (RR-394 slice H). While a session
+# spool is targeted, the bridge mirrors its state file there.
+LEGACY_VOICE_COMMAND_STATE_FILE = "/tmp/voice_command_state.json"
+_MIRRORED_COMMAND_STATE_FILE = (
+    VOICE_COMMAND_STATE_FILE
+    if os.environ.get("RELAY_SESSION_SPOOL_DIR", "").strip()
+    and VOICE_COMMAND_STATE_FILE != LEGACY_VOICE_COMMAND_STATE_FILE
+    else None
 )
 VOICE_COMMAND_AUTHORIZATION_FILE = os.environ.get(
     "VOICE_COMMAND_AUTHORIZATION_FILE",
@@ -468,11 +504,29 @@ def _read_json_file(path: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _mirror_command_state(path: str) -> None:
+    if _MIRRORED_COMMAND_STATE_FILE is None or path != _MIRRORED_COMMAND_STATE_FILE:
+        return
+    tmp = LEGACY_VOICE_COMMAND_STATE_FILE + ".tmp"
+    try:
+        shutil.copyfile(path, tmp)
+        os.replace(tmp, LEGACY_VOICE_COMMAND_STATE_FILE)
+    except OSError:
+        pass
+
+
 def _atomic_write_json(path: str, payload: dict) -> None:
+    _ensure_session_spool_dir()
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(payload, f, sort_keys=True)
     os.rename(tmp, path)
+    _mirror_command_state(path)
+
+
+def sync_deliverable_state(state_path: str, inbox: IntentInbox) -> None:
+    _sync_inbox_deliverable_state(state_path, inbox)
+    _mirror_command_state(state_path)
 
 
 def _command_action_journal_snapshot(
@@ -1808,6 +1862,7 @@ def _publish_command(
     transport: str = "shared-ready-file",
 ) -> None:
     """Publish through the durable inbox, retaining ready files as transport."""
+    _ensure_session_spool_dir()
     if inbox is None:
         _discard_pending_command(command_path=command_path, meta_path=meta_path)
     published_metadata = dict(metadata)
@@ -4474,6 +4529,7 @@ def _run_relay(
             VOICE_COMMAND_CLAIM_FILE,
             VOICE_MANUAL_CLAIM_ACK_FILE,
             VOICE_PROVIDER_TURNS_FILE,
+            *([LEGACY_VOICE_COMMAND_STATE_FILE] if _MIRRORED_COMMAND_STATE_FILE else []),
         ]:
             try:
                 os.unlink(path)
@@ -4496,6 +4552,7 @@ def _record_bridge_readiness(outcome: str) -> None:
 
 def _write_cmd_file(text: str, path: str = VOICE_CMD_FILE):
     """Atomically write a voice command to the ready file."""
+    _ensure_session_spool_dir()
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         f.write(text)

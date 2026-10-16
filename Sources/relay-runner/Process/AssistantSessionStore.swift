@@ -221,7 +221,12 @@ final class AssistantSessionStore {
                     id: UUID().uuidString.lowercased(), contextID: context.id, role: .context,
                     text: "Switched to \(context.displayName)", createdAt: now
                 ))
-                document.bindings[previous.id]?.lifecycle = .saved
+                // RR-394: a previous context whose session still runs keeps
+                // its lifecycle; only a stopped one is recorded as saved.
+                if let lifecycle = document.bindings[previous.id]?.lifecycle,
+                   lifecycle != .running, lifecycle != .starting {
+                    document.bindings[previous.id]?.lifecycle = .saved
+                }
                 document.bindings[previous.id]?.lastActivity = now
             }
         }

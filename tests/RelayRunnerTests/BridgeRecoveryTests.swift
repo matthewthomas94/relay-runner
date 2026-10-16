@@ -385,13 +385,15 @@ final class BridgeRecoveryTests: XCTestCase {
             XCTAssertTrue(script.contains("launchctl print follows"))
             XCTAssertTrue(script.contains("direct bridge process exited status=$status"))
             XCTAssertTrue(script.contains("direct fallback produced socket provider=${RELAY_PROVIDER:-none}"))
-            XCTAssertTrue(script.contains("mv /tmp/voice_cmd_ready \"$REPLAY_DIR/voice_cmd_ready\""))
+            XCTAssertTrue(script.contains("mv \"$SPOOL\"/voice_cmd_ready \"$REPLAY_DIR/voice_cmd_ready\""))
             XCTAssertTrue(script.contains("restore_replayed_command"))
             XCTAssertTrue(script.contains("app watchdog replayed pending voice command after bridge recovery"))
             XCTAssertTrue(script.contains("[ -f /tmp/voice_bridge_stop_requested ] && exit 1"))
-            XCTAssertTrue(script.contains("/tmp/voice_cmd_ready.meta"))
-            XCTAssertTrue(script.contains("/tmp/voice_command_state.json"))
-            XCTAssertTrue(script.contains("/tmp/voice_cmd_claimed.json"))
+            XCTAssertTrue(script.contains("SPOOL=\"${RELAY_SESSION_SPOOL_DIR:-/tmp}\""))
+            XCTAssertTrue(script.contains("RELAY_SESSION_SPOOL_DIR=''"))
+            XCTAssertTrue(script.contains("\"$SPOOL\"/voice_cmd_ready.meta"))
+            XCTAssertTrue(script.contains("\"$SPOOL\"/voice_command_state.json"))
+            XCTAssertTrue(script.contains("\"$SPOOL\"/voice_cmd_claimed.json"))
             XCTAssertTrue(script.contains("nohup /bin/bash -lc"))
         }
     }
@@ -507,7 +509,7 @@ final class BridgeRecoveryTests: XCTestCase {
         ))
         XCTAssertTrue(script.contains("export RELAY_CONTINUITY_RECOVERY_PENDING=1"))
         XCTAssertTrue(script.contains(
-            "[ \"$RELAY_CONTINUITY_RECOVERY_PENDING\" = \"1\" ] || rm -f /tmp/voice_command_state.json"
+            "[ \"$RELAY_CONTINUITY_RECOVERY_PENDING\" = \"1\" ] || rm -f \"$SPOOL\"/voice_command_state.json /tmp/voice_command_state.json"
         ))
     }
 

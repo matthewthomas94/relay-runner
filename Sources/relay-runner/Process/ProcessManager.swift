@@ -17,15 +17,16 @@ final class ProcessManager {
     private var tutorialTTSProcess: Process?
     private var tutorialTTSInput: Pipe?
     private static let bridgeSocketPath = "/tmp/voice_bridge.sock"
-    private static let voiceCommandPath = "/tmp/voice_cmd_ready"
-    private static let voiceCommandMetaPath = "/tmp/voice_cmd_ready.meta"
-    private static let voiceCommandStatePath = "/tmp/voice_command_state.json"
-    private static let voiceCommandClaimedPath = "/tmp/voice_cmd_claimed.json"
+    /// RR-394: bridge health reads follow the session spool the running
+    /// bridge publishes into (legacy /tmp for manual sessions).
+    private static var bridgeSpool: VoiceSessionSpool { VoiceSessionSpool.bridgeTarget() }
+    private static var voiceCommandPath: String { bridgeSpool.command }
+    private static var voiceCommandMetaPath: String { bridgeSpool.metadata }
+    private static var voiceCommandStatePath: String { bridgeSpool.commandState }
+    private static var voiceCommandClaimedPath: String { bridgeSpool.claimed }
     private static let legacyVoiceProviderTurnsPath = "/tmp/voice_provider_turns.json"
     private static let voiceProviderTurnsPath = "/tmp/voice_provider_turns_v2.json"
-    private static let voiceProviderSessionPath = "/tmp/voice_provider_session_id"
-    private static let terminalManualSubmissionPath = "/tmp/relay_terminal_manual_submission.json"
-    private static let terminalDeliveryEventsPath = "/tmp/relay_terminal_delivery_events.jsonl"
+    private static var voiceProviderSessionPath: String { bridgeSpool.providerSessionID }
     private static let heartbeatPath = "/tmp/voice_bridge_heartbeat"
     private static let bridgeStopRequestedPath = "/tmp/voice_bridge_stop_requested"
     private static let bridgeCwdPath = "/tmp/voice_bridge.cwd"
@@ -38,21 +39,22 @@ final class ProcessManager {
     private static let bridgeRuntimePaths = [
         "/tmp/voice_in.fifo",
         bridgeSocketPath,
-        voiceCommandPath,
-        voiceCommandMetaPath,
-        voiceCommandStatePath,
-        voiceCommandClaimedPath,
+        VoiceSessionSpool.legacy.command,
+        VoiceSessionSpool.legacy.metadata,
+        VoiceSessionSpool.legacy.commandState,
+        VoiceSessionSpool.legacy.claimed,
         legacyVoiceProviderTurnsPath,
         voiceProviderTurnsPath,
-        voiceProviderSessionPath,
-        terminalManualSubmissionPath,
-        terminalDeliveryEventsPath,
+        VoiceSessionSpool.legacy.providerSessionID,
+        VoiceSessionSpool.legacy.manualSubmission,
+        VoiceSessionSpool.legacy.deliveryEvents,
         "/tmp/tts_in.fifo",
         "/tmp/tts_control.sock",
         heartbeatPath,
         "/tmp/voice_bridge_heartbeat.pid",
         bridgeCwdPath,
         bridgeProviderPath,
+        VoiceSessionSpool.bridgeTargetPath,
         "/tmp/relay_board_now.txt",
         "/tmp/relay_board_prev.txt",
     ]
@@ -608,6 +610,9 @@ final class ProcessManager {
         let sessionScope: String?
         let generalFilesRoot: String?
         let preservesContextAuthorization: Bool
+        /// RR-394: the session spool the recovered bridge publishes into;
+        /// nil keeps the legacy /tmp files.
+        let spoolDirectory: String?
 
         init(
             workingDirectory: String,
@@ -616,7 +621,8 @@ final class ProcessManager {
             continuityRecoveryPending: Bool = false,
             sessionScope: String? = nil,
             generalFilesRoot: String? = nil,
-            preservesContextAuthorization: Bool = false
+            preservesContextAuthorization: Bool = false,
+            spoolDirectory: String? = nil
         ) {
             self.workingDirectory = workingDirectory
             self.provider = provider
@@ -625,13 +631,15 @@ final class ProcessManager {
             self.sessionScope = sessionScope
             self.generalFilesRoot = generalFilesRoot
             self.preservesContextAuthorization = preservesContextAuthorization
+            self.spoolDirectory = spoolDirectory
         }
     }
 
     func bridgeRecoveryContext(fallbackConfig: AppConfig? = nil) -> BridgeRecoveryContext? {
         if let context = Self.bridgeRecoveryContext(
             cwdFile: URL(fileURLWithPath: Self.bridgeCwdPath),
-            providerFile: URL(fileURLWithPath: Self.bridgeProviderPath)
+            providerFile: URL(fileURLWithPath: Self.bridgeProviderPath),
+            spoolFile: URL(fileURLWithPath: VoiceSessionSpool.bridgeTargetPath)
         ) {
             return context
         }
@@ -643,7 +651,7 @@ final class ProcessManager {
         )
     }
 
-    static func bridgeRecoveryContext(cwdFile: URL, providerFile: URL?) -> BridgeRecoveryContext? {
+    static func bridgeRecoveryContext(cwdFile: URL, providerFile: URL?, spoolFile: URL? = nil) -> BridgeRecoveryContext? {
         guard let rawCwd = try? String(contentsOf: cwdFile, encoding: .utf8) else {
             return nil
         }
@@ -654,7 +662,12 @@ final class ProcessManager {
             .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .flatMap { $0.isEmpty ? nil : $0 }
-        return BridgeRecoveryContext(workingDirectory: cwd, provider: provider)
+        let spool = spoolFile.map { VoiceSessionSpool.bridgeTarget(targetFile: $0.path) }
+        return BridgeRecoveryContext(
+            workingDirectory: cwd,
+            provider: provider,
+            spoolDirectory: spool.flatMap { $0.isLegacy ? nil : $0.directory }
+        )
     }
 
     @discardableResult
@@ -705,7 +718,9 @@ final class ProcessManager {
         RELAY_SESSION_SCOPE=\(shellQuoted(context.sessionScope ?? ""))
         RELAY_GENERAL_FILES_ROOT=\(shellQuoted(context.generalFilesRoot ?? ""))
         RELAY_PRESERVE_CONTEXT_AUTHORIZATION=\(context.preservesContextAuthorization ? "1" : "0")
-        RELAY_PROVIDER_SESSION_ID=$(cat /tmp/voice_provider_session_id 2>/dev/null || true)
+        RELAY_SESSION_SPOOL_DIR=\(shellQuoted(context.spoolDirectory ?? ""))
+        SPOOL="${RELAY_SESSION_SPOOL_DIR:-/tmp}"
+        RELAY_PROVIDER_SESSION_ID=$(cat "$SPOOL"/voice_provider_session_id 2>/dev/null || true)
         VOICE_BRIDGE_LOG=/tmp/voice_bridge.log
         REPLAY_DIR=$(mktemp -d /tmp/voice_bridge_replay.XXXXXX 2>/dev/null || true)
         REPLAY_READY=0
@@ -717,35 +732,35 @@ final class ProcessManager {
             [ "$REPLAY_READY" = "1" ] || return 0
             [ "$RELAY_CONTINUITY_RECOVERY_PENDING" = "1" ] && return 0
             [ -f /tmp/voice_bridge_stop_requested ] && return 1
-            if [ -f /tmp/voice_cmd_ready ]; then
+            if [ -f "$SPOOL"/voice_cmd_ready ]; then
                 echo "[relay-runner] app watchdog replay skipped; another voice command is already pending." >> "$VOICE_BRIDGE_LOG"
                 return 0
             fi
-            if [ -f /tmp/voice_command_state.json ] && ! cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" /tmp/voice_command_state.json; then
+            if [ -f "$SPOOL"/voice_command_state.json ] && ! cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" "$SPOOL"/voice_command_state.json; then
                 echo "[relay-runner] app watchdog replay skipped; Relay command state was superseded." >> "$VOICE_BRIDGE_LOG"
                 return 0
             fi
-            if [ -f /tmp/voice_cmd_ready.meta ] && ! cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" /tmp/voice_cmd_ready.meta; then
+            if [ -f "$SPOOL"/voice_cmd_ready.meta ] && ! cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" "$SPOOL"/voice_cmd_ready.meta; then
                 echo "[relay-runner] app watchdog replay skipped; newer ready metadata exists." >> "$VOICE_BRIDGE_LOG"
                 return 0
             fi
-            if [ -f /tmp/voice_cmd_claimed.json ] && cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" /tmp/voice_cmd_claimed.json; then
+            if [ -f "$SPOOL"/voice_cmd_claimed.json ] && cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" "$SPOOL"/voice_cmd_claimed.json; then
                 echo "[relay-runner] app watchdog replay skipped; Relay command was already claimed." >> "$VOICE_BRIDGE_LOG"
                 return 0
             fi
-            cp "$REPLAY_DIR/voice_cmd_ready.meta" /tmp/voice_cmd_ready.meta || return 1
-            cp "$REPLAY_DIR/voice_command_state.json" /tmp/voice_command_state.json || return 1
+            cp "$REPLAY_DIR/voice_cmd_ready.meta" "$SPOOL"/voice_cmd_ready.meta || return 1
+            cp "$REPLAY_DIR/voice_command_state.json" "$SPOOL"/voice_command_state.json || return 1
             [ -f "$REPLAY_DIR/voice_command_authorizations.json" ] && cp "$REPLAY_DIR/voice_command_authorizations.json" /tmp/voice_command_authorizations.json
-            cp "$REPLAY_DIR/voice_cmd_ready" /tmp/voice_cmd_ready.replay || return 1
-            mv /tmp/voice_cmd_ready.replay /tmp/voice_cmd_ready || return 1
+            cp "$REPLAY_DIR/voice_cmd_ready" "$SPOOL"/voice_cmd_ready.replay || return 1
+            mv "$SPOOL"/voice_cmd_ready.replay "$SPOOL"/voice_cmd_ready || return 1
             echo "[relay-runner] app watchdog replayed pending voice command after bridge recovery." >> "$VOICE_BRIDGE_LOG"
         }
-        if [ -n "$REPLAY_DIR" ] && mv /tmp/voice_cmd_ready "$REPLAY_DIR/voice_cmd_ready" 2>/dev/null; then
-            if [ -f /tmp/voice_cmd_ready.meta ] && mv /tmp/voice_cmd_ready.meta "$REPLAY_DIR/voice_cmd_ready.meta" 2>/dev/null; then
-                cp /tmp/voice_command_state.json "$REPLAY_DIR/voice_command_state.json" 2>/dev/null || cp "$REPLAY_DIR/voice_cmd_ready.meta" "$REPLAY_DIR/voice_command_state.json"
+        if [ -n "$REPLAY_DIR" ] && mv "$SPOOL"/voice_cmd_ready "$REPLAY_DIR/voice_cmd_ready" 2>/dev/null; then
+            if [ -f "$SPOOL"/voice_cmd_ready.meta ] && mv "$SPOOL"/voice_cmd_ready.meta "$REPLAY_DIR/voice_cmd_ready.meta" 2>/dev/null; then
+                cp "$SPOOL"/voice_command_state.json "$REPLAY_DIR/voice_command_state.json" 2>/dev/null || cp "$REPLAY_DIR/voice_cmd_ready.meta" "$REPLAY_DIR/voice_command_state.json"
                 cp /tmp/voice_command_authorizations.json "$REPLAY_DIR/voice_command_authorizations.json" 2>/dev/null || true
                 if cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" "$REPLAY_DIR/voice_command_state.json" \
-                    && { [ ! -f /tmp/voice_cmd_claimed.json ] || ! cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" /tmp/voice_cmd_claimed.json; }; then
+                    && { [ ! -f "$SPOOL"/voice_cmd_claimed.json ] || ! cmp -s "$REPLAY_DIR/voice_cmd_ready.meta" "$SPOOL"/voice_cmd_claimed.json; }; then
                     REPLAY_READY=1
                     echo "[relay-runner] app watchdog captured pending voice command for replay." >> "$VOICE_BRIDGE_LOG"
                 else
@@ -760,14 +775,14 @@ final class ProcessManager {
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         pkill -f '[v]oice_bridge.py' 2>/dev/null || true
         [ "$RELAY_PRESERVE_CONTEXT_AUTHORIZATION" = "1" ] || rm -f /tmp/voice_command_authorizations.json
-        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_cmd_claimed.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
-        [ "$RELAY_CONTINUITY_RECOVERY_PENDING" = "1" ] || rm -f /tmp/voice_command_state.json
+        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock "$SPOOL"/voice_cmd_ready "$SPOOL"/voice_cmd_ready.meta "$SPOOL"/voice_cmd_claimed.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json "$SPOOL"/voice_provider_session_id "$SPOOL"/relay_terminal_manual_submission.json "$SPOOL"/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/voice_bridge.spool /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+        [ "$RELAY_CONTINUITY_RECOVERY_PENDING" = "1" ] || rm -f "$SPOOL"/voice_command_state.json /tmp/voice_command_state.json
         VOICE_BRIDGE_LOG_REASON=watchdog-recovery VOICE_BRIDGE_LOG_PROVIDER="${RELAY_PROVIDER:-none}" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log || : >> "$VOICE_BRIDGE_LOG"
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         echo "[relay-runner] app watchdog recovery launching via launchctl provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
-        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$5" ]; then export RELAY_PROVIDER_SESSION_ID="$5"; else unset RELAY_PROVIDER_SESSION_ID; fi; if [ -n "$6" ]; then export RELAY_RECOVERY_GENERATION="$6"; else unset RELAY_RECOVERY_GENERATION; fi; if [ "$7" = "1" ]; then export RELAY_CONTINUITY_RECOVERY_PENDING=1; else unset RELAY_CONTINUITY_RECOVERY_PENDING; fi; if [ -n "$8" ]; then export RELAY_SESSION_SCOPE="$8"; else unset RELAY_SESSION_SCOPE; fi; if [ -n "$9" ]; then export RELAY_GENERAL_FILES_ROOT="$9"; else unset RELAY_GENERAL_FILES_ROOT; fi; if [ "${10:-0}" = "1" ]; then export RELAY_PRESERVE_CONTEXT_AUTHORIZATION=1; else unset RELAY_PRESERVE_CONTEXT_AUTHORIZATION; fi; export RELAY_ACTOR_ROLE=voice_bridge; unset RELAY_FOREGROUND_GATE_HANDLE RELAY_REPLY_HELPER RELAY_SESSION_EVENTS RELAY_CONTEXT_COMPACTION_EVENTS; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" "$RELAY_PROVIDER_SESSION_ID" "$RELAY_RECOVERY_GENERATION" "$RELAY_CONTINUITY_RECOVERY_PENDING" "$RELAY_SESSION_SCOPE" "$RELAY_GENERAL_FILES_ROOT" "$RELAY_PRESERVE_CONTEXT_AUTHORIZATION" >> "$VOICE_BRIDGE_LOG" 2>&1
+        launchctl submit -l com.relay.voicebridge -- /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$5" ]; then export RELAY_PROVIDER_SESSION_ID="$5"; else unset RELAY_PROVIDER_SESSION_ID; fi; if [ -n "$6" ]; then export RELAY_RECOVERY_GENERATION="$6"; else unset RELAY_RECOVERY_GENERATION; fi; if [ "$7" = "1" ]; then export RELAY_CONTINUITY_RECOVERY_PENDING=1; else unset RELAY_CONTINUITY_RECOVERY_PENDING; fi; if [ -n "$8" ]; then export RELAY_SESSION_SCOPE="$8"; else unset RELAY_SESSION_SCOPE; fi; if [ -n "$9" ]; then export RELAY_GENERAL_FILES_ROOT="$9"; else unset RELAY_GENERAL_FILES_ROOT; fi; if [ "${10:-0}" = "1" ]; then export RELAY_PRESERVE_CONTEXT_AUTHORIZATION=1; else unset RELAY_PRESERVE_CONTEXT_AUTHORIZATION; fi; if [ -n "${11:-}" ]; then export RELAY_SESSION_SPOOL_DIR="${11}"; else unset RELAY_SESSION_SPOOL_DIR; fi; export RELAY_ACTOR_ROLE=voice_bridge; unset RELAY_FOREGROUND_GATE_HANDLE RELAY_REPLY_HELPER RELAY_SESSION_EVENTS RELAY_CONTEXT_COMPACTION_EVENTS; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] launchctl bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-voice "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" "$RELAY_PROVIDER_SESSION_ID" "$RELAY_RECOVERY_GENERATION" "$RELAY_CONTINUITY_RECOVERY_PENDING" "$RELAY_SESSION_SCOPE" "$RELAY_GENERAL_FILES_ROOT" "$RELAY_PRESERVE_CONTEXT_AUTHORIZATION" "$RELAY_SESSION_SPOOL_DIR" >> "$VOICE_BRIDGE_LOG" 2>&1
         submit_status=$?
-        [ -n "$RELAY_PROVIDER_SESSION_ID" ] && printf '%s\n' "$RELAY_PROVIDER_SESSION_ID" > /tmp/voice_provider_session_id
+        [ -n "$RELAY_PROVIDER_SESSION_ID" ] && printf '%s\n' "$RELAY_PROVIDER_SESSION_ID" > "$SPOOL"/voice_provider_session_id
         if [ "$submit_status" -eq 0 ]; then
             echo "[relay-runner] app watchdog launchctl job submission accepted exit_status=0 (submission only; bridge/provider outcome pending) provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
         else
@@ -792,7 +807,7 @@ final class ProcessManager {
         [ "$print_status" -eq 0 ] || echo "[relay-runner] app watchdog launchctl print exit_status=$print_status" >> "$VOICE_BRIDGE_LOG"
         echo "[relay-runner] app watchdog falling back to direct background launch." >> "$VOICE_BRIDGE_LOG"
         launchctl remove com.relay.voicebridge 2>/dev/null || true
-        nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$5" ]; then export RELAY_PROVIDER_SESSION_ID="$5"; else unset RELAY_PROVIDER_SESSION_ID; fi; if [ -n "$6" ]; then export RELAY_RECOVERY_GENERATION="$6"; else unset RELAY_RECOVERY_GENERATION; fi; if [ "$7" = "1" ]; then export RELAY_CONTINUITY_RECOVERY_PENDING=1; else unset RELAY_CONTINUITY_RECOVERY_PENDING; fi; if [ -n "$8" ]; then export RELAY_SESSION_SCOPE="$8"; else unset RELAY_SESSION_SCOPE; fi; if [ -n "$9" ]; then export RELAY_GENERAL_FILES_ROOT="$9"; else unset RELAY_GENERAL_FILES_ROOT; fi; if [ "${10:-0}" = "1" ]; then export RELAY_PRESERVE_CONTEXT_AUTHORIZATION=1; else unset RELAY_PRESERVE_CONTEXT_AUTHORIZATION; fi; export RELAY_ACTOR_ROLE=voice_bridge; unset RELAY_FOREGROUND_GATE_HANDLE RELAY_REPLY_HELPER RELAY_SESSION_EVENTS RELAY_CONTEXT_COMPACTION_EVENTS; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" "$RELAY_PROVIDER_SESSION_ID" "$RELAY_RECOVERY_GENERATION" "$RELAY_CONTINUITY_RECOVERY_PENDING" "$RELAY_SESSION_SCOPE" "$RELAY_GENERAL_FILES_ROOT" "$RELAY_PRESERVE_CONTEXT_AUTHORIZATION" >> "$VOICE_BRIDGE_LOG" 2>&1 &
+        nohup /bin/bash -lc 'cd "$1" || exit 1; if [ -n "$3" ]; then export RELAY_RUNNER_PROVIDER="$3"; else unset RELAY_RUNNER_PROVIDER; fi; if [ -n "$5" ]; then export RELAY_PROVIDER_SESSION_ID="$5"; else unset RELAY_PROVIDER_SESSION_ID; fi; if [ -n "$6" ]; then export RELAY_RECOVERY_GENERATION="$6"; else unset RELAY_RECOVERY_GENERATION; fi; if [ "$7" = "1" ]; then export RELAY_CONTINUITY_RECOVERY_PENDING=1; else unset RELAY_CONTINUITY_RECOVERY_PENDING; fi; if [ -n "$8" ]; then export RELAY_SESSION_SCOPE="$8"; else unset RELAY_SESSION_SCOPE; fi; if [ -n "$9" ]; then export RELAY_GENERAL_FILES_ROOT="$9"; else unset RELAY_GENERAL_FILES_ROOT; fi; if [ "${10:-0}" = "1" ]; then export RELAY_PRESERVE_CONTEXT_AUTHORIZATION=1; else unset RELAY_PRESERVE_CONTEXT_AUTHORIZATION; fi; if [ -n "${11:-}" ]; then export RELAY_SESSION_SPOOL_DIR="${11}"; else unset RELAY_SESSION_SPOOL_DIR; fi; export RELAY_ACTOR_ROLE=voice_bridge; unset RELAY_FOREGROUND_GATE_HANDLE RELAY_REPLY_HELPER RELAY_SESSION_EVENTS RELAY_CONTEXT_COMPACTION_EVENTS; "$2" --relay\(greetingFlag) >> "$4" 2>&1; status=$?; echo "[relay-runner] direct bridge process exited status=$status at $(date -u "+%Y-%m-%dT%H:%M:%SZ") provider=${3:-none}" >> "$4"; exit "$status"' relay-direct "$RELAY_CWD" "$RELAY_BRIDGE" "$RELAY_PROVIDER" "$VOICE_BRIDGE_LOG" "$RELAY_PROVIDER_SESSION_ID" "$RELAY_RECOVERY_GENERATION" "$RELAY_CONTINUITY_RECOVERY_PENDING" "$RELAY_SESSION_SCOPE" "$RELAY_GENERAL_FILES_ROOT" "$RELAY_PRESERVE_CONTEXT_AUTHORIZATION" "$RELAY_SESSION_SPOOL_DIR" >> "$VOICE_BRIDGE_LOG" 2>&1 &
         fallback_pid=$!
         echo "[relay-runner] app watchdog direct fallback launched pid=$fallback_pid provider=${RELAY_PROVIDER:-none}" >> "$VOICE_BRIDGE_LOG"
         for _ in $(seq 1 60); do
@@ -910,6 +925,9 @@ final class ProcessManager {
         let appSessionID: String?
         let recoveryGeneration: String?
         let foregroundGateHandle: String?
+        /// RR-394: the per-session voice handoff directory this launch exports;
+        /// `.legacy` for manual and external-terminal sessions.
+        let spool: VoiceSessionSpool
         let diagnosticsCorrelationID: String
 
         init(
@@ -924,6 +942,7 @@ final class ProcessManager {
             appSessionID: String? = nil,
             recoveryGeneration: String? = nil,
             foregroundGateHandle: String? = nil,
+            spool: VoiceSessionSpool = .legacy,
             diagnosticsCorrelationID: String = UUID().uuidString.lowercased()
         ) {
             self.executable = executable
@@ -937,6 +956,7 @@ final class ProcessManager {
             self.appSessionID = appSessionID
             self.recoveryGeneration = recoveryGeneration
             self.foregroundGateHandle = foregroundGateHandle
+            self.spool = spool
             self.diagnosticsCorrelationID = diagnosticsCorrelationID
         }
     }
@@ -1057,10 +1077,20 @@ final class ProcessManager {
         NSLog("[ProcessManager] Refreshing Relay skill files before launch.")
         installSkill(force: false)
 
-        let launcher = "/tmp/voice_bridge_launch.command"
         let providerSessionID = voiceDelivery == .appOwned || sessionContext != nil
             ? (transportSessionID ?? UUID().uuidString.lowercased())
             : nil
+        // App-owned sessions each get a private spool keyed by their transport
+        // session id; manual and external sessions keep the /tmp contract. A
+        // recovery launch keeps the retained bridge's spool and queued items.
+        let retainedSpool = startsVoiceBridge ? VoiceSessionSpool.legacy : VoiceSessionSpool.bridgeTarget()
+        let spool = voiceDelivery != .appOwned
+            ? .legacy
+            : retainedSpool.isLegacy
+                ? VoiceSessionSpool(key: providerSessionID ?? UUID().uuidString.lowercased())
+                : retainedSpool
+        try spool.prepare()
+        let launcher = spool.launcher
         let appSessionID = voiceDelivery == .appOwned
             ? RelayDiagnostics.shared.appSessionID
             : nil
@@ -1089,7 +1119,8 @@ final class ProcessManager {
             nativeResumeID: nativeResumeID,
             providerBindingPath: providerBindingPath,
             publicHandoff: publicHandoff,
-            preservesContextAuthorization: preservesContextAuthorization
+            preservesContextAuthorization: preservesContextAuthorization,
+            spool: spool
         )
         try script.write(toFile: launcher, atomically: true, encoding: String.Encoding.utf8)
 
@@ -1118,7 +1149,8 @@ final class ProcessManager {
             providerSessionID: providerSessionID,
             appSessionID: appSessionID,
             recoveryGeneration: effectiveRecoveryGeneration,
-            foregroundGateHandle: foregroundGateHandle
+            foregroundGateHandle: foregroundGateHandle,
+            spool: spool
         )
     }
 
@@ -1175,7 +1207,8 @@ final class ProcessManager {
         nativeResumeID: String? = nil,
         providerBindingPath: String? = nil,
         publicHandoff: String = "",
-        preservesContextAuthorization: Bool = false
+        preservesContextAuthorization: Bool = false,
+        spool: VoiceSessionSpool = .legacy
     ) -> String {
         let effectiveProviderSessionID = voiceDelivery == .appOwned || sessionContext != nil
             ? (providerSessionID ?? UUID().uuidString.lowercased())
@@ -1265,6 +1298,7 @@ final class ProcessManager {
             foregroundGateHandle: effectiveForegroundGateHandle
         ))
         \(Self.appOwnedProviderSessionExport(effectiveProviderSessionID))
+        \(Self.sessionSpoolEnvironment(spool, voiceDelivery: voiceDelivery))
         \(Self.appOwnedAutomaticCompactionEnvironment(
             target: target,
             voiceDelivery: voiceDelivery,
@@ -1778,8 +1812,8 @@ final class ProcessManager {
     You are the app-owned foreground Relay orchestrator/PM in Relay Runner integrated terminal.
     Relay Runner has already started the voice bridge and injects each claimed voice turn into this provider prompt; do not invoke relay-bridge or start a polling loop.
     Dispatching a worker or sending a final response ends only the current provider turn. The Relay session remains active for later user turns and worker updates; never invoke relay-stop or end the session unless the user explicitly asks to stop it.
-    A turn is voice-originated only when its prompt text exactly matches agent_prompt in /tmp/voice_cmd_claimed.json. For legacy metadata without agent_prompt, require an exact source_text match instead. Otherwise treat it as a normal typed turn and do not use claimed metadata or write messenger trace/reply events. One source turn may arrive as several ordered items; each claimed item has a stable intent_id and exactly one work_disposition: continue_current, run_sidecar, queue_project_work, clarify_priority, replace_current, or control_only. Queue conflicting work by default. A scoped replace_current cancels only its resolved item or ticket; only cancellation_scope=all_work may preempt unrelated accepted work. Sidecars must be bounded, read-only, independently verifiable, resource-safe, silent, and unable to bypass Relay tickets for project mutations.
-    For a matching voice item, treat relay_command_seq, relay_command_id, and intent_id as two contracts. Compare the claimed item with /tmp/voice_command_state.json before output. Relay Runner may inject and claim a newer voice prompt while you are working; incorporate that prompt as steering in this same PM session, rebind its work and reply to its matching claimed identity, and preserve earlier bounded work unless its authorization was revoked. If a newer command exists only in state and has not been injected and claimed, do not answer or act on it yet. A newer continue_current command with authorization_effect preserve and cancellation_scope none does not revoke the earlier item. For any other newer unclaimed command, stop stale output and finish only still-authorized bounded effects. Ticket edits, dispatches, and orchestrator actions must pass the corresponding claimed seq/id and item identity when supported. Acknowledgement, inspection/status, and additive items do not revoke unrelated prior authorizations.
+    A turn is voice-originated only when its prompt text exactly matches agent_prompt in $VOICE_COMMAND_CLAIM_FILE (default /tmp/voice_cmd_claimed.json). For legacy metadata without agent_prompt, require an exact source_text match instead. Otherwise treat it as a normal typed turn and do not use claimed metadata or write messenger trace/reply events. One source turn may arrive as several ordered items; each claimed item has a stable intent_id and exactly one work_disposition: continue_current, run_sidecar, queue_project_work, clarify_priority, replace_current, or control_only. Queue conflicting work by default. A scoped replace_current cancels only its resolved item or ticket; only cancellation_scope=all_work may preempt unrelated accepted work. Sidecars must be bounded, read-only, independently verifiable, resource-safe, silent, and unable to bypass Relay tickets for project mutations.
+    For a matching voice item, treat relay_command_seq, relay_command_id, and intent_id as two contracts. Compare the claimed item with $VOICE_COMMAND_STATE_FILE (default /tmp/voice_command_state.json) before output. Relay Runner may inject and claim a newer voice prompt while you are working; incorporate that prompt as steering in this same PM session, rebind its work and reply to its matching claimed identity, and preserve earlier bounded work unless its authorization was revoked. If a newer command exists only in state and has not been injected and claimed, do not answer or act on it yet. A newer continue_current command with authorization_effect preserve and cancellation_scope none does not revoke the earlier item. For any other newer unclaimed command, stop stale output and finish only still-authorized bounded effects. Ticket edits, dispatches, and orchestrator actions must pass the corresponding claimed seq/id and item identity when supported. Acknowledgement, inspection/status, and additive items do not revoke unrelated prior authorizations.
     Resolve each command as non-work/control, direct action, ticket creation/refinement, ticket update, worker dispatch, or clarification. Raw Relay command captures are private metadata and must not appear in visible .orchestrator tickets. Do not implement substantial project work inline unless the user explicitly asks.
     Public internet research is available by default. Use it only to read public evidence; it does not authorize messages, publishing, uploads of private workspace data, purchases, or unrelated mutations. Pin public-repository evidence to a commit when conclusions depend on source code, and report provider/network failure explicitly instead of claiming the source was assessed.
     Use mcp__relay-actions__* for screen manipulation and mcp__relay-vision__screenshot for screenshots; never use native computer-use fallbacks for those capabilities, and do not call propose_action.
@@ -1933,7 +1967,18 @@ final class ProcessManager {
 
     private static func appOwnedProviderSessionPublish(_ providerSessionID: String?) -> String {
         guard providerSessionID != nil else { return "" }
-        return "printf '%s\\n' \"$RELAY_PROVIDER_SESSION_ID\" > /tmp/voice_provider_session_id"
+        return "printf '%s\\n' \"$RELAY_PROVIDER_SESSION_ID\" > \"${RELAY_SESSION_SPOOL_DIR:-/tmp}\"/voice_provider_session_id"
+    }
+
+    /// RR-394: export this session's spool so relay-bridge, the provider, its
+    /// hooks, reply helper, and MCP servers all resolve the same handoff files.
+    static func sessionSpoolEnvironment(_ spool: VoiceSessionSpool, voiceDelivery: SessionVoiceDelivery) -> String {
+        guard voiceDelivery == .appOwned, !spool.isLegacy else {
+            return "unset " + VoiceSessionSpool.environmentNames.joined(separator: " ")
+        }
+        return spool.environment
+            .map { "export \($0.name)=" + shellQuoted($0.value) }
+            .joined(separator: "\n")
     }
 
     /// Codex filters stdio MCP child environments. Forward only the ownership
@@ -1941,6 +1986,7 @@ final class ProcessManager {
     static func appOwnedMCPEnvironmentFlag(target: AgentTarget, voiceDelivery: SessionVoiceDelivery) -> String {
         guard target == .codex, voiceDelivery == .appOwned else { return "" }
         let ownership = ["RELAY_PROVIDER_SESSION_ID", "RELAY_APP_SESSION_ID", "RELAY_RECOVERY_GENERATION", "RELAY_FOREGROUND_GATE_HANDLE", "RELAY_SESSION_BINDING_PATH"]
+            + VoiceSessionSpool.environmentNames
         let servers = [
             ("relay-actions", ownership + ["RELAY_RUNNER_PROVIDER", "RELAY_CONTEXT_ID"]),
             ("relay-orchestrator", ownership + ["RELAY_PROJECT_SCOPE_TOKEN"]),

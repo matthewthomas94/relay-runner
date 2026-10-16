@@ -188,9 +188,29 @@ final class AssistantContextLifecycleTests: XCTestCase {
         XCTAssertTrue(idle.contains("assistantSessionStore.saveIfIdle(context: activeContext, now: now,"))
         XCTAssertTrue(idle.contains("eligible: menuSessionActive && embeddedTerminal.phase == .running && canReplaceContextProvider"))
         XCTAssertTrue(idle.contains("assistantSessionStore.pendingContinuation == nil"))
-        XCTAssertTrue(idle.contains("end: { embeddedTerminal.end(); resetActiveSessionState() }"))
+        XCTAssertTrue(idle.contains("end: { endSession(context: activeContext) }"))
         let switching = source[switchStart.lowerBound..<switchEnd.lowerBound]
-        XCTAssertTrue(switching.contains("previousProcesses = assistantSessionStore.managedProviderProcesses"))
+        XCTAssertTrue(switching.contains(".filter { !sessionRegistry.isLive($0.context.id) }"))
+        XCTAssertTrue(switching.contains("switch sessionRegistry.admit(contextID: context.id)"))
+        XCTAssertFalse(switching.contains("embeddedTerminal.end()"))
+        XCTAssertTrue(switching.contains("case .refused(let message):"))
+        let endStart = try XCTUnwrap(source.range(of: "    func endSession(context: AssistantSessionContext) {"))
+        let endBody = String(source[endStart.lowerBound...]).components(separatedBy: "\n    }\n")[0]
+        XCTAssertTrue(endBody.contains("sessionRegistry.end(contextID: context.id, retainingSpool: bridgeTargetsContext)"))
+        XCTAssertTrue(endBody.contains("if bridgeTargetsContext { retargetVoiceBridge(releasing: retainedSpool) }"))
+        let retargetStart = try XCTUnwrap(source.range(of: "    private func retargetVoiceBridge(releasing endedSpool: VoiceSessionSpool?) {"))
+        let retargetBody = String(source[retargetStart.lowerBound...]).components(separatedBy: "\n    }\n")[0]
+        let relaunch = try XCTUnwrap(retargetBody.range(of: "processManager.relaunchBridgeDaemon("))
+        XCTAssertTrue(retargetBody.contains("voiceContextID = targetID"))
+        XCTAssertTrue(retargetBody.contains("spoolDirectory: spool.directory"))
+        XCTAssertNotNil(retargetBody.range(of: "endedSpool?.remove()", range: relaunch.upperBound..<retargetBody.endIndex),
+                        "The ended spool outlives the bridge until it is retargeted")
+        XCTAssertFalse(endBody.contains("pkill"))
+        XCTAssertFalse(endBody.contains("killBridge"))
+        let exitStart = try XCTUnwrap(source.range(of: "    private func embeddedTerminalDidExit(contextID: String, exitCode: Int32?) {"))
+        let exitBody = String(source[exitStart.lowerBound...]).components(separatedBy: "\n    }\n")[0]
+        XCTAssertTrue(exitBody.contains("saveAssistantSession(lifecycle: .interrupted, context: exitedContext)"))
+        XCTAssertTrue(exitBody.contains("if sessionRegistry.hasLiveSessions { return }"))
         XCTAssertTrue(switching.contains("try assistantSessionStore.select(context,"))
         XCTAssertTrue(switching.contains("for process in previousProcesses"))
         XCTAssertTrue(switching.contains("process.requestTermination()"))

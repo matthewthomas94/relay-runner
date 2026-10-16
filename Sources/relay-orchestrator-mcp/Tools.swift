@@ -62,8 +62,11 @@ private func claimedRelayCommand() -> (seq: Int, id: String, intentID: String?)?
         case .typed: return nil
         }
     }
-    let url = URL(fileURLWithPath: "/tmp/voice_cmd_claimed.json")
-    guard FileManager.default.fileExists(atPath: "/tmp/voice_command_state.json"),
+    // RR-394: app-owned sessions export their per-session spool paths.
+    let claimPath = env["VOICE_COMMAND_CLAIM_FILE"].flatMap { $0.isEmpty ? nil : $0 } ?? "/tmp/voice_cmd_claimed.json"
+    let statePath = env["VOICE_COMMAND_STATE_FILE"].flatMap { $0.isEmpty ? nil : $0 } ?? "/tmp/voice_command_state.json"
+    let url = URL(fileURLWithPath: claimPath)
+    guard FileManager.default.fileExists(atPath: statePath),
           let data = try? Data(contentsOf: url),
           let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
           let seq = optionalInt(raw["relay_command_seq"]),
