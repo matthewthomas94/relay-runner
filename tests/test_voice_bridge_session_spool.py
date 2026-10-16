@@ -83,6 +83,21 @@ class CommandStateMirrorTests(unittest.TestCase):
                 with open(legacy) as f:
                     self.assertEqual(json.load(f), {"relay_command_seq": 2})
 
+    def test_publish_after_the_spool_was_removed_recreates_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            spool = os.path.join(root, "ended-session")
+            state = os.path.join(spool, "voice_command_state.json")
+            cmd = os.path.join(spool, "voice_cmd_ready")
+            with mock.patch.dict(os.environ, {"RELAY_SESSION_SPOOL_DIR": spool}), \
+                    mock.patch.object(self.vb, "_MIRRORED_COMMAND_STATE_FILE", None):
+                self.vb._atomic_write_json(state, {"relay_command_seq": 3})
+                self.vb._write_cmd_file("hello", cmd)
+            self.assertEqual(os.stat(spool).st_mode & 0o777, 0o700)
+            with open(state) as f:
+                self.assertEqual(json.load(f), {"relay_command_seq": 3})
+            with open(cmd) as f:
+                self.assertEqual(f.read(), "hello")
+
 
 if __name__ == "__main__":
     unittest.main()

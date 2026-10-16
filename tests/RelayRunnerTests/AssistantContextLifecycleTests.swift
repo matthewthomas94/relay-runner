@@ -196,7 +196,15 @@ final class AssistantContextLifecycleTests: XCTestCase {
         XCTAssertTrue(switching.contains("case .refused(let message):"))
         let endStart = try XCTUnwrap(source.range(of: "    func endSession(context: AssistantSessionContext) {"))
         let endBody = String(source[endStart.lowerBound...]).components(separatedBy: "\n    }\n")[0]
-        XCTAssertTrue(endBody.contains("sessionRegistry.end(contextID: context.id)"))
+        XCTAssertTrue(endBody.contains("sessionRegistry.end(contextID: context.id, retainingSpool: bridgeTargetsContext)"))
+        XCTAssertTrue(endBody.contains("if bridgeTargetsContext { retargetVoiceBridge(releasing: retainedSpool) }"))
+        let retargetStart = try XCTUnwrap(source.range(of: "    private func retargetVoiceBridge(releasing endedSpool: VoiceSessionSpool?) {"))
+        let retargetBody = String(source[retargetStart.lowerBound...]).components(separatedBy: "\n    }\n")[0]
+        let relaunch = try XCTUnwrap(retargetBody.range(of: "processManager.relaunchBridgeDaemon("))
+        XCTAssertTrue(retargetBody.contains("voiceContextID = targetID"))
+        XCTAssertTrue(retargetBody.contains("spoolDirectory: spool.directory"))
+        XCTAssertNotNil(retargetBody.range(of: "endedSpool?.remove()", range: relaunch.upperBound..<retargetBody.endIndex),
+                        "The ended spool outlives the bridge until it is retargeted")
         XCTAssertFalse(endBody.contains("pkill"))
         XCTAssertFalse(endBody.contains("killBridge"))
         let exitStart = try XCTUnwrap(source.range(of: "    private func embeddedTerminalDidExit(contextID: String, exitCode: Int32?) {"))

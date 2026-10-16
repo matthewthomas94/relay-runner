@@ -89,10 +89,18 @@ final class EmbeddedSessionRegistry {
         spools[contextID] = spool
     }
 
-    /// Stop only this context's PTY and remove only its spool.
-    func end(contextID: String) {
+    func spool(for contextID: String) -> VoiceSessionSpool? { spools[contextID] }
+
+    /// Stop only this context's PTY and remove only its spool. A caller whose
+    /// bridge still publishes into the spool retains it and removes the
+    /// returned spool once the bridge is retargeted.
+    @discardableResult
+    func end(contextID: String, retainingSpool: Bool = false) -> VoiceSessionSpool? {
         sessions[contextID]?.end()
-        spools.removeValue(forKey: contextID)?.remove()
+        guard let spool = spools.removeValue(forKey: contextID) else { return nil }
+        if retainingSpool { return spool }
+        spool.remove()
+        return nil
     }
 
     func endAll() {

@@ -3550,6 +3550,32 @@ final class EmbeddedSessionRegistryTests: XCTestCase {
         XCTAssertTrue(registry.hasLiveSessions)
     }
 
+    func testEndingTheVoiceTargetedContextCanRetainItsSpoolForTheBridge() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("rr-registry-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let registry = makeRegistry()
+        let a = try launch(registry, "a")
+        let b = try launch(registry, "b", provider: "Claude")
+        let spoolA = VoiceSessionSpool(key: "a", rootDirectory: root.path)
+        let spoolB = VoiceSessionSpool(key: "b", rootDirectory: root.path)
+        try spoolA.prepare(); try spoolB.prepare()
+        registry.setSpool(spoolA, for: "a")
+        registry.setSpool(spoolB, for: "b")
+
+        let retained = registry.end(contextID: "a", retainingSpool: true)
+        XCTAssertEqual(retained, spoolA)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: spoolA.directory),
+                      "The bridge still publishes here until it is retargeted")
+        XCTAssertEqual(a.phase, .ended)
+        XCTAssertEqual(b.phase, .running)
+        XCTAssertEqual(registry.liveContextIDs, ["b"])
+        XCTAssertNil(registry.spool(for: "a"))
+        XCTAssertEqual(registry.spool(for: "b"), spoolB, "The retarget destination")
+        retained?.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: spoolA.directory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: spoolB.directory))
+    }
+
     func testExitAndReadyCallbacksCarryTheirOwnContext() throws {
         let registry = makeRegistry()
         var exits: [String] = [], readies: [String] = []

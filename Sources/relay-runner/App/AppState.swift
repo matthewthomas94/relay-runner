@@ -1192,9 +1192,61 @@ final class AppState {
         }
         saveAssistantSession(lifecycle: .saved, context: context)
         if pendingContextSelection == context { pendingContextSelection = nil }
-        sessionRegistry.end(contextID: context.id)
+        let bridgeTargetsContext = context.id == voiceContextID
+        let retainedSpool = sessionRegistry.end(contextID: context.id, retainingSpool: bridgeTargetsContext)
         if context == activeContext { focusNextLiveContext() }
+        if bridgeTargetsContext { retargetVoiceBridge(releasing: retainedSpool) }
         refreshWorkspaceActivity(invalidateRoute: true)
+    }
+
+    /// The bridge published into an ended context's spool: relaunch it into a
+    /// live context's spool, and only then remove the ended spool.
+    private func retargetVoiceBridge(releasing endedSpool: VoiceSessionSpool?) {
+        let live = sessionRegistry.liveContextIDs
+        let targetID = live.contains(activeContext.id) ? activeContext.id : live.first
+        guard let targetID,
+              let binding = assistantSessionStore.document.bindings[targetID],
+              let spool = sessionRegistry.spool(for: targetID) else {
+            voiceContextID = nil
+            endedSpool?.remove()
+            return
+        }
+        voiceContextID = targetID
+        let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
+            repositoryPath: binding.context.workingDirectory
+        )
+        let recoveryContext = ProcessManager.BridgeRecoveryContext(
+            workingDirectory: binding.context.workingDirectory,
+            provider: binding.provider,
+            recoveryGeneration: continuityRecoveryGenerationBySession[sessionID],
+            sessionScope: binding.context.kind.rawValue,
+            generalFilesRoot: AssistantSessionStore.filesDirectory.path,
+            preservesContextAuthorization: true,
+            spoolDirectory: spool.directory
+        )
+        bridgeRecoveryInFlight = true
+        NSLog("[AppState] Retargeting voice bridge to \(recoveryContext.workingDirectory)")
+        let processManager = self.processManager
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let retargeted = processManager.relaunchBridgeDaemon(
+                context: recoveryContext,
+                suppressStartupGreeting: true
+            )
+            DispatchQueue.main.async { [weak self] in
+                endedSpool?.remove()
+                guard let self else { return }
+                self.bridgeRecoveryInFlight = false
+                self.bridgeAliveCache = retargeted
+                guard !retargeted, !self.processManager.bridgeStopRequested() else { return }
+                self.statusText = "Voice bridge unavailable"
+                self.stateMachine.showProgramStatus(
+                    title: "Voice unavailable",
+                    body: "Relay Runner could not move voice to the remaining session. Restart that session before speaking again."
+                )
+                self.syncNotchActivitySurface()
+                NSLog("[AppState] Voice bridge retarget failed")
+            }
+        }
     }
 
     /// Save the focused context and every other context with a live session.
