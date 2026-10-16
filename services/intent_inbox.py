@@ -19,7 +19,7 @@ from provider_turn_broker import (
 )
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _key(payload: dict[str, Any] | None) -> tuple[int, str] | None:
@@ -31,6 +31,13 @@ def _key(payload: dict[str, Any] | None) -> tuple[int, str] | None:
         return None
     command_id = str(payload.get("relay_command_id") or "").strip()
     return (seq, command_id) if command_id else None
+
+
+def _session_key(metadata: dict[str, Any] | None) -> str:
+    """The voice session that owns an intent; ``""`` for unrouted legacy rows."""
+    if not isinstance(metadata, dict):
+        return ""
+    return str(metadata.get("voice_target_session_key") or "").strip()
 
 
 class IntentInbox:
@@ -83,7 +90,8 @@ class IntentInbox:
                     lease_attempts INTEGER NOT NULL DEFAULT 0,
                     recovered_at REAL,
                     recovery_generation TEXT NOT NULL DEFAULT '0',
-                    recovery_decision TEXT
+                    recovery_decision TEXT,
+                    session_key TEXT NOT NULL DEFAULT ''
                 );
                 """
             )
@@ -127,6 +135,24 @@ class IntentInbox:
                 self._connection.execute(
                     "ALTER TABLE intents ADD COLUMN recovery_decision TEXT"
                 )
+            if "session_key" not in columns:
+                # RR-400: one shared bridge inbox serves every live session, so
+                # rows carry their owner. Backfill from the RR-398 routing key.
+                self._connection.execute(
+                    "ALTER TABLE intents ADD COLUMN session_key TEXT NOT NULL DEFAULT ''"
+                )
+                for row in self._connection.execute(
+                    "SELECT intent_id, metadata_json FROM intents"
+                ).fetchall():
+                    try:
+                        session_key = _session_key(json.loads(row["metadata_json"]))
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if session_key:
+                        self._connection.execute(
+                            "UPDATE intents SET session_key=? WHERE intent_id=?",
+                            (session_key, str(row["intent_id"])),
+                        )
             self._connection.execute("DROP INDEX IF EXISTS intents_command_key")
             self._connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS intents_command_item_key "
@@ -234,8 +260,8 @@ class IntentInbox:
                 INSERT OR IGNORE INTO intents(
                     intent_id, command_seq, command_id, within_turn_order, prompt, metadata_json,
                     route, state, delivery_id, claim_id, ack_id, created_at,
-                    recovery_generation
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    recovery_generation, session_key
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     intent_id,
@@ -251,6 +277,7 @@ class IntentInbox:
                     ack_id,
                     now,
                     recovery_generation,
+                    _session_key(stored),
                 ),
             )
         return stored
@@ -262,8 +289,13 @@ class IntentInbox:
         command_path: str,
         metadata_path: str,
         before_command_seq: int | None = None,
+        session_key: str | None = None,
     ) -> int:
-        """Retire foreground prompts that cannot belong to this live session."""
+        """Retire foreground prompts that cannot belong to this live session.
+
+        With ``session_key`` only that session's rows (and unrouted legacy
+        rows) are retired; other live sessions keep their own generations.
+        """
         generation = normalize_recovery_generation(recovery_generation)
         now = time.time()
         with self._lock, self._connection:
@@ -272,10 +304,11 @@ class IntentInbox:
                 SELECT intent_id FROM intents
                  WHERE recovery_generation != ?
                    AND (? IS NULL OR command_seq < ?)
+                   AND (? IS NULL OR session_key IN (?, ''))
                    AND route!='run_sidecar'
                    AND state IN ('pending', 'delivered', 'claimed', 'review_required', 'recovery_pending')
                 """,
-                (generation, before_command_seq, before_command_seq),
+                (generation, before_command_seq, before_command_seq, session_key, session_key),
             ).fetchall()
             if not rows:
                 return 0
@@ -428,7 +461,10 @@ class IntentInbox:
         command_path: str | None = None,
         metadata_path: str | None = None,
     ) -> list[str]:
-        """Cancel only the resolved item/ticket and release its ready-file lease."""
+        """Cancel only the resolved item/ticket and release its ready-file lease.
+
+        Every scope, including ``all_work``, is limited to the issuing session.
+        """
         scope, target_ids, target = self._cancellation_fields(metadata)
         if scope not in {"item", "ticket", "all_work"}:
             return []
@@ -437,8 +473,10 @@ class IntentInbox:
                 """
                 SELECT * FROM intents
                  WHERE state IN ('pending', 'delivered', 'claimed', 'review_required', 'recovery_pending', 'acked')
+                   AND session_key=?
                  ORDER BY command_seq DESC, within_turn_order DESC, ordinal DESC
-                """
+                """,
+                (_session_key(metadata),),
             ).fetchall()
             if scope == "all_work":
                 matched = list(rows)
@@ -484,6 +522,54 @@ class IntentInbox:
         self._project_provider_turns()
         return matched_ids
 
+    def _awaits_source_predecessor(self, row: sqlite3.Row) -> bool:
+        """A later voice turn can steer an active PM turn. Siblings of one
+        source turn stay ordered, and a completed final still waits for its
+        authoritative reply effect."""
+        if not self.provider_turn_events_enabled:
+            return False
+        predecessor = self._connection.execute(
+            """
+            SELECT intents.ordinal
+             FROM intents
+             WHERE intents.state='acked'
+               AND intents.command_seq=?
+               AND intents.command_id=?
+               AND (
+                   EXISTS (
+                       SELECT 1
+                         FROM provider_turns
+                        WHERE provider_turns.intent_id=intents.intent_id
+                          AND provider_turns.command_seq=intents.command_seq
+                          AND provider_turns.command_id=intents.command_id
+                          AND provider_turns.state='active'
+                   )
+                   OR (
+                       EXISTS (
+                           SELECT 1
+                             FROM provider_turns
+                            WHERE provider_turns.intent_id=intents.intent_id
+                              AND provider_turns.command_seq=intents.command_seq
+                              AND provider_turns.command_id=intents.command_id
+                              AND provider_turns.state='completed_final'
+                       )
+                       AND NOT EXISTS (
+                           SELECT 1
+                             FROM provider_turn_effects
+                            WHERE provider_turn_effects.intent_id=intents.intent_id
+                              AND provider_turn_effects.effect_kind='authoritative_reply'
+                              AND provider_turn_effects.state IN ('delivered', 'failed')
+                       )
+                   )
+               )
+             ORDER BY intents.command_seq, intents.within_turn_order,
+                      intents.ordinal
+             LIMIT 1
+            """,
+            (int(row["command_seq"]), str(row["command_id"])),
+        ).fetchone()
+        return predecessor is not None
+
     def materialize_next(
         self,
         *,
@@ -492,10 +578,12 @@ class IntentInbox:
         transport: str,
         paths_for: Callable[[dict[str, Any]], tuple[str, str] | None] | None = None,
     ) -> dict[str, Any] | None:
-        """Atomically lease the oldest pending intent into the compatibility mailbox.
+        """Atomically lease the oldest deliverable intent into its session mailbox.
 
         ``paths_for`` routes the selected intent to its own session mailbox; the
-        default paths are used when it is omitted or returns ``None``.
+        default paths are used when it is omitted or returns ``None``. Ordering
+        and the unacknowledged-delivery gate apply per session, so one session's
+        in-flight turn never blocks another session's queue.
         """
         if paths_for is None and (os.path.exists(command_path) or os.path.exists(metadata_path)):
             return None
@@ -503,78 +591,51 @@ class IntentInbox:
         with self._lock, self._connection:
             unacked = self._connection.execute(
                 """
-                SELECT ordinal
+                SELECT session_key, metadata_json
                   FROM intents
                  WHERE route != 'run_sidecar'
                    AND state IN ('delivered', 'claimed', 'review_required')
-                 ORDER BY command_seq, within_turn_order, ordinal
-                 LIMIT 1
                 """
-            ).fetchone()
-            if unacked is not None:
-                return None
-            row = self._connection.execute(
+            ).fetchall()
+            blocked = {str(row["session_key"]) for row in unacked}
+            # An ended session's work is routed to the focused mailbox, so an
+            # in-flight turn also blocks every intent bound for its mailbox.
+            busy_mailboxes = set()
+            if paths_for is not None:
+                for row in unacked:
+                    paths = paths_for(json.loads(row["metadata_json"]))
+                    busy_mailboxes.add(paths[0] if paths else command_path)
+            candidates = self._connection.execute(
                 """
                 SELECT *
                   FROM intents
                  WHERE state='pending' AND route != 'run_sidecar'
                  ORDER BY command_seq, within_turn_order, ordinal
-                 LIMIT 1
                 """
-            ).fetchone()
+            ).fetchall()
+            row = None
+            for candidate in candidates:
+                session_key = str(candidate["session_key"])
+                if session_key in blocked:
+                    continue
+                # Only a session's oldest pending intent is eligible.
+                blocked.add(session_key)
+                if self._awaits_source_predecessor(candidate):
+                    continue
+                metadata = json.loads(candidate["metadata_json"])
+                if paths_for is not None:
+                    paths = paths_for(metadata) or (command_path, metadata_path)
+                    if (
+                        paths[0] in busy_mailboxes
+                        or os.path.exists(paths[0])
+                        or os.path.exists(paths[1])
+                    ):
+                        continue
+                    command_path, metadata_path = paths
+                row = candidate
+                break
             if row is None:
                 return None
-            if self.provider_turn_events_enabled:
-                # A later voice turn can steer an active PM turn. Siblings of
-                # one source turn stay ordered, and a completed final still
-                # waits for its authoritative reply effect.
-                predecessor = self._connection.execute(
-                    """
-                    SELECT intents.ordinal
-                     FROM intents
-                     WHERE intents.state='acked'
-                       AND intents.command_seq=?
-                       AND intents.command_id=?
-                       AND (
-                           EXISTS (
-                               SELECT 1
-                                 FROM provider_turns
-                                WHERE provider_turns.intent_id=intents.intent_id
-                                  AND provider_turns.command_seq=intents.command_seq
-                                  AND provider_turns.command_id=intents.command_id
-                                  AND provider_turns.state='active'
-                           )
-                           OR (
-                               EXISTS (
-                                   SELECT 1
-                                     FROM provider_turns
-                                    WHERE provider_turns.intent_id=intents.intent_id
-                                      AND provider_turns.command_seq=intents.command_seq
-                                      AND provider_turns.command_id=intents.command_id
-                                      AND provider_turns.state='completed_final'
-                               )
-                               AND NOT EXISTS (
-                                   SELECT 1
-                                     FROM provider_turn_effects
-                                    WHERE provider_turn_effects.intent_id=intents.intent_id
-                                      AND provider_turn_effects.effect_kind='authoritative_reply'
-                                      AND provider_turn_effects.state IN ('delivered', 'failed')
-                               )
-                           )
-                       )
-                     ORDER BY intents.command_seq, intents.within_turn_order,
-                              intents.ordinal
-                     LIMIT 1
-                    """,
-                    (int(row["command_seq"]), str(row["command_id"])),
-                ).fetchone()
-                if predecessor is not None:
-                    return None
-            metadata = json.loads(row["metadata_json"])
-            if paths_for is not None:
-                command_path, metadata_path = paths_for(metadata) or (command_path, metadata_path)
-                if os.path.exists(command_path) or os.path.exists(metadata_path):
-                    return None
             metadata["intent_delivery_id"] = row["delivery_id"]
             command_tmp = command_path + ".tmp"
             metadata_tmp = metadata_path + ".tmp"
