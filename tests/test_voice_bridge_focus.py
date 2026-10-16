@@ -88,22 +88,22 @@ class FocusTestCase(unittest.TestCase):
 
 class VoiceFocusTargetTests(FocusTestCase):
     def test_focus_retargets_the_live_bridge_with_each_providers_native_binding(self):
-        a = self.focus("A", "codex", live=["startup", "A"])
-        b = self.focus("B", "claude", live=["startup", "A", "B"])
+        a = self.focus("a", "codex", live=["startup", "a"])
+        b = self.focus("b", "claude", live=["startup", "a", "b"])
 
         self.assertEqual(voice_bridge._current_voice_target(), b)
-        self.assertEqual(voice_bridge._voice_target_for("A"), a)
-        self.assertEqual(a.provider_session_id, "codex-A-native")
-        self.assertEqual(b.provider_session_id, "claude-B-native")
-        self.assertEqual(voice_bridge._authoritative_provider_session_id(), "claude-B-native")
+        self.assertEqual(voice_bridge._voice_target_for("a"), a)
+        self.assertEqual(a.provider_session_id, "codex-a-native")
+        self.assertEqual(b.provider_session_id, "claude-b-native")
+        self.assertEqual(voice_bridge._authoritative_provider_session_id(), "claude-b-native")
         with open(voice_bridge.BRIDGE_SPOOL_FILE) as f:
             self.assertEqual(f.read().strip(), b.spool_dir)
         with open(voice_bridge.BRIDGE_PROVIDER_FILE) as f:
             self.assertEqual(f.read().strip(), "claude")
 
     def test_focus_rejects_spools_outside_the_session_root(self):
-        payload = self.focus_payload("A", "codex")
-        payload["spool_dir"] = os.path.join(self.root, "elsewhere", "A")
+        payload = self.focus_payload("a", "codex")
+        payload["spool_dir"] = os.path.join(self.root, "elsewhere", "a")
         self.assertIsNone(voice_bridge._apply_voice_focus(payload))
         payload = self.focus_payload("../A", "codex")
         self.assertIsNone(voice_bridge._apply_voice_focus(payload))
@@ -114,8 +114,8 @@ class VoiceFocusTargetTests(FocusTestCase):
             with self.subTest(provider=provider):
                 inbox = IntentInbox(os.path.join(self.root, f"{provider}.sqlite3"))
                 self.addCleanup(inbox.close)
-                a = self.focus(f"A-{provider}", provider)
-                b = self.focus(f"B-{provider}", provider)
+                a = self.focus(f"a-{provider}", provider)
+                b = self.focus(f"b-{provider}", provider)
                 metadata = {
                     "relay_command_seq": 7,
                     "relay_command_id": f"cmd-{provider}",
@@ -141,20 +141,20 @@ class VoiceFocusTargetTests(FocusTestCase):
                 os.unlink(b.meta_path)
 
     def test_ending_the_focused_session_hands_its_queued_command_to_the_next_session(self):
-        a = self.focus("A", "codex", live=["startup", "A"])
-        b = self.focus("B", "claude", live=["startup", "A", "B"])
+        a = self.focus("a", "codex", live=["startup", "a"])
+        b = self.focus("b", "claude", live=["startup", "a", "b"])
         os.makedirs(b.spool_dir, exist_ok=True)
         with open(b.command_path, "w") as f:
-            f.write("queued for B")
+            f.write("queued for b")
         with open(b.meta_path, "w") as f:
             json.dump({"intent_id": "queued"}, f)
 
-        self.focus("A", "codex", live=["startup", "A"])
+        self.focus("a", "codex", live=["startup", "a"])
 
-        self.assertIsNone(voice_bridge._voice_target_for("B"))
-        self.assertEqual(voice_bridge._current_voice_target().session_key, "A")
+        self.assertIsNone(voice_bridge._voice_target_for("b"))
+        self.assertEqual(voice_bridge._current_voice_target().session_key, "a")
         with open(a.command_path) as f:
-            self.assertEqual(f.read(), "queued for B")
+            self.assertEqual(f.read(), "queued for b")
         self.assertFalse(os.path.exists(b.command_path))
 
     def test_each_non_startup_session_registers_and_stops_its_own_orchestrator(self):
@@ -164,12 +164,12 @@ class VoiceFocusTargetTests(FocusTestCase):
             started.append(target.session_key)
             return {"session_id": len(started), "target": target.session_key}
 
-        payload = self.focus_payload("A", "codex", live=["startup", "A"])
+        payload = self.focus_payload("a", "codex", live=["startup", "a"])
         voice_bridge._apply_voice_focus(payload, start_orchestrator=start, stop_orchestrator=stopped.append)
         self.assertTrue(wait_until(lambda: voice_bridge._voice_target_orchestrator(
-            voice_bridge._voice_target_for("A"), None) is not None))
+            voice_bridge._voice_target_for("a"), None) is not None))
         voice_bridge._apply_voice_focus(payload, start_orchestrator=start, stop_orchestrator=stopped.append)
-        self.assertEqual(started, ["A"])
+        self.assertEqual(started, ["a"])
         bridge_session = {"session_id": 99}
         startup = voice_bridge._voice_target_for("startup")
         self.assertIs(voice_bridge._voice_target_orchestrator(startup, bridge_session), bridge_session)
@@ -178,7 +178,7 @@ class VoiceFocusTargetTests(FocusTestCase):
             self.focus_payload("startup-2", "claude", live=["startup", "startup-2"]),
             stop_orchestrator=stopped.append,
         )
-        self.assertEqual(stopped, [{"session_id": 1, "target": "A"}])
+        self.assertEqual(stopped, [{"session_id": 1, "target": "a"}])
 
 
 class VoiceFocusControlSocketTests(FocusTestCase):
@@ -199,25 +199,25 @@ class VoiceFocusControlSocketTests(FocusTestCase):
             self.assertTrue(wait_until(lambda: os.path.exists(sock_path)))
             client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
             self.addCleanup(client.close)
-            message = voice_bridge.VOICE_FOCUS_PREFIX + json.dumps(self.focus_payload("B", "codex"))
+            message = voice_bridge.VOICE_FOCUS_PREFIX + json.dumps(self.focus_payload("b", "codex"))
             client.sendto(message.encode(), sock_path)
             self.assertTrue(wait_until(
-                lambda: getattr(voice_bridge._current_voice_target(), "session_key", "") == "B"
+                lambda: getattr(voice_bridge._current_voice_target(), "session_key", "") == "b"
             ))
         self.assertFalse(shutdown.is_set())
         self.assertTrue(thread.is_alive())
         self.assertEqual(
             context["provider_session_ownership"].provider_session_id(),
-            "codex-B-native",
+            "codex-b-native",
         )
 
 
 class RecordingPinTests(FocusTestCase):
     def test_recording_started_on_a_is_delivered_to_a_after_focus_moves_to_b(self):
-        a = self.focus("A", "codex")
+        a = self.focus("a", "codex")
         shutdown = threading.Event()
         reads = iter([
-            b"__VOICE_TARGET__:A\n",
+            b"__VOICE_TARGET__:a\n",
             None,  # focus moves to B while the recording is still being transcribed
             b"add a test\n",
         ])
@@ -225,7 +225,7 @@ class RecordingPinTests(FocusTestCase):
         def read(_fd, _size):
             chunk = next(reads)
             if chunk is None:
-                self.focus("B", "claude")
+                self.focus("b", "claude")
                 return b"\n"
             if chunk == b"add a test\n":
                 shutdown.set()
@@ -273,9 +273,102 @@ class RecordingPinTests(FocusTestCase):
         self.assertEqual(kwargs["command_path"], a.command_path)
         self.assertEqual(kwargs["meta_path"], a.meta_path)
         metadata = publish.call_args.args[1]
-        self.assertEqual(metadata["voice_target_session_key"], "A")
+        self.assertEqual(metadata["voice_target_session_key"], "a")
         self.assertEqual(metadata["provider"], "codex")
         self.assertEqual(str(active_work.call_args.kwargs["repo_path"]), a.cwd)
+
+
+class RoutedAuthorizationTests(FocusTestCase):
+    """Grants are keyed to the session a command is routed to, not the startup one."""
+
+    def setUp(self):
+        super().setUp()
+        import orchestrator
+
+        self.orchestrator = orchestrator
+        self.ledger = os.path.join(self.root, "authorizations.json")
+        for module, name, value in (
+            (voice_bridge, "VOICE_COMMAND_AUTHORIZATION_FILE", self.ledger),
+            (orchestrator, "RELAY_COMMAND_AUTHORIZATION_FILE", self.ledger),
+            (orchestrator, "RELAY_SESSION_SPOOL_ROOT", voice_bridge.Path(self.sessions)),
+            (orchestrator, "RELAY_COMMAND_STATE_FILE", voice_bridge.Path(self.root, "legacy_state.json")),
+        ):
+            patcher = mock.patch.object(module, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def publish(self, seq, command_id, target, **fields):
+        metadata = {
+            "relay_command_seq": seq,
+            "relay_command_id": command_id,
+            "intent_id": f"intent-{command_id}",
+            **fields,
+        }
+        voice_bridge._publish_command(
+            "voice turn",
+            metadata,
+            command_path=target.command_path,
+            meta_path=target.meta_path,
+            state_path=voice_bridge.VOICE_COMMAND_STATE_FILE,
+            authorization_path=self.ledger,
+        )
+
+    def record(self, command_id):
+        with open(self.ledger) as f:
+            records = json.load(f)["authorizations"]
+        return next(item for item in records if item["relay_command_id"] == command_id)
+
+    def dispatch(self, seq, command_id, key, ticket_id):
+        self.orchestrator._validate_relay_command(
+            seq,
+            command_id,
+            relay_intent_id=f"intent-{command_id}",
+            mutation=self.orchestrator._relay_mutation_metadata("dispatch_ticket", ticket_id=ticket_id),
+            relay_session_key=key,
+        )
+
+    def update(self, ticket_id, key):
+        return {
+            "action": "update_ticket",
+            "ticket_id": ticket_id,
+            "source_text": f"update {ticket_id}",
+            "authorization_relationship": "additive",
+            "voice_target_session_key": key,
+        }
+
+    def test_focused_sessions_command_is_enforced_under_its_own_key(self):
+        startup = voice_bridge._voice_target_for("startup")
+        self.publish(1, "cmd-a", startup, **self.update("RR-1", "startup"))
+        b = self.focus("b", "claude", live=["startup", "b"])
+        self.publish(2, "cmd-b", b, **self.update("RR-2", "b"))
+
+        self.assertEqual(self.record("cmd-a")["relay_session_key"], "startup")
+        self.assertEqual(self.record("cmd-b")["relay_session_key"], "b")
+        with self.assertRaisesRegex(ValueError, "not authorized for this mutation"):
+            self.dispatch(2, "cmd-b", "b", "RR-9")
+        self.dispatch(2, "cmd-b", "b", "RR-2")
+
+        # B's whole-turn interrupt revokes B's grants and leaves A's untouched.
+        self.publish(3, "cmd-stop", b, action="control", authorization_relationship="interrupt")
+        self.assertEqual(self.record("cmd-b")["status"], "revoked")
+        self.assertEqual(self.record("cmd-a")["status"], "active")
+        self.assertEqual(self.record("cmd-a")["started_mutations"], [])
+
+    def test_ending_a_session_moves_its_queued_grants_to_the_next_focus(self):
+        a = self.focus("a", "codex", live=["startup", "a"])
+        self.publish(1, "cmd-a", a, **self.update("RR-1", "a"))
+        self.focus("startup", "claude", live=["startup"])
+
+        self.assertEqual(self.record("cmd-a")["relay_session_key"], "startup")
+        self.dispatch(1, "cmd-a", "startup", "RR-1")
+
+    def test_manual_bridge_target_records_key_less_grants(self):
+        legacy = voice_bridge.VoiceTarget(
+            session_key="legacy", provider="claude", provider_session_id="", cwd="/tmp",
+            command_path="/tmp/voice_cmd_ready", meta_path="/tmp/voice_cmd_ready.meta",
+            claim_path="/tmp/voice_cmd_claimed.json", manual_ack_path="/tmp/voice_cmd_manual_ack.json",
+        )
+        self.assertEqual(voice_bridge._authorization_key_for_target(legacy), "")
 
 
 if __name__ == "__main__":

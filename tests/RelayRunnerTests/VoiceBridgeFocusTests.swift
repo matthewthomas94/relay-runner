@@ -22,7 +22,7 @@ final class VoiceBridgeFocusTests: XCTestCase {
     }
 
     func testFocusMessageFitsOneBridgeDatagram() throws {
-        let live = (0..<4).map { "context-\($0)-\(UUID().uuidString)" }
+        let live = (0..<4).map { "context-\($0)-\(UUID().uuidString.lowercased())" }
         let message = try XCTUnwrap(focusMessage(live[0], provider: "claude", sessionsRoot: "/tmp/relay-sessions", focus: true, live: live))
         XCTAssertTrue(message.hasPrefix("__FOCUS__:"))
         XCTAssertLessThan(message.utf8.count, 2048)
@@ -56,7 +56,7 @@ final class VoiceBridgeFocusTests: XCTestCase {
         print(json.dumps({
             "current": vb._current_voice_target().session_key,
             "unstamped": vb._voice_mailbox_for({})[0],
-            "stamped_a": vb._voice_mailbox_for({"voice_target_session_key": "A"})[0],
+            "stamped_a": vb._voice_mailbox_for({"voice_target_session_key": "a"})[0],
             "provider": open(vb.BRIDGE_PROVIDER_FILE).read().strip(),
             "native": vb._authoritative_provider_session_id(),
         }))
@@ -65,11 +65,11 @@ final class VoiceBridgeFocusTests: XCTestCase {
             let sessions = FileManager.default.temporaryDirectory.appendingPathComponent("rr398-\(UUID().uuidString)").path
             try FileManager.default.createDirectory(atPath: sessions, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(atPath: sessions) }
-            let live = ["A", "B"]
+            let live = ["a", "b"]
             // syncVoiceFocus sends the other live sessions first and the focused one last.
             let messages = try [
-                XCTUnwrap(focusMessage("A", provider: providerA, sessionsRoot: sessions, focus: false, live: live)),
-                XCTUnwrap(focusMessage("B", provider: providerB, sessionsRoot: sessions, focus: true, live: live)),
+                XCTUnwrap(focusMessage("a", provider: providerA, sessionsRoot: sessions, focus: false, live: live)),
+                XCTUnwrap(focusMessage("b", provider: providerB, sessionsRoot: sessions, focus: true, live: live)),
             ]
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
@@ -82,11 +82,11 @@ final class VoiceBridgeFocusTests: XCTestCase {
             process.waitUntilExit()
             XCTAssertEqual(process.terminationStatus, 0, providerB)
             let result = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String], providerB)
-            XCTAssertEqual(result["current"], "B", providerB)
-            XCTAssertEqual(result["unstamped"], "\(sessions)/B/voice_cmd_ready", providerB)
-            XCTAssertEqual(result["stamped_a"], "\(sessions)/A/voice_cmd_ready", providerB)
+            XCTAssertEqual(result["current"], "b", providerB)
+            XCTAssertEqual(result["unstamped"], "\(sessions)/b/voice_cmd_ready", providerB)
+            XCTAssertEqual(result["stamped_a"], "\(sessions)/a/voice_cmd_ready", providerB)
             XCTAssertEqual(result["provider"], providerB)
-            XCTAssertEqual(result["native"], "\(providerB)-B-native")
+            XCTAssertEqual(result["native"], "\(providerB)-b-native")
         }
     }
 

@@ -57,6 +57,7 @@ from relay_authorization import (
     allowed_mutations_for_metadata,
     command_relationship,
     record_command_authorization,
+    transfer_session_authorizations,
 )
 from pm_frontstage import (
     OrchestrationTraceEvent,
@@ -461,6 +462,9 @@ BRIDGE_PROVIDER_FILE = "/tmp/voice_bridge.provider"
 BRIDGE_SPOOL_FILE = "/tmp/voice_bridge.spool"
 VOICE_FOCUS_PREFIX = "__FOCUS__:"
 VOICE_TARGET_PREFIX = "__VOICE_TARGET__:"
+# Matches the orchestrator's RELAY_SESSION_KEY_RE and the app's sanitized
+# VoiceSessionSpool key, so a routed key is one the daemon accepts.
+_RELAY_SESSION_KEY_RE = re.compile(r"[a-z0-9-]{1,64}")
 
 
 @dataclass(frozen=True)
@@ -500,6 +504,33 @@ def _current_voice_target() -> VoiceTarget | None:
 def _voice_target_for(session_key: str | None) -> VoiceTarget | None:
     with _VOICE_TARGET_LOCK:
         return _VOICE_TARGETS.get(str(session_key or ""))
+
+
+def _authorization_key_for_target(target: VoiceTarget | None) -> str:
+    """The relay session key a target's provider presents to the orchestrator.
+
+    Only app-owned spools under ``/tmp/relay-sessions`` are keyed; manual
+    bridges (the ``legacy`` target) record key-less authorizations.
+    """
+    if target is None:
+        return RELAY_SESSION_KEY
+    if (
+        os.path.dirname(target.spool_dir.rstrip("/")) != RELAY_SESSIONS_ROOT
+        or not _RELAY_SESSION_KEY_RE.fullmatch(target.session_key)
+    ):
+        return ""
+    return target.session_key
+
+
+def _authorization_session_key(metadata: dict) -> str:
+    """Key a command's authorization to the session it is routed to (RR-398).
+
+    Mirrors ``_voice_mailbox_for``: the recorded target, else the focused one.
+    """
+    return _authorization_key_for_target(
+        _voice_target_for(metadata.get("voice_target_session_key"))
+        or _current_voice_target()
+    )
 
 
 def _live_voice_targets() -> list[VoiceTarget]:
@@ -589,8 +620,8 @@ def _voice_target_from_focus(payload: dict) -> VoiceTarget | None:
     spool = os.path.normpath(str(payload.get("spool_dir") or "").strip() or "/")
     cwd = str(payload.get("cwd") or "").strip()
     if (
-        not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", key)
-        or key in {".", ".."}
+        not _RELAY_SESSION_KEY_RE.fullmatch(key)
+        or os.path.basename(spool) != key
         or os.path.dirname(spool) != RELAY_SESSIONS_ROOT
         or not cwd
         or not os.path.isabs(cwd)
@@ -729,6 +760,17 @@ def _apply_voice_focus(
             _VOICE_TARGET_ORCHESTRATOR_PENDING.add(target.session_key)
         focused_ownership = _VOICE_TARGET_OWNERSHIP.get(_VOICE_TARGET_KEY or "")
     for ended in pruned:
+        ended_key = _authorization_key_for_target(ended)
+        if current is not None and ended_key:
+            # Queued work handed to the focused session keeps its grants.
+            try:
+                transfer_session_authorizations(
+                    VOICE_COMMAND_AUTHORIZATION_FILE,
+                    ended_key,
+                    _authorization_key_for_target(current),
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                print(f"[voice_bridge] Could not transfer Relay authorizations: {exc}", file=sys.stderr)
         _hand_off_mailbox(ended, current)
     for lifecycle in stopped:
         if stop_orchestrator is not None:
@@ -2257,7 +2299,7 @@ def _publish_command(
                     if published_metadata.get("lifecycle_state") == "cancelled"
                     else allowed_mutations_for_metadata(published_metadata)
                 ),
-                session_key=RELAY_SESSION_KEY,
+                session_key=_authorization_session_key(published_metadata),
             )
         except (OSError, TypeError, ValueError) as e:
             print(f"[voice_bridge] Could not record Relay mutation authorization: {e}", file=sys.stderr)
@@ -4850,7 +4892,7 @@ def _run_relay(
                                 if item.lifecycle_state == "cancelled"
                                 else allowed_mutations_for_metadata(metadata)
                             ),
-                            session_key=RELAY_SESSION_KEY,
+                            session_key=_authorization_session_key(metadata),
                         )
                     except (OSError, TypeError, ValueError) as e:
                         print(
