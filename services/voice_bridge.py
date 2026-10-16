@@ -10,7 +10,7 @@ mode retained for manual debugging; Start Session and relay-bridge do not use it
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import os
@@ -450,6 +450,309 @@ COMMAND_ACTION_RECOVERY_STATES = frozenset({"claimed", "delivery_failed", "super
 COMMAND_ACTION_TERMINAL_STATES = frozenset({"delivery_failed", "superseded"})
 TTS_IN_FIFO = "/tmp/tts_in.fifo"
 VOICE_ACKNOWLEDGEMENT = os.environ.get("VOICE_ACKNOWLEDGEMENT", "Got it. I'm on it.")
+
+# RR-398: one bridge serves every live app session. The focused session is a
+# lock-guarded mutable target that the app re-targets with ``__FOCUS__`` on the
+# control socket instead of relaunching the bridge. The command ledger stays
+# at the startup state path; per-session mailboxes receive their own commands.
+RELAY_SESSIONS_ROOT = "/tmp/relay-sessions"
+BRIDGE_CWD_FILE = "/tmp/voice_bridge.cwd"
+BRIDGE_PROVIDER_FILE = "/tmp/voice_bridge.provider"
+BRIDGE_SPOOL_FILE = "/tmp/voice_bridge.spool"
+VOICE_FOCUS_PREFIX = "__FOCUS__:"
+VOICE_TARGET_PREFIX = "__VOICE_TARGET__:"
+
+
+@dataclass(frozen=True)
+class VoiceTarget:
+    """A live session's native provider binding and voice handoff files."""
+
+    session_key: str
+    provider: str
+    provider_session_id: str
+    cwd: str
+    command_path: str
+    meta_path: str
+    claim_path: str
+    manual_ack_path: str
+    state_path: str = ""
+    spool_dir: str = ""
+    app_session_id: str = ""
+    recovery_generation: str = ""
+    project_name: str = ""
+
+
+_VOICE_TARGET_LOCK = threading.RLock()
+_VOICE_TARGETS: dict[str, VoiceTarget] = {}
+_VOICE_TARGET_OWNERSHIP: dict[str, object] = {}
+_VOICE_TARGET_ORCHESTRATORS: dict[str, dict] = {}
+_VOICE_TARGET_ORCHESTRATOR_PENDING: set[str] = set()
+_VOICE_TARGET_KEY: str | None = None
+_VOICE_STARTUP_KEY: str | None = None
+_VOICE_LEDGER_STATE_FILE: str | None = None
+
+
+def _current_voice_target() -> VoiceTarget | None:
+    with _VOICE_TARGET_LOCK:
+        return _VOICE_TARGETS.get(_VOICE_TARGET_KEY or "")
+
+
+def _voice_target_for(session_key: str | None) -> VoiceTarget | None:
+    with _VOICE_TARGET_LOCK:
+        return _VOICE_TARGETS.get(str(session_key or ""))
+
+
+def _live_voice_targets() -> list[VoiceTarget]:
+    with _VOICE_TARGET_LOCK:
+        return list(_VOICE_TARGETS.values())
+
+
+def _voice_target_ownership(target: VoiceTarget | None):
+    if target is None:
+        return None
+    with _VOICE_TARGET_LOCK:
+        return _VOICE_TARGET_OWNERSHIP.get(target.session_key)
+
+
+def _voice_target_orchestrator(target: VoiceTarget | None, fallback: dict | None) -> dict | None:
+    """Return the target's orchestrator session; the startup target uses the bridge's."""
+    with _VOICE_TARGET_LOCK:
+        if target is None or target.session_key == _VOICE_STARTUP_KEY:
+            return fallback
+        return _VOICE_TARGET_ORCHESTRATORS.get(target.session_key)
+
+
+def _start_target_orchestrator(cfg: dict, target: VoiceTarget) -> dict | None:
+    """Register a heartbeat lifecycle for a non-startup target's project."""
+    global _CONTINUITY_SESSION_NATIVE_ID
+    native_id = _CONTINUITY_SESSION_NATIVE_ID
+    try:
+        return start_persistent_orchestrator_lifecycle(cfg, threading.Event(), cwd=target.cwd)
+    finally:
+        # Continuity events stay attributed to the bridge's own session.
+        _CONTINUITY_SESSION_NATIVE_ID = native_id
+
+
+def _install_startup_voice_target(provider_session_ownership=None) -> VoiceTarget:
+    """Register the session this bridge launched with, from current module paths."""
+    global _VOICE_TARGET_KEY, _VOICE_STARTUP_KEY, _VOICE_LEDGER_STATE_FILE
+    spool = os.environ.get("RELAY_SESSION_SPOOL_DIR", "").strip()
+    target = VoiceTarget(
+        session_key=(
+            os.environ.get("RELAY_SESSION_KEY", "").strip()
+            or os.path.basename(spool.rstrip("/"))
+            or "legacy"
+        ),
+        provider=os.environ.get("RELAY_RUNNER_PROVIDER", "").strip(),
+        provider_session_id=PROVIDER_SESSION_ID,
+        cwd=os.getcwd(),
+        command_path=VOICE_CMD_FILE,
+        meta_path=VOICE_CMD_META_FILE,
+        claim_path=VOICE_COMMAND_CLAIM_FILE,
+        manual_ack_path=VOICE_MANUAL_CLAIM_ACK_FILE,
+        spool_dir=spool,
+        app_session_id=os.environ.get("RELAY_APP_SESSION_ID", "").strip(),
+        recovery_generation=os.environ.get("RELAY_RECOVERY_GENERATION", "").strip(),
+    )
+    with _VOICE_TARGET_LOCK:
+        _VOICE_TARGETS.clear()
+        _VOICE_TARGET_OWNERSHIP.clear()
+        _VOICE_TARGET_ORCHESTRATORS.clear()
+        _VOICE_TARGETS[target.session_key] = target
+        if provider_session_ownership is not None:
+            _VOICE_TARGET_OWNERSHIP[target.session_key] = provider_session_ownership
+        _VOICE_TARGET_ORCHESTRATOR_PENDING.clear()
+        _VOICE_TARGET_KEY = target.session_key
+        _VOICE_STARTUP_KEY = target.session_key
+        _VOICE_LEDGER_STATE_FILE = VOICE_COMMAND_STATE_FILE
+    return target
+
+
+def _clear_voice_targets() -> list[dict]:
+    """Forget every target; return per-target orchestrator lifecycles to stop."""
+    global _VOICE_TARGET_KEY, _VOICE_STARTUP_KEY, _VOICE_LEDGER_STATE_FILE
+    with _VOICE_TARGET_LOCK:
+        lifecycles = list(_VOICE_TARGET_ORCHESTRATORS.values())
+        _VOICE_TARGETS.clear()
+        _VOICE_TARGET_OWNERSHIP.clear()
+        _VOICE_TARGET_ORCHESTRATORS.clear()
+        _VOICE_TARGET_ORCHESTRATOR_PENDING.clear()
+        _VOICE_TARGET_KEY = None
+        _VOICE_STARTUP_KEY = None
+        _VOICE_LEDGER_STATE_FILE = None
+    return lifecycles
+
+
+def _voice_target_from_focus(payload: dict) -> VoiceTarget | None:
+    """Validate an app ``__FOCUS__`` payload into a target, or reject it."""
+    key = str(payload.get("session_key") or "").strip()
+    spool = os.path.normpath(str(payload.get("spool_dir") or "").strip() or "/")
+    cwd = str(payload.get("cwd") or "").strip()
+    if (
+        not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", key)
+        or key in {".", ".."}
+        or os.path.dirname(spool) != RELAY_SESSIONS_ROOT
+        or not cwd
+        or not os.path.isabs(cwd)
+    ):
+        return None
+    return VoiceTarget(
+        session_key=key,
+        provider=str(payload.get("provider") or "").strip().lower(),
+        provider_session_id=str(payload.get("provider_session_id") or "").strip(),
+        cwd=cwd,
+        command_path=os.path.join(spool, "voice_cmd_ready"),
+        meta_path=os.path.join(spool, "voice_cmd_ready.meta"),
+        claim_path=os.path.join(spool, "voice_cmd_claimed.json"),
+        manual_ack_path=os.path.join(spool, "voice_cmd_manual_ack.json"),
+        state_path=os.path.join(spool, "voice_command_state.json"),
+        spool_dir=spool,
+        app_session_id=str(payload.get("app_session_id") or "").strip(),
+        recovery_generation=str(payload.get("recovery_generation") or "").strip(),
+        project_name=str(payload.get("project_name") or "").strip(),
+    )
+
+
+def _write_bridge_target_files(target: VoiceTarget) -> None:
+    """Keep the app's bridge cwd/provider/spool view on the focused target."""
+    for path, value in (
+        (BRIDGE_CWD_FILE, target.cwd),
+        (BRIDGE_PROVIDER_FILE, target.provider),
+        (BRIDGE_SPOOL_FILE, target.spool_dir),
+    ):
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            with open(tmp, "w") as f:
+                f.write(value + "\n")
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _hand_off_mailbox(source: VoiceTarget, destination: VoiceTarget | None) -> bool:
+    """Move an ended target's undelivered command into the focused mailbox."""
+    if destination is None or destination.command_path == source.command_path:
+        return False
+    if not os.path.exists(source.command_path) or os.path.exists(source.claim_path):
+        return False
+    if os.path.exists(destination.command_path) or os.path.exists(destination.meta_path):
+        return False
+    try:
+        if destination.spool_dir:
+            os.makedirs(destination.spool_dir, mode=0o700, exist_ok=True)
+        if os.path.exists(source.meta_path):
+            os.replace(source.meta_path, destination.meta_path)
+        os.replace(source.command_path, destination.command_path)
+    except OSError as exc:
+        print(f"[voice_bridge] Could not hand off queued voice command: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
+def _register_target_orchestrator(target: VoiceTarget, start_orchestrator, stop_orchestrator) -> None:
+    """Register and heartbeat an orchestrator session for one live target."""
+    try:
+        lifecycle = start_orchestrator(target)
+    except Exception as exc:  # never let a registration failure kill the bridge
+        print(f"[voice_bridge] Target orchestrator registration failed: {exc}", file=sys.stderr)
+        lifecycle = None
+    with _VOICE_TARGET_LOCK:
+        _VOICE_TARGET_ORCHESTRATOR_PENDING.discard(target.session_key)
+        if lifecycle is not None and target.session_key in _VOICE_TARGETS:
+            _VOICE_TARGET_ORCHESTRATORS.setdefault(target.session_key, lifecycle)
+            lifecycle = None
+    if lifecycle is not None and stop_orchestrator is not None:
+        stop_orchestrator(lifecycle)
+
+
+def _apply_voice_focus(
+    payload: dict,
+    recovery_context: dict | None = None,
+    *,
+    start_orchestrator=None,
+    stop_orchestrator=None,
+) -> VoiceTarget | None:
+    """Register, focus, and prune live targets without restarting the bridge."""
+    global _VOICE_TARGET_KEY, _PROVIDER_SESSION_OWNERSHIP
+    target = _voice_target_from_focus(payload)
+    if target is None:
+        print("[voice_bridge] Rejected invalid __FOCUS__ target", file=sys.stderr)
+        return None
+    live = payload.get("live_session_keys")
+    live_keys = {str(key) for key in live} if isinstance(live, list) else None
+    ownership_fields = {
+        "provider_session_id": target.provider_session_id,
+        "provider": target.provider,
+        "app_session_id": target.app_session_id,
+        "recovery_generation": target.recovery_generation,
+    }
+    with _VOICE_TARGET_LOCK:
+        _VOICE_TARGETS[target.session_key] = target
+        existing = _VOICE_TARGET_OWNERSHIP.get(target.session_key)
+        scope = existing.provider_turn_scope() if existing is not None else {}
+        # Keep an ownership that already accepted a provider transition; a new
+        # app session or recovery generation is a different owner.
+        if (
+            scope.get("app_session_id") != target.app_session_id
+            or scope.get("recovery_generation") != target.recovery_generation
+        ):
+            _VOICE_TARGET_OWNERSHIP.pop(target.session_key, None)
+            if all(ownership_fields.values()):
+                _VOICE_TARGET_OWNERSHIP[target.session_key] = ProviderSessionOwnership(
+                    **ownership_fields
+                )
+        if payload.get("focus", True):
+            _VOICE_TARGET_KEY = target.session_key
+        current = _VOICE_TARGETS.get(_VOICE_TARGET_KEY or "")
+        pruned: list[VoiceTarget] = []
+        if live_keys is not None:
+            for key in list(_VOICE_TARGETS):
+                if key not in live_keys and key != _VOICE_TARGET_KEY:
+                    pruned.append(_VOICE_TARGETS.pop(key))
+                    _VOICE_TARGET_OWNERSHIP.pop(key, None)
+        stopped = [
+            _VOICE_TARGET_ORCHESTRATORS.pop(ended.session_key)
+            for ended in pruned
+            if ended.session_key in _VOICE_TARGET_ORCHESTRATORS
+        ]
+        # The startup session keeps the bridge's own orchestrator lifecycle.
+        needs_orchestrator = (
+            start_orchestrator is not None
+            and target.session_key != _VOICE_STARTUP_KEY
+            and target.session_key not in _VOICE_TARGET_ORCHESTRATORS
+            and target.session_key not in _VOICE_TARGET_ORCHESTRATOR_PENDING
+        )
+        if needs_orchestrator:
+            _VOICE_TARGET_ORCHESTRATOR_PENDING.add(target.session_key)
+        focused_ownership = _VOICE_TARGET_OWNERSHIP.get(_VOICE_TARGET_KEY or "")
+    for ended in pruned:
+        _hand_off_mailbox(ended, current)
+    for lifecycle in stopped:
+        if stop_orchestrator is not None:
+            stop_orchestrator(lifecycle)
+    if needs_orchestrator:
+        # Registration is an HTTP round trip; keep the control socket responsive.
+        threading.Thread(
+            target=_register_target_orchestrator,
+            args=(target, start_orchestrator, stop_orchestrator),
+            name="voice-target-orchestrator",
+            daemon=True,
+        ).start()
+    if current is not None and current.session_key == target.session_key:
+        _write_bridge_target_files(current)
+        _PROVIDER_SESSION_OWNERSHIP = focused_ownership
+        if recovery_context is not None:
+            recovery_context["provider_session_ownership"] = focused_ownership
+    print(
+        f"[voice_bridge] Voice target {'focused' if current is target else 'registered'}: "
+        f"session={target.session_key} provider={target.provider or 'unknown'}",
+        file=sys.stderr,
+    )
+    return target
+
 VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS = 0.0
 VOICE_ACKNOWLEDGEMENT_AUTO_DISMISS_SECONDS = 3.0
 
@@ -513,14 +816,23 @@ def _read_json_file(path: str) -> dict:
 
 
 def _mirror_command_state(path: str) -> None:
-    if _MIRRORED_COMMAND_STATE_FILE is None or path != _MIRRORED_COMMAND_STATE_FILE:
-        return
-    tmp = LEGACY_VOICE_COMMAND_STATE_FILE + ".tmp"
-    try:
-        shutil.copyfile(path, tmp)
-        os.replace(tmp, LEGACY_VOICE_COMMAND_STATE_FILE)
-    except OSError:
-        pass
+    destinations = []
+    if _MIRRORED_COMMAND_STATE_FILE is not None and path == _MIRRORED_COMMAND_STATE_FILE:
+        destinations.append(LEGACY_VOICE_COMMAND_STATE_FILE)
+    if path == _VOICE_LEDGER_STATE_FILE:
+        # Every live session's hooks read their own spool's state file.
+        destinations.extend(
+            target.state_path for target in _live_voice_targets()
+            if target.state_path and target.state_path != path
+        )
+    for destination in destinations:
+        tmp = destination + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(destination), mode=0o700, exist_ok=True)
+            shutil.copyfile(path, tmp)
+            os.replace(tmp, destination)
+        except OSError:
+            pass
 
 
 def _atomic_write_json(path: str, payload: dict) -> None:
@@ -1859,6 +2171,21 @@ def _discard_pending_command(
         pass
 
 
+def _release_cancelled_leases(intent_ids: list[str]) -> None:
+    """Remove cancelled leases from every live session mailbox, not just one."""
+    wanted = set(intent_ids or [])
+    if not wanted:
+        return
+    for target in _live_voice_targets():
+        leased = _read_json_file(target.meta_path)
+        if str(leased.get("intent_id") or "") in wanted:
+            for path in (target.command_path, target.meta_path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+
 def _publish_command(
     text: str,
     metadata: dict,
@@ -1902,6 +2229,7 @@ def _publish_command(
             command_path=command_path,
             metadata_path=meta_path,
         )
+        _release_cancelled_leases(cancelled_ids)
         if cancelled_ids:
             published_metadata["target_intent_ids"] = cancelled_ids
             item = published_metadata.get("voice_work_item")
@@ -1942,11 +2270,15 @@ def _publish_command(
     with _VOICE_STATE_LOCK:
         _atomic_write_json(state_path, stored_metadata)
         sync_deliverable_state(state_path, inbox)
-    inbox.materialize_next(
-        command_path=command_path,
-        metadata_path=meta_path,
-        transport=transport,
-    )
+    try:
+        inbox.materialize_next(
+            command_path=command_path,
+            metadata_path=meta_path,
+            transport=transport,
+            paths_for=_voice_mailbox_for if _live_voice_targets() else None,
+        )
+    except OSError as exc:
+        print(f"[voice_bridge] Could not deliver queued voice command: {exc}", file=sys.stderr)
     with _VOICE_STATE_LOCK:
         sync_deliverable_state(state_path, inbox)
 
@@ -2038,6 +2370,9 @@ def _authoritative_provider_session_id() -> str:
         provider_session_id = ownership.provider_session_id()
         if provider_session_id:
             return provider_session_id
+    target = _current_voice_target()
+    if target is not None and target.provider_session_id:
+        return target.provider_session_id
     return PROVIDER_SESSION_ID
 
 
@@ -2448,6 +2783,23 @@ def _log_provider_session_transition(payload: dict, *, decision: str) -> None:
     )
 
 
+def _voice_mailbox_for(metadata: dict) -> tuple[str, str] | None:
+    """Deliver an item to the session focused when it was recorded (RR-398).
+
+    An item whose session has ended falls back to the focused session so a
+    queued command is never stranded in a removed spool.
+    """
+    target = (
+        _voice_target_for(metadata.get("voice_target_session_key"))
+        or _current_voice_target()
+    )
+    if target is None:
+        return None
+    if target.spool_dir:
+        os.makedirs(target.spool_dir, mode=0o700, exist_ok=True)
+    return target.command_path, target.meta_path
+
+
 def _start_intent_inbox_pump(
     inbox: IntentInbox,
     shutdown_event: threading.Event,
@@ -2470,42 +2822,61 @@ def _start_intent_inbox_pump(
     with _VOICE_STATE_LOCK:
         sync_deliverable_state(state_path, inbox)
 
+    def _mailboxes() -> list[tuple[str, str, object, str]]:
+        targets = _live_voice_targets()
+        if not targets:
+            return [(claimed_path, manual_ack_path, provider_session_ownership, "")]
+        return [
+            (
+                target.claim_path,
+                target.manual_ack_path,
+                _voice_target_ownership(target),
+                target.provider_session_id,
+            )
+            for target in targets
+        ]
+
     def _run() -> None:
         while not shutdown_event.is_set():
-            claimed = _read_json_file(claimed_path)
-            if claimed:
-                provider_session_id = (
-                    provider_session_ownership.provider_session_id()
-                    if provider_session_ownership is not None
-                    else _authoritative_provider_session_id()
-                )
-                provider_ownership = (
-                    provider_session_ownership.provider_turn_scope()
-                    if provider_session_ownership is not None
-                    else None
-                )
-                inbox.observe_claim(
-                    claimed,
-                    provider_turn_seen=_provider_turn_seen(
+            for claim_file, ack_file, ownership, target_session_id in _mailboxes():
+                claimed = _read_json_file(claim_file)
+                if claimed:
+                    provider_session_id = (
+                        ownership.provider_session_id()
+                        if ownership is not None
+                        else target_session_id or _authoritative_provider_session_id()
+                    )
+                    provider_ownership = (
+                        ownership.provider_turn_scope()
+                        if ownership is not None
+                        else None
+                    )
+                    inbox.observe_claim(
                         claimed,
-                        turns_path=turns_path,
-                        provider_session_id=provider_session_id,
-                        provider_ownership=provider_ownership,
-                    ),
-                )
-            manual_ack = _read_json_file(manual_ack_path)
-            if _manual_claim_ack_matches(claimed, manual_ack):
-                if inbox.observe_claim(manual_ack, provider_turn_seen=True):
-                    try:
-                        os.unlink(manual_ack_path)
-                    except OSError:
-                        pass
+                        provider_turn_seen=_provider_turn_seen(
+                            claimed,
+                            turns_path=turns_path,
+                            provider_session_id=provider_session_id,
+                            provider_ownership=provider_ownership,
+                        ),
+                    )
+                manual_ack = _read_json_file(ack_file)
+                if _manual_claim_ack_matches(claimed, manual_ack):
+                    if inbox.observe_claim(manual_ack, provider_turn_seen=True):
+                        try:
+                            os.unlink(ack_file)
+                        except OSError:
+                            pass
             inbox.reconcile_terminal_claims()
-            inbox.materialize_next(
-                command_path=command_path,
-                metadata_path=meta_path,
-                transport=transport,
-            )
+            try:
+                inbox.materialize_next(
+                    command_path=command_path,
+                    metadata_path=meta_path,
+                    transport=transport,
+                    paths_for=_voice_mailbox_for if _live_voice_targets() else None,
+                )
+            except OSError as exc:
+                print(f"[voice_bridge] Could not deliver queued voice command: {exc}", file=sys.stderr)
             try:
                 with _VOICE_STATE_LOCK:
                     sync_deliverable_state(state_path, inbox)
@@ -2972,6 +3343,20 @@ def _start_control_socket(
                 cmd = data.decode("utf-8", errors="replace").strip()
                 cmd_lower = cmd.lower()
                 recovery_payload = None
+                if cmd.startswith(VOICE_FOCUS_PREFIX):
+                    try:
+                        focus_payload = json.loads(cmd[len(VOICE_FOCUS_PREFIX):])
+                    except json.JSONDecodeError:
+                        focus_payload = None
+                    if isinstance(focus_payload, dict):
+                        context = recovery_context or {}
+                        _apply_voice_focus(
+                            focus_payload,
+                            recovery_context,
+                            start_orchestrator=context.get("start_target_orchestrator"),
+                            stop_orchestrator=context.get("stop_target_orchestrator"),
+                        )
+                    continue
                 if cmd.startswith("{"):
                     try:
                         candidate = json.loads(cmd)
@@ -4253,6 +4638,9 @@ def _run_relay(
     if not ensure_fifo(TTS_IN_FIFO):
         return False
 
+    if _VOICE_STARTUP_KEY is None:
+        _install_startup_voice_target(provider_session_ownership)
+
     if inbox is not None:
         # Resolve paths at call time like cleanup above; the parameter
         # defaults were bound at import and would bypass a patched module.
@@ -4301,11 +4689,15 @@ def _run_relay(
 
     fifo_fd = open_fifo(VOICE_FIFO)
     if fifo_fd is None:
+        _clear_voice_targets()
         return False
     if on_ready is not None:
         on_ready()
 
     fifo_buf = b""
+    # Session focused when the current recording started; it receives the
+    # transcript even if focus moves before the transcript arrives (RR-398).
+    pinned_target_key: str | None = None
     try:
         while not shutdown_event.is_set():
             try:
@@ -4348,6 +4740,12 @@ def _run_relay(
                 if not text:
                     continue
 
+                if text.startswith(VOICE_TARGET_PREFIX):
+                    pinned_target_key = text[len(VOICE_TARGET_PREFIX):].strip() or None
+                    continue
+                if text == "__CANCEL__":
+                    pinned_target_key = None
+
                 if _handle_relay_control_message(
                     text,
                     tts_worker,
@@ -4363,6 +4761,15 @@ def _run_relay(
                 if slash_match:
                     text = "/" + slash_match.group(1).replace(" ", "-")
 
+                voice_target = (
+                    _voice_target_for(pinned_target_key) or _current_voice_target()
+                )
+                pinned_target_key = None
+                target_repo = Path(voice_target.cwd) if voice_target else Path.cwd()
+                target_orchestrator = _voice_target_orchestrator(
+                    voice_target,
+                    orchestrator_session,
+                )
                 relay_command = _begin_relay_command(text)
                 _record_messenger_stage(
                     tts_worker,
@@ -4398,8 +4805,8 @@ def _run_relay(
                 resolved_items = _resolve_voice_work_items(
                     text,
                     relay_command,
-                    repo_path=Path.cwd(),
-                    active_work=_active_work(repo_path=Path.cwd()),
+                    repo_path=target_repo,
+                    active_work=_active_work(repo_path=target_repo),
                     foreground_active=_any_provider_turn_active(),
                 )
                 relay_command["voice_work_items"] = [
@@ -4428,6 +4835,10 @@ def _run_relay(
                     disposition = resolved["disposition"]
                     metadata = resolved["metadata"]
                     prompt = resolved["prompt"]
+                    if voice_target is not None:
+                        metadata["voice_target_session_key"] = voice_target.session_key
+                        if voice_target.provider:
+                            metadata["provider"] = voice_target.provider
                     _record_command_action_state(metadata, "classified")
                     try:
                         record_command_authorization(
@@ -4492,20 +4903,23 @@ def _run_relay(
                             item.source_text,
                             metadata,
                             action,
-                            repo_path=Path.cwd(),
-                            orchestrator_session=orchestrator_session,
+                            repo_path=target_repo,
+                            orchestrator_session=target_orchestrator,
                         )
                     if item.lifecycle_state != "cancelled":
                         _start_pm_update_mode(
                             metadata,
                             action,
-                            orchestrator_session=orchestrator_session,
+                            orchestrator_session=target_orchestrator,
                             messenger=messenger,
                             source_text=item.source_text,
                         )
                     _publish_command(
                         prompt,
                         metadata,
+                        command_path=voice_target.command_path if voice_target else VOICE_CMD_FILE,
+                        meta_path=voice_target.meta_path if voice_target else VOICE_CMD_META_FILE,
+                        state_path=VOICE_COMMAND_STATE_FILE,
                         authorization_path=VOICE_COMMAND_AUTHORIZATION_FILE,
                         inbox=inbox,
                         transport=(
@@ -4531,6 +4945,8 @@ def _run_relay(
                 os.close(fifo_fd)
             except OSError:
                 pass
+        for lifecycle in _clear_voice_targets():
+            stop_persistent_orchestrator_lifecycle(lifecycle, reason="bridge stopped")
         for path in [
             TTS_IN_FIFO,
             VOICE_CMD_FILE,
@@ -4650,6 +5066,8 @@ def main():
     recovery_context: dict[str, object] = {
         "provider_session_ownership": provider_session_ownership,
     }
+    # Register before the control socket so an early __FOCUS__ is not lost.
+    _install_startup_voice_target(provider_session_ownership)
 
     # Control socket for reload/shutdown from Tauri app
     control_thread = threading.Thread(
@@ -4662,6 +5080,15 @@ def main():
     # Relay mode: daemon for the relay-bridge skill/command
     if relay_mode:
         orchestrator_session = start_persistent_orchestrator_lifecycle(cfg, shutdown_event)
+        recovery_context["start_target_orchestrator"] = (
+            lambda target: _start_target_orchestrator(cfg, target)
+        )
+        recovery_context["stop_target_orchestrator"] = (
+            lambda session: stop_persistent_orchestrator_lifecycle(
+                session,
+                reason="voice session ended",
+            )
+        )
 
         def _submit_messenger_speech(
             text,

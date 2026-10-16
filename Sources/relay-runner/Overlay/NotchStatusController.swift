@@ -509,10 +509,13 @@ struct NotchVisualLabelPresentation: Equatable {
 /// Background activity is tracked separately so hidden labels never make
 /// active work look idle.
 enum NotchVisualLabelAllowlist {
+    /// `voiceTargetName` names the session a recording is delivered to when
+    /// several sessions share the voice bridge (RR-398).
     static func presentation(
         for state: OverlayState,
         bridgeStartingUp: Bool = false,
-        boardContentLoading: Bool = false
+        boardContentLoading: Bool = false,
+        voiceTargetName: String? = nil
     ) -> NotchVisualLabelPresentation {
         if bridgeStartingUp {
             return NotchVisualLabelPresentation(
@@ -525,7 +528,7 @@ enum NotchVisualLabelAllowlist {
         let label: String?
         switch state {
         case .listening, .recording:
-            label = "Listening"
+            label = voiceTargetName.map { "Listening · \($0)" } ?? "Listening"
         case .sent:
             label = "Sending voice"
         case .cancelled(.stt):
@@ -575,12 +578,14 @@ enum NotchActivityLabelPlanner {
         bridgeRecoveryInFlight: Bool = false,
         bridgeStartingUp: Bool = false,
         boardContentLoading: Bool = false,
+        voiceTargetName: String? = nil,
         now: Date = Date()
     ) -> [String] {
         NotchVisualLabelAllowlist.presentation(
             for: state,
             bridgeStartingUp: bridgeStartingUp,
-            boardContentLoading: boardContentLoading
+            boardContentLoading: boardContentLoading,
+            voiceTargetName: voiceTargetName
         ).labels
     }
 
@@ -592,13 +597,15 @@ enum NotchActivityLabelPlanner {
         bridgeRecoveryInFlight: Bool = false,
         bridgeStartingUp: Bool = false,
         boardContentLoading: Bool = false,
+        voiceTargetName: String? = nil,
         now: Date = Date(),
         ticketForRun: ((RunState) -> Ticket?)? = nil
     ) -> String? {
         NotchVisualLabelAllowlist.presentation(
             for: state,
             bridgeStartingUp: bridgeStartingUp,
-            boardContentLoading: boardContentLoading
+            boardContentLoading: boardContentLoading,
+            voiceTargetName: voiceTargetName
         ).hoverLabel
     }
 

@@ -103,6 +103,9 @@ final class STTEngine: @unchecked Sendable {
     /// Built eagerly in init: ownership changes reach it from both the main
     /// thread and the model-load task, and a lazy initializer is not thread-safe.
     @ObservationIgnored private var audioCapture: AudioCaptureLifecycle!
+    @ObservationIgnored private let voiceTargetLock = NSLock()
+    @ObservationIgnored private var voiceTargetKey: String?
+    @ObservationIgnored private var recordingTargetKey: String?
 
     // MARK: - Init
 
@@ -250,6 +253,35 @@ final class STTEngine: @unchecked Sendable {
         captureModelReady = true
         try applyCaptureOwnershipLocked()
         return true
+    }
+
+    /// Session key focused for voice. Each recording is stamped with the key
+    /// focused when it started so the shared bridge delivers it there (RR-398).
+    var voiceTargetSessionKey: String? {
+        get {
+            voiceTargetLock.lock()
+            defer { voiceTargetLock.unlock() }
+            return voiceTargetKey
+        }
+        set {
+            voiceTargetLock.lock()
+            voiceTargetKey = newValue
+            voiceTargetLock.unlock()
+        }
+    }
+
+    /// The key the current or latest recording was stamped with.
+    var recordingVoiceTargetSessionKey: String? {
+        voiceTargetLock.lock()
+        defer { voiceTargetLock.unlock() }
+        return recordingTargetKey
+    }
+
+    private func stampRecordingVoiceTarget() -> String? {
+        voiceTargetLock.lock()
+        defer { voiceTargetLock.unlock() }
+        recordingTargetKey = voiceTargetKey
+        return recordingTargetKey
     }
 
     var isCaptureAllowed: Bool {
@@ -578,6 +610,9 @@ final class STTEngine: @unchecked Sendable {
                     // Kill TTS playback immediately (but don't notify Claude yet —
                     // that waits until after settle to avoid breaking double-tap play)
                     writeVoiceOutput("__TTS_STOP__")
+                    if let targetKey = stampRecordingVoiceTarget() {
+                        writeVoiceOutput("__VOICE_TARGET__:\(targetKey)")
+                    }
                     audioBuffer.setMaxSamples(nil)
                     audioBuffer.accepting = true
                     audioBuffer.clear()

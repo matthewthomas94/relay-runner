@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from continuity_incidents import normalize_recovery_generation
 from provider_turn_broker import (
@@ -490,9 +490,14 @@ class IntentInbox:
         command_path: str,
         metadata_path: str,
         transport: str,
+        paths_for: Callable[[dict[str, Any]], tuple[str, str] | None] | None = None,
     ) -> dict[str, Any] | None:
-        """Atomically lease the oldest pending intent into the compatibility mailbox."""
-        if os.path.exists(command_path) or os.path.exists(metadata_path):
+        """Atomically lease the oldest pending intent into the compatibility mailbox.
+
+        ``paths_for`` routes the selected intent to its own session mailbox; the
+        default paths are used when it is omitted or returns ``None``.
+        """
+        if paths_for is None and (os.path.exists(command_path) or os.path.exists(metadata_path)):
             return None
         materialized: dict[str, Any] | None = None
         with self._lock, self._connection:
@@ -566,6 +571,10 @@ class IntentInbox:
                 if predecessor is not None:
                     return None
             metadata = json.loads(row["metadata_json"])
+            if paths_for is not None:
+                command_path, metadata_path = paths_for(metadata) or (command_path, metadata_path)
+                if os.path.exists(command_path) or os.path.exists(metadata_path):
+                    return None
             metadata["intent_delivery_id"] = row["delivery_id"]
             command_tmp = command_path + ".tmp"
             metadata_tmp = metadata_path + ".tmp"
