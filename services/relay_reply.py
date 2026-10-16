@@ -56,9 +56,16 @@ def _relay_command_key(command: dict | None) -> tuple[int, str] | None:
     return command_seq, command_id
 
 
-def _claimed_reply_authorized(claim: dict, state: dict) -> bool:
+def _session_key() -> str:
+    spool = os.environ.get("RELAY_SESSION_SPOOL_DIR", "").strip()
+    return (
+        os.environ.get("RELAY_SESSION_KEY", "").strip()
+        or os.path.basename(spool.rstrip("/"))
+    )
+
+
+def _claimed_reply_authorized(claim: dict, state: dict, session_key: str = "") -> bool:
     claim_key = _relay_command_key(claim)
-    state_key = _relay_command_key(state)
     if claim_key is None:
         return False
     cancelled = state.get("cancelled_intent_ids")
@@ -66,6 +73,12 @@ def _claimed_reply_authorized(claim: dict, state: dict) -> bool:
         str(value) for value in cancelled
     }:
         return False
+    # RR-401: the ledger is shared; judge a reply against its own session's
+    # newest command, not another session's newer one.
+    sessions = state.get("session_commands")
+    if session_key and isinstance(sessions, dict) and isinstance(sessions.get(session_key), dict):
+        state = sessions[session_key]
+    state_key = _relay_command_key(state)
     if state_key == claim_key:
         return True
     if state_key is None or state_key[0] <= claim_key[0]:
@@ -98,6 +111,12 @@ def encode_orchestrator_reply(text: str, command: dict) -> str:
         "actor_role": os.environ.get("RELAY_ACTOR_ROLE", "").strip(),
         "foreground_gate_handle": os.environ.get("RELAY_FOREGROUND_GATE_HANDLE", "").strip(),
     })
+    # RR-401: the shared bridge routes the reply to its origin session.
+    origin = {
+        "session_key": _session_key(),
+        "provider_session_id": os.environ.get("RELAY_PROVIDER_SESSION_ID", "").strip(),
+    }
+    payload.update({key: value for key, value in origin.items() if value})
     return ORCHESTRATOR_REPLY_PREFIX + json.dumps(payload, sort_keys=True)
 
 
@@ -118,7 +137,7 @@ def publish_current_reply(
     if key is None:
         print("[relay_reply] reply not emitted: claimed command unavailable", file=stderr)
         return False
-    if not _claimed_reply_authorized(claim, _read_json_file(state_path)):
+    if not _claimed_reply_authorized(claim, _read_json_file(state_path), _session_key()):
         print("[relay_reply] reply not emitted: claimed command is not current", file=stderr)
         return False
     try:

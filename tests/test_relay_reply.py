@@ -26,6 +26,8 @@ class RelayReplyTests(unittest.TestCase):
         })
         ownership.start()
         self.addCleanup(ownership.stop)
+        for key in ("RELAY_SESSION_KEY", "RELAY_SESSION_SPOOL_DIR", "RELAY_PROVIDER_SESSION_ID"):
+            os.environ.pop(key, None)
 
     def test_current_claim_is_encoded_and_written_as_canonical_control_line(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -133,6 +135,53 @@ class RelayReplyTests(unittest.TestCase):
             payload = os.read(reader, 4096).decode()
             self.assertIn('"relay_command_id": "cmd-17"', payload)
             self.assertIn('"text": "First reply."', payload)
+
+    def test_background_session_reply_is_judged_against_its_own_session_command(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claim_path = os.path.join(temp_dir, "voice_cmd_claimed.json")
+            state_path = os.path.join(temp_dir, "voice_command_state.json")
+            fifo_path = os.path.join(temp_dir, "voice_in.fifo")
+            claim = {"relay_command_seq": 17, "relay_command_id": "cmd-17"}
+            Path(claim_path).write_text(json.dumps(claim))
+            # Session B's newer command leads the shared ledger.
+            Path(state_path).write_text(json.dumps({
+                "relay_command_seq": 18,
+                "relay_command_id": "cmd-18",
+                "session_commands": {
+                    "session-a": claim,
+                    "session-b": {"relay_command_seq": 18, "relay_command_id": "cmd-18"},
+                },
+            }))
+            os.mkfifo(fifo_path)
+            reader = os.open(fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+            self.addCleanup(os.close, reader)
+
+            with mock.patch.dict(os.environ, {
+                "RELAY_SESSION_KEY": "session-a",
+                "RELAY_PROVIDER_SESSION_ID": "provider-a",
+            }):
+                self.assertTrue(relay_reply.publish_current_reply(
+                    "A finished.",
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    fifo_path=fifo_path,
+                    stderr=io.StringIO(),
+                ))
+            payload = json.loads(
+                os.read(reader, 4096).decode().removeprefix(relay_reply.ORCHESTRATOR_REPLY_PREFIX)
+            )
+            self.assertEqual(payload["session_key"], "session-a")
+            self.assertEqual(payload["provider_session_id"], "provider-a")
+
+            # B's session still sees A's older command as superseded.
+            with mock.patch.dict(os.environ, {"RELAY_SESSION_KEY": "session-b"}):
+                self.assertFalse(relay_reply.publish_current_reply(
+                    "Stale.",
+                    claim_path=claim_path,
+                    state_path=state_path,
+                    fifo_path=fifo_path,
+                    stderr=io.StringIO(),
+                ))
 
     def test_non_foreground_actor_cannot_publish_authoritative_reply(self):
         stderr = io.StringIO()

@@ -784,6 +784,7 @@ def _apply_voice_focus(
             daemon=True,
         ).start()
     if current is not None and current.session_key == target.session_key:
+        _clear_reply_badge(current)
         _write_bridge_target_files(current)
         _PROVIDER_SESSION_OWNERSHIP = focused_ownership
         if recovery_context is not None:
@@ -794,6 +795,156 @@ def _apply_voice_focus(
         file=sys.stderr,
     )
     return target
+
+VOICE_REPLY_BADGE_FILENAME = "voice_reply_badge.json"
+VOICE_REPLY_BADGE_LIMIT = 5
+VOICE_REPLAY_PREFIX = "__REPLAY__:"
+_VOICE_BADGE_LOCK = threading.Lock()
+# The focused session's reply most recently handed to speech.
+_SPOKEN_REPLY: dict | None = None
+
+
+def _reply_badge_path(target: VoiceTarget | None) -> str:
+    if target is None or not target.spool_dir:
+        return ""
+    return os.path.join(target.spool_dir, VOICE_REPLY_BADGE_FILENAME)
+
+
+def _update_reply_badge(target: VoiceTarget | None, update) -> dict:
+    """Apply ``update`` to a session's badge file; the app shows its counts."""
+    path = _reply_badge_path(target)
+    if not path:
+        return {}
+    with _VOICE_BADGE_LOCK:
+        badge = _read_json_file(path)
+        replies = badge.get("replies")
+        badge = {
+            "unread_count": int(badge.get("unread_count") or 0),
+            "outcome_count": int(badge.get("outcome_count") or 0),
+            "replies": replies if isinstance(replies, list) else [],
+        }
+        if update(badge) is False:
+            return badge
+        badge["replies"] = badge["replies"][-VOICE_REPLY_BADGE_LIMIT:]
+        try:
+            os.makedirs(target.spool_dir, mode=0o700, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(badge, f, sort_keys=True)
+            os.replace(tmp, path)
+        except OSError as exc:
+            print(f"[voice_bridge] Could not write reply badge: {exc}", file=sys.stderr)
+        return badge
+
+
+def _record_background_reply(target: VoiceTarget, text: str, command: dict) -> None:
+    """Keep a reply the user has not heard in its session's badge (RR-401)."""
+    entry = {
+        field: command[field]
+        for field in ("relay_command_seq", "relay_command_id", "intent_id")
+        if command.get(field) is not None
+    }
+    entry.update({"text": text, "at": time.time()})
+
+    def _add(badge: dict) -> None:
+        badge["unread_count"] += 1
+        badge["replies"].append(entry)
+
+    _update_reply_badge(target, _add)
+
+
+def _record_background_outcomes(target: VoiceTarget, count: int) -> None:
+    def _set(badge: dict) -> bool:
+        if badge["outcome_count"] == count:
+            return False
+        badge["outcome_count"] = count
+        return True
+
+    _update_reply_badge(target, _set)
+
+
+def _clear_reply_badge(target: VoiceTarget | None) -> None:
+    """Focusing a session marks its badge read; stored replies stay for read-out."""
+    def _clear(badge: dict) -> bool:
+        if not badge["unread_count"] and not badge["outcome_count"]:
+            return False
+        badge["unread_count"] = 0
+        badge["outcome_count"] = 0
+        return True
+
+    _update_reply_badge(target, _clear)
+
+
+def _latest_badge_reply(target: VoiceTarget | None) -> str:
+    path = _reply_badge_path(target)
+    if not path:
+        return ""
+    with _VOICE_BADGE_LOCK:
+        replies = _read_json_file(path).get("replies")
+    if not isinstance(replies, list) or not replies or not isinstance(replies[-1], dict):
+        return ""
+    return str(replies[-1].get("text") or "").strip()
+
+
+def _reply_origin_target(data: dict) -> VoiceTarget | None:
+    """The live session a reply came from: its session key, else its provider session."""
+    target = _voice_target_for(data.get("session_key"))
+    if target is not None:
+        return target
+    provider_session_id = str(data.get("provider_session_id") or "").strip()
+    if provider_session_id:
+        for candidate in _live_voice_targets():
+            if candidate.provider_session_id == provider_session_id:
+                return candidate
+    return None
+
+
+def _is_background_target(target: VoiceTarget | None) -> bool:
+    with _VOICE_TARGET_LOCK:
+        return target is not None and target.session_key != _VOICE_TARGET_KEY
+
+
+def _note_spoken_reply(target: VoiceTarget | None, text: str, command: dict) -> None:
+    global _SPOKEN_REPLY
+    session_key = target.session_key if target is not None else (_VOICE_TARGET_KEY or "")
+    _SPOKEN_REPLY = {"session_key": session_key, "text": text, "command": dict(command)}
+
+
+def _cut_off_unfocused_speech(previous_key: str | None, tts_worker, messenger) -> None:
+    """Stop the old session's speech on a focus switch and badge its reply.
+
+    Only speech and the messenger generation end; the provider command keeps
+    running in its own session.
+    """
+    global _SPOKEN_REPLY
+    with _VOICE_TARGET_LOCK:
+        focused_key = _VOICE_TARGET_KEY
+        previous = _VOICE_TARGETS.get(previous_key or "")
+    if not previous_key or previous_key == focused_key:
+        return
+    if tts_worker is None or not getattr(tts_worker, "speaking", False):
+        return
+    tts_worker.skip()
+    if messenger is not None:
+        messenger.interrupt()
+    spoken = _SPOKEN_REPLY
+    if spoken is not None and spoken.get("session_key") == previous_key and previous is not None:
+        _SPOKEN_REPLY = None
+        _record_background_reply(previous, str(spoken.get("text") or ""), spoken.get("command") or {})
+    print(
+        f"[voice_bridge] Focus switch stopped speech for session={previous_key}",
+        file=sys.stderr,
+    )
+
+
+def _handle_session_replay(payload: dict, tts_worker) -> bool:
+    """Read out a session's latest stored reply on explicit request (RR-401)."""
+    text = _latest_badge_reply(_voice_target_for(payload.get("session_key")))
+    if not text or tts_worker is None:
+        return False
+    tts_worker.read_out(text)
+    return True
+
 
 VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS = 0.0
 VOICE_ACKNOWLEDGEMENT_AUTO_DISMISS_SECONDS = 3.0
@@ -884,6 +1035,37 @@ def _atomic_write_json(path: str, payload: dict) -> None:
         json.dump(payload, f, sort_keys=True)
     os.rename(tmp, path)
     _mirror_command_state(path)
+
+
+_SESSION_COMMAND_FIELDS = (
+    "relay_command_seq",
+    "relay_command_id",
+    "intent_id",
+    "work_disposition",
+)
+
+
+def _write_command_state(path: str, metadata: dict) -> None:
+    """Write the shared command ledger, keeping each session's newest command.
+
+    RR-401: the ledger's top-level command is the globally newest one, so a
+    background session's reply is judged against ``session_commands[key]``.
+    """
+    payload = dict(metadata)
+    previous = _read_json_file(path).get("session_commands")
+    sessions = dict(previous) if isinstance(previous, dict) else {}
+    with _VOICE_TARGET_LOCK:
+        session_key = str(metadata.get("voice_target_session_key") or _VOICE_TARGET_KEY or "")
+        live_keys = set(_VOICE_TARGETS)
+    if live_keys:
+        sessions = {key: value for key, value in sessions.items() if key in live_keys}
+    if session_key and _relay_command_key(metadata) is not None:
+        sessions[session_key] = {
+            field: metadata[field] for field in _SESSION_COMMAND_FIELDS if field in metadata
+        }
+    if sessions:
+        payload["session_commands"] = sessions
+    _atomic_write_json(path, payload)
 
 
 def sync_deliverable_state(state_path: str, inbox: IntentInbox) -> None:
@@ -1440,15 +1622,11 @@ def _messenger_outcome_trace(outcomes: list[tuple[int, dict]]) -> dict:
     }
 
 
-def _deliver_pending_messenger_outcomes_once(
-    *,
+def _fetch_pending_messenger_outcomes(
     orchestrator_session: dict | None,
-    messenger: MessengerRuntime | None,
     request_get_json=_get_orchestrator_json,
-    request_json=_post_orchestrator_json,
-) -> int:
-    if messenger is None:
-        return 0
+) -> list[tuple[int, dict]]:
+    """Read undelivered outcomes; the daemon's GET does not mark them delivered."""
     try:
         response = request_get_json(
             "/v1/messenger/outcomes",
@@ -1456,10 +1634,10 @@ def _deliver_pending_messenger_outcomes_once(
         )
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
         print(f"[voice_bridge] pending messenger outcome fetch failed: {e}", file=sys.stderr)
-        return 0
+        return []
     outcomes = response.get("outcomes") if isinstance(response, dict) else None
     if not isinstance(outcomes, list):
-        return 0
+        return []
 
     pending: list[tuple[int, dict]] = []
     for outcome in outcomes:
@@ -1474,6 +1652,45 @@ def _deliver_pending_messenger_outcomes_once(
             pending.append((int(outcome_id), trace))
         except (TypeError, ValueError):
             continue
+    return pending
+
+
+def _messenger_outcome_session(target: VoiceTarget | None, fallback: dict | None) -> dict | None:
+    """The outcome scope for a target: the bridge's own session, else its project."""
+    with _VOICE_TARGET_LOCK:
+        if target is None or target.session_key == _VOICE_STARTUP_KEY:
+            return fallback
+    return {"repo_path": target.cwd, "provider": target.provider}
+
+
+def _count_background_messenger_outcomes(
+    focused_session: dict | None,
+    fallback: dict | None,
+    request_get_json=_get_orchestrator_json,
+) -> None:
+    """Badge background sessions' undelivered outcomes; refocus delivers them (RR-401)."""
+    focused_repo = str((focused_session or {}).get("repo_path") or "")
+    for target in _live_voice_targets():
+        if not _is_background_target(target):
+            continue
+        session = _messenger_outcome_session(target, fallback)
+        if str((session or {}).get("repo_path") or "") == focused_repo:
+            continue
+        _record_background_outcomes(
+            target, len(_fetch_pending_messenger_outcomes(session, request_get_json))
+        )
+
+
+def _deliver_pending_messenger_outcomes_once(
+    *,
+    orchestrator_session: dict | None,
+    messenger: MessengerRuntime | None,
+    request_get_json=_get_orchestrator_json,
+    request_json=_post_orchestrator_json,
+) -> int:
+    if messenger is None:
+        return 0
+    pending = _fetch_pending_messenger_outcomes(orchestrator_session, request_get_json)
     if not pending:
         return 0
 
@@ -1508,11 +1725,18 @@ def _start_messenger_outcome_polling(
     def _run() -> None:
         poll_seconds = max(0.25, MESSENGER_OUTCOME_POLL_SECONDS)
         while not shutdown_event.is_set():
+            # Only the focused session hears its outcomes; the rest are counted.
+            focused_session = _messenger_outcome_session(
+                _current_voice_target(), orchestrator_session
+            )
             _deliver_pending_messenger_outcomes_once(
-                orchestrator_session=orchestrator_session,
+                orchestrator_session=focused_session,
                 messenger=messenger,
                 request_get_json=request_get_json,
                 request_json=request_json,
+            )
+            _count_background_messenger_outcomes(
+                focused_session, orchestrator_session, request_get_json
             )
             shutdown_event.wait(poll_seconds)
 
@@ -1797,7 +2021,7 @@ def _begin_relay_command(
         provider = os.environ.get("RELAY_RUNNER_PROVIDER", "").strip()
         if provider:
             metadata["provider"] = provider
-        _atomic_write_json(state_path, metadata)
+        _write_command_state(state_path, metadata)
     _record_private_command_capture(metadata, event_log_path=event_log_path)
     _post_continuity_event("bridge", "command_received", metadata)
     return metadata
@@ -2287,7 +2511,7 @@ def _publish_command(
             if published_metadata.get("cancellation_scope") in {"item", "ticket"}:
                 published_metadata["provider_preempt_intent_ids"] = cancelled_ids
     with _VOICE_STATE_LOCK:
-        _atomic_write_json(state_path, published_metadata)
+        _write_command_state(state_path, published_metadata)
     if authorization_path:
         try:
             record_command_authorization(
@@ -2310,7 +2534,7 @@ def _publish_command(
 
     stored_metadata = inbox.enqueue(text, published_metadata, route or "continue_current")
     with _VOICE_STATE_LOCK:
-        _atomic_write_json(state_path, stored_metadata)
+        _write_command_state(state_path, stored_metadata)
         sync_deliverable_state(state_path, inbox)
     try:
         inbox.materialize_next(
@@ -2362,6 +2586,7 @@ def _relay_command_current_or_preserved(
     relay_command: dict,
     *,
     state_path: str = VOICE_COMMAND_STATE_FILE,
+    session_key: str = "",
 ) -> bool:
     expected = _relay_command_key(relay_command)
     if expected is None:
@@ -2373,6 +2598,9 @@ def _relay_command_current_or_preserved(
         str(value) for value in cancelled
     }:
         return False
+    sessions = current.get("session_commands")
+    if session_key and isinstance(sessions, dict) and isinstance(sessions.get(session_key), dict):
+        current = sessions[session_key]
     current_key = _relay_command_key(current)
     if current_key == expected:
         return True
@@ -2962,7 +3190,7 @@ def _enqueue_sidecar_intent(
             IntentRoute.RUN_SIDECAR.value,
         )
     with _VOICE_STATE_LOCK:
-        _atomic_write_json(state_path, stored)
+        _write_command_state(state_path, stored)
         if inbox is not None:
             sync_deliverable_state(state_path, inbox)
     return sidecar_lane.submit(source_text, stored)
@@ -3392,12 +3620,24 @@ def _start_control_socket(
                         focus_payload = None
                     if isinstance(focus_payload, dict):
                         context = recovery_context or {}
+                        previous_key = _VOICE_TARGET_KEY
                         _apply_voice_focus(
                             focus_payload,
                             recovery_context,
                             start_orchestrator=context.get("start_target_orchestrator"),
                             stop_orchestrator=context.get("stop_target_orchestrator"),
                         )
+                        _cut_off_unfocused_speech(
+                            previous_key, tts_worker, context.get("messenger")
+                        )
+                    continue
+                if cmd.startswith(VOICE_REPLAY_PREFIX):
+                    try:
+                        replay_payload = json.loads(cmd[len(VOICE_REPLAY_PREFIX):])
+                    except json.JSONDecodeError:
+                        replay_payload = None
+                    if isinstance(replay_payload, dict):
+                        _handle_session_replay(replay_payload, tts_worker)
                     continue
                 if cmd.startswith("{"):
                     try:
@@ -4354,7 +4594,12 @@ def _handle_provider_completion_control(
     )
     if _foreground_reply_delivered(command):
         return True
-    if not _relay_command_current_or_preserved(command, state_path=state_path):
+    origin = _reply_origin_target(data)
+    if not _relay_command_current_or_preserved(
+        command,
+        state_path=state_path,
+        session_key=origin.session_key if origin is not None else "",
+    ):
         print(
             "[voice_bridge] Dropping provider completion because its Relay command was superseded.",
             file=sys.stderr,
@@ -4375,6 +4620,8 @@ def _handle_provider_completion_control(
             "recovery_generation",
             "actor_role",
             "foreground_gate_handle",
+            "session_key",
+            "provider_session_id",
         ):
             if data.get(field) is not None:
                 payload[field] = data[field]
@@ -4452,7 +4699,13 @@ def _handle_orchestrator_reply_control(
         return False
     if _foreground_reply_delivered(command):
         return True
-    if not _relay_command_current_or_preserved(command, state_path=state_path):
+    # RR-401: validate against the reply's own session, not the focused one.
+    origin = _reply_origin_target(data)
+    if not _relay_command_current_or_preserved(
+        command,
+        state_path=state_path,
+        session_key=origin.session_key if origin is not None else "",
+    ):
         print(
             "[voice_bridge] Dropping foreground reply because its Relay command was superseded.",
             file=sys.stderr,
@@ -4487,6 +4740,14 @@ def _handle_orchestrator_reply_control(
     if effect_id is not None and not provider_turn_broker.authorize_effect_delivery(effect_id):
         _finish_foreground_reply_delivery(command, delivered=False)
         return False
+    if _is_background_target(origin):
+        # Only the focused session speaks; the rest wait in a badge.
+        _record_background_reply(origin, reply, command)
+        _finish_foreground_reply_delivery(command, delivered=True)
+        if effect_id is not None:
+            provider_turn_broker.finish_effect(effect_id, delivered=True)
+        return True
+    _note_spoken_reply(origin, reply, command)
     if messenger is not None and messenger.submit_final(payload):
         _finish_foreground_reply_delivery(command, delivered=True)
         if effect_id is not None:
@@ -4703,7 +4964,7 @@ def _run_relay(
                 if not isinstance(metadata, dict):
                     continue
                 with _VOICE_STATE_LOCK:
-                    _atomic_write_json(VOICE_COMMAND_STATE_FILE, metadata)
+                    _write_command_state(VOICE_COMMAND_STATE_FILE, metadata)
                     sync_deliverable_state(VOICE_COMMAND_STATE_FILE, inbox)
                 sidecar_lane.submit(
                     str(metadata.get("source_text") or pending.get("prompt") or ""),

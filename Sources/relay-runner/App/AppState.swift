@@ -264,6 +264,9 @@ final class AppState {
     @ObservationIgnored private var voiceContextID: String?
     /// The `__FOCUS__` datagrams the running bridge last accepted.
     @ObservationIgnored private var sentVoiceFocus: [String] = []
+    /// RR-401: unheard reply and outcome counts per background live context.
+    private(set) var sessionReplyBadges: [String: Int] = [:]
+    @ObservationIgnored private var replyBadgeTimer: Timer?
     private var voiceContext: AssistantSessionContext {
         voiceContextID.flatMap { assistantSessionStore.document.bindings[$0]?.context } ?? activeContext
     }
@@ -866,6 +869,9 @@ final class AppState {
         programBoardOverlay.setRunningSessionPathsProvider { [weak self] in
             self?.runningSessionProjectPaths ?? []
         }
+        programBoardOverlay.setSessionReplyBadgesProvider { [weak self] in
+            self?.sessionReplyBadgeProjectPaths ?? [:]
+        }
         programBoardOverlay.setSessionProvider { [weak self] in
             self?.config.general.provider ?? .codex
         }
@@ -1213,6 +1219,41 @@ final class AppState {
         sessionRegistry.liveContextIDs.map { id in
             (id, assistantSessionStore.document.bindings[id]?.context.displayName ?? id)
         }
+    }
+
+    /// RR-401: badge counts keyed by project path, for the board's project cards.
+    var sessionReplyBadgeProjectPaths: [String: Int] {
+        sessionReplyBadges.reduce(into: [:]) { paths, entry in
+            if let path = assistantSessionStore.document.bindings[entry.key]?.context.repositoryPath {
+                paths[path] = entry.value
+            }
+        }
+    }
+
+    /// RR-401: read each background session's badge file. The focused
+    /// session shows none; the bridge clears its file on focus.
+    private func refreshSessionReplyBadges() {
+        let badges = sessionRegistry.liveContextIDs.reduce(into: [String: Int]()) { badges, contextID in
+            guard contextID != activeContext.id,
+                  let spool = sessionRegistry.spool(for: contextID), !spool.isLegacy else { return }
+            let count = VoiceReplyBadge.load(path: spool.replyBadge).count
+            if count > 0 { badges[contextID] = count }
+        }
+        if badges != sessionReplyBadges { sessionReplyBadges = badges }
+    }
+
+    /// RR-401: speak a session's latest stored reply on request. Replies are
+    /// never replayed automatically.
+    func readOutSessionReply(contextID: String) {
+        guard let key = sessionRegistry.spool(for: contextID)?.key,
+              let message = Self.voiceReplayMessage(sessionKey: key) else { return }
+        _ = SocketClient.bridgeSend(message)
+    }
+
+    static func voiceReplayMessage(sessionKey: String) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: ["session_key": sessionKey]),
+              let json = String(data: data, encoding: .utf8) else { return nil }
+        return "__REPLAY__:" + json
     }
 
     /// RR-395: a Workspace terminal tab was selected; focus that context's
@@ -3174,6 +3215,9 @@ final class AppState {
         bridgeWatchdog = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.refreshBridgeWatchdog()
         }
+        replyBadgeTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.refreshSessionReplyBadges()
+        }
     }
 
     private func refreshBridgeWatchdog() {
@@ -3601,6 +3645,9 @@ final class AppState {
         bridgeWatchdog = nil
         bridgeWatchdogTask?.cancel()
         bridgeWatchdogTask = nil
+        replyBadgeTimer?.invalidate()
+        replyBadgeTimer = nil
+        sessionReplyBadges = [:]
     }
 
     private func sweepReadyTicketsForActiveProject(trigger: String) {
