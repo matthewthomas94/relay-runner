@@ -400,9 +400,9 @@ VOICE_CMD_META_FILE = VOICE_CMD_FILE + ".meta"
 VOICE_COMMAND_STATE_FILE = _session_spool_path("voice_command_state.json", "VOICE_COMMAND_STATE_FILE")
 VOICE_COMMAND_CLAIM_FILE = _session_spool_path("voice_cmd_claimed.json", "VOICE_COMMAND_CLAIM_FILE")
 VOICE_MANUAL_CLAIM_ACK_FILE = _session_spool_path("voice_cmd_manual_ack.json", "VOICE_MANUAL_CLAIM_ACK_FILE")
-# The orchestrator daemon still validates freshness against the legacy state
-# path until it resolves per-session spools (RR-394 slice H). While a session
-# spool is targeted, the bridge mirrors its state file there.
+# RR-399: the daemon resolves a keyed mutation's state from its session spool,
+# but key-less daemon paths (the background orchestrator-command loop) still
+# read the legacy state path, so a targeted session spool is mirrored there.
 LEGACY_VOICE_COMMAND_STATE_FILE = "/tmp/voice_command_state.json"
 _MIRRORED_COMMAND_STATE_FILE = (
     VOICE_COMMAND_STATE_FILE
@@ -413,6 +413,14 @@ _MIRRORED_COMMAND_STATE_FILE = (
 VOICE_COMMAND_AUTHORIZATION_FILE = os.environ.get(
     "VOICE_COMMAND_AUTHORIZATION_FILE",
     "/tmp/voice_command_authorizations.json",
+)
+# Authorization records carry the targeted spool's key so a session's
+# cancellation revokes only its own grants; manual bridges record no key.
+_TARGETED_SPOOL_DIR = os.environ.get("RELAY_SESSION_SPOOL_DIR", "").strip().rstrip("/")
+RELAY_SESSION_KEY = (
+    os.path.basename(_TARGETED_SPOOL_DIR)
+    if os.path.dirname(_TARGETED_SPOOL_DIR) == "/tmp/relay-sessions"
+    else ""
 )
 VOICE_PROVIDER_TURNS_FILE = os.environ.get("VOICE_PROVIDER_TURNS_FILE", "/tmp/voice_provider_turns.json")
 VOICE_PROVIDER_TURN_PROJECTION_FILE = os.environ.get(
@@ -1921,6 +1929,7 @@ def _publish_command(
                     if published_metadata.get("lifecycle_state") == "cancelled"
                     else allowed_mutations_for_metadata(published_metadata)
                 ),
+                session_key=RELAY_SESSION_KEY,
             )
         except (OSError, TypeError, ValueError) as e:
             print(f"[voice_bridge] Could not record Relay mutation authorization: {e}", file=sys.stderr)
@@ -4430,6 +4439,7 @@ def _run_relay(
                                 if item.lifecycle_state == "cancelled"
                                 else allowed_mutations_for_metadata(metadata)
                             ),
+                            session_key=RELAY_SESSION_KEY,
                         )
                     except (OSError, TypeError, ValueError) as e:
                         print(

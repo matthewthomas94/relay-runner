@@ -27,6 +27,7 @@ import shutil
 import signal
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -178,6 +179,11 @@ from tickets import (
 PORT_FILE = Path("/tmp/relay_orchestrator.port")
 RELAY_COMMAND_STATE_FILE = Path("/tmp/voice_command_state.json")
 RELAY_COMMAND_AUTHORIZATION_FILE = Path("/tmp/voice_command_authorizations.json")
+# App-owned sessions keep their command state in a per-session spool (see
+# Sources/relay-runner/Process/VoiceSessionSpool.swift); manual single-session
+# bridges keep RELAY_COMMAND_STATE_FILE.
+RELAY_SESSION_SPOOL_ROOT = Path("/tmp/relay-sessions")
+RELAY_SESSION_KEY_RE = re.compile(r"[a-z0-9-]{1,64}")
 VOICE_STATE_SOCK = Path("/tmp/voice_state.sock")
 BRIDGE_CONTROL_SOCK = Path(os.environ.get("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock"))
 DEFAULT_PORT = 7634
@@ -1497,11 +1503,47 @@ def _body_acceptance_criteria(ticket: dict[str, Any]) -> list[str]:
     return criteria
 
 
-def _relay_command_current(relay_command_seq: int | str | None, relay_command_id: str | None) -> bool:
+def _relay_session_key(value: Any) -> str | None:
+    key = str(value or "").strip()
+    if not key:
+        return None
+    if not RELAY_SESSION_KEY_RE.fullmatch(key):
+        raise ValueError("invalid relay_session_key")
+    return key
+
+
+def _relay_command_state_file(relay_session_key: str | None) -> Path | None:
+    """Resolve the command state file of the session issuing a request.
+
+    Without a session key this is the legacy manual-bridge path. A keyed
+    session only ever reads its own spool; a missing or untrusted spool is
+    never current rather than falling back to another session's state.
+    """
+    if not relay_session_key:
+        return RELAY_COMMAND_STATE_FILE
+    spool = RELAY_SESSION_SPOOL_ROOT / relay_session_key
+    try:
+        info = os.lstat(spool)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        return None
+    return spool / "voice_command_state.json"
+
+
+def _relay_command_current(
+    relay_command_seq: int | str | None,
+    relay_command_id: str | None,
+    *,
+    relay_session_key: str | None = None,
+) -> bool:
     if relay_command_seq is None or not relay_command_id:
         return False
+    state_file = _relay_command_state_file(relay_session_key)
+    if state_file is None:
+        return False
     try:
-        current = json.loads(RELAY_COMMAND_STATE_FILE.read_text())
+        current = json.loads(state_file.read_text())
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return False
     if not isinstance(current, dict):
@@ -1523,15 +1565,22 @@ def _validate_relay_command(
     *,
     relay_intent_id: str | None = None,
     mutation: dict[str, Any] | None = None,
+    relay_session_key: Any = None,
 ) -> None:
     if relay_command_seq is None and not relay_command_id:
         return
-    current = _relay_command_current(relay_command_seq, str(relay_command_id or ""))
+    session_key = _relay_session_key(relay_session_key)
+    current = _relay_command_current(
+        relay_command_seq,
+        str(relay_command_id or ""),
+        relay_session_key=session_key,
+    )
     if current:
         if mutation is not None and authorization_exists(
             RELAY_COMMAND_AUTHORIZATION_FILE,
             relay_command_seq,
             relay_command_id,
+            session_key=session_key,
         ):
             validate_and_mark_mutation(
                 RELAY_COMMAND_AUTHORIZATION_FILE,
@@ -1539,6 +1588,7 @@ def _validate_relay_command(
                 relay_command_id,
                 mutation,
                 relay_intent_id=relay_intent_id,
+                session_key=session_key,
             )
         return
     if mutation is not None:
@@ -1548,6 +1598,7 @@ def _validate_relay_command(
             relay_command_id,
             mutation,
             relay_intent_id=relay_intent_id,
+            session_key=session_key,
         )
         return
     raise ValueError("stale Relay command: a newer voice command has superseded this action")
@@ -7803,6 +7854,7 @@ Title: {ticket['title']}
         relay_command_seq: int | str | None = None,
         relay_command_id: str | None = None,
         relay_intent_id: str | None = None,
+        relay_session_key: str | None = None,
         project_scope_token: str | None = None,
         internally_confirmed_project_id: str | None = None,
     ) -> dict:
@@ -7815,6 +7867,7 @@ Title: {ticket['title']}
             relay_command_id,
             relay_intent_id=relay_intent_id,
             mutation=_relay_mutation_metadata("dispatch_ticket", ticket_id=ticket_id),
+            relay_session_key=relay_session_key,
         )
 
         repo = Path(repo_path).expanduser().resolve()
@@ -10721,6 +10774,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         relay_command_seq: int | str | None = None,
         relay_command_id: str | None = None,
         relay_intent_id: str | None = None,
+        relay_session_key: str | None = None,
     ) -> dict[str, Any]:
         """Review one incident proposal; only acceptance authors one backlog ticket."""
         normalized = str(decision or "").strip().lower()
@@ -10800,6 +10854,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 relay_command_seq=relay_command_seq,
                 relay_command_id=relay_command_id,
                 relay_intent_id=relay_intent_id,
+                relay_session_key=relay_session_key,
             )
             ticket_id = str(result["tickets_written"][0]["ticket_id"])
             ticket = read_ticket(target / ".orchestrator" / f"{ticket_id}.md")
@@ -10871,6 +10926,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         relay_command_seq: int | str | None = None,
         relay_command_id: str | None = None,
         relay_intent_id: str | None = None,
+        relay_session_key: str | None = None,
     ) -> dict[str, Any]:
         with self._authoring_mutex():
             return self._review_spike_followup_locked(
@@ -10881,6 +10937,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 relay_command_seq=relay_command_seq,
                 relay_command_id=relay_command_id,
                 relay_intent_id=relay_intent_id,
+                relay_session_key=relay_session_key,
             )
 
     def _review_spike_followup_locked(
@@ -10893,6 +10950,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         relay_command_seq: int | str | None = None,
         relay_command_id: str | None = None,
         relay_intent_id: str | None = None,
+        relay_session_key: str | None = None,
     ) -> dict[str, Any]:
         batch = self.followup_proposals.get(batch_id)
         if batch is None:
@@ -10922,6 +10980,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     "spike_followup_accept",
                     request_id=f"{batch_id}:{proposal_id}",
                 ),
+                relay_session_key=relay_session_key,
             )
 
         origin_repo, _ = self._completed_spike(
@@ -11085,6 +11144,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         relay_command_seq: int | str | None = None,
         relay_command_id: str | None = None,
         relay_intent_id: str | None = None,
+        relay_session_key: str | None = None,
     ) -> dict:
         if not repo_path:
             raise ValueError("repo_path is required")
@@ -11148,6 +11208,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     relay_command_id,
                     relay_intent_id=relay_intent_id or command_intent_id,
                     mutation=mutation,
+                    relay_session_key=relay_session_key,
                 )
 
             def _cancel_and_return(
@@ -11763,7 +11824,8 @@ class Handler(BaseHTTPRequestHandler):
                     elif operation == "dispatch":
                         mutation = _relay_mutation_metadata("dispatch_ticket", ticket_id=task_id)
                     _validate_relay_command(body.get("relay_command_seq"), body.get("relay_command_id"),
-                        relay_intent_id=body.get("relay_intent_id"), mutation=mutation)
+                        relay_intent_id=body.get("relay_intent_id"), mutation=mutation,
+                        relay_session_key=body.get("relay_session_key"))
                     if operation == "create":
                         return 201, store.create(title=body.get("title"), description=body.get("description"),
                             acceptance_criteria=body.get("acceptance_criteria"), request_id=body.get("request_id"))
@@ -12162,6 +12224,7 @@ class Handler(BaseHTTPRequestHandler):
                     relay_command_seq=body.get("relay_command_seq"),
                     relay_command_id=body.get("relay_command_id"),
                     relay_intent_id=body.get("relay_intent_id"),
+                    relay_session_key=body.get("relay_session_key"),
                 )
                 return 202, result
 
@@ -12181,6 +12244,7 @@ class Handler(BaseHTTPRequestHandler):
                     relay_command_seq=body.get("relay_command_seq"),
                     relay_command_id=body.get("relay_command_id"),
                     relay_intent_id=body.get("relay_intent_id"),
+                    relay_session_key=body.get("relay_session_key"),
                 )
 
             if method == "POST" and segments == ["v1", "spikes", "follow-ups", "propose"]:
@@ -12209,6 +12273,7 @@ class Handler(BaseHTTPRequestHandler):
                     relay_command_seq=body.get("relay_command_seq"),
                     relay_command_id=body.get("relay_command_id"),
                     relay_intent_id=body.get("relay_intent_id"),
+                    relay_session_key=body.get("relay_session_key"),
                 )
 
             if method == "POST" and segments == ["v1", "runs"]:
@@ -12225,6 +12290,8 @@ class Handler(BaseHTTPRequestHandler):
                     dispatch_args["relay_command_id"] = body.get("relay_command_id")
                 if body.get("relay_intent_id"):
                     dispatch_args["relay_intent_id"] = body.get("relay_intent_id")
+                if body.get("relay_session_key"):
+                    dispatch_args["relay_session_key"] = body.get("relay_session_key")
                 if body.get("project_scope_token"):
                     dispatch_args["project_scope_token"] = body.get("project_scope_token")
                 result = self.daemon.dispatch(**dispatch_args)

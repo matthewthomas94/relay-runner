@@ -79,6 +79,16 @@ private func claimedRelayCommand() -> (seq: Int, id: String, intentID: String?)?
     return (seq, id, intentID?.isEmpty == false ? intentID : nil)
 }
 
+/// RR-399: name the app-owned session whose spool the attached seq/id was
+/// claimed from, so the daemon checks that session's command state rather
+/// than the shared /tmp mirror. Manual bridges export no key.
+private func attachRelaySessionKey(_ body: inout [String: Any]) {
+    guard body["relay_command_id"] != nil,
+          let key = ProcessInfo.processInfo.environment["RELAY_SESSION_KEY"],
+          !key.isEmpty else { return }
+    body["relay_session_key"] = key
+}
+
 private func proxy(method: String, path: String, body: [String: Any]? = nil) async throws -> [[String: Any]] {
     do {
         let payload = try await DaemonClient.request(method: method, path: path, body: body)
@@ -166,6 +176,7 @@ struct DispatchTicketTool: MCPTool {
                 body["relay_intent_id"] = intentID
             }
         }
+        attachRelaySessionKey(&body)
         return try await proxy(method: "POST", path: "/v1/runs", body: body)
     }
 }
@@ -591,6 +602,7 @@ struct ReviewSpikeFollowupTool: MCPTool {
                 body["relay_intent_id"] = intentID
             }
         }
+        attachRelaySessionKey(&body)
         return try await proxy(
             method: "POST",
             path: "/v1/spikes/follow-ups/\(urlEscape(batchID))/proposals/\(urlEscape(proposalID))/review",
@@ -675,6 +687,7 @@ struct ReviewContinuityProposalTool: MCPTool {
             body["relay_command_id"] = claimed.id
             if let intentID = claimed.intentID { body["relay_intent_id"] = intentID }
         }
+        attachRelaySessionKey(&body)
         return try await proxy(
             method: "POST",
             path: "/v1/continuity-reports/\(urlEscape(reportID))/proposals/\(urlEscape(proposalID))/review",
