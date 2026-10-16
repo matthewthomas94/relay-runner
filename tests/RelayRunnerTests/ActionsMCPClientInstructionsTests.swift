@@ -97,6 +97,14 @@ final class ActionsMCPClientInstructionsTests: XCTestCase {
         let content = try await tool.call(arguments: ["project": "/registered/project", "provider": "claude"])
         XCTAssertEqual(content.first?["text"] as? String, "Project switch queued until this reply finishes.")
     }
+    func testFocusOrBrowseActivationReportsTheAppOutcome() async throws {
+        let tool = ActivateProjectTool(notify: { true }, activate: { path, _, _ in
+            .activated(repoPath: path, message: "Opened the project board without starting a session; other sessions keep running.")
+        })
+        let content = try await tool.call(arguments: ["project": "/registered/project"])
+        XCTAssertEqual(content.first?["text"] as? String, "Opened the project board without starting a session; other sessions keep running.")
+        XCTAssertTrue(ActivateProjectTool().description.contains("The current session is never stopped."))
+    }
     func testExplicitContinuationValidatesPublicTextAndDoesNotManufactureNavigationWork() async throws {
         var forwarded: [String?] = []
         let general = ActivateGeneralTool(notify: { true }, activate: { forwarded.append($0); return .selected(message: "queued") })
