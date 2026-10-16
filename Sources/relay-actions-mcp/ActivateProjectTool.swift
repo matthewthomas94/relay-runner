@@ -3,13 +3,15 @@ import Foundation
 struct ActivateProjectTool: MCPTool {
     let name = "activate_project"
     let description = """
-        Select a Relay Runner project context by absolute repo path or known alias. \
+        Focus or browse a Relay Runner project by absolute repo path or known alias. \
         Existing git repos get their local .orchestrator board config initialized if needed; \
         non-git folders are refused instead of running git init. Codex and Claude callers use \
-        the same tool and may pass their provider label when known. The app defers switching \
-        until recording, the current provider turn and other active obligations finish. \
-        Finish the current reply after a queued result; wait for the selected session to be \
-        ready before project work. Pass continuation only when explicitly forwarding the unfinished user request; the app binds its original authority and delivers it once. Omit it for navigation. Use the general-tasks alias to select the built-in project.
+        the same tool and may pass their provider label when known. A project with a running \
+        session is focused; otherwise its board opens and no session starts. The current \
+        session is never stopped. Pass continuation only when explicitly forwarding the \
+        unfinished user request: after this turn finishes the app focuses the destination's \
+        session, starting it if needed, and submits the request there once with its original \
+        authority. Omit it for navigation. Use the general-tasks alias for the built-in project.
         """
     var notify: () -> Bool = { ConfirmationClient.notifyToolFiredAndWait(toolName: "activate_project") }
     var activate: (String, String?, String?) -> ProjectActivationOutcome = ConfirmationClient.requestProjectActivation
@@ -18,7 +20,7 @@ struct ActivateProjectTool: MCPTool {
         [
             "type": "object",
             "properties": [
-                "continuation": ["type": "string", "description": "Optional unfinished public user request to deliver once in the confirmed destination after this turn finishes. Explicit opt-in only; omit for navigation. Do not include private reasoning or unrelated history."],
+                "continuation": ["type": "string", "description": "Optional unfinished public user request to submit once to the destination project's session (started if needed) after this turn finishes. Explicit opt-in only; omit for navigation. Do not include private reasoning or unrelated history."],
                 "project": [
                     "type": "string",
                     "description": "Absolute repo path or registered project alias.",
@@ -45,8 +47,8 @@ struct ActivateProjectTool: MCPTool {
         }
 
         switch activate(project, provider, try continuationText(arguments)) {
-        case .activated(let repoPath):
-            return [["type": "text", "text": "Selected project at \(repoPath). Wait for its session to be ready before starting project work."]]
+        case .activated(let repoPath, let message):
+            return [["type": "text", "text": message ?? "Selected project at \(repoPath)."]]
         case .queued(_, let message):
             return [["type": "text", "text": message]]
         case .failed(let message):
@@ -59,12 +61,12 @@ struct ActivateProjectTool: MCPTool {
 
 struct ActivateGeneralTool: MCPTool {
     let name = "activate_general"
-    let description = "Compatibility alias for selecting Relay Runner's preinstalled general-tasks project in Application Support. Selection waits for the current recording, provider turn and other active obligations to finish. Finish the current reply after a queued result; wait for general-tasks to be ready before new work."
+    let description = "Compatibility alias for activate_project with Relay Runner's preinstalled general-tasks project in Application Support. A running general-tasks session is focused; otherwise its board opens and no session starts. The current session is never stopped. Pass continuation to forward an unfinished request once to the general-tasks session after this turn finishes, starting it if needed."
     var notify: () -> Bool = { ConfirmationClient.notifyToolFiredAndWait(toolName: "activate_general") }
     var activate: (String?) -> GeneralActivationOutcome = ConfirmationClient.requestGeneralActivation
 
     var inputSchema: [String: Any] {
-        ["type": "object", "properties": ["continuation": ["type": "string", "description": "Optional unfinished public user request to forward exactly once after this turn finishes and general-tasks is ready. Omit for navigation."]], "additionalProperties": false]
+        ["type": "object", "properties": ["continuation": ["type": "string", "description": "Optional unfinished public user request to submit once to the general-tasks session (started if needed) after this turn finishes. Omit for navigation."]], "additionalProperties": false]
     }
 
     func call(arguments: [String: Any]) async throws -> [[String: Any]] {

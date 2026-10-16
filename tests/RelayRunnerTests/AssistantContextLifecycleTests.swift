@@ -219,6 +219,27 @@ final class AssistantContextLifecycleTests: XCTestCase {
         XCTAssertFalse(switching.contains("stopDaemon"))
     }
 
+    func testActivationFocusesOrBrowsesAndContinuationTargetsDestinationSession() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Sources/relay-runner/App/AppState.swift"), encoding: .utf8)
+        func body(_ signature: String) throws -> String {
+            let start = try XCTUnwrap(source.range(of: signature))
+            return String(source[start.lowerBound...]).components(separatedBy: "\n    }\n")[0]
+        }
+        let activate = try body("    func activateProject(pathOrAlias: String,")
+        XCTAssertTrue(activate.contains("selected = selectProjectContext(repositoryPath: repoPath, startsSession: false)"))
+        XCTAssertTrue(activate.contains("selected = requestContextSelection(destination, continuationID: id)"))
+        XCTAssertTrue(try body("    func activateGeneral(").contains("selectGeneralContext(startsSession: false)"))
+        let select = try body("    func selectProjectContext(repositoryPath: String,")
+        XCTAssertTrue(select.contains("guard startsSession || sessionRegistry.isLive(context.id) else {"))
+        let reconcile = try body("    private func reconcileContextContinuation(")
+        XCTAssertTrue(reconcile.contains("guard let session = sessionRegistry.sessions[destination.id]"))
+        XCTAssertTrue(reconcile.contains("var owner = continuationDestinationOwners[destination.id]"))
+        XCTAssertTrue(reconcile.contains("guard session.submitContextContinuation(deliverable) else {"))
+        XCTAssertFalse(reconcile.contains("guard activeContext == continuation.destination"))
+        XCTAssertFalse(reconcile.contains("embeddedTerminal.submitContextContinuation"))
+    }
+
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("relay-lifecycle-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

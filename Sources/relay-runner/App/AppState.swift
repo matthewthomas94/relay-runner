@@ -253,7 +253,9 @@ final class AppState {
     @ObservationIgnored private var pendingContextSelection: AssistantSessionContext?
     @ObservationIgnored private var continuationSourceReady = false
     @ObservationIgnored private var locallyCancelledContinuationID: String?
-    @ObservationIgnored private var continuationDestinationOwner: [String: String]?
+    /// Launch owner identity per context; a continuation is delivered to its
+    /// destination context's own session, focused or not.
+    @ObservationIgnored private var continuationDestinationOwners: [String: [String: String]] = [:]
     var canClearContextContinuation: Bool { assistantSessionStore.pendingContinuation != nil }
     @ObservationIgnored private var idleSessionSaved = false
     /// RR-394: the context whose spool the shared voice bridge publishes into
@@ -1931,17 +1933,19 @@ final class AppState {
     }
 
     @discardableResult
-    func selectGeneralContext() -> Bool {
+    func selectGeneralContext(startsSession: Bool = true) -> Bool {
         do {
             guard let registry = projectRegistryV2 else { return false }
             let project = try registry.ensureGeneralTasksProject()
-            return selectProjectContext(repositoryPath: project.lastResolvedPath)
+            return selectProjectContext(repositoryPath: project.lastResolvedPath, startsSession: startsSession)
         } catch {
             contextSwitchMessage = "general-tasks could not be opened: \(error.localizedDescription)"
             return false
         }
     }
 
+    /// `startsSession: false` browses: a context with a live session is
+    /// focused, any other context is selected without launching a process.
     @discardableResult
     func selectProjectContext(repositoryPath: String, startsSession: Bool = true) -> Bool {
         do {
@@ -1956,7 +1960,7 @@ final class AppState {
                 let path = WorkspaceFolder.url(from: repositoryPath).resolvingSymlinksInPath().path
                 context = AssistantSessionContext(kind: .project, projectID: path, repositoryPath: path)
             }
-            guard startsSession else {
+            guard startsSession || sessionRegistry.isLive(context.id) else {
                 try assistantSessionStore.select(context, provider: config.general.provider.rawValue, model: config.general.model)
                 sessionRegistry.focus(contextID: context.id)
                 publishConversationState()
@@ -1990,7 +1994,9 @@ final class AppState {
         do {
             let pendingID = assistantSessionStore.pendingContinuation?.id
             locallyCancelledContinuationID = pendingID
-            if let pendingID { embeddedTerminal.cancelContextContinuation(id: pendingID) }
+            if let pending = assistantSessionStore.pendingContinuation {
+                sessionRegistry.sessions[pending.destination.id]?.cancelContextContinuation(id: pending.id)
+            }
             try assistantSessionStore.cancelContinuation()
             pendingContextSelection = nil
             contextSwitchMessage = nil
@@ -2003,7 +2009,7 @@ final class AppState {
                 let pending = assistantSessionStore.pendingContinuation
                 if let pending, pending.destination != context {
                     locallyCancelledContinuationID = pending.id
-                    embeddedTerminal.cancelContextContinuation(id: pending.id)
+                    sessionRegistry.sessions[pending.destination.id]?.cancelContextContinuation(id: pending.id)
                 }
                 try assistantSessionStore.cancelContinuation(unless: context)
             }
@@ -2077,10 +2083,13 @@ final class AppState {
             }
             continuationSourceReady = status == "ready"
             guard continuationSourceReady else { return }
-            guard activeContext == continuation.destination else { return }
-            guard embeddedTerminal.phase == .running, canReplaceContextProvider,
-                  let binding = assistantSessionStore.binding(for: activeContext), let native = binding.nativeSessionID,
-                  var owner = continuationDestinationOwner,
+            // RR-397: deliver to the destination's own session, existing or
+            // newly started, whether or not it is focused.
+            let destination = continuation.destination
+            guard let session = sessionRegistry.sessions[destination.id],
+                  session.phase == .running, !session.hasUnsubmittedInput, canReplaceContextProvider,
+                  let binding = assistantSessionStore.binding(for: destination), let native = binding.nativeSessionID,
+                  var owner = continuationDestinationOwners[destination.id],
                   owner["provider_session_id"] == binding.transportSessionID,
                   binding.context == continuation.destination else { return }
             if let registry = projectRegistryV2, let path = continuation.destination.repositoryPath {
@@ -2092,15 +2101,15 @@ final class AppState {
             owner["native_session_id"] = native
             // Durable submitting wins before the first PTY byte. No timer,
             // restart or duplicate activation may replay an uncertain paste.
-            guard let deliverable = try assistantSessionStore.prepareContinuationDelivery(sourceStatus: status, context: activeContext,
-                ready: embeddedTerminal.phase == .running, clearToSend: canReplaceContextProvider, owner: owner, now: now) else { return }
-            guard embeddedTerminal.submitContextContinuation(deliverable) else {
+            guard let deliverable = try assistantSessionStore.prepareContinuationDelivery(sourceStatus: status, context: destination,
+                ready: session.phase == .running, clearToSend: canReplaceContextProvider, owner: owner, now: now) else { return }
+            guard session.submitContextContinuation(deliverable) else {
                 try assistantSessionStore.updateContinuation(continuation.id, state: .recoveryRequired,
                     message: "Continuation was not submitted. Clear it and issue a new request; no automatic retry will occur.")
                 contextSwitchMessage = assistantSessionStore.pendingContinuation?.message
                 return
             }
-            contextSwitchMessage = "Forwarding the explicit request to \(activeContext.displayName); waiting for its native acknowledgement."
+            contextSwitchMessage = "Forwarding the explicit request to \(destination.displayName); waiting for its native acknowledgement."
         } catch {
             contextSwitchMessage = "Continuation needs review: \(error.localizedDescription). It will not be replayed automatically."
         }
@@ -2395,7 +2404,7 @@ final class AppState {
                 )
                 try assistantSessionStore.begin(context: context, provider: launchConfig.general.provider.rawValue,
                                                model: launchConfig.general.model, transportSessionID: launchID.uuidString.lowercased())
-                continuationDestinationOwner = ["provider": prepared.target.providerMetadataValue,
+                continuationDestinationOwners[context.id] = ["provider": prepared.target.providerMetadataValue,
                     "provider_session_id": prepared.providerSessionID ?? "", "app_session_id": prepared.appSessionID ?? "",
                     "recovery_generation": prepared.recoveryGeneration ?? "", "foreground_gate_handle": prepared.foregroundGateHandle ?? ""]
                 if preservesVoiceBridge {
@@ -2980,7 +2989,7 @@ final class AppState {
                 return ProjectActivationReply.failed(message: "\(error)")
             }
         }.value
-        if case .activated(let repoPath) = reply {
+        if case .activated(let repoPath, _) = reply {
             let selected: Bool
             do {
                 if let continuation {
@@ -2990,17 +2999,31 @@ final class AppState {
                     let destination = AssistantSessionContext.project(token)
                     let id = try reserveContextContinuation(continuation, destination: destination)
                     selected = requestContextSelection(destination, continuationID: id)
-                } else { selected = selectProjectContext(repositoryPath: repoPath) }
+                } else {
+                    // RR-397: focus a running session or browse the board;
+                    // never start a process or stop the source session.
+                    selected = selectProjectContext(repositoryPath: repoPath, startsSession: false)
+                }
             } catch { return .failed(message: error.localizedDescription) }
             guard selected else {
                 return .failed(message: contextSwitchMessage ?? "Project context could not be selected.")
             }
             refreshWorkspaceActivity(invalidateRoute: true)
             if pendingContextSelection != nil {
-                return .queued(repoPath: repoPath, message: "\(contextSwitchMessage ?? "Project switch queued.") Finish the current reply; wait for the selected session to be ready before project work.")
+                return .queued(repoPath: repoPath, message: "\(contextSwitchMessage ?? "Project switch queued.") Finish the current reply.\(continuation == nil ? "" : " The request is then delivered once to that project's session.")")
             }
+            return .activated(repoPath: repoPath, message: browseOrFocusMessage(name: activeContext.displayName))
         }
         return reply
+    }
+
+    /// Reply for a focus-or-browse activation of the now-active context.
+    private func browseOrFocusMessage(name: String) -> String {
+        if sessionRegistry.isLive(activeContext.id) {
+            return "Focused the running \(name) session; other sessions keep running."
+        }
+        programBoardOverlay.showWork()
+        return "Opened the \(name) board without starting a session; other sessions keep running. Pass continuation to forward an unfinished request into \(name)'s session."
     }
 
     @MainActor
@@ -3017,15 +3040,15 @@ final class AppState {
                 let destination = AssistantSessionContext.project(token)
                 let id = try reserveContextContinuation(continuation, destination: destination)
                 selected = requestContextSelection(destination, continuationID: id)
-            } else { selected = selectGeneralContext() }
+            } else { selected = selectGeneralContext(startsSession: false) }
         } catch { return .failed(message: error.localizedDescription) }
         guard selected else {
             return .failed(message: contextSwitchMessage ?? "general-tasks could not be selected.")
         }
         refreshWorkspaceActivity(invalidateRoute: true)
         let message = pendingContextSelection != nil
-            ? "\(contextSwitchMessage ?? "general-tasks selection queued.") Finish the current reply; wait for general-tasks to be ready before new work."
-            : "general-tasks selected. Wait for its session to be ready before new work."
+            ? "\(contextSwitchMessage ?? "general-tasks selection queued.") Finish the current reply.\(continuation == nil ? "" : " The request is then delivered once to the general-tasks session.")"
+            : browseOrFocusMessage(name: activeContext.displayName)
         return .selected(message: message)
     }
 

@@ -65,6 +65,15 @@ final class ActionsConfirmBusTests: XCTestCase {
         XCTAssertEqual(reply["pending"] as? Bool, true)
         XCTAssertEqual(reply["message"] as? String, "Project switch queued.")
     }
+    func testFocusOrBrowseActivationMessageTraversesSocket() async throws {
+        let bus = ActionsConfirmBus(stateMachine: StateMachine(), onActivateProject: { project, _, _ in
+            .activated(repoPath: project, message: "Focused the running project session; other sessions keep running.")
+        })
+        let reply = try await request(["type": "activate_project", "project": "/registered/project"], from: bus)
+        XCTAssertEqual(reply["result"] as? String, "ok")
+        XCTAssertNil(reply["pending"])
+        XCTAssertEqual(reply["message"] as? String, "Focused the running project session; other sessions keep running.")
+    }
     func testExplicitContinuationTraversesSocketAndMalformedInputNeverFallsBackToNavigation() async throws {
         var received: [[String: String]] = []
         let bus = ActionsConfirmBus(stateMachine: StateMachine(), onActivateProject: { _, _, continuation in

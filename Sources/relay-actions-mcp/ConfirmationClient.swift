@@ -32,7 +32,7 @@ enum BoardToggleOutcome {
 }
 
 enum ProjectActivationOutcome {
-    case activated(repoPath: String)
+    case activated(repoPath: String, message: String? = nil)
     case queued(repoPath: String, message: String)
     case failed(message: String)
     case menuBarUnavailable
@@ -146,7 +146,7 @@ enum ConfirmationClient {
             if json["pending"] as? Bool == true {
                 return .queued(repoPath: repoPath, message: json["message"] as? String ?? "Project context switch queued. Finish the current reply before switching.")
             }
-            return .activated(repoPath: repoPath)
+            return .activated(repoPath: repoPath, message: json["message"] as? String)
         }
         if result == "error" {
             return .failed(message: json["message"] as? String ?? "Project activation failed.")

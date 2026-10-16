@@ -256,8 +256,10 @@ actor ActionsConfirmBus {
                 message: "Relay Runner cannot activate projects right now."
             )
             switch reply {
-            case .activated(let repoPath):
-                writePayload(fd: fd, payload: ["result": "ok", "repo_path": repoPath])
+            case .activated(let repoPath, let message):
+                var payload: [String: Any] = ["result": "ok", "repo_path": repoPath]
+                if let message { payload["message"] = message }
+                writePayload(fd: fd, payload: payload)
             case .queued(let repoPath, let message):
                 writePayload(fd: fd, payload: ["result": "ok", "repo_path": repoPath, "pending": true, "message": message])
             case .failed(let message):
@@ -459,7 +461,7 @@ actor ActionsConfirmBus {
 }
 
 enum ProjectActivationReply {
-    case activated(repoPath: String)
+    case activated(repoPath: String, message: String? = nil)
     case queued(repoPath: String, message: String)
     case failed(message: String)
 }
