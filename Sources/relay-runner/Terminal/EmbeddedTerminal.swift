@@ -3867,10 +3867,66 @@ struct EmbeddedTerminalTab: View {
 struct WorkspaceTerminalPanel: View {
     @Bindable var appState: AppState
 
+    private var tabs: [(id: String, name: String)] { appState.workspaceSessionTabs }
+
     var body: some View {
-        EmbeddedTerminalTab(
-            session: appState.embeddedTerminal,
-            recoverDelivery: { appState.recoverBlockedVoiceDelivery() }
-        )
+        VStack(spacing: 0) {
+            if !tabs.isEmpty {
+                WorkspaceSessionTabStrip(
+                    tabs: tabs,
+                    selectedID: appState.activeContext.id,
+                    select: { appState.focusSessionTab(contextID: $0) },
+                    close: { appState.closeSessionTab(contextID: $0) }
+                )
+                .transition(.relayElement)
+            }
+            EmbeddedTerminalTab(
+                session: appState.embeddedTerminal,
+                recoverDelivery: { appState.recoverBlockedVoiceDelivery() }
+            )
+        }
+        .animation(RelayMotion.change, value: tabs.map(\.id))
+    }
+}
+
+private struct WorkspaceSessionTabStrip: View {
+    let tabs: [(id: String, name: String)]
+    let selectedID: String
+    let select: (String) -> Void
+    let close: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(tabs, id: \.id) { tab in
+                let selected = tab.id == selectedID
+                HStack(spacing: 6) {
+                    Button(action: { select(tab.id) }) {
+                        Text(tab.name).lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    Button(action: { close(tab.id) }) {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Stop \(tab.name) session")
+                    .accessibilityLabel("Stop \(tab.name) session")
+                }
+                .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Color.primary : Color.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.primary.opacity(selected ? 0.12 : 0))
+                )
+                .animation(RelayMotion.change, value: selected)
+                .accessibilityElement(children: .contain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+                .transition(.relayElement)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
     }
 }
