@@ -1,0 +1,58 @@
+{
+  "observed_at": "2026-10-17T13:35:12.715481+00:00",
+  "hardware": {
+    "model": "Mac16,1",
+    "chip": "Apple M4",
+    "cores": 10,
+    "memory_bytes": 25769803776
+  },
+  "os": {
+    "version": "27.0.1",
+    "build": "26A434"
+  },
+  "toolchain": {
+    "xcode": "Xcode 26.2\nBuild version 17C52",
+    "swift": "Apple Swift version 6.2.3 (swiftlang-6.2.3.3.21 clang-1700.6.3.2)\nTarget: arm64-apple-macosx28.0",
+    "sdk": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk"
+  },
+  "power": {
+    "ac_connected": true,
+    "low_power_mode": 0
+  },
+  "source_start_head": "9ee1da7b5cd7dc53c538415515162815d4f0f6ab",
+  "runtime_revisions": {
+    "baseline": "57551cd90e0bbec342766244358bcf08afb05290",
+    "candidate": "0b1f46289fe27d95b5e66ad8be46e64f5ee02ae7"
+  },
+  "corpus_freeze_commit": "0ef653f7",
+  "corpus_sha256": "7e36e6e70a379a8aa347cdc0c0bc6350ec76f8af713904ad3d8b314468029768",
+  "builds": {
+    "baseline": {
+      "sha256": "0e82959b234a881efdf32ec0442bdcbab634c269ce8d3ca1d57aa426d831482e",
+      "bytes": 5377240,
+      "configuration": "release",
+      "minos": "14.0",
+      "sdk": "26.2"
+    },
+    "candidate": {
+      "sha256": "e5213cd06fbcd4fea32553d2b59325ee9bac5ff7dcee34f9d2c7e3d9c3abe421",
+      "bytes": 18242456,
+      "configuration": "release",
+      "minos": "14.0",
+      "sdk": "26.2"
+    },
+    "app": {
+      "sha256": "12f65d5a0336b5332898b67fe5c865a292fff4dc1ae1a10dd829934e162294a5",
+      "bytes": 35570048,
+      "configuration": "release",
+      "minos": "14.0",
+      "sdk": "26.2"
+    }
+  },
+  "first_isolated_preparation_seconds": {
+    "v2": 104.90499889850616,
+    "v3": 147.931774020195,
+    "phonon2": 375.3740360736847
+  },
+  "preparation_caveat": "New isolated model cache; existing system Core ML caches were not cleared. App compilation overlapped preparation. Preparation is not a controlled cold-machine benchmark."
+}

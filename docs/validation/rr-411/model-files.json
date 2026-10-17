@@ -1,0 +1,510 @@
+{
+  "FluidInference/phonon-2-coreml": {
+    "revision": "a812a0dfef205660787ef6234317ab79acf4d5d6",
+    "bytes": 357726026,
+    "files": [
+      {
+        "path": "Decoder.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "3d1a9cd4d7b7956d20c48d9a8041717f9f02c6db72dfeda565080e1cff1db3a3",
+        "upstream_hash": "3d1a9cd4d7b7956d20c48d9a8041717f9f02c6db72dfeda565080e1cff1db3a3",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Decoder.mlmodelc/coremldata.bin",
+        "bytes": 554,
+        "sha256": "2590e4588972f8d3d1ddb10ce603decffd2e9bb79a88c6096a58c5732f6369fd",
+        "upstream_hash": "2590e4588972f8d3d1ddb10ce603decffd2e9bb79a88c6096a58c5732f6369fd",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Decoder.mlmodelc/model.mil",
+        "bytes": 13110,
+        "sha256": "956f600207f88396017ca5c96cfa3acd5bfee60835a5b44b762e033a8fb28955",
+        "upstream_hash": "36dcd5cbb71d13f42a177427ddbab7539e0d167e",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Decoder.mlmodelc/weights/weight.bin",
+        "bytes": 23604992,
+        "sha256": "05181616ed1af70b2aad0463d08d1d73a245af4ccb6159df79994f28c135d9d6",
+        "upstream_hash": "05181616ed1af70b2aad0463d08d1d73a245af4ccb6159df79994f28c135d9d6",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Encoder.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "c81b869306f38dce16359c8594ef2b4026cb60d91089aa758998b5d43357754b",
+        "upstream_hash": "c81b869306f38dce16359c8594ef2b4026cb60d91089aa758998b5d43357754b",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Encoder.mlmodelc/coremldata.bin",
+        "bytes": 542,
+        "sha256": "f8cef401c9d1d05e11fc2749245df86a38b9f81f8404e94fa054700d6a4394d9",
+        "upstream_hash": "f8cef401c9d1d05e11fc2749245df86a38b9f81f8404e94fa054700d6a4394d9",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Encoder.mlmodelc/model.mil",
+        "bytes": 1012823,
+        "sha256": "03eba2ef3abae8a90a3d525d60c1aff3ecbbcbf815389df20738e793be3579ad",
+        "upstream_hash": "be9ede482e550569c9cb1dba3c33545a07f88316",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Encoder.mlmodelc/weights/weight.bin",
+        "bytes": 319611456,
+        "sha256": "d76b3604417342bf06dc39c01cdb8a6f5d129c835c4442cf8ff92c08d51b8889",
+        "upstream_hash": "d76b3604417342bf06dc39c01cdb8a6f5d129c835c4442cf8ff92c08d51b8889",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "JointDecisionv3.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "7b53f663c4400205f8bc00243076de50f95d8a1a64978dee7232eb0ddc7d683c",
+        "upstream_hash": "7b53f663c4400205f8bc00243076de50f95d8a1a64978dee7232eb0ddc7d683c",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "JointDecisionv3.mlmodelc/coremldata.bin",
+        "bytes": 586,
+        "sha256": "8d2170f28b28466476f62484a0c8b07c2d31713ac254d1b7cf80eba8070e9554",
+        "upstream_hash": "8d2170f28b28466476f62484a0c8b07c2d31713ac254d1b7cf80eba8070e9554",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "JointDecisionv3.mlmodelc/model.mil",
+        "bytes": 11777,
+        "sha256": "791b3c3cf3eb2079c84623fc880f6bba008d1366e5f8b03e9a8ed8bd4d7194a0",
+        "upstream_hash": "be552d46f98f9dc9b242b0d1659833db60aa3f83",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "JointDecisionv3.mlmodelc/weights/weight.bin",
+        "bytes": 12642764,
+        "sha256": "5f922e335bc57174645fd6ede581395f1ae846f7227898301b5a1a7585f4ab45",
+        "upstream_hash": "5f922e335bc57174645fd6ede581395f1ae846f7227898301b5a1a7585f4ab45",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "c9beeb989c8d66f8be11df59bc6df277ec76cee404f6865b46243835ef562f6d",
+        "upstream_hash": "c9beeb989c8d66f8be11df59bc6df277ec76cee404f6865b46243835ef562f6d",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/coremldata.bin",
+        "bytes": 486,
+        "sha256": "dbde3f2300842c1fd51ef3ff948a0bcffe65ffd2dca10707f2509f32c1d65b1d",
+        "upstream_hash": "dbde3f2300842c1fd51ef3ff948a0bcffe65ffd2dca10707f2509f32c1d65b1d",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/metadata.json",
+        "bytes": 2841,
+        "sha256": "2a98699e22d279dd37fa1d238aeb1c6db1df0d6fad687775324157689d8f3acf",
+        "upstream_hash": "06162c58cf2f5343a0e60f36f843bcdf3cc58527",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/model.mil",
+        "bytes": 28181,
+        "sha256": "4b8518a956450fec57f06c2a21bdffc26973f7f1fa6842fb38fe917f896b6b93",
+        "upstream_hash": "f987e2479228436c49189aa47edb376db74dcff5",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/weights/weight.bin",
+        "bytes": 491072,
+        "sha256": "129b76e3aeafa8afa3ea76d995b964b145fe83700d579f6ff42c4c38fa0968ea",
+        "upstream_hash": "129b76e3aeafa8afa3ea76d995b964b145fe83700d579f6ff42c4c38fa0968ea",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "config.json",
+        "bytes": 1626,
+        "sha256": "cca35a1f8312b7fa099a41089185815773366190b4287690a193ae649b4ee0f8",
+        "upstream_hash": "fdb0cb18f976b9929d080345a5bbc67dbb027b2c",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "parakeet_v3_vocab.json",
+        "bytes": 151122,
+        "sha256": "7ec60e05f1b24480736ec0eed40900f4626bce1fa9a60fd700ec7e2a59198735",
+        "upstream_hash": "c684822ec3b671ebc449c433a7012398d39b8bb0",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "parakeet_vocab.json",
+        "bytes": 151122,
+        "sha256": "7ec60e05f1b24480736ec0eed40900f4626bce1fa9a60fd700ec7e2a59198735",
+        "upstream_hash": "c684822ec3b671ebc449c433a7012398d39b8bb0",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      }
+    ]
+  },
+  "FluidInference/parakeet-tdt-0.6b-v2-coreml": {
+    "revision": "ee09c569f73759e6d44c9bd16766f477b2b36d39",
+    "bytes": 464413250,
+    "files": [
+      {
+        "path": "Decoder.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "46de1a6fe2e49d19a2125bc91acf020df7f2aea84ba821532aade8427a440b05",
+        "upstream_hash": "46de1a6fe2e49d19a2125bc91acf020df7f2aea84ba821532aade8427a440b05",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Decoder.mlmodelc/coremldata.bin",
+        "bytes": 554,
+        "sha256": "d200ca07694a347f6d02a3886a062ae839831e094e443222f2e48a14945966a8",
+        "upstream_hash": "d200ca07694a347f6d02a3886a062ae839831e094e443222f2e48a14945966a8",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Decoder.mlmodelc/metadata.json",
+        "bytes": 3427,
+        "sha256": "90a279b822496316458febc0ce761ab05954fadd9d66aa97bea077a35fc8f2b2",
+        "upstream_hash": "e3a08d21a5d1577db2bedd1749ea0ddae5d21b73",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Decoder.mlmodelc/model.mil",
+        "bytes": 13106,
+        "sha256": "7b95a5a6b672c652000348a67b6d4d92bb8e176b978c6666fe73c28a4d7ec579",
+        "upstream_hash": "167cc9db34dd7828e0e61eab40d6a09f8a234d30",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Decoder.mlmodelc/weights/weight.bin",
+        "bytes": 14429952,
+        "sha256": "27d26890221d82322c1092fd99d7b40578e435d5cf4b83c887c42603caf97aba",
+        "upstream_hash": "27d26890221d82322c1092fd99d7b40578e435d5cf4b83c887c42603caf97aba",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Encoder.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "42e638870d73f26b332918a3496ce36793fbb413a81cbd3d16ba01328637a105",
+        "upstream_hash": "42e638870d73f26b332918a3496ce36793fbb413a81cbd3d16ba01328637a105",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Encoder.mlmodelc/coremldata.bin",
+        "bytes": 485,
+        "sha256": "4def7aa848599ad0e17a8b9a982edcdbf33cf92e1f4b798de32e2ca0bc74b030",
+        "upstream_hash": "4def7aa848599ad0e17a8b9a982edcdbf33cf92e1f4b798de32e2ca0bc74b030",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Encoder.mlmodelc/metadata.json",
+        "bytes": 2926,
+        "sha256": "58222fbc48c13c49d9715567803cd50cb9c23e4360462e0f8ffcea59a2c73c63",
+        "upstream_hash": "c87f9eb24e76b8e518dc1fbead46c8c0029d3925",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Encoder.mlmodelc/model.mil",
+        "bytes": 959769,
+        "sha256": "ed7b19156ca29fa7dfd6891deb9fda4b0e8893f68597c985d135736546a43808",
+        "upstream_hash": "93d1301ccde7c2ca447af6c01ab05bfda5a5dd2c",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Encoder.mlmodelc/weights/weight.bin",
+        "bytes": 445187200,
+        "sha256": "4adc7ad44f9d05e1bffeb2b06d3bb02861a5c7602dff63a6b494aed3bf8a6c3e",
+        "upstream_hash": "4adc7ad44f9d05e1bffeb2b06d3bb02861a5c7602dff63a6b494aed3bf8a6c3e",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "JointDecision.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "f1183ba213bb94a918c8d2cad19ab045320618f97f6ca662245b3936d7b090f7",
+        "upstream_hash": "f1183ba213bb94a918c8d2cad19ab045320618f97f6ca662245b3936d7b090f7",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "JointDecision.mlmodelc/coremldata.bin",
+        "bytes": 534,
+        "sha256": "e2c6752f1c8cf2d3f6f26ec93195c9bfa759ad59edf9f806696a138154f96f11",
+        "upstream_hash": "e2c6752f1c8cf2d3f6f26ec93195c9bfa759ad59edf9f806696a138154f96f11",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "JointDecision.mlmodelc/metadata.json",
+        "bytes": 2936,
+        "sha256": "ba8d309417b9acd4a175fdb15687de6a941db2f5b06666a60e7cf3cc8e2d3c3c",
+        "upstream_hash": "db3b2bc33cfda6f7cd1073d21182446180e53f94",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "JointDecision.mlmodelc/model.mil",
+        "bytes": 9722,
+        "sha256": "93bf82042235127cb81ab537dcae47a1c2e7e242ce4ffdaf772981b45eedc4f0",
+        "upstream_hash": "339c35b303b074de7fe047bb099311a4cc08cf53",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "JointDecision.mlmodelc/weights/weight.bin",
+        "bytes": 3453388,
+        "sha256": "ca22a65903a05e64137677da608077578a8606090a598abf4875fa6199aaa19d",
+        "upstream_hash": "ca22a65903a05e64137677da608077578a8606090a598abf4875fa6199aaa19d",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "03ab3c1327a054c54c07a40325db967ec574f2c91dcc8192bfa44aa561bcf2d8",
+        "upstream_hash": "03ab3c1327a054c54c07a40325db967ec574f2c91dcc8192bfa44aa561bcf2d8",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/coremldata.bin",
+        "bytes": 494,
+        "sha256": "d88ea1fc349459c9e100d6a96688c5b29a1f0d865f544be103001724b986b6d6",
+        "upstream_hash": "d88ea1fc349459c9e100d6a96688c5b29a1f0d865f544be103001724b986b6d6",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/metadata.json",
+        "bytes": 2974,
+        "sha256": "fb16c581ff5e1b962e7cb2181ed892cd32f9f84c12b6e80ff3e089f28e35bcbb",
+        "upstream_hash": "887f7d4adc6d7f933686f7b984e23a47b45f57e3",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/model.mil",
+        "bytes": 27166,
+        "sha256": "3e06d16fd061294c8a75be68c43a3b1ed1f593d4a9c35249e9cdbccadc59721e",
+        "upstream_hash": "e94cce4bc7fbf55e55788449bf067ffe09a5ca91",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/weights/weight.bin",
+        "bytes": 298880,
+        "sha256": "a5f7df6c7f47147ae9486fe18cc7792f9a44d093ec3c6a11e91ef2dc363c48dc",
+        "upstream_hash": "a5f7df6c7f47147ae9486fe18cc7792f9a44d093ec3c6a11e91ef2dc363c48dc",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "config.json",
+        "bytes": 3,
+        "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+        "upstream_hash": "0967ef424bce6791893e9a57bb952f80fd536e93",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "parakeet_vocab.json",
+        "bytes": 18762,
+        "sha256": "57019fe3c745772ca83a1b048a4bb951cd51329504ea33d4d83316b96e279a97",
+        "upstream_hash": "a111d3bd29d44781c4588447c3eac1ea549cb1f1",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      }
+    ]
+  },
+  "FluidInference/parakeet-tdt-0.6b-v3-coreml": {
+    "revision": "7dd20fe6b1797d35f5e3307e8b1732d9a178edfe",
+    "bytes": 495913442,
+    "files": [
+      {
+        "path": "Decoder.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "4238c4e81ecd0dc94bd7dfbb60f7e2cc824107c1ffe0387b8607b72833dba350",
+        "upstream_hash": "4238c4e81ecd0dc94bd7dfbb60f7e2cc824107c1ffe0387b8607b72833dba350",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Decoder.mlmodelc/coremldata.bin",
+        "bytes": 554,
+        "sha256": "18647af085d87bd8f3121c8a9b4d4564c1ede038dab63d295b4e745cf2d7fb99",
+        "upstream_hash": "18647af085d87bd8f3121c8a9b4d4564c1ede038dab63d295b4e745cf2d7fb99",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Decoder.mlmodelc/metadata.json",
+        "bytes": 3427,
+        "sha256": "a39e93cd8371b8ded92635c7804fcd0590f0d1dd9415c6d19a0484be073077d9",
+        "upstream_hash": "781350d40ed83511afc3bc31a804e6a543e69d04",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Decoder.mlmodelc/model.mil",
+        "bytes": 13110,
+        "sha256": "ef2a0a281695398a62fde86ac269c68f73d5b578d7ed3b31f2ba91a2d1ea1f35",
+        "upstream_hash": "95328ba81ca8dceb16c039e62f1a7d447ede43c2",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Decoder.mlmodelc/weights/weight.bin",
+        "bytes": 23604992,
+        "sha256": "48adf0f0d47c406c8253d4f7fef967436a39da14f5a65e66d5a4b407be355d41",
+        "upstream_hash": "48adf0f0d47c406c8253d4f7fef967436a39da14f5a65e66d5a4b407be355d41",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Encoder.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "42e638870d73f26b332918a3496ce36793fbb413a81cbd3d16ba01328637a105",
+        "upstream_hash": "42e638870d73f26b332918a3496ce36793fbb413a81cbd3d16ba01328637a105",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Encoder.mlmodelc/coremldata.bin",
+        "bytes": 485,
+        "sha256": "d48034a167a82e88fc3df64f60af963ab3983538271175b8319e7d5720a0fb86",
+        "upstream_hash": "d48034a167a82e88fc3df64f60af963ab3983538271175b8319e7d5720a0fb86",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Encoder.mlmodelc/metadata.json",
+        "bytes": 2921,
+        "sha256": "da24da9cca943fb29d7fa8e376d57fca7cb3aa08ca51b956b0b0e56813f087e9",
+        "upstream_hash": "aecde9a8c4ff70c5b5d227a079650fcf5033caee",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Encoder.mlmodelc/model.mil",
+        "bytes": 959769,
+        "sha256": "ed7b19156ca29fa7dfd6891deb9fda4b0e8893f68597c985d135736546a43808",
+        "upstream_hash": "93d1301ccde7c2ca447af6c01ab05bfda5a5dd2c",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Encoder.mlmodelc/weights/weight.bin",
+        "bytes": 445187200,
+        "sha256": "e2020f323703477a5b21d7c2d282c403e371afb5962e79877e3033e73ba6f421",
+        "upstream_hash": "e2020f323703477a5b21d7c2d282c403e371afb5962e79877e3033e73ba6f421",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "JointDecision.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "bc69ef031ed427e888b1f3889d13eb373655edd5ac9927de20b5dae281b636b7",
+        "upstream_hash": "bc69ef031ed427e888b1f3889d13eb373655edd5ac9927de20b5dae281b636b7",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "JointDecision.mlmodelc/coremldata.bin",
+        "bytes": 534,
+        "sha256": "f56ded0404498e666ffcd84dda0c393924fc3581345ad03e41429ff560cb97b6",
+        "upstream_hash": "f56ded0404498e666ffcd84dda0c393924fc3581345ad03e41429ff560cb97b6",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "JointDecision.mlmodelc/metadata.json",
+        "bytes": 2936,
+        "sha256": "3044edab5e4ee331d37cef7100074653c944a0e58184ab618aab183a0e0707bc",
+        "upstream_hash": "dfdc56eca9b9c64d68bcb71ab14d94851720034d",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "JointDecision.mlmodelc/model.mil",
+        "bytes": 9723,
+        "sha256": "2cb084d7e0dc86ad3ddaa53a9631cdd5d97f19839218845b0e65ca065a4d1a5e",
+        "upstream_hash": "b7a794f82b0c0f9f98d08de5374831d1bae5858d",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "JointDecision.mlmodelc/weights/weight.bin",
+        "bytes": 12642764,
+        "sha256": "4e0e63d840032f7f07ddb1d64446051166281e5491bf22da8a945c41f6eedb3e",
+        "upstream_hash": "4e0e63d840032f7f07ddb1d64446051166281e5491bf22da8a945c41f6eedb3e",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "JointDecisionv3.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "26def4bf73dd56d29dee21c8ef97cb8969e62f6120ed1adc91e46828e2737b6c",
+        "upstream_hash": "26def4bf73dd56d29dee21c8ef97cb8969e62f6120ed1adc91e46828e2737b6c",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "JointDecisionv3.mlmodelc/coremldata.bin",
+        "bytes": 521,
+        "sha256": "f5fc08b741400f0088492c9e839418b1e18522f19cba28d361dd030c5f398342",
+        "upstream_hash": "f5fc08b741400f0088492c9e839418b1e18522f19cba28d361dd030c5f398342",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "JointDecisionv3.mlmodelc/metadata.json",
+        "bytes": 3453,
+        "sha256": "d9307211b9a37e0f0ac260c7660b1571a3de25841035cfdf9b58fd40425f890f",
+        "upstream_hash": "0461ef9e55ba8e8ba0d2cb33b6e1a031b0d481d7",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "JointDecisionv3.mlmodelc/model.mil",
+        "bytes": 11775,
+        "sha256": "be60732943389a047175111a83f8839f3eb39d4803adafa828a0871b2f39818d",
+        "upstream_hash": "0a80fde4b1ec61093a03fc0fc3431172db34a4d2",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "JointDecisionv3.mlmodelc/weights/weight.bin",
+        "bytes": 12642764,
+        "sha256": "4e0e63d840032f7f07ddb1d64446051166281e5491bf22da8a945c41f6eedb3e",
+        "upstream_hash": "4e0e63d840032f7f07ddb1d64446051166281e5491bf22da8a945c41f6eedb3e",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "c9beeb989c8d66f8be11df59bc6df277ec76cee404f6865b46243835ef562f6d",
+        "upstream_hash": "c9beeb989c8d66f8be11df59bc6df277ec76cee404f6865b46243835ef562f6d",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/coremldata.bin",
+        "bytes": 486,
+        "sha256": "dbde3f2300842c1fd51ef3ff948a0bcffe65ffd2dca10707f2509f32c1d65b1d",
+        "upstream_hash": "dbde3f2300842c1fd51ef3ff948a0bcffe65ffd2dca10707f2509f32c1d65b1d",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/metadata.json",
+        "bytes": 2841,
+        "sha256": "2a98699e22d279dd37fa1d238aeb1c6db1df0d6fad687775324157689d8f3acf",
+        "upstream_hash": "06162c58cf2f5343a0e60f36f843bcdf3cc58527",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/model.mil",
+        "bytes": 28181,
+        "sha256": "4b8518a956450fec57f06c2a21bdffc26973f7f1fa6842fb38fe917f896b6b93",
+        "upstream_hash": "f987e2479228436c49189aa47edb376db74dcff5",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "Preprocessor.mlmodelc/weights/weight.bin",
+        "bytes": 491072,
+        "sha256": "129b76e3aeafa8afa3ea76d995b964b145fe83700d579f6ff42c4c38fa0968ea",
+        "upstream_hash": "129b76e3aeafa8afa3ea76d995b964b145fe83700d579f6ff42c4c38fa0968ea",
+        "upstream_hash_algorithm": "sha256"
+      },
+      {
+        "path": "config.json",
+        "bytes": 475,
+        "sha256": "97f19ecccd0fdc730d76fb918090fa8bc64bce8ea4ad43715d5e9c2c7350db66",
+        "upstream_hash": "b6a1d442c414a219be5332e5b9a011631aff1515",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "parakeet_v3_vocab.json",
+        "bytes": 151122,
+        "sha256": "7ec60e05f1b24480736ec0eed40900f4626bce1fa9a60fd700ec7e2a59198735",
+        "upstream_hash": "c684822ec3b671ebc449c433a7012398d39b8bb0",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      },
+      {
+        "path": "parakeet_vocab.json",
+        "bytes": 151122,
+        "sha256": "7ec60e05f1b24480736ec0eed40900f4626bce1fa9a60fd700ec7e2a59198735",
+        "upstream_hash": "c684822ec3b671ebc449c433a7012398d39b8bb0",
+        "upstream_hash_algorithm": "git-blob-sha1"
+      }
+    ]
+  }
+}
