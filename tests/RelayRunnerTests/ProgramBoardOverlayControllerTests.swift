@@ -209,7 +209,7 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertTrue(controller.contains("projectSelectionHandler?(repoPath)"))
         XCTAssertTrue(overlayView.contains("onSelectProject: onSelectProject"))
         XCTAssertTrue(appState.contains("programBoardOverlay.setProjectSelectionHandler"))
-        XCTAssertTrue(appState.contains("selectProjectContext(repositoryPath: repoPath, startsSession: self.hasActiveSession)"))
+        XCTAssertTrue(appState.contains("selectProjectContext(repositoryPath: repoPath, startsSession: runs)"))
         let launch = try XCTUnwrap(appState.range(of: "    func newSession("))
         let resolution = try XCTUnwrap(appState.range(of: "Self.prepareSessionContext(workingDirectory: workingDirectory, registry: projectRegistryV2)", range: launch.upperBound..<appState.endIndex))
         let commit = try XCTUnwrap(appState.range(of: "try assistantSessionStore.select(", range: resolution.upperBound..<appState.endIndex))

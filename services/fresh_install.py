@@ -65,6 +65,7 @@ RELAY_TEMPORARY_ARTIFACTS = (
     "tts_debug.log",
     "tts_in.fifo",
     "voice_bridge.cwd",
+    "voice_bridge.pid",
     "voice_bridge.provider",
     "voice_bridge.sock",
     "voice_bridge_heartbeat",

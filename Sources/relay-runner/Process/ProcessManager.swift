@@ -30,6 +30,8 @@ final class ProcessManager {
     private static let heartbeatPath = "/tmp/voice_bridge_heartbeat"
     private static let bridgeStopRequestedPath = "/tmp/voice_bridge_stop_requested"
     private static let bridgeCwdPath = "/tmp/voice_bridge.cwd"
+    /// RR-403: written by the running bridge with its own PID.
+    static let bridgePIDPath = "/tmp/voice_bridge.pid"
     private static let bridgeProviderPath = "/tmp/voice_bridge.provider"
     private static let tutorialTTSControlPath = "/tmp/relay_tutorial_tts_control.sock"
     private static let bridgeLaunchdLabel = "com.relay.voicebridge"
@@ -52,6 +54,7 @@ final class ProcessManager {
         "/tmp/tts_control.sock",
         heartbeatPath,
         "/tmp/voice_bridge_heartbeat.pid",
+        bridgePIDPath,
         bridgeCwdPath,
         bridgeProviderPath,
         VoiceSessionSpool.bridgeTargetPath,
@@ -750,7 +753,7 @@ final class ProcessManager {
             fi
             cp "$REPLAY_DIR/voice_cmd_ready.meta" "$SPOOL"/voice_cmd_ready.meta || return 1
             cp "$REPLAY_DIR/voice_command_state.json" "$SPOOL"/voice_command_state.json || return 1
-            [ -f "$REPLAY_DIR/voice_command_authorizations.json" ] && cp "$REPLAY_DIR/voice_command_authorizations.json" /tmp/voice_command_authorizations.json
+            [ -f "$REPLAY_DIR/voice_command_authorizations.json" ] && [ ! -f /tmp/voice_command_authorizations.json ] && cp "$REPLAY_DIR/voice_command_authorizations.json" /tmp/voice_command_authorizations.json
             cp "$REPLAY_DIR/voice_cmd_ready" "$SPOOL"/voice_cmd_ready.replay || return 1
             mv "$SPOOL"/voice_cmd_ready.replay "$SPOOL"/voice_cmd_ready || return 1
             echo "[relay-runner] app watchdog replayed pending voice command after bridge recovery." >> "$VOICE_BRIDGE_LOG"
@@ -773,9 +776,12 @@ final class ProcessManager {
         launchctl remove com.relay.voicebridge 2>/dev/null || true
         [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
-        pkill -f '[v]oice_bridge.py' 2>/dev/null || true
+        BRIDGE_PID=$(cat \(bridgePIDPath) 2>/dev/null || true)
+        if [ -n "$BRIDGE_PID" ] && ps -p "$BRIDGE_PID" -o command= 2>/dev/null | grep -q '[v]oice_bridge.py'; then
+            kill "$BRIDGE_PID" 2>/dev/null || true
+        fi
         [ "$RELAY_PRESERVE_CONTEXT_AUTHORIZATION" = "1" ] || rm -f /tmp/voice_command_authorizations.json
-        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock "$SPOOL"/voice_cmd_ready "$SPOOL"/voice_cmd_ready.meta "$SPOOL"/voice_cmd_claimed.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json "$SPOOL"/voice_provider_session_id "$SPOOL"/relay_terminal_manual_submission.json "$SPOOL"/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/voice_bridge.spool /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock "$SPOOL"/voice_cmd_ready "$SPOOL"/voice_cmd_ready.meta "$SPOOL"/voice_cmd_claimed.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json "$SPOOL"/voice_provider_session_id "$SPOOL"/relay_terminal_manual_submission.json "$SPOOL"/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid \(bridgePIDPath) /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/voice_bridge.spool /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
         [ "$RELAY_CONTINUITY_RECOVERY_PENDING" = "1" ] || rm -f "$SPOOL"/voice_command_state.json /tmp/voice_command_state.json
         VOICE_BRIDGE_LOG_REASON=watchdog-recovery VOICE_BRIDGE_LOG_PROVIDER="${RELAY_PROVIDER:-none}" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log || : >> "$VOICE_BRIDGE_LOG"
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
@@ -834,16 +840,44 @@ final class ProcessManager {
             SocketClient.bridgeSend("shutdown")
             Thread.sleep(forTimeInterval: 0.5)
         }
-        if Self.voiceBridgeProcessAlive() {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-            proc.arguments = ["-f", "voice_bridge.py"]
-            try? proc.run()
-            proc.waitUntilExit()
-        }
+        Self.terminateRecordedBridge()
         Self.removeBridgeRuntimeFiles()
         if stopRequested {
             Self.markBridgeStopRequested()
+        }
+    }
+
+    /// RR-403: stop the bridge by the PID it recorded, never by command-line
+    /// pattern, so another user's or session's bridge-named process survives.
+    /// A recycled PID is rejected by checking the process still runs voice_bridge.py.
+    @discardableResult
+    static func terminateRecordedBridge(
+        pidFile: String = bridgePIDPath,
+        commandLine: (pid_t) -> String? = processCommandLine,
+        signal send: (pid_t) -> Void = { _ = kill($0, SIGTERM) }
+    ) -> Bool {
+        guard let raw = try? String(contentsOfFile: pidFile, encoding: .utf8),
+              let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              pid > 1,
+              commandLine(pid)?.contains("voice_bridge.py") == true else { return false }
+        send(pid)
+        return true
+    }
+
+    private static func processCommandLine(of pid: pid_t) -> String? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
+        proc.arguments = ["-p", String(pid), "-o", "command="]
+        let output = Pipe()
+        proc.standardOutput = output
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            return proc.terminationStatus == 0 ? String(data: data, encoding: .utf8) : nil
+        } catch {
+            return nil
         }
     }
 
@@ -856,13 +890,7 @@ final class ProcessManager {
             Thread.sleep(forTimeInterval: 0.5)
         }
         // Force kill if still alive
-        if Self.voiceBridgeProcessAlive() {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-            proc.arguments = ["-f", "voice_bridge.py"]
-            try? proc.run()
-            proc.waitUntilExit()
-        }
+        Self.terminateRecordedBridge()
         Self.removeBridgeRuntimeFiles()
         Self.markBridgeStopRequested()
     }

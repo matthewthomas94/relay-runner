@@ -11,6 +11,7 @@ mode retained for manual debugging; Start Session and relay-bridge do not use it
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import atexit
 import hashlib
 import json
 import os
@@ -460,6 +461,9 @@ RELAY_SESSIONS_ROOT = "/tmp/relay-sessions"
 BRIDGE_CWD_FILE = "/tmp/voice_bridge.cwd"
 BRIDGE_PROVIDER_FILE = "/tmp/voice_bridge.provider"
 BRIDGE_SPOOL_FILE = "/tmp/voice_bridge.spool"
+# RR-403: the running bridge's own PID, so recovery and stop paths signal this
+# process instead of pattern-matching every voice_bridge.py on the machine.
+BRIDGE_PID_FILE = "/tmp/voice_bridge.pid"
 VOICE_FOCUS_PREFIX = "__FOCUS__:"
 VOICE_TARGET_PREFIX = "__VOICE_TARGET__:"
 # Matches the orchestrator's RELAY_SESSION_KEY_RE and the app's sanitized
@@ -647,6 +651,30 @@ def _voice_target_from_focus(payload: dict) -> VoiceTarget | None:
         recovery_generation=str(payload.get("recovery_generation") or "").strip(),
         project_name=str(payload.get("project_name") or "").strip(),
     )
+
+
+def _write_bridge_pid_file() -> None:
+    tmp = f"{BRIDGE_PID_FILE}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as f:
+            f.write(f"{os.getpid()}\n")
+        os.replace(tmp, BRIDGE_PID_FILE)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _remove_bridge_pid_file() -> None:
+    """Drop the PID file only while it still names this process."""
+    try:
+        with open(BRIDGE_PID_FILE) as f:
+            if f.read().strip() != str(os.getpid()):
+                return
+        os.unlink(BRIDGE_PID_FILE)
+    except OSError:
+        pass
 
 
 def _write_bridge_target_files(target: VoiceTarget) -> None:
@@ -5313,6 +5341,10 @@ def main():
 
     if not ensure_fifo(VOICE_FIFO):
         sys.exit(1)
+
+    if relay_mode:
+        _write_bridge_pid_file()
+        atexit.register(_remove_bridge_pid_file)
 
     tts_queue: queue.Queue = queue.Queue()
     tts_executor = TTSWorker(tts_queue, start_control_socket=not relay_mode)

@@ -214,10 +214,16 @@ class VoiceFocusControlSocketTests(FocusTestCase):
 
 class RecordingPinTests(FocusTestCase):
     def test_recording_started_on_a_is_delivered_to_a_after_focus_moves_to_b(self):
-        a = self.focus("a", "codex")
+        self.assert_recording_pinned("a", "codex", "b", "claude")
+
+    def test_recording_pin_holds_when_claude_is_focused_away_to_codex(self):
+        self.assert_recording_pinned("a", "claude", "b", "codex")
+
+    def assert_recording_pinned(self, a_key, a_provider, b_key, b_provider):
+        a = self.focus(a_key, a_provider)
         shutdown = threading.Event()
         reads = iter([
-            b"__VOICE_TARGET__:a\n",
+            f"__VOICE_TARGET__:{a_key}\n".encode(),
             None,  # focus moves to B while the recording is still being transcribed
             b"add a test\n",
         ])
@@ -225,7 +231,7 @@ class RecordingPinTests(FocusTestCase):
         def read(_fd, _size):
             chunk = next(reads)
             if chunk is None:
-                self.focus("b", "claude")
+                self.focus(b_key, b_provider)
                 return b"\n"
             if chunk == b"add a test\n":
                 shutdown.set()
@@ -273,8 +279,8 @@ class RecordingPinTests(FocusTestCase):
         self.assertEqual(kwargs["command_path"], a.command_path)
         self.assertEqual(kwargs["meta_path"], a.meta_path)
         metadata = publish.call_args.args[1]
-        self.assertEqual(metadata["voice_target_session_key"], "a")
-        self.assertEqual(metadata["provider"], "codex")
+        self.assertEqual(metadata["voice_target_session_key"], a_key)
+        self.assertEqual(metadata["provider"], a_provider)
         self.assertEqual(str(active_work.call_args.kwargs["repo_path"]), a.cwd)
 
 
