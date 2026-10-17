@@ -1,9 +1,17 @@
 import Foundation
 
+protocol MeetingRecordingTranscribing: Sendable {
+    func transcribe(
+        _ recording: MeetingRecordedAudioReading,
+        sessionID: String,
+        onEvent: @escaping @Sendable (MeetingRecordingTranscriptionEvent) -> Void
+    ) async throws -> MeetingProducerFinalBoundary
+}
+
 /// Transcribes a finished recording after Stop in one offline pass. It reuses
 /// the live producer's windows and segment IDs, emits final revisions only,
 /// and keeps the model loaded just for the duration of the batch.
-struct MeetingRecordingTranscriber: Sendable {
+struct MeetingRecordingTranscriber: MeetingRecordingTranscribing {
     let transcriber: MeetingWindowTranscribing
     var configuration: MeetingTranscriptProducer.Configuration = .default
 

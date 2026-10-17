@@ -1807,6 +1807,7 @@ final class AppState {
         case .recording: snapshot.captureStatusMessage ?? "Taking notes"
         case .paused: "Notes paused"
         case .preparing: "Preparing notes"
+        case .transcribing: "Transcribing notes"
         case .stopping: snapshot.captureInterrupted ? "Recording interrupted" : "Saving notes"
         case .saved: "Note saved"
         case .interrupted: "Note interrupted"
@@ -1819,8 +1820,9 @@ final class AppState {
     static func stoppingMeetingNoteSnapshot(
         from snapshot: MeetingNoteCoordinatorSnapshot
     ) -> MeetingNoteCoordinatorSnapshot {
+        // Stop transcribes the recording before it saves the note.
         MeetingNoteCoordinatorSnapshot(
-            phase: .stopping,
+            phase: .transcribing,
             noteID: snapshot.noteID,
             project: snapshot.project,
             liveHypothesisCount: snapshot.liveHypothesisCount,

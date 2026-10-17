@@ -159,6 +159,30 @@ class MetadataStorageTests(unittest.TestCase):
             NoteIdentity.from_mapping(current["note"]["identity"]), NoteUpdate.from_mapping(current["note"]), current["note"]["metadata"])))
         self.assertEqual(reloaded.metadata, current["note"]["metadata"])
 
+    def test_record_only_capture_generates_metadata_once_after_stop(self):
+        calls = []
+        queue = NoteMetadataQueue(lambda text, _: calls.append(text) or FIELDS, debounce=0)
+        self.addCleanup(queue.shutdown)
+        timestamp = "2026-09-20T08:00:00Z"
+        note = self.manager.create(request_id="record-only", created_at=timestamp, capture_started_at=timestamp,
+                                   captured_at=timestamp, recording_state="recording",
+                                   checkpoint_reason="checkpoint", segments=[], provider="codex")
+        artifact = note["note"]["identity"]["artifact_id"]
+        # The daemon schedules metadata after every durable write; capture sends state only.
+        queue.schedule(self.manager, artifact); self.wait_queue(queue)
+        for index, (state, reason) in enumerate([("paused", "pause"), ("recording", "resume"), ("paused", "pause")]):
+            update = dict(note["note"])
+            update.update(segments=[], recording_state=state, checkpoint_reason=reason)
+            note = self.manager.update(request_id=f"state-{index}", update=update)
+            queue.schedule(self.manager, artifact); self.wait_queue(queue)
+        self.assertEqual(calls, [])
+        completed = self.checkpoint(note, "Words transcribed after Stop.", "stop", completed=True)
+        queue.schedule(self.manager, artifact); self.wait_queue(queue)
+        self.assertEqual(calls, ["Words transcribed after Stop."])
+        result = self.manager.get(artifact)["note"]
+        self.assertEqual(result["metadata"]["state"], "ready")
+        self.assertEqual(result["segments"], completed["note"]["segments"])
+
     def test_stale_active_result_discarded_final_tail_followup(self):
         started = threading.Event(); release = threading.Event(); calls = []
         def generate(text, cancel):

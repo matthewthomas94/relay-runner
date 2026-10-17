@@ -97,8 +97,8 @@ struct MeetingAudioFrame: Sendable {
     }
 }
 
-/// RR-368 persists accepted chunks before this ticket retains them in its
-/// bounded ASR window. Audio is deliberately absent from logs and note Markdown.
+/// Accepted chunks go to the session's local recording and are transcribed
+/// after Stop. Audio is deliberately absent from logs and note Markdown.
 struct MeetingAcceptedAudio: Sendable {
     let descriptor: MeetingAcceptedAudioDescriptor
     let samples: [Float]
@@ -210,14 +210,15 @@ struct MeetingProducerMetrics: Codable, Equatable, Sendable {
     var maximumProcessingMilliseconds = 0
 }
 
-/// Stable restart cursor. RR-368 owns the durable audio referenced by
-/// `pendingAudio`; the producer owns deterministic IDs and revision cursors.
+/// Stable restart cursor. `pendingAudio` names raw chunks retained by journals
+/// from before compressed recording; the producer owns deterministic IDs and
+/// revision cursors.
 struct MeetingProducerCheckpoint: Codable, Equatable, Sendable {
     let sessionID: String
     let state: MeetingProducerState
     let timingEpochs: [MeetingTimingEpoch]
     let timelineOriginNanoseconds: UInt64?
-    let timelineSampleBySource: [MeetingAudioSourceID: Int]
+    var timelineSampleBySource: [MeetingAudioSourceID: Int]
     let nextWindowSequenceByEpoch: [String: Int]
     let completedWindowSequencesByEpoch: [String: [Int]]
     let emittedRevisionBySegment: [String: Int]

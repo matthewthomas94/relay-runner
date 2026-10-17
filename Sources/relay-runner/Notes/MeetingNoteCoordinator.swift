@@ -6,6 +6,8 @@ enum MeetingNoteCoordinatorPhase: String, Codable, Equatable, Sendable {
     case preparing
     case recording
     case paused
+    /// Stop has finalized the recording and local transcription is running.
+    case transcribing
     case stopping
     case saved
     case interrupted
@@ -13,7 +15,7 @@ enum MeetingNoteCoordinatorPhase: String, Codable, Equatable, Sendable {
 
     var ownsForeground: Bool {
         switch self {
-        case .preparing, .recording, .paused, .stopping, .interrupted, .error:
+        case .preparing, .recording, .paused, .transcribing, .stopping, .interrupted, .error:
             return true
         case .idle, .saved:
             return false
@@ -33,27 +35,28 @@ struct MeetingNoteProjectBinding: Codable, Equatable, Sendable {
     }
 }
 
+/// Audio is recorded while the meeting runs and transcribed once after Stop,
+/// so nothing is published between the empty note and the completed one.
 struct MeetingNoteCheckpointPolicy: Equatable, Sendable {
-    /// Target cadence for publishing final transcript revisions while speech continues.
-    /// Writer latency or outage may extend canonical publication, while the
-    /// zero-unpersisted-audio contract keeps that tail locally replayable.
-    let artifactIntervalSeconds: Int
-    /// Accepted audio is written before the producer acknowledges its ingest call.
-    let maximumUnpersistedAcceptedAudioMilliseconds: Int
-    let recoveryAudioBudgetBytes: Int
+    /// Local cap on the compressed recording across both sources.
+    let recordingBudgetBytes: Int
 
-    var maximumRecoveryAudioSecondsAtTwoSources: Int {
-        recoveryAudioBudgetBytes / (16_000 * MemoryLayout<Float>.size * 2)
+    /// Only each source's open recorder segment is unreadable, so a hard crash
+    /// loses at most this much audio per source.
+    var maximumUnfinalizedAudioSecondsPerSource: Int {
+        MeetingCompressedAudioRecorder.maxSegmentSeconds
     }
 
-    var maximumRecoveryAudioSecondsAtOneSource: Int {
-        recoveryAudioBudgetBytes / (16_000 * MemoryLayout<Float>.size)
+    var maximumRecordingSecondsAtTwoSources: Int {
+        recordingBudgetBytes / (MeetingCompressedAudioRecorder.nominalBytesPerSecond * 2)
+    }
+
+    var maximumRecordingSecondsAtOneSource: Int {
+        recordingBudgetBytes / MeetingCompressedAudioRecorder.nominalBytesPerSecond
     }
 
     static let `default` = MeetingNoteCheckpointPolicy(
-        artifactIntervalSeconds: 15,
-        maximumUnpersistedAcceptedAudioMilliseconds: 0,
-        recoveryAudioBudgetBytes: MeetingNoteRecoveryStore.defaultAudioBudgetBytes
+        recordingBudgetBytes: MeetingCompressedAudioRecorder.defaultBudgetBytes
     )
 }
 
@@ -92,6 +95,8 @@ struct MeetingNoteCoordinatorSnapshot: Equatable, Sendable {
             return (.listening, "Taking notes", false)
         case .paused:
             return (.paused, "Paused", false)
+        case .transcribing:
+            return (.working, "Transcribing notes", true)
         case .stopping:
             // A failure tears capture down through the same phase as Stop;
             // it must not look like a save the user asked for.
@@ -109,12 +114,13 @@ struct MeetingNoteCoordinatorSnapshot: Equatable, Sendable {
 }
 
 enum MeetingNoteRecoveryResolution: String, Sendable {
-    /// Replay the incomplete accepted tail and remain paused. Microphone capture
-    /// resumes only through a later explicit resume action.
+    /// Reopen the retained recording and remain paused. Microphone capture
+    /// resumes only through a later explicit resume action, and a later Stop
+    /// transcribes audio from before and after the interruption.
     case recoverPaused
-    /// Replay the incomplete accepted tail, then publish a completed note.
+    /// Transcribe the retained recording, then publish a completed note.
     case finalize
-    /// Complete the last canonical transcript without replaying incomplete audio.
+    /// Delete the retained recording and complete the last canonical transcript.
     case discardIncompleteTail
 }
 
@@ -135,7 +141,7 @@ enum MeetingNoteCoordinatorError: LocalizedError, Equatable {
     case captureFailed(String)
     case localSaveFailed(String)
     /// The note writer rejected or missed a checkpoint. The journal and
-    /// accepted audio remain on this Mac.
+    /// recording remain on this Mac.
     case publicationFailed(String)
 
     var errorDescription: String? {
@@ -290,12 +296,19 @@ final class MeetingNoteEventBuffer: @unchecked Sendable {
         var producerFailed = false
         var sourceChanged = false
         lock.lock()
+        if case .source(let source, let state) = event {
+            // Capture reports the same state for every chunk. Keep transitions
+            // without retaining those duplicates for the entire recording.
+            guard sourceStates[source] != state else {
+                lock.unlock()
+                return
+            }
+            sourceStates[source] = state
+            sourceChanged = true
+        }
         events.append(event)
         if case .issue(let issue) = event {
             latestIssue = issue
-        } else if case .source(let source, let state) = event {
-            sourceChanged = sourceStates[source] != state
-            sourceStates[source] = state
         } else if case .state(.failed) = event {
             terminalIssue = latestIssue
             producerFailed = true
@@ -343,14 +356,15 @@ actor MeetingNoteCoordinator {
         let id: UUID
         let capture: any MeetingNoteCaptureControlling
         let events: MeetingNoteEventBuffer
+        let recorder: MeetingCompressedAudioRecorder
     }
 
     private let writer: any MeetingNoteArtifactWriting
     private let recoveryStore: any MeetingNoteRecoveryStoring
+    private let recordingTranscriber: any MeetingRecordingTranscribing
     private let captureFactory: CaptureFactory
     private let policy: MeetingNoteCheckpointPolicy
     private let now: @Sendable () -> String
-    private let automaticCheckpointing: Bool
     private let snapshotSink: SnapshotSink
     private let scopeTokenRefresher: ScopeTokenRefresher?
 
@@ -359,7 +373,6 @@ actor MeetingNoteCoordinator {
     private var phase: MeetingNoteCoordinatorPhase = .idle
     private var desiredPaused = false
     private var pauseReconciliationRunning = false
-    private var checkpointTask: Task<Void, Never>?
     private var stopTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
     private var captureStatePersistenceTail: Task<Void, Error>?
     private var captureStatePersistenceGeneration = 0
@@ -379,18 +392,18 @@ actor MeetingNoteCoordinator {
         writer: any MeetingNoteArtifactWriting,
         recoveryStore: any MeetingNoteRecoveryStoring,
         policy: MeetingNoteCheckpointPolicy = .default,
-        automaticCheckpointing: Bool = true,
         now: @escaping @Sendable () -> String = {
             Date().ISO8601Format(.iso8601)
         },
         snapshotSink: @escaping SnapshotSink = { _ in },
         scopeTokenRefresher: ScopeTokenRefresher? = nil,
+        recordingTranscriber: any MeetingRecordingTranscribing,
         captureFactory: @escaping CaptureFactory
     ) {
         self.writer = writer
         self.recoveryStore = recoveryStore
+        self.recordingTranscriber = recordingTranscriber
         self.policy = policy
-        self.automaticCheckpointing = automaticCheckpointing
         self.now = now
         self.snapshotSink = snapshotSink
         self.scopeTokenRefresher = scopeTokenRefresher
@@ -407,19 +420,23 @@ actor MeetingNoteCoordinator {
             writer: OrchestratorMeetingNoteWriter(),
             recoveryStore: store,
             snapshotSink: snapshotSink,
-            scopeTokenRefresher: scopeTokenRefresher
+            scopeTokenRefresher: scopeTokenRefresher,
+            recordingTranscriber: MeetingRecordingTranscriber(
+                transcriber: FluidAudioMeetingTranscriber(modelName: modelName)
+            )
         ) { sessionID, acceptedAudioSink, durableCheckpointSink, eventSink in
+            // Recording loads no model; the transcriber runs only after Stop.
             let producer = MeetingTranscriptProducer(
                 sessionID: sessionID,
                 transcriber: FluidAudioMeetingTranscriber(modelName: modelName),
+                transcribesLive: false,
                 acceptedAudioSink: acceptedAudioSink,
                 durableCheckpointSink: durableCheckpointSink,
                 eventSink: eventSink
             )
-            // Persist roughly 100 ms per source instead of rewriting the
-            // recovery journal for every hardware callback. Hold about 30 s of
-            // two-source batches so a stall delays persistence instead of
-            // dropping audio and ending the recording.
+            // Hand the recorder roughly 100 ms per source instead of every
+            // hardware callback. Hold about 30 s of two-source batches so a
+            // stall delays recording instead of dropping audio and ending it.
             return MeetingNoteCaptureSession(
                 producer: producer,
                 maximumPendingFrames: 600,
@@ -447,7 +464,6 @@ actor MeetingNoteCoordinator {
             throw MeetingNoteCoordinatorError.foregroundBusy
         }
 
-        checkpointTask?.cancel()
         stopTask = nil
         captureStatePersistenceTail = nil
         captureInterrupted = false
@@ -505,27 +521,7 @@ actor MeetingNoteCoordinator {
             self.journal = journal
             try await recoveryStore.save(journal)
 
-            let runtimeID = UUID()
-            let events = makeEventBuffer(sessionID: sessionID, runtimeID: runtimeID)
-            let store = recoveryStore
-            let capture = captureFactory(
-                sessionID,
-                { audio in
-                    try await store.persistAudio(sessionID: sessionID, audio: audio)
-                },
-                { checkpoint in
-                    try await store.saveProducerCheckpoint(
-                        sessionID: sessionID,
-                        checkpoint: checkpoint
-                    )
-                },
-                { events.append($0) }
-            )
-            runtime = Runtime(
-                id: runtimeID,
-                capture: capture,
-                events: events
-            )
+            let capture = try await makeRuntime(sessionID: sessionID).capture
             try await capture.start(initiallyPaused: initiallyPaused, resume: nil)
             journal.producerCheckpoint = await capture.checkpoint()
             if let issue = applyBufferedEvents(to: &journal) {
@@ -536,7 +532,6 @@ actor MeetingNoteCoordinator {
             journal.updatedAt = now()
             self.journal = journal
             try await recoveryStore.save(journal)
-            startCheckpointLoopIfNeeded()
             return snapshot()
         } catch {
             if !hasPersistedRecoveryJournal,
@@ -642,19 +637,6 @@ actor MeetingNoteCoordinator {
         return snapshot()
     }
 
-    func checkpointNow() async throws -> MeetingNoteCoordinatorSnapshot {
-        guard phase == .recording || phase == .paused else {
-            return snapshot()
-        }
-        _ = try await publishCheckpoint(
-            reason: .checkpoint,
-            recordingState: phase == .paused ? .paused : .recording,
-            captureEndedAt: nil,
-            force: false
-        )
-        return snapshot()
-    }
-
     func stop() async throws -> MeetingNoteCoordinatorSnapshot {
         if interruptionTeardownActive {
             // A failure is already stopping capture. Let it finish so Stop
@@ -691,17 +673,25 @@ actor MeetingNoteCoordinator {
         }
     }
 
+    /// Reads journals and recording manifests only; no model, microphone, or
+    /// capture starts until the user picks a resolution.
     func recoveryOffers() async throws -> [MeetingNoteRecoveryOffer] {
-        try await recoveryStore.loadAll().map { journal in
-            MeetingNoteRecoveryOffer(
+        var offers: [MeetingNoteRecoveryOffer] = []
+        for journal in try await recoveryStore.loadAll() {
+            let recorded = (try? await recoveryStore.loadRecording(
+                sessionID: journal.sessionID
+            ))?.segments.count ?? 0
+            offers.append(MeetingNoteRecoveryOffer(
                 sessionID: journal.sessionID,
                 noteID: journal.identity?.noteID,
                 project: journal.project,
                 phase: journal.phase,
                 updatedAt: journal.updatedAt,
-                pendingAudioChunkCount: journal.producerCheckpoint?.pendingAudio.count ?? 0
-            )
+                pendingAudioChunkCount: (journal.producerCheckpoint?.pendingAudio.count ?? 0)
+                    + recorded
+            ))
         }
+        return offers
     }
 
     func resolveRecovery(
@@ -714,7 +704,6 @@ actor MeetingNoteCoordinator {
         else { throw MeetingNoteCoordinatorError.recoveryNotFound }
 
         guard runtime == nil else { throw MeetingNoteCoordinatorError.foregroundBusy }
-        checkpointTask?.cancel()
         captureInterrupted = false
         activeScopeToken = projectScopeToken
         hasPersistedRecoveryJournal = true
@@ -796,6 +785,7 @@ actor MeetingNoteCoordinator {
                 journal.revisions.removeAll()
                 journal.producerCheckpoint = nil
                 self.journal = journal
+                try await recoveryStore.removeRecording(sessionID: sessionID)
                 _ = try await publishCheckpoint(
                     reason: .complete,
                     recordingState: .completed,
@@ -812,53 +802,26 @@ actor MeetingNoteCoordinator {
                 return snapshot()
             }
 
-            let runtimeID = UUID()
-            let events = makeEventBuffer(sessionID: sessionID, runtimeID: runtimeID)
-            let store = recoveryStore
-            let capture = captureFactory(
-                sessionID,
-                { audio in
-                    try await store.persistAudio(sessionID: sessionID, audio: audio)
-                },
-                { checkpoint in
-                    try await store.saveProducerCheckpoint(
-                        sessionID: sessionID,
-                        checkpoint: checkpoint
-                    )
-                },
-                { events.append($0) }
-            )
-            runtime = Runtime(
-                id: runtimeID,
-                capture: capture,
-                events: events
-            )
-            try await capture.start(
-                initiallyPaused: true,
-                resume: journal.producerCheckpoint
-            )
-            if let checkpoint = journal.producerCheckpoint,
-               !checkpoint.pendingAudio.isEmpty {
-                let audio = try await recoveryStore.loadAudio(
-                    sessionID: sessionID,
-                    descriptors: checkpoint.pendingAudio
+            if resolution == .finalize {
+                return try await transcribeAndComplete(
+                    journal,
+                    captureEndedAt: journal.captureEndedAt ?? now()
                 )
-                try await capture.replayAcceptedAudio(audio)
-                // A final window may retire all but its overlap during the
-                // first replay. Drain that smaller retained tail before the
-                // same Stop attempts completion; a later user click must not
-                // be required to replay it.
-                if resolution == .finalize {
-                    let remaining = await capture.checkpoint().pendingAudio
-                    if !remaining.isEmpty && remaining.count < checkpoint.pendingAudio.count {
-                        let tail = try await recoveryStore.loadAudio(
-                            sessionID: sessionID,
-                            descriptors: remaining
-                        )
-                        try await capture.replayAcceptedAudio(tail)
-                    }
-                }
             }
+
+            // Record-only capture checkpoints only when an epoch opens, so a
+            // crash leaves the timeline cursor behind the recorded audio. New
+            // epochs must start after everything already on disk.
+            var checkpoint = journal.producerCheckpoint
+            if var timeline = checkpoint?.timelineSampleBySource {
+                for segment in try await recoveryStore.loadRecording(sessionID: sessionID).segments {
+                    let end = segment.startSample + segment.sampleCount
+                    timeline[segment.sourceID] = max(timeline[segment.sourceID] ?? 0, end)
+                }
+                checkpoint?.timelineSampleBySource = timeline
+            }
+            let capture = try await makeRuntime(sessionID: sessionID).capture
+            try await capture.start(initiallyPaused: true, resume: checkpoint)
             journal.producerCheckpoint = await capture.checkpoint()
             if let issue = applyBufferedEvents(to: &journal) {
                 throw captureFailure(issue)
@@ -868,10 +831,6 @@ actor MeetingNoteCoordinator {
             journal.updatedAt = now()
             self.journal = journal
             try await recoveryStore.save(journal)
-
-            if resolution == .finalize {
-                return try await performStop(allowFailedCaptureRecovery: false)
-            }
             _ = try await publishCheckpoint(
                 reason: .pause,
                 recordingState: .paused,
@@ -879,7 +838,6 @@ actor MeetingNoteCoordinator {
                 force: true
             )
             desiredPaused = true
-            startCheckpointLoopIfNeeded()
             return snapshot()
         } catch {
             try? await markInterrupted(error)
@@ -890,6 +848,7 @@ actor MeetingNoteCoordinator {
     private func pauseCapture() async throws -> Bool {
         guard let runtime else { throw MeetingNoteCoordinatorError.captureUnavailable }
         try await runtime.capture.pause()
+        try await runtime.recorder.finishAll()
         guard self.runtime?.id == runtime.id, phase == .recording else { return false }
         phase = .paused
         journal?.phase = .paused
@@ -909,14 +868,10 @@ actor MeetingNoteCoordinator {
         return true
     }
 
-    private func performStop(
-        allowFailedCaptureRecovery: Bool = true
-    ) async throws -> MeetingNoteCoordinatorSnapshot {
+    private func performStop() async throws -> MeetingNoteCoordinatorSnapshot {
         guard let runtime, var journal else {
             throw MeetingNoteCoordinatorError.captureUnavailable
         }
-        checkpointTask?.cancel()
-        checkpointTask = nil
         phase = .stopping
         journal.phase = .stopping
         journal.updatedAt = now()
@@ -953,30 +908,11 @@ actor MeetingNoteCoordinator {
             journal.captureEndedAt = endedAt
             journal.updatedAt = endedAt
             self.journal = journal
-            try await recoveryStore.save(journal)
-            try await retainPendingAudio(journal)
-            guard journal.producerCheckpoint?.pendingAudio.isEmpty == true else {
-                throw MeetingNoteCoordinatorError.localSaveFailed(
-                    "accepted audio remains pending local transcription"
-                )
-            }
-            _ = try await publishCheckpoint(
-                reason: .complete,
-                recordingState: .completed,
-                captureEndedAt: endedAt,
-                force: true
-            )
-            phase = .saved
-            self.journal?.phase = .saved
-            self.runtime = nil
-            activeScopeToken = nil
-            try await recoveryStore.removeSession(sessionID: journal.sessionID)
-            hasPersistedRecoveryJournal = false
-            return snapshot()
+            try await runtime.recorder.close()
+            return try await transcribeAndComplete(journal, captureEndedAt: endedAt)
         } catch {
             try? await markInterrupted(error)
-            if allowFailedCaptureRecovery,
-               error as? MeetingProducerError == .backpressureExceeded,
+            if error as? MeetingProducerError == .backpressureExceeded,
                self.runtime == nil,
                phase == .error {
                 return try await resolveRecovery(
@@ -987,6 +923,72 @@ actor MeetingNoteCoordinator {
             }
             throw error
         }
+    }
+
+    /// Stop's second half: the recording is final, so transcribe it once,
+    /// publish the completed note, and only then delete the local audio.
+    private func transcribeAndComplete(
+        _ journal: MeetingNoteRecoveryJournal,
+        captureEndedAt: String
+    ) async throws -> MeetingNoteCoordinatorSnapshot {
+        var journal = journal
+        phase = .transcribing
+        journal.phase = .transcribing
+        journal.captureEndedAt = captureEndedAt
+        journal.updatedAt = now()
+        self.journal = journal
+        try await recoveryStore.save(journal)
+        snapshotSink(snapshot())
+
+        let checkpoint = journal.producerCheckpoint
+        let legacyAudio: [MeetingAcceptedAudio]
+        if let checkpoint, !checkpoint.pendingAudio.isEmpty {
+            legacyAudio = try await recoveryStore.loadAudio(
+                sessionID: journal.sessionID,
+                descriptors: checkpoint.pendingAudio
+            )
+        } else {
+            legacyAudio = []
+        }
+        let reader = MeetingNoteRecordingReader(
+            checkpoint: checkpoint,
+            legacyAudio: legacyAudio,
+            recording: try await recoveryStore.loadRecording(sessionID: journal.sessionID)
+        )
+        let collector = MeetingNoteRevisionCollector()
+        _ = try await recordingTranscriber.transcribe(reader, sessionID: journal.sessionID) { event in
+            if case .revision(let revision) = event { collector.append(revision) }
+        }
+
+        var revisions = Dictionary(
+            uniqueKeysWithValues: journal.revisions.map { ($0.segmentID, $0) }
+        )
+        for revision in (checkpoint?.durableRevisions ?? []) + collector.values.map(reader.restore) {
+            if let current = revisions[revision.segmentID], current.isFinal { continue }
+            revisions[revision.segmentID] = revision
+        }
+        journal.revisions = revisions.values.sorted(by: Self.revisionOrder)
+        phase = .stopping
+        journal.phase = .stopping
+        journal.updatedAt = now()
+        self.journal = journal
+        try await recoveryStore.save(journal)
+        snapshotSink(snapshot())
+
+        _ = try await publishCheckpoint(
+            reason: .complete,
+            recordingState: .completed,
+            captureEndedAt: captureEndedAt,
+            force: true
+        )
+        phase = .saved
+        self.journal?.phase = .saved
+        runtime = nil
+        activeScopeToken = nil
+        try await recoveryStore.removeRecording(sessionID: journal.sessionID)
+        try await recoveryStore.removeSession(sessionID: journal.sessionID)
+        hasPersistedRecoveryJournal = false
+        return snapshot()
     }
 
     @discardableResult
@@ -1041,7 +1043,6 @@ actor MeetingNoteCoordinator {
         }
 
         if !force, finalSegments == journal.canonicalSegments {
-            try await retainPendingAudio(journal)
             return snapshot()
         }
 
@@ -1098,7 +1099,6 @@ actor MeetingNoteCoordinator {
             current.updatedAt = now()
             self.journal = current
             try await recoveryStore.save(current)
-            try await retainPendingAudio(current)
             return snapshot()
         } catch {
             if Self.isCancellation(error) {
@@ -1236,10 +1236,6 @@ actor MeetingNoteCoordinator {
         }
     }
 
-    private func retainPendingAudio(_ journal: MeetingNoteRecoveryJournal) async throws {
-        try await recoveryStore.retainCheckpointAudio(sessionID: journal.sessionID)
-    }
-
     private func markInterrupted(_ error: Error) async throws {
         if interruptionTeardownActive {
             await withCheckedContinuation { continuation in
@@ -1255,8 +1251,6 @@ actor MeetingNoteCoordinator {
             waiters.forEach { $0.resume() }
         }
 
-        checkpointTask?.cancel()
-        checkpointTask = nil
         if phase == .recording || phase == .paused {
             captureInterrupted = true
         }
@@ -1276,6 +1270,8 @@ actor MeetingNoteCoordinator {
             case .idle, .stopping, .stopped:
                 break
             }
+            // Finalize the open segments so the retained recording stays readable.
+            try? await activeRuntime.recorder.close()
 
             if self.runtime?.id == activeRuntime.id {
                 if var current = journal {
@@ -1301,7 +1297,6 @@ actor MeetingNoteCoordinator {
             snapshotSink(snapshot())
         }
         try await recoveryStore.save(journal)
-        try await retainPendingAudio(journal)
     }
 
     private func handleTerminalProducerFailure(
@@ -1333,9 +1328,32 @@ actor MeetingNoteCoordinator {
             """)
         let failure = captureFailure(bufferedIssue ?? issue)
         try? await markInterrupted(failure)
-        if let journal = self.journal {
-            try? await retainPendingAudio(journal)
-        }
+    }
+
+    /// Accepted audio goes only to the session's compressed recorder; producer
+    /// checkpoints carry the recording's timing epochs.
+    private func makeRuntime(sessionID: String) async throws -> Runtime {
+        let recorder = try MeetingCompressedAudioRecorder(
+            directory: try await recoveryStore.recordingDirectory(sessionID: sessionID),
+            budgetBytes: policy.recordingBudgetBytes
+        )
+        let runtimeID = UUID()
+        let events = makeEventBuffer(sessionID: sessionID, runtimeID: runtimeID)
+        let store = recoveryStore
+        let capture = captureFactory(
+            sessionID,
+            { audio in try await recorder.append(audio) },
+            { checkpoint in
+                try await store.saveProducerCheckpoint(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint
+                )
+            },
+            { events.append($0) }
+        )
+        let created = Runtime(id: runtimeID, capture: capture, events: events, recorder: recorder)
+        runtime = created
+        return created
     }
 
     private func makeEventBuffer(sessionID: String, runtimeID: UUID) -> MeetingNoteEventBuffer {
@@ -1396,8 +1414,6 @@ actor MeetingNoteCoordinator {
         _ error: Error,
         journal: MeetingNoteRecoveryJournal
     ) {
-        checkpointTask?.cancel()
-        checkpointTask = nil
         runtime = nil
         activeScopeToken = nil
         phase = .error
@@ -1409,8 +1425,6 @@ actor MeetingNoteCoordinator {
     }
 
     private func releaseUndurableStartFailure() {
-        checkpointTask?.cancel()
-        checkpointTask = nil
         stopTask = nil
         runtime = nil
         activeScopeToken = nil
@@ -1418,55 +1432,6 @@ actor MeetingNoteCoordinator {
         captureInterrupted = false
         phase = .idle
         journal = nil
-    }
-
-    private func startCheckpointLoopIfNeeded() {
-        guard automaticCheckpointing,
-              policy.artifactIntervalSeconds > 0,
-              checkpointTask == nil else { return }
-        let interval = UInt64(policy.artifactIntervalSeconds) * 1_000_000_000
-        checkpointTask = Task { [weak self] in
-            var publicationFailing = false
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: interval)
-                guard !Task.isCancelled, let self else { return }
-                do {
-                    _ = try await self.checkpointNow()
-                    if publicationFailing {
-                        publicationFailing = false
-                        await self.publicationRecovered()
-                    }
-                } catch {
-                    if Task.isCancelled { return }
-                    if Self.isCancellation(error) { continue }
-                    if case MeetingNoteCoordinatorError.publicationFailed = error {
-                        // The journal and accepted audio stay on this Mac, so a
-                        // slow or unavailable note writer must not end the
-                        // recording. The held request is resent next interval.
-                        publicationFailing = true
-                        await self.publicationFailedDuringCapture()
-                        continue
-                    }
-                    try? await self.markInterrupted(error)
-                    return
-                }
-            }
-        }
-    }
-
-    private func publicationFailedDuringCapture() async {
-        Self.logger.error("Note checkpoint publication failed; capture continues and will retry")
-        // Recognized audio no longer needs its recovery copy, whether or not
-        // the writer accepted the transcript.
-        if let journal { try? await retainPendingAudio(journal) }
-        guard phase == .recording || phase == .paused else { return }
-        snapshotSink(snapshot())
-    }
-
-    private func publicationRecovered() {
-        Self.logger.notice("Note checkpoint publication recovered")
-        guard phase == .recording || phase == .paused else { return }
-        snapshotSink(snapshot())
     }
 
     private func snapshot(from journal: MeetingNoteRecoveryJournal?) -> MeetingNoteCoordinatorSnapshot {
@@ -1491,6 +1456,17 @@ actor MeetingNoteCoordinator {
         if let storeError = error as? MeetingNoteRecoveryStoreError {
             return storeError.localizedDescription
         }
+        if let recordingError = error as? MeetingCompressedAudioError {
+            return recordingError.localizedDescription
+        }
+        // Underlying transcriber messages are not passed through.
+        if let transcriptionError = error as? MeetingRecordingTranscriptionError {
+            switch transcriptionError {
+            case .modelUnavailable: return "The local transcription model is unavailable."
+            case .invalidRecording: return "The meeting recording could not be read."
+            case .transcriptionFailed: return "Local transcription failed for the recording."
+            }
+        }
         let nsError = error as NSError
         if nsError.domain == NSCocoaErrorDomain,
            nsError.code == CocoaError.fileWriteOutOfSpace.rawValue {
@@ -1514,9 +1490,22 @@ actor MeetingNoteCoordinator {
             }
         case let error as MeetingNoteRecoveryStoreError:
             switch error {
-            case .audioBudgetExceeded: return "recovery_audio_budget_exceeded"
             case .missingAudio: return "recovery_audio_missing"
             case .invalidAudio: return "recovery_audio_invalid"
+            }
+        case let error as MeetingCompressedAudioError:
+            switch error {
+            case .budgetExceeded: return "recording_budget_exceeded"
+            case .invalidAudio: return "recording_audio_invalid"
+            case .recorderClosed: return "recording_closed"
+            case .invalidManifest: return "recording_manifest_invalid"
+            case .missingSegment: return "recording_segment_missing"
+            }
+        case let error as MeetingRecordingTranscriptionError:
+            switch error {
+            case .modelUnavailable: return "transcription_model_unavailable"
+            case .invalidRecording: return "recording_invalid"
+            case .transcriptionFailed: return "transcription_failed"
             }
         case let error as MeetingProducerError:
             switch error {
@@ -1538,5 +1527,136 @@ actor MeetingNoteCoordinator {
         let nsError = error as NSError
         return nsError.domain == NSURLErrorDomain
             && nsError.code == URLError.cancelled.rawValue
+    }
+}
+
+/// Replays a session's audio for the post-Stop batch: Float32 chunks retained by
+/// journals from before compressed recording first, then the recording.
+private struct MeetingNoteRecordingReader: MeetingRecordedAudioReading {
+    let timingEpochs: [MeetingTimingEpoch]
+    let totalMilliseconds: Int
+    private let legacyChunksBySource: [MeetingAudioSourceID: [MeetingAcceptedAudio]]
+    private let recording: MeetingCompressedAudioRecording
+    /// Legacy windows the live producer already completed. Their epochs are
+    /// rebased past them so the batch reproduces the live segment IDs.
+    private let windowOffsetByEpoch: [String: Int]
+    private let ownedSamples = MeetingTranscriptProducer.Configuration.default.ownedSamples
+
+    init(
+        checkpoint: MeetingProducerCheckpoint?,
+        legacyAudio: [MeetingAcceptedAudio],
+        recording: MeetingCompressedAudioRecording
+    ) {
+        let legacyEpochIDs = Set(legacyAudio.map(\.descriptor.timingEpochID))
+        var offsets: [String: Int] = [:]
+        for epochID in legacyEpochIDs {
+            offsets[epochID] = checkpoint?.nextWindowSequenceByEpoch[epochID] ?? 0
+        }
+        let owned = ownedSamples
+        timingEpochs = (checkpoint?.timingEpochs ?? []).map { epoch in
+            guard let offset = offsets[epoch.epochID], offset > 0 else { return epoch }
+            let startSample = epoch.startSample + offset * owned
+            return MeetingTimingEpoch(
+                epochID: epoch.epochID,
+                sourceID: epoch.sourceID,
+                sequence: epoch.sequence,
+                startSample: startSample,
+                startMilliseconds: startSample * 1_000 / epoch.sampleRate,
+                sampleRate: epoch.sampleRate
+            )
+        }
+        windowOffsetByEpoch = offsets
+        let sequenceByEpoch = Dictionary(
+            (checkpoint?.timingEpochs ?? []).map { ($0.epochID, $0.sequence) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        legacyChunksBySource = Dictionary(grouping: legacyAudio, by: \.descriptor.sourceID)
+            .mapValues { chunks in
+                chunks.sorted {
+                    let left = sequenceByEpoch[$0.descriptor.timingEpochID] ?? 0
+                    let right = sequenceByEpoch[$1.descriptor.timingEpochID] ?? 0
+                    if left != right { return left < right }
+                    return $0.descriptor.sequence < $1.descriptor.sequence
+                }
+            }
+        self.recording = recording
+        totalMilliseconds = legacyAudio.reduce(0) {
+            $0 + $1.descriptor.sampleCount * 1_000 / $1.descriptor.sampleRate
+        } + recording.segments.reduce(0) {
+            $0 + $1.sampleCount * 1_000 / MeetingCompressedAudioRecorder.sampleRate
+        }
+    }
+
+    func chunks(
+        for source: MeetingAudioSourceID
+    ) -> AsyncThrowingStream<MeetingAcceptedAudio, Error> {
+        let cursor = MeetingNoteRecordingCursor(
+            legacy: legacyChunksBySource[source] ?? [],
+            recorded: recording.chunks(for: source).makeAsyncIterator()
+        )
+        // The unfolding form pulls one decoded chunk at a time.
+        return AsyncThrowingStream { try await cursor.next() }
+    }
+
+    /// Maps a rebased epoch's revision back to the live producer's segment ID
+    /// and window sequence.
+    func restore(_ revision: MeetingTranscriptSegmentRevision) -> MeetingTranscriptSegmentRevision {
+        guard let offset = windowOffsetByEpoch[revision.timingEpochID], offset > 0 else {
+            return revision
+        }
+        let prefix = "\(revision.timingEpochID)-S"
+        guard revision.segmentID.hasPrefix(prefix),
+              let ownedStart = Int(revision.segmentID.dropFirst(prefix.count)) else {
+            return revision
+        }
+        return MeetingTranscriptSegmentRevision(
+            segmentID: prefix + String(ownedStart + offset * ownedSamples),
+            sourceID: revision.sourceID,
+            timingEpochID: revision.timingEpochID,
+            windowSequence: revision.windowSequence + offset,
+            revision: revision.revision,
+            startMilliseconds: revision.startMilliseconds,
+            endMilliseconds: revision.endMilliseconds,
+            text: revision.text,
+            isFinal: revision.isFinal,
+            recognizedWords: revision.recognizedWords
+        )
+    }
+}
+
+/// Only the unfolding stream calls `next`, one call at a time.
+private final class MeetingNoteRecordingCursor: @unchecked Sendable {
+    private var legacy: IndexingIterator<[MeetingAcceptedAudio]>
+    private var recorded: MeetingCompressedAudioRecording.Chunks.Iterator
+
+    init(
+        legacy: [MeetingAcceptedAudio],
+        recorded: MeetingCompressedAudioRecording.Chunks.Iterator
+    ) {
+        self.legacy = legacy.makeIterator()
+        self.recorded = recorded
+    }
+
+    func next() async throws -> MeetingAcceptedAudio? {
+        if let chunk = legacy.next() { return chunk }
+        return try await recorded.next()
+    }
+}
+
+/// Lock-backed because the batch transcriber delivers events synchronously.
+private final class MeetingNoteRevisionCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var revisions: [MeetingTranscriptSegmentRevision] = []
+
+    func append(_ revision: MeetingTranscriptSegmentRevision) {
+        lock.lock()
+        revisions.append(revision)
+        lock.unlock()
+    }
+
+    var values: [MeetingTranscriptSegmentRevision] {
+        lock.lock()
+        defer { lock.unlock() }
+        return revisions
     }
 }

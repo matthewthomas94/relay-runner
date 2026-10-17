@@ -3,6 +3,51 @@ import XCTest
 @testable import relay_runner
 
 final class MeetingNoteCoordinatorTests: XCTestCase {
+    func testEventBufferDropsDuplicateSourcesAndPreservesTransitionsAndFailure() async {
+        let sourceChanged = expectation(description: "source transition")
+        sourceChanged.expectedFulfillmentCount = 6
+        let terminalFailure = expectation(description: "terminal failure")
+        let issue = MeetingCaptureIssue(
+            code: .checkpointFailed,
+            sourceID: .microphone,
+            message: "Fixture recording failure",
+            recoverable: true
+        )
+        let events = MeetingNoteEventBuffer(
+            terminalFailureSink: {
+                XCTAssertEqual($0, issue)
+                terminalFailure.fulfill()
+            },
+            sourceStateSink: { sourceChanged.fulfill() }
+        )
+        for _ in 0..<100 {
+            events.append(.source(.microphone, .capturing))
+            events.append(.source(.systemAudio, .capturing))
+        }
+        XCTAssertEqual(events.drain(), [
+            .source(.microphone, .capturing), .source(.systemAudio, .capturing),
+        ])
+        // Draining does not forget source state or turn the next chunk into a change.
+        events.append(.source(.microphone, .capturing))
+        events.append(.source(.systemAudio, .interrupted))
+        events.append(.source(.systemAudio, .interrupted))
+        XCTAssertEqual(events.unhealthySources(), [.systemAudio])
+        events.append(.source(.systemAudio, .capturing))
+        XCTAssertTrue(events.unhealthySources().isEmpty)
+        events.append(.source(.microphone, .paused))
+        events.append(.source(.microphone, .paused))
+        events.append(.source(.microphone, .capturing))
+        events.append(.issue(issue))
+        events.append(.source(.microphone, .capturing))
+        events.append(.state(.failed))
+        XCTAssertEqual(events.drain(), [
+            .source(.systemAudio, .interrupted), .source(.systemAudio, .capturing),
+            .source(.microphone, .paused), .source(.microphone, .capturing),
+            .issue(issue), .state(.failed),
+        ])
+        await fulfillment(of: [sourceChanged, terminalFailure], timeout: 1)
+    }
+
     func testRecorderPresentationUsesExactOwnedLabelsAndNoStaleListeningState() {
         let recording = snapshot(phase: .recording).notchPresentation
         let paused = snapshot(phase: .paused).notchPresentation
@@ -11,6 +56,8 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(recording?.label, "Taking notes")
         XCTAssertEqual(paused?.status, .paused)
         XCTAssertEqual(paused?.label, "Paused")
+        XCTAssertEqual(snapshot(phase: .transcribing).notchPresentation?.label, "Transcribing notes")
+        XCTAssertEqual(snapshot(phase: .transcribing).notchPresentation?.pinsLabel, true)
         XCTAssertEqual(snapshot(phase: .stopping).notchPresentation?.label, "Saving notes")
         XCTAssertEqual(snapshot(phase: .stopping).notchPresentation?.pinsLabel, true)
         XCTAssertEqual(snapshot(phase: .error).notchPresentation?.label, "Note save failed")
@@ -24,18 +71,17 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             XCTAssertNil(presentation?.label)
         }
         XCTAssertNil(snapshot(phase: .saved).notchPresentation)
-        XCTAssertEqual(MeetingNoteCheckpointPolicy.default.artifactIntervalSeconds, 15)
         XCTAssertEqual(
-            MeetingNoteCheckpointPolicy.default.maximumUnpersistedAcceptedAudioMilliseconds,
-            0
+            MeetingNoteCheckpointPolicy.default.maximumUnfinalizedAudioSecondsPerSource,
+            30
         )
         XCTAssertEqual(
-            MeetingNoteCheckpointPolicy.default.maximumRecoveryAudioSecondsAtTwoSources,
-            2_097
+            MeetingNoteCheckpointPolicy.default.maximumRecordingSecondsAtTwoSources,
+            25_165
         )
         XCTAssertEqual(
-            MeetingNoteCheckpointPolicy.default.maximumRecoveryAudioSecondsAtOneSource,
-            4_194
+            MeetingNoteCheckpointPolicy.default.maximumRecordingSecondsAtOneSource,
+            50_331
         )
     }
 
@@ -96,11 +142,16 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         let writer = FakeMeetingNoteWriter(syncState: "pending")
         let store = InMemoryMeetingNoteRecoveryStore()
         let captures = FakeMeetingNoteCaptureFactory()
-        captures.stopRevisions = [
+        let transcriber = FakeMeetingRecordingTranscriber(revisions: [
             revision(id: "microphone-E0-S0", start: 0, text: "Same words — café", final: true),
             revision(id: "microphone-E0-S10", start: 1_000, text: "Same words — café", final: true),
-        ]
-        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
+        ])
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            recordingTranscriber: transcriber
+        )
 
         let started = try await coordinator.start(
             project: project,
@@ -129,13 +180,14 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         let stopCount = await capture.stopCount
         let storeIsEmpty = await store.isEmpty
         XCTAssertEqual(stopCount, 1)
+        XCTAssertEqual(transcriber.callCount, 1)
         XCTAssertTrue(storeIsEmpty)
     }
 
     func testFirstStopRetriesTransientFinalTranscriptionAndClearsRecovery() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
-        let captures = DurableMeetingNoteCaptureFactory(firstCaptureFailureCount: 1)
+        let captures = DurableMeetingNoteCaptureFactory(batchFailureCount: 1)
         let coordinator = makeDurableCoordinator(
             writer: writer,
             store: store,
@@ -151,55 +203,15 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         let updates = await writer.updates
         let storeIsEmpty = await store.isEmpty
         let capture = try XCTUnwrap(captures.firstCapture)
-        let transcriber = try XCTUnwrap(captures.firstTranscriber)
 
         XCTAssertEqual(saved.phase, .saved)
         XCTAssertEqual(capture.stopCount, 1)
-        XCTAssertEqual(transcriber.attemptCount, 2)
+        XCTAssertEqual(captures.liveTranscriber.prepareCount, 0)
+        XCTAssertEqual(captures.liveTranscriber.attemptCount, 0)
+        XCTAssertEqual(captures.batchTranscriber.prepareCount, 1)
+        XCTAssertEqual(captures.batchTranscriber.attemptCount, 2)
         XCTAssertEqual(updates.map(\.update.recordingState), [.completed])
         XCTAssertEqual(updates.first?.update.segments.map(\.text), ["recovered tail"])
-        XCTAssertTrue(storeIsEmpty)
-    }
-
-    func testStopSupersedesCancelledBackgroundCheckpointWithoutSaveFailure() async throws {
-        let writer = FakeMeetingNoteWriter()
-        let store = InMemoryMeetingNoteRecoveryStore()
-        let captures = FakeMeetingNoteCaptureFactory()
-        let policy = MeetingNoteCheckpointPolicy(
-            artifactIntervalSeconds: 1,
-            maximumUnpersistedAcceptedAudioMilliseconds: 0,
-            recoveryAudioBudgetBytes: MeetingNoteRecoveryStore.defaultAudioBudgetBytes
-        )
-        let coordinator = makeCoordinator(
-            writer: writer,
-            store: store,
-            captures: captures,
-            policy: policy,
-            automaticCheckpointing: true
-        )
-        _ = try await coordinator.start(
-            project: project,
-            projectScopeToken: "scope-original",
-            initiallyPaused: false
-        )
-        let capture = try XCTUnwrap(captures.latest())
-        await capture.emitRevision(
-            revision(id: "microphone-E0-S0", start: 0, text: "durable words", final: true)
-        )
-        await writer.suspendNextUpdateUntilCancelled()
-        await writer.waitForCancellableUpdate()
-
-        let saved = try await coordinator.stop()
-        let attempts = await writer.attemptedRequestIDs
-        let updates = await writer.updates
-        let storeIsEmpty = await store.isEmpty
-
-        XCTAssertEqual(saved.phase, .saved)
-        XCTAssertEqual(attempts.count, 3)
-        XCTAssertEqual(attempts[0], attempts[1])
-        XCTAssertNotEqual(attempts[1], attempts[2])
-        XCTAssertEqual(updates.map(\.update.recordingState), [.recording, .completed])
-        XCTAssertEqual(updates.last?.update.segments.map(\.text), ["durable words"])
         XCTAssertTrue(storeIsEmpty)
     }
 
@@ -207,15 +219,21 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
         let captures = FakeMeetingNoteCaptureFactory()
-        captures.stopRevisions = [
+        let transcriber = FakeMeetingRecordingTranscriber(revisions: [
             revision(id: "system-E0-S0", start: 0, text: "durable tail", final: true),
-        ]
-        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
+        ])
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            recordingTranscriber: transcriber
+        )
         _ = try await coordinator.start(
             project: project,
             projectScopeToken: "scope-original",
             initiallyPaused: false
         )
+        try await XCTUnwrap(captures.latest()).emitAudio(sampleCount: 1_600)
         await writer.failNextUpdate()
 
         do {
@@ -228,9 +246,11 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         let failed = await coordinator.snapshot()
         let offers = try await coordinator.recoveryOffers()
         let failedAttempts = await writer.attemptedRequestIDs
+        let recordedSegments = await store.recordedSegmentCount(sessionID: try XCTUnwrap(offers.first?.sessionID))
         XCTAssertEqual(failed.phase, .error)
         XCTAssertEqual(offers.count, 1)
         XCTAssertEqual(failedAttempts.count, 1)
+        XCTAssertEqual(recordedSegments, 1, "a failed save keeps the recording")
 
         let recovered = try await coordinator.resolveRecovery(
             sessionID: try XCTUnwrap(offers.first?.sessionID),
@@ -402,22 +422,23 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(updates.map(\.update.checkpointReason), [.resume, .complete])
     }
 
-    func testRetainingCheckpointAudioKeepsPersistedChunkUntilItsDescriptorIsSaved() async throws {
+    func testRealStoreLoadsLegacyFloat32AudioAndExcludesRecordingFromBackup() async throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("meeting-note-retain-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("meeting-note-legacy-\(UUID().uuidString)", isDirectory: true)
         let store = MeetingNoteRecoveryStore(root: root)
         defer { try? FileManager.default.removeItem(at: root) }
-        let sessionID = "inflight-retention"
+        let sessionID = "legacy-float32"
         let descriptor = audioDescriptor(chunkID: "microphone-E0-A704")
-        var journal = MeetingNoteRecoveryJournal(
+        let timestamp = "2026-09-21T00:00:00Z"
+        let journal = MeetingNoteRecoveryJournal(
             schemaVersion: MeetingNoteRecoveryJournal.schemaVersion,
             sessionID: sessionID,
             project: project,
             createRequest: RelayProjectNoteCreateRequest(
-                requestID: "create-inflight-retention",
-                createdAt: "2026-09-21T00:00:00Z",
-                captureStartedAt: "2026-09-21T00:00:00Z",
-                capturedAt: "2026-09-21T00:00:00Z",
+                requestID: "create-legacy-float32",
+                createdAt: timestamp,
+                captureStartedAt: timestamp,
+                capturedAt: timestamp,
                 recordingState: .recording,
                 checkpointReason: .checkpoint,
                 segments: [],
@@ -425,8 +446,13 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
                 provider: "codex"
             ),
             identity: noteIdentity(),
-            phase: .recording,
-            producerCheckpoint: producerCheckpoint(sessionID: sessionID, state: .recording),
+            phase: .interrupted,
+            producerCheckpoint: producerCheckpoint(
+                sessionID: sessionID,
+                state: .recording,
+                acceptedChunkCount: 1,
+                pendingAudio: [descriptor]
+            ),
             revisions: [],
             canonicalSegments: [],
             pendingUpdate: nil,
@@ -434,45 +460,29 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             syncState: "local_only",
             captureEndedAt: nil,
             lastError: nil,
-            updatedAt: "2026-09-21T00:00:00Z"
+            updatedAt: timestamp
         )
         try await store.save(journal)
-        try await store.persistAudio(
-            sessionID: sessionID,
-            audio: MeetingAcceptedAudio(descriptor: descriptor, samples: [1, 2])
-        )
-        try await store.retainCheckpointAudio(sessionID: sessionID)
-        journal.producerCheckpoint = producerCheckpoint(
-            sessionID: sessionID,
-            state: .recording,
-            acceptedChunkCount: 1,
-            pendingAudio: [descriptor]
-        )
-        try await store.saveProducerCheckpoint(
-            sessionID: sessionID,
-            checkpoint: try XCTUnwrap(journal.producerCheckpoint)
-        )
+        try writeLegacyFloat32Audio(root: root, sessionID: sessionID, chunkID: descriptor.chunkID, samples: [1, 2])
+
         let relaunchedStore = MeetingNoteRecoveryStore(root: root)
         let recovered = try await relaunchedStore.loadAudio(
             sessionID: sessionID,
             descriptors: [descriptor]
         )
         XCTAssertEqual(recovered.first?.samples, [1, 2])
-        try await store.saveProducerCheckpoint(
-            sessionID: sessionID,
-            checkpoint: producerCheckpoint(
-                sessionID: sessionID,
-                state: .recording,
-                acceptedChunkCount: 1
-            )
-        )
-        try await store.retainCheckpointAudio(sessionID: sessionID)
+        let recording = try await relaunchedStore.recordingDirectory(sessionID: sessionID)
+        let values = try recording.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        XCTAssertEqual(values.isExcludedFromBackup, true)
+
+        try await relaunchedStore.removeSession(sessionID: sessionID)
         do {
-            _ = try await store.loadAudio(sessionID: sessionID, descriptors: [descriptor])
-            XCTFail("finalized audio should be released")
+            _ = try await relaunchedStore.loadAudio(sessionID: sessionID, descriptors: [descriptor])
+            XCTFail("removing the session should delete legacy audio")
         } catch let error as MeetingNoteRecoveryStoreError {
             XCTAssertEqual(error, .missingAudio(descriptor.chunkID))
         }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recording.path))
     }
 
     func testStaleJournalSaveCannotRestoreFinalizedAudioDescriptor() async throws {
@@ -585,8 +595,8 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         let coordinator = MeetingNoteCoordinator(
             writer: writer,
             recoveryStore: reloadedStore,
-            automaticCheckpointing: false,
-            now: { "2026-09-21T00:00:01Z" }
+            now: { "2026-09-21T00:00:01Z" },
+            recordingTranscriber: FakeMeetingRecordingTranscriber()
         ) { sessionID, acceptedAudio, _, events in
             captures.make(
                 sessionID: sessionID,
@@ -893,21 +903,18 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             scopeTokenRefresher: { project in
                 refreshes.record(project)
                 return "scope-refreshed"
-            }
+            },
+            recordingTranscriber: FakeMeetingRecordingTranscriber(revisions: [
+                revision(id: "microphone-E0-S0", start: 0, text: "saved once", final: true),
+            ])
         )
         _ = try await coordinator.start(
             project: project,
             projectScopeToken: "scope-original",
             initiallyPaused: false
         )
-        let capture = try XCTUnwrap(captures.latest())
-        await capture.emitRevision(
-            revision(id: "microphone-E0-S0", start: 0, text: "saved once", final: true)
-        )
         await writer.invalidateOriginalScope()
 
-        let checkpointed = try await coordinator.checkpointNow()
-        XCTAssertEqual(checkpointed.phase, .recording)
         await coordinator.setPaused(true)
         let paused = await coordinator.snapshot()
         XCTAssertEqual(paused.phase, .paused)
@@ -926,16 +933,15 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             "scope-refreshed",
             "scope-refreshed",
             "scope-refreshed",
-            "scope-refreshed",
         ])
         XCTAssertEqual(attempts[0], attempts[1], "scope retry must preserve the request ID")
         XCTAssertEqual(
             updates.map(\.update.checkpointReason),
-            [.checkpoint, .pause, .resume, .complete]
+            [.pause, .resume, .complete]
         )
         XCTAssertEqual(
             updates.map(\.update.recordingState),
-            [.recording, .paused, .recording, .completed]
+            [.paused, .recording, .completed]
         )
         let savedTexts = await writer.savedSegments.map(\.text)
         XCTAssertEqual(savedTexts, ["saved once"])
@@ -953,16 +959,15 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             scopeTokenRefresher: { project in
                 refreshes.record(project)
                 return "scope-refreshed"
-            }
+            },
+            recordingTranscriber: FakeMeetingRecordingTranscriber(revisions: [
+                revision(id: "microphone-E0-S0", start: 0, text: "committed tail", final: true),
+            ])
         )
         _ = try await coordinator.start(
             project: project,
             projectScopeToken: "scope-original",
             initiallyPaused: false
-        )
-        let capture = try XCTUnwrap(captures.latest())
-        await capture.emitRevision(
-            revision(id: "microphone-E0-S0", start: 0, text: "committed tail", final: true)
         )
         await writer.loseNextCommittedUpdateResponse()
 
@@ -1003,7 +1008,8 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         for pauseBeforeSwitch in [false, true] {
             let writer = FakeMeetingNoteWriter()
             let store = InMemoryMeetingNoteRecoveryStore()
-            let captures = DurableMeetingNoteCaptureFactory()
+            // Both attempts of the first Stop fail; recovery's batch succeeds.
+            let captures = DurableMeetingNoteCaptureFactory(batchFailureCount: 2)
             let coordinator = makeDurableCoordinator(
                 writer: writer,
                 store: store,
@@ -1031,7 +1037,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
                 }
                 XCTFail("unresolved accepted audio must block the work session")
             } catch {
-                XCTAssertTrue(error.localizedDescription.contains("pending local transcription"))
+                XCTAssertTrue(error.localizedDescription.contains("Local transcription failed"))
             }
 
             let failed = await coordinator.snapshot()
@@ -1103,16 +1109,13 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         }
     }
 
-    func testRecoveryReplaysExactPendingAudioAndNeverStartsMicrophoneImplicitly() async throws {
+    func testRecoverPausedKeepsLegacyAudioAndStopTranscribesBeforeAndAfter() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
         let captures = FakeMeetingNoteCaptureFactory()
-        captures.replayRevision = revision(
-            id: "microphone-E0-S0",
-            start: 0,
-            text: "recovered tail",
-            final: true
-        )
+        let transcriber = FakeMeetingRecordingTranscriber(revisions: [
+            revision(id: "microphone-E0-S0", start: 0, text: "recovered tail", final: true),
+        ])
         let sessionID = "interrupted-session"
         let descriptor = audioDescriptor(chunkID: "chunk-1")
         let identity = noteIdentity()
@@ -1155,7 +1158,12 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             audio: MeetingAcceptedAudio(descriptor: descriptor, samples: [0.1, 0.2])
         )
         await writer.seed(identity: identity, segments: [])
-        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            recordingTranscriber: transcriber
+        )
 
         let recovered = try await coordinator.resolveRecovery(
             sessionID: sessionID,
@@ -1166,30 +1174,44 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         let startInitiallyPaused = await capture.startInitiallyPaused
         let startCount = await capture.startCount
         let resumeCount = await capture.resumeCount
-        let replayedChunkIDs = await capture.replayedChunkIDs
         let recoveryUpdates = await writer.updates
 
         XCTAssertEqual(recovered.phase, .paused)
         XCTAssertEqual(startInitiallyPaused, true)
         XCTAssertEqual(startCount, 1)
         XCTAssertEqual(resumeCount, 0)
-        XCTAssertEqual(replayedChunkIDs, ["chunk-1"])
-        XCTAssertEqual(recoveryUpdates.last?.update.segments.map(\.text), ["recovered tail"])
+        XCTAssertEqual(transcriber.callCount, 0, "recovering paused must not transcribe")
+        XCTAssertEqual(recoveryUpdates.map(\.update.checkpointReason), [.pause])
+        XCTAssertTrue(recoveryUpdates.allSatisfy { $0.update.segments.isEmpty })
 
         let resumed = try await coordinator.resumeRecoveredCapture()
         let resumedCount = await capture.resumeCount
         XCTAssertEqual(resumed.phase, .recording)
         XCTAssertEqual(resumedCount, 1)
+        try await capture.emitAudio(sampleCount: 1_600)
+        let saved = try await coordinator.stop()
+        let completed = await writer.updates.last
+        let storeIsEmpty = await store.isEmpty
+
+        XCTAssertEqual(saved.phase, .saved)
+        XCTAssertEqual(transcriber.callCount, 1)
+        XCTAssertEqual(transcriber.readChunkIDs.first, "chunk-1")
+        XCTAssertEqual(transcriber.readChunkIDs.count, 2, "Stop reads audio from before and after recovery")
+        XCTAssertEqual(completed?.update.recordingState, .completed)
+        XCTAssertEqual(completed?.update.segments.map(\.text), ["recovered tail"])
+        XCTAssertTrue(storeIsEmpty)
     }
 
-    func testOneFinalizeActionReplaysResidualAcceptedTailBeforeCompletion() async throws {
+    func testFinalizeTranscribesLegacyFloat32JournalFromDisk() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meeting-note-legacy-finalize-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MeetingNoteRecoveryStore(root: root)
         let writer = FakeMeetingNoteWriter()
-        let store = InMemoryMeetingNoteRecoveryStore()
         let captures = FakeMeetingNoteCaptureFactory()
-        captures.replayRetainsOneChunkOnce = true
-        captures.replayRevision = revision(
-            id: "microphone-E0-S0", start: 0, text: "final words", final: true
-        )
+        let transcriber = FakeMeetingRecordingTranscriber(revisions: [
+            revision(id: "microphone-E0-S0", start: 0, text: "final words", final: true),
+        ])
         let sessionID = "residual-tail"
         let first = audioDescriptor(chunkID: "first")
         let last = audioDescriptor(chunkID: "last")
@@ -1224,13 +1246,24 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             lastError: nil,
             updatedAt: timestamp
         ))
-        await store.persistAudio(sessionID: sessionID,
-                                 audio: MeetingAcceptedAudio(descriptor: first, samples: [1, 2]))
-        await store.persistAudio(sessionID: sessionID,
-                                 audio: MeetingAcceptedAudio(descriptor: last, samples: [3, 4]))
+        try writeLegacyFloat32Audio(root: root, sessionID: sessionID, chunkID: "first", samples: [1, 2])
+        try writeLegacyFloat32Audio(root: root, sessionID: sessionID, chunkID: "last", samples: [3, 4])
         await writer.seed(identity: identity, segments: [])
-        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
+        let coordinator = MeetingNoteCoordinator(
+            writer: writer,
+            recoveryStore: store,
+            now: { timestamp },
+            recordingTranscriber: transcriber
+        ) { sessionID, acceptedAudio, _, events in
+            captures.make(
+                sessionID: sessionID,
+                acceptedAudioSink: acceptedAudio,
+                eventSink: events
+            )
+        }
 
+        let offers = try await coordinator.recoveryOffers()
+        XCTAssertEqual(offers.first?.pendingAudioChunkCount, 2)
         let result = try await coordinator.resolveRecovery(
             sessionID: sessionID,
             projectScopeToken: "scope-original",
@@ -1239,55 +1272,189 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(result.phase, .saved)
         XCTAssertEqual(result.durableSegmentCount, 1)
-        let capture = try XCTUnwrap(captures.latest())
-        let replayCount = await capture.replayCount
-        let replayedChunkIDs = await capture.replayedChunkIDs
-        let stopCount = await capture.stopCount
-        let storeIsEmpty = await store.isEmpty
-        XCTAssertEqual(replayCount, 2)
-        XCTAssertEqual(replayedChunkIDs, ["last"])
-        XCTAssertEqual(stopCount, 1)
-        XCTAssertTrue(storeIsEmpty)
+        XCTAssertEqual(transcriber.callCount, 1)
+        XCTAssertEqual(transcriber.readChunkIDs, ["first", "last"])
+        XCTAssertEqual(captures.count, 0, "finalize must not start capture")
+        let journals = try await store.loadAll()
+        XCTAssertTrue(journals.isEmpty)
+        let remaining = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        XCTAssertTrue(remaining.isEmpty, "the legacy audio must be deleted after the save")
         let updates = await writer.updates
         XCTAssertEqual(updates.last?.update.segments.map(\.text), ["final words"])
     }
 
-    func testSingleStopRecoversFailedCaptureAndItsAcceptedTail() async throws {
+    func testSingleStopRecoversFailedCaptureAndTranscribesItsRecording() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
         let captures = FakeMeetingNoteCaptureFactory()
         captures.firstStopFailure = .backpressureExceeded
-        captures.replayRevision = revision(
-            id: "microphone-E0-S0", start: 0, text: "accepted tail", final: true
+        let transcriber = FakeMeetingRecordingTranscriber(revisions: [
+            revision(id: "microphone-E0-S0", start: 0, text: "accepted tail", final: true),
+        ])
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            recordingTranscriber: transcriber
         )
-        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
         _ = try await coordinator.start(
             project: project,
             projectScopeToken: "scope-original",
             initiallyPaused: false
         )
-        let offers = try await coordinator.recoveryOffers()
-        let sessionID = try XCTUnwrap(offers.first?.sessionID)
-        let descriptor = audioDescriptor(chunkID: "accepted-tail")
-        let originalCapture = try XCTUnwrap(captures.latest())
-        await originalCapture.setPendingAudio([descriptor])
-        await store.persistAudio(
-            sessionID: sessionID,
-            audio: MeetingAcceptedAudio(descriptor: descriptor, samples: [1, 2])
-        )
+        let capture = try XCTUnwrap(captures.latest())
+        try await capture.emitAudio(sampleCount: 1_600)
+        let emitted = await capture.emittedChunkIDs
 
         let result = try await coordinator.stop()
 
         XCTAssertEqual(result.phase, .saved)
         XCTAssertEqual(result.durableSegmentCount, 1)
-        XCTAssertEqual(captures.count, 2)
-        let recoveredCapture = try XCTUnwrap(captures.latest())
-        let replayedChunkIDs = await recoveredCapture.replayedChunkIDs
-        XCTAssertEqual(replayedChunkIDs, ["accepted-tail"])
+        XCTAssertEqual(captures.count, 1, "finalize must not start a second capture")
+        XCTAssertEqual(transcriber.callCount, 1)
+        XCTAssertEqual(transcriber.readChunkIDs.count, emitted.count)
         let storeIsEmpty = await store.isEmpty
         XCTAssertTrue(storeIsEmpty)
         let updates = await writer.updates
         XCTAssertEqual(updates.last?.update.segments.map(\.text), ["accepted tail"])
+    }
+
+    func testRecordOnlyCaptureRunsNoASRAndPublishesTextOnlyAfterStop() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = ControllableMeetingNoteCaptureFactory()
+        let updates = MeetingNoteSnapshotRecorder()
+        let batch = DurableFinalWindowTranscriber(failureCount: 0)
+        let coordinator = makeRecordOnlyCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            snapshotSink: { updates.append($0) },
+            recordingTranscriber: MeetingRecordingTranscriber(transcriber: batch)
+        )
+        let chunk = (0..<1_600).map { Float(sin(Double($0) / 8)) * 0.25 }
+
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        for _ in 0..<3 { XCTAssertTrue(captures.capture.emit(samples: chunk)) }
+        await coordinator.setPaused(true)
+        await coordinator.setPaused(false)
+        for _ in 0..<200 where !captures.capture.isRunning {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        for _ in 0..<2 { XCTAssertTrue(captures.capture.emit(samples: chunk)) }
+        await coordinator.setPaused(true)
+
+        let journals = await store.loadAll()
+        let journal = try XCTUnwrap(journals.first)
+        let sessionID = journal.sessionID
+        let recording = try await store.loadRecording(sessionID: sessionID)
+        let checkpointWrites = await store.producerCheckpointWriteCount
+        let epochs = try XCTUnwrap(journal.producerCheckpoint?.timingEpochs)
+        let sessionDirectory = try await store.recordingDirectory(sessionID: sessionID)
+            .deletingLastPathComponent()
+        let files = FileManager.default.enumerator(at: sessionDirectory, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL } ?? []
+
+        XCTAssertEqual(captures.liveTranscriber.prepareCount, 0)
+        XCTAssertEqual(captures.liveTranscriber.attemptCount, 0)
+        XCTAssertEqual(batch.prepareCount, 0, "no model is resident while recording")
+        XCTAssertEqual(batch.attemptCount, 0)
+        XCTAssertEqual(checkpointWrites, 2, "one producer checkpoint per timing epoch, not per chunk")
+        XCTAssertTrue(journal.revisions.isEmpty)
+        XCTAssertEqual(journal.producerCheckpoint?.pendingAudio, [])
+        XCTAssertEqual(recording.segments.map(\.sampleCount).reduce(0, +), 8_000)
+        XCTAssertEqual(Set(recording.segments.map(\.timingEpochID)), Set(epochs.map(\.epochID)))
+        XCTAssertEqual(epochs.count, 2)
+        XCTAssertFalse(files.contains { $0.pathExtension == "f32" })
+        XCTAssertFalse(updates.snapshots.contains { $0.liveHypothesisCount > 0 })
+
+        let saved = try await coordinator.stop()
+        let requests = await writer.updates
+        let creates = await writer.createRequests
+        let labels = updates.snapshots.compactMap(\.notchPresentation?.label)
+        let transcribing = try XCTUnwrap(labels.firstIndex(of: "Transcribing notes"))
+        let saving = try XCTUnwrap(labels.firstIndex(of: "Saving notes"))
+        let storeIsEmpty = await store.isEmpty
+        let recordingRemains = await store.hasRecording(sessionID: sessionID)
+
+        XCTAssertEqual(saved.phase, .saved)
+        XCTAssertLessThan(transcribing, saving)
+        XCTAssertEqual(batch.prepareCount, 1)
+        XCTAssertEqual(captures.liveTranscriber.attemptCount, 0)
+        XCTAssertTrue(creates.allSatisfy { $0.segments.isEmpty })
+        XCTAssertEqual(
+            requests.map(\.update.checkpointReason),
+            [.pause, .resume, .pause, .complete]
+        )
+        XCTAssertTrue(requests.dropLast().allSatisfy { $0.update.segments.isEmpty })
+        let segments = try XCTUnwrap(requests.last?.update.segments)
+        XCTAssertEqual(segments.map(\.segmentID), epochs.map { "\($0.epochID)-S0" })
+        XCTAssertEqual(segments.map(\.startMilliseconds), epochs.map(\.startMilliseconds))
+        XCTAssertEqual(
+            segments.map(\.endMilliseconds),
+            zip(epochs, [4_800, 3_200]).map { ($0.startSample + $1) * 1_000 / 16_000 }
+        )
+        XCTAssertEqual(segments.map(\.speaker), ["microphone", "microphone"])
+        XCTAssertEqual(segments.map(\.text), ["recovered tail", "recovered tail"])
+        XCTAssertFalse(recordingRemains)
+        XCTAssertTrue(storeIsEmpty)
+    }
+
+    func testFailedTranscriptionKeepsRecordingAndDiscardCompletesWithCanonicalSegments() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = ControllableMeetingNoteCaptureFactory()
+        let transcriber = FakeMeetingRecordingTranscriber(failureCount: 1)
+        let coordinator = makeRecordOnlyCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            recordingTranscriber: transcriber
+        )
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        XCTAssertTrue(captures.capture.emit(samples: [Float](repeating: 0.25, count: 1_600)))
+
+        do {
+            _ = try await coordinator.stop()
+            XCTFail("expected the injected transcription failure to block completion")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Local transcription failed"))
+        }
+
+        let journals = await store.loadAll()
+        let sessionID = try XCTUnwrap(journals.first?.sessionID)
+        let recordedSegments = await store.recordedSegmentCount(sessionID: sessionID)
+        let offers = try await coordinator.recoveryOffers()
+        XCTAssertEqual(recordedSegments, 1, "the recording survives a failed transcription")
+        XCTAssertEqual(offers.map(\.sessionID), [sessionID])
+        XCTAssertEqual(offers.first?.pendingAudioChunkCount, recordedSegments)
+        XCTAssertEqual(transcriber.callCount, 1, "building offers must not transcribe")
+        XCTAssertEqual(captures.liveTranscriber.prepareCount, 0, "building offers must not load a model")
+        XCTAssertFalse(captures.capture.isRunning, "building offers must not capture")
+
+        let discarded = try await coordinator.resolveRecovery(
+            sessionID: sessionID,
+            projectScopeToken: "scope-original",
+            resolution: .discardIncompleteTail
+        )
+        let completed = await writer.updates.last
+        let recordingRemains = await store.hasRecording(sessionID: sessionID)
+        let storeIsEmpty = await store.isEmpty
+
+        XCTAssertEqual(discarded.phase, .saved)
+        XCTAssertEqual(transcriber.callCount, 1, "discard deletes the audio without transcribing it")
+        XCTAssertEqual(completed?.update.recordingState, .completed)
+        XCTAssertEqual(completed?.update.segments, [])
+        XCTAssertFalse(recordingRemains)
+        XCTAssertTrue(storeIsEmpty)
     }
 
     @MainActor
@@ -1295,12 +1462,9 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
         let captures = FakeMeetingNoteCaptureFactory()
-        captures.replayRevision = revision(
-            id: "microphone-E0-S0",
-            start: 0,
-            text: "recovered tail",
-            final: true
-        )
+        let transcriber = FakeMeetingRecordingTranscriber(revisions: [
+            revision(id: "microphone-E0-S0", start: 0, text: "recovered tail", final: true),
+        ])
         let sessionID = "pending-recovery-session"
         let descriptor = audioDescriptor(chunkID: "pending-recovery-chunk")
         let identity = noteIdentity()
@@ -1342,7 +1506,12 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         )
         await writer.seed(identity: identity, segments: [])
         await writer.suspendNextUpdate()
-        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            recordingTranscriber: transcriber
+        )
 
         let recoveryTask = Task {
             try await coordinator.resolveRecovery(
@@ -1608,14 +1777,14 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
     func testRuntimeCheckpointDiskFullStopsCaptureAndClearsTakingNotes() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
-        let captures = RuntimeCheckpointFailureCaptureFactory()
+        let captures = ControllableMeetingNoteCaptureFactory()
         let updates = MeetingNoteSnapshotRecorder()
         let coordinator = MeetingNoteCoordinator(
             writer: writer,
             recoveryStore: store,
-            automaticCheckpointing: false,
             now: { "2026-09-21T00:00:00Z" },
-            snapshotSink: { updates.append($0) }
+            snapshotSink: { updates.append($0) },
+            recordingTranscriber: FakeMeetingRecordingTranscriber()
         ) { sessionID, acceptedAudio, durableCheckpoint, events in
             captures.make(
                 sessionID: sessionID,
@@ -1667,71 +1836,24 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(failed.notchPresentation?.label, "Recording interrupted")
     }
 
-    func testBackgroundPublicationFailureKeepsRecordingAndResendsHeldRequest() async throws {
-        let writer = FakeMeetingNoteWriter()
-        let store = InMemoryMeetingNoteRecoveryStore()
-        let captures = FakeMeetingNoteCaptureFactory()
-        let updates = MeetingNoteSnapshotRecorder()
-        let coordinator = makeCoordinator(
-            writer: writer,
-            store: store,
-            captures: captures,
-            policy: MeetingNoteCheckpointPolicy(
-                artifactIntervalSeconds: 1,
-                maximumUnpersistedAcceptedAudioMilliseconds: 0,
-                recoveryAudioBudgetBytes: MeetingNoteRecoveryStore.defaultAudioBudgetBytes
-            ),
-            automaticCheckpointing: true,
-            snapshotSink: { updates.append($0) }
-        )
-        _ = try await coordinator.start(
-            project: project,
-            projectScopeToken: "scope-original",
-            initiallyPaused: false
-        )
-        let capture = try XCTUnwrap(captures.latest())
-        await writer.failNextUpdate()
-        await capture.emitRevision(
-            revision(id: "microphone-E0-S0", start: 0, text: "durable words", final: true)
-        )
-
-        for _ in 0..<500 {
-            if await writer.updates.count == 1 { break }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        let attempts = await writer.attemptedRequestIDs
-        let recording = await coordinator.snapshot()
-        let stillRecording = await capture.isRecording
-        XCTAssertEqual(attempts.count, 2)
-        XCTAssertEqual(attempts.first, attempts.last)
-        XCTAssertEqual(recording.phase, .recording)
-        XCTAssertNil(recording.errorMessage)
-        XCTAssertTrue(stillRecording)
-        XCTAssertEqual(captures.count, 1)
-        XCTAssertTrue(updates.snapshots.contains {
-            $0.phase == .recording && $0.errorMessage != nil
-        })
-
-        let saved = try await coordinator.stop()
-        XCTAssertEqual(saved.phase, .saved)
-        let storeIsEmpty = await store.isEmpty
-        XCTAssertTrue(storeIsEmpty)
-    }
-
     func testStopDuringFailureTeardownFinalizesOnceAndClearsRecovery() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
         let captures = FakeMeetingNoteCaptureFactory()
-        let coordinator = makeCoordinator(writer: writer, store: store, captures: captures)
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: store,
+            captures: captures,
+            recordingTranscriber: FakeMeetingRecordingTranscriber(revisions: [
+                revision(id: "microphone-E0-S0", start: 0, text: "before the failure", final: true)
+            ])
+        )
         _ = try await coordinator.start(
             project: project,
             projectScopeToken: "scope-original",
             initiallyPaused: false
         )
         let capture = try XCTUnwrap(captures.latest())
-        await capture.emitRevision(
-            revision(id: "microphone-E0-S0", start: 0, text: "before the failure", final: true)
-        )
         await capture.suspendNextStop()
         await capture.emitTerminalFailure(.backpressureExceeded)
         await capture.waitForSuspendedStop()
@@ -1823,53 +1945,6 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(restored?.revisions.count, saved.count)
     }
 
-    func testFileRecoveryStoreEnforcesBudgetAndRemovesOwnedAudio() async throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("meeting-note-store-\(UUID().uuidString)", isDirectory: true)
-        let store = MeetingNoteRecoveryStore(root: root, audioBudgetBytes: 8)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let first = audioDescriptor(chunkID: "first")
-        let second = audioDescriptor(chunkID: "second")
-
-        try await store.persistAudio(
-            sessionID: "budget",
-            audio: MeetingAcceptedAudio(descriptor: first, samples: [1, 2])
-        )
-        do {
-            try await store.persistAudio(
-                sessionID: "budget",
-                audio: MeetingAcceptedAudio(descriptor: second, samples: [3, 4])
-            )
-            XCTFail("expected the bounded recovery audio budget")
-        } catch let error as MeetingNoteRecoveryStoreError {
-            XCTAssertEqual(error, .audioBudgetExceeded(limitBytes: 8))
-        }
-        try await store.retainAudio(sessionID: "budget", chunkIDs: [])
-        do {
-            _ = try await store.loadAudio(sessionID: "budget", descriptors: [first])
-            XCTFail("owned audio should have been removed")
-        } catch let error as MeetingNoteRecoveryStoreError {
-            XCTAssertEqual(error, .missingAudio("first"))
-        }
-        try await store.persistAudio(
-            sessionID: "budget",
-            audio: MeetingAcceptedAudio(descriptor: second, samples: [3, 4])
-        )
-        let relaunched = MeetingNoteRecoveryStore(root: root, audioBudgetBytes: 8)
-        do {
-            try await relaunched.persistAudio(
-                sessionID: "budget",
-                audio: MeetingAcceptedAudio(
-                    descriptor: audioDescriptor(chunkID: "third"),
-                    samples: [5, 6]
-                )
-            )
-            XCTFail("relaunch must count already persisted recovery audio")
-        } catch let error as MeetingNoteRecoveryStoreError {
-            XCTAssertEqual(error, .audioBudgetExceeded(limitBytes: 8))
-        }
-    }
-
     func testArtifactResponseCannotRegressCursorPersistedDuringWriterDelay() async throws {
         let store = InMemoryMeetingNoteRecoveryStore()
         let sessionID = "cursor-race"
@@ -1946,18 +2021,18 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         store: InMemoryMeetingNoteRecoveryStore,
         captures: FakeMeetingNoteCaptureFactory,
         policy: MeetingNoteCheckpointPolicy = .default,
-        automaticCheckpointing: Bool = false,
         snapshotSink: @escaping MeetingNoteCoordinator.SnapshotSink = { _ in },
-        scopeTokenRefresher: MeetingNoteCoordinator.ScopeTokenRefresher? = nil
+        scopeTokenRefresher: MeetingNoteCoordinator.ScopeTokenRefresher? = nil,
+        recordingTranscriber: any MeetingRecordingTranscribing = FakeMeetingRecordingTranscriber()
     ) -> MeetingNoteCoordinator {
         MeetingNoteCoordinator(
             writer: writer,
             recoveryStore: store,
             policy: policy,
-            automaticCheckpointing: automaticCheckpointing,
             now: { "2026-09-21T00:00:00Z" },
             snapshotSink: snapshotSink,
-            scopeTokenRefresher: scopeTokenRefresher
+            scopeTokenRefresher: scopeTokenRefresher,
+            recordingTranscriber: recordingTranscriber
         ) { sessionID, acceptedAudio, _, events in
             captures.make(
                 sessionID: sessionID,
@@ -1967,16 +2042,41 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         }
     }
 
-    private func makeDurableCoordinator(
+    private func makeRecordOnlyCoordinator(
         writer: FakeMeetingNoteWriter,
         store: InMemoryMeetingNoteRecoveryStore,
-        captures: DurableMeetingNoteCaptureFactory
+        captures: ControllableMeetingNoteCaptureFactory,
+        snapshotSink: @escaping MeetingNoteCoordinator.SnapshotSink = { _ in },
+        recordingTranscriber: any MeetingRecordingTranscribing
     ) -> MeetingNoteCoordinator {
         MeetingNoteCoordinator(
             writer: writer,
             recoveryStore: store,
-            automaticCheckpointing: false,
-            now: { "2026-09-21T00:00:00Z" }
+            now: { "2026-09-21T00:00:00Z" },
+            snapshotSink: snapshotSink,
+            recordingTranscriber: recordingTranscriber
+        ) { sessionID, acceptedAudio, durableCheckpoint, events in
+            captures.make(
+                sessionID: sessionID,
+                acceptedAudioSink: acceptedAudio,
+                durableCheckpointSink: durableCheckpoint,
+                eventSink: events
+            )
+        }
+    }
+
+    private func makeDurableCoordinator(
+        writer: FakeMeetingNoteWriter,
+        store: InMemoryMeetingNoteRecoveryStore,
+        captures: DurableMeetingNoteCaptureFactory,
+        snapshotSink: @escaping MeetingNoteCoordinator.SnapshotSink = { _ in }
+    ) -> MeetingNoteCoordinator {
+        MeetingNoteCoordinator(
+            writer: writer,
+            recoveryStore: store,
+            now: { "2026-09-21T00:00:00Z" },
+            snapshotSink: snapshotSink,
+            recordingTranscriber: MeetingRecordingTranscriber(transcriber: captures.batchTranscriber)
         ) { sessionID, acceptedAudio, durableCheckpoint, events in
             captures.make(
                 sessionID: sessionID,
@@ -2082,6 +2182,27 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
             metrics: metrics
         )
     }
+
+    /// Writes a raw chunk the way journals from before compressed recording did.
+    private func writeLegacyFloat32Audio(
+        root: URL,
+        sessionID: String,
+        chunkID: String,
+        samples: [Float]
+    ) throws {
+        func encoded(_ value: String) -> String {
+            Data(value.utf8).base64EncodedString()
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        let directory = root
+            .appendingPathComponent("session-" + encoded(sessionID), isDirectory: true)
+            .appendingPathComponent("audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try samples.withUnsafeBufferPointer { Data(buffer: $0) }
+            .write(to: directory.appendingPathComponent(encoded(chunkID) + ".f32"))
+    }
 }
 
 private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
@@ -2103,6 +2224,7 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
     private var cancellableUpdateWaiters: [CheckedContinuation<Void, Never>] = []
     private var fetchState: RelayProjectNoteRecordingState = .paused
     private(set) var createCount = 0
+    private(set) var createRequests: [RelayProjectNoteCreateRequest] = []
     private(set) var updates: [RelayProjectNoteCheckpointRequest] = []
     private(set) var attemptedRequestIDs: [String] = []
     private(set) var repositories: [String] = []
@@ -2158,6 +2280,7 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
         projectScopeToken: String?
     ) -> RelayProjectNoteResponse {
         createCount += 1
+        createRequests.append(request)
         repositories.append(repositoryPath)
         return response(
             state: request.recordingState,
@@ -2399,9 +2522,6 @@ private enum FakeMeetingNoteError: Error, Equatable {
 private final class FakeMeetingNoteCaptureFactory: @unchecked Sendable {
     private let lock = NSLock()
     private var captures: [FakeMeetingNoteCapture] = []
-    var stopRevisions: [MeetingTranscriptSegmentRevision] = []
-    var replayRevision: MeetingTranscriptSegmentRevision?
-    var replayRetainsOneChunkOnce = false
     var firstStopFailure: MeetingProducerError?
     var startError: Error?
 
@@ -2411,17 +2531,12 @@ private final class FakeMeetingNoteCaptureFactory: @unchecked Sendable {
         eventSink: @escaping MeetingTranscriptProducer.EventSink
     ) -> FakeMeetingNoteCapture {
         lock.lock()
-        let stopRevisions = self.stopRevisions
-        let replayRevision = self.replayRevision
-        let replayRetainsOneChunkOnce = self.replayRetainsOneChunkOnce
         let stopFailure = captures.isEmpty ? firstStopFailure : nil
         let startError = self.startError
         let capture = FakeMeetingNoteCapture(
             sessionID: sessionID,
+            acceptedAudioSink: acceptedAudioSink,
             eventSink: eventSink,
-            stopRevisions: stopRevisions,
-            replayRevision: replayRevision,
-            replayRetainsOneChunkOnce: replayRetainsOneChunkOnce,
             stopFailure: stopFailure,
             startError: startError
         )
@@ -2445,10 +2560,8 @@ private final class FakeMeetingNoteCaptureFactory: @unchecked Sendable {
 
 private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
     let sessionID: String
+    private let acceptedAudioSink: MeetingTranscriptProducer.AcceptedAudioSink
     private let eventSink: MeetingTranscriptProducer.EventSink
-    private let stopRevisions: [MeetingTranscriptSegmentRevision]
-    private let replayRevision: MeetingTranscriptSegmentRevision?
-    private let replayRetainsOneChunkOnce: Bool
     private var stopFailure: MeetingProducerError?
     private let startError: Error?
     private(set) var startCount = 0
@@ -2456,9 +2569,9 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
     private(set) var pauseCount = 0
     private(set) var resumeCount = 0
     private(set) var stopCount = 0
-    private(set) var replayedChunkIDs: [String] = []
-    private(set) var replayCount = 0
+    private(set) var emittedChunkIDs: [String] = []
     private(set) var ingressClosed = false
+    private var acceptedSamples = 0
     private var shouldSuspendNextPause = false
     private var suspendedPause: CheckedContinuation<Void, Never>?
     private var suspendedPauseWaiters: [CheckedContinuation<Void, Never>] = []
@@ -2470,8 +2583,29 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
 
     var isRecording: Bool { state == .recording }
 
-    func emitRevision(_ revision: MeetingTranscriptSegmentRevision) {
-        eventSink(.revision(revision))
+    /// Hands one 16 kHz microphone chunk to the session recorder, as the
+    /// record-only producer does.
+    func emitAudio(sampleCount: Int) async throws {
+        let rate = MeetingCompressedAudioRecorder.sampleRate
+        let start = acceptedSamples
+        let descriptor = MeetingAcceptedAudioDescriptor(
+            chunkID: "\(sessionID)-microphone-E0-A\(emittedChunkIDs.count)",
+            sourceID: .microphone,
+            timingEpochID: "\(sessionID)-microphone-E0",
+            sequence: emittedChunkIDs.count,
+            startSample: start,
+            endSample: start + sampleCount,
+            startMilliseconds: start * 1_000 / rate,
+            endMilliseconds: (start + sampleCount) * 1_000 / rate,
+            sampleRate: rate,
+            sampleCount: sampleCount
+        )
+        acceptedSamples += sampleCount
+        emittedChunkIDs.append(descriptor.chunkID)
+        try await acceptedAudioSink(MeetingAcceptedAudio(
+            descriptor: descriptor,
+            samples: [Float](repeating: 0.25, count: sampleCount)
+        ))
     }
 
     func emitSource(_ source: MeetingAudioSourceID, state: MeetingCaptureSourceState) {
@@ -2507,18 +2641,14 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
 
     init(
         sessionID: String,
+        acceptedAudioSink: @escaping MeetingTranscriptProducer.AcceptedAudioSink,
         eventSink: @escaping MeetingTranscriptProducer.EventSink,
-        stopRevisions: [MeetingTranscriptSegmentRevision],
-        replayRevision: MeetingTranscriptSegmentRevision?,
-        replayRetainsOneChunkOnce: Bool,
         stopFailure: MeetingProducerError?,
         startError: Error?
     ) {
         self.sessionID = sessionID
+        self.acceptedAudioSink = acceptedAudioSink
         self.eventSink = eventSink
-        self.stopRevisions = stopRevisions
-        self.replayRevision = replayRevision
-        self.replayRetainsOneChunkOnce = replayRetainsOneChunkOnce
         self.stopFailure = stopFailure
         self.startError = startError
     }
@@ -2608,15 +2738,12 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
             state = .failed
             throw failure
         }
-        for revision in stopRevisions { eventSink(.revision(revision)) }
         state = .stopped
         ingressClosed = true
         return MeetingProducerFinalBoundary(
             sessionID: sessionID,
             timingEpochs: [],
-            finalSegmentRevisionByID: Dictionary(
-                uniqueKeysWithValues: stopRevisions.map { ($0.segmentID, $0.revision) }
-            ),
+            finalSegmentRevisionByID: [:],
             metrics: MeetingProducerMetrics()
         )
     }
@@ -2653,39 +2780,91 @@ private actor FakeMeetingNoteCapture: MeetingNoteCaptureControlling {
             metrics: MeetingProducerMetrics()
         )
     }
+}
 
-    func replayAcceptedAudio(_ chunks: [MeetingAcceptedAudio]) {
-        replayCount += 1
-        replayedChunkIDs = chunks.map(\.descriptor.chunkID)
-        if let replayRevision { eventSink(.revision(replayRevision)) }
-        let remaining = replayRetainsOneChunkOnce && replayCount == 1
-            ? Array(chunks.suffix(1)).map(\.descriptor) : []
-        checkpointValue = MeetingProducerCheckpoint(
+/// Stands in for the RR-405 batch transcriber. It reads the whole recording,
+/// so tests can assert what Stop handed it.
+private final class FakeMeetingRecordingTranscriber: MeetingRecordingTranscribing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var configuredRevisions: [MeetingTranscriptSegmentRevision]
+    private var remainingFailures: Int
+    private var calls = 0
+    private var lastChunkIDs: [String] = []
+
+    init(
+        revisions: [MeetingTranscriptSegmentRevision] = [],
+        failureCount: Int = 0
+    ) {
+        configuredRevisions = revisions
+        remainingFailures = failureCount
+    }
+
+    var revisions: [MeetingTranscriptSegmentRevision] {
+        get { withLock { configuredRevisions } }
+        set { withLock { configuredRevisions = newValue } }
+    }
+
+    var failureCount: Int {
+        get { withLock { remainingFailures } }
+        set { withLock { remainingFailures = newValue } }
+    }
+
+    var callCount: Int { withLock { calls } }
+
+    /// Chunk IDs the most recent call read, in source order.
+    var readChunkIDs: [String] { withLock { lastChunkIDs } }
+
+    func transcribe(
+        _ recording: MeetingRecordedAudioReading,
+        sessionID: String,
+        onEvent: @escaping @Sendable (MeetingRecordingTranscriptionEvent) -> Void
+    ) async throws -> MeetingProducerFinalBoundary {
+        var chunkIDs: [String] = []
+        for source in MeetingAudioSourceID.allCases {
+            for try await chunk in recording.chunks(for: source) {
+                chunkIDs.append(chunk.descriptor.chunkID)
+            }
+        }
+        let (shouldFail, revisions): (Bool, [MeetingTranscriptSegmentRevision]) = withLock {
+            calls += 1
+            lastChunkIDs = chunkIDs
+            let shouldFail = remainingFailures > 0
+            remainingFailures = max(0, remainingFailures - 1)
+            return (shouldFail, configuredRevisions)
+        }
+        if shouldFail {
+            throw MeetingRecordingTranscriptionError.transcriptionFailed("injected")
+        }
+        for revision in revisions { onEvent(.revision(revision)) }
+        return MeetingProducerFinalBoundary(
             sessionID: sessionID,
-            state: state,
-            timingEpochs: [],
-            timelineOriginNanoseconds: nil,
-            timelineSampleBySource: [:],
-            nextWindowSequenceByEpoch: [:],
-            completedWindowSequencesByEpoch: [:],
-            emittedRevisionBySegment: [:],
-            finalRevisionBySegment: [:],
-            durableRevisions: nil,
-            pendingAudio: remaining,
+            timingEpochs: recording.timingEpochs,
+            finalSegmentRevisionByID: Dictionary(
+                revisions.map { ($0.segmentID, $0.revision) },
+                uniquingKeysWith: max
+            ),
             metrics: MeetingProducerMetrics()
         )
     }
+
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
 }
 
+/// Real record-only producers whose single synthetic chunk is batch
+/// transcribed after Stop by the shared `batchTranscriber`.
 private final class DurableMeetingNoteCaptureFactory: @unchecked Sendable {
     private let lock = NSLock()
-    private let firstCaptureFailureCount: Int?
-    private var makeCount = 0
     private var captures: [DurableSyntheticAudioCapture] = []
-    private var transcribers: [DurableFinalWindowTranscriber] = []
+    /// Live producers only record, so this is never prepared or called.
+    let liveTranscriber = DurableFinalWindowTranscriber(failureCount: 0)
+    let batchTranscriber: DurableFinalWindowTranscriber
 
-    init(firstCaptureFailureCount: Int? = nil) {
-        self.firstCaptureFailureCount = firstCaptureFailureCount
+    init(batchFailureCount: Int? = 0) {
+        batchTranscriber = DurableFinalWindowTranscriber(failureCount: batchFailureCount)
     }
 
     var firstCapture: DurableSyntheticAudioCapture? {
@@ -2694,12 +2873,6 @@ private final class DurableMeetingNoteCaptureFactory: @unchecked Sendable {
         return captures.first
     }
 
-    var firstTranscriber: DurableFinalWindowTranscriber? {
-        lock.lock()
-        defer { lock.unlock() }
-        return transcribers.first
-    }
-
     func make(
         sessionID: String,
         acceptedAudioSink: @escaping MeetingTranscriptProducer.AcceptedAudioSink,
@@ -2707,25 +2880,14 @@ private final class DurableMeetingNoteCaptureFactory: @unchecked Sendable {
         eventSink: @escaping MeetingTranscriptProducer.EventSink
     ) -> MeetingNoteCaptureSession {
         lock.lock()
-        makeCount += 1
-        let failureCount = makeCount == 1 ? firstCaptureFailureCount : 0
         let capture = DurableSyntheticAudioCapture(samples: [0.25, 0.5])
-        let transcriber = DurableFinalWindowTranscriber(failureCount: failureCount)
         captures.append(capture)
-        transcribers.append(transcriber)
         lock.unlock()
 
         let producer = MeetingTranscriptProducer(
             sessionID: sessionID,
-            transcriber: transcriber,
-            configuration: MeetingTranscriptProducer.Configuration(
-                sampleRate: 10,
-                windowMilliseconds: 1_000,
-                overlapMilliseconds: 200,
-                firstPartialMilliseconds: 400,
-                partialIntervalMilliseconds: 400,
-                maximumQueuedWindows: 4
-            ),
+            transcriber: liveTranscriber,
+            transcribesLive: false,
             acceptedAudioSink: acceptedAudioSink,
             durableCheckpointSink: durableCheckpointSink,
             eventSink: eventSink
@@ -2734,8 +2896,10 @@ private final class DurableMeetingNoteCaptureFactory: @unchecked Sendable {
     }
 }
 
-private final class RuntimeCheckpointFailureCaptureFactory: @unchecked Sendable {
+/// A real record-only producer fed by a test-driven microphone.
+private final class ControllableMeetingNoteCaptureFactory: @unchecked Sendable {
     let capture = ControllableMeetingAudioCapture()
+    let liveTranscriber = DurableFinalWindowTranscriber(failureCount: 0)
 
     func make(
         sessionID: String,
@@ -2745,15 +2909,8 @@ private final class RuntimeCheckpointFailureCaptureFactory: @unchecked Sendable 
     ) -> MeetingNoteCaptureSession {
         let producer = MeetingTranscriptProducer(
             sessionID: sessionID,
-            transcriber: DurableFinalWindowTranscriber(failureCount: 0),
-            configuration: MeetingTranscriptProducer.Configuration(
-                sampleRate: 10,
-                windowMilliseconds: 1_000,
-                overlapMilliseconds: 200,
-                firstPartialMilliseconds: 400,
-                partialIntervalMilliseconds: 400,
-                maximumQueuedWindows: 4
-            ),
+            transcriber: liveTranscriber,
+            transcribesLive: false,
             acceptedAudioSink: acceptedAudioSink,
             durableCheckpointSink: durableCheckpointSink,
             eventSink: eventSink
@@ -2801,7 +2958,7 @@ private final class ControllableMeetingAudioCapture: MeetingAudioCapturing, @unc
         return MeetingCaptureSourceInfo(
             sourceID: sourceID,
             routeID: "controllable-checkpoint-failure",
-            sampleRate: 10,
+            sampleRate: 16_000,
             channelCount: 1
         )
     }
@@ -2833,6 +2990,7 @@ private final class DurableFinalWindowTranscriber: MeetingWindowTranscribing, @u
     private let lock = NSLock()
     private var remainingFailures: Int?
     private var attempts = 0
+    private var prepares = 0
 
     init(failureCount: Int?) {
         remainingFailures = failureCount
@@ -2844,10 +3002,23 @@ private final class DurableFinalWindowTranscriber: MeetingWindowTranscribing, @u
         return attempts
     }
 
+    var prepareCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return prepares
+    }
+
     func prepare(
         onState: @escaping @Sendable (MeetingLocalModelState) -> Void
     ) async throws {
+        recordPrepare()
         onState(.ready(model: "synthetic-durability-fixture"))
+    }
+
+    private func recordPrepare() {
+        lock.lock()
+        prepares += 1
+        lock.unlock()
     }
 
     func transcribe(
@@ -2908,7 +3079,7 @@ private final class DurableSyntheticAudioCapture: MeetingAudioCapturing, @unchec
         return MeetingCaptureSourceInfo(
             sourceID: sourceID,
             routeID: "synthetic-durability",
-            sampleRate: 10,
+            sampleRate: 16_000,
             channelCount: 1
         )
     }
@@ -2927,13 +3098,25 @@ private final class DurableSyntheticAudioCapture: MeetingAudioCapturing, @unchec
     }
 }
 
+/// Journals stay in memory; recordings are real files under a temporary root
+/// so the coordinator drives the real compressed recorder.
 private actor InMemoryMeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
     private var journals: [String: MeetingNoteRecoveryJournal] = [:]
     private var audio: [String: [String: MeetingAcceptedAudio]] = [:]
     private var failNextSave = false
     private var failNextProducerCheckpoint = false
+    private(set) var producerCheckpointWriteCount = 0
+    private let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("meeting-note-store-\(UUID().uuidString)", isDirectory: true)
 
-    var isEmpty: Bool { journals.isEmpty && audio.values.allSatisfy(\.isEmpty) }
+    deinit {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    var isEmpty: Bool {
+        journals.isEmpty && audio.values.allSatisfy(\.isEmpty)
+            && ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).isEmpty
+    }
 
     func failNextSaveWithDiskFull() {
         failNextSave = true
@@ -2965,6 +3148,7 @@ private actor InMemoryMeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         journals.values.sorted { $0.updatedAt < $1.updatedAt }
     }
 
+    /// Seeds raw Float32 audio a journal from before compressed recording kept.
     func persistAudio(sessionID: String, audio: MeetingAcceptedAudio) {
         self.audio[sessionID, default: [:]][audio.descriptor.chunkID] = audio
     }
@@ -2973,6 +3157,7 @@ private actor InMemoryMeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         sessionID: String,
         checkpoint: MeetingProducerCheckpoint
     ) throws {
+        producerCheckpointWriteCount += 1
         if failNextProducerCheckpoint {
             failNextProducerCheckpoint = false
             throw CocoaError(.fileWriteOutOfSpace)
@@ -2996,17 +3181,40 @@ private actor InMemoryMeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         }
     }
 
-    func retainAudio(sessionID: String, chunkIDs: Set<String>) {
-        audio[sessionID] = audio[sessionID]?.filter { chunkIDs.contains($0.key) }
+    func recordingDirectory(sessionID: String) throws -> URL {
+        let directory = recordingURL(sessionID)
+        try MeetingCompressedAudioRecorder.prepareDirectory(directory)
+        return directory
     }
 
-    func retainCheckpointAudio(sessionID: String) {
-        let retained = Set(journals[sessionID]?.producerCheckpoint?.pendingAudio.map(\.chunkID) ?? [])
-        retainAudio(sessionID: sessionID, chunkIDs: retained)
+    func loadRecording(sessionID: String) throws -> MeetingCompressedAudioRecording {
+        try MeetingCompressedAudioRecording.load(directory: recordingURL(sessionID))
     }
 
-    func removeSession(sessionID: String) {
+    func recordedSegmentCount(sessionID: String) -> Int {
+        ((try? loadRecording(sessionID: sessionID))?.segments.count) ?? 0
+    }
+
+    func hasRecording(sessionID: String) -> Bool {
+        FileManager.default.fileExists(atPath: recordingURL(sessionID).path)
+    }
+
+    func removeRecording(sessionID: String) throws {
+        let directory = recordingURL(sessionID)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        try FileManager.default.removeItem(at: directory)
+    }
+
+    func removeSession(sessionID: String) throws {
         journals.removeValue(forKey: sessionID)
         audio.removeValue(forKey: sessionID)
+        let directory = root.appendingPathComponent(sessionID, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        try FileManager.default.removeItem(at: directory)
+    }
+
+    private func recordingURL(_ sessionID: String) -> URL {
+        root.appendingPathComponent(sessionID, isDirectory: true)
+            .appendingPathComponent("recording", isDirectory: true)
     }
 }

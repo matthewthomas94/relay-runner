@@ -46,6 +46,10 @@ actor MeetingTranscriptProducer {
     private let sessionID: String
     private let transcriber: MeetingWindowTranscribing
     private let configuration: Configuration
+    /// Record-only capture hands accepted audio to its sink and keeps the
+    /// timeline and epochs, but buffers nothing for recognition. The recording
+    /// is transcribed after Stop by `transcribeRecording`.
+    private let transcribesLive: Bool
     private let acceptedAudioSink: AcceptedAudioSink
     private let durableCheckpointSink: DurableCheckpointSink
     private let eventSink: EventSink
@@ -81,6 +85,7 @@ actor MeetingTranscriptProducer {
         sessionID: String,
         transcriber: MeetingWindowTranscribing,
         configuration: Configuration = .default,
+        transcribesLive: Bool = true,
         acceptedAudioSink: @escaping AcceptedAudioSink = { _ in },
         durableCheckpointSink: @escaping DurableCheckpointSink = { _ in },
         eventSink: @escaping EventSink = { _ in }
@@ -92,6 +97,7 @@ actor MeetingTranscriptProducer {
         self.sessionID = sessionID
         self.transcriber = transcriber
         self.configuration = configuration
+        self.transcribesLive = transcribesLive
         self.acceptedAudioSink = acceptedAudioSink
         self.durableCheckpointSink = durableCheckpointSink
         self.eventSink = eventSink
@@ -146,20 +152,22 @@ actor MeetingTranscriptProducer {
             }
         }
 
-        do {
-            try await transcriber.prepare { [eventSink] modelState in
-                eventSink(.model(modelState))
+        if transcribesLive {
+            do {
+                try await transcriber.prepare { [eventSink] modelState in
+                    eventSink(.model(modelState))
+                }
+            } catch {
+                emit(.model(.failed(error.localizedDescription)))
+                emitIssue(
+                    code: .modelUnavailable,
+                    message: "The local transcription model is unavailable: \(error.localizedDescription)",
+                    recoverable: true
+                )
+                state = .failed
+                emit(.state(.failed))
+                throw error
             }
-        } catch {
-            emit(.model(.failed(error.localizedDescription)))
-            emitIssue(
-                code: .modelUnavailable,
-                message: "The local transcription model is unavailable: \(error.localizedDescription)",
-                recoverable: true
-            )
-            state = .failed
-            emit(.state(.failed))
-            throw error
         }
 
         state = initiallyPaused ? .paused : .recording
@@ -240,6 +248,7 @@ actor MeetingTranscriptProducer {
                 timelineSample(for: presentationTimeNanoseconds)
             )
         }
+        let opensEpoch = buffer.epoch == nil
         let epoch = ensureEpoch(for: source, buffer: &buffer)
         let startSample = buffer.timelineSamples
         let endSample = startSample + samples.count
@@ -276,31 +285,39 @@ actor MeetingTranscriptProducer {
 
         buffer.acceptedChunkSequence += 1
         buffer.timelineSamples = endSample
-        buffer.samples.append(contentsOf: samples)
-        buffer.pendingAudio.append(descriptor)
+        if transcribesLive {
+            buffer.samples.append(contentsOf: samples)
+            buffer.pendingAudio.append(descriptor)
+        }
         metrics.acceptedSamplesBySource[source, default: 0] += samples.count
         metrics.acceptedChunkCount += 1
         sourceBuffers[source] = buffer
         sourceStates[source] = .capturing
         emit(.source(source, .capturing))
 
-        do {
-            try await durableCheckpointSink(checkpoint())
-        } catch {
-            let producerError = MeetingProducerError.checkpointFailed(error.localizedDescription)
-            terminalError = producerError
-            state = .failed
-            emitIssue(
-                code: .checkpointFailed,
-                sourceID: source,
-                message: producerError.localizedDescription,
-                recoverable: true
-            )
-            emit(.state(.failed))
-            throw producerError
+        // Record-only capture checkpoints only when an epoch opens, so the
+        // recording's timing survives a crash without a write per chunk.
+        if transcribesLive || opensEpoch {
+            do {
+                try await durableCheckpointSink(checkpoint())
+            } catch {
+                let producerError = MeetingProducerError.checkpointFailed(error.localizedDescription)
+                terminalError = producerError
+                state = .failed
+                emitIssue(
+                    code: .checkpointFailed,
+                    sourceID: source,
+                    message: producerError.localizedDescription,
+                    recoverable: true
+                )
+                emit(.state(.failed))
+                throw producerError
+            }
         }
 
-        try submitAvailableWindows(for: source)
+        if transcribesLive {
+            try submitAvailableWindows(for: source)
+        }
         await Task.yield()
     }
 

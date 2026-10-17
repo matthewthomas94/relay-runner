@@ -11,7 +11,6 @@ protocol MeetingNoteCaptureControlling: Sendable {
     func quiesceCaptureSources() async
     func stopCaptureSourcesForInterruption() async
     func checkpoint() async -> MeetingProducerCheckpoint
-    func replayAcceptedAudio(_ chunks: [MeetingAcceptedAudio]) async throws
     func releasePersistedRevisions(_ persistedFinalRevisionBySegment: [String: Int]) async
 }
 
@@ -108,10 +107,6 @@ actor MeetingNoteCaptureSession {
 
     func checkpoint() async -> MeetingProducerCheckpoint {
         await producer.checkpoint()
-    }
-
-    func replayAcceptedAudio(_ chunks: [MeetingAcceptedAudio]) async throws {
-        try await producer.replayAcceptedAudio(chunks)
     }
 
     func releasePersistedRevisions(_ persistedFinalRevisionBySegment: [String: Int]) async {

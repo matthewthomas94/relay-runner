@@ -85,7 +85,10 @@ present exactly when the recording state is `completed`.
 The shared Swift contracts are in
 `Sources/relay-runner/Notes/ProjectNoteContracts.swift`. Storage accepts a full
 segment snapshot per meaningful checkpoint. The recorder owns batching and must
-not call the writer once per partial STT callback. The canonical storage writer does not start or stop foreground provider sessions,
+not call the writer once per partial STT callback. Meeting capture records
+audio only: it creates an empty note, sends state-only pause/resume checkpoints
+with zero segments, and sends the transcript once in the completed checkpoint
+after Stop. The canonical storage writer does not start or stop foreground provider sessions,
 foreground modes, key routing, or audio. The daemon schedules isolated metadata
 generation only after durable publication.
 The recorder's source, timing, revision, bounded-queue, pause, final-boundary,
@@ -195,6 +198,8 @@ The source hash covers only the exact joined transcript sent to the provider;
 recording state/timing and metadata changes cannot invalidate it. Prior valid
 metadata survives failures and is visibly pending when newer text is being
 summarized. Empty notes use the existing deterministic label with no summary.
+Because capture checkpoints carry no text until Stop, the first provider call
+follows the completed checkpoint.
 Legacy documents have no metadata and remain readable without migration.
 
 Metadata publication checks immutable identity, materialization, source hash and
