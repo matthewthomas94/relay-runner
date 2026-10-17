@@ -342,6 +342,92 @@ class ReadySweeperTests(unittest.TestCase):
                 "source": "dependency-progression",
             }])
 
+    def test_dispatch_queues_dependency_gated_ticket_without_starting_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="in_progress")
+            self.write_ticket(repo, "RR-2", status="done")
+            self.write_ticket(repo, "RR-3", status="backlog", depends_on=["RR-1", "RR-2"])
+            self.write_ticket(repo, "RR-4", status="ready", depends_on=["RR-1"])
+            ready_before = (repo / ".orchestrator" / "RR-4.md").read_text()
+
+            daemon = object.__new__(Daemon)
+            daemon.runs = FakeRuns()
+
+            queued = Daemon.dispatch(daemon, ticket_id="RR-3", repo_path=str(repo))
+            already_ready = Daemon.dispatch(daemon, ticket_id="RR-4", repo_path=str(repo))
+
+            self.assertEqual(queued, {
+                "queued": True,
+                "already_active": False,
+                "run": None,
+                "waiting_on": ["RR-1"],
+            })
+            self.assertIn("status: ready", (repo / ".orchestrator" / "RR-3.md").read_text())
+            self.assertEqual(already_ready["waiting_on"], ["RR-1"])
+            self.assertIsNone(already_ready["run"])
+            self.assertEqual((repo / ".orchestrator" / "RR-4.md").read_text(), ready_before)
+            branches = subprocess.run(
+                ["git", "-C", str(repo), "branch", "--list"],
+                capture_output=True, text=True, check=True,
+            ).stdout
+            self.assertEqual(branches, "")
+
+    def test_stale_relay_dispatch_of_gated_ticket_is_rejected_before_queueing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="in_progress")
+            self.write_ticket(repo, "RR-2", status="backlog", depends_on=["RR-1"])
+            before = (repo / ".orchestrator" / "RR-2.md").read_text()
+            state_path = Path(tmp) / "voice_command_state.json"
+            state_path.write_text(json.dumps({
+                "relay_command_seq": 2,
+                "relay_command_id": "second",
+            }))
+            daemon = object.__new__(Daemon)
+            with patch.object(orchestrator, "RELAY_COMMAND_STATE_FILE", state_path):
+                with self.assertRaisesRegex(ValueError, "stale Relay command"):
+                    Daemon.dispatch(
+                        daemon,
+                        ticket_id="RR-2",
+                        repo_path=str(repo),
+                        relay_command_seq=1,
+                        relay_command_id="first",
+                    )
+            self.assertEqual((repo / ".orchestrator" / "RR-2.md").read_text(), before)
+
+    def test_queued_dependent_dispatches_once_after_predecessor_is_done(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="in_progress")
+            self.write_ticket(repo, "RR-2", status="backlog", depends_on=["RR-1"])
+
+            daemon = object.__new__(Daemon)
+            daemon.runs = FakeRuns()
+            queued = Daemon.dispatch(daemon, ticket_id="RR-2", repo_path=str(repo))
+            self.assertTrue(queued["queued"])
+
+            calls: list[dict] = []
+
+            def fake_dispatch(**kwargs):
+                calls.append(kwargs)
+                daemon.runs.active["RR-2"] = {"id": 42}
+                return {"already_active": False, "run": {"id": 42}}
+
+            daemon.dispatch = fake_dispatch
+            sweep = Daemon.sweep_ready_tickets(daemon, repo_path=str(repo), trigger="test")
+            self.assertEqual(sweep["dispatched"], [])
+            self.assertEqual(calls, [])
+
+            self.write_ticket(repo, "RR-1", status="done")
+            Daemon._progress_dependents(daemon, repo_path=str(repo), finished_ticket_id="RR-1")
+            Daemon.sweep_ready_tickets(daemon, repo_path=str(repo), trigger="test")
+
+            self.assertEqual([call["ticket_id"] for call in calls], ["RR-2"])
+
     def test_dependency_progression_does_not_promote_when_finished_ticket_is_not_done(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"

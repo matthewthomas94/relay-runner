@@ -66,7 +66,9 @@ Manual dispatch is still available for edge cases — retries, dispatching out-o
 /relay-dispatch work on MA-6
 ```
 
-The daemon:
+If any of the ticket's `depends_on` tickets is not `done`, the daemon queues it instead: it moves the ticket to `ready` (the Queued lane, with a waiting marker), creates no run, worktree or branch, and returns `{"queued": true, "run": null, "waiting_on": [...]}`. The ticket starts automatically once its dependencies are done. There is no force flag.
+
+Otherwise the daemon:
 
 1. Validates `<repo>/.orchestrator/MA-6.md` exists.
 2. Adds a git worktree at `~/Library/Application Support/relay-runner/workspaces/ma-6/` on branch `relay/ma-6`, branched off the repo's default branch (resolved via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `main`).

@@ -7893,6 +7893,29 @@ Title: {ticket['title']}
                 f"ticket {ticket_id} is verification blocked; use the explicit resume action "
                 "after the external condition changes"
             )
+        if ticket.get("status") in ("backlog", "ready") and ticket.get("depends_on"):
+            all_tickets = scan_repo(repo)
+            waiting_on = [
+                dependency_id
+                for dependency_id in ticket["depends_on"]
+                if not self._all_dependencies_done(
+                    repo=repo,
+                    ticket={"depends_on": [dependency_id]},
+                    all_tickets=all_tickets,
+                    artifact_lifecycle=artifact_lifecycle,
+                )
+            ]
+            if waiting_on:
+                return self._queue_for_dependencies(
+                    repo=repo,
+                    ticket_file=ticket_file,
+                    ticket=ticket,
+                    waiting_on=waiting_on,
+                    artifact_lifecycle=artifact_lifecycle,
+                    source=source,
+                    relay_command_id=relay_command_id,
+                    relay_intent_id=relay_intent_id,
+                )
         _notify_orchestration_trace(
             "dispatch-started",
             ticket_id=ticket_id,
@@ -8383,6 +8406,52 @@ Title: {ticket['title']}
                 status_message=f"Dispatched {ticket_id}.",
             )
         return {"already_active": False, "run": run}
+
+    def _queue_for_dependencies(
+        self,
+        *,
+        repo: Path,
+        ticket_file: Path,
+        ticket: dict[str, Any],
+        waiting_on: list[str],
+        artifact_lifecycle: ArtifactLifecycleCoordinator | None,
+        source: str,
+        relay_command_id: str | None,
+        relay_intent_id: str | None,
+    ) -> dict:
+        """Queue a dependency-gated ticket in `ready`; the sweeper starts it later."""
+        ticket_id = ticket["id"]
+        if ticket.get("status") == "backlog":
+            if artifact_lifecycle is not None:
+                artifact_lifecycle.queue_for_dependencies(ticket_id)
+            else:
+                ticket["status"] = "ready"
+                write_ticket(ticket_file, ticket)
+            _notify_orchestration_trace("board-change", ticket_id=ticket_id)
+        print(
+            f"[orchestrator] dispatch queued {ticket_id} from {source}: "
+            f"waiting on {', '.join(waiting_on)}",
+            file=sys.stderr,
+        )
+        command_store = getattr(self, "orchestrator_commands", None)
+        if relay_command_id and command_store and command_store.get_private(
+            str(relay_command_id),
+            intent_id=relay_intent_id,
+        ):
+            command_store.update_status(
+                str(relay_command_id),
+                intent_id=relay_intent_id,
+                status="dispatched",
+                outcome="dispatch-queued",
+                ticket_id=ticket_id,
+                status_message=f"{ticket_id} is queued, waiting on {', '.join(waiting_on)}.",
+            )
+        return {
+            "queued": True,
+            "already_active": False,
+            "run": None,
+            "waiting_on": waiting_on,
+        }
 
     def _spike_ticket_update(
         self,

@@ -811,6 +811,39 @@ class ArtifactLifecycleCoordinator:
         )
         return tuple(promoted)
 
+    def queue_for_dependencies(self, ticket_id: str) -> LifecycleWriteResult | None:
+        """Move a backlog ticket to `ready` so it waits for its dependencies."""
+        snapshot = self.store.snapshot()
+        path = f".orchestrator/{ticket_id}.md"
+        content = snapshot.files.get(path)
+        if content is None:
+            raise ArtifactValidationError(f"canonical ticket {ticket_id} is missing")
+        fields, _ = _split_ticket(content)
+        if fields.get("status") != "backlog":
+            return None
+        artifact_id = fields.get("artifact_id")
+        if not artifact_id:
+            raise ArtifactValidationError(f"ticket {ticket_id} has no immutable artifact_id")
+        instant = _format_instant(self.now())
+        event_id = f"lifecycle:dependency-queue:{ticket_id}:{snapshot.commit_id}"
+        write = self.store.mutate(
+            ArtifactMutation(
+                event_id=event_id,
+                actor_type="pm",
+                device_id=self.device_id,
+                expected_base=snapshot.commit_id,
+                operations=(
+                    TicketWrite(
+                        ticket_id,
+                        artifact_id,
+                        _rewrite_ticket(content, {"status": "ready", "activity_at": instant}),
+                    ),
+                ),
+                summary=f"Queue {ticket_id} until its dependencies are done",
+            )
+        )
+        return LifecycleWriteResult(event_id, write.commit_id, idempotent=write.idempotent)
+
     def _dependencies_allow_automatic_promotion(
         self,
         dependencies: Sequence[str],
