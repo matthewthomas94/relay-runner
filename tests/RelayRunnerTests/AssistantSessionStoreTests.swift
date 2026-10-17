@@ -246,6 +246,14 @@ final class AssistantSessionStoreTests: XCTestCase {
             try JSONSerialization.data(withJSONObject: record).write(to: sidecar)
             try store.reconcile(context: .general, activeRunIDs: [], pendingIntentIDs: [])
             XCTAssertEqual(store.binding(for: .general)?.resumableNativeSessionID, native)
+            // The transcript file was never written, so a launch starts fresh.
+            XCTAssertNil(store.binding(for: .general)?.launchableNativeSessionID)
+            let transcript = directory.appendingPathComponent("rollout-\(native).jsonl")
+            try Data().write(to: transcript)
+            record["transcript_path"] = transcript.path
+            try JSONSerialization.data(withJSONObject: record).write(to: sidecar)
+            try store.reconcile(context: .general, activeRunIDs: [], pendingIntentIDs: [])
+            XCTAssertEqual(store.binding(for: .general)?.launchableNativeSessionID, native)
             let changedNative = UUID().uuidString.lowercased()
             record["native_session_id"] = changedNative
             record["transcript_path"] = NSNull()
