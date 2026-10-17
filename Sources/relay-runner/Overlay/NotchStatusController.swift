@@ -511,18 +511,28 @@ struct NotchVisualLabelPresentation: Equatable {
 enum NotchVisualLabelAllowlist {
     /// `voiceTargetName` names the session a recording is delivered to when
     /// several sessions share the voice bridge (RR-398). `playbackTargetName`
-    /// names the session whose reply is playing (RR-407).
+    /// names the session whose reply is playing (RR-407). `switchNotice` is the
+    /// brief outcome of a Shift+Arrow session switch (RR-408); it shows over
+    /// the state's own label, including Playing, and pins until it expires.
     static func presentation(
         for state: OverlayState,
         bridgeStartingUp: Bool = false,
         boardContentLoading: Bool = false,
         voiceTargetName: String? = nil,
-        playbackTargetName: String? = nil
+        playbackTargetName: String? = nil,
+        switchNotice: SessionSwitchNotice? = nil
     ) -> NotchVisualLabelPresentation {
         if bridgeStartingUp {
             return NotchVisualLabelPresentation(
                 labels: ["Starting up..."],
                 hoverLabel: "Starting session",
+                pinsLabel: true
+            )
+        }
+        if let switchNotice {
+            return NotchVisualLabelPresentation(
+                labels: [switchNotice.label],
+                hoverLabel: switchNotice.label,
                 pinsLabel: true
             )
         }
@@ -582,6 +592,7 @@ enum NotchActivityLabelPlanner {
         boardContentLoading: Bool = false,
         voiceTargetName: String? = nil,
         playbackTargetName: String? = nil,
+        switchNotice: SessionSwitchNotice? = nil,
         now: Date = Date()
     ) -> [String] {
         NotchVisualLabelAllowlist.presentation(
@@ -589,7 +600,8 @@ enum NotchActivityLabelPlanner {
             bridgeStartingUp: bridgeStartingUp,
             boardContentLoading: boardContentLoading,
             voiceTargetName: voiceTargetName,
-            playbackTargetName: playbackTargetName
+            playbackTargetName: playbackTargetName,
+            switchNotice: switchNotice
         ).labels
     }
 
@@ -603,6 +615,7 @@ enum NotchActivityLabelPlanner {
         boardContentLoading: Bool = false,
         voiceTargetName: String? = nil,
         playbackTargetName: String? = nil,
+        switchNotice: SessionSwitchNotice? = nil,
         now: Date = Date(),
         ticketForRun: ((RunState) -> Ticket?)? = nil
     ) -> String? {
@@ -611,7 +624,8 @@ enum NotchActivityLabelPlanner {
             bridgeStartingUp: bridgeStartingUp,
             boardContentLoading: boardContentLoading,
             voiceTargetName: voiceTargetName,
-            playbackTargetName: playbackTargetName
+            playbackTargetName: playbackTargetName,
+            switchNotice: switchNotice
         ).hoverLabel
     }
 
