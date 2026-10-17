@@ -50,6 +50,7 @@ final class TranscriptionPill: NSView {
     /// Fades the clipped body edges so overflowing text dissolves instead
     /// of ending on a hard line.
     private let bodyFadeMask = CAGradientLayer()
+    private var bodyFadeBlurHeight: CGFloat = -1
     private var bodyEdgeFade: (top: Bool, bottom: Bool) = (false, false)
     /// Cards that peek above the reply for unread replies in other sessions,
     /// nearest first. Notification-style, but cascading from the top.
@@ -727,7 +728,9 @@ final class TranscriptionPill: NSView {
             } else {
                 cancelBodyScroll()
             }
-            updateBodyEdgeFade()
+            // The container may still be animating from an older size; fade
+            // against the size it is heading to, or a stale mask hides text.
+            updateBodyEdgeFade(containerSize: containerFrame.size)
         }
 
     }
@@ -736,8 +739,8 @@ final class TranscriptionPill: NSView {
 
     /// Fades and blurs whichever body edge hides more text: the top once
     /// the reader has scrolled past the start, the bottom while text remains.
-    func updateBodyEdgeFade() {
-        let bounds = bodyContainer.bounds
+    func updateBodyEdgeFade(containerSize: NSSize? = nil) {
+        let bounds = containerSize.map { NSRect(origin: .zero, size: $0) } ?? bodyContainer.bounds
         let labelY = bodyLabel.frame.origin.y
         let overflow = bodyLabel.frame.height - bounds.height
         let edges = (
@@ -753,7 +756,8 @@ final class TranscriptionPill: NSView {
         bodyFadeMask.endPoint = CGPoint(x: 0.5, y: 0)
         bodyFadeMask.locations = [0, NSNumber(value: Double(fraction)),
                                   NSNumber(value: Double(1 - fraction)), 1]
-        if edges != bodyEdgeFade || bodyContainer.layer?.filters == nil {
+        if edges != bodyEdgeFade || bodyContainer.layer?.filters == nil || bounds.height != bodyFadeBlurHeight {
+            bodyFadeBlurHeight = bounds.height
             bodyEdgeFade = edges
             bodyFadeMask.colors = Self.bodyFadeColors(top: edges.top, bottom: edges.bottom)
             bodyContainer.layer?.filters = Self.bodyEdgeBlur(
@@ -794,7 +798,8 @@ final class TranscriptionPill: NSView {
             mask = image.applyingFilter("CIMaximumCompositing", parameters: [kCIInputBackgroundImageKey: mask])
         }
         blur.name = "bodyEdgeBlur"
-        blur.setValue(mask, forKey: "inputMask")
+        // Bound the mask to the body: infinite extents leave the filter output unbounded.
+        blur.setValue(mask.cropped(to: CGRect(x: 0, y: 0, width: 10_000, height: maxY)), forKey: "inputMask")
         blur.setValue(6, forKey: kCIInputRadiusKey)
         return [blur]
     }

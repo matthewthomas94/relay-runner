@@ -920,16 +920,35 @@ def _latest_badge_reply(target: VoiceTarget | None) -> str:
 
 
 def _reply_origin_target(data: dict) -> VoiceTarget | None:
-    """The live session a reply came from: its session key, else its provider session."""
+    """The live session a reply came from: its session key, else its provider session.
+
+    Stop-hook completions name the provider session as ``session_id``.
+    """
     target = _voice_target_for(data.get("session_key"))
     if target is not None:
         return target
-    provider_session_id = str(data.get("provider_session_id") or "").strip()
+    provider_session_id = str(
+        data.get("provider_session_id") or data.get("session_id") or ""
+    ).strip()
     if provider_session_id:
         for candidate in _live_voice_targets():
-            if candidate.provider_session_id == provider_session_id:
+            if provider_session_id in (
+                candidate.provider_session_id,
+                _spool_provider_session_id(candidate),
+            ):
                 return candidate
     return None
+
+
+def _spool_provider_session_id(target: VoiceTarget) -> str:
+    """The provider session the app last recorded in the target's spool."""
+    if not target.spool_dir:
+        return ""
+    try:
+        with open(os.path.join(target.spool_dir, "voice_provider_session_id")) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 
 def _is_background_target(target: VoiceTarget | None) -> bool:
@@ -944,7 +963,7 @@ def _note_spoken_reply(target: VoiceTarget | None, text: str, command: dict) -> 
 
 
 def _cut_off_unfocused_speech(previous_key: str | None, tts_worker, messenger) -> None:
-    """Stop the old session's speech on a focus switch and badge its reply.
+    """Stop the old session's speech on a focus switch and badge its unheard reply.
 
     Only speech and the messenger generation end; the provider command keeps
     running in its own session.
@@ -952,22 +971,110 @@ def _cut_off_unfocused_speech(previous_key: str | None, tts_worker, messenger) -
     global _SPOKEN_REPLY
     with _VOICE_TARGET_LOCK:
         focused_key = _VOICE_TARGET_KEY
-        previous = _VOICE_TARGETS.get(previous_key or "")
+        spoken = _SPOKEN_REPLY
+        spoken_target = (
+            _VOICE_TARGETS.get(spoken.get("session_key") or "") if spoken else None
+        )
     if not previous_key or previous_key == focused_key:
         return
-    if tts_worker is None or not getattr(tts_worker, "speaking", False):
+    if spoken_target is not None and spoken_target.session_key == focused_key:
+        # The waiting reply belongs to the session the user just opened.
         return
-    tts_worker.skip()
+    speaking = tts_worker is not None and getattr(tts_worker, "speaking", False)
+    if spoken_target is None and not speaking:
+        return
+    if speaking:
+        # A distinct reason so the stop is not taken as the user finishing it.
+        tts_worker.skip(reason="focus_switch")
     if messenger is not None:
         messenger.interrupt()
-    spoken = _SPOKEN_REPLY
-    if spoken is not None and spoken.get("session_key") == previous_key and previous is not None:
+    if spoken_target is not None:
         _SPOKEN_REPLY = None
-        _record_background_reply(previous, str(spoken.get("text") or ""), spoken.get("command") or {})
+        _record_background_reply(
+            spoken_target, str(spoken.get("text") or ""), spoken.get("command") or {}
+        )
     print(
         f"[voice_bridge] Focus switch stopped speech for session={previous_key}",
         file=sys.stderr,
     )
+
+
+def _oldest_unread_reply() -> tuple[VoiceTarget, dict] | None:
+    """The earliest unheard reply across sessions other than the focused one."""
+    with _VOICE_TARGET_LOCK:
+        focused_key = _VOICE_TARGET_KEY
+    oldest: tuple[VoiceTarget, dict] | None = None
+    for target in _live_voice_targets():
+        path = _reply_badge_path(target)
+        if target.session_key == focused_key or not path:
+            continue
+        with _VOICE_BADGE_LOCK:
+            badge = _read_json_file(path)
+        unread = int(badge.get("unread_count") or 0)
+        replies = badge.get("replies")
+        if unread <= 0 or not isinstance(replies, list) or not replies:
+            continue
+        entry = replies[-min(unread, len(replies))]
+        if not isinstance(entry, dict) or not str(entry.get("text") or "").strip():
+            continue
+        if oldest is None or float(entry.get("at") or 0) < float(oldest[1].get("at") or 0):
+            oldest = (target, entry)
+    return oldest
+
+
+def _advance_reply_queue(tts_worker) -> bool:
+    """Bring the next unheard reply forward; it waits for the play gesture."""
+    global _SPOKEN_REPLY
+    if tts_worker is None or getattr(tts_worker, "speaking", False):
+        return False
+    found = _oldest_unread_reply()
+    if found is None:
+        return False
+    target, entry = found
+
+    def _take(badge: dict) -> bool:
+        if badge["unread_count"] <= 0:
+            return False
+        badge["unread_count"] -= 1
+        return True
+
+    _update_reply_badge(target, _take)
+    text = str(entry.get("text") or "").strip()
+    command = {
+        field: entry[field]
+        for field in ("relay_command_seq", "relay_command_id", "intent_id")
+        if entry.get(field) is not None
+    }
+    _SPOKEN_REPLY = {"session_key": target.session_key, "text": text, "command": command}
+    # No command metadata: the reply's own command is no longer the newest.
+    tts_worker.input_queue.put({
+        "text": text,
+        "display_text": text,
+        "_speech_intent_spec": {
+            "dedup_key": f"queued-reply:{target.session_key}:{entry.get('at')}",
+        },
+    })
+    print(
+        f"[voice_bridge] Brought forward unheard reply from session={target.session_key}",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _on_reply_finished(reason: str, tts_worker) -> None:
+    """A reply was heard or dismissed: offer the next unheard one."""
+    global _SPOKEN_REPLY
+    _SPOKEN_REPLY = None
+    _advance_reply_queue(tts_worker)
+
+
+def _cancel_speech(tts_worker) -> None:
+    """Dismiss the current reply; the next unheard reply comes forward."""
+    playing = getattr(tts_worker, "playing", None)
+    tts_worker.skip()
+    if playing is False:
+        # Nothing was playing, so no stop event will report the dismissal.
+        _on_reply_finished("dismissed", tts_worker)
 
 
 def _handle_session_replay(payload: dict, tts_worker) -> bool:
@@ -3353,6 +3460,8 @@ def _mark_foreground_reply_delivered(command: dict | None) -> None:
 
 
 def _reset_foreground_reply_delivery_for_tests() -> None:
+    global _SPOKEN_REPLY
+    _SPOKEN_REPLY = None
     with _FOREGROUND_REPLY_LOCK:
         _FOREGROUND_REPLIED_COMMANDS.clear()
         _FOREGROUND_REPLY_IN_FLIGHT.clear()
@@ -4249,7 +4358,7 @@ def _handle_relay_control_message(
         # Double-tap Control is also used to dismiss acknowledgement/TTS UI.
         # In relay mode Codex and Claude share this bridge path, so dismissal
         # must not advance newest-intent metadata for either provider.
-        tts_worker.skip()
+        _cancel_speech(tts_worker)
         return True
 
     if text == "__PLAY__" or text.startswith("__PLAY__:"):
@@ -4661,6 +4770,8 @@ def _handle_provider_completion_control(
         ):
             if data.get(field) is not None:
                 payload[field] = data[field]
+        if origin is not None:
+            payload["session_key"] = origin.session_key
         return _handle_orchestrator_reply_control(
             json.dumps(payload),
             tts_worker=tts_worker,
@@ -5367,6 +5478,7 @@ def main():
             ),
             event_log_path=SPEECH_EVENT_LOG,
             control_socket_path=TTS_CONTROL_SOCK,
+            on_reply_finished=lambda reason: _on_reply_finished(reason, tts_worker),
         )
         projection_path = (
             None
@@ -5626,7 +5738,7 @@ def main():
 
                 if text == "__CANCEL__":
                     bridge.interrupt()
-                    tts_worker.skip()  # Clear pending text so next message gets fresh notification
+                    _cancel_speech(tts_worker)  # Clear pending text so next message gets fresh notification
                     continue
 
                 if text == "__PLAY__" or text.startswith("__PLAY__:"):

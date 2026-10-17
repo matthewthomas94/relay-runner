@@ -28,7 +28,8 @@ class FakeWorker:
         self.eligibility = eligibility
         self.observer = observer
 
-    def skip(self):
+    def skip(self, *, reason="user_stop"):
+        del reason
         self.calls.append("skip")
 
     def stop_playback(self, *, reason="user_stop"):
@@ -383,6 +384,42 @@ class SpeechCoordinatorTests(unittest.TestCase):
         worker.observer("cancelled", payload["_speech_intent"])
 
         self.assertFalse(coordinator.play_or_replay())
+        self.assertTrue(worker.input_queue.empty())
+
+    def test_finished_final_reports_completion_and_user_stop_only(self):
+        for state, reason, expected in (
+            ("completed", None, ["completed"]),
+            ("cancelled", "user_stop", ["user_stop"]),
+            ("cancelled", "focus_switch", []),
+        ):
+            with self.subTest(state=state, reason=reason):
+                worker = FakeWorker()
+                finished: list[str] = []
+                coordinator = SpeechCoordinator(
+                    worker,
+                    is_current=lambda seq, command_id: True,
+                    on_reply_finished=finished.append,
+                )
+                coordinator.submit(intent(kind="final", authoritative=True, replayable=True))
+                payload = worker.input_queue.get_nowait()["_speech_intent"]
+                worker.observer("started", payload)
+                self.assertTrue(coordinator.speaking)
+                self.assertTrue(coordinator.playing)
+                if reason:
+                    coordinator.skip(reason=reason)
+                worker.observer(state, payload)
+
+                self.assertEqual(finished, expected)
+                self.assertFalse(coordinator.speaking)
+
+    def test_read_out_plays_text_without_command_metadata(self):
+        worker, coordinator, _ = self.make_coordinator(current=(9, "newer"))
+        coordinator.read_out("  Stored reply.  ")
+        coordinator.read_out("")
+
+        payload = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(payload["spoken_text"], "Stored reply.")
+        self.assertIn("play", worker.calls)
         self.assertTrue(worker.input_queue.empty())
 
     def test_stopping_initial_playback_retains_one_fresh_replay(self):

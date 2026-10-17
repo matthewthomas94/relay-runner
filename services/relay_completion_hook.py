@@ -45,6 +45,7 @@ PROVIDER_TURN_BROKER_MODE = os.environ.get(
 ).strip()
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
 PROVIDER_SESSION_ID = os.environ.get("RELAY_PROVIDER_SESSION_ID", "").strip()
+RELAY_SESSION_KEY = os.environ.get("RELAY_SESSION_KEY", "").strip()
 PROVIDER_TURN_TTL_SECONDS = float(os.environ.get("VOICE_PROVIDER_TURN_TTL_SECONDS", "3600"))
 PROVIDER_TURN_LIMIT = int(os.environ.get("VOICE_PROVIDER_TURN_LIMIT", "32"))
 MANUAL_SUBMISSION_EVIDENCE_TTL_SECONDS = float(
@@ -1290,6 +1291,8 @@ def _complete_turn(
         "relay_command_id": record["relay_command_id"],
         "session_id": record.get("session_id"),
     }
+    if RELAY_SESSION_KEY:
+        completion["session_key"] = RELAY_SESSION_KEY
     for field in ("intent_id", "within_turn_order", "target", "disposition", "cancellation_scope"):
         if record.get(field) is not None:
             completion[field] = record[field]

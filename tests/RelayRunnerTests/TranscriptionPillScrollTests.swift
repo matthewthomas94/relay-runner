@@ -252,6 +252,22 @@ final class TranscriptionPillScrollTests: XCTestCase {
         XCTAssertEqual(edgeAlphas(mask).bottom, 1, accuracy: 0.01)
     }
 
+    func testAnimatedShortBodyMaskCoversItsTargetSize() throws {
+        let mounted = mountLongPill()
+        defer { mounted.close() }
+        mounted.pill.showCompact(title: "Thinking…", theme: .tts, animated: false)
+        mounted.pill.showFull(title: "Response ready…", body: "Short body", theme: .tts, animated: true)
+        // Land mid-way through the blur-in, while the container is still resizing.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+
+        let bodyLabel = try XCTUnwrap(bodyLabel(in: mounted.pill))
+        let mask = try XCTUnwrap(bodyLabel.superview?.layer?.mask as? CAGradientLayer)
+        // The mask must cover the text even before the container finishes animating.
+        XCTAssertGreaterThanOrEqual(mask.frame.height + 0.5, bodyLabel.frame.height)
+        XCTAssertEqual(edgeAlphas(mask).top, 1, accuracy: 0.01)
+        XCTAssertEqual(edgeAlphas(mask).bottom, 1, accuracy: 0.01)
+    }
+
     func testReplyStackPeeksAboveFullPillOnly() throws {
         let mounted = mountLongPill()
         defer { mounted.close() }

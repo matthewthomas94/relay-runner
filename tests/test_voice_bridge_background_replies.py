@@ -18,6 +18,7 @@ class FakeTTS:
     def __init__(self, speaking: bool = False):
         self.input_queue = queue.Queue()
         self.speaking = speaking
+        self.playing = False
         self.skip = mock.Mock()
         self.read_out = mock.Mock()
 
@@ -164,6 +165,81 @@ class BackgroundReplyTests(FocusTestCase):
 
         self.focus("a", "codex")
         self.assertEqual(self.badge(a)["outcome_count"], 0)
+
+    def test_stop_hook_completion_resolves_its_session_from_the_provider_id(self):
+        a = self.focus("a", "claude")
+        self.focus("b", "codex")
+        os.makedirs(a.spool_dir, exist_ok=True)
+        with open(os.path.join(a.spool_dir, "voice_provider_session_id"), "w") as f:
+            f.write("claude-resumed-id\n")
+
+        self.assertEqual(voice_bridge._reply_origin_target({"session_id": "claude-a-native"}), a)
+        self.assertEqual(voice_bridge._reply_origin_target({"session_id": "claude-resumed-id"}), a)
+        self.assertIsNone(voice_bridge._reply_origin_target({"session_id": "unknown"}))
+
+    def unheard(self, key: str, provider: str, seq: int, text: str):
+        target = self.focus(key, provider)
+        command = self.command(seq, f"cmd-{key}", key)
+        self.focus("focused", "codex")
+        voice_bridge._record_background_reply(target, text, command)
+        return target
+
+    def test_dismissing_a_reply_brings_the_oldest_unheard_reply_forward(self):
+        a = self.unheard("a", "codex", 1, "A finished.")
+        b = self.unheard("b", "claude", 2, "B finished.")
+
+        voice_bridge._cancel_speech(self.tts)
+
+        item = self.tts.input_queue.get_nowait()
+        self.assertEqual(item["text"], "A finished.")
+        self.assertEqual(self.badge(a)["unread_count"], 0)
+        self.assertEqual(self.badge(b)["unread_count"], 1)
+
+        # Listening to A to the end offers B next.
+        voice_bridge._on_reply_finished("completed", self.tts)
+        self.assertEqual(self.tts.input_queue.get_nowait()["text"], "B finished.")
+        self.assertEqual(self.badge(b)["unread_count"], 0)
+
+        voice_bridge._on_reply_finished("completed", self.tts)
+        self.assertTrue(self.tts.input_queue.empty())
+
+    def test_cancelling_playback_leaves_the_advance_to_the_stop_event(self):
+        self.unheard("a", "codex", 1, "A finished.")
+        self.tts.playing = True
+
+        voice_bridge._cancel_speech(self.tts)
+
+        self.tts.skip.assert_called_once()
+        self.assertTrue(self.tts.input_queue.empty())
+
+    def test_no_reply_is_brought_forward_while_speech_is_pending(self):
+        self.unheard("a", "codex", 1, "A finished.")
+        self.tts.speaking = True
+
+        self.assertFalse(voice_bridge._advance_reply_queue(self.tts))
+        self.assertTrue(self.tts.input_queue.empty())
+
+    def test_a_brought_forward_reply_is_rebadged_when_focus_moves_away(self):
+        a = self.unheard("a", "codex", 1, "A finished.")
+        self.assertTrue(voice_bridge._advance_reply_queue(self.tts))
+        self.tts.speaking = True
+
+        self.focus("c", "claude")
+        voice_bridge._cut_off_unfocused_speech("focused", self.tts, self.messenger)
+
+        self.tts.skip.assert_called_once_with(reason="focus_switch")
+        self.assertEqual(self.badge(a)["unread_count"], 1)
+
+    def test_opening_the_session_of_the_waiting_reply_keeps_it(self):
+        a = self.unheard("a", "codex", 1, "A finished.")
+        self.assertTrue(voice_bridge._advance_reply_queue(self.tts))
+        self.tts.speaking = True
+
+        self.focus("a", "codex")
+        voice_bridge._cut_off_unfocused_speech("focused", self.tts, self.messenger)
+
+        self.tts.skip.assert_not_called()
+        self.assertEqual(self.badge(a)["unread_count"], 0)
 
 
 if __name__ == "__main__":

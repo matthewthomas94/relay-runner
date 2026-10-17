@@ -664,10 +664,10 @@ class TTSWorker:
             ),
         )
 
-    def skip(self):
+    def skip(self, *, reason: str = "user_stop"):
         """Stop playback AND discard pending text."""
         with self._play_request_lock:
-            self.stop_playback()
+            self.stop_playback(reason=reason)
             with self._lock:
                 text = self._pending_text.strip()
                 display_text = self._pending_display_text.strip() or text

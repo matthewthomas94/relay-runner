@@ -39,7 +39,8 @@ LIFECYCLE_ROLES = frozenset({
 })
 REALIZATION_DECISIONS = frozenset({"full", "delta", "suppress"})
 REPLAY_HISTORY_LIMIT = 32
-REPLAY_RETAINING_STOP_REASONS = frozenset({"user_stop"})
+# A focus switch stops like the user does, but does not count as finishing it.
+REPLAY_RETAINING_STOP_REASONS = frozenset({"user_stop", "focus_switch"})
 MESSENGER_TIMING_STAGES = frozenset({
     "user_turn_received",
     "messenger_submitted",
@@ -259,8 +260,12 @@ class SpeechCoordinator:
         is_preserved: Callable[[int, str, dict[str, Any]], bool] | None = None,
         event_log_path: str | os.PathLike[str] | None = None,
         control_socket_path: str | None = None,
+        on_reply_finished: Callable[[str], None] | None = None,
     ):
         self.worker = worker
+        # Called with "completed" or "user_stop" once a final reply ends and
+        # nothing else is queued, so the bridge can offer the next unheard one.
+        self._on_reply_finished = on_reply_finished
         self.input_queue = CoordinatorInputQueue(self)
         self._is_current = is_current
         self._is_preserved = is_preserved
@@ -303,6 +308,27 @@ class SpeechCoordinator:
     def has_pending_speech(self) -> bool:
         with self._lock:
             return bool(self._committed_id or self._playing_id or self._backlog)
+
+    @property
+    def speaking(self) -> bool:
+        """Audio is playing or a reply is waiting to be played."""
+        return self.has_pending_speech
+
+    @property
+    def playing(self) -> bool:
+        with self._lock:
+            return self._playing_id is not None
+
+    def read_out(self, text: str) -> None:
+        """Speak explicit text now, such as a stored background reply (RR-401)."""
+        text = str(text or "").strip()
+        if not text:
+            return
+        if self.submit(SpeechIntent.build(
+            spoken_text=text,
+            dedup_key=f"read_out:{uuid.uuid4().hex}",
+        )):
+            self.play()
 
     def played_coverage(self, command_seq: int, command_id: str) -> tuple[dict[str, Any], ...]:
         """Return bounded semantic coverage from speech that finished playing."""
@@ -578,14 +604,14 @@ class SpeechCoordinator:
             return
         self.worker.stop_playback(reason=normalized_reason)
 
-    def skip(self) -> None:
+    def skip(self, *, reason: str = "user_stop") -> None:
         with self._lock:
             if self._playing_id is not None:
                 stop_active_attempt = True
             else:
                 stop_active_attempt = False
         if stop_active_attempt:
-            self.stop_playback(reason="user_stop")
+            self.stop_playback(reason=reason)
             return
         with self._lock:
             self._clear_play_request_locked()
@@ -937,6 +963,13 @@ class SpeechCoordinator:
             )
         if next_intent is not None:
             self._enqueue_worker(next_intent)
+        elif (
+            self._on_reply_finished is not None
+            and intent.kind in FINAL_KINDS
+            and (state == "completed" or stop_reason == "user_stop")
+            and not self.has_pending_speech
+        ):
+            self._on_reply_finished("completed" if state == "completed" else "user_stop")
         if state in {"completed", "cancelled", "failed"}:
             self._utterance_timings.pop(intent_id, None)
             self._intent_committed_at.pop(intent_id, None)
