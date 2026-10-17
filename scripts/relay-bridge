@@ -67,6 +67,7 @@ BRIDGE_RUNTIME_FILES=(
     "/tmp/tts_control.sock"
     "/tmp/voice_bridge_heartbeat"
     "/tmp/voice_bridge_heartbeat.pid"
+    "/tmp/voice_bridge.pid"
     "$BRIDGE_CWD_FILE"
     "$BRIDGE_PROVIDER_FILE"
     "$BRIDGE_SPOOL_FILE"
@@ -566,7 +567,7 @@ RELAY_CWD=$(pwd)
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
 rm -f /tmp/voice_bridge_stop_requested
-pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_cmd_manual_ack.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+{ BP=$(cat /tmp/voice_bridge.pid 2>/dev/null); [ -n "$BP" ] && ps -p "$BP" -o command= 2>/dev/null | grep -q '[v]oice_bridge.py' && kill "$BP" 2>/dev/null; }; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_cmd_manual_ack.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 RELAY_BRIDGE='__RELAY_BRIDGE__'
 RELAY_PROVIDER=claude
 VOICE_BRIDGE_LOG=/tmp/voice_bridge.log
@@ -807,7 +808,7 @@ When the session ends (user says "stop listening", "exit voice", or similar), cl
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 : > /tmp/voice_bridge_stop_requested
-pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_cmd_manual_ack.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+{ BP=$(cat /tmp/voice_bridge.pid 2>/dev/null); [ -n "$BP" ] && ps -p "$BP" -o command= 2>/dev/null | grep -q '[v]oice_bridge.py' && kill "$BP" 2>/dev/null; }; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_cmd_manual_ack.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 ```
 
 ## Important Notes
@@ -844,7 +845,7 @@ Stop the voice I/O bridge for this Claude session. Use this to end a `/relay-bri
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
 : > /tmp/voice_bridge_stop_requested
-pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_cmd_manual_ack.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+{ BP=$(cat /tmp/voice_bridge.pid 2>/dev/null); [ -n "$BP" ] && ps -p "$BP" -o command= 2>/dev/null | grep -q '[v]oice_bridge.py' && kill "$BP" 2>/dev/null; }; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_cmd_manual_ack.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 ```
 
 2. Confirm it's stopped:
@@ -892,7 +893,7 @@ If not running, tell the user to start the Relay Runner menu bar app, then stop.
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
 rm -f /tmp/voice_bridge_stop_requested
-pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_cmd_manual_ack.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+{ BP=$(cat /tmp/voice_bridge.pid 2>/dev/null); [ -n "$BP" ] && ps -p "$BP" -o command= 2>/dev/null | grep -q '[v]oice_bridge.py' && kill "$BP" 2>/dev/null; }; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_cmd_manual_ack.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 RELAY_CWD=$(pwd)
 RELAY_BRIDGE='__RELAY_BRIDGE__'
 RELAY_PROVIDER=codex
@@ -1118,7 +1119,7 @@ When the session ends:
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null; rm -f /tmp/voice_bridge_heartbeat.pid
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 : > /tmp/voice_bridge_stop_requested
-pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_cmd_manual_ack.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+{ BP=$(cat /tmp/voice_bridge.pid 2>/dev/null); [ -n "$BP" ] && ps -p "$BP" -o command= 2>/dev/null | grep -q '[v]oice_bridge.py' && kill "$BP" 2>/dev/null; }; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_cmd_manual_ack.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 ```
 CODEX_BRIDGE_MD_EOF
     sed \
@@ -1142,7 +1143,7 @@ Stop the voice I/O bridge for this Codex session.
 launchctl remove com.relay.voicebridge 2>/dev/null || true
 [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
 : > /tmp/voice_bridge_stop_requested
-pkill -f '[v]oice_bridge.py' 2>/dev/null; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_cmd_manual_ack.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+{ BP=$(cat /tmp/voice_bridge.pid 2>/dev/null); [ -n "$BP" ] && ps -p "$BP" -o command= 2>/dev/null | grep -q '[v]oice_bridge.py' && kill "$BP" 2>/dev/null; }; rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock /tmp/voice_cmd_ready /tmp/voice_cmd_ready.meta /tmp/voice_command_state.json /tmp/voice_cmd_claimed.json /tmp/voice_cmd_manual_ack.json /tmp/voice_command_authorizations.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json /tmp/voice_provider_session_id /tmp/relay_terminal_manual_submission.json /tmp/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
 pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1 && echo "bridge: STILL RUNNING" || echo "bridge: stopped"
 ```
 
@@ -1915,7 +1916,7 @@ s.close()
 " 2>/dev/null
         sleep 0.5
         # Force kill if still alive
-        pkill -f '[v]oice_bridge.py' 2>/dev/null || true
+        { BP=$(cat /tmp/voice_bridge.pid 2>/dev/null); [ -n "$BP" ] && ps -p "$BP" -o command= 2>/dev/null | grep -q '[v]oice_bridge.py' && kill "$BP" 2>/dev/null; } || true
         sleep 0.3
     fi
     cleanup_bridge_runtime_files
