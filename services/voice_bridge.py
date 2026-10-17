@@ -1052,6 +1052,7 @@ def _advance_reply_queue(tts_worker) -> bool:
         "display_text": text,
         "_speech_intent_spec": {
             "dedup_key": f"queued-reply:{target.session_key}:{entry.get('at')}",
+            "session_key": target.session_key,
         },
     })
     print(
@@ -3936,6 +3937,25 @@ def _arm_authoritative_playback(
         return False
 
 
+def _session_key_for_command(
+    command_seq: int | None, command_id: str | None, state_path: str
+) -> str:
+    """The session a Relay command targeted, from the shared command ledger."""
+    if command_seq is None or not command_id:
+        return ""
+    sessions = _read_json_file(state_path).get("session_commands")
+    if not isinstance(sessions, dict):
+        return ""
+    for key, entry in sessions.items():
+        if (
+            isinstance(entry, dict)
+            and entry.get("relay_command_id") == command_id
+            and entry.get("relay_command_seq") == command_seq
+        ):
+            return str(key)
+    return ""
+
+
 def _queue_tts_text(
     text: str,
     tts_queue: queue.Queue,
@@ -3957,6 +3977,7 @@ def _queue_tts_text(
     covered_facts: list[str] | tuple[str, ...] | None = None,
     realization_decision: str = "full",
     suppression_reason: str | None = None,
+    session_key: str | None = None,
 ) -> bool:
     """Submit a typed speech intent unless its Relay command is stale."""
     text, display_text, command_seq, command_id = _parse_tts_payload(text)
@@ -4029,6 +4050,9 @@ def _queue_tts_text(
             covered_facts=covered_facts,
             realization_decision=realization_decision,
             suppression_reason=suppression_reason,
+            session_key=session_key or _session_key_for_command(
+                command_seq, command_id, state_path
+            ),
         )
         if (
             atomic_waiting_playback
@@ -4926,6 +4950,7 @@ def _handle_orchestrator_reply_control(
         semantic_brief=reply,
         work_disposition=payload.get("work_disposition"),
         replayable=True,
+        session_key=origin.session_key if origin is not None else None,
     )
     if delivered:
         _finish_foreground_reply_delivery(command, delivered=True)

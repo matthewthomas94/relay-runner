@@ -28,6 +28,8 @@ struct SpeechPresentation: Equatable {
     let stopReason: String?
     let commandSequence: Int?
     let commandID: String?
+    /// Voice-target session the reply came from (RR-407).
+    let sessionKey: String?
 
     init?(_ payload: [String: Any]) {
         guard let modeValue = payload["presentation_mode"] as? String,
@@ -43,6 +45,7 @@ struct SpeechPresentation: Equatable {
         self.stopReason = (payload["stop_reason"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         self.commandSequence = payload["relay_command_seq"] as? Int
         self.commandID = (payload["relay_command_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        self.sessionKey = (payload["session_key"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     init(
@@ -52,7 +55,8 @@ struct SpeechPresentation: Equatable {
         mode: SpeechPresentationMode,
         stopReason: String? = nil,
         commandSequence: Int? = nil,
-        commandID: String? = nil
+        commandID: String? = nil,
+        sessionKey: String? = nil
     ) {
         self.utteranceID = utteranceID
         self.originalUtteranceID = originalUtteranceID
@@ -61,6 +65,7 @@ struct SpeechPresentation: Equatable {
         self.stopReason = stopReason
         self.commandSequence = commandSequence
         self.commandID = commandID
+        self.sessionKey = sessionKey
     }
 }
 
