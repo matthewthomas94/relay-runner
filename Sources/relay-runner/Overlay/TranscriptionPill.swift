@@ -50,7 +50,6 @@ final class TranscriptionPill: NSView {
     /// Fades the clipped body edges so overflowing text dissolves instead
     /// of ending on a hard line.
     private let bodyFadeMask = CAGradientLayer()
-    private var bodyFadeBlurHeight: CGFloat = -1
     private var bodyEdgeFade: (top: Bool, bottom: Bool) = (false, false)
     /// Cards that peek above the reply for unread replies in other sessions,
     /// nearest first. Notification-style, but cascading from the top.
@@ -68,7 +67,7 @@ final class TranscriptionPill: NSView {
     private let textGap: CGFloat = 12
     private let cr: CGFloat = 16
     private let bottomOffset: CGFloat = 56
-    /// Height of the body edge fade and blur band.
+    /// Height of the body edge fade band.
     static let bodyFadeHeight: CGFloat = 22
     /// How far each stacked card peeks above the one in front of it.
     static let stackPeek: CGFloat = 8
@@ -185,7 +184,6 @@ final class TranscriptionPill: NSView {
         // Body container — clips bodyLabel to maxBodyHeight so overflowing
         // text scrolls inside the visible window instead of resizing the pill.
         bodyContainer.wantsLayer = true
-        bodyContainer.layerUsesCoreImageFilters = true
         bodyContainer.layer?.masksToBounds = true
         bodyFadeMask.colors = Self.bodyFadeColors(top: false, bottom: false)
         bodyContainer.layer?.mask = bodyFadeMask
@@ -819,7 +817,7 @@ final class TranscriptionPill: NSView {
 
     // MARK: - Body edge fade
 
-    /// Fades and blurs whichever body edge hides more text: the top once
+    /// Fades whichever body edge hides more text: the top once
     /// the reader has scrolled past the start, the bottom while text remains.
     func updateBodyEdgeFade(containerSize: NSSize? = nil) {
         let bounds = containerSize.map { NSRect(origin: .zero, size: $0) } ?? bodyContainer.bounds
@@ -838,16 +836,9 @@ final class TranscriptionPill: NSView {
         bodyFadeMask.endPoint = CGPoint(x: 0.5, y: 0)
         bodyFadeMask.locations = [0, NSNumber(value: Double(fraction)),
                                   NSNumber(value: Double(1 - fraction)), 1]
-        if edges != bodyEdgeFade || bodyContainer.layer?.filters == nil || bounds.height != bodyFadeBlurHeight {
-            bodyFadeBlurHeight = bounds.height
+        if edges != bodyEdgeFade {
             bodyEdgeFade = edges
             bodyFadeMask.colors = Self.bodyFadeColors(top: edges.top, bottom: edges.bottom)
-            bodyContainer.layer?.filters = Self.bodyEdgeBlur(
-                height: bounds.height,
-                scale: window?.backingScaleFactor ?? 2,
-                top: edges.top,
-                bottom: edges.bottom
-            )
         }
         CATransaction.commit()
     }
@@ -856,34 +847,6 @@ final class TranscriptionPill: NSView {
         let solid = NSColor.black.cgColor
         let clear = NSColor.black.withAlphaComponent(0).cgColor
         return [top ? clear : solid, solid, solid, bottom ? clear : solid]
-    }
-
-    /// A blur that deepens toward each faded edge, under the alpha fade.
-    static func bodyEdgeBlur(height: CGFloat, scale: CGFloat, top: Bool, bottom: Bool) -> [CIFilter] {
-        guard top || bottom, height > 0,
-              let blur = CIFilter(name: "CIMaskedVariableBlur") else { return [] }
-        let band = bodyFadeHeight * scale
-        let maxY = height * scale
-        let black = CIColor(red: 0, green: 0, blue: 0)
-        let white = CIColor(red: 1, green: 1, blue: 1)
-        var mask = CIImage(color: black)
-        func edge(from start: CGFloat, to end: CGFloat) -> CIImage? {
-            let gradient = CIFilter(name: "CISmoothLinearGradient")
-            gradient?.setValue(CIVector(x: 0, y: start), forKey: "inputPoint0")
-            gradient?.setValue(CIVector(x: 0, y: end), forKey: "inputPoint1")
-            gradient?.setValue(white, forKey: "inputColor0")
-            gradient?.setValue(black, forKey: "inputColor1")
-            return gradient?.outputImage
-        }
-        for image in [top ? edge(from: maxY, to: maxY - band) : nil,
-                      bottom ? edge(from: 0, to: band) : nil].compactMap({ $0 }) {
-            mask = image.applyingFilter("CIMaximumCompositing", parameters: [kCIInputBackgroundImageKey: mask])
-        }
-        blur.name = "bodyEdgeBlur"
-        // Bound the mask to the body: infinite extents leave the filter output unbounded.
-        blur.setValue(mask.cropped(to: CGRect(x: 0, y: 0, width: 10_000, height: maxY)), forKey: "inputMask")
-        blur.setValue(6, forKey: kCIInputRadiusKey)
-        return [blur]
     }
 
     // MARK: - Body scroll (teleprompter)
