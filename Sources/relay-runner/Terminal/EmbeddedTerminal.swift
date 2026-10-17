@@ -463,6 +463,13 @@ final class RelayTerminalView: TerminalView {
         case scrollPageUp, scrollPageDown, scrollToTop, scrollToBottom
     }
 
+    /// A macOS line-editing key. Movement and selection are not prompt text;
+    /// deletions reach the unsent-prompt tracker as edits.
+    enum EditingKey: Equatable {
+        case navigation([UInt8])
+        case edit([UInt8])
+    }
+
     static let baseFontSize: CGFloat = 13
     static let fontSizeRange: ClosedRange<CGFloat> = 9...24
     static let scrollbackLines = 10_000
@@ -472,6 +479,10 @@ final class RelayTerminalView: TerminalView {
     private var defersFocusReports = false
     private var deferredFocusReport: [UInt8]?
     private var navigationKeyMonitor: Any?
+    private var handledKeyDownCodes: Set<UInt16> = []
+    /// Codex ignores Shift-modified arrows, so for Codex they send the
+    /// unshifted movement instead of doing nothing.
+    var sendsShiftSelectionKeys = true
     private var rendererActivationAttempted = false
     private var bellFlashLayer: CALayer?
 
@@ -528,7 +539,7 @@ final class RelayTerminalView: TerminalView {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if handleNavigationShortcut(event) || handleKeyCommand(event) {
+        if handleEditingKey(event) || handleKeyCommand(event) {
             return true
         }
         return super.performKeyEquivalent(with: event)
@@ -557,9 +568,21 @@ final class RelayTerminalView: TerminalView {
     }
 
     @discardableResult
-    func handleNavigationShortcut(_ event: NSEvent) -> Bool {
-        guard let payload = Self.navigationShortcutPayload(for: event) else { return false }
-        sendNavigationShortcut(payload)
+    func handleEditingKey(_ event: NSEvent) -> Bool {
+        let terminal = getTerminal()
+        guard let key = Self.editingKey(
+            keyCode: event.keyCode,
+            modifierFlags: event.modifierFlags,
+            kitty: !terminal.keyboardEnhancementFlags.isEmpty,
+            applicationCursor: terminal.applicationCursor,
+            sendsShiftSelectionKeys: sendsShiftSelectionKeys
+        ) else { return false }
+        switch key {
+        case .navigation(let payload):
+            sendNavigationShortcut(payload)
+        case .edit(let payload):
+            send(data: ArraySlice(payload))
+        }
         return true
     }
 
@@ -569,47 +592,83 @@ final class RelayTerminalView: TerminalView {
         send(data: ArraySlice(payload))
     }
 
-    static func navigationShortcutPayload(for event: NSEvent) -> [UInt8]? {
-        switch event.keyCode {
-        case 123:
-            return navigationShortcutPayload(left: true, modifierFlags: event.modifierFlags)
-        case 124:
-            return navigationShortcutPayload(left: false, modifierFlags: event.modifierFlags)
+    /// RR-409: SwiftTerm turns Shift-arrows, Option-Delete and Cmd-Delete into
+    /// AppKit selectors it drops ("Unhandle selector"), and in Kitty mode it
+    /// encodes Cmd as Super, which Codex ignores. These keys are encoded here
+    /// instead, in the form both hosted CLIs accept. Either Option key counts:
+    /// arrows and Delete compose no characters.
+    static func editingKey(
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags,
+        kitty: Bool,
+        applicationCursor: Bool = false,
+        sendsShiftSelectionKeys: Bool = true
+    ) -> EditingKey? {
+        var flags = modifierFlags.intersection([.command, .option, .control, .shift])
+        switch keyCode {
+        case 123, 124:
+            let left = keyCode == 123
+            let final: UInt8 = left ? 68 : 67 // D / C
+            if flags.contains(.shift), !sendsShiftSelectionKeys {
+                flags.remove(.shift)
+                if flags.isEmpty {
+                    return .navigation(applicationCursor ? [27, 79, final] : [27, 91, final])
+                }
+            }
+            switch flags {
+            case .option:
+                return .navigation(kitty ? csi("1;3", final) : (left ? [27, 98] : [27, 102])) // Alt-arrow / Esc-b, Esc-f.
+            case .command:
+                return .navigation(kitty ? csi(left ? "97;5" : "101;5", 117) : (left ? [1] : [5])) // Ctrl-A / Ctrl-E.
+            case .shift:
+                return .navigation(csi("1;2", final))
+            case [.shift, .option]:
+                return .navigation(csi("1;4", final))
+            case [.shift, .command]:
+                return .navigation(csi("1;10", final))
+            default:
+                return nil
+            }
+        case 51: // Delete
+            switch flags {
+            case .option:
+                return .edit(kitty ? csi("127;3", 117) : [27, 127]) // Alt-Backspace / Esc-DEL.
+            case .command:
+                return .edit(kitty ? csi("117;5", 117) : [21]) // Ctrl-U.
+            default:
+                return nil
+            }
+        case 117: // Forward Delete (Fn-Delete)
+            return flags == .option ? .edit(kitty ? csi("100;3", 117) : [27, 100]) : nil // Alt-d / Esc-d.
         default:
             return nil
         }
     }
 
-    private static func navigationShortcutPayload(
-        left: Bool,
-        modifierFlags: NSEvent.ModifierFlags
-    ) -> [UInt8]? {
-        let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let semanticFlags = flags.intersection([.command, .option, .control, .shift])
-        switch semanticFlags {
-        case .option:
-            return left ? [27, 98] : [27, 102] // Esc-b / Esc-f.
-        case .command:
-            return left ? [1] : [5] // Ctrl-A / Ctrl-E.
-        default:
-            return nil
-        }
+    private static func csi(_ parameters: String, _ final: UInt8) -> [UInt8] {
+        [27, 91] + Array(parameters.utf8) + [final]
     }
 
     private func installNavigationKeyMonitorIfNeeded() {
         guard window != nil, navigationKeyMonitor == nil else { return }
-        navigationKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+        navigationKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard let self,
                   event.window === self.window,
                   self.window?.firstResponder === self else {
                 return event
             }
+            if event.type == .keyUp {
+                // SwiftTerm would report a Kitty release for a press it never saw.
+                return self.handledKeyDownCodes.remove(event.keyCode) == nil ? event : nil
+            }
             // SwiftTerm's keyDown is not overridable; set Meta per event so
             // right Option still composes characters (e.g. UK Option-3 = #).
             self.optionAsMetaKey = Self.optionActsAsMeta(rawModifierFlags: event.modifierFlags.rawValue)
-            guard self.handleNavigationShortcut(event) || self.handleKeyCommand(event) else {
+            guard self.handleEditingKey(event) || self.handleKeyCommand(event) else {
+                self.handledKeyDownCodes.remove(event.keyCode)
                 return event
             }
+            self.handledKeyDownCodes.insert(event.keyCode)
             return nil
         }
     }
@@ -898,14 +957,20 @@ struct RelayTerminalInputTracker: Equatable {
         case cleared(pendingByteCount: Int)
     }
 
+    private struct InputUnit: Equatable {
+        var byteCount: Int
+        var isWhitespace: Bool
+    }
+
     private(set) var pendingByteCount = 0
-    private var pendingInputUnitByteCounts: [Int] = []
+    private var pendingInputUnits: [InputUnit] = []
 
     var hasUnsubmittedInput: Bool { pendingByteCount > 0 }
 
     @discardableResult
     mutating func record(data: ArraySlice<UInt8>) -> Transition {
         if let transition = recordKittyKeyEvent(data) { return transition }
+        if let transition = recordEditingSequence(data) { return transition }
         if isNavigationShortcut(data) || isTerminalControlSequence(data) { return .none }
 
         var transition: Transition = .none
@@ -924,8 +989,12 @@ struct RelayTerminalInputTracker: Equatable {
             case 8, 127:
                 removeLastPendingInputUnit()
                 if transition == .none { transition = .draftChanged }
+            case 23:
+                // Ctrl-W deletes the previous word in both Codex and Claude.
+                removeLastPendingWord()
+                if transition == .none { transition = .draftChanged }
             case 9, 32...126:
-                appendPendingInputUnit(byteCount: 1)
+                appendPendingInputUnit(byteCount: 1, isWhitespace: byte == 9 || byte == 32)
                 if transition == .none { transition = .draftChanged }
             case 0xc2...0xf4:
                 let expectedLength: Int
@@ -947,6 +1016,24 @@ struct RelayTerminalInputTracker: Equatable {
             index += 1
         }
         return transition
+    }
+
+    /// Meta (Esc-prefixed) keys and forward deletes. Esc-b / Esc-f and other
+    /// Meta commands are not prompt text.
+    private mutating func recordEditingSequence(_ data: ArraySlice<UInt8>) -> Transition? {
+        let bytes = Array(data)
+        if bytes == [27, 127] || bytes == [27, 8] {
+            removeLastPendingWord()
+            return .draftChanged
+        }
+        if bytes == [27, 100] { return .draftChanged } // Esc-d deletes the next word.
+        // Forward Delete with or without modifiers: CSI 3 ~ / CSI 3 ; m ~.
+        if bytes.count >= 4, bytes[0] == 27, bytes[1] == 91, bytes[2] == 51, bytes.last == 126,
+           bytes.count == 4 || bytes[3] == 59 {
+            return .draftChanged
+        }
+        if bytes.count == 2, bytes[0] == 27, (32...126).contains(bytes[1]) { return Transition.none }
+        return nil
     }
 
     private func isNavigationShortcut(_ data: ArraySlice<UInt8>) -> Bool {
@@ -995,7 +1082,28 @@ struct RelayTerminalInputTracker: Equatable {
                 let previousCount = clearPendingInput()
                 return .cleared(pendingByteCount: previousCount)
             }
+            if keyCode == 119 {
+                removeLastPendingWord()
+                return .draftChanged
+            }
             return Transition.none
+        }
+        // Alt, Super, Hyper and Meta keys are commands, not prompt text.
+        if modifierMask & (2 | 8 | 16 | 32) != 0 {
+            switch keyCode {
+            case 8, 127:
+                // Super-Backspace deletes to the line start; Alt-Backspace a word.
+                if modifierMask & 8 != 0 {
+                    let previousCount = clearPendingInput()
+                    return .cleared(pendingByteCount: previousCount)
+                }
+                removeLastPendingWord()
+                return .draftChanged
+            case 100 where modifierMask & 2 != 0:
+                return .draftChanged
+            default:
+                return Transition.none
+            }
         }
 
         switch keyCode {
@@ -1009,11 +1117,14 @@ struct RelayTerminalInputTracker: Equatable {
             removeLastPendingInputUnit()
             return .draftChanged
         case 9:
-            appendPendingInputUnit(byteCount: 1)
+            appendPendingInputUnit(byteCount: 1, isWhitespace: true)
             return .draftChanged
         case 32...0x10ffff where !(0xe000...0xf8ff).contains(keyCode):
             if let scalar = UnicodeScalar(keyCode) {
-                appendPendingInputUnit(byteCount: String(scalar).utf8.count)
+                appendPendingInputUnit(
+                    byteCount: String(scalar).utf8.count,
+                    isWhitespace: scalar.properties.isWhitespace
+                )
                 return .draftChanged
             }
             return Transition.none
@@ -1022,25 +1133,36 @@ struct RelayTerminalInputTracker: Equatable {
         }
     }
 
-    private mutating func appendPendingInputUnit(byteCount: Int) {
+    private mutating func appendPendingInputUnit(byteCount: Int, isWhitespace: Bool = false) {
         let count = max(1, byteCount)
-        pendingInputUnitByteCounts.append(count)
+        pendingInputUnits.append(InputUnit(byteCount: count, isWhitespace: isWhitespace))
         pendingByteCount += count
     }
 
     private mutating func removeLastPendingInputUnit() {
-        guard let removed = pendingInputUnitByteCounts.popLast() else {
+        guard let removed = pendingInputUnits.popLast() else {
             pendingByteCount = 0
             return
         }
-        pendingByteCount = max(0, pendingByteCount - removed)
+        pendingByteCount = max(0, pendingByteCount - removed.byteCount)
+    }
+
+    /// Trailing whitespace, then the word before it, as readline's
+    /// backward-kill-word does.
+    private mutating func removeLastPendingWord() {
+        guard !pendingInputUnits.isEmpty else {
+            pendingByteCount = 0
+            return
+        }
+        while pendingInputUnits.last?.isWhitespace == true { removeLastPendingInputUnit() }
+        while let last = pendingInputUnits.last, !last.isWhitespace { removeLastPendingInputUnit() }
     }
 
     @discardableResult
     private mutating func clearPendingInput() -> Int {
         let previousCount = pendingByteCount
         pendingByteCount = 0
-        pendingInputUnitByteCounts.removeAll(keepingCapacity: true)
+        pendingInputUnits.removeAll(keepingCapacity: true)
         return previousCount
     }
 }
@@ -3288,6 +3410,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         voiceDelivery?.stop()
         voiceDelivery = nil
         usesAppOwnedInput = launch.voiceDelivery == .appOwned
+        terminalView.sendsShiftSelectionKeys = launch.target != .codex
         appOwnedInputGeneration += 1
         appOwnedInputChannel?.close(flags: .stop)
         appOwnedInputChannel = nil

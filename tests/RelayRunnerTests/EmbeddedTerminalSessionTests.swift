@@ -1142,6 +1142,61 @@ final class RelayTerminalInputTrackerTests: XCTestCase {
         XCTAssertFalse(tracker.hasUnsubmittedInput)
         XCTAssertEqual(tracker.pendingByteCount, 0)
     }
+
+    func testTrackerTreatsWordDeletionAsAnEditInRawAndKittyModes() {
+        for deleteWord in ["\u{1B}\u{7F}", "\u{17}", "\u{1B}[127;3u", "\u{1B}[119;5u"] {
+            var tracker = RelayTerminalInputTracker()
+            tracker.record(data: ArraySlice(Array("aaa bbb ".utf8)))
+
+            XCTAssertEqual(tracker.record(data: ArraySlice(Array(deleteWord.utf8))), .draftChanged, deleteWord)
+            XCTAssertEqual(tracker.pendingByteCount, 4, deleteWord)
+            XCTAssertEqual(tracker.record(data: ArraySlice(Array(deleteWord.utf8))), .draftChanged, deleteWord)
+            XCTAssertFalse(tracker.hasUnsubmittedInput, deleteWord)
+        }
+    }
+
+    func testTrackerClearsTheDraftForDeleteToLineStartInRawAndKittyModes() {
+        for deleteLine in ["\u{15}", "\u{1B}[117;5u", "\u{1B}[127;9u"] {
+            var tracker = RelayTerminalInputTracker()
+            tracker.record(data: ArraySlice(Array("aaa bbb".utf8)))
+
+            XCTAssertEqual(
+                tracker.record(data: ArraySlice(Array(deleteLine.utf8))),
+                .cleared(pendingByteCount: 7),
+                deleteLine
+            )
+            XCTAssertFalse(tracker.hasUnsubmittedInput, deleteLine)
+        }
+    }
+
+    func testTrackerTreatsForwardWordDeletionAsAnEdit() {
+        for deleteNextWord in ["\u{1B}d", "\u{1B}[3;3~", "\u{1B}[3~", "\u{1B}[100;3u"] {
+            var tracker = RelayTerminalInputTracker()
+            tracker.record(data: ArraySlice(Array("aaa".utf8)))
+
+            XCTAssertEqual(tracker.record(data: ArraySlice(Array(deleteNextWord.utf8))), .draftChanged, deleteNextWord)
+            XCTAssertTrue(tracker.hasUnsubmittedInput, deleteNextWord)
+        }
+    }
+
+    func testTrackerIgnoresModifiedNavigationAndSelectionKeys() {
+        let keys = [
+            "\u{1B}b", "\u{1B}f", "\u{1B}x", "\u{01}", "\u{05}",
+            "\u{1B}[1;3D", "\u{1B}[1;2D", "\u{1B}[1;4C", "\u{1B}[1;10D", "\u{1B}OD",
+            "\u{1B}[97;5u", "\u{1B}[101;5u", "\u{1B}[98;3u", "\u{1B}[102;3u", "\u{1B}[99;9u",
+        ]
+        var tracker = RelayTerminalInputTracker()
+        for key in keys {
+            XCTAssertEqual(tracker.record(data: ArraySlice(Array(key.utf8))), .none, key.debugDescription)
+        }
+        XCTAssertFalse(tracker.hasUnsubmittedInput)
+
+        tracker.record(data: ArraySlice(Array("aaa".utf8)))
+        for key in keys {
+            tracker.record(data: ArraySlice(Array(key.utf8)))
+        }
+        XCTAssertEqual(tracker.pendingByteCount, 3, "Moving or selecting does not edit the draft")
+    }
 }
 
 final class RelayTerminalViewInputOriginTests: XCTestCase {
@@ -1224,25 +1279,95 @@ final class RelayTerminalViewInputOriginTests: XCTestCase {
         XCTAssertEqual(delegate.terminalResponseFlags, [false, false, false, false])
     }
 
-    func testNavigationShortcutPayloadRequiresPlainOptionOrCommandArrow() {
+    func testEditingKeysEncodeEveryTableKeyWithoutKeyboardProtocol() {
+        for option in [leftOption, rightOption] {
+            XCTAssertEqual(editingKey(123, option), .navigation([27, 98]))
+            XCTAssertEqual(editingKey(124, option), .navigation([27, 102]))
+            XCTAssertEqual(editingKey(51, option), .edit([27, 127]))
+            XCTAssertEqual(editingKey(117, option.union(.function)), .edit([27, 100]))
+            XCTAssertEqual(editingKey(123, option.union(.shift)), .navigation(bytes("\u{1B}[1;4D")))
+            XCTAssertEqual(editingKey(124, option.union(.shift)), .navigation(bytes("\u{1B}[1;4C")))
+        }
+        XCTAssertEqual(editingKey(123, .command), .navigation([1]))
+        XCTAssertEqual(editingKey(124, .command), .navigation([5]))
+        XCTAssertEqual(editingKey(51, .command), .edit([21]))
+        XCTAssertEqual(editingKey(123, .shift), .navigation(bytes("\u{1B}[1;2D")))
+        XCTAssertEqual(editingKey(124, .shift), .navigation(bytes("\u{1B}[1;2C")))
+        XCTAssertEqual(editingKey(123, [.shift, .command]), .navigation(bytes("\u{1B}[1;10D")))
+        XCTAssertEqual(editingKey(124, [.shift, .command]), .navigation(bytes("\u{1B}[1;10C")))
+        // Laptop arrows carry Fn and keypad flags; they do not change the key.
+        XCTAssertEqual(editingKey(123, [.command, .function, .numericPad]), .navigation([1]))
+    }
+
+    func testEditingKeysUseKittyEncodingsWhenTheProtocolIsActive() {
+        for option in [leftOption, rightOption] {
+            XCTAssertEqual(editingKey(123, option, kitty: true), .navigation(bytes("\u{1B}[1;3D")))
+            XCTAssertEqual(editingKey(124, option, kitty: true), .navigation(bytes("\u{1B}[1;3C")))
+            XCTAssertEqual(editingKey(51, option, kitty: true), .edit(bytes("\u{1B}[127;3u")))
+            XCTAssertEqual(editingKey(117, option.union(.function), kitty: true), .edit(bytes("\u{1B}[100;3u")))
+            XCTAssertEqual(editingKey(123, option.union(.shift), kitty: true), .navigation(bytes("\u{1B}[1;4D")))
+            XCTAssertEqual(editingKey(124, option.union(.shift), kitty: true), .navigation(bytes("\u{1B}[1;4C")))
+        }
+        XCTAssertEqual(editingKey(123, .command, kitty: true), .navigation(bytes("\u{1B}[97;5u")))
+        XCTAssertEqual(editingKey(124, .command, kitty: true), .navigation(bytes("\u{1B}[101;5u")))
+        XCTAssertEqual(editingKey(51, .command, kitty: true), .edit(bytes("\u{1B}[117;5u")))
+        XCTAssertEqual(editingKey(123, .shift, kitty: true), .navigation(bytes("\u{1B}[1;2D")))
+        XCTAssertEqual(editingKey(124, .shift, kitty: true), .navigation(bytes("\u{1B}[1;2C")))
+        XCTAssertEqual(editingKey(123, [.shift, .command], kitty: true), .navigation(bytes("\u{1B}[1;10D")))
+        XCTAssertEqual(editingKey(124, [.shift, .command], kitty: true), .navigation(bytes("\u{1B}[1;10C")))
+    }
+
+    func testShiftEditingKeysMoveWithoutSelectingWhenTheProviderIgnoresShiftArrows() {
+        for kitty in [false, true] {
+            XCTAssertEqual(editingKey(123, .shift, kitty: kitty, shiftSelects: false), .navigation(bytes("\u{1B}[D")))
+            XCTAssertEqual(editingKey(124, .shift, kitty: kitty, shiftSelects: false), .navigation(bytes("\u{1B}[C")))
+            XCTAssertEqual(
+                editingKey(123, leftOption.union(.shift), kitty: kitty, shiftSelects: false),
+                editingKey(123, leftOption, kitty: kitty)
+            )
+            XCTAssertEqual(
+                editingKey(124, [.shift, .command], kitty: kitty, shiftSelects: false),
+                editingKey(124, .command, kitty: kitty)
+            )
+        }
         XCTAssertEqual(
-            RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 123, modifiers: .option)),
-            [27, 98]
+            RelayTerminalView.editingKey(
+                keyCode: 123, modifierFlags: .shift, kitty: false,
+                applicationCursor: true, sendsShiftSelectionKeys: false
+            ),
+            .navigation(bytes("\u{1B}OD"))
         )
-        XCTAssertEqual(
-            RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 124, modifiers: .option)),
-            [27, 102]
-        )
-        XCTAssertEqual(
-            RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 123, modifiers: .command)),
-            [1]
-        )
-        XCTAssertEqual(
-            RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 124, modifiers: .command)),
-            [5]
-        )
-        XCTAssertNil(RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 123, modifiers: [.option, .shift])))
-        XCTAssertNil(RelayTerminalView.navigationShortcutPayload(for: keyEvent(keyCode: 125, modifiers: .option)))
+    }
+
+    func testEditingKeysLeaveOtherKeysToSwiftTerm() {
+        for kitty in [false, true] {
+            XCTAssertNil(editingKey(123, [], kitty: kitty), "Plain arrows")
+            XCTAssertNil(editingKey(51, [], kitty: kitty), "Backspace")
+            XCTAssertNil(editingKey(117, .function, kitty: kitty), "Fn-Delete")
+            XCTAssertNil(editingKey(115, [], kitty: kitty), "Home")
+            XCTAssertNil(editingKey(119, [], kitty: kitty), "End")
+            XCTAssertNil(editingKey(115, .command, kitty: kitty), "Cmd-Home scrolls")
+            XCTAssertNil(editingKey(116, .shift, kitty: kitty), "Shift-PageUp scrolls")
+            XCTAssertNil(editingKey(123, .control, kitty: kitty))
+            XCTAssertNil(editingKey(123, [.command, .option], kitty: kitty))
+            XCTAssertNil(editingKey(125, leftOption, kitty: kitty))
+            XCTAssertNil(editingKey(8, .command, kitty: kitty), "Cmd-C")
+        }
+    }
+
+    func testEditingKeysFollowTheNegotiatedKeyboardProtocol() {
+        let view = RelayTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        let delegate = TerminalInputOriginCapturingDelegate(view: view)
+        view.terminalDelegate = delegate
+
+        view.feed(text: "\u{1B}[>7u")
+        XCTAssertTrue(view.performKeyEquivalent(with: keyEvent(keyCode: 123, modifiers: .command)))
+        XCTAssertTrue(view.performKeyEquivalent(with: keyEvent(keyCode: 51, modifiers: .command)))
+        view.feed(text: "\u{1B}[<u")
+        XCTAssertTrue(view.performKeyEquivalent(with: keyEvent(keyCode: 123, modifiers: .command)))
+
+        XCTAssertEqual(delegate.payloads, [bytes("\u{1B}[97;5u"), bytes("\u{1B}[117;5u"), [1]])
+        XCTAssertEqual(delegate.navigationShortcutFlags, [true, false, true], "Deletions reach the prompt tracker")
     }
 
     func testKeyCommandsMapGhosttyStyleShortcuts() {
@@ -3378,6 +3503,134 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
     }
 }
 
+/// RR-409 regression: AppKit editing keys travel the real window event path.
+/// Before the fix SwiftTerm turned Shift-arrows, non-meta Option-Delete and
+/// Cmd-Delete into `moveLeftAndModifySelection:`, `deleteWordBackward:` and
+/// `deleteToBeginningOfLine:` and dropped them as "Unhandle selector", so the
+/// hosted CLI received nothing.
+final class RelayTerminalEditingKeyEventPathTests: XCTestCase {
+    private final class KeyPanel: NSPanel {
+        override var canBecomeKey: Bool { true }
+    }
+
+    private struct Key {
+        let name: String
+        let keyCode: UInt16
+        let modifiers: NSEvent.ModifierFlags
+        let raw: [UInt8]
+        let kitty: [UInt8]
+    }
+
+    func testEveryEditingKeyReachesTheHostedCLIExactlyOnce() throws {
+        let app = NSApplication.shared
+        let panel = KeyPanel(
+            contentRect: NSRect(x: 100, y: 100, width: 600, height: 400),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        let host = EmbeddedTerminalHostNSView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        panel.contentView = host
+        let view = RelayTerminalView(frame: host.bounds)
+        let delegate = TerminalInputOriginCapturingDelegate(view: view)
+        view.terminalDelegate = delegate
+        host.install(view)
+        panel.makeKeyAndOrderFront(nil)
+        defer { panel.orderOut(nil) }
+        panel.makeFirstResponder(view)
+        guard panel.isKeyWindow, panel.firstResponder === view else {
+            throw XCTSkip("The test panel could not become the key window")
+        }
+
+        let arrow: NSEvent.ModifierFlags = [.function, .numericPad]
+        var keys: [Key] = []
+        for (side, option) in [("left", leftOption), ("right", rightOption)] {
+            keys += [
+                Key(name: "\(side) Option-Left", keyCode: 123, modifiers: arrow.union(option),
+                    raw: [27, 98], kitty: bytes("\u{1B}[1;3D")),
+                Key(name: "\(side) Option-Right", keyCode: 124, modifiers: arrow.union(option),
+                    raw: [27, 102], kitty: bytes("\u{1B}[1;3C")),
+                Key(name: "\(side) Option-Delete", keyCode: 51, modifiers: option,
+                    raw: [27, 127], kitty: bytes("\u{1B}[127;3u")),
+                Key(name: "\(side) Fn-Option-Delete", keyCode: 117, modifiers: option.union(.function),
+                    raw: [27, 100], kitty: bytes("\u{1B}[100;3u")),
+                Key(name: "\(side) Shift-Option-Left", keyCode: 123, modifiers: arrow.union(option).union(.shift),
+                    raw: bytes("\u{1B}[1;4D"), kitty: bytes("\u{1B}[1;4D")),
+            ]
+        }
+        keys += [
+            Key(name: "Cmd-Left", keyCode: 123, modifiers: arrow.union(.command),
+                raw: [1], kitty: bytes("\u{1B}[97;5u")),
+            Key(name: "Cmd-Right", keyCode: 124, modifiers: arrow.union(.command),
+                raw: [5], kitty: bytes("\u{1B}[101;5u")),
+            Key(name: "Cmd-Delete", keyCode: 51, modifiers: .command,
+                raw: [21], kitty: bytes("\u{1B}[117;5u")),
+            Key(name: "Shift-Left", keyCode: 123, modifiers: arrow.union(.shift),
+                raw: bytes("\u{1B}[1;2D"), kitty: bytes("\u{1B}[1;2D")),
+            Key(name: "Shift-Right", keyCode: 124, modifiers: arrow.union(.shift),
+                raw: bytes("\u{1B}[1;2C"), kitty: bytes("\u{1B}[1;2C")),
+            Key(name: "Shift-Cmd-Left", keyCode: 123, modifiers: arrow.union([.shift, .command]),
+                raw: bytes("\u{1B}[1;10D"), kitty: bytes("\u{1B}[1;10D")),
+        ]
+
+        func press(_ key: Key) -> [[UInt8]] {
+            let before = delegate.payloads.count
+            let characters: String
+            switch key.keyCode {
+            case 123: characters = String(UnicodeScalar(UInt16(NSLeftArrowFunctionKey))!)
+            case 124: characters = String(UnicodeScalar(UInt16(NSRightArrowFunctionKey))!)
+            case 117: characters = String(UnicodeScalar(UInt16(NSDeleteFunctionKey))!)
+            default: characters = "\u{7F}"
+            }
+            for type in [NSEvent.EventType.keyDown, .keyUp] {
+                let event = NSEvent.keyEvent(
+                    with: type,
+                    location: .zero,
+                    modifierFlags: key.modifiers,
+                    timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: panel.windowNumber,
+                    context: nil,
+                    characters: characters,
+                    charactersIgnoringModifiers: characters,
+                    isARepeat: false,
+                    keyCode: key.keyCode
+                )!
+                app.postEvent(event, atStart: false)
+                while let next = app.nextEvent(
+                    matching: .any,
+                    until: Date(timeIntervalSinceNow: 0.05),
+                    inMode: .default,
+                    dequeue: true
+                ) {
+                    app.sendEvent(next)
+                }
+            }
+            return Array(delegate.payloads[before...])
+        }
+
+        for key in keys {
+            XCTAssertEqual(press(key), [key.raw], "Raw \(key.name)")
+        }
+        // Kitty flags 7 include event-type reporting; a key the app encoded
+        // must not leak a SwiftTerm release event for the swallowed press.
+        view.feed(text: "\u{1B}[>7u")
+        for key in keys {
+            XCTAssertEqual(press(key), [key.kitty], "Kitty \(key.name)")
+        }
+        view.feed(text: "\u{1B}[<u")
+
+        // Keys the app does not own still reach SwiftTerm unchanged.
+        XCTAssertEqual(
+            press(Key(name: "Backspace", keyCode: 51, modifiers: [], raw: [], kitty: [])),
+            [[127]]
+        )
+        XCTAssertEqual(
+            press(Key(name: "Fn-Delete", keyCode: 117, modifiers: .function, raw: [], kitty: [])),
+            [bytes("\u{1B}[3~")]
+        )
+    }
+}
+
 private final class TerminalInputOriginCapturingDelegate: TerminalViewDelegate {
     private weak var relayView: RelayTerminalView?
     private(set) var terminalResponseFlags: [Bool] = []
@@ -3401,6 +3654,25 @@ private final class TerminalInputOriginCapturingDelegate: TerminalViewDelegate {
     func clipboardCopy(source: TerminalView, content: Data) {}
     func clipboardRead(source: TerminalView) -> Data? { nil }
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+}
+
+private let leftOption = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.option.rawValue | 0x20)
+private let rightOption = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.option.rawValue | 0x40)
+
+private func bytes(_ text: String) -> [UInt8] { Array(text.utf8) }
+
+private func editingKey(
+    _ keyCode: UInt16,
+    _ modifiers: NSEvent.ModifierFlags,
+    kitty: Bool = false,
+    shiftSelects: Bool = true
+) -> RelayTerminalView.EditingKey? {
+    RelayTerminalView.editingKey(
+        keyCode: keyCode,
+        modifierFlags: modifiers,
+        kitty: kitty,
+        sendsShiftSelectionKeys: shiftSelects
+    )
 }
 
 private func keyEvent(

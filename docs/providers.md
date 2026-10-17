@@ -95,6 +95,25 @@ If sign-in is needed, Start Session opens the selected provider's login flow aut
 
 For a terminal you launched yourself, install Relay Skills from **Settings → General**, then invoke the relay-bridge skill from the active Codex or Claude session. `relay-stop` ends that manual bridge. Directly running `services/voice_bridge.py` is an implementation path, not a supported user entry point.
 
+### Embedded terminal editing keys
+
+The embedded terminal sends the standard macOS editing keys to Claude Code and Codex itself instead of letting SwiftTerm turn them into AppKit selectors it drops. When the provider has pushed the Kitty keyboard protocol (Codex does; Claude's REPL currently does not) the app sends the Kitty form; otherwise it sends the readline bytes both CLIs accept.
+
+| Key | Action | Without Kitty protocol | With Kitty protocol |
+|---|---|---|---|
+| Cmd-Left / Cmd-Right | Start / end of line | Ctrl-A / Ctrl-E | `CSI 97;5u` / `CSI 101;5u` |
+| Option-Left / Option-Right (either Option key) | Word back / forward | `ESC b` / `ESC f` | `CSI 1;3D` / `CSI 1;3C` |
+| Option-Delete | Delete previous word | `ESC DEL` | `CSI 127;3u` |
+| Cmd-Delete | Delete to start of line | Ctrl-U | `CSI 117;5u` |
+| Fn-Option-Delete | Delete next word | `ESC d` | `CSI 100;3u` |
+| Shift-Left / Shift-Right | Select by character | `CSI 1;2D` / `CSI 1;2C` | same |
+| Shift-Option-Left / -Right | Select by word | `CSI 1;4D` / `CSI 1;4C` | same |
+| Shift-Cmd-Left / -Right | Select to line start / end | `CSI 1;10D` / `CSI 1;10C` | same |
+
+Fn-Delete, Home, End, Cmd-Home/End, Shift-PageUp/PageDown, Backspace, Ctrl-C, copy, paste, find, zoom, and mouse selection keep SwiftTerm's handling. Only the left Option key acts as Meta for other keys, so the right Option key still composes characters.
+
+Shift selection depends on the provider. Claude Code moves the cursor for the Shift keys but has no prompt selection, so they behave like their unshifted forms. Codex ignores Shift-modified arrows entirely, so for Codex sessions the app drops Shift and sends the plain movement; the keys move but cannot select. Use mouse selection to copy prompt text in either provider.
+
 ## Shared behavior
 
 Both providers use the same:
