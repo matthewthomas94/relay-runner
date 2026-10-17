@@ -41,6 +41,7 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
     static let defaultAudioBudgetBytes = 256 * 1_024 * 1_024
 
     private static let journalFilename = "journal.json"
+    private static let recordingDirectoryName = "recording"
     /// Capture checkpoints arrive several times a second for the whole meeting.
     /// They live beside the journal so each one costs only its own size, never
     /// a decode and rewrite of the transcript-bearing journal.
@@ -258,6 +259,23 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
             try load(sessionID: sessionID)?.producerCheckpoint?.pendingAudio.map(\.chunkID) ?? []
         ).union(audioAwaitingCheckpoint[sessionID] ?? [])
         try retainAudio(sessionID: sessionID, chunkIDs: retained)
+    }
+
+    /// Compressed meeting recording for one session. It lives inside the session
+    /// directory, so `removeSession` deletes it with everything else.
+    func recordingDirectory(sessionID: String) throws -> URL {
+        _ = try sessionDirectory(sessionID, create: true)
+        let directory = try sessionDirectory(sessionID, create: false)
+            .appendingPathComponent(Self.recordingDirectoryName, isDirectory: true)
+        try MeetingCompressedAudioRecorder.prepareDirectory(directory, fileManager: fileManager)
+        return directory
+    }
+
+    func removeRecording(sessionID: String) throws {
+        let directory = try sessionDirectory(sessionID, create: false)
+            .appendingPathComponent(Self.recordingDirectoryName, isDirectory: true)
+        guard fileManager.fileExists(atPath: directory.path) else { return }
+        try fileManager.removeItem(at: directory)
     }
 
     func removeSession(sessionID: String) throws {
