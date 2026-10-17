@@ -115,6 +115,64 @@ final class OverlayPresentationMotionTests: XCTestCase {
         XCTAssertEqual(reduced.pill.alphaValue, 0)
     }
 
+    func testQueuedReplyKeepsOverlayUpWhileOnlyTheFinishedCardLeaves() {
+        for cancels in [false, true] {
+            let scene = Scene(showsCard: true)
+            defer { scene.stop() }
+            scene.controller.setReplyStackDepth(1, now: 0)
+            scene.state.handleServiceEvent(source: "tts", newState: "speaking", text: "First reply.")
+            for time in [0.0, 0.31, 0.62] { scene.step(time) }
+            XCTAssertEqual(scene.pill.alphaValue, 1)
+
+            if cancels {
+                scene.state.setCancelled()
+            } else {
+                scene.state.handleServiceEvent(source: "tts", newState: "idle", text: nil)
+            }
+            // The polled badge drops just after the bridge advances the queue.
+            scene.step(1.0)
+            scene.controller.setReplyStackDepth(0, now: 1.2)
+            XCTAssertTrue(scene.pill.isFrontCardDismissed)
+            for time in [1.15, 1.31, 1.6] {
+                scene.step(time)
+                XCTAssertEqual(scene.pill.alphaValue, 1)
+            }
+
+            scene.state.handleServiceEvent(source: "tts", newState: "message_waiting", text: "Second reply.")
+            scene.step(1.7)
+            XCTAssertFalse(scene.pill.isFrontCardDismissed)
+            XCTAssertEqual(scene.pill.alphaValue, 1)
+        }
+    }
+
+    func testReplyQueueHoldExpiresWhenNoReplyComesForward() {
+        let scene = Scene(showsCard: true)
+        defer { scene.stop() }
+        scene.controller.setReplyStackDepth(1, now: 0)
+        scene.state.handleServiceEvent(source: "tts", newState: "speaking", text: "First reply.")
+        for time in [0.0, 0.31, 0.62] { scene.step(time) }
+        scene.state.handleServiceEvent(source: "tts", newState: "idle", text: nil)
+        scene.step(1.0)
+        scene.step(5.9)
+        XCTAssertEqual(scene.pill.alphaValue, 1)
+        scene.step(6.0)
+        scene.step(6.31)
+        XCTAssertEqual(scene.pill.alphaValue, 0)
+        XCTAssertFalse(scene.pill.isFrontCardDismissed)
+    }
+
+    func testReplyWithoutQueueStillLeavesTogether() {
+        let scene = Scene(showsCard: true)
+        defer { scene.stop() }
+        scene.state.handleServiceEvent(source: "tts", newState: "speaking", text: "Only reply.")
+        for time in [0.0, 0.31, 0.62] { scene.step(time) }
+        scene.state.handleServiceEvent(source: "tts", newState: "idle", text: nil)
+        scene.step(1.0)
+        scene.step(1.31)
+        XCTAssertEqual(scene.pill.alphaValue, 0)
+        XCTAssertFalse(scene.pill.isFrontCardDismissed)
+    }
+
     private func assertAligned(_ scene: Scene, file: StaticString = #filePath, line: UInt = #line) {
         let departure = scene.motion.overlayDeparture
         XCTAssertEqual(scene.motion.pillDeparture, departure, accuracy: 0.001, file: file, line: line)

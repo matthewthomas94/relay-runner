@@ -94,7 +94,9 @@ final class OverlayController {
 
     /// Unread replies waiting in other sessions, shown as cards stacked
     /// above the reply pill.
-    func setReplyStackDepth(_ depth: Int) {
+    func setReplyStackDepth(_ depth: Int, now: TimeInterval = CACurrentMediaTime()) {
+        if depth < replyStackDepth { replyStackDroppedAt = now }
+        replyStackDepth = depth
         pill.setStackDepth(depth)
     }
 
@@ -261,6 +263,24 @@ final class OverlayController {
     private var lastPartial: String = ""
     private var lastPreview: String?
 
+    /// Unread replies still queued keep the overlay up between replies: only
+    /// the finished reply's card leaves while the bridge brings the next one
+    /// forward. The badge count is polled, so a drop just before the reply
+    /// ends still counts as queued.
+    private var replyStackDepth = 0
+    private var replyStackDroppedAt: TimeInterval = -.infinity
+    private var replyQueueHoldUntil: TimeInterval?
+    private var replyQueueHoldTheme: ParticleFieldRenderer.Theme?
+    static let replyQueueGrace: TimeInterval = 2.0
+    static let replyQueueHoldTimeout: TimeInterval = 5.0
+
+    private static func isReplyState(_ state: OverlayState) -> Bool {
+        switch state {
+        case .speaking, .preparing, .messageWaiting, .speechFailed: return true
+        default: return false
+        }
+    }
+
     static func pillStatusTitle(for state: OverlayState) -> String? {
         NotchActivityLabelPlanner.label(for: state)
     }
@@ -347,10 +367,27 @@ final class OverlayController {
         let partial = sm.partialTranscription
         let preview = sm.messagePreview
 
+        let showsStatePill = Self.showsPill(for: state, replayRetained: sm.replayRetained)
+        if showsStatePill {
+            replyQueueHoldUntil = nil
+        } else if let holdUntil = replyQueueHoldUntil {
+            if now >= holdUntil {
+                replyQueueHoldUntil = nil
+                pill.hide()
+            }
+        } else if Self.isReplyState(lastAppliedState),
+                  replyStackDepth > 0 || now - replyStackDroppedAt < Self.replyQueueGrace {
+            replyQueueHoldUntil = now + Self.replyQueueHoldTimeout
+            replyQueueHoldTheme = lastAppliedState.particleTheme
+            pill.dismissFrontCard()
+        }
+        let holdsReplyQueue = replyQueueHoldUntil != nil
+        let stateTheme = holdsReplyQueue ? replyQueueHoldTheme : state.particleTheme
+
         // Particle field
         let particleTheme = voiceMotion.update(
-            theme: config.screen_glow && config.glow_intensity > 0 ? state.particleTheme : nil,
-            showsPill: Self.showsPill(for: state, replayRetained: sm.replayRetained),
+            theme: config.screen_glow && config.glow_intensity > 0 ? stateTheme : nil,
+            showsPill: showsStatePill || holdsReplyQueue,
             reduceMotion: reduceMotion,
             now: now
         )
@@ -393,7 +430,7 @@ final class OverlayController {
             }
 
         case .cancelled:
-            if state != lastAppliedState {
+            if state != lastAppliedState, !holdsReplyQueue {
                 pill.hide()
             }
 
@@ -417,7 +454,7 @@ final class OverlayController {
             }
 
         case .acknowledgement:
-            if state != lastAppliedState {
+            if state != lastAppliedState, !holdsReplyQueue {
                 pill.hide()
             }
 
@@ -456,7 +493,7 @@ final class OverlayController {
             if sm.replayRetained {
                 // Control cancellation retains Option replay in the state
                 // machine without reopening the outgoing playback pill.
-                if state != lastAppliedState { pill.hide() }
+                if state != lastAppliedState, !holdsReplyQueue { pill.hide() }
             } else if let preview = Self.previewBody(
                 for: state,
                 messagePreview: preview,
@@ -509,7 +546,8 @@ final class OverlayController {
             }
 
         default:
-            if lastAppliedState != state || !lastPartial.isEmpty || lastPreview != nil {
+            if !holdsReplyQueue,
+               lastAppliedState != state || !lastPartial.isEmpty || lastPreview != nil {
                 pill.hide()
             }
         }

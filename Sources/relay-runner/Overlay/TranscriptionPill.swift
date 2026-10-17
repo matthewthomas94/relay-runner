@@ -94,6 +94,9 @@ final class TranscriptionPill: NSView {
     private var contentTransitionGeneration: UInt = 0
     private var sharedDeparture: CGFloat?
     private var sharedReduceMotion = false
+    /// True while the finished reply's card has left and the stack waits
+    /// for the next queued reply to come forward.
+    private(set) var isFrontCardDismissed = false
 
     /// Active body-scroll animation timer. Replaced/cancelled when state
     /// changes or the pill hides.
@@ -212,10 +215,11 @@ final class TranscriptionPill: NSView {
         let wasVisible = alphaValue > 0.01
         let wasCompact = isCompact
         let themeChanged = currentTheme.map { type(of: $0) != type(of: theme) } ?? true
+        let returning = isFrontCardDismissed
 
         applyTypography()
         applyTheme(theme)
-        let swapsTitleInPlace = wasVisible && animated && wasCompact && !themeChanged
+        let swapsTitleInPlace = wasVisible && animated && wasCompact && !themeChanged && !returning
         setText(title, on: titleLabel, crossfade: swapsTitleInPlace)
         titleLabel.alignment = .center
         isCompact = true
@@ -225,13 +229,17 @@ final class TranscriptionPill: NSView {
         let pillWidth = ceil(titleSize.width) + pillPadH * 2 + 8  // 8px buffer prevents truncation
         let pillHeight = ceil(titleSize.height) + pillPadV * 2
 
-        if wasVisible && animated && (!wasCompact || themeChanged) {
+        if wasVisible && returning {
+            applyLayout(width: pillWidth, height: pillHeight, animated: animated)
+            showFrontCard(animated: animated)
+        } else if wasVisible && animated && (!wasCompact || themeChanged) {
             // State-to-state transition: blur out → update → blur in
             transitionContent(width: pillWidth, height: pillHeight)
         } else if wasVisible {
             // Same-state update: smooth resize
             applyLayout(width: pillWidth, height: pillHeight, animated: animated)
         } else {
+            showFrontCard(animated: false)
             // Fresh entrance
             applyLayout(width: pillWidth, height: pillHeight, animated: false)
             slideIn(animated: animated)
@@ -247,6 +255,7 @@ final class TranscriptionPill: NSView {
         visibilityGeneration &+= 1
         let wasVisible = alphaValue > 0.01
         let wasCompact = isCompact
+        let returning = isFrontCardDismissed
 
         applyTypography()
         applyTheme(theme)
@@ -256,7 +265,7 @@ final class TranscriptionPill: NSView {
         // Full → full updates keep the surface and swap the copy in place.
         // Streaming text (live transcription, a growing preview) updates
         // directly; only a different response crossfades.
-        let swapsInPlace = wasVisible && animated && !wasCompact
+        let swapsInPlace = wasVisible && animated && !wasCompact && !returning
         let bodyContinues = body.hasPrefix(bodyLabel.stringValue)
         setText(title, on: titleLabel, crossfade: swapsInPlace)
         titleLabel.alignment = .left
@@ -278,7 +287,12 @@ final class TranscriptionPill: NSView {
         let bodyVisibleHeight = min(bodySize.height, maxBodyHeight)
         let pillHeight = pillPadV + titleSize.height + textGap + bodyVisibleHeight + pillPadV
 
-        if wasVisible && animated && wasCompact {
+        if wasVisible && returning {
+            // The next queued reply comes forward into the card that left.
+            bodyContainer.isHidden = false
+            applyLayout(width: maxWidth, height: pillHeight, animated: animated)
+            showFrontCard(animated: animated)
+        } else if wasVisible && animated && wasCompact {
             // Compact → Full transition: blur out → update → blur in
             transitionContent(width: maxWidth, height: pillHeight)
         } else if wasVisible {
@@ -294,6 +308,7 @@ final class TranscriptionPill: NSView {
             }
         } else {
             // Fresh entrance
+            showFrontCard(animated: false)
             bodyContainer.isHidden = false
             bodyContainer.alphaValue = 1
             applyLayout(width: maxWidth, height: pillHeight, animated: false)
@@ -330,8 +345,72 @@ final class TranscriptionPill: NSView {
             })
         } else {
             alphaValue = 0
+            showFrontCard(animated: false)
             bodyContainer.isHidden = true
             bodyContainer.alphaValue = 0
+        }
+    }
+
+    // MARK: - Reply queue
+
+    private var frontCardViews: [NSView] { [surfaceContainerView, titleLabel, bodyContainer] }
+    private static let frontCardSink: CGFloat = -24
+
+    /// The finished reply sinks and fades out of the front of the stack;
+    /// the stacked cards and the overlay stay until the next one arrives.
+    func dismissFrontCard() {
+        guard alphaValue > 0.01, !isFrontCardDismissed else { return }
+        isFrontCardDismissed = true
+        visibilityGeneration &+= 1
+        cancelBodyScroll()
+        cancelContentTransition()
+        let animated = !sharedReduceMotion
+        for view in frontCardViews {
+            if animated {
+                let sink = CABasicAnimation(keyPath: "transform.translation.y")
+                sink.fromValue = 0
+                sink.toValue = Self.frontCardSink
+                sink.duration = exitDuration
+                sink.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                sink.fillMode = .forwards
+                sink.isRemovedOnCompletion = false
+                view.layer?.add(sink, forKey: "frontCardMotion")
+            }
+        }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = animated ? exitDuration : 0
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            for view in frontCardViews { view.animator().alphaValue = 0 }
+        }
+    }
+
+    /// The next reply comes down from the stack into the front card.
+    private func showFrontCard(animated: Bool) {
+        guard isFrontCardDismissed else { return }
+        isFrontCardDismissed = false
+        let bodyAlpha: CGFloat = isCompact ? 0 : 1
+        for view in frontCardViews {
+            view.layer?.removeAnimation(forKey: "frontCardMotion")
+            guard animated else { continue }
+            let rise = CABasicAnimation(keyPath: "transform.translation.y")
+            rise.fromValue = Self.stackPeek
+            rise.toValue = 0
+            rise.duration = entranceDuration
+            rise.timingFunction = springTiming
+            view.layer?.add(rise, forKey: "frontCardMotion")
+        }
+        guard animated else {
+            surfaceContainerView.alphaValue = 1
+            titleLabel.alphaValue = 1
+            bodyContainer.alphaValue = bodyAlpha
+            return
+        }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = entranceDuration
+            ctx.timingFunction = springTiming
+            surfaceContainerView.animator().alphaValue = 1
+            titleLabel.animator().alphaValue = 1
+            bodyContainer.animator().alphaValue = bodyAlpha
         }
     }
 
@@ -399,7 +478,10 @@ final class TranscriptionPill: NSView {
         resetBlurFilter()
         layer?.setValue(reduceMotion ? 0 : blurRadius, forKeyPath: "filters.motionBlur.inputRadius")
         CATransaction.commit()
-        if departure == 1 { cancelBodyScroll() }
+        if departure == 1 {
+            cancelBodyScroll()
+            showFrontCard(animated: false)
+        }
     }
 
     private func cancelContentTransition() {

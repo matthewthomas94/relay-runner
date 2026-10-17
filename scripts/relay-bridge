@@ -1903,7 +1903,45 @@ if ! $VENV_ONLY; then
     rm -f "$BRIDGE_STOP_REQUESTED_FILE"
 fi
 
-if ! $VENV_ONLY && { [ -S "$BRIDGE_SOCK" ] || pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; }; then
+# Concurrent session launches (several tabs restored at once) must not each
+# replace the bridge: serialise the stop/start, and a launch that had to wait
+# for another one joins the bridge that launch just started.
+BRIDGE_START_LOCK="/tmp/voice_bridge_start.lock"
+JOIN_RUNNING_BRIDGE=false
+
+voice_bridge_is_live() {
+    local pid
+    [ -S "$BRIDGE_SOCK" ] || return 1
+    pid="$(cat /tmp/voice_bridge.pid 2>/dev/null)"
+    [ -n "$pid" ] && ps -p "$pid" -o command= 2>/dev/null | grep -q '[v]oice_bridge.py'
+}
+
+acquire_bridge_start_lock() {
+    local waited=false attempts=0 now mtime
+    while ! mkdir "$BRIDGE_START_LOCK" 2>/dev/null; do
+        waited=true
+        now="$(date +%s)"
+        mtime="$(support_file_mtime "$BRIDGE_START_LOCK")"
+        # A start waits at most ~60s for its socket; older locks are stale.
+        if [ "$mtime" -gt 0 ] && [ $((now - mtime)) -ge 90 ]; then
+            rm -rf "$BRIDGE_START_LOCK"
+            continue
+        fi
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 1200 ] || break
+        sleep 0.1
+    done
+    trap 'rm -rf "$BRIDGE_START_LOCK"' EXIT
+    if $waited && voice_bridge_is_live; then
+        JOIN_RUNNING_BRIDGE=true
+    fi
+}
+
+if $START_DAEMON_ONLY; then
+    acquire_bridge_start_lock
+fi
+
+if ! $VENV_ONLY && ! $JOIN_RUNNING_BRIDGE && { [ -S "$BRIDGE_SOCK" ] || pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; }; then
     if pgrep -f '[v]oice_bridge.py' > /dev/null 2>&1; then
         echo "[relay-bridge] Stopping previous voice session..."
         # Try graceful shutdown first
@@ -2350,6 +2388,11 @@ fi
 echo "[relay-bridge] Starting voice bridge..."
 record_support_event shell bridge_readiness started
 if $START_DAEMON_ONLY; then
+    if $JOIN_RUNNING_BRIDGE; then
+        echo "[relay-bridge] Joined the voice bridge a concurrent launch started." | tee -a "$(voice_bridge_log_path)"
+        record_support_event shell bridge_readiness ready
+        exit 0
+    fi
     if start_voice_bridge_daemon; then
         echo "[relay-bridge] Voice bridge ready."
         exit 0
