@@ -214,6 +214,62 @@ final class TranscriptionPillScrollTests: XCTestCase {
         XCTAssertEqual(bodyLabel.frame.minY, selectedY, accuracy: 0.01)
     }
 
+    func testManualScrollSurvivesStreamingPreviewGrowth() throws {
+        let mounted = mountLongPill()
+        defer { mounted.close() }
+        let bodyLabel = try XCTUnwrap(bodyLabel(in: mounted.pill))
+
+        mounted.pill.scrollWheel(with: try makeScrollEvent(deltaY: 40, units: .pixel))
+        let readingTop = bodyLabel.frame.maxY
+
+        mounted.pill.showFull(
+            title: "Playing…",
+            body: longBody + "\nMore streamed text arriving.",
+            theme: .tts,
+            animated: false
+        )
+        XCTAssertEqual(bodyLabel.frame.maxY, readingTop, accuracy: 0.01)
+        XCTAssertNotNil(mounted.pill.manualScrollFrameOnScreen())
+    }
+
+    func testOverflowingBodyFadesInsteadOfHardCropping() throws {
+        let mounted = mountLongPill()
+        defer { mounted.close() }
+        let bodyLabel = try XCTUnwrap(bodyLabel(in: mounted.pill))
+        let mask = try XCTUnwrap(bodyLabel.superview?.layer?.mask as? CAGradientLayer)
+
+        // At the start only the bottom edge hides text.
+        XCTAssertEqual(edgeAlphas(mask).top, 1, accuracy: 0.01)
+        XCTAssertEqual(edgeAlphas(mask).bottom, 0, accuracy: 0.01)
+
+        mounted.pill.scrollWheel(with: try makeScrollEvent(deltaY: 40, units: .pixel))
+        XCTAssertEqual(edgeAlphas(mask).top, 0, accuracy: 0.01)
+        XCTAssertEqual(edgeAlphas(mask).bottom, 0, accuracy: 0.01)
+
+        mounted.pill.scrollWheel(with: try makeScrollEvent(deltaY: -10_000, units: .pixel))
+        mounted.pill.scrollWheel(with: try makeScrollEvent(deltaY: 10_000, units: .pixel))
+        XCTAssertEqual(edgeAlphas(mask).top, 0, accuracy: 0.01)
+        XCTAssertEqual(edgeAlphas(mask).bottom, 1, accuracy: 0.01)
+    }
+
+    func testReplyStackPeeksAboveFullPillOnly() throws {
+        let mounted = mountLongPill()
+        defer { mounted.close() }
+        let height = mounted.pill.frame.height
+
+        mounted.pill.setStackDepth(5)
+        XCTAssertEqual(mounted.pill.stackDepth, 2)
+        XCTAssertEqual(mounted.pill.frame.height, height + 2 * TranscriptionPill.stackPeek, accuracy: 0.01)
+
+        mounted.pill.setStackDepth(1)
+        XCTAssertEqual(mounted.pill.frame.height, height + TranscriptionPill.stackPeek, accuracy: 0.01)
+
+        mounted.pill.showCompact(title: "Thinking…", theme: .tts, animated: false)
+        let compactHeight = mounted.pill.frame.height
+        mounted.pill.setStackDepth(2)
+        XCTAssertEqual(mounted.pill.frame.height, compactHeight, accuracy: 0.01)
+    }
+
     func testNewMessageResetsToTopAndNonScrollableStatesPassThrough() throws {
         let mounted = mountLongPill()
         defer { mounted.close() }
@@ -222,7 +278,7 @@ final class TranscriptionPillScrollTests: XCTestCase {
         mounted.pill.scrollWheel(with: try makeScrollEvent(deltaY: 40, units: .pixel))
         mounted.pill.showFull(
             title: "Response ready…",
-            body: longBody + "\nNew response",
+            body: "New response\n" + longBody,
             theme: .tts,
             animated: false
         )
@@ -283,6 +339,11 @@ final class TranscriptionPillScrollTests: XCTestCase {
             pill.hide(animated: false)
             panel.orderOut(nil)
         })
+    }
+
+    private func edgeAlphas(_ mask: CAGradientLayer) -> (top: CGFloat, bottom: CGFloat) {
+        let colors = (mask.colors as? [CGColor]) ?? []
+        return (colors.first?.alpha ?? -1, colors.last?.alpha ?? -1)
     }
 
     private func bodyLabel(in pill: TranscriptionPill) -> NSTextField? {

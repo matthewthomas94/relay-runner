@@ -47,6 +47,15 @@ final class TranscriptionPill: NSView {
     /// pill into a wall of text. When the label exceeds the container, the
     /// label is animated upward inside the container (teleprompter-style).
     private let bodyContainer = NSView()
+    /// Fades the clipped body edges so overflowing text dissolves instead
+    /// of ending on a hard line.
+    private let bodyFadeMask = CAGradientLayer()
+    private var bodyEdgeFade: (top: Bool, bottom: Bool) = (false, false)
+    /// Cards that peek above the reply for unread replies in other sessions,
+    /// nearest first. Notification-style, but cascading from the top.
+    private let stackCards: [NSView] = (0..<2).map { _ in NSView() }
+    private(set) var stackDepth = 0
+    private var cardSize: NSSize = .zero
 
     private let maxWidth: CGFloat = 460
     /// Cap for the visible body region. Around 4 lines at 14pt — matches the
@@ -58,6 +67,13 @@ final class TranscriptionPill: NSView {
     private let textGap: CGFloat = 12
     private let cr: CGFloat = 16
     private let bottomOffset: CGFloat = 56
+    /// Height of the body edge fade and blur band.
+    static let bodyFadeHeight: CGFloat = 22
+    /// How far each stacked card peeks above the one in front of it.
+    static let stackPeek: CGFloat = 8
+    /// Horizontal inset of each stacked card, per side, nearest first.
+    static let stackInsets: [CGFloat] = [14, 28]
+    static let stackAlphas: [CGFloat] = [0.85, 0.6]
 
     private let textColor = NSColor(red: 226 / 255, green: 232 / 255, blue: 240 / 255, alpha: 1)
 
@@ -123,6 +139,24 @@ final class TranscriptionPill: NSView {
         motionBlur.setValue(0, forKey: kCIInputRadiusKey)
         layer?.filters = [motionBlur]
 
+        for card in stackCards.reversed() {
+            card.wantsLayer = true
+            card.layerUsesCoreImageFilters = true
+            card.layer?.cornerRadius = cr
+            card.layer?.masksToBounds = true
+            card.layer?.backgroundColor = DarkSurfaceStyle.pillFill.cgColor
+            card.layer?.borderColor = DarkSurfaceStyle.border.cgColor
+            card.layer?.borderWidth = 1
+            if let blur = CIFilter(name: "CIGaussianBlur") {
+                blur.name = "stackBlur"
+                blur.setValue(0, forKey: kCIInputRadiusKey)
+                card.layer?.filters = [blur]
+            }
+            card.alphaValue = 0
+            card.isHidden = true
+            addSubview(card)
+        }
+
         surfaceContainerView.wantsLayer = true
         surfaceContainerView.layer?.cornerRadius = cr
         surfaceContainerView.layer?.masksToBounds = true
@@ -147,7 +181,10 @@ final class TranscriptionPill: NSView {
         // Body container — clips bodyLabel to maxBodyHeight so overflowing
         // text scrolls inside the visible window instead of resizing the pill.
         bodyContainer.wantsLayer = true
+        bodyContainer.layerUsesCoreImageFilters = true
         bodyContainer.layer?.masksToBounds = true
+        bodyFadeMask.colors = Self.bodyFadeColors(top: false, bottom: false)
+        bodyContainer.layer?.mask = bodyFadeMask
         bodyContainer.isHidden = true
         bodyContainer.alphaValue = 0
         addSubview(bodyContainer)
@@ -226,7 +263,8 @@ final class TranscriptionPill: NSView {
         // so the next layout starts from the top with the auto-teleprompter
         // (or pin-to-bottom for STT). Same body across state transitions
         // (messageWaiting → speaking) keeps the user's manual position.
-        if bodyLabel.stringValue != body {
+        // A streaming preview that only grows is the same message.
+        if !bodyContinues {
             manualScrollEngaged = false
         }
         setText(body, on: bodyLabel, crossfade: swapsInPlace && !themeMatches(.stt) && !bodyContinues)
@@ -464,9 +502,12 @@ final class TranscriptionPill: NSView {
     private func applyLayout(width: CGFloat, height: CGFloat, animated: Bool, duration: CFTimeInterval = 0.4) {
         guard let superview = superview else { return }
 
+        cardSize = NSSize(width: width, height: height)
+        let peek = stackPeekHeight
         let x = (superview.bounds.width - width) / 2
-        let y = bottomOffset - (bottomOffset + height + 20) * (sharedDeparture ?? 0)
-        let targetFrame = NSRect(x: x, y: y, width: width, height: height)
+        let y = bottomOffset - (bottomOffset + height + peek + 20) * (sharedDeparture ?? 0)
+        // The front card sits at the bottom; stacked cards peek above it.
+        let targetFrame = NSRect(x: x, y: y, width: width, height: height + peek)
         let targetBounds = NSRect(x: 0, y: 0, width: width, height: height)
 
         let inset = targetBounds.insetBy(dx: 0.5, dy: 0.5)
@@ -497,6 +538,76 @@ final class TranscriptionPill: NSView {
         }
 
         layoutLabels(targetBounds: targetBounds, animated: animated, duration: duration)
+        layoutStackCards(animated: animated && alphaValue > 0.01, duration: duration)
+    }
+
+    // MARK: - Reply stack
+
+    /// Shows up to two cards peeking above the reply, one per unread reply
+    /// waiting in another session. Only full replies carry the stack.
+    func setStackDepth(_ depth: Int) {
+        let depth = max(0, min(depth, stackCards.count))
+        guard depth != stackDepth else { return }
+        stackDepth = depth
+        guard superview != nil, cardSize != .zero, !isTransitioning else { return }
+        applyLayout(
+            width: cardSize.width,
+            height: cardSize.height,
+            animated: alphaValue > 0.01 && !sharedReduceMotion
+        )
+    }
+
+    private var visibleStackDepth: Int { isCompact ? 0 : stackDepth }
+
+    private var stackPeekHeight: CGFloat { CGFloat(visibleStackDepth) * Self.stackPeek }
+
+    /// Each card rises from behind the reply into its peek, fading and
+    /// unblurring; a leaving card sinks back behind it the same way.
+    private func layoutStackCards(animated: Bool, duration: CFTimeInterval) {
+        let depth = visibleStackDepth
+        for (index, card) in stackCards.enumerated() {
+            let inset = Self.stackInsets[index]
+            let shown = index < depth
+            let rest = NSRect(
+                x: inset,
+                y: 0,
+                width: max(0, cardSize.width - inset * 2),
+                height: cardSize.height
+            )
+            var target = rest
+            if shown { target.origin.y = CGFloat(index + 1) * Self.stackPeek }
+            let wasShown = !card.isHidden && card.alphaValue > 0.01
+            let alpha: CGFloat = shown ? Self.stackAlphas[index] : 0
+            guard animated, shown != wasShown || card.frame != target else {
+                card.frame = target
+                card.alphaValue = alpha
+                card.isHidden = !shown
+                card.layer?.setValue(0, forKeyPath: "filters.stackBlur.inputRadius")
+                continue
+            }
+            if shown && !wasShown {
+                card.frame = rest
+                card.alphaValue = 0
+                card.isHidden = false
+            }
+            if shown != wasShown {
+                let blur = CABasicAnimation(keyPath: "filters.stackBlur.inputRadius")
+                blur.fromValue = shown ? 12 : 0
+                blur.toValue = shown ? 0 : 12
+                blur.duration = duration
+                blur.timingFunction = springTiming
+                card.layer?.add(blur, forKey: "stackBlur")
+            }
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = duration
+                ctx.timingFunction = springTiming
+                card.animator().frame = target
+                card.animator().alphaValue = alpha
+            }, completionHandler: { [weak self, weak card] in
+                guard let self, let card, index >= self.visibleStackDepth else { return }
+                card.isHidden = true
+            })
+        }
     }
 
     /// Set all internal CALayer frames — called inside a CATransaction.
@@ -557,14 +668,21 @@ final class TranscriptionPill: NSView {
             // Otherwise (TTS, fresh entrance) start at the top and let the
             // teleprompter reveal the rest.
             let isSttPinToBottom = themeMatches(.stt) && bodyContentHeight > maxBodyHeight
-            let scrollContinues = bodyLabel.stringValue == scrolledBodyText
+            let scrollContinues = scrolledBodyText.map { bodyLabel.stringValue.hasPrefix($0) } ?? false
+            // Growing text extends the label downward; keep its top where
+            // the reader left it.
+            let continuedY = min(0, max(
+                initialLabelY,
+                bodyLabel.frame.origin.y - (bodyContentHeight - bodyLabel.frame.height)
+            ))
             let preservedY: CGFloat
             if isSttPinToBottom {
                 preservedY = 0  // bottom of label aligned with bottom of container = latest text
             } else if manualScrollEngaged {
-                preservedY = bodyLabel.frame.origin.y
+                preservedY = continuedY
             } else if scrollContinues {
-                preservedY = bodyLabel.frame.origin.y
+                preservedY = continuedY
+                scrolledBodyText = bodyLabel.stringValue
             } else {
                 preservedY = initialLabelY
             }
@@ -609,8 +727,76 @@ final class TranscriptionPill: NSView {
             } else {
                 cancelBodyScroll()
             }
+            updateBodyEdgeFade()
         }
 
+    }
+
+    // MARK: - Body edge fade
+
+    /// Fades and blurs whichever body edge hides more text: the top once
+    /// the reader has scrolled past the start, the bottom while text remains.
+    func updateBodyEdgeFade() {
+        let bounds = bodyContainer.bounds
+        let labelY = bodyLabel.frame.origin.y
+        let overflow = bodyLabel.frame.height - bounds.height
+        let edges = (
+            top: overflow > 0.5 && labelY > bounds.height - bodyLabel.frame.height + 0.5,
+            bottom: overflow > 0.5 && labelY < -0.5
+        )
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        bodyFadeMask.frame = bounds
+        let fraction = bounds.height > 0 ? min(0.45, Self.bodyFadeHeight / bounds.height) : 0
+        // CAGradientLayer runs top (0) to bottom (1) in its unit space.
+        bodyFadeMask.startPoint = CGPoint(x: 0.5, y: 1)
+        bodyFadeMask.endPoint = CGPoint(x: 0.5, y: 0)
+        bodyFadeMask.locations = [0, NSNumber(value: Double(fraction)),
+                                  NSNumber(value: Double(1 - fraction)), 1]
+        if edges != bodyEdgeFade || bodyContainer.layer?.filters == nil {
+            bodyEdgeFade = edges
+            bodyFadeMask.colors = Self.bodyFadeColors(top: edges.top, bottom: edges.bottom)
+            bodyContainer.layer?.filters = Self.bodyEdgeBlur(
+                height: bounds.height,
+                scale: window?.backingScaleFactor ?? 2,
+                top: edges.top,
+                bottom: edges.bottom
+            )
+        }
+        CATransaction.commit()
+    }
+
+    static func bodyFadeColors(top: Bool, bottom: Bool) -> [CGColor] {
+        let solid = NSColor.black.cgColor
+        let clear = NSColor.black.withAlphaComponent(0).cgColor
+        return [top ? clear : solid, solid, solid, bottom ? clear : solid]
+    }
+
+    /// A blur that deepens toward each faded edge, under the alpha fade.
+    static func bodyEdgeBlur(height: CGFloat, scale: CGFloat, top: Bool, bottom: Bool) -> [CIFilter] {
+        guard top || bottom, height > 0,
+              let blur = CIFilter(name: "CIMaskedVariableBlur") else { return [] }
+        let band = bodyFadeHeight * scale
+        let maxY = height * scale
+        let black = CIColor(red: 0, green: 0, blue: 0)
+        let white = CIColor(red: 1, green: 1, blue: 1)
+        var mask = CIImage(color: black)
+        func edge(from start: CGFloat, to end: CGFloat) -> CIImage? {
+            let gradient = CIFilter(name: "CISmoothLinearGradient")
+            gradient?.setValue(CIVector(x: 0, y: start), forKey: "inputPoint0")
+            gradient?.setValue(CIVector(x: 0, y: end), forKey: "inputPoint1")
+            gradient?.setValue(white, forKey: "inputColor0")
+            gradient?.setValue(black, forKey: "inputColor1")
+            return gradient?.outputImage
+        }
+        for image in [top ? edge(from: maxY, to: maxY - band) : nil,
+                      bottom ? edge(from: 0, to: band) : nil].compactMap({ $0 }) {
+            mask = image.applyingFilter("CIMaximumCompositing", parameters: [kCIInputBackgroundImageKey: mask])
+        }
+        blur.name = "bodyEdgeBlur"
+        blur.setValue(mask, forKey: "inputMask")
+        blur.setValue(6, forKey: kCIInputRadiusKey)
+        return [blur]
     }
 
     // MARK: - Body scroll (teleprompter)
@@ -658,6 +844,7 @@ final class TranscriptionPill: NSView {
                 var newFrame = self.bodyLabel.frame
                 newFrame.origin.y = min(currentY + pixelsPerTick, targetY)
                 self.bodyLabel.frame = newFrame
+                self.updateBodyEdgeFade()
             }
             RunLoop.main.add(timer, forMode: .common)
             self.bodyScrollTimer = timer
@@ -711,6 +898,7 @@ final class TranscriptionPill: NSView {
             var f = bodyLabel.frame
             f.origin.y = newY
             bodyLabel.frame = f
+            updateBodyEdgeFade()
         }
     }
 

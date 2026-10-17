@@ -265,7 +265,9 @@ final class AppState {
     /// The `__FOCUS__` datagrams the running bridge last accepted.
     @ObservationIgnored private var sentVoiceFocus: [String] = []
     /// RR-401: unheard reply and outcome counts per background live context.
-    private(set) var sessionReplyBadges: [String: Int] = [:]
+    private(set) var sessionReplyBadges: [String: Int] = [:] {
+        didSet { overlayController?.setReplyStackDepth(sessionReplyBadges.values.reduce(0, +)) }
+    }
     @ObservationIgnored private var replyBadgeTimer: Timer?
     private var voiceContext: AssistantSessionContext {
         voiceContextID.flatMap { assistantSessionStore.document.bindings[$0]?.context } ?? activeContext
@@ -3767,6 +3769,7 @@ final class AppState {
         let oc = OverlayController(config: config.awareness)
         oc.start(stateMachine: stateMachine)
         overlayController = oc
+        oc.setReplyStackDepth(sessionReplyBadges.values.reduce(0, +))
 
         // Workspace overlay — install Esc dismissal once macOS has granted
         // either global-event permission. Accessibility is the normal setup

@@ -92,6 +92,12 @@ final class OverlayController {
         NSLog("[OverlayController] Stopped")
     }
 
+    /// Unread replies waiting in other sessions, shown as cards stacked
+    /// above the reply pill.
+    func setReplyStackDepth(_ depth: Int) {
+        pill.setStackDepth(depth)
+    }
+
     func updateConfig(_ newConfig: AwarenessConfig) {
         config = newConfig
         particleField.setIntensity(newConfig.glow_intensity)
