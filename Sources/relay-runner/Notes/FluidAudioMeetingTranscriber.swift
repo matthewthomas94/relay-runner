@@ -61,4 +61,10 @@ actor FluidAudioMeetingTranscriber: MeetingWindowTranscribing {
             processingMilliseconds: Int((result.processingTime * 1_000).rounded())
         )
     }
+
+    func release() async {
+        guard let manager else { return }
+        self.manager = nil
+        await manager.cleanup()
+    }
 }

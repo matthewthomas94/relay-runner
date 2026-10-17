@@ -70,6 +70,12 @@ actor MeetingTranscriptProducer {
     private var drainTask: Task<Void, Never>?
     private var metrics = MeetingProducerMetrics()
     private var terminalError: MeetingProducerError?
+    /// Post-stop batch state. Live capture never sets these.
+    private var isRecordingTranscription = false
+    private var recordingFailure: Error?
+    private var recordingCapacityWaiter: CheckedContinuation<Void, Never>?
+    private var recordingProcessedMilliseconds = 0
+    private var recordingProgress: (@Sendable (Int) -> Void)?
 
     init(
         sessionID: String,
@@ -370,18 +376,58 @@ actor MeetingTranscriptProducer {
             sourceStates[source] = .stopped
             emit(.source(source, .stopped))
         }
-        let boundary = MeetingProducerFinalBoundary(
-            sessionID: sessionID,
-            timingEpochs: timingEpochs,
-            finalSegmentRevisionByID: committedFinalRevisionBySegment.merging(
-                finalRevisionBySegment,
-                uniquingKeysWith: max
-            ),
-            metrics: metrics
-        )
+        let boundary = finalBoundary()
         emit(.finalBoundary(boundary))
         emit(.state(.stopped))
         return boundary
+    }
+
+    /// Transcribes a finished recording in one pass through the same windows,
+    /// ownership and segment IDs as live capture. It submits final windows
+    /// only, skips per-chunk checkpoints, and waits for queue capacity instead
+    /// of failing. `onProgress` receives processed owned milliseconds. The
+    /// caller prepares and releases the transcriber.
+    func transcribeRecording(
+        _ recording: MeetingRecordedAudioReading,
+        onProgress: @escaping @Sendable (Int) -> Void = { _ in }
+    ) async throws -> MeetingProducerFinalBoundary {
+        guard state == .idle else { throw MeetingProducerError.invalidState(state) }
+        state = .stopping
+        isRecordingTranscription = true
+        recordingProgress = onProgress
+        timingEpochs = recording.timingEpochs
+        do {
+            try await withTaskCancellationHandler {
+                for source in MeetingAudioSourceID.allCases {
+                    for try await chunk in recording.chunks(for: source) {
+                        try await appendRecordedAudio(chunk, from: source)
+                    }
+                    try await waitForRecordingCapacity()
+                    try flushTail(for: source)
+                }
+                await waitUntilIdle()
+                try checkRecordingActive()
+            } onCancel: {
+                Task { await self.stopRecordingTranscription(CancellationError()) }
+            }
+        } catch {
+            let failure = recordingFailure ?? error
+            stopRecordingTranscription(failure)
+            await waitUntilIdle()
+            state = .failed
+            switch failure {
+            case is CancellationError, is MeetingRecordingTranscriptionError:
+                throw failure
+            case MeetingProducerError.checkpointFailed(let message):
+                throw MeetingRecordingTranscriptionError.invalidRecording(message)
+            default:
+                throw MeetingRecordingTranscriptionError.invalidRecording(
+                    failure.localizedDescription
+                )
+            }
+        }
+        state = .stopped
+        return finalBoundary()
     }
 
     func sourceBecameUnavailable(
@@ -491,6 +537,97 @@ actor MeetingTranscriptProducer {
         request: MeetingTranscriptionRequest
     ) async {
         await apply(result, for: request)
+    }
+
+    private func finalBoundary() -> MeetingProducerFinalBoundary {
+        MeetingProducerFinalBoundary(
+            sessionID: sessionID,
+            timingEpochs: timingEpochs,
+            finalSegmentRevisionByID: committedFinalRevisionBySegment.merging(
+                finalRevisionBySegment,
+                uniquingKeysWith: max
+            ),
+            metrics: metrics
+        )
+    }
+
+    /// Feeds one recorded chunk in pieces no longer than an owned window, so
+    /// each piece completes at most one final window and the queue stays
+    /// within `maximumQueuedWindows` while input waits for capacity.
+    private func appendRecordedAudio(
+        _ chunk: MeetingAcceptedAudio,
+        from source: MeetingAudioSourceID
+    ) async throws {
+        let descriptor = chunk.descriptor
+        guard descriptor.sourceID == source,
+              descriptor.sampleCount == chunk.samples.count
+        else {
+            throw MeetingRecordingTranscriptionError.invalidRecording(
+                "a recorded chunk does not match its source or sample count"
+            )
+        }
+        if let current = sourceBuffers[source]?.epoch,
+           current.epochID != descriptor.timingEpochID
+        {
+            guard let next = timingEpochs.first(where: {
+                $0.epochID == descriptor.timingEpochID
+            }), next.sourceID == source, next.sequence > current.sequence else {
+                throw MeetingRecordingTranscriptionError.invalidRecording(
+                    "recorded chunks are not in timing-epoch order"
+                )
+            }
+            try await waitForRecordingCapacity()
+            try flushTail(for: source)
+        }
+        var offset = 0
+        while offset < chunk.samples.count {
+            let count = min(configuration.ownedSamples, chunk.samples.count - offset)
+            let startSample = descriptor.startSample + offset
+            try await waitForRecordingCapacity()
+            try appendAcceptedAudio(MeetingAcceptedAudio(
+                descriptor: MeetingAcceptedAudioDescriptor(
+                    chunkID: descriptor.chunkID,
+                    sourceID: source,
+                    timingEpochID: descriptor.timingEpochID,
+                    sequence: descriptor.sequence,
+                    startSample: startSample,
+                    endSample: startSample + count,
+                    startMilliseconds: milliseconds(forSample: startSample),
+                    endMilliseconds: milliseconds(forSample: startSample + count),
+                    sampleRate: descriptor.sampleRate,
+                    sampleCount: count
+                ),
+                samples: Array(chunk.samples[offset..<(offset + count)])
+            ))
+            try submitAvailableWindows(for: source, allowPartial: false)
+            offset += count
+        }
+    }
+
+    private func waitForRecordingCapacity() async throws {
+        try checkRecordingActive()
+        while queuedJobs.count >= configuration.maximumQueuedWindows {
+            await withCheckedContinuation { recordingCapacityWaiter = $0 }
+            try checkRecordingActive()
+        }
+    }
+
+    private func checkRecordingActive() throws {
+        if let recordingFailure { throw recordingFailure }
+        try Task.checkCancellation()
+    }
+
+    private func stopRecordingTranscription(_ failure: Error) {
+        guard isRecordingTranscription, state == .stopping else { return }
+        if recordingFailure == nil { recordingFailure = failure }
+        queuedJobs.removeAll()
+        drainTask?.cancel()
+        resumeRecordingCapacityWaiter()
+    }
+
+    private func resumeRecordingCapacityWaiter() {
+        recordingCapacityWaiter?.resume()
+        recordingCapacityWaiter = nil
     }
 
     private func ensureEpoch(
@@ -704,19 +841,27 @@ actor MeetingTranscriptProducer {
 
     private func drainJobs() async {
         while !queuedJobs.isEmpty {
-            if terminalError != nil {
+            if terminalError != nil || recordingFailure != nil {
                 queuedJobs.removeAll()
                 break
             }
             let request = queuedJobs.removeFirst()
             metrics.queuedWindowCount = queuedJobs.count
+            resumeRecordingCapacityWaiter()
             let maximumAttempts = request.isFinal ? 2 : 1
             for attempt in 0..<maximumAttempts {
                 do {
                     let result = try await transcriber.transcribe(request)
+                    if recordingFailure != nil { break }
                     await apply(result, for: request)
+                    if isRecordingTranscription {
+                        recordingProcessedMilliseconds +=
+                            request.ownedEndMilliseconds - request.ownedStartMilliseconds
+                        recordingProgress?(recordingProcessedMilliseconds)
+                    }
                     break
                 } catch {
+                    if recordingFailure != nil { break }
                     metrics.transcriptionFailureCount += 1
                     emitIssue(
                         code: .transcriptionFailed,
@@ -724,11 +869,21 @@ actor MeetingTranscriptProducer {
                         message: "Local transcription failed for a retained audio window: \(error.localizedDescription)",
                         recoverable: true
                     )
-                    if attempt + 1 == maximumAttempts { break }
+                    if attempt + 1 == maximumAttempts {
+                        if isRecordingTranscription {
+                            stopRecordingTranscription(
+                                MeetingRecordingTranscriptionError.transcriptionFailed(
+                                    error.localizedDescription
+                                )
+                            )
+                        }
+                        break
+                    }
                 }
             }
         }
         drainTask = nil
+        resumeRecordingCapacityWaiter()
     }
 
     private func apply(
@@ -804,6 +959,12 @@ actor MeetingTranscriptProducer {
             recognizedWords: request.isFinal || result.tokens.isEmpty
                 ? nil : ownedWords(from: result.tokens, request: request)
         )
+        // A post-stop batch has no per-chunk journal; the caller keeps the
+        // recording until the whole batch succeeds.
+        if isRecordingTranscription {
+            emit(.revision(revision))
+            return
+        }
         durableRevisions[revision.segmentID] = revision
         do {
             try await durableCheckpointSink(checkpoint())

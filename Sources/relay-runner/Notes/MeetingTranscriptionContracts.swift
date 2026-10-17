@@ -274,6 +274,44 @@ enum MeetingProducerEvent: Equatable, Sendable {
 protocol MeetingWindowTranscribing: Sendable {
     func prepare(onState: @escaping @Sendable (MeetingLocalModelState) -> Void) async throws
     func transcribe(_ request: MeetingTranscriptionRequest) async throws -> MeetingTranscriptionResult
+    /// Unloads the model so it is not resident between post-stop batches.
+    func release() async
+}
+
+extension MeetingWindowTranscribing {
+    func release() async {}
+}
+
+/// A finished recording read back after Stop. Each source yields its accepted
+/// chunks in capture order; `timingEpochs` covers every chunk's epoch.
+protocol MeetingRecordedAudioReading: Sendable {
+    var timingEpochs: [MeetingTimingEpoch] { get }
+    /// Accepted audio summed across sources, used as the progress total.
+    var totalMilliseconds: Int { get }
+    func chunks(for source: MeetingAudioSourceID) -> AsyncThrowingStream<MeetingAcceptedAudio, Error>
+}
+
+enum MeetingRecordingTranscriptionEvent: Equatable, Sendable {
+    case model(MeetingLocalModelState)
+    case progress(processedMilliseconds: Int, totalMilliseconds: Int)
+    case revision(MeetingTranscriptSegmentRevision)
+}
+
+enum MeetingRecordingTranscriptionError: LocalizedError, Equatable {
+    case modelUnavailable(String)
+    case invalidRecording(String)
+    case transcriptionFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .modelUnavailable(let message):
+            return "The local transcription model is unavailable: \(message)"
+        case .invalidRecording(let message):
+            return "The meeting recording could not be read: \(message)"
+        case .transcriptionFailed(let message):
+            return "Local transcription failed for the recording: \(message)"
+        }
+    }
 }
 
 enum MeetingProducerError: LocalizedError, Equatable {

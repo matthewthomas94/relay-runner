@@ -2875,3 +2875,515 @@ private func XCTAssertThrowsErrorAsync<T>(
         errorHandler(error)
     }
 }
+
+// MARK: - RR-405 post-stop batch transcription
+
+extension MeetingTranscriptProducerTests {
+    func testOfflineBatchMatchesLiveFinalsAcrossEpochsAndSources() async throws {
+        let transcriber = FakeMeetingTranscriber { request in
+            MeetingTranscriptionResult(
+                text: request.samples.map { String(Int($0)) }.joined(separator: " "),
+                tokens: [],
+                processingMilliseconds: 1
+            )
+        }
+        let accepted = MeetingAcceptedAudioRecorder()
+        let liveEvents = MeetingEventRecorder()
+        let live = MeetingTranscriptProducer(
+            sessionID: "fixture-golden",
+            transcriber: transcriber,
+            configuration: smallConfiguration,
+            acceptedAudioSink: { try await accepted.record($0) },
+            eventSink: { liveEvents.record($0) }
+        )
+        var next: Float = 1
+        func samples(_ count: Int) -> [Float] {
+            defer { next += Float(count) }
+            return (0..<count).map { next + Float($0) }
+        }
+        try await live.start(initiallyPaused: false)
+        for count in [3, 11, 5, 2] {
+            try await live.ingest(samples(count), from: .microphone)
+            try await live.ingest(samples(count + 1), from: .systemAudio)
+        }
+        try await live.pause()
+        try await live.resume()
+        for count in [7, 13] {
+            try await live.ingest(samples(count), from: .systemAudio)
+            try await live.ingest(samples(count), from: .microphone)
+        }
+        let liveBoundary = try await live.stop()
+        XCTAssertEqual(liveBoundary.timingEpochs.count, 4)
+        XCTAssertTrue(liveEvents.revisions.contains { !$0.isFinal })
+
+        let recording = InMemoryMeetingRecording(
+            timingEpochs: liveBoundary.timingEpochs,
+            audio: accepted.audio
+        )
+        let offlineEvents = MeetingEventRecorder()
+        let offline = MeetingTranscriptProducer(
+            sessionID: "fixture-golden",
+            transcriber: transcriber,
+            configuration: smallConfiguration,
+            eventSink: { offlineEvents.record($0) }
+        )
+        let offlineBoundary = try await offline.transcribeRecording(recording)
+
+        struct Final: Equatable {
+            let segmentID: String
+            let start: Int
+            let end: Int
+            let text: String
+            let speaker: MeetingAudioSourceID
+        }
+        func finals(_ revisions: [MeetingTranscriptSegmentRevision]) -> [Final] {
+            revisions.filter(\.isFinal)
+                .map { Final(
+                    segmentID: $0.segmentID,
+                    start: $0.startMilliseconds,
+                    end: $0.endMilliseconds,
+                    text: $0.text,
+                    speaker: $0.sourceID
+                ) }
+                .sorted { ($0.segmentID, $0.start) < ($1.segmentID, $1.start) }
+        }
+        let liveFinals = finals(liveEvents.revisions)
+        XCTAssertGreaterThan(liveFinals.count, 6)
+        XCTAssertEqual(finals(offlineEvents.revisions), liveFinals)
+        XCTAssertFalse(offlineEvents.revisions.contains { !$0.isFinal })
+        XCTAssertEqual(
+            Set(offlineBoundary.finalSegmentRevisionByID.keys),
+            Set(liveBoundary.finalSegmentRevisionByID.keys)
+        )
+        XCTAssertEqual(offlineBoundary.timingEpochs, liveBoundary.timingEpochs)
+    }
+
+    func testOfflineBatchWaitsForCapacityInsteadOfFailingBackpressure() async throws {
+        let configuration = MeetingTranscriptProducer.Configuration(
+            sampleRate: 10,
+            windowMilliseconds: 1_000,
+            overlapMilliseconds: 200,
+            firstPartialMilliseconds: 400,
+            partialIntervalMilliseconds: 400,
+            maximumQueuedWindows: 2
+        )
+        let events = MeetingEventRecorder()
+        let checkpoints = MeetingProducerCheckpointRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-slow-batch",
+            transcriber: FakeMeetingTranscriber(delayNanoseconds: 5_000_000) { _ in
+                MeetingTranscriptionResult(text: "word", tokens: [], processingMilliseconds: 5)
+            },
+            configuration: configuration,
+            durableCheckpointSink: { await checkpoints.record($0) },
+            eventSink: { events.record($0) }
+        )
+        // Each 80-sample chunk spans ten owned windows, far beyond the bound.
+        let recording = InMemoryMeetingRecording.synthetic(
+            sessionID: "fixture-slow-batch",
+            sampleRate: 10,
+            chunkSampleCounts: [80, 3, 1]
+        )
+
+        let boundary = try await producer.transcribeRecording(recording)
+
+        XCTAssertFalse(events.issues.contains { $0.code == .backpressureExceeded })
+        XCTAssertLessThanOrEqual(boundary.metrics.maximumQueuedWindowCount, 2)
+        XCTAssertGreaterThan(boundary.metrics.maximumQueuedWindowCount, 0)
+        // 84 samples per source: ten owned windows plus a four-sample tail.
+        XCTAssertEqual(events.revisions.filter(\.isFinal).count, 22)
+        let checkpointCount = await checkpoints.values.count
+        XCTAssertEqual(checkpointCount, 0)
+    }
+
+    func testBatchPreparesAndReleasesModelOnceAndReportsMonotonicProgress() async throws {
+        let transcriber = CountingMeetingTranscriber()
+        let events = MeetingRecordingEventRecorder()
+        let recording = InMemoryMeetingRecording.synthetic(
+            sessionID: "fixture-progress",
+            sampleRate: 10,
+            chunkSampleCounts: [5, 17, 9]
+        )
+
+        let boundary = try await MeetingRecordingTranscriber(
+            transcriber: transcriber,
+            configuration: smallConfiguration
+        ).transcribe(recording, sessionID: "fixture-progress") { events.record($0) }
+
+        XCTAssertEqual(transcriber.prepareCount, 1)
+        XCTAssertEqual(transcriber.releaseCount, 1)
+        XCTAssertEqual(events.models.prefix(2), [.checking, .ready(model: "counting-fixture")])
+        XCTAssertEqual(events.models.last, .notLoaded)
+        let progress = events.progress
+        XCTAssertEqual(progress.first?.processed, 0)
+        XCTAssertTrue(progress.allSatisfy { $0.total == recording.totalMilliseconds })
+        XCTAssertEqual(progress.map(\.processed), progress.map(\.processed).sorted())
+        XCTAssertGreaterThan(progress.count, 3)
+        XCTAssertEqual(progress.last?.processed, recording.totalMilliseconds)
+        XCTAssertFalse(events.revisions.isEmpty)
+        XCTAssertTrue(events.revisions.allSatisfy(\.isFinal))
+        XCTAssertEqual(boundary.finalSegmentRevisionByID.count, events.revisions.count)
+    }
+
+    func testBatchReleasesModelAfterTranscriptionFailure() async throws {
+        let transcriber = CountingMeetingTranscriber { request in
+            if request.windowSequence == 1 { throw FixtureTranscriptionError.failedWindow }
+            return MeetingTranscriptionResult(text: "word", tokens: [], processingMilliseconds: 1)
+        }
+        let recording = InMemoryMeetingRecording.synthetic(
+            sessionID: "fixture-failure",
+            sampleRate: 10,
+            chunkSampleCounts: [40]
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            try await MeetingRecordingTranscriber(
+                transcriber: transcriber,
+                configuration: self.smallConfiguration
+            ).transcribe(recording, sessionID: "fixture-failure") { _ in }
+        ) { error in
+            guard case MeetingRecordingTranscriptionError.transcriptionFailed = error else {
+                return XCTFail("Unexpected error \(error)")
+            }
+        }
+        XCTAssertEqual(transcriber.prepareCount, 1)
+        XCTAssertEqual(transcriber.releaseCount, 1)
+    }
+
+    func testBatchReleasesModelAfterPrepareFailure() async throws {
+        let transcriber = CountingMeetingTranscriber(failsPrepare: true)
+        let events = MeetingRecordingEventRecorder()
+        let recording = InMemoryMeetingRecording.synthetic(
+            sessionID: "fixture-model",
+            sampleRate: 10,
+            chunkSampleCounts: [12]
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            try await MeetingRecordingTranscriber(
+                transcriber: transcriber,
+                configuration: self.smallConfiguration
+            ).transcribe(recording, sessionID: "fixture-model") { events.record($0) }
+        ) { error in
+            guard case MeetingRecordingTranscriptionError.modelUnavailable = error else {
+                return XCTFail("Unexpected error \(error)")
+            }
+        }
+        XCTAssertEqual(transcriber.prepareCount, 1)
+        XCTAssertEqual(transcriber.releaseCount, 1)
+        XCTAssertEqual(transcriber.transcribeCount, 0)
+        guard case .failed = events.models.last else {
+            return XCTFail("Expected a failed model state")
+        }
+    }
+
+    func testBatchCancellationStopsPromptlyAndReleasesModel() async throws {
+        let transcriber = CountingMeetingTranscriber(delayNanoseconds: 20_000_000)
+        let events = MeetingRecordingEventRecorder()
+        // 2,000 owned windows at 20 ms each would take far longer than the bound.
+        let recording = InMemoryMeetingRecording.synthetic(
+            sessionID: "fixture-cancel",
+            sampleRate: 10,
+            chunkSampleCounts: Array(repeating: 800, count: 20)
+        )
+        let batch = MeetingRecordingTranscriber(
+            transcriber: transcriber,
+            configuration: smallConfiguration
+        )
+        let task = Task {
+            try await batch.transcribe(recording, sessionID: "fixture-cancel") {
+                events.record($0)
+            }
+        }
+        try await eventually { events.revisions.count >= 2 }
+
+        let cancelledAt = Date()
+        task.cancel()
+        let revisionsAtCancel = events.revisions.count
+        let eventsAtCancel = events.count
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "Unexpected error \(error)")
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(cancelledAt), 1)
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(events.revisions.count, revisionsAtCancel)
+        XCTAssertEqual(events.count, eventsAtCancel)
+        XCTAssertEqual(transcriber.prepareCount, 1)
+        XCTAssertEqual(transcriber.releaseCount, 1)
+        let transcribedAfterCancel = transcriber.transcribeCount
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(transcriber.transcribeCount, transcribedAfterCancel)
+    }
+
+    func testOfflineSixtyMinuteDualSourceBatchRemainsBounded() async throws {
+        let configuration = MeetingTranscriptProducer.Configuration(
+            sampleRate: 10,
+            windowMilliseconds: 60_000,
+            overlapMilliseconds: 1_000,
+            firstPartialMilliseconds: 30_000,
+            partialIntervalMilliseconds: 30_000,
+            maximumQueuedWindows: 16
+        )
+        let checkpoints = MeetingProducerCheckpointRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-offline-sixty-minutes",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: "", tokens: [], processingMilliseconds: 3)
+            },
+            configuration: configuration,
+            durableCheckpointSink: { await checkpoints.record($0) }
+        )
+        let maximumBufferedSamples = MaximumSampleRecorder()
+        let recording = StreamedSixtyMinuteRecording(
+            sessionID: "fixture-offline-sixty-minutes"
+        ) { second in
+            guard second % 60 == 59 else { return }
+            maximumBufferedSamples.record(await producer.bufferedSampleCount())
+        }
+
+        let boundary = try await producer.transcribeRecording(recording)
+
+        XCTAssertEqual(boundary.metrics.droppedAudioSampleCount, 0)
+        XCTAssertEqual(boundary.metrics.transcriptionFailureCount, 0)
+        XCTAssertLessThanOrEqual(boundary.metrics.maximumQueuedWindowCount, 16)
+        XCTAssertEqual(boundary.metrics.maximumProcessingMilliseconds, 3)
+        let maximum = maximumBufferedSamples.value
+        XCTAssertGreaterThan(maximum, 0)
+        XCTAssertLessThan(maximum, configuration.windowSamples * 2)
+        XCTAssertLessThan(maximum * MemoryLayout<Float>.stride, 4_800)
+        let checkpointCount = await checkpoints.values.count
+        XCTAssertEqual(checkpointCount, 0)
+    }
+}
+
+private struct InMemoryMeetingRecording: MeetingRecordedAudioReading {
+    let timingEpochs: [MeetingTimingEpoch]
+    let audio: [MeetingAcceptedAudio]
+
+    var totalMilliseconds: Int {
+        audio.reduce(0) {
+            $0 + $1.descriptor.endMilliseconds - $1.descriptor.startMilliseconds
+        }
+    }
+
+    func chunks(
+        for source: MeetingAudioSourceID
+    ) -> AsyncThrowingStream<MeetingAcceptedAudio, Error> {
+        let chunks = audio.filter { $0.descriptor.sourceID == source }
+        return AsyncThrowingStream { continuation in
+            for chunk in chunks { continuation.yield(chunk) }
+            continuation.finish()
+        }
+    }
+
+    /// One epoch per source, starting at zero, with the given chunk sizes.
+    static func synthetic(
+        sessionID: String,
+        sampleRate: Int,
+        chunkSampleCounts: [Int]
+    ) -> InMemoryMeetingRecording {
+        var epochs: [MeetingTimingEpoch] = []
+        var audio: [MeetingAcceptedAudio] = []
+        for source in MeetingAudioSourceID.allCases {
+            let epoch = MeetingTimingEpoch(
+                epochID: "\(sessionID)-\(source.rawValue)-E0",
+                sourceID: source,
+                sequence: 0,
+                startSample: 0,
+                startMilliseconds: 0,
+                sampleRate: sampleRate
+            )
+            epochs.append(epoch)
+            var start = 0
+            for (sequence, count) in chunkSampleCounts.enumerated() {
+                audio.append(syntheticChunk(
+                    epoch: epoch,
+                    sequence: sequence,
+                    startSample: start,
+                    samples: (0..<count).map { Float(start + $0) }
+                ))
+                start += count
+            }
+        }
+        return InMemoryMeetingRecording(timingEpochs: epochs, audio: audio)
+    }
+}
+
+private func syntheticChunk(
+    epoch: MeetingTimingEpoch,
+    sequence: Int,
+    startSample: Int,
+    samples: [Float]
+) -> MeetingAcceptedAudio {
+    let endSample = startSample + samples.count
+    return MeetingAcceptedAudio(
+        descriptor: MeetingAcceptedAudioDescriptor(
+            chunkID: "\(epoch.epochID)-C\(sequence)",
+            sourceID: epoch.sourceID,
+            timingEpochID: epoch.epochID,
+            sequence: sequence,
+            startSample: startSample,
+            endSample: endSample,
+            startMilliseconds: startSample * 1_000 / epoch.sampleRate,
+            endMilliseconds: endSample * 1_000 / epoch.sampleRate,
+            sampleRate: epoch.sampleRate,
+            sampleCount: samples.count
+        ),
+        samples: samples
+    )
+}
+
+/// Yields one second of 10 Hz audio per chunk for an hour, lazily, so the
+/// fixture never holds the recording in memory.
+private struct StreamedSixtyMinuteRecording: MeetingRecordedAudioReading {
+    let timingEpochs: [MeetingTimingEpoch]
+    let totalMilliseconds = 2 * 60 * 60 * 1_000
+    private let afterSecond: @Sendable (Int) async -> Void
+
+    init(sessionID: String, afterSecond: @escaping @Sendable (Int) async -> Void) {
+        timingEpochs = MeetingAudioSourceID.allCases.map {
+            MeetingTimingEpoch(
+                epochID: "\(sessionID)-\($0.rawValue)-E0",
+                sourceID: $0,
+                sequence: 0,
+                startSample: 0,
+                startMilliseconds: 0,
+                sampleRate: 10
+            )
+        }
+        self.afterSecond = afterSecond
+    }
+
+    func chunks(
+        for source: MeetingAudioSourceID
+    ) -> AsyncThrowingStream<MeetingAcceptedAudio, Error> {
+        let epoch = timingEpochs.first { $0.sourceID == source }!
+        let afterSecond = afterSecond
+        let second = SecondCounter()
+        return AsyncThrowingStream {
+            let current = second.next()
+            if current > 0 { await afterSecond(current - 1) }
+            guard current < 60 * 60 else { return nil }
+            return syntheticChunk(
+                epoch: epoch,
+                sequence: current,
+                startSample: current * 10,
+                samples: .init(repeating: source == .microphone ? 0.01 : 0.02, count: 10)
+            )
+        }
+    }
+}
+
+private final class SecondCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.withTestLock {
+            defer { value += 1 }
+            return value
+        }
+    }
+}
+
+private final class MaximumSampleRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var maximum = 0
+
+    func record(_ value: Int) {
+        lock.withTestLock { maximum = max(maximum, value) }
+    }
+
+    var value: Int { lock.withTestLock { maximum } }
+}
+
+private final class CountingMeetingTranscriber: MeetingWindowTranscribing, @unchecked Sendable {
+    private let lock = NSLock()
+    private let delayNanoseconds: UInt64
+    private let failsPrepare: Bool
+    private let result: @Sendable (MeetingTranscriptionRequest) throws -> MeetingTranscriptionResult
+    private var prepares = 0
+    private var releases = 0
+    private var transcriptions = 0
+
+    init(
+        delayNanoseconds: UInt64 = 0,
+        failsPrepare: Bool = false,
+        result: @escaping @Sendable (MeetingTranscriptionRequest) throws -> MeetingTranscriptionResult = { _ in
+            MeetingTranscriptionResult(text: "word", tokens: [], processingMilliseconds: 1)
+        }
+    ) {
+        self.delayNanoseconds = delayNanoseconds
+        self.failsPrepare = failsPrepare
+        self.result = result
+    }
+
+    var prepareCount: Int { lock.withTestLock { prepares } }
+    var releaseCount: Int { lock.withTestLock { releases } }
+    var transcribeCount: Int { lock.withTestLock { transcriptions } }
+
+    func prepare(
+        onState: @escaping @Sendable (MeetingLocalModelState) -> Void
+    ) async throws {
+        lock.withTestLock { prepares += 1 }
+        onState(.checking)
+        if failsPrepare { throw FixtureTranscriptionError.failedWindow }
+        onState(.ready(model: "counting-fixture"))
+    }
+
+    func transcribe(
+        _ request: MeetingTranscriptionRequest
+    ) async throws -> MeetingTranscriptionResult {
+        lock.withTestLock { transcriptions += 1 }
+        if delayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: delayNanoseconds)
+        }
+        return try result(request)
+    }
+
+    func release() async {
+        lock.withTestLock { releases += 1 }
+    }
+}
+
+private final class MeetingRecordingEventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [MeetingRecordingTranscriptionEvent] = []
+
+    func record(_ event: MeetingRecordingTranscriptionEvent) {
+        lock.withTestLock { values.append(event) }
+    }
+
+    var count: Int { lock.withTestLock { values.count } }
+
+    var models: [MeetingLocalModelState] {
+        lock.withTestLock {
+            values.compactMap {
+                if case .model(let state) = $0 { return state }
+                return nil
+            }
+        }
+    }
+
+    var progress: [(processed: Int, total: Int)] {
+        lock.withTestLock {
+            values.compactMap {
+                if case .progress(let processed, let total) = $0 { return (processed, total) }
+                return nil
+            }
+        }
+    }
+
+    var revisions: [MeetingTranscriptSegmentRevision] {
+        lock.withTestLock {
+            values.compactMap {
+                if case .revision(let revision) = $0 { return revision }
+                return nil
+            }
+        }
+    }
+}
