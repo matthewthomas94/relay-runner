@@ -55,7 +55,9 @@ Keep note IDs, artifact references, global-library location, canonical save APIs
 
 **Settings and migration.** Offer Phonon 2 as the recommended English model on macOS 15+ after validation. New supported installations use it by default; macOS 14 keeps v2. For existing v2 users on supported systems, prepare Phonon successfully before a one-time switch at an idle boundary; retain the previous choice for rollback and record that migration so an explicit rollback is not immediately undone. Preserve an explicit v3 selection for multilingual use. Keep Swift and Python consistent for persisted identifiers, legacy Whisper aliases, and supported-OS defaults. Surface the actual active model if preparation fails; keep the previous model selected until the switch succeeds. Do not change an active recording's backend. Keep existing caches until a separate cleanup decision.
 
-**Implementation tickets.** RR-411 through RR-416 are authored in Backlog with no runs. A benchmark/prototype that writes a harness is implementation work, not a read-only spike. The table records the dependency graph; it does not authorize dispatch.
+**Implementation tickets.** RR-411 through RR-416 follow the dependency graph below. A benchmark/prototype that writes a harness is implementation work, not a read-only spike. Dispatch requires an explicit user action.
+
+The user authorized execution on 2026-10-18, starting RR-411 on the available Apple Silicon Mac with public fixtures. Corpus selection, provenance and freezing the proposed thresholds before measurements are worker deliverables. Unavailable macOS 14 or live validation no longer blocks starting RR-411; it remains required acceptance evidence and must be recorded as an exact verification blocker when it cannot be completed. RR-412's explicit feasibility-acceptance gate and the later release gates remain in place.
 
 | Package | Scope and completion evidence | Dependencies | Assigned worker |
 | --- | --- | --- | --- |
