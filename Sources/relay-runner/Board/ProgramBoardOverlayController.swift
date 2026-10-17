@@ -118,6 +118,7 @@ final class ProgramBoardOverlayController {
     private var resumeRecoveredNoteHandler: (() async throws -> MeetingNoteCoordinatorSnapshot)?
     private var sessionActiveProvider: () -> Bool = { false }
     private var runningSessionPathsProvider: () -> [String] = { [] }
+    private var sessionReplyBadgesProvider: () -> [String: Int] = { [:] }
     private var sessionProvider: () -> GeneralConfig.AgentProvider = { .codex }
     private var noteCaptureSnapshotProvider: () -> MeetingNoteCoordinatorSnapshot = {
         MeetingNoteCoordinatorSnapshot(
@@ -230,6 +231,10 @@ final class ProgramBoardOverlayController {
 
     func setRunningSessionPathsProvider(_ provider: @escaping () -> [String]) {
         self.runningSessionPathsProvider = provider
+    }
+
+    func setSessionReplyBadgesProvider(_ provider: @escaping () -> [String: Int]) {
+        self.sessionReplyBadgesProvider = provider
     }
 
     func setSessionProvider(_ provider: @escaping () -> GeneralConfig.AgentProvider) {
@@ -975,6 +980,10 @@ final class ProgramBoardOverlayController {
             let runningPaths = self.runningSessionPathsProvider()
             if runningPaths != self.model.runningSessionPaths {
                 self.model.runningSessionPaths = runningPaths
+            }
+            let replyBadges = self.sessionReplyBadgesProvider()
+            if replyBadges != self.model.sessionReplyBadges {
+                self.model.sessionReplyBadges = replyBadges
             }
             let sessionProvider = self.sessionProvider()
             if sessionProvider != self.model.sessionProvider {

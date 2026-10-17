@@ -198,6 +198,19 @@ class TTSWorkerReplayTests(unittest.TestCase):
         self.assertEqual(worker.played_wavs, [])
         self.assertEqual(worker._pending_text, "")
 
+    def test_read_out_speaks_the_given_text_and_reports_speaking(self):
+        worker = self.make_worker()
+        self.assertFalse(worker.speaking)
+        worker._pending_text = "queued"
+        self.assertTrue(worker.speaking)
+        worker._pending_text = ""
+
+        worker.read_out("  The stored background reply.  ")
+        worker.read_out("")
+
+        self.assertEqual(worker.played_texts, ["The stored background reply."])
+        self.assertEqual(worker.played_displays, ["The stored background reply."])
+
     def test_skip_preserves_pending_text_for_replay(self):
         worker = self.make_worker()
         worker._pending_text = "canceled latest"

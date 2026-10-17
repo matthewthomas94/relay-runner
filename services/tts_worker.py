@@ -682,6 +682,22 @@ class TTSWorker:
             self._cancel_speculation()
             _notify_state("idle")
 
+    @property
+    def speaking(self) -> bool:
+        """Audio is playing or text is waiting to be spoken."""
+        with self._lock:
+            return self._playing or bool(self._pending_text.strip())
+
+    def read_out(self, text: str):
+        """Speak explicit text now, such as a stored background reply (RR-401)."""
+        text = str(text or "").strip()
+        if not text:
+            return
+        with self._play_request_lock:
+            if self._playing:
+                self.stop_playback(reason="read_out")
+            self._play_text(text, display_text=text)
+
     def replay(self):
         """Replay the last spoken audio."""
         with self._play_request_lock:

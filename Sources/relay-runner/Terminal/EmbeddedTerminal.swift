@@ -3875,7 +3875,9 @@ struct WorkspaceTerminalPanel: View {
                 WorkspaceSessionTabStrip(
                     tabs: tabs,
                     selectedID: appState.activeContext.id,
+                    badges: appState.sessionReplyBadges,
                     select: { appState.focusSessionTab(contextID: $0) },
+                    readOut: { appState.readOutSessionReply(contextID: $0) },
                     close: { appState.closeSessionTab(contextID: $0) }
                 )
                 .transition(.relayElement)
@@ -3892,7 +3894,9 @@ struct WorkspaceTerminalPanel: View {
 private struct WorkspaceSessionTabStrip: View {
     let tabs: [(id: String, name: String)]
     let selectedID: String
+    let badges: [String: Int]
     let select: (String) -> Void
+    let readOut: (String) -> Void
     let close: (String) -> Void
 
     var body: some View {
@@ -3904,6 +3908,13 @@ private struct WorkspaceSessionTabStrip: View {
                         Text(tab.name).lineLimit(1)
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        Button("Read Out Latest Reply") { readOut(tab.id) }
+                    }
+                    if let count = badges[tab.id], count > 0 {
+                        SessionReplyBadge(count: count)
+                            .transition(.relayElement)
+                    }
                     Button(action: { close(tab.id) }) {
                         Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
                     }
@@ -3928,5 +3939,21 @@ private struct WorkspaceSessionTabStrip: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
+    }
+}
+
+/// RR-401: unheard replies and outcomes waiting in a background session.
+struct SessionReplyBadge: View {
+    let count: Int
+
+    var body: some View {
+        Text("\(count)")
+            .font(.system(size: 10, weight: .semibold).monospacedDigit())
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5)
+            .frame(minWidth: 16, minHeight: 16)
+            .background(Capsule().fill(Color.accentColor))
+            .help("\(count) unheard \(count == 1 ? "update" : "updates")")
+            .accessibilityLabel("\(count) unheard \(count == 1 ? "update" : "updates")")
     }
 }

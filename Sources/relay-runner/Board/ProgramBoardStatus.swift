@@ -1538,6 +1538,8 @@ final class ProgramBoardViewModel {
     var theme: ParticleFieldRenderer.Theme?
     var hasActiveSession = false
     var runningSessionPaths: [String] = []
+    /// RR-401: unheard background replies and outcomes per project path.
+    var sessionReplyBadges: [String: Int] = [:]
     var sessionProvider: GeneralConfig.AgentProvider = .codex
     var selectedProjectPath: String?
     var selectedTicketDetail: ProgramTicketDetail?

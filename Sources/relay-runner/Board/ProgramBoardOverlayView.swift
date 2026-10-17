@@ -1160,6 +1160,7 @@ private struct ProgramBoardContent: View {
                         projectTargets: model.projectTargets,
                         selectedProjectPath: model.selectedProjectPath,
                         runningSessionPaths: model.runningSessionPaths,
+                        sessionReplyBadges: model.sessionReplyBadges,
                         errorMessage: model.errorMessage,
                         isDiagnosticsExporting: model.isDiagnosticsExporting,
                         theme: model.theme,
@@ -1238,6 +1239,7 @@ private struct ProgramOverviewColumn: View {
     let projectTargets: [ProgramBoardProjectTarget]
     let selectedProjectPath: String?
     let runningSessionPaths: [String]
+    let sessionReplyBadges: [String: Int]
     let errorMessage: String?
     let isDiagnosticsExporting: Bool
     let theme: ParticleFieldRenderer.Theme?
@@ -1290,6 +1292,11 @@ private struct ProgramOverviewColumn: View {
                             hasSession: scopedPath.map { path in
                                 runningSessionPaths.contains { ProgramBoardProjectPath.matches($0, path) }
                             } ?? false,
+                            replyBadgeCount: scopedPath.map { path in
+                                sessionReplyBadges.reduce(0) { total, entry in
+                                    ProgramBoardProjectPath.matches(entry.key, path) ? total + entry.value : total
+                                }
+                            } ?? 0,
                             onSelect: {
                                 if let path = scopedPath {
                                     onSelectProject(path)
@@ -1494,6 +1501,7 @@ private struct ProgramProjectCard: View {
     let item: ProgramStatusItem
     let isSelected: Bool
     let hasSession: Bool
+    let replyBadgeCount: Int
     let onSelect: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isFocused: Bool
@@ -1529,6 +1537,10 @@ private struct ProgramProjectCard: View {
                             .transition(.relayElement)
                             .accessibilityLabel("Session running")
                             .help("Session running")
+                    }
+                    if replyBadgeCount > 0 {
+                        SessionReplyBadge(count: replyBadgeCount)
+                            .transition(.relayElement)
                     }
                     Spacer(minLength: 0)
                     // Reserves room for the Finder button overlaid outside the card button.
