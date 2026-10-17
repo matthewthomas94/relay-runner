@@ -161,6 +161,40 @@ final class OverlayPresentationMotionTests: XCTestCase {
         XCTAssertFalse(scene.pill.isFrontCardDismissed)
     }
 
+    func testOptionPlaybackOfQueuedReplyShowsThePlayingCard() {
+        for depth in [0, 1] {
+            for waitsAt in [1.1, 3.0, 9.0] {
+                let scene = Scene(showsCard: true)
+                defer { scene.stop() }
+                scene.controller.setReplyStackDepth(depth, now: 0)
+                let handoff = SpeechPresentation(utteranceID: "handoff", originalUtteranceID: "handoff", mode: .newDelivery)
+                scene.state.handleServiceEvent(source: "tts", newState: "speaking", text: "On it.", presentation: handoff)
+                for time in [0.0, 0.31, 0.62] { scene.step(time) }
+                scene.state.handleServiceEvent(source: "tts", newState: "idle", text: nil, presentation: handoff)
+                scene.step(1.0)
+
+                let reply = SpeechPresentation(utteranceID: "reply", originalUtteranceID: "reply", mode: .newDelivery)
+                scene.state.handleServiceEvent(source: "tts", newState: "message_waiting", text: "Here is the reply.", presentation: reply)
+                for time in [waitsAt, waitsAt + 0.31, waitsAt + 0.62] { scene.step(time) }
+                XCTAssertEqual(scene.pill.alphaValue, 1, "depth \(depth) waits \(waitsAt)")
+
+                let played = waitsAt + 40
+                scene.state.setPlaybackRequested()
+                scene.step(played)
+                scene.state.handleServiceEvent(source: "tts", newState: "preparing", text: "Here is the reply.", presentation: reply)
+                scene.step(played + 0.05)
+                scene.state.handleServiceEvent(source: "tts", newState: "speaking", text: "Here is the reply.", presentation: reply)
+                for time in [played + 0.1, played + 0.41, played + 0.72] { scene.step(time) }
+                RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+
+                XCTAssertEqual(scene.state.state, .speaking, "depth \(depth) waits \(waitsAt)")
+                XCTAssertEqual(scene.pill.alphaValue, 1, "depth \(depth) waits \(waitsAt)")
+                XCTAssertFalse(scene.pill.isFrontCardDismissed, "depth \(depth) waits \(waitsAt)")
+                XCTAssertEqual(scene.frontCardAlpha, 1, "depth \(depth) waits \(waitsAt)")
+            }
+        }
+    }
+
     func testReplyWithoutQueueStillLeavesTogether() {
         let scene = Scene(showsCard: true)
         defer { scene.stop() }
@@ -211,6 +245,9 @@ final class OverlayPresentationMotionTests: XCTestCase {
         func step(_ time: TimeInterval) {
             card?.update(theme: state.state.particleTheme ?? .idle, reduceMotion: true)
             controller.applyPresentation(state, now: time, reduceMotion: false)
+        }
+        var frontCardAlpha: CGFloat {
+            (Mirror(reflecting: pill).children.first { $0.label == "surfaceContainerView" }?.value as? NSView)?.alphaValue ?? -1
         }
         func stop() { card?.stop(); pill.hide(animated: false); renderer.transition(to: nil) }
     }

@@ -141,7 +141,11 @@ final class StateMachine: @unchecked Sendable {
         let presentAt: Date
     }
 
-    private(set) var state: OverlayState = .idle
+    private(set) var state: OverlayState = .idle {
+        didSet {
+            if state != .preparing { playbackRequested = false }
+        }
+    }
     private(set) var partialTranscription: String = ""
     private(set) var messagePreview: String?
     private(set) var replayRetained = false
@@ -157,6 +161,9 @@ final class StateMachine: @unchecked Sendable {
     private var sentEnteredAt: Date?
     private var pendingAcknowledgement: PendingAcknowledgement?
     private var presentedDeliveryIDs: [String] = []
+    /// Set by an Option gesture. The next playback event is the one the user
+    /// asked for, even if the waiting card's presentation went stale.
+    private var playbackRequested = false
 
     init(
         now: @escaping () -> Date = Date.init,
@@ -414,9 +421,11 @@ final class StateMachine: @unchecked Sendable {
         if case .messageWaiting = state {
             replayRetained = false
             state = .preparing
+            playbackRequested = true
         } else if case .replayWaiting = state, replayRetained {
             replayRetained = false
             state = .preparing
+            playbackRequested = true
         }
     }
 
@@ -664,6 +673,9 @@ final class StateMachine: @unchecked Sendable {
 
     private func canApplyPlaybackPresentation(_ incoming: SpeechPresentation?) -> Bool {
         switch state {
+        case .preparing where playbackRequested && incoming != nil:
+            playbackRequested = false
+            return true
         case .preparing, .speaking:
             return presentationMatchesActiveSpeech(incoming)
         default:

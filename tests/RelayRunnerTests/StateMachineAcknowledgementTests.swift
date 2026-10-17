@@ -199,6 +199,52 @@ final class StateMachineAcknowledgementTests: XCTestCase {
         XCTAssertEqual(stateMachine.state, .speaking)
     }
 
+    func testOptionPlaybackShowsSpeakingAfterAStaleUtteranceWasLeftActive() throws {
+        let stateMachine = StateMachine()
+        let earlier = try XCTUnwrap(SpeechPresentation([
+            "utterance_id": "earlier-reply",
+            "original_utterance_id": "earlier-reply",
+            "presentation_mode": "new_delivery",
+        ]))
+        let current = try XCTUnwrap(SpeechPresentation([
+            "utterance_id": "current-reply",
+            "original_utterance_id": "current-reply",
+            "presentation_mode": "new_delivery",
+            "relay_command_seq": 25,
+        ]))
+
+        // An earlier reply waits, then a new turn starts and that reply is
+        // stopped while "Thinking" is up, so its idle never clears it.
+        stateMachine.handleServiceEvent(
+            source: "tts", newState: "message_waiting", text: "Earlier reply.",
+            presentation: earlier
+        )
+        stateMachine.handleServiceEvent(source: "bridge", newState: "processing", text: nil)
+        stateMachine.handleServiceEvent(
+            source: "tts", newState: "idle", text: nil, presentation: earlier
+        )
+
+        // The bridge's authoritative preview carries no presentation.
+        stateMachine.handleServiceEvent(
+            source: "tts", newState: "message_waiting", text: "Current reply."
+        )
+        stateMachine.setPlaybackRequested()
+        XCTAssertEqual(stateMachine.state, .preparing)
+
+        stateMachine.handleServiceEvent(
+            source: "tts", newState: "preparing", text: nil, presentation: current
+        )
+        stateMachine.handleServiceEvent(
+            source: "tts", newState: "speaking", text: nil, presentation: current
+        )
+        XCTAssertEqual(stateMachine.state, .speaking)
+
+        stateMachine.handleServiceEvent(
+            source: "tts", newState: "idle", text: nil, presentation: current
+        )
+        XCTAssertEqual(stateMachine.state, .idle)
+    }
+
     func testSpeechFailureIsExplicitAndKeepsAuthoritativePreview() {
         let stateMachine = StateMachine()
         stateMachine.handleServiceEvent(
