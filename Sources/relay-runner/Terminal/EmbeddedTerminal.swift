@@ -3800,7 +3800,9 @@ struct EmbeddedTerminalTab: View {
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: session.presentsTerminal)
             }
         }
-        .frame(maxWidth: WorkspaceSurfaceSizing.terminalMaxWidth, minHeight: BoardSurfaceLayout.columnHeight, maxHeight: BoardSurfaceLayout.columnHeight)
+        // The Workspace panel fixes the overall height; the terminal takes
+        // what the session tab strip leaves.
+        .frame(maxWidth: WorkspaceSurfaceSizing.terminalMaxWidth, maxHeight: .infinity)
         .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius))
         .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius, style: .continuous))
         .overlay(
@@ -3887,6 +3889,8 @@ struct WorkspaceTerminalPanel: View {
                 recoverDelivery: { appState.recoverBlockedVoiceDelivery() }
             )
         }
+        .frame(maxWidth: WorkspaceSurfaceSizing.terminalMaxWidth)
+        .frame(height: BoardSurfaceLayout.columnHeight, alignment: .top)
         .animation(RelayMotion.change, value: tabs.map(\.id))
     }
 }

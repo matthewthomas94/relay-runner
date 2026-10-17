@@ -53,6 +53,14 @@ final class AssistantSessionStore {
         var resumableNativeSessionID: String? {
             transcriptPath?.isEmpty == false ? nativeSessionID : nil
         }
+        // A provider may record a transcript path before writing the file
+        // (for example a Claude session that exited with no turn). Resuming
+        // that id fails with "No conversation found", so launch fresh instead.
+        var launchableNativeSessionID: String? {
+            guard let id = resumableNativeSessionID, let path = transcriptPath,
+                  FileManager.default.fileExists(atPath: path) else { return nil }
+            return id
+        }
     }
     struct Continuation: Codable, Equatable, Identifiable {
         enum State: String, Codable { case queued, submitting, consumed, recoveryRequired, cancelled }

@@ -2545,7 +2545,7 @@ final class AppState {
                     conversationID: conversationID,
                     transportSessionID: launchID.uuidString.lowercased(),
                     nativeResumeID: assistantSessionStore.binding(for: context).flatMap {
-                        $0.provider == launchConfig.general.provider.rawValue && $0.model == launchConfig.general.model ? $0.resumableNativeSessionID : nil
+                        $0.provider == launchConfig.general.provider.rawValue && $0.model == launchConfig.general.model ? $0.launchableNativeSessionID : nil
                     },
                     providerBindingPath: assistantSessionStore.bindingURL(transportSessionID: launchID.uuidString.lowercased()).path,
                     publicHandoff: assistantSessionStore.publicHandoff(for: context),
