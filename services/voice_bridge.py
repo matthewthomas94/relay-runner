@@ -3636,6 +3636,8 @@ def _start_control_socket(
                         _cut_off_unfocused_speech(
                             previous_key, tts_worker, context.get("messenger")
                         )
+                        if context.get("messenger") is not None:
+                            context["messenger"].focus(_VOICE_TARGET_KEY or "")
                     continue
                 if cmd.startswith(VOICE_REPLAY_PREFIX):
                     try:

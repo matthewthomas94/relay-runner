@@ -528,6 +528,17 @@ class CodexMessengerBackend:
                 raise
             self._thread_id = str(thread_id)
 
+    def rebind(self, partition_key: str) -> None:
+        """Start a fresh ephemeral thread on the existing app-server process."""
+        with self._start_lock:
+            if not self._is_ready():
+                return  # the next start() opens a fresh thread anyway
+            response = self._rpc_request("thread/start", self.thread_start_params(), timeout=15)
+            thread_id = response.get("result", {}).get("thread", {}).get("id")
+            if not thread_id:
+                raise MessengerError("Codex messenger did not return a thread id")
+            self._thread_id = str(thread_id)
+
     def ask(
         self,
         prompt: str,
@@ -841,6 +852,21 @@ class ClaudeMessengerBackend:
         self._state_lock = threading.Lock()
         self._pending: dict | None = None
         self._session_id: str | None = None
+        self._partition_session_ids: dict[str, str] = {}
+        self._partition = ""
+
+    def rebind(self, partition_key: str) -> None:
+        """Resume the partition's own Claude session, respawning the one process."""
+        with self._start_lock:
+            if self._session_id:
+                self._partition_session_ids[self._partition] = self._session_id
+            self._partition = partition_key
+            self._session_id = self._partition_session_ids.get(partition_key)
+            with self._state_lock:
+                proc, self._proc = self._proc, None
+            if proc and proc.poll() is None:
+                proc.kill()
+        self.start()
 
     def spawn_command(self) -> list[str]:
         command = _command_prefix(self.config.command)
@@ -1183,6 +1209,11 @@ class MessengerRuntime:
         self._generation = 0
         self._current_command: tuple[int, str] | None = None
         self._has_trace_for_current_command = False
+        # RR-402: the live attributes above and `_context` belong to the focused
+        # partition; other sessions' state is parked here until refocused.
+        self._partition_key = ""
+        self._parked_partitions: dict[str, tuple[deque[str], int, tuple[int, str] | None, bool]] = {}
+        self._bound_partition = ""
         self._final_commands: set[tuple[int, str]] = set()
         self._active_event: _MessengerEvent | None = None
         self._action_kinds: dict[tuple[int, str], str] = {}
@@ -1451,6 +1482,38 @@ class MessengerRuntime:
         )
         return True
 
+    def focus(self, partition_key: str) -> bool:
+        """Switch the shared runtime to a session's context partition (RR-402).
+
+        Returns False when that partition is already focused. The provider
+        re-bind happens lazily before the next ask, on the worker thread.
+        """
+        key = str(partition_key or "")
+        with self._lock:
+            if key == self._partition_key:
+                return False
+            self._parked_partitions[self._partition_key] = (
+                self._context,
+                self._generation,
+                self._current_command,
+                self._has_trace_for_current_command,
+            )
+            parked = self._parked_partitions.pop(key, None)
+            if parked is None:
+                self._context = deque(maxlen=self._context.maxlen)
+                self._current_command = None
+                self._has_trace_for_current_command = False
+                # Stay ahead of the old partition's generation so its queued or
+                # in-flight events can never read as current here.
+                self._generation += 1
+            else:
+                self._context, self._generation, self._current_command, self._has_trace_for_current_command = parked
+                self._generation += 1
+            self._partition_key = key
+            self._discard_pending_events_locked()
+        self.backend.interrupt()
+        return True
+
     def interrupt(self) -> None:
         with self._lock:
             self._generation += 1
@@ -1458,6 +1521,22 @@ class MessengerRuntime:
             self._has_trace_for_current_command = False
             self._discard_pending_events_locked()
         self.backend.interrupt()
+
+    def _bind_backend_to_partition(self) -> None:
+        with self._lock:
+            key = self._partition_key
+            if key == self._bound_partition:
+                return
+        rebind = getattr(self.backend, "rebind", None)
+        started = time.monotonic()
+        if callable(rebind):
+            rebind(key)
+        with self._lock:
+            self._bound_partition = key
+        print(
+            f"[messenger] re-bound to focused session in {(time.monotonic() - started) * 1000:.0f} ms",
+            file=sys.stderr,
+        )
 
     def recover_backend(self) -> bool:
         """Recreate a dead provider backend without interrupting queued or live work."""
@@ -1528,6 +1607,7 @@ class MessengerRuntime:
                 self._deliver_response(bound_event, response)
 
             try:
+                self._bind_backend_to_partition()
                 self._observe_continuity("progress", event)
                 if event.kind == "user_turn":
                     self._observe_timing(

@@ -555,6 +555,127 @@ class MessengerRuntimeTests(unittest.TestCase):
         self.assertIn("Current event content:", prompt)
         self.assertLess(len(prompt), 6_000)
 
+    def test_focus_partitions_context_per_session_and_restores_on_refocus(self):
+        class RebindBackend(FakeBackend):
+            def __init__(self, responses):
+                super().__init__(responses)
+                self.rebinds: list[str] = []
+
+            def rebind(self, key):
+                self.rebinds.append(key)
+
+        backend = RebindBackend(["", ""])
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: None,
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.focus("session-a")
+        runtime.submit_user("alpha secret project", {"relay_command_seq": 1, "relay_command_id": "a"})
+        runtime._events.get_nowait()
+
+        self.assertTrue(runtime.focus("session-b"))
+        self.assertFalse(runtime.focus("session-b"))
+        runtime.submit_user("beta question", {"relay_command_seq": 2, "relay_command_id": "b"})
+        prompt_b = runtime._prompt_for(runtime._events.get_nowait())
+        self.assertIn("beta question", prompt_b)
+        self.assertNotIn("alpha secret project", prompt_b)
+
+        runtime.focus("session-a")
+        runtime.submit_user("alpha follow-up", {"relay_command_seq": 3, "relay_command_id": "a2"})
+        prompt_a = runtime._prompt_for(runtime._events.get_nowait())
+        self.assertIn("alpha secret project", prompt_a)
+        self.assertNotIn("beta question", prompt_a)
+
+    def test_focus_switch_makes_old_partition_events_stale_and_rebinds_backend(self):
+        class RebindBackend(FakeBackend):
+            def __init__(self):
+                super().__init__([""])
+                self.rebinds: list[str] = []
+
+            def rebind(self, key):
+                self.rebinds.append(key)
+
+        backend = RebindBackend()
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: None,
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.focus("session-a")
+        runtime.submit_user("hello", {"relay_command_seq": 1, "relay_command_id": "a"})
+        stale = runtime._events.get_nowait()
+        runtime.focus("session-b")
+        self.assertFalse(runtime._event_is_current(stale))
+
+        runtime.start()
+        runtime.submit_user("hi", {"relay_command_seq": 2, "relay_command_id": "b"})
+        self.assertTrue(wait_until(lambda: backend.rebinds == ["session-b"]))
+        runtime.shutdown()
+
+    def test_claude_rebind_resumes_per_partition_session_in_one_process(self):
+        class Proc:
+            stdin = None
+
+            def __init__(self):
+                self.killed = False
+                self._lines: queue.Queue[str | None] = queue.Queue()
+                self.stdout = iter(self._lines.get, None)
+
+            def poll(self):
+                return 1 if self.killed else None
+
+            def kill(self):
+                self.killed = True
+                self._lines.put(None)
+
+        procs: list[Proc] = []
+        commands: list[list[str]] = []
+
+        def popen(command, **kwargs):
+            commands.append(command)
+            procs.append(Proc())
+            return procs[-1]
+
+        config = MessengerConfig(True, "claude", "claude", "haiku", "default", "/tmp")
+        backend = ClaudeMessengerBackend(
+            config,
+            popen_factory=popen,
+            subscription_check=lambda *a, **k: type("R", (), {"ready": True, "message": ""})(),
+        )
+        backend.start()
+        backend.rebind("a")
+        backend._session_id = "sid-a"
+        backend.rebind("b")
+        backend._session_id = "sid-b"
+        backend.rebind("a")
+
+        self.assertEqual(sum(1 for proc in procs if not proc.killed), 1)
+        self.assertNotIn("--resume", commands[2])
+        self.assertEqual(commands[-1][commands[-1].index("--resume") + 1], "sid-a")
+
+    def test_codex_rebind_starts_new_thread_on_the_same_process(self):
+        config = MessengerConfig(True, "codex", "codex", "gpt-5.6-luna", "low", "/tmp")
+        backend = CodexMessengerBackend(config)
+        backend._thread_id = "thread-a"
+        calls: list[str] = []
+
+        class Proc:
+            def poll(self):
+                return None
+
+        backend._proc = Proc()
+
+        def rpc(method, params, *, timeout):
+            calls.append(method)
+            return {"result": {"thread": {"id": "thread-b"}}}
+
+        backend._rpc_request = rpc
+        backend.rebind("b")
+
+        self.assertEqual(calls, ["thread/start"])
+        self.assertEqual(backend._thread_id, "thread-b")
+
     def test_streaming_response_is_spoken_before_provider_turn_completes(self):
         class StreamingBackend(FakeBackend):
             config = MessengerConfig(True, "codex", "codex", "gpt-5.6-luna", "low", "/tmp")
