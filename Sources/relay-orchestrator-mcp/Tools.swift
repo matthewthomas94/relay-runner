@@ -107,7 +107,10 @@ struct DispatchTicketTool: MCPTool {
         an isolated `relay/<sanitized-id>` worktree and the review/merge lifecycle. Spike tickets use a \
         detached read-only snapshot, create no worker branch, and persist structured findings through a \
         daemon-owned ticket-only completion. Returns the run record (state, run_id, execution_mode, \
-        workspace_path, branch).
+        workspace_path, branch). A ticket whose `depends_on` tickets are not all done is queued instead \
+        of started: it moves to `ready` (Queued) with no run, worktree, or branch, the result is \
+        `{"queued": true, "run": null, "waiting_on": [...]}`, and it starts automatically once its \
+        dependencies are done.
         """
 
     var inputSchema: [String: Any] {

@@ -16,6 +16,7 @@ The preinstalled `general-tasks` project uses the same ticket, worktree, dispatc
 4. **Dispatch.** Call `mcp__relay-orchestrator__dispatch_ticket(ticket_id="RR-6", repo_path="<absolute path>")`. Pass `context="..."` when the ticket body wouldn't survive cold without this conversation. The tool returns:
    - `already_active: true` → there's already a run going for this ticket. Tell the user the existing run_id and stop.
    - `already_active: false` → a fresh run is started; the response includes `run_id`, `state` (Claimed → Running), `workspace_path`, and `branch`.
+   - `queued: true` → a `depends_on` ticket is not done yet. The ticket now waits in `ready` with no run and starts automatically; tell the user which tickets it is `waiting_on`.
 5. **Report briefly.** One sentence: "Started RR-6 in worktree `<path>`, run_id N." Don't wait — the run is async.
 
 ## Status checks

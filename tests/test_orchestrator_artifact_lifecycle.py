@@ -1263,6 +1263,69 @@ Saved through the daemon-owned typed writer.
             self.store._find_event(f"lifecycle:dependency-sweep:{before}")
         )
 
+    def test_dispatch_queues_dependency_gated_backlog_ticket_through_artifact_writer(self):
+        self.write_ticket("RR-2", status="in_progress")
+        self.write_ticket("RR-3", status="done")
+        self.write_ticket("RR-4", status="backlog", depends_on=("RR-2", "RR-3"))
+        branches_before = self.git("branch", "--list")
+
+        with patch.object(Worker, "start", autospec=True) as start:
+            result = self.daemon.dispatch(
+                ticket_id="RR-4",
+                repo_path=str(self.repo),
+                project_scope_token=self.scope_token(),
+            )
+
+        self.assertEqual(result, {
+            "queued": True,
+            "already_active": False,
+            "run": None,
+            "waiting_on": ["RR-2"],
+        })
+        start.assert_not_called()
+        self.assertIsNone(self.daemon.runs.find_active("RR-4", repo_path=str(self.repo)))
+        self.assertEqual(self.git("branch", "--list"), branches_before)
+        self.assertEqual(list((self.root / "workspaces").glob("*rr-4*")), [])
+        canonical = self.store.snapshot().files[".orchestrator/RR-4.md"].decode("utf-8")
+        self.assertIn("status: ready", canonical)
+        self.assertIn("status: ready", (self.repo / ".orchestrator/RR-4.md").read_text())
+
+        head = self.store._head()
+        with patch.object(Worker, "start", autospec=True) as start:
+            again = self.daemon.dispatch(
+                ticket_id="RR-4",
+                repo_path=str(self.repo),
+                project_scope_token=self.scope_token(),
+            )
+        self.assertEqual(again["waiting_on"], ["RR-2"])
+        start.assert_not_called()
+        self.assertEqual(self.store._head(), head)
+
+    def test_dispatch_starts_ticket_whose_only_dependency_is_archived_done(self):
+        self.write_ticket("RR-archived", status="done")
+        self.write_ticket("RR-dependent", status="ready", depends_on=("RR-archived",))
+        lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+        ArtifactRetentionManager(
+            self.store,
+            lease_store=lifecycle.leases,
+            enabled=True,
+        ).delete(
+            "RR-archived",
+            event_id="archive-done-dependency",
+            device_id="test-device",
+        )
+
+        with patch.object(Worker, "start", autospec=True) as start:
+            result = self.daemon.dispatch(
+                ticket_id="RR-dependent",
+                repo_path=str(self.repo),
+                project_scope_token=self.scope_token(),
+            )
+
+        self.assertNotIn("queued", result)
+        self.assertIsNotNone(result["run"])
+        start.assert_called_once()
+
     def test_dependency_summary_keeps_incomplete_predecessor_unsatisfied(self):
         self.write_ticket("RR-incomplete", status="backlog")
         self.write_ticket(
