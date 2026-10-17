@@ -1171,7 +1171,8 @@ private struct ProgramBoardContent: View {
                         onSelectProject: onSelectProject,
                         onRetry: onRefresh,
                         onCreateDiagnostics: onCreateDiagnostics,
-                        onHistoryStart: onHistoryStart
+                        onHistoryStart: onHistoryStart,
+                        onDismiss: onDismiss
                     )
                     ForEach(ProgramBoardLane.allCases) { lane in
                         ProgramWorkColumnPanel(
@@ -1251,6 +1252,7 @@ private struct ProgramOverviewColumn: View {
     let onRetry: () -> Void
     let onCreateDiagnostics: () -> Void
     let onHistoryStart: () -> Void
+    let onDismiss: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -1301,7 +1303,8 @@ private struct ProgramOverviewColumn: View {
                                 if let path = scopedPath {
                                     onSelectProject(path)
                                 }
-                            }
+                            },
+                            onOpenInFinder: onDismiss
                         )
                         .transition(.relayElement)
                     }
@@ -1503,6 +1506,7 @@ private struct ProgramProjectCard: View {
     let hasSession: Bool
     let replyBadgeCount: Int
     let onSelect: () -> Void
+    let onOpenInFinder: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isFocused: Bool
     @State private var isHovered = false
@@ -1597,6 +1601,8 @@ private struct ProgramProjectCard: View {
                     help: "Open \(item.project?.name ?? "project") in Finder"
                 ) {
                     NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+                    // The Workspace sits above Finder, so close it to reveal the window.
+                    onOpenInFinder()
                 }
                 .padding(16)
             }
