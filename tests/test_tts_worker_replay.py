@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import asdict
 
 import os
 import queue
@@ -590,6 +591,27 @@ class TTSWorkerReplayTests(unittest.TestCase):
         self.assertEqual(waiting.kwargs["presentation_mode"], "new_delivery")
         self.assertEqual(waiting.kwargs["original_utterance_id"], "speech-2")
         self.assertNotIn("spoken_text", waiting.kwargs)
+
+    def test_presentation_fields_carry_the_session_key_through_a_replay(self):
+        from dataclasses import replace
+        from speech_coordinator import SpeechIntent
+
+        intent = SpeechIntent.build(spoken_text="Hi.", session_key="session-b")
+        replay = replace(
+            intent,
+            utterance_id="replay-1",
+            original_utterance_id=intent.original_utterance_id,
+            replay_of=intent.original_utterance_id,
+        )
+        for candidate in (intent, replay):
+            fields = tts_worker._presentation_fields(asdict(candidate))
+            self.assertEqual(fields["session_key"], "session-b")
+        self.assertEqual(
+            replay.presentation_mode, "explicit_replay"
+        )
+        self.assertNotIn("session_key", tts_worker._presentation_fields(asdict(
+            SpeechIntent.build(spoken_text="Hi.")
+        )))
 
     def test_explicit_replay_does_not_publish_a_waiting_preview(self):
         worker = self.make_worker()

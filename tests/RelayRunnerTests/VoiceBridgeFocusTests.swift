@@ -123,6 +123,31 @@ final class VoiceBridgeFocusTests: XCTestCase {
         )
     }
 
+    func testPlayingLabelNamesTheReplySessionProject() {
+        let names = ["a": "Alpha", "b": "Beta"]
+        let keys = ["a": "key-a", "b": "key-b"]
+        func name(_ key: String?, live: [String]) -> String? {
+            playbackTargetName(
+                sessionKey: key, liveContextIDs: live,
+                spoolKey: { keys[$0] }, displayName: { names[$0] }
+            )
+        }
+        XCTAssertEqual(name("key-b", live: ["a", "b"]), "Beta")
+        XCTAssertEqual(name("key-a", live: ["a", "b"]), "Alpha")
+        XCTAssertNil(name("key-b", live: ["b"]))
+        XCTAssertNil(name("unknown", live: ["a", "b"]))
+        XCTAssertNil(name(nil, live: ["a", "b"]))
+
+        let presented = NotchActivityLabelPlanner.labels(for: .speaking, playbackTargetName: "Beta")
+        XCTAssertEqual(presented, ["Playing · Beta"])
+        XCTAssertEqual(
+            NotchActivityLabelPlanner.hoverLabel(for: .speaking, playbackTargetName: "Beta"),
+            "Playing · Beta"
+        )
+        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .speaking), ["Playing"])
+        XCTAssertEqual(NotchActivityLabelPlanner.labels(for: .recording, playbackTargetName: "Beta"), ["Listening"])
+    }
+
     func testAppStateSendsFocusInsteadOfRelaunchingALiveBridge() throws {
         let source = try String(contentsOf: Self.root.appendingPathComponent("Sources/relay-runner/App/AppState.swift"), encoding: .utf8)
         let retargetStart = try XCTUnwrap(source.range(of: "    private func retargetVoiceBridge(releasing endedSpool: VoiceSessionSpool?) {"))

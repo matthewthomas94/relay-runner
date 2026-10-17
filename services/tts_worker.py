@@ -94,6 +94,7 @@ def _presentation_fields(
     mode = presentation_mode or (
         "explicit_replay" if replay_of else "new_delivery"
     )
+    session_key = str(speech_intent.get("session_key") or "").strip()
     return {
         "utterance_id": utterance_id or None,
         "original_utterance_id": original_id or None,
@@ -102,6 +103,7 @@ def _presentation_fields(
         "stop_reason": stop_reason,
         "relay_command_seq": speech_intent.get("command_seq"),
         "relay_command_id": speech_intent.get("command_id"),
+        **({"session_key": session_key} if session_key else {}),
     }
 
 

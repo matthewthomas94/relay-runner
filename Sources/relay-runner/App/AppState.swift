@@ -724,6 +724,7 @@ final class AppState {
         let foregroundActivityLabel =
             NotchActivityLabelPlanner.label(forWorkingProgress: stateMachine.currentWorkingProgress())
         let voiceTargetName = listeningVoiceTargetName
+        let playbackTargetName = playingVoiceTargetName
         let labels = NotchActivityLabelPlanner.labels(
             for: stateMachine.state,
             foregroundActivity: foregroundActivityLabel,
@@ -732,7 +733,8 @@ final class AppState {
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
             bridgeStartingUp: bridgeStartingUp,
             boardContentLoading: boardContentLoading,
-            voiceTargetName: voiceTargetName
+            voiceTargetName: voiceTargetName,
+            playbackTargetName: playbackTargetName
         )
         let hoverActivityLabel = NotchActivityLabelPlanner.hoverLabel(
             for: stateMachine.state,
@@ -743,6 +745,7 @@ final class AppState {
             bridgeStartingUp: bridgeStartingUp,
             boardContentLoading: boardContentLoading,
             voiceTargetName: voiceTargetName,
+            playbackTargetName: playbackTargetName,
             ticketForRun: { [notchActivityTicketsByRunKey] run in
                 let repoPath = URL(fileURLWithPath: run.repoPath).resolvingSymlinksInPath().path
                 return notchActivityTicketsByRunKey[
@@ -1433,6 +1436,19 @@ final class AppState {
             : sttEngine.voiceTargetSessionKey
         let contextID = live.first { key != nil && sessionRegistry.spool(for: $0)?.key == key } ?? voiceContextID
         return contextID.flatMap { assistantSessionStore.document.bindings[$0]?.context.displayName }
+    }
+
+    /// The project whose reply is playing, shown while several sessions share
+    /// the bridge. Unknown or missing session keys show plain "Playing".
+    private var playingVoiceTargetName: String? {
+        playbackTargetName(
+            sessionKey: stateMachine.speechPresentation?.sessionKey,
+            liveContextIDs: sessionRegistry.liveContextIDs,
+            spoolKey: { [sessionRegistry] in sessionRegistry.spool(for: $0)?.key },
+            displayName: { [assistantSessionStore] in
+                assistantSessionStore.document.bindings[$0]?.context.displayName
+            }
+        )
     }
 
     /// Save the focused context and every other context with a live session.

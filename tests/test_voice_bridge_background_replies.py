@@ -241,6 +241,61 @@ class BackgroundReplyTests(FocusTestCase):
         self.tts.skip.assert_not_called()
         self.assertEqual(self.badge(a)["unread_count"], 0)
 
+    def coordinated_tts(self) -> FakeTTS:
+        tts = FakeTTS()
+        tts.input_queue = mock.Mock()
+        tts.input_queue.submit_text.return_value = True
+        tts.input_queue.supports_atomic_waiting_playback = False
+        tts.input_queue.publishes_waiting_preview = True
+        return tts
+
+    def test_direct_reply_speech_carries_its_session_key(self):
+        self.focus("b", "claude")
+        command = self.command(5, "cmd-b", "b")
+        self.messenger.submit_final.return_value = False
+        self.tts = self.coordinated_tts()
+
+        self.assertTrue(self.reply(command, "b", "B finished.", "claude"))
+
+        self.assertEqual(self.tts.input_queue.submit_text.call_args.kwargs["session_key"], "b")
+
+    def test_stop_hook_completion_speech_carries_its_session_key(self):
+        b = self.focus("b", "claude")
+        command = self.command(6, "cmd-b2", "b")
+        self.tts = self.coordinated_tts()
+
+        self.assertTrue(voice_bridge._handle_provider_completion_control(
+            json.dumps({**command, "session_id": "claude-b-native", "text": "Done."}),
+            tts_worker=self.tts,
+            messenger=None,
+            state_path=self.state_path,
+        ))
+
+        self.assertEqual(
+            self.tts.input_queue.submit_text.call_args.kwargs["session_key"], b.session_key
+        )
+
+    def test_messenger_speech_resolves_its_session_from_the_command_ledger(self):
+        self.focus("a", "codex")
+        self.command(7, "cmd-a", "a")
+        tts = self.coordinated_tts()
+
+        voice_bridge._queue_tts_text(
+            json.dumps({"text": "On it.", "relay_command_seq": 7, "relay_command_id": "cmd-a"}),
+            tts.input_queue,
+            state_path=self.state_path,
+            allow_pending_command=True,
+        )
+
+        self.assertEqual(tts.input_queue.submit_text.call_args.kwargs["session_key"], "a")
+
+    def test_brought_forward_reply_speech_carries_its_session_key(self):
+        a = self.unheard("a", "codex", 1, "A finished.")
+        self.assertTrue(voice_bridge._advance_reply_queue(self.tts))
+
+        item = self.tts.input_queue.get_nowait()
+        self.assertEqual(item["_speech_intent_spec"]["session_key"], a.session_key)
+
 
 if __name__ == "__main__":
     unittest.main()

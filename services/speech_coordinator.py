@@ -81,6 +81,7 @@ class SpeechIntent:
     suppression_reason: str = ""
     original_utterance_id: str = ""
     replay_of: str | None = None
+    session_key: str = ""
 
     @property
     def command_key(self) -> tuple[int, str] | None:
@@ -126,6 +127,7 @@ class SpeechIntent:
         suppression_reason: str | None = None,
         original_utterance_id: str | None = None,
         replay_of: str | None = None,
+        session_key: str | None = None,
     ) -> "SpeechIntent":
         source = source if source in SPEECH_SOURCES else "fallback"
         kind = kind if kind in SPEECH_KINDS else "fallback"
@@ -181,6 +183,7 @@ class SpeechIntent:
                 str(original_utterance_id or "").strip() or resolved_utterance_id
             ),
             replay_of=str(replay_of) if replay_of else None,
+            session_key=str(session_key or "").strip(),
         )
 
 

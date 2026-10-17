@@ -510,12 +510,14 @@ struct NotchVisualLabelPresentation: Equatable {
 /// active work look idle.
 enum NotchVisualLabelAllowlist {
     /// `voiceTargetName` names the session a recording is delivered to when
-    /// several sessions share the voice bridge (RR-398).
+    /// several sessions share the voice bridge (RR-398). `playbackTargetName`
+    /// names the session whose reply is playing (RR-407).
     static func presentation(
         for state: OverlayState,
         bridgeStartingUp: Bool = false,
         boardContentLoading: Bool = false,
-        voiceTargetName: String? = nil
+        voiceTargetName: String? = nil,
+        playbackTargetName: String? = nil
     ) -> NotchVisualLabelPresentation {
         if bridgeStartingUp {
             return NotchVisualLabelPresentation(
@@ -544,7 +546,7 @@ enum NotchVisualLabelAllowlist {
         case .preparing:
             label = "Preparing speech"
         case .speaking:
-            label = "Playing"
+            label = playbackTargetName.map { "Playing · \($0)" } ?? "Playing"
         case .speechFailed:
             label = "Speech unavailable"
         case .actionGlow(awaitingConfirmation: nil):
@@ -579,13 +581,15 @@ enum NotchActivityLabelPlanner {
         bridgeStartingUp: Bool = false,
         boardContentLoading: Bool = false,
         voiceTargetName: String? = nil,
+        playbackTargetName: String? = nil,
         now: Date = Date()
     ) -> [String] {
         NotchVisualLabelAllowlist.presentation(
             for: state,
             bridgeStartingUp: bridgeStartingUp,
             boardContentLoading: boardContentLoading,
-            voiceTargetName: voiceTargetName
+            voiceTargetName: voiceTargetName,
+            playbackTargetName: playbackTargetName
         ).labels
     }
 
@@ -598,6 +602,7 @@ enum NotchActivityLabelPlanner {
         bridgeStartingUp: Bool = false,
         boardContentLoading: Bool = false,
         voiceTargetName: String? = nil,
+        playbackTargetName: String? = nil,
         now: Date = Date(),
         ticketForRun: ((RunState) -> Ticket?)? = nil
     ) -> String? {
@@ -605,7 +610,8 @@ enum NotchActivityLabelPlanner {
             for: state,
             bridgeStartingUp: bridgeStartingUp,
             boardContentLoading: boardContentLoading,
-            voiceTargetName: voiceTargetName
+            voiceTargetName: voiceTargetName,
+            playbackTargetName: playbackTargetName
         ).hoverLabel
     }
 
@@ -2217,4 +2223,16 @@ private extension Array {
     subscript(safe index: Index) -> Element? {
         indices.contains(index) ? self[index] : nil
     }
+}
+
+/// The project name for a playing reply (RR-407): only when several sessions
+/// are live and the reply's session key maps to a known context.
+func playbackTargetName<ID: Hashable>(
+    sessionKey: String?,
+    liveContextIDs: [ID],
+    spoolKey: (ID) -> String?,
+    displayName: (ID) -> String?
+) -> String? {
+    guard liveContextIDs.count > 1, let sessionKey else { return nil }
+    return liveContextIDs.first { spoolKey($0) == sessionKey }.flatMap(displayName)
 }
