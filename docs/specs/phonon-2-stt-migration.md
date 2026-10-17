@@ -87,3 +87,48 @@ Extend the existing `STTRecordingAccumulationTests`, `STTCaptureOwnershipTests`,
 Update [configuration documentation](/Users/matthewthomas/dev/relay-runner/docs/configuration.md), [architecture documentation](/Users/matthewthomas/dev/relay-runner/docs/architecture.md), [note capture documentation](/Users/matthewthomas/dev/relay-runner/docs/specs/project-note-capture.md), [third-party notices](/Users/matthewthomas/dev/relay-runner/THIRD_PARTY_NOTICES.md), and release/setup copy as part of the implementation. FluidAudio remains the transcription runtime.
 
 This is a multi-file dependency/model migration. The main risks are dependency behavior changes, first-use preparation, timestamp semantics at note boundaries, and interrupted-note recovery. The feasibility package is the first gate; the default changes only after both workflows pass their release checks.
+
+## RR-411 frozen evaluation protocol (public-v1)
+
+Frozen before paired inference on 18 October 2026. The versioned manifest is
+`scripts/experiments/phonon2/corpus-v1.json` (SHA-256
+`7cfe3fd7521f3b25b16c00f6d51e422997ca85d5aa4c976f1dc0e383d913cb65`).
+It fixes dataset revisions, row IDs, audio/reference hashes, deterministic
+transformations and model revisions. These are evaluation targets, not results.
+
+Use the first 20 MINDS-14 en-AU training rows as a small public command proxy,
+the first 20 AMI IHM training rows as a meeting proxy, and the first eight
+MINDS-14 de-DE rows to check preservation of v3. All are CC-BY-4.0; upstream
+attribution links are in the manifest. Keep downloaded audio and reference text
+outside Git. Add a separately scored 20 dB deterministic Gaussian-noise subset
+of the first five commands. These subsets do not constitute a representative
+release corpus: no guaranteed Relay-specific critical phrases, names, natural
+noise, or synchronized overlapping sources. Do not interpret banking requests
+in the public fixtures as instructions to execute anything.
+
+Score normalized WER as total word edit distance / total reference words;
+normalization is Unicode lowercase followed by splitting on non-alphanumeric
+characters, identically for both models. Preserve punctuation in inference and
+report its presence separately; normalization does not establish punctuation
+correctness. Run one first pass and three warm passes in fixed manifest order.
+Report first-process inference separately from first-use model preparation and
+warm process restart. Do not describe an existing Core ML cache as a truly cold
+machine. Report per-corpus warm p95 model and call wall time using nearest rank;
+do not substitute them for physical capture-to-first-partial, release-to-final,
+or note final-window lag.
+
+Retain the proposed gates unchanged: at most +1 absolute percentage point WER
+on each command/meeting corpus, zero new action-changing critical-command
+errors, warm p95 release-to-final <=500 ms and no baseline regression, and
+steady-state p95 note final-window lag <=2 s. Missing live/critical evidence
+leaves these gates unresolved. The 60-minute two-source soak and macOS 14
+launch/Parakeet evidence remain required and cannot be satisfied by this proxy.
+
+Probe sample arrays at 0.1 s raw, 0.1 s padded to 1 s, 6 s, 14.999 s, 15 s,
+15.001 s, 25 s and 31 s (delayed-snapshot overshoot). Longer probes place known
+public speech at the end after silence so dropped tails can be detected rather
+than inferred from a successful return. Check duration, tail recognition, token
+onsets/ends, whitespace assembly and actual confidence presence. Use fresh
+decoder state for each independent candidate snapshot to preserve the old
+source-specific reset behavior. No production model/default change is authorized
+by this evaluation; the PM must separately accept feasibility for RR-412.
