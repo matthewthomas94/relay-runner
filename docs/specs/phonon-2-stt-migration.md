@@ -132,3 +132,24 @@ onsets/ends, whitespace assembly and actual confidence presence. Use fresh
 decoder state for each independent candidate snapshot to preserve the old
 source-specific reset behavior. No production model/default change is authorized
 by this evaluation; the PM must separately accept feasibility for RR-412.
+
+### Pre-measurement corpus amendment (public-v2)
+
+Before any model inference, inspection found that MINDS-14 rows are intent-sorted:
+the public-v1 command prefix covered only bill payments. Public-v2 replaces that
+prefix with the first two en-AU examples of each of its 14 banking intents
+(28 commands). Meeting and multilingual selection, model pins and every numerical
+threshold above stay unchanged. Regular clips shorter than one second receive
+zero padding to one second, matching Relay's note adapter and the baseline
+runtime's minimum; the deliberately raw 0.1-second boundary probe stays raw.
+There are 69 fixtures including the five noisy derivatives and eight boundaries.
+The original v1 manifest is retained as an unused protocol record. No comparison
+results informed this amendment.
+
+The operative manifest is `scripts/experiments/phonon2/corpus-v2.json`, SHA-256
+`7e36e6e70a379a8aa347cdc0c0bc6350ec76f8af713904ad3d8b314468029768`.
+The stratification improves public proxy coverage; it does not fill the explicitly
+missing Relay-critical phrases, natural noise or overlapping-source evidence.
+
+The tail probe uses the first selected command fitting within six seconds,
+without cropping speech; all boundary sample counts were checked before inference.
