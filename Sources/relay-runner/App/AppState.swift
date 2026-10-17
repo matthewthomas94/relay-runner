@@ -251,6 +251,9 @@ final class AppState {
     }
     @ObservationIgnored private let assistantSessionStore = AssistantSessionStore()
     @ObservationIgnored private var pendingContextSelection: AssistantSessionContext?
+    /// RR-408: the brief notch outcome of a Shift+Arrow session switch.
+    @ObservationIgnored private var sessionSwitchNotice: SessionSwitchNotice?
+    @ObservationIgnored private var sessionSwitchNoticeExpiry: DispatchWorkItem?
     @ObservationIgnored private var continuationSourceReady = false
     @ObservationIgnored private var locallyCancelledContinuationID: String?
     /// Launch owner identity per context; a continuation is delivered to its
@@ -725,6 +728,7 @@ final class AppState {
             NotchActivityLabelPlanner.label(forWorkingProgress: stateMachine.currentWorkingProgress())
         let voiceTargetName = listeningVoiceTargetName
         let playbackTargetName = playingVoiceTargetName
+        let switchNotice = sessionSwitchNotice
         let labels = NotchActivityLabelPlanner.labels(
             for: stateMachine.state,
             foregroundActivity: foregroundActivityLabel,
@@ -734,7 +738,8 @@ final class AppState {
             bridgeStartingUp: bridgeStartingUp,
             boardContentLoading: boardContentLoading,
             voiceTargetName: voiceTargetName,
-            playbackTargetName: playbackTargetName
+            playbackTargetName: playbackTargetName,
+            switchNotice: switchNotice
         )
         let hoverActivityLabel = NotchActivityLabelPlanner.hoverLabel(
             for: stateMachine.state,
@@ -746,6 +751,7 @@ final class AppState {
             boardContentLoading: boardContentLoading,
             voiceTargetName: voiceTargetName,
             playbackTargetName: playbackTargetName,
+            switchNotice: switchNotice,
             ticketForRun: { [notchActivityTicketsByRunKey] run in
                 let repoPath = URL(fileURLWithPath: run.repoPath).resolvingSymlinksInPath().path
                 return notchActivityTicketsByRunKey[
@@ -765,7 +771,7 @@ final class AppState {
         notchStatusController.setPresentation(
             status: NotchSessionStatus.resolve(
                 for: stateMachine.state,
-                hasActivityLabels: hasActiveWork,
+                hasActivityLabels: hasActiveWork || switchNotice != nil,
                 boardIsLoading: boardIsLoading
             ),
             activityLabels: labels,
@@ -773,7 +779,8 @@ final class AppState {
             pinsWorkingLabel: NotchVisualLabelAllowlist.presentation(
                 for: stateMachine.state,
                 bridgeStartingUp: bridgeStartingUp,
-                boardContentLoading: boardContentLoading
+                boardContentLoading: boardContentLoading,
+                switchNotice: switchNotice
             ).pinsLabel
         )
     }
@@ -1271,6 +1278,39 @@ final class AppState {
         } else if let path = context.repositoryPath {
             selectProjectContext(repositoryPath: path)
         }
+    }
+
+    /// RR-408: Shift+Right / Shift+Left cycle the voice target through the
+    /// Workspace's session tabs. Focusing goes through `focusSessionTab`, so
+    /// the existing guards apply; the notch only claims what happened.
+    func switchVoiceTarget(_ direction: SessionSwitchDirection) {
+        let coordinator = SessionSwitchCoordinator<String>(
+            liveIDs: { [weak self] in self?.workspaceSessionTabs.map(\.id) ?? [] },
+            currentID: { [weak self] in
+                guard let self else { return nil }
+                let live = self.sessionRegistry.liveContextIDs
+                return [self.activeContext.id, self.voiceContextID].compactMap { $0 }.first(where: live.contains)
+            },
+            displayName: { [weak self] id in self?.workspaceSessionTabs.first { $0.id == id }?.name },
+            focus: { [weak self] in self?.focusSessionTab(contextID: $0) },
+            isFocused: { [weak self] in self?.activeContext.id == $0 },
+            isPending: { [weak self] in self?.pendingContextSelection?.id == $0 },
+            isRecording: { [weak self] in self?.sttEngine?.isRecording == true }
+        )
+        showSessionSwitchNotice(coordinator.switchTarget(direction))
+    }
+
+    private func showSessionSwitchNotice(_ notice: SessionSwitchNotice?) {
+        guard let notice else { return }
+        sessionSwitchNoticeExpiry?.cancel()
+        sessionSwitchNotice = notice
+        syncNotchActivitySurface()
+        let expiry = DispatchWorkItem { [weak self] in
+            self?.sessionSwitchNotice = nil
+            self?.syncNotchActivitySurface()
+        }
+        sessionSwitchNoticeExpiry = expiry
+        DispatchQueue.main.asyncAfter(deadline: .now() + SessionSwitchNotice.displayDuration, execute: expiry)
     }
 
     /// RR-395: closing a tab stops only that context's session, like Stop.
@@ -3843,6 +3883,11 @@ final class AppState {
                 engine.captureOwnerRequestedSerial != self.observedCaptureOwnerRequestedSerial
             self.observedCaptureOwnerRequestedSerial = engine.captureOwnerRequestedSerial
             self.publishOnboardingTutorialSTTEvents(from: engine, includeRecordingStart: false)
+
+            if let direction = engine.sessionSwitchRequested {
+                engine.sessionSwitchRequested = nil
+                self.switchVoiceTarget(direction)
+            }
 
             if engine.boardToggleRequested {
                 let recognizedAt = engine.boardToggleRequestedAt ?? CACurrentMediaTime()

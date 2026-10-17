@@ -86,6 +86,20 @@ final class BoardHotkeyGestureTests: XCTestCase {
         XCTAssertFalse(gesture.handleFlagsChanged([], at: start.addingTimeInterval(0.50)))
     }
 
+    func testHoldingShiftWhilePressingLeftThenRightNeverToggles() {
+        var gesture = BoardHotkeyGesture(doubleTapWindow: 0.45)
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+
+        for step in 0..<2 {
+            let offset = Double(step) * 0.2
+            XCTAssertFalse(gesture.handleFlagsChanged(.shift, at: start.addingTimeInterval(offset)))
+            // Shift+Left then Shift+Right (RR-408) reach the gesture as key downs.
+            gesture.handleKeyDown()
+            gesture.handleKeyDown()
+            XCTAssertFalse(gesture.handleFlagsChanged([], at: start.addingTimeInterval(offset + 0.05)))
+        }
+    }
+
     private func tapShift(_ gesture: inout BoardHotkeyGesture, downAt: Date, upAt: Date) -> Bool {
         XCTAssertFalse(gesture.handleFlagsChanged(.shift, at: downAt))
         return gesture.handleFlagsChanged([], at: upAt)
