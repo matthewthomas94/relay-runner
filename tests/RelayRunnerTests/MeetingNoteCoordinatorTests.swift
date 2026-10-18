@@ -1283,6 +1283,204 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(updates.last?.update.segments.map(\.text), ["final words"])
     }
 
+    func testStartPersistsTranscriptionIdentityAndLegacyJournalDecodesWithoutIt() async throws {
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let identity = MeetingTranscriptionIdentity.current(for: .parakeetV3)
+        let coordinator = MeetingNoteCoordinator(
+            writer: FakeMeetingNoteWriter(),
+            recoveryStore: store,
+            now: { "2026-09-21T00:00:00Z" },
+            recordingTranscriber: FakeMeetingRecordingTranscriber(),
+            transcriptionIdentity: identity
+        ) { sessionID, acceptedAudio, _, events in
+            captures.make(sessionID: sessionID, acceptedAudioSink: acceptedAudio, eventSink: events)
+        }
+        _ = try await coordinator.start(
+            project: project,
+            projectScopeToken: "scope-original",
+            initiallyPaused: false
+        )
+        let journals = await store.loadAll()
+        let journal = try XCTUnwrap(journals.first)
+        XCTAssertEqual(journal.transcriptionIdentity, identity)
+        XCTAssertEqual(identity.modelRevision, nil, "the legacy Parakeet cache is unpinned")
+        XCTAssertEqual(
+            MeetingTranscriptionIdentity.current(for: .phonon2).modelRevision,
+            STTModelPreparation.phononRevision
+        )
+
+        let encoded = try JSONEncoder().encode(journal)
+        XCTAssertEqual(try JSONDecoder().decode(MeetingNoteRecoveryJournal.self, from: encoded), journal)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNotNil(legacy.removeValue(forKey: "transcription_identity"))
+        let decoded = try JSONDecoder().decode(
+            MeetingNoteRecoveryJournal.self,
+            from: JSONSerialization.data(withJSONObject: legacy)
+        )
+        XCTAssertNil(decoded.transcriptionIdentity)
+        XCTAssertEqual(decoded.sessionID, journal.sessionID)
+        _ = try await coordinator.stop()
+    }
+
+    func testPendingTailReplaysWithRecordingIdentityAfterSettingsChange() async throws {
+        let recorded = MeetingTranscriptionIdentity.current(for: .parakeetV3)
+        let fixture = try await pendingTailFixture(identity: recorded)
+        defer { fixture.cleanUp() }
+        let probe = RecordingTranscriberFactoryProbe()
+        // The relaunched app is now configured for a different model.
+        let coordinator = fixture.coordinator(
+            configured: .current(for: .parakeetV2),
+            probe: probe
+        )
+
+        let offerCandidate = try await coordinator.recoveryOffers().first
+        let offer = try XCTUnwrap(offerCandidate)
+        XCTAssertEqual(offer.transcriptionIdentity, recorded)
+        XCTAssertFalse(offer.requiresTranscriptionModelChoice)
+        let result = try await coordinator.resolveRecovery(
+            sessionID: fixture.sessionID,
+            projectScopeToken: "scope-original",
+            resolution: .finalize
+        )
+
+        XCTAssertEqual(result.phase, .saved)
+        XCTAssertEqual(probe.identities, [recorded])
+        XCTAssertEqual(probe.transcriber.callCount, 1)
+    }
+
+    func testLegacyTailWithoutIdentityRequiresModelChoiceBeforeReplay() async throws {
+        let fixture = try await pendingTailFixture(identity: nil)
+        defer { fixture.cleanUp() }
+        let probe = RecordingTranscriberFactoryProbe()
+        let coordinator = fixture.coordinator(configured: .current(for: .parakeetV2), probe: probe)
+
+        let offerCandidate = try await coordinator.recoveryOffers().first
+        let offer = try XCTUnwrap(offerCandidate)
+        XCTAssertNil(offer.transcriptionIdentity)
+        XCTAssertTrue(offer.requiresTranscriptionModelChoice)
+        XCTAssertTrue(offer.transcriptionModelChoices.contains(.parakeetV2))
+        XCTAssertTrue(offer.transcriptionModelChoices.contains(.parakeetV3))
+        for resolution in [MeetingNoteRecoveryResolution.finalize, .recoverPaused] {
+            do {
+                _ = try await coordinator.resolveRecovery(
+                    sessionID: fixture.sessionID,
+                    projectScopeToken: "scope-original",
+                    resolution: resolution
+                )
+                XCTFail("an unidentified tail must not replay with an implicit model")
+            } catch let error as MeetingNoteCoordinatorError {
+                XCTAssertEqual(error, .transcriptionModelRequired)
+            }
+        }
+        XCTAssertTrue(probe.identities.isEmpty)
+        XCTAssertEqual(fixture.captures.count, 0)
+        let untouchedCandidate = try await fixture.store.loadAll().first
+        let untouched = try XCTUnwrap(untouchedCandidate)
+        XCTAssertNil(untouched.transcriptionIdentity)
+        XCTAssertEqual(untouched.producerCheckpoint?.pendingAudio.count, 2)
+
+        let result = try await coordinator.resolveRecovery(
+            sessionID: fixture.sessionID,
+            projectScopeToken: "scope-original",
+            resolution: .finalize,
+            transcriptionModel: .parakeetV3
+        )
+        XCTAssertEqual(result.phase, .saved)
+        XCTAssertEqual(probe.identities, [.current(for: .parakeetV3)])
+        let updates = await fixture.writer.updates
+        XCTAssertEqual(updates.last?.update.segments.map(\.text), ["final words"])
+    }
+
+    func testUnreproducibleIdentityRequiresChoiceAndModelFailureStaysRecoverable() async throws {
+        let current = MeetingTranscriptionIdentity.current(for: .parakeetV3)
+        let stale = MeetingTranscriptionIdentity(
+            backend: current.backend,
+            model: current.model,
+            runtimeRevision: "retired-runtime",
+            modelRevision: current.modelRevision,
+            decoding: current.decoding
+        )
+        XCTAssertThrowsError(try stale.reproducibleModel())
+        XCTAssertEqual(try current.reproducibleModel(), .parakeetV3)
+        XCTAssertThrowsError(
+            try MeetingTranscriptionIdentity.current(for: .phonon2)
+                .reproducibleModel(operatingSystem: OperatingSystemVersion(
+                    majorVersion: 14, minorVersion: 0, patchVersion: 0
+                ))
+        )
+        let fixture = try await pendingTailFixture(identity: stale)
+        defer { fixture.cleanUp() }
+        let probe = RecordingTranscriberFactoryProbe()
+        probe.failure = MeetingRecordingTranscriptionError.modelUnavailable("assets missing")
+        let coordinator = fixture.coordinator(configured: current, probe: probe)
+
+        let offerCandidate = try await coordinator.recoveryOffers().first
+        let offer = try XCTUnwrap(offerCandidate)
+        XCTAssertTrue(offer.requiresTranscriptionModelChoice)
+        do {
+            _ = try await coordinator.resolveRecovery(
+                sessionID: fixture.sessionID,
+                projectScopeToken: "scope-original",
+                resolution: .finalize,
+                transcriptionModel: .parakeetV3
+            )
+            XCTFail("missing model assets must not complete the note")
+        } catch {}
+
+        // The recording and its chosen identity survive for a later retry.
+        let journalCandidate = try await fixture.store.loadAll().first
+        let journal = try XCTUnwrap(journalCandidate)
+        XCTAssertEqual(journal.transcriptionIdentity, current)
+        XCTAssertEqual(journal.producerCheckpoint?.pendingAudio.count, 2)
+        probe.failure = nil
+        let retriedCandidate = try await coordinator.recoveryOffers().first
+        let retried = try XCTUnwrap(retriedCandidate)
+        XCTAssertFalse(retried.requiresTranscriptionModelChoice)
+        let result = try await coordinator.resolveRecovery(
+            sessionID: fixture.sessionID,
+            projectScopeToken: "scope-original",
+            resolution: .finalize
+        )
+        XCTAssertEqual(result.phase, .saved)
+        XCTAssertEqual(probe.identities, [current, current])
+    }
+
+    func testNoteRecordingAndRecoveryNeverReachVoicePipelineProvidersOrDispatch() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let forbidden = [
+            "FIFOWriter", "ProcessManager", "STTEngine(", "writeVoiceOutput(",
+            "dispatchTicket", "sweepReadyTickets", "sweepProgramReadyTickets",
+            "writeArtifactTicket", "claimArtifactTicketID",
+        ]
+        for name in [
+            "MeetingNoteCoordinator.swift",
+            "MeetingRecordingTranscriber.swift",
+            "MeetingTranscriptionIdentity.swift",
+            "MeetingNoteRecoveryStore.swift",
+            "FluidAudioMeetingTranscriber.swift",
+        ] {
+            let source = try String(
+                contentsOf: root.appendingPathComponent("Sources/relay-runner/Notes/\(name)"),
+                encoding: .utf8
+            )
+            for symbol in forbidden {
+                XCTAssertFalse(source.contains(symbol), "\(name) must not reference \(symbol)")
+            }
+            // Notes reach the daemon only through the project-note writer.
+            let calls = Set(source.components(separatedBy: "OrchestratorClient.").dropFirst().map {
+                String($0.prefix { $0.isLetter })
+            })
+            XCTAssertTrue(
+                calls.isSubset(of: ["createProjectNote", "updateProjectNote", "fetchProjectNote"]),
+                "\(name) calls \(calls.sorted())"
+            )
+        }
+    }
+
     func testSingleStopRecoversFailedCaptureAndTranscribesItsRecording() async throws {
         let writer = FakeMeetingNoteWriter()
         let store = InMemoryMeetingNoteRecoveryStore()
@@ -2183,6 +2381,53 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         )
     }
 
+    /// An interrupted note whose two legacy chunks were never transcribed.
+    private func pendingTailFixture(
+        identity transcriptionIdentity: MeetingTranscriptionIdentity?
+    ) async throws -> PendingTailFixture {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meeting-note-identity-\(UUID().uuidString)", isDirectory: true)
+        let fixture = PendingTailFixture(root: root, project: project)
+        let timestamp = "2026-09-21T00:00:00Z"
+        let journal = MeetingNoteRecoveryJournal(
+            schemaVersion: MeetingNoteRecoveryJournal.schemaVersion,
+            sessionID: fixture.sessionID,
+            project: project,
+            createRequest: RelayProjectNoteCreateRequest(
+                requestID: "note-create-\(fixture.sessionID)",
+                createdAt: timestamp,
+                captureStartedAt: timestamp,
+                capturedAt: timestamp,
+                recordingState: .recording,
+                checkpointReason: .checkpoint,
+                segments: [],
+                captureEndedAt: nil,
+                provider: "codex"
+            ),
+            identity: noteIdentity(),
+            phase: .interrupted,
+            producerCheckpoint: producerCheckpoint(
+                sessionID: fixture.sessionID,
+                state: .failed,
+                pendingAudio: [audioDescriptor(chunkID: "first"), audioDescriptor(chunkID: "last")]
+            ),
+            revisions: [],
+            canonicalSegments: [],
+            pendingUpdate: nil,
+            nextCheckpointSequence: 1,
+            syncState: "local_only",
+            captureEndedAt: nil,
+            lastError: nil,
+            updatedAt: timestamp,
+            transcriptionIdentity: transcriptionIdentity
+        )
+        try await fixture.store.save(journal)
+        await fixture.writer.seed(identity: noteIdentity(), segments: [])
+        try writeLegacyFloat32Audio(root: root, sessionID: fixture.sessionID, chunkID: "first", samples: [1, 2])
+        try writeLegacyFloat32Audio(root: root, sessionID: fixture.sessionID, chunkID: "last", samples: [3, 4])
+        return fixture
+    }
+
     /// Writes a raw chunk the way journals from before compressed recording did.
     private func writeLegacyFloat32Audio(
         root: URL,
@@ -2202,6 +2447,79 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try samples.withUnsafeBufferPointer { Data(buffer: $0) }
             .write(to: directory.appendingPathComponent(encoded(chunkID) + ".f32"))
+    }
+}
+
+private struct PendingTailFixture {
+    let root: URL
+    let project: MeetingNoteProjectBinding
+    let sessionID = "identity-tail"
+    let store: MeetingNoteRecoveryStore
+    let writer = FakeMeetingNoteWriter()
+    let captures = FakeMeetingNoteCaptureFactory()
+
+    init(root: URL, project: MeetingNoteProjectBinding) {
+        self.root = root
+        self.project = project
+        store = MeetingNoteRecoveryStore(root: root)
+    }
+
+    func coordinator(
+        configured identity: MeetingTranscriptionIdentity,
+        probe: RecordingTranscriberFactoryProbe
+    ) -> MeetingNoteCoordinator {
+        let captures = captures
+        return MeetingNoteCoordinator(
+            writer: writer,
+            recoveryStore: store,
+            now: { "2026-09-21T00:00:00Z" },
+            recordingTranscriber: FakeMeetingRecordingTranscriber(),
+            transcriptionIdentity: identity,
+            recordingTranscriberFactory: { try probe.make($0) }
+        ) { sessionID, acceptedAudio, _, events in
+            captures.make(sessionID: sessionID, acceptedAudioSink: acceptedAudio, eventSink: events)
+        }
+    }
+
+    func cleanUp() {
+        try? FileManager.default.removeItem(at: root)
+    }
+}
+
+/// Records which journal identity each replay asked for.
+private final class RecordingTranscriberFactoryProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var made: [MeetingTranscriptionIdentity] = []
+    private var configuredFailure: Error?
+    let transcriber = FakeMeetingRecordingTranscriber(revisions: [
+        MeetingTranscriptSegmentRevision(
+            segmentID: "microphone-E0-S0",
+            sourceID: .microphone,
+            timingEpochID: "microphone-E0",
+            windowSequence: 0,
+            revision: 0,
+            startMilliseconds: 0,
+            endMilliseconds: 1_000,
+            text: "final words",
+            isFinal: true
+        ),
+    ])
+
+    var identities: [MeetingTranscriptionIdentity] {
+        lock.lock(); defer { lock.unlock() }
+        return made
+    }
+
+    var failure: Error? {
+        get { lock.lock(); defer { lock.unlock() }; return configuredFailure }
+        set { lock.lock(); configuredFailure = newValue; lock.unlock() }
+    }
+
+    func make(_ identity: MeetingTranscriptionIdentity) throws -> any MeetingRecordingTranscribing {
+        lock.lock(); defer { lock.unlock() }
+        made.append(identity)
+        if let configuredFailure { throw configuredFailure }
+        return transcriber
     }
 }
 
