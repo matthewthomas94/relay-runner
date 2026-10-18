@@ -215,7 +215,7 @@ struct SessionWheelView: View {
                 } else {
                     VStack(spacing: 5) {
                         RelaySwap(title, style: .text) { title in
-                            Text(title)
+                            Text(title.replacingOccurrences(of: " ", with: "\n"))
                                 .font(AppTypography.font(.action, size: 12)).lineLimit(2)
                         }
                         if !detail.isEmpty {
