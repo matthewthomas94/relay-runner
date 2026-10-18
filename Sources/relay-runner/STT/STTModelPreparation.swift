@@ -115,10 +115,14 @@ actor STTModelPreparation {
         progress: @escaping @Sendable (STTPreparationPhase) -> Void
     ) async throws -> STTPreparedModelIdentity {
         let entry: InFlight
+        let observer: UUID
         if let existing = inFlight[model] {
             entry = existing
+            observer = entry.fanout.add(progress)
         } else {
+            // Register the first caller before the task starts so it sees `.checking`.
             let fanout = ProgressFanout()
+            observer = fanout.add(progress)
             let environment = environment
             let task = Task {
                 try await Self.prepareAssets(model, environment: environment, progress: fanout.emit)
@@ -130,7 +134,6 @@ actor STTModelPreparation {
                 await self?.finish(model, entry)
             }
         }
-        let observer = entry.fanout.add(progress)
         entry.waiters += 1
         defer {
             entry.fanout.remove(observer)
