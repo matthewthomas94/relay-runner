@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""Build the RR-413 dictation replay outside the source tree (Swift 6.0+, macOS 14+).
+
+Copies the production TranscriptAccumulator and TranscriptFilter so the replay
+exercises exactly the shipped accumulation and silence-filter decisions.
+"""
+import argparse
+import os
+import pathlib
+import shutil
+import subprocess
+
+PIN = '0b1f46289fe27d95b5e66ad8be46e64f5ee02ae7'
+STT = pathlib.Path(__file__).resolve().parents[3] / 'Sources' / 'relay-runner' / 'STT'
+SOURCES = ['dictation.swift', 'TranscriptAccumulator.swift', 'TranscriptFilter.swift']
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('directory', type=pathlib.Path)
+    a = p.parse_args()
+    a.directory.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(pathlib.Path(__file__).with_name('dictation.swift'), a.directory / 'dictation.swift')
+    for name in SOURCES[1:]:
+        shutil.copyfile(STT / name, a.directory / name)
+    (a.directory / 'Package.swift').write_text(f'''// swift-tools-version: 6.0
+import PackageDescription
+let package = Package(name: "RR413Dictation", platforms: [.macOS(.v14)],
+    dependencies: [.package(url: "https://github.com/FluidInference/FluidAudio.git", revision: "{PIN}")],
+    targets: [.executableTarget(name: "dictation", dependencies: [.product(name: "FluidAudio", package: "FluidAudio")],
+        path: ".", sources: [{", ".join(chr(34) + s + chr(34) for s in SOURCES)}], swiftSettings: [.swiftLanguageMode(.v5)])])
+''')
+    env = dict(os.environ)
+    env['SDKROOT'] = '/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk'
+    subprocess.run(['swift', 'build', '-c', 'release', '--package-path', str(a.directory), '-j', '4'], check=True, env=env)
+
+if __name__ == '__main__':
+    main()

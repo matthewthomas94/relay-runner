@@ -164,3 +164,105 @@ missing Relay-critical phrases, natural noise or overlapping-source evidence.
 
 The tail probe uses the first selected command fitting within six seconds,
 without cropping speech; all boundary sample counts were checked before inference.
+
+## RR-413 ordinary workflow evidence
+
+### Changes
+
+- `STTEngineDependencies.transcribe` is an injectable seam, so the capture loops
+  can be tested without a model. Production still uses a fresh `TdtDecoderState`
+  for each snapshot.
+- The silence/hallucination filter moved to `TranscriptFilter`, shared by both
+  loops and by the offline harness. Its decisions are unchanged.
+- `cancelRecording` now bumps `captureInterruptionEpoch`, as stop, ownership
+  close (switching to notes), reference-audio suspension and device
+  reconfiguration already do. Every inference result is checked against the
+  epoch before it is published, so a stale partial or final is dropped.
+- A chunk whose snapshot the filter drops as silence still rolls over at 25 s
+  with 1 s overlap. Previously it skipped the rollover.
+- `TranscriptAccumulator.join` dedupes only a suffix/prefix overlap of at most
+  five words, the most 1 s of shared audio can re-transcribe. Shared words take
+  their trailing punctuation from the later segment. Containment-based dedupe
+  was removed, because it deleted genuinely repeated speech.
+- Fixed a pre-existing race. The Caps Lock loop's initial reset cleared a wheel
+  request made before the loop started. It now clears only audio.
+
+The 500 ms cadence, chunk sizes, gestures, tutorial isolation, media settle,
+reference-audio suspension, defaults, Note Taker, and the FIFO/bridge contract
+are unchanged.
+
+### Tests
+
+`STTRecordingAccumulationTests` and `STTCaptureOwnershipTests` cover:
+
+- repeated speech across a rollover;
+- boundary punctuation;
+- a single final delivery per release, written once to the command FIFO;
+- stale results after stop, cancel, device change, model supersede and the
+  switch to notes;
+- silent-chunk rollover;
+- tutorial isolation.
+
+Ten consecutive runs passed: 39 tests in about 19 s each run.
+
+### Offline replay (`scripts/experiments/phonon2/dictation.swift`)
+
+The replay drives RR-411's public-v2 fixtures through the production
+accumulator and filter on a virtual clock. The clock models the 500 ms cadence,
+25 s rollover and 1 s overlap, and advances by measured inference time. Each
+model ran four passes on the pinned revisions; pass 0 is a fresh process.
+
+| Scenario | Baseline (eec42416) | RR-413 |
+|---|---|---|
+| short, ~15 s, beyond 15 s, 25 s rollover, ~31 s overshoot | — | identical or equivalent to baseline |
+| repeated speech (12× "I need to change my address", 72 words) | 30 words kept, 42 errors, both models | 72 words kept, 0 errors, both models |
+| two rollovers, Phonon (errors per pass) | 35 / 30 / 36 / 45 | 39 / 40 / 35 / 40 |
+| two rollovers, v2 (errors per pass) | 25 / 30 / 25 / 38 | 44 / 38 / 34 / 29 |
+| aggregate non-repeated WER | Phonon 22.0 %, v2 21.0 % | Phonon 22.5 %, v2 22.9 % |
+
+The two-rollover numbers swing as much between passes as between builds. Rollover
+boundaries move with measured inference time, so this is noise, not a
+regression.
+
+Neither build produced a duplicated boundary from a correct join. The only
+adjacent duplicate appears in the model's own live output. Both builds keep a
+few gapped near-duplicates such as "it just keeps um it just keeps": the
+recognizer re-hears the overlap with a filler word, and exact suffix/prefix
+matching doesn't catch it. This limitation predates RR-413.
+
+### Silence filter
+
+Measured output from both models:
+
+- Digital silence and Gaussian noise (RMS 0.002–0.03, 1 s and 3 s) were all
+  dropped.
+- Short valid utterances were kept (Phonon "Yeah.", "So, I think", "Hm."), and
+  so were the command probes.
+
+### Latency (offline proxy)
+
+These figures time the model call at release on the replay clock. They are not
+physical capture-to-text latency.
+
+| Model | Warm p95 release-to-final | Warm max refinement |
+|---|---|---|
+| Parakeet v2, baseline | 427 ms | 485 ms |
+| Parakeet v2, RR-413 | 422 ms | 472 ms |
+| Phonon 2, baseline | 418 ms | 760 ms |
+| Phonon 2, RR-413 | 396 ms | 766 ms |
+
+Every model and build meets the warm p95 ≤ 500 ms gate. RR-413 shows no
+regression against the same-run Parakeet baseline.
+
+### Known limitations
+
+- A Caps Lock toggle-stop within the 0.5 s hold threshold still counts as a tap.
+  That is existing behavior.
+
+### Not verified (waived 2026-10-18)
+
+- Live dictation on hardware, in both the Caps Lock and always-on loops.
+- Live delivery of the final text to Codex and Claude.
+
+Both are accepted risk. The FIFO payload and bridge contract are unchanged, so
+both providers receive the same single final line the tests assert.

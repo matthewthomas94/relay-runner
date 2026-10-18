@@ -29,6 +29,47 @@ final class STTRecordingAccumulationTests: XCTestCase {
         )
     }
 
+    func testTranscriptAccumulatorKeepsGenuinelyRepeatedSpeechAcrossRollover() {
+        var accumulator = TranscriptAccumulator()
+
+        accumulator.refine("I need to change my address. I need to change my address.")
+        accumulator.commitLiveSegment()
+        // The 1 s overlap re-hears "my address." before the new repetitions.
+        accumulator.refine("my address. I need to change my address. I need to change my address.")
+
+        XCTAssertEqual(
+            accumulator.transcript,
+            "I need to change my address. I need to change my address. "
+                + "I need to change my address. I need to change my address."
+        )
+    }
+
+    func testTranscriptAccumulatorKeepsARepeatedSegmentThatDoesNotOverlap() {
+        var accumulator = TranscriptAccumulator()
+
+        accumulator.refine("I need to change my address.")
+        accumulator.commitLiveSegment()
+        accumulator.refine("I need to change my address.")
+
+        XCTAssertEqual(
+            accumulator.transcript,
+            "I need to change my address. I need to change my address."
+        )
+    }
+
+    func testTranscriptAccumulatorTakesBoundaryPunctuationFromTheLaterSegment() {
+        var accumulator = TranscriptAccumulator()
+
+        accumulator.refine("I would like to stop all transactions")
+        accumulator.commitLiveSegment()
+        accumulator.refine("stop all transactions. Freeze my card.")
+
+        XCTAssertEqual(
+            accumulator.transcript,
+            "I would like to stop all transactions. Freeze my card."
+        )
+    }
+
     func testTranscriptAccumulatorResetClearsPartialAndCommittedText() {
         var accumulator = TranscriptAccumulator()
 

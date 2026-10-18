@@ -38,24 +38,36 @@ struct TranscriptAccumulator: Equatable {
         let previousComparable = previousWords.map { $0.normalized }
         let nextComparable = nextWords.map { $0.normalized }
 
-        if contains(previousComparable, nextComparable) {
-            return previous
-        }
-        if contains(nextComparable, previousComparable) {
-            return next
-        }
-
-        let maxOverlap = min(previousComparable.count, nextComparable.count)
+        // A rollover keeps only 1 s of shared audio, so only a short
+        // suffix/prefix can be a re-transcription. Longer matches (or one
+        // segment containing the other) are genuinely repeated speech.
+        let maxOverlap = min(previousComparable.count, nextComparable.count, maxOverlapWords)
         if maxOverlap > 0 {
             for size in stride(from: maxOverlap, through: 1, by: -1) {
                 if Array(previousComparable.suffix(size)) == Array(nextComparable.prefix(size)) {
-                    let combinedWords = previousWords.map { $0.raw } + nextWords.dropFirst(size).map { $0.raw }
+                    // The earlier segment heard these words with more
+                    // context; the later one heard how the sentence ended.
+                    let shared = zip(previousWords.suffix(size), nextWords.prefix(size)).map { earlier, later in
+                        stripTrailingPunctuation(earlier.raw) + trailingPunctuation(later.raw)
+                    }
+                    let combinedWords = previousWords.dropLast(size).map { $0.raw } + shared
+                        + nextWords.dropFirst(size).map { $0.raw }
                     return combinedWords.joined(separator: " ")
                 }
             }
         }
 
         return previous + " " + next
+    }
+
+    private static let maxOverlapWords = 5
+
+    private static func stripTrailingPunctuation(_ word: String) -> String {
+        String(word.prefix(word.count - trailingPunctuation(word).count))
+    }
+
+    private static func trailingPunctuation(_ word: String) -> String {
+        String(word.reversed().prefix { $0.isPunctuation }.reversed())
     }
 
     private static func clean(_ text: String) -> String {
@@ -78,17 +90,5 @@ struct TranscriptAccumulator: Equatable {
                 )
             }
             .filter { !$0.normalized.isEmpty }
-    }
-
-    private static func contains(_ words: [String], _ candidate: [String]) -> Bool {
-        guard !candidate.isEmpty else { return true }
-        guard candidate.count <= words.count else { return false }
-
-        for start in 0...(words.count - candidate.count) {
-            if Array(words[start..<(start + candidate.count)]) == candidate {
-                return true
-            }
-        }
-        return false
     }
 }
