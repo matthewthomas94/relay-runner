@@ -2232,9 +2232,11 @@ final class MeetingTranscriptProducerTests: XCTestCase {
 
     func testBackpressureStopsInsteadOfSilentlyDroppingFinalAudio() async throws {
         let events = MeetingEventRecorder()
+        let transcriptionGate = MeetingStartReturnGate()
+        addTeardownBlock { await transcriptionGate.open() }
         let producer = MeetingTranscriptProducer(
             sessionID: "fixture-backpressure",
-            transcriber: FakeMeetingTranscriber(delayNanoseconds: 100_000_000) { _ in
+            transcriber: FakeMeetingTranscriber(transcriptionGate: transcriptionGate) { _ in
                 MeetingTranscriptionResult(text: "slow", tokens: [], processingMilliseconds: 100)
             },
             configuration: MeetingTranscriptProducer.Configuration(
@@ -2248,15 +2250,18 @@ final class MeetingTranscriptProducerTests: XCTestCase {
             eventSink: { events.record($0) }
         )
         try await producer.start(initiallyPaused: false)
-        try await producer.ingest(.init(repeating: 0.2, count: 10), from: .microphone)
-        try await producer.ingest(.init(repeating: 0.2, count: 10), from: .microphone)
+        try await producer.ingest(.init(repeating: 0.2, count: 10), from: .systemAudio)
+        try await eventually { await transcriptionGate.waitingCount == 1 }
+        try await producer.ingest(.init(repeating: 0.2, count: 10), from: .systemAudio)
 
         await XCTAssertThrowsErrorAsync(
-            try await producer.ingest(.init(repeating: 0.2, count: 10), from: .microphone)
+            try await producer.ingest(.init(repeating: 0.2, count: 10), from: .systemAudio)
         ) { error in
             XCTAssertEqual(error as? MeetingProducerError, .backpressureExceeded)
         }
         XCTAssertTrue(events.issues.contains { $0.code == .backpressureExceeded })
+        await transcriptionGate.open()
+        await producer.waitUntilIdle()
     }
 
     private func assertRapidRestartOwnership(
