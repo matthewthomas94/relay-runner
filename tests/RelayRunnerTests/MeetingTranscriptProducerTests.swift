@@ -3,6 +3,40 @@ import XCTest
 @testable import relay_runner
 
 final class MeetingTranscriptProducerTests: XCTestCase {
+    func testRecordOnlyCaptureRetainsOnlySourceTransitionsUntilStop() async throws {
+        let events = MeetingNoteEventBuffer()
+        let transcriber = CountingMeetingTranscriber()
+        let checkpoints = MeetingProducerCheckpointRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-record-only-event-budget",
+            transcriber: transcriber,
+            transcribesLive: false,
+            durableCheckpointSink: { await checkpoints.record($0) },
+            eventSink: { events.append($0) }
+        )
+        try await producer.start()
+        _ = events.drain()
+
+        // No periodic event drains or checkpoints during a long recording.
+        for _ in 0..<10_000 {
+            try await producer.ingest([0.1], from: .microphone)
+            try await producer.ingest([0.1], from: .systemAudio)
+        }
+
+        let retained = events.drain()
+        XCTAssertEqual(retained.count, 4, "Only one epoch and capturing transition per source")
+        XCTAssertEqual(retained.prefix(4).filter {
+            if case .source = $0 { return true }
+            return false
+        }, [.source(.microphone, .capturing), .source(.systemAudio, .capturing)])
+        let persisted = await checkpoints.values
+        XCTAssertEqual(persisted.count, 2, "Only the initial epoch per source is checkpointed")
+        let boundary = try await producer.stop()
+        XCTAssertEqual(boundary.metrics.acceptedChunkCount, 20_000)
+        XCTAssertEqual(transcriber.prepareCount, 0)
+        XCTAssertEqual(transcriber.transcribeCount, 0)
+    }
+
     func testDisplaySleepWakeRequestsOneSystemStreamRestart() {
         let gate = MeetingSystemAudioCallbackGate()
         let stream = NSObject()
@@ -1725,6 +1759,43 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         }
         XCTAssertEqual(boundary.metrics.droppedAudioSampleCount, 0)
         XCTAssertFalse(accepted.audio.flatMap(\.samples).contains(9))
+    }
+
+    func testRecordOnlyProducerHandsEveryChunkToRecorderWithoutASR() async throws {
+        let transcriber = CountingMeetingTranscriber()
+        let accepted = MeetingAcceptedAudioRecorder()
+        let checkpoints = MeetingProducerCheckpointRecorder()
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-record-only",
+            transcriber: transcriber,
+            configuration: smallConfiguration,
+            transcribesLive: false,
+            acceptedAudioSink: { try await accepted.record($0) },
+            durableCheckpointSink: { await checkpoints.record($0) },
+            eventSink: { events.record($0) }
+        )
+
+        try await producer.start(initiallyPaused: false)
+        for value in 1...20 {
+            try await producer.ingest([Float](repeating: Float(value), count: 5), from: .microphone)
+        }
+        try await producer.ingest([7, 7, 7, 7], from: .systemAudio)
+        try await producer.pause()
+        try await producer.resume()
+        try await producer.ingest([8, 8], from: .microphone)
+        let checkpoint = await producer.checkpoint()
+        let boundary = try await producer.stop()
+        let persisted = await checkpoints.values
+
+        XCTAssertEqual(transcriber.prepareCount, 0, "record-only capture keeps no model resident")
+        XCTAssertEqual(transcriber.transcribeCount, 0)
+        XCTAssertEqual(accepted.audio.count, 22)
+        XCTAssertEqual(accepted.audio.map(\.samples.count).reduce(0, +), 106)
+        XCTAssertEqual(persisted.count, 3, "one checkpoint per opened epoch, not per chunk")
+        XCTAssertTrue(checkpoint.pendingAudio.isEmpty)
+        XCTAssertTrue(events.revisions.isEmpty)
+        XCTAssertEqual(boundary.timingEpochs.count, 3)
     }
 
     func testSourceInterruptionFinalizesTailAndRecoveryStartsNewEpoch() async throws {

@@ -1,14 +1,11 @@
 import Foundation
 
 enum MeetingNoteRecoveryStoreError: LocalizedError, Equatable {
-    case audioBudgetExceeded(limitBytes: Int)
     case missingAudio(String)
     case invalidAudio(String)
 
     var errorDescription: String? {
         switch self {
-        case .audioBudgetExceeded(let limitBytes):
-            return "Meeting recovery audio reached its \(limitBytes)-byte local limit."
         case .missingAudio:
             return "Required meeting recovery audio is unavailable."
         case .invalidAudio:
@@ -23,28 +20,26 @@ protocol MeetingNoteRecoveryStoring: Sendable {
     func save(_ journal: MeetingNoteRecoveryJournal) async throws
     func load(sessionID: String) async throws -> MeetingNoteRecoveryJournal?
     func loadAll() async throws -> [MeetingNoteRecoveryJournal]
-    func persistAudio(sessionID: String, audio: MeetingAcceptedAudio) async throws
     func saveProducerCheckpoint(
         sessionID: String,
         checkpoint: MeetingProducerCheckpoint
     ) async throws
+    /// Raw Float32 chunks written by journals from before compressed recording.
     func loadAudio(
         sessionID: String,
         descriptors: [MeetingAcceptedAudioDescriptor]
     ) async throws -> [MeetingAcceptedAudio]
-    func retainAudio(sessionID: String, chunkIDs: Set<String>) async throws
-    func retainCheckpointAudio(sessionID: String) async throws
+    func recordingDirectory(sessionID: String) async throws -> URL
+    func loadRecording(sessionID: String) async throws -> MeetingCompressedAudioRecording
+    func removeRecording(sessionID: String) async throws
     func removeSession(sessionID: String) async throws
 }
 
 actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
-    static let defaultAudioBudgetBytes = 256 * 1_024 * 1_024
-
     private static let journalFilename = "journal.json"
     private static let recordingDirectoryName = "recording"
-    /// Capture checkpoints arrive several times a second for the whole meeting.
-    /// They live beside the journal so each one costs only its own size, never
-    /// a decode and rewrite of the transcript-bearing journal.
+    /// Capture checkpoints live beside the journal so each one costs only its
+    /// own size, never a decode and rewrite of the transcript-bearing journal.
     private static let producerCheckpointFilename = "producer-checkpoint.json"
 
     /// Write-through mirror of one session's files.
@@ -83,22 +78,16 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
     }
 
     private let root: URL
-    private let audioBudgetBytes: Int
     private let fileManager: FileManager
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private var sessions: [String: Session] = [:]
-    private var audioAwaitingCheckpoint: [String: Set<String>] = [:]
-    private var audioBytesBySession: [String: Int] = [:]
 
     init(
         root: URL = MeetingNoteRecoveryStore.defaultRoot(),
-        audioBudgetBytes: Int = MeetingNoteRecoveryStore.defaultAudioBudgetBytes,
         fileManager: FileManager = .default
     ) {
-        precondition(audioBudgetBytes > 0)
         self.root = root
-        self.audioBudgetBytes = audioBudgetBytes
         self.fileManager = fileManager
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -167,35 +156,6 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         }.sorted { $0.updatedAt < $1.updatedAt }
     }
 
-    func persistAudio(sessionID: String, audio: MeetingAcceptedAudio) throws {
-        let directory = try audioDirectory(sessionID: sessionID, create: true)
-        let url = directory.appendingPathComponent(encodedFilename(audio.descriptor.chunkID))
-        let expectedBytes = audio.samples.count * MemoryLayout<Float>.size
-        if fileManager.fileExists(atPath: url.path) {
-            let attributes = try fileManager.attributesOfItem(atPath: url.path)
-            guard attributes[.size] as? Int == expectedBytes else {
-                throw MeetingNoteRecoveryStoreError.invalidAudio(audio.descriptor.chunkID)
-            }
-            audioAwaitingCheckpoint[sessionID, default: []].insert(audio.descriptor.chunkID)
-            return
-        }
-
-        let usedBytes = try audioBytesBySession[sessionID] ?? directorySize(directory)
-        guard usedBytes + expectedBytes <= audioBudgetBytes else {
-            throw MeetingNoteRecoveryStoreError.audioBudgetExceeded(limitBytes: audioBudgetBytes)
-        }
-        let data = audio.samples.withUnsafeBytes { Data($0) }
-        do {
-            try data.write(to: url, options: .atomic)
-            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        } catch {
-            audioBytesBySession.removeValue(forKey: sessionID)
-            throw error
-        }
-        audioBytesBySession[sessionID] = usedBytes + expectedBytes
-        audioAwaitingCheckpoint[sessionID, default: []].insert(audio.descriptor.chunkID)
-    }
-
     func saveProducerCheckpoint(
         sessionID: String,
         checkpoint: MeetingProducerCheckpoint
@@ -211,14 +171,13 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         )
         session.journal.producerCheckpoint = filtered
         sessions[sessionID] = session
-        audioAwaitingCheckpoint[sessionID]?.subtract(checkpoint.pendingAudio.map(\.chunkID))
     }
 
     func loadAudio(
         sessionID: String,
         descriptors: [MeetingAcceptedAudioDescriptor]
     ) throws -> [MeetingAcceptedAudio] {
-        let directory = try audioDirectory(sessionID: sessionID, create: false)
+        let directory = try audioDirectory(sessionID: sessionID)
         return try descriptors.map { descriptor in
             let url = directory.appendingPathComponent(encodedFilename(descriptor.chunkID))
             guard fileManager.fileExists(atPath: url.path) else {
@@ -237,30 +196,6 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         }
     }
 
-    func retainAudio(sessionID: String, chunkIDs: Set<String>) throws {
-        let directory = try audioDirectory(sessionID: sessionID, create: false)
-        guard fileManager.fileExists(atPath: directory.path) else { return }
-        var usedBytes = try audioBytesBySession[sessionID] ?? directorySize(directory)
-        audioBytesBySession.removeValue(forKey: sessionID)
-        let retainedFilenames = Set(chunkIDs.map(encodedFilename))
-        for url in try fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) where !retainedFilenames.contains(url.lastPathComponent) {
-            usedBytes -= try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            try fileManager.removeItem(at: url)
-        }
-        audioBytesBySession[sessionID] = usedBytes
-    }
-
-    func retainCheckpointAudio(sessionID: String) throws {
-        let retained = Set(
-            try load(sessionID: sessionID)?.producerCheckpoint?.pendingAudio.map(\.chunkID) ?? []
-        ).union(audioAwaitingCheckpoint[sessionID] ?? [])
-        try retainAudio(sessionID: sessionID, chunkIDs: retained)
-    }
-
     /// Compressed meeting recording for one session. It lives inside the session
     /// directory, so `removeSession` deletes it with everything else.
     func recordingDirectory(sessionID: String) throws -> URL {
@@ -269,6 +204,16 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
             .appendingPathComponent(Self.recordingDirectoryName, isDirectory: true)
         try MeetingCompressedAudioRecorder.prepareDirectory(directory, fileManager: fileManager)
         return directory
+    }
+
+    /// Reads the manifest without creating anything, so building recovery
+    /// offers leaves no trace on disk.
+    func loadRecording(sessionID: String) throws -> MeetingCompressedAudioRecording {
+        try MeetingCompressedAudioRecording.load(
+            directory: try sessionDirectory(sessionID, create: false)
+                .appendingPathComponent(Self.recordingDirectoryName, isDirectory: true),
+            fileManager: fileManager
+        )
     }
 
     func removeRecording(sessionID: String) throws {
@@ -283,8 +228,6 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         guard fileManager.fileExists(atPath: directory.path) else { return }
         try fileManager.removeItem(at: directory)
         sessions.removeValue(forKey: sessionID)
-        audioAwaitingCheckpoint.removeValue(forKey: sessionID)
-        audioBytesBySession.removeValue(forKey: sessionID)
     }
 
     private func session(_ sessionID: String) throws -> Session? {
@@ -342,28 +285,9 @@ actor MeetingNoteRecoveryStore: MeetingNoteRecoveryStoring {
         return directory
     }
 
-    private func audioDirectory(sessionID: String, create: Bool) throws -> URL {
-        let directory = try sessionDirectory(sessionID, create: create)
+    private func audioDirectory(sessionID: String) throws -> URL {
+        try sessionDirectory(sessionID, create: false)
             .appendingPathComponent("audio", isDirectory: true)
-        if create {
-            try fileManager.createDirectory(
-                at: directory,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-        }
-        return directory
-    }
-
-    private func directorySize(_ directory: URL) throws -> Int {
-        guard fileManager.fileExists(atPath: directory.path) else { return 0 }
-        return try fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ).reduce(into: 0) { result, url in
-            result += try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        }
     }
 
     private func encodedDirectoryName(_ value: String) -> String {

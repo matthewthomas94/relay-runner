@@ -66,9 +66,16 @@ closes it. Late lower revisions are rejected. A repeated sentence in a later
 owned range has a different segment ID and is retained; there is no global
 substring suppression like `TranscriptAccumulator.join`.
 
+Meeting notes do not transcribe while recording (RR-406). The coordinator
+builds its producer with `transcribesLive: false`: it keeps the shared
+timeline and timing epochs and hands every accepted chunk to the recorder, but
+it never prepares a model, submits a window, or emits a partial hypothesis.
+After Stop, `MeetingRecordingTranscriber` runs the finished recording through
+the same windows and segment IDs once, forwarding final revisions only.
+
 `MeetingTranscriptSegmentRevision.projectNoteSegment` maps final producer
-output into the RR-364 storage type. RR-368 should checkpoint meaningful
-batches, not every partial callback.
+output into the RR-364 storage type. The coordinator publishes those finals in
+the single completed checkpoint, never per partial callback.
 
 ## Bounded processing and backpressure
 
@@ -76,8 +83,12 @@ Capture callbacks enter one tracked consumer through a bounded ingress (audio
 frames and rare source events share the bound); there is no task allocation per
 frame. The live note session batches about 100 ms per source and holds 600
 items, roughly 30 seconds of two-source audio, so a transient stall delays
-persistence instead of dropping speech. Accepted chunks reach the RR-368 sink
-before entering the ASR buffer. The producer then retains at most the current
+persistence instead of dropping speech. Accepted chunks reach the recorder
+sink before the producer acknowledges them. Record-only note capture then
+retains no samples. The coordinator drops repeated source-state events before
+buffering them, so uninterrupted recording retains only state transitions,
+not one event per audio chunk; failure events remain ordered and delivered.
+A live or post-Stop pass retains at most the current
 window plus overlap per active source, plus a configurable bounded transcription
 queue (24 windows by default, about a minute of two-source final windows). If capture ingress overflows, dropped frame and
 sample counters are recorded, every started adapter is stopped, and capture
@@ -120,12 +131,14 @@ Ingress submission and close share one lock-held gate, so no callback can enter
 between marking the boundary closed and terminating its bounded stream.
 Its single consumer drains only frames already accepted before that boundary
 while asynchronous adapter teardown runs; teardown-time and stale callbacks are
-rejected. The producer then finalizes the accepted pre-pause tail. `resume()`
-creates new timing epochs. Rapid duplicate pause/resume calls are idempotent
+rejected. The producer then finalizes the accepted pre-pause tail, and note
+capture closes each source's open recorder segment so all pre-pause audio is
+readable on disk. `resume()` creates new timing epochs. Rapid duplicate pause/resume calls are idempotent
 only in their matching state.
 
-Stop uses the same adapter-stop and ingress-drain barrier before it drains final
-ASR tails and emits one `MeetingProducerFinalBoundary`. Adapter ownership remains
+Stop uses the same adapter-stop and ingress-drain barrier before it emits one
+`MeetingProducerFinalBoundary`. Record-only capture has no ASR tail to drain;
+the coordinator then closes the recording and transcribes it. Adapter ownership remains
 separate from source availability, so a running adapter that reports a later
 format/source failure is still stopped during teardown. An interrupted or
 failed source is ingress-gated before its recovery work begins, so stale adapter
@@ -148,14 +161,17 @@ revisions. Source recovery starts a new epoch.
 `MeetingProducerCheckpoint` records the shared timeline origin and source
 cursors, epochs, the next contiguous unfinished window per epoch, successful
 windows beyond any earlier failure, final/emitted revision cursors, metrics,
-and descriptors for unfinished audio. RR-368 owns the referenced audio bytes
-and cleanup. On restart it restores the checkpoint and passes exactly those
-persisted chunks to `replayAcceptedAudio`. Replay processes each epoch in order,
-trims a retained chunk that crosses a committed-window boundary, and skips
-already successful windows. A later successful window never releases audio
-needed by an earlier failed window. The audio sink failing is a capture failure:
-the producer does not retain the unpersisted chunk or allow the destination
-foreground mode to start.
+and descriptors for unfinished audio. Record-only capture writes it only when a
+timing epoch opens (start, resume, source recovery), never per chunk, so its
+`pendingAudio` stays empty and its source cursors can trail the recorded audio.
+Recovery advances each source cursor past the recorded segments before a
+resumed capture opens new epochs. There is no live replay path;
+`replayAcceptedAudio` has been removed. A journal from before compressed
+recording may still name raw Float32 chunks in `pendingAudio`: the post-Stop
+pass reads those first, rebases their epochs past windows the live producer
+already completed so segment IDs match, and then reads the recording. The audio
+sink failing is a capture failure: the producer does not acknowledge the chunk
+or allow the destination foreground mode to start.
 
 ## Offline and licensing boundary
 
@@ -186,59 +202,75 @@ The project repository path and optional registered project identity are bound
 before capture starts and are reused for every create, checkpoint, retry, and
 recovery call. A later Workspace selection cannot redirect the note.
 
-Accepted audio uses a write-before-ack rule: the RR-365 producer awaits the
-recovery store before it adds a chunk to its ASR buffer. Consequently the
-maximum accepted-but-unpersisted audio interval is zero milliseconds. Final
-segment revisions target a 15-second canonical Markdown cadence while recording
-and are also published at pause, resume, manual checkpoint, and completion
-boundaries. Daemon/writer latency or outage can extend canonical publication;
-the acknowledged tail remains locally replayable rather than being claimed as
-already canonical. A failed 15-second checkpoint does not stop capture: the
-journaled request is resent at the next interval and the note panel says that
-saving is retrying. Pause, resume, and completion checkpoints still fail into
-recovery as before.
-Partial hypotheses remain distinguishable from canonical durable segments and
-are not published as final transcript text. The exact pending artifact request
-and its stable request ID are journaled before a writer call, so a process death
-or injected failure retries the same idempotent mutation rather than appending
-the transcript twice.
+Accepted audio uses a write-before-ack rule: the producer awaits the session
+recorder before it acknowledges a chunk. `MeetingCompressedAudioRecorder`
+encodes each source as AAC-LC `.m4a` segments (16 kHz mono, 32 kbps) of at
+most 30 seconds, and a segment enters the recording manifest only when it
+closes: at 30 seconds, at pause, at Stop, or when an interruption closes the
+recorder. A hard crash or power loss therefore loses at most one open segment,
+30 seconds or less per source; every closed segment survives.
+
+While recording there are no live partials and no transcript text. The
+coordinator creates the empty note before capture starts and then publishes
+only state checkpoints at pause and resume, each carrying zero segments. There
+is no periodic, per-chunk, or partial-callback checkpoint, and the journal is
+not rewritten per chunk. Daemon/writer latency or outage cannot lose audio,
+because the recording stays local until the completed note is saved. Pause,
+resume, and completion checkpoints fail into recovery as before.
+
+Stop transcribes once. After the capture barrier the coordinator closes the
+recording and shows **Transcribing notes** while `MeetingRecordingTranscriber`
+prepares FluidAudio, transcribes the complete recording, and releases the
+model. It then shows **Saving notes** and publishes one completed checkpoint
+with every segment's stable ID, source speaker, and millisecond timing. The
+exact pending artifact request and its stable request ID are journaled before a
+writer call, so a process death or injected failure retries the same idempotent
+mutation rather than appending the transcript twice.
 
 Transient state lives under Application Support at `Relay Runner/Note
 Recovery`, never under the project or source checkout. Each session has an
-atomic JSON journal, a separate atomic producer checkpoint, and raw Float32
-chunk files with opaque encoded names. The producer checkpoint is rewritten for
-every accepted chunk, so it carries only open-window revision guards and finals
-the journal has not saved yet; its cost does not grow with meeting length. On
-load, the newer of the two replay cursors wins. The default per-session audio
-budget is 256 MiB. At 16 kHz mono Float32 this is a
-hard upper bound of 2,097 seconds (34m57s) with both sources continuously
-retained, or 4,194 seconds (69m54s) with one source; reaching it fails capture
-instead of accepting uncheckpointed speech. After each canonical checkpoint
-attempt, audio not named by the producer's pending descriptor cursor is removed.
-Successful completion removes the complete owned recovery directory. Neither
+atomic JSON journal, a separate atomic producer checkpoint, and an owner-only
+`recording` directory holding the compressed segments and their manifest. The
+recording directory, its segments, and its manifest are excluded from Time
+Machine and other macOS backups. On load, the newer of the two replay cursors
+wins. The default recording budget is 192 MiB across both sources. At the
+nominal 4,000 bytes per second per source this is about 25,165 seconds
+(6h59m) with both sources continuously recorded, or about 50,331 seconds
+(13h58m) with one source. The recorder counts each open segment's projected
+size plus container overhead, so reaching the budget fails capture with
+`recording_budget_exceeded` and keeps the recording for recovery rather than
+accepting audio it cannot store. After a successful completed save the
+coordinator deletes the recording and then the complete owned recovery
+directory. A failed transcription or save deletes nothing: the recording and
+journal remain and the note is listed as a recovery offer. Neither
 audio samples nor transcript text are written to diagnostics, provider input,
 or application logs. Capture interruptions are logged under the
 `com.relayrunner.app` subsystem, `notes` category, as cause codes and producer
 counters only.
 
 A failure that ends capture while recording or paused shows "Recording
-interrupted", never "Saving notes"; "Saving notes" is reserved for a Stop the
-user requested. Stop pressed during that teardown waits for it, then finalizes
+interrupted", never "Transcribing notes" or "Saving notes"; those are reserved
+for a Stop the user requested. Stop pressed during that teardown waits for it, then finalizes
 from the recovery journal.
 
-On relaunch the coordinator lists incomplete journals without starting FluidAudio,
-a capture adapter, a provider, a messenger, a bridge, or a microphone. Recovery
-first retries any pending idempotent writer mutation and reads the last canonical
-artifact revision from the immutable original project. The user can then:
+On relaunch the coordinator lists incomplete journals and reads their
+recording manifests without starting FluidAudio, a capture adapter, a provider,
+a messenger, a bridge, or a microphone. Recovery first retries any pending
+idempotent writer mutation and reads the last canonical artifact revision from
+the immutable original project. The user can then:
 
-- replay exactly the descriptor-addressed local audio tail and remain paused;
-- replay that tail and finalize the note; or
-- discard only the incomplete tail and complete the last canonical transcript.
+- reopen the recording and remain paused (`recoverPaused`); a later explicit
+  resume records new epochs after the recorded audio, and Stop transcribes the
+  audio from before and after the interruption together;
+- transcribe the recording and finalize the note (`finalize`); or
+- delete the recording and complete the last canonical transcript
+  (`discardIncompleteTail`).
 
-Replay restores producer cursors before loading audio, rejects missing or
-mismatched chunks, and remains paused after the `recover` choice. Resuming a
-microphone requires a later explicit resume action. Already saved canonical
-segments are never deleted by incomplete-tail discard.
+Recovery restores producer cursors before capture restarts and rejects a
+missing or mismatched recording segment or legacy chunk. Resuming a microphone
+requires a later explicit resume action. Already saved canonical segments are
+never deleted by discard. A journal written before compressed recording still
+finalizes from its raw Float32 chunks.
 
 `AppState` uses its existing `endSession()` / `resetActiveSessionState()` path
 for work-to-note transitions, stops the ordinary STT key owner, and waits for

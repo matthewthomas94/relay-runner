@@ -215,7 +215,7 @@ final class AppStateLaunchTests: XCTestCase {
 
         let stopping = AppState.stoppingMeetingNoteSnapshot(from: recording)
 
-        XCTAssertEqual(stopping.phase, .stopping)
+        XCTAssertEqual(stopping.phase, .transcribing)
         XCTAssertEqual(stopping.noteID, "RR-N12")
         XCTAssertEqual(stopping.project, project)
         XCTAssertEqual(stopping.liveHypothesisCount, 3)
@@ -223,7 +223,7 @@ final class AppStateLaunchTests: XCTestCase {
         XCTAssertEqual(stopping.syncState, "pending")
         XCTAssertNil(stopping.errorMessage)
         XCTAssertEqual(stopping.notchPresentation?.status, .working)
-        XCTAssertEqual(stopping.notchPresentation?.label, "Saving notes")
+        XCTAssertEqual(stopping.notchPresentation?.label, "Transcribing notes")
     }
 
     func testOnboardingTutorialAcceptsOnlyItsIsolatedTTSState() {
