@@ -17,29 +17,29 @@ final class RelayMotionTests: XCTestCase {
         XCTAssertLessThan(RelayMotion.exitDuration, RelayMotion.enterDuration)
     }
 
-    func testHiddenContentAndTextSitBelow() {
-        XCTAssertEqual(
-            RelayMotion.Style.element.offset(hidden: true, reduceMotion: false),
-            CGSize(width: 0, height: RelayMotion.Style.element.distance)
-        )
-        XCTAssertEqual(
-            RelayMotion.Style.surface.offset(hidden: true, reduceMotion: false),
-            CGSize(width: 0, height: RelayMotion.Style.surface.distance)
-        )
-        XCTAssertEqual(
-            RelayMotion.Style.text.offset(hidden: true, reduceMotion: false),
-            CGSize(width: 0, height: RelayMotion.Style.text.distance)
-        )
-        XCTAssertEqual(RelayMotion.Style.text.offset(hidden: false, reduceMotion: false), .zero)
-        XCTAssertGreaterThan(RelayMotion.Style.text.blur(hidden: true, reduceMotion: false), 0)
-        XCTAssertEqual(RelayMotion.Style.text.blur(hidden: false, reduceMotion: false), 0)
+    func testHiddenContentContractsAndBlursWithoutMoving() {
+        for style in [RelayMotion.Style.element, .surface, .text] {
+            XCTAssertGreaterThanOrEqual(style.hiddenScale, 0.9)
+            XCTAssertLessThan(style.scale(hidden: true, reduceMotion: false), 1)
+            XCTAssertEqual(style.scale(hidden: false, reduceMotion: false), 1)
+            XCTAssertGreaterThan(style.blur(hidden: true, reduceMotion: false), 0)
+            XCTAssertEqual(style.blur(hidden: false, reduceMotion: false), 0)
+        }
     }
 
     func testReduceMotionKeepsOnlyTheFade() {
         for style in [RelayMotion.Style.element, .surface, .text] {
-            XCTAssertEqual(style.offset(hidden: true, reduceMotion: true), .zero)
+            XCTAssertEqual(style.scale(hidden: true, reduceMotion: true), 1)
             XCTAssertEqual(style.blur(hidden: true, reduceMotion: true), 0)
         }
+    }
+
+    func testSharedDurationsAreTwentyFivePercentShorter() {
+        XCTAssertEqual(RelayMotion.enterDuration, 0.255, accuracy: 0.0001)
+        XCTAssertEqual(RelayMotion.exitDuration, 0.15, accuracy: 0.0001)
+        XCTAssertEqual(RelayMotion.changeDuration, 0.225, accuracy: 0.0001)
+        XCTAssertEqual(RelayMotion.hoverDuration, 0.1125, accuracy: 0.0001)
+        XCTAssertEqual(RelayMotion.replacementGap, 0.075, accuracy: 0.0001)
     }
 
     func testLayerPreparationAddsOneNamedBlurAndKeepsExistingFilters() throws {
@@ -57,21 +57,23 @@ final class RelayMotionTests: XCTestCase {
         XCTAssertTrue(view.layerUsesCoreImageFilters)
     }
 
-    func testVerticalTravelReadsAsBelowOnScreenForFlippedAndUnflippedParents() {
-        final class FlippedView: NSView {
-            override var isFlipped: Bool { true }
+    func testScalePreservesTheCenterForCornerAndCenterAnchoredLayers() {
+        for anchor in [CGPoint.zero, CGPoint(x: 0.5, y: 0.5), CGPoint(x: 1, y: 1)] {
+            let parent = CALayer()
+            let child = CALayer()
+            child.bounds = CGRect(x: 0, y: 0, width: 300, height: 200)
+            child.anchorPoint = anchor
+            child.position = CGPoint(x: 160, y: 180)
+            parent.addSublayer(child)
+            let center = CGPoint(x: 150, y: 100)
+            let resting = child.convert(center, to: parent)
+            child.transform = RelayLayerMotion.centeredScale(0.96, on: child)
+            let contracted = child.convert(center, to: parent)
+            XCTAssertEqual(contracted.x, resting.x, accuracy: 0.001)
+            XCTAssertEqual(contracted.y, resting.y, accuracy: 0.001)
+            XCTAssertEqual(child.frame.width, 288, accuracy: 0.001)
+            XCTAssertEqual(child.frame.height, 192, accuracy: 0.001)
         }
-        let child = NSView(frame: .zero)
-        let unflipped = NSView(frame: .zero)
-        unflipped.addSubview(child)
-        let expected: (CGFloat) -> CGFloat = { sign in
-            RelayLayerMotion.reduceMotion ? 0 : sign * RelayMotion.Style.element.distance
-        }
-        XCTAssertEqual(RelayLayerMotion.hiddenTranslation(for: child, style: .element).height, expected(-1))
-
-        let flipped = FlippedView(frame: .zero)
-        flipped.addSubview(child)
-        XCTAssertEqual(RelayLayerMotion.hiddenTranslation(for: child, style: .element).height, expected(1))
     }
 
     func testReplacementsWaitForTheOutgoingExitAndABeat() {
@@ -151,6 +153,7 @@ final class RelayMotionTests: XCTestCase {
         let resting = window.frame
 
         RelayWindowMotion.present(window, makeKey: false)
+        XCTAssertEqual(window.frame, resting, "Presentation scales content without relocating the window")
         RunLoop.main.run(until: Date().addingTimeInterval(RelayMotion.enterDuration + 0.25))
         XCTAssertTrue(window.isVisible)
         XCTAssertEqual(window.alphaValue, 1, accuracy: 0.01)
@@ -159,6 +162,7 @@ final class RelayMotionTests: XCTestCase {
         var dismissed = false
         RelayWindowMotion.dismiss(window) { dismissed = true }
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(window.frame, resting, "Dismissal keeps the same window frame")
         RelayWindowMotion.present(window, makeKey: false)
         RunLoop.main.run(until: Date().addingTimeInterval(RelayMotion.enterDuration + 0.3))
 

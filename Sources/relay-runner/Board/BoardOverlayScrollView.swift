@@ -340,7 +340,7 @@ final class BoardOverlayScrollContainer: NSView {
     private func revealThumb() {
         hideWorkItem?.cancel()
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.10
+            context.duration = 0.10 * RelayMotion.durationScale
             context.timingFunction = RelayMotion.enterCurve.mediaTimingFunction
             thumbView.animator().alphaValue = 1
         }
@@ -365,7 +365,7 @@ final class BoardOverlayScrollContainer: NSView {
             return
         }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.22
+            context.duration = 0.22 * RelayMotion.durationScale
             context.timingFunction = RelayMotion.exitCurve.mediaTimingFunction
             thumbView.animator().alphaValue = 0
         }

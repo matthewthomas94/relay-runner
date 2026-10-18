@@ -3981,13 +3981,7 @@ struct EmbeddedTerminalTab: View {
         // The Workspace panel fixes the overall height; the terminal takes
         // what the session tab strip leaves.
         .frame(maxWidth: WorkspaceSurfaceSizing.terminalMaxWidth, maxHeight: .infinity)
-        .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius))
         .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius, style: .continuous)
-                .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.18), radius: 18, x: 0, y: 10)
         .environment(\.colorScheme, .dark)
     }
 
@@ -4050,18 +4044,14 @@ struct WorkspaceTerminalPanel: View {
     private var tabs: [(id: String, name: String)] { appState.workspaceSessionTabs }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if !tabs.isEmpty {
-                WorkspaceSessionTabStrip(
-                    tabs: tabs,
-                    selectedID: appState.activeContext.id,
-                    badges: appState.sessionReplyBadges,
-                    select: { appState.focusSessionTab(contextID: $0) },
-                    readOut: { appState.readOutSessionReply(contextID: $0) },
-                    close: { appState.closeSessionTab(contextID: $0) }
-                )
-                .transition(.relayElement)
-            }
+        WorkspaceTerminalSurface(
+            tabs: tabs,
+            selectedID: appState.activeContext.id,
+            badges: appState.sessionReplyBadges,
+            select: { appState.focusSessionTab(contextID: $0) },
+            readOut: { appState.readOutSessionReply(contextID: $0) },
+            close: { appState.closeSessionTab(contextID: $0) }
+        ) {
             EmbeddedTerminalTab(
                 session: appState.embeddedTerminal,
                 recoverDelivery: { appState.recoverBlockedVoiceDelivery() }
@@ -4069,95 +4059,6 @@ struct WorkspaceTerminalPanel: View {
         }
         .frame(maxWidth: WorkspaceSurfaceSizing.terminalMaxWidth)
         .frame(height: BoardSurfaceLayout.columnHeight, alignment: .top)
-        .animation(RelayMotion.change, value: tabs.map(\.id))
-    }
-}
-
-private struct WorkspaceSessionTabStrip: View {
-    let tabs: [(id: String, name: String)]
-    let selectedID: String
-    let badges: [String: Int]
-    let select: (String) -> Void
-    let readOut: (String) -> Void
-    let close: (String) -> Void
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(tabs, id: \.id) { tab in
-                WorkspaceSessionTab(
-                    name: tab.name,
-                    selected: tab.id == selectedID,
-                    badgeCount: badges[tab.id] ?? 0,
-                    select: { select(tab.id) },
-                    readOut: { readOut(tab.id) },
-                    close: { close(tab.id) }
-                )
-                .transition(.relayElement)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-    }
-}
-
-/// Matches the Workspace menu tabs (WorkspaceNavigationButton) so the two
-/// strips read as one family.
-private struct WorkspaceSessionTab: View {
-    let name: String
-    let selected: Bool
-    let badgeCount: Int
-    let select: () -> Void
-    let readOut: () -> Void
-    let close: () -> Void
-    @State private var isHovered = false
-
-    private var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
-    }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: WorkspaceNavigationStyle.iconTextSpacing) {
-            Button(action: select) {
-                Text(name)
-                    .font(AppTypography.font(.menuTab))
-                    .lineLimit(1)
-            }
-            .buttonStyle(.plain)
-            .contextMenu {
-                Button("Read Out Latest Reply", action: readOut)
-            }
-            if badgeCount > 0 {
-                SessionReplyBadge(count: badgeCount)
-                    .transition(.relayElement)
-            }
-            Button(action: close) {
-                Image(systemName: "xmark")
-                    .font(AppTypography.symbolFont(size: WorkspaceNavigationStyle.iconSize, weight: .bold))
-                    .frame(width: WorkspaceNavigationStyle.iconSize, height: WorkspaceNavigationStyle.iconSize)
-            }
-            .buttonStyle(.plain)
-            .help("Stop \(name) session")
-            .accessibilityLabel("Stop \(name) session")
-        }
-        .foregroundStyle(Color(
-            .sRGB,
-            red: 226 / 255,
-            green: 232 / 255,
-            blue: 240 / 255,
-            opacity: WorkspaceNavigationStyle.activeTextOpacity
-        ))
-        .frame(height: WorkspaceNavigationStyle.controlHeight - 2 * WorkspaceNavigationStyle.verticalPadding)
-        .padding(.horizontal, WorkspaceNavigationStyle.horizontalPadding)
-        .padding(.vertical, WorkspaceNavigationStyle.verticalPadding)
-        .background(shape.fill(selected || isHovered ? BoardDarkSurfaceStyle.cardActiveFill : Color.clear))
-        .overlay(shape.strokeBorder(selected || isHovered ? BoardDarkSurfaceStyle.border : Color.clear, lineWidth: 1))
-        .contentShape(shape)
-        .onHover { isHovered = $0 }
-        .animation(RelayMotion.hover, value: isHovered)
-        .animation(RelayMotion.change, value: selected)
-        .accessibilityElement(children: .contain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

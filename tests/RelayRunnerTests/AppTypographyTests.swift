@@ -105,7 +105,7 @@ final class AppTypographyTests: XCTestCase {
         )
         XCTAssertEqual(
             AppTypography.resolved(.permissionButton, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-SemiBold", size: 16, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-Regular", size: 16, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.notchStatus, availablePostScriptNames: available),

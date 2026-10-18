@@ -3,12 +3,12 @@ import QuartzCore
 
 enum BoardRevealTransitionTiming {
     static let firstMotionBudget: TimeInterval = 0.10
-    static let expandToFullWidthDuration: TimeInterval = 0.24
-    static let expandDuration: TimeInterval = 0.34
-    static let contentRevealDuration: TimeInterval = 0.38
-    static let contentHideDuration: TimeInterval = 0.22
-    static let dismissToFullWidthDuration: TimeInterval = 0.24
-    static let compactDuration: TimeInterval = 0.22
+    static let expandToFullWidthDuration: TimeInterval = 0.24 * RelayMotion.durationScale
+    static let expandDuration: TimeInterval = 0.34 * RelayMotion.durationScale
+    static let contentRevealDuration: TimeInterval = 0.38 * RelayMotion.durationScale
+    static let contentHideDuration: TimeInterval = 0.22 * RelayMotion.durationScale
+    static let dismissToFullWidthDuration: TimeInterval = 0.24 * RelayMotion.durationScale
+    static let compactDuration: TimeInterval = 0.22 * RelayMotion.durationScale
 
     static var revealAnimationDuration: TimeInterval {
         expandToFullWidthDuration + expandDuration + contentRevealDuration
@@ -156,7 +156,7 @@ final class BoardRevealContainerView: NSView {
         contentContainerView.autoresizingMask = [.width, .height]
         contentContainerView.alphaValue = 0
         contentContainerView.isHidden = true
-        setContentYOffset(hiddenContentYOffset)
+        setContentScale(hiddenContentScale)
         addSubview(contentContainerView)
 
         hostedContentView.frame = contentContainerView.bounds
@@ -208,7 +208,7 @@ final class BoardRevealContainerView: NSView {
         contentVisible = false
         contentContainerView.alphaValue = 0
         contentContainerView.isHidden = true
-        setContentYOffset(hiddenContentYOffset)
+        setContentScale(hiddenContentScale)
         setLoading(startsLoading)
     }
 
@@ -295,13 +295,13 @@ final class BoardRevealContainerView: NSView {
         contentVisible = true
         contentContainerView.isHidden = false
         contentContainerView.alphaValue = 0
-        setContentYOffset(hiddenContentYOffset)
+        setContentScale(hiddenContentScale)
         // The Workspace takes the loader's place only once it has left.
         let loaderExit = revealView.loadingExitRemaining
         let delay = loaderExit > 0 ? loaderExit + RelayMotion.replacementGap : 0
-        animateContentYOffset(
-            from: hiddenContentYOffset,
-            to: 0,
+        animateContentScale(
+            from: hiddenContentScale,
+            to: 1,
             duration: BoardRevealTransitionTiming.contentRevealDuration,
             timing: Self.revealTiming,
             delay: delay
@@ -345,9 +345,9 @@ final class BoardRevealContainerView: NSView {
         }
 
         contentVisible = false
-        animateContentYOffset(
-            from: 0,
-            to: hiddenContentYOffset,
+        animateContentScale(
+            from: 1,
+            to: hiddenContentScale,
             duration: BoardRevealTransitionTiming.contentHideDuration,
             timing: Self.hideTiming
         )
@@ -368,20 +368,24 @@ final class BoardRevealContainerView: NSView {
         }
     }
 
-    private func setContentYOffset(_ offset: CGFloat) {
-        contentContainerView.layer?.transform = CATransform3DMakeTranslation(0, offset, 0)
+    private func setContentScale(_ scale: CGFloat) {
+        guard let layer = contentContainerView.layer else { return }
+        layer.transform = RelayLayerMotion.centeredScale(scale, on: layer)
     }
 
-    private func animateContentYOffset(
+    private func animateContentScale(
         from: CGFloat,
         to: CGFloat,
         duration: CFTimeInterval,
         timing: CAMediaTimingFunction,
         delay: CFTimeInterval = 0
     ) {
-        let animation = CABasicAnimation(keyPath: "transform.translation.y")
-        animation.fromValue = from
-        animation.toValue = to
+        guard let layer = contentContainerView.layer else { return }
+        let animation = CABasicAnimation(keyPath: "transform")
+        animation.fromValue = layer.animation(forKey: "boardRevealContentScale") != nil
+            ? layer.presentation()?.transform ?? layer.transform
+            : RelayLayerMotion.centeredScale(from, on: layer)
+        animation.toValue = RelayLayerMotion.centeredScale(to, on: layer)
         animation.duration = duration
         animation.timingFunction = timing
         animation.fillMode = .forwards
@@ -390,11 +394,11 @@ final class BoardRevealContainerView: NSView {
             animation.fillMode = .both
         }
         animation.isRemovedOnCompletion = false
-        contentContainerView.layer?.add(animation, forKey: "boardRevealContentYOffset")
-        setContentYOffset(to)
+        contentContainerView.layer?.add(animation, forKey: "boardRevealContentScale")
+        setContentScale(to)
     }
 
-    /// Blurs the hosted Workspace only while it travels; the filter is
+    /// Blurs the hosted Workspace only while it scales; the filter is
     /// removed once the content settles so the resting surface renders
     /// without an offscreen pass.
     private func animateContentBlur(
@@ -434,18 +438,15 @@ final class BoardRevealContainerView: NSView {
         }
     }
 
-    /// Travel and blur drop out under Reduce Motion; the fade remains.
-    private var hiddenContentYOffset: CGFloat {
-        reduceMotion ? 0 : Self.hiddenContentYOffset
+    /// Scale and blur drop out under Reduce Motion; the fade remains.
+    private var hiddenContentScale: CGFloat {
+        RelayMotion.Style.surface.scale(hidden: true, reduceMotion: reduceMotion)
     }
 
     private var hiddenContentBlurRadius: CGFloat {
         reduceMotion ? 0 : RelayMotion.Style.surface.blurRadius
     }
 
-    // The container is flipped, so a positive offset sits below the resting
-    // position: content rises into place on reveal and sinks on hide.
-    private static let hiddenContentYOffset: CGFloat = 14
     private static let revealTiming = RelayMotion.enterCurve.mediaTimingFunction
     private static let hideTiming = RelayMotion.exitCurve.mediaTimingFunction
     private static let contentBlurKeyPath = "filters.\(RelayLayerMotion.blurFilterName).inputRadius"
@@ -625,7 +626,7 @@ private final class BoardRevealSurfaceView: NSView {
     }
 
     /// Shows the update-check loader across the expanded surface, below the
-    /// notch strip, once the surface has room for it. It rises in and sinks
+    /// notch strip, once the surface has room for it. It expands in and contracts
     /// out like any surface, and leaves the view hierarchy once it has gone
     /// so its animation stops.
     private func updateLoadingIndicator(animated: Bool) {

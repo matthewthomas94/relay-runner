@@ -4,25 +4,25 @@ import SwiftUI
 
 /// The shared motion language for every Relay Runner surface.
 ///
-/// Anything that appears, text included, rises a few points into place while
-/// it sharpens from a blur and fades in. Anything that disappears sinks back
-/// down, blurs and fades out. Only the notch's status label travels
-/// horizontally (see `NotchContentMotion`). Every movement is eased; exits are
+/// Anything that appears, text included, expands into place while
+/// it sharpens from a blur and fades in. Anything that disappears contracts,
+/// blurs and fades out. Every movement is eased; exits are
 /// quicker than entrances so dismissals feel responsive. When one thing
 /// replaces another, the outgoing content finishes leaving and the screen
 /// rests for a beat before its replacement arrives, so the two never share
 /// the screen.
 ///
-/// Reduce Motion keeps the opacity crossfade and drops travel and blur.
+/// Reduce Motion keeps the opacity crossfade and drops scale and blur.
 enum RelayMotion {
     // MARK: Timing
 
-    static let enterDuration: TimeInterval = 0.34
-    static let exitDuration: TimeInterval = 0.2
-    static let changeDuration: TimeInterval = 0.3
-    static let hoverDuration: TimeInterval = 0.15
+    static let durationScale: Double = 0.75
+    static let enterDuration: TimeInterval = 0.34 * durationScale
+    static let exitDuration: TimeInterval = 0.2 * durationScale
+    static let changeDuration: TimeInterval = 0.3 * durationScale
+    static let hoverDuration: TimeInterval = 0.15 * durationScale
     /// The empty beat between an exit and the entrance that replaces it.
-    static let replacementGap: TimeInterval = 0.1
+    static let replacementGap: TimeInterval = 0.1 * durationScale
     /// How long a replacement waits: the outgoing exit plus a short rest.
     static let replacementDelay: TimeInterval = exitDuration + replacementGap
 
@@ -84,29 +84,25 @@ enum RelayMotion {
     static var hover: Animation { .easeOut(duration: hoverDuration) }
 
     static func change(reduceMotion: Bool) -> Animation {
-        reduceMotion ? .easeInOut(duration: 0.18) : change
+        reduceMotion ? .easeInOut(duration: 0.18 * durationScale) : change
     }
 
     // MARK: Styles
 
-    /// How far, and how blurred, a hidden element sits from its resting place.
+    /// How contracted and blurred a hidden element is at its resting position.
     struct Style: Equatable {
-        let axis: Axis
-        let distance: CGFloat
+        let hiddenScale: CGFloat
         let blurRadius: CGFloat
 
         /// Controls, rows, badges, icons, and inline sections.
-        static let element = Style(axis: .vertical, distance: 6, blurRadius: 6)
+        static let element = Style(hiddenScale: 0.96, blurRadius: 6)
         /// Modals, panels, popovers, windows, and whole pages.
-        static let surface = Style(axis: .vertical, distance: 12, blurRadius: 12)
+        static let surface = Style(hiddenScale: 0.96, blurRadius: 12)
         /// Labels and copy that swap in place.
-        static let text = Style(axis: .vertical, distance: 6, blurRadius: 4)
+        static let text = Style(hiddenScale: 0.96, blurRadius: 4)
 
-        func offset(hidden: Bool, reduceMotion: Bool) -> CGSize {
-            guard hidden, !reduceMotion else { return .zero }
-            return axis == .horizontal
-                ? CGSize(width: distance, height: 0)
-                : CGSize(width: 0, height: distance)
+        func scale(hidden: Bool, reduceMotion: Bool) -> CGFloat {
+            hidden && !reduceMotion ? hiddenScale : 1
         }
 
         func blur(hidden: Bool, reduceMotion: Bool) -> CGFloat {
@@ -124,11 +120,10 @@ struct RelayMotionEffect: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        let offset = style.offset(hidden: hidden, reduceMotion: reduceMotion)
         content
             .opacity(hidden ? 0 : 1)
             .blur(radius: style.blur(hidden: hidden, reduceMotion: reduceMotion))
-            .offset(x: offset.width, y: offset.height)
+            .scaleEffect(style.scale(hidden: hidden, reduceMotion: reduceMotion))
     }
 }
 
@@ -166,9 +161,9 @@ extension AnyTransition {
     }
 }
 
-/// Swaps content built from `value`: the outgoing copy sinks out still
+/// Swaps content built from `value`: the outgoing copy contracts still
 /// showing its own value, the space rests for a beat, then the copy for the
-/// new value rises in.
+/// new value expands in.
 ///
 /// Build everything that changes with `value` inside `content` from its
 /// argument. The leaving copy is frozen with the value it was built from; a
@@ -256,20 +251,16 @@ enum RelayLayerMotion {
         layer.filters = filters + [blur]
     }
 
-    /// Screen-space travel for a hidden view, expressed in its superview's
-    /// coordinates. Vertical travel always reads as "below" on screen.
-    static func hiddenTranslation(for view: NSView, style: RelayMotion.Style) -> CGSize {
-        guard !reduceMotion else { return .zero }
-        switch style.axis {
-        case .horizontal:
-            return CGSize(width: style.distance, height: 0)
-        case .vertical:
-            let downward: CGFloat = view.superview?.isFlipped == true ? 1 : -1
-            return CGSize(width: 0, height: style.distance * downward)
-        }
+    /// AppKit backing layers may anchor at a corner. Compensate so scaling
+    /// preserves the visual center without changing their layout or anchor.
+    static func centeredScale(_ scale: CGFloat, on layer: CALayer) -> CATransform3D {
+        var transform = CATransform3DMakeScale(scale, scale, 1)
+        transform.m41 = layer.bounds.width * (0.5 - layer.anchorPoint.x) * (1 - scale)
+        transform.m42 = layer.bounds.height * (0.5 - layer.anchorPoint.y) * (1 - scale)
+        return transform
     }
 
-    /// Fades, sharpens, and raises a view into place.
+    /// Fades, sharpens, and expands a view into place.
     static func animateIn(
         _ view: NSView,
         style: RelayMotion.Style = .element,
@@ -290,7 +281,7 @@ enum RelayLayerMotion {
         )
     }
 
-    /// Blurs, fades, and lowers a view out of sight, then hides it.
+    /// Blurs, fades, and contracts a view out of sight, then hides it.
     static func animateOut(
         _ view: NSView,
         style: RelayMotion.Style = .element,
@@ -315,7 +306,7 @@ enum RelayLayerMotion {
     }
 
     /// Replaces a view's content in place: a snapshot of the old content
-    /// leaves, then the updated view arrives. Text uses the horizontal style.
+    /// leaves, then the updated view arrives.
     static func crossfade(
         _ view: NSView,
         style: RelayMotion.Style = .text,
@@ -360,9 +351,8 @@ enum RelayLayerMotion {
             completion?()
             return
         }
-        let travel = hiddenTranslation(for: view, style: style)
         let blur = reduceMotion ? 0 : style.blurRadius
-        let hiddenTransform = CATransform3DMakeTranslation(travel.width, travel.height, 0)
+        let hiddenTransform = centeredScale(style.scale(hidden: true, reduceMotion: reduceMotion), on: layer)
         let startTransform = fromHidden ? hiddenTransform : CATransform3DIdentity
         let endTransform = fromHidden ? CATransform3DIdentity : hiddenTransform
         let startBlur = fromHidden ? blur : 0
@@ -448,8 +438,6 @@ enum RelayWindowMotion {
     /// Bumped by every present/dismiss so a dismissal that is overtaken by a
     /// re-presentation never orders the window out afterwards.
     private static var generations: [ObjectIdentifier: Int] = [:]
-    /// Where a window rests while it is lowered for its exit.
-    private static var restingFrames: [ObjectIdentifier: NSRect] = [:]
 
     private static func nextGeneration(for window: NSWindow) -> Int {
         let id = ObjectIdentifier(window)
@@ -458,8 +446,7 @@ enum RelayWindowMotion {
         return generation
     }
 
-    /// Orders a window in by fading it up, raising it a few points, and
-    /// sharpening its content.
+    /// Orders a window in by fading, expanding, and sharpening its content.
     static func present(
         _ window: NSWindow,
         makeKey: Bool = true,
@@ -467,8 +454,6 @@ enum RelayWindowMotion {
         completion: (() -> Void)? = nil
     ) {
         _ = nextGeneration(for: window)
-        let target = restingFrames.removeValue(forKey: ObjectIdentifier(window)) ?? window.frame
-        let reduceMotion = RelayLayerMotion.reduceMotion
         let alreadyVisible = window.isVisible && window.alphaValue > 0.99
         guard !alreadyVisible else {
             if makeKey { window.makeKeyAndOrderFront(nil) } else { window.orderFront(nil) }
@@ -478,31 +463,24 @@ enum RelayWindowMotion {
 
         if !window.isVisible {
             window.alphaValue = 0
-            if !reduceMotion {
-                window.setFrame(target.offsetBy(dx: 0, dy: -style.distance), display: false)
-            }
         }
         if makeKey { window.makeKeyAndOrderFront(nil) } else { window.orderFrontRegardless() }
 
-        if let content = window.contentView, !reduceMotion {
+        if let content = window.contentView {
             RelayLayerMotion.prepare(content)
-            animateContentBlur(content, from: style.blurRadius, to: 0, curve: RelayMotion.enterCurve,
-                               duration: RelayMotion.enterDuration)
+            animateContent(content, style: style, entering: true)
         }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = RelayMotion.enterDuration
             context.timingFunction = RelayMotion.enterCurve.mediaTimingFunction
             window.animator().alphaValue = 1
-            if !reduceMotion {
-                window.animator().setFrame(target, display: true)
-            }
         } completionHandler: {
             completion?()
         }
     }
 
-    /// Fades a window down, lowering it a few points and blurring its
-    /// content, then orders it out and restores its frame for next time.
+    /// Contracts, blurs, and fades the content, then orders the window out.
+    /// The frame stays fixed throughout both directions.
     static func dismiss(
         _ window: NSWindow,
         style: RelayMotion.Style = .surface,
@@ -514,53 +492,61 @@ enum RelayWindowMotion {
         }
         let id = ObjectIdentifier(window)
         let generation = nextGeneration(for: window)
-        let resting = restingFrames[id] ?? window.frame
-        restingFrames[id] = resting
-        let reduceMotion = RelayLayerMotion.reduceMotion
-        if let content = window.contentView, !reduceMotion {
+        if let content = window.contentView {
             RelayLayerMotion.prepare(content)
-            animateContentBlur(content, from: 0, to: style.blurRadius, curve: RelayMotion.exitCurve,
-                               duration: RelayMotion.exitDuration)
+            animateContent(content, style: style, entering: false)
         }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = RelayMotion.exitDuration
             context.timingFunction = RelayMotion.exitCurve.mediaTimingFunction
             window.animator().alphaValue = 0
-            if !reduceMotion {
-                window.animator().setFrame(resting.offsetBy(dx: 0, dy: -style.distance), display: true)
-            }
         } completionHandler: {
             guard generations[id] == generation else { return }
-            restingFrames[id] = nil
             window.orderOut(nil)
-            window.setFrame(resting, display: false)
             window.alphaValue = 1
             if let layer = window.contentView?.layer {
                 layer.removeAnimation(forKey: "relayWindowBlur")
+                layer.removeAnimation(forKey: "relayWindowScale")
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                layer.transform = CATransform3DIdentity
                 layer.setValue(0, forKeyPath: "filters.\(RelayLayerMotion.blurFilterName).inputRadius")
+                CATransaction.commit()
             }
             completion?()
         }
     }
 
-    private static func animateContentBlur(
+    private static func animateContent(
         _ view: NSView,
-        from: CGFloat,
-        to: CGFloat,
-        curve: RelayMotion.Curve,
-        duration: TimeInterval
+        style: RelayMotion.Style,
+        entering: Bool
     ) {
         guard let layer = view.layer else { return }
+        let reduceMotion = RelayLayerMotion.reduceMotion
         let keyPath = "filters.\(RelayLayerMotion.blurFilterName).inputRadius"
+        let hidden = RelayLayerMotion.centeredScale(style.scale(hidden: true, reduceMotion: reduceMotion), on: layer)
+        let targetTransform = entering ? CATransform3DIdentity : hidden
+        let targetBlur = entering ? 0 : style.blur(hidden: true, reduceMotion: reduceMotion)
+        let interrupting = layer.animation(forKey: "relayWindowScale") != nil
+        let scale = CABasicAnimation(keyPath: "transform")
+        scale.fromValue = interrupting ? layer.presentation()?.transform ?? layer.transform
+            : (entering ? hidden : CATransform3DIdentity)
+        scale.toValue = targetTransform
+        let blur = CABasicAnimation(keyPath: keyPath)
+        blur.fromValue = interrupting ? layer.presentation()?.value(forKeyPath: keyPath)
+            : (entering ? style.blur(hidden: true, reduceMotion: reduceMotion) : 0)
+        blur.toValue = targetBlur
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layer.setValue(to, forKeyPath: keyPath)
+        layer.transform = targetTransform
+        layer.setValue(targetBlur, forKeyPath: keyPath)
         CATransaction.commit()
-        let animation = CABasicAnimation(keyPath: keyPath)
-        animation.fromValue = from
-        animation.toValue = to
-        animation.duration = duration
-        animation.timingFunction = curve.mediaTimingFunction
-        layer.add(animation, forKey: "relayWindowBlur")
+        for animation in [scale, blur] {
+            animation.duration = entering ? RelayMotion.enterDuration : RelayMotion.exitDuration
+            animation.timingFunction = (entering ? RelayMotion.enterCurve : RelayMotion.exitCurve).mediaTimingFunction
+        }
+        layer.add(scale, forKey: "relayWindowScale")
+        layer.add(blur, forKey: "relayWindowBlur")
     }
 }

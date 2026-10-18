@@ -2995,6 +2995,7 @@ final class AppState {
     }
 
     private func refreshSessionWheel(_ model: SessionWheelModel, includesProjects: Bool) {
+        model.isWorkspaceVisible = programBoardOverlay.isVisible
         let recording = sttEngine?.isRecording == true
         let recordingKey = sttEngine?.recordingVoiceTargetSessionKey
         let ready = sttEngine != nil && sttSetupSucceeded && permissions.microphone == .granted

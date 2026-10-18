@@ -751,16 +751,15 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertTrue(leaveWorking.shouldAnimatePlacement)
     }
 
-    func testLabelChangesSwapHorizontallyThroughABlurOneAtATime() {
+    func testLabelChangesScaleThroughABlurOneAtATime() {
         var motion = NotchContentMotion()
         motion.labelChanged(from: nil, width: 0, to: "Listening", now: 10)
         XCTAssertTrue(motion.departingLabels.isEmpty)
 
         let arriving = motion.arrivalAppearance(now: 10, reduceMotion: false)
         XCTAssertEqual(arriving.alpha, 0)
-        XCTAssertEqual(NotchContentMotion.labelStyle.axis, .horizontal, "status copy is the one horizontal slide")
-        XCTAssertEqual(RelayMotion.Style.text.axis, .vertical)
-        XCTAssertEqual(arriving.offset, NotchContentMotion.labelStyle.distance)
+        XCTAssertEqual(NotchContentMotion.labelStyle, RelayMotion.Style.text)
+        XCTAssertEqual(arriving.scale, NotchContentMotion.labelStyle.hiddenScale)
         XCTAssertEqual(arriving.blur, NotchContentMotion.labelStyle.blurRadius)
         XCTAssertEqual(
             motion.arrivalAppearance(now: 10 + RelayMotion.enterDuration + 0.001, reduceMotion: false),
@@ -778,7 +777,7 @@ final class NotchStatusPlacementTests: XCTestCase {
         )
         XCTAssertGreaterThan(midway.alpha, 0)
         XCTAssertLessThan(midway.alpha, 1)
-        XCTAssertGreaterThan(midway.offset, 0)
+        XCTAssertLessThan(midway.scale, 1)
         XCTAssertGreaterThan(midway.blur, 0)
         XCTAssertTrue(motion.isAnimating(now: 11.1))
 
@@ -811,7 +810,7 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertEqual(motion.arrivalAppearance(now: 0.1, reduceMotion: true).alpha, 0)
         let arriving = motion.arrivalAppearance(now: RelayMotion.replacementDelay + 0.1, reduceMotion: true)
         XCTAssertGreaterThan(arriving.alpha, 0)
-        XCTAssertEqual(arriving.offset, 0)
+        XCTAssertEqual(arriving.scale, 1)
         XCTAssertEqual(arriving.blur, 0)
         let departing = motion.departureAppearance(
             of: motion.departingLabels[0],
@@ -819,7 +818,7 @@ final class NotchStatusPlacementTests: XCTestCase {
             reduceMotion: true
         )
         XCTAssertLessThan(departing.alpha, 1)
-        XCTAssertEqual(departing.offset, 0)
+        XCTAssertEqual(departing.scale, 1)
         XCTAssertEqual(departing.blur, 0)
         XCTAssertEqual(motion.presenceBlur(now: 0, reduceMotion: true), 0)
     }

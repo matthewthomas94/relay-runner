@@ -3,7 +3,7 @@ import AppKit
 import QuartzCore
 
 /// Eased transitions for the notch's drawn content. Copy crossfades
-/// horizontally through a blur, glyph dots emerge from and retract into the
+/// with scale and blur, glyph dots emerge from and retract into the
 /// core while colours blend, looping glyph motion settles at rest, and the
 /// hover disc fades.
 struct NotchContentMotion {
@@ -30,10 +30,10 @@ struct NotchContentMotion {
 
     struct LabelAppearance: Equatable {
         let alpha: CGFloat
-        let offset: CGFloat
+        let scale: CGFloat
         let blur: CGFloat
 
-        static let resting = LabelAppearance(alpha: 1, offset: 0, blur: 0)
+        static let resting = LabelAppearance(alpha: 1, scale: 1, blur: 0)
     }
 
     struct RenderedDot: Equatable {
@@ -46,13 +46,7 @@ struct NotchContentMotion {
         let index: Int
     }
 
-    /// Status copy (Listening, Playing, …) is the one place text slides
-    /// horizontally; everything else in the app rises and sinks.
-    static let labelStyle = RelayMotion.Style(
-        axis: .horizontal,
-        distance: RelayMotion.Style.text.distance,
-        blurRadius: RelayMotion.Style.text.blurRadius
-    )
+    static let labelStyle = RelayMotion.Style.text
     static let glyphChangeDuration = max(RelayMotion.enterDuration, RelayMotion.changeDuration)
     static let maximumDotSoftness: CGFloat = 1.5
     static let coreCenters = [
@@ -126,7 +120,7 @@ struct NotchContentMotion {
         let style = Self.labelStyle
         return LabelAppearance(
             alpha: alpha,
-            offset: reduceMotion ? 0 : style.distance * hiddenAmount,
+            scale: reduceMotion ? 1 : 1 - (1 - style.hiddenScale) * hiddenAmount,
             blur: reduceMotion ? 0 : style.blurRadius * hiddenAmount
         )
     }
@@ -346,9 +340,16 @@ final class NotchBlurredTextRenderer {
         in rect: NSRect,
         blur: CGFloat,
         alpha: CGFloat,
-        scale: CGFloat
+        scale: CGFloat,
+        contentScale: CGFloat = 1
     ) {
         guard alpha > 0.001, rect.width > 0, rect.height > 0 else { return }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        let context = NSGraphicsContext.current?.cgContext
+        context?.translateBy(x: rect.midX, y: rect.midY)
+        context?.scaleBy(x: contentScale, y: contentScale)
+        context?.translateBy(x: -rect.midX, y: -rect.midY)
         let blurStep = Int((blur * 4).rounded())
         guard blurStep > 0 else {
             var faded = attributes

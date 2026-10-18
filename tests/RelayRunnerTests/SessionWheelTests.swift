@@ -3,6 +3,16 @@ import XCTest
 @testable import relay_runner
 
 final class SessionWheelTests: XCTestCase {
+    func testWorkspaceActionTracksVisibilityAndDoesNotChangeWithSessionHover() {
+        let model = SessionWheelModel()
+        XCTAssertEqual(model.workspaceActionTitle, "Open workspace")
+        model.refresh(sessions: [.init(id: "relay", name: "Relay Runner")])
+        model.hover(at: SessionWheelGeometry.position(slot: 0, radius: 119))
+        XCTAssertEqual(model.workspaceActionTitle, "Open workspace")
+        model.isWorkspaceVisible = true
+        XCTAssertEqual(model.workspaceActionTitle, "Close workspace")
+    }
+
     private let geometry = SessionWheelGeometry.self
     private func session(_ id: String) -> SessionWheelSession { .init(id: id, name: id) }
     private func projects(_ count: Int) -> [SessionWheelProject] {
@@ -351,10 +361,13 @@ final class SessionWheelTests: XCTestCase {
             .enumerated().map { .init(id: "\($0.offset)", name: $0.element, path: "/\($0.offset)") }
         let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
                                     selectCenter: {}, back: {}, dismiss: {})
-        for state in ["sessions", "controls", "play-hover", "recording-controls", "projects", "last-page", "limit"]
+        for state in ["sessions", "workspace-open", "controls", "play-hover", "recording-controls", "projects", "last-page", "limit"]
             + (0..<geometry.slotCount).map({ "contour-\($0)" }) {
             switch state {
-            case "controls": model.hover(at: geometry.position(slot: 0, radius: 119))
+            case "workspace-open": model.isWorkspaceVisible = true
+            case "controls":
+                model.isWorkspaceVisible = false
+                model.hover(at: geometry.position(slot: 0, radius: 119))
             case "play-hover":
                 model.hover(at: geometry.position(slot: 0, radius: geometry.actionRadius, offset: geometry.actionOffset(.message)))
             case "recording-controls":

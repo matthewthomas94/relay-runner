@@ -1309,20 +1309,12 @@ final class NotchStatusController {
         }
 
         panel.stopFrameAnimation()
-        panel.setFrame(placement.retractedFrame, display: false)
+        panel.setFrame(placement.visibleFrame, display: false)
         updateStatusContent()
-        panel.alphaValue = 0
-        panel.orderFrontRegardless()
-
         let duration = animationDuration(RelayMotion.enterDuration)
         pillView.setContentPresence(visible: true, duration: duration)
         pillView.redrawDuringFrameAnimation(duration: duration)
-        panel.animateFrame(to: placement.visibleFrame, duration: duration, curve: RelayMotion.enterCurve)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = RelayMotion.enterCurve.mediaTimingFunction
-            panel.animator().alphaValue = 1
-        }
+        RelayWindowMotion.present(panel, makeKey: false)
     }
 
     private func hide() {
@@ -1332,25 +1324,18 @@ final class NotchStatusController {
         stopCarousel()
 
         guard let panel else { return }
-        let targetFrame = currentPlacement()?.retractedFrame
-            ?? lastPlacement?.retractedFrame
-            ?? panel.frame.offsetBy(dx: 0, dy: 2)
         let duration = animationDuration(RelayMotion.exitDuration)
 
         pillView.setContentPresence(visible: false, duration: duration)
         pillView.redrawDuringFrameAnimation(duration: duration)
-        panel.animateFrame(to: targetFrame, duration: duration, curve: RelayMotion.exitCurve) { [weak self, weak panel] in
+        panel.stopFrameAnimation()
+        RelayWindowMotion.dismiss(panel) { [weak self, weak panel] in
             guard let self,
                   self.placementAnimationGeneration == animationGeneration,
                   !self.active else {
                 return
             }
             panel?.orderOut(nil)
-        }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = RelayMotion.exitCurve.mediaTimingFunction
-            panel.animator().alphaValue = 0
         }
     }
 
@@ -1981,7 +1966,7 @@ final class NotchStatusPillContentView: NSView {
             let appearance = contentMotion.departureAppearance(of: label, now: now, reduceMotion: reduceMotion)
             guard appearance.alpha > 0.001, label.width > 0 else { continue }
             let rect = NSRect(
-                x: leadingInset + appearance.offset,
+                x: leadingInset,
                 y: (bounds.height - NotchActivityLabelRenderPolicy.textHeight) / 2,
                 width: label.width,
                 height: NotchActivityLabelRenderPolicy.textHeight
@@ -1992,7 +1977,8 @@ final class NotchStatusPillContentView: NSView {
                 in: rect,
                 blur: max(appearance.blur, presenceBlur),
                 alpha: appearance.alpha,
-                scale: window?.backingScaleFactor ?? 2
+                scale: window?.backingScaleFactor ?? 2,
+                contentScale: appearance.scale
             )
         }
         NSGraphicsContext.restoreGraphicsState()
@@ -2017,7 +2003,7 @@ final class NotchStatusPillContentView: NSView {
         )
         let arrival = contentMotion.arrivalAppearance(now: now, reduceMotion: reduceMotion)
         let blur = max(arrival.blur, contentMotion.presenceBlur(now: now, reduceMotion: reduceMotion))
-        let isSettled = arrival.offset == 0 && blur == 0
+        let isSettled = arrival.scale == 1 && blur == 0
 
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: isScrolling || isSettled ? textRect : labelTransitionClip()).addClip()
@@ -2040,10 +2026,11 @@ final class NotchStatusPillContentView: NSView {
             NotchBlurredTextRenderer.shared.draw(
                 label,
                 attributes: labelAttributes(isScrolling: false, alpha: 1),
-                in: textRect.offsetBy(dx: arrival.offset, dy: 0),
+                in: textRect,
                 blur: blur,
                 alpha: arrival.alpha,
-                scale: window?.backingScaleFactor ?? 2
+                scale: window?.backingScaleFactor ?? 2,
+                contentScale: arrival.scale
             )
         }
         NSGraphicsContext.restoreGraphicsState()

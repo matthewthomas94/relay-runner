@@ -5,16 +5,15 @@ import CoreImage
 /// Dark solid surface matching the board overlay styling.
 ///
 /// Animation contract:
-///   - Entrance: slide up from below screen + Gaussian blur 48→0 + opacity fade
-///   - Exit: slide down below screen + Gaussian blur 0→48 + opacity fade
+///   - Entrance: expand in place + blur to sharp + opacity fade
+///   - Exit: contract in place + blur + opacity fade
 ///   - State transitions (while visible): blur out → update content → blur in
 ///   - Content updates within same state: smooth in-place resize
-///   - All movement is purely vertical (Y-axis only)
 final class TranscriptionPill: NSView {
     enum MotionStyle {
-        static let exitBlurRadius: CGFloat = 48
+        static let exitBlurRadius = RelayMotion.Style.surface.blurRadius
         static let entranceBlurRadius = exitBlurRadius
-        static let visibilityDuration: TimeInterval = 0.3
+        static let visibilityDuration = RelayMotion.changeDuration
     }
 
     enum DarkSurfaceStyle {
@@ -117,8 +116,8 @@ final class TranscriptionPill: NSView {
     private let springTiming = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
     private let entranceDuration = MotionStyle.visibilityDuration
     private let exitDuration = MotionStyle.visibilityDuration
-    private let transitionBlurDuration: CFTimeInterval = 0.12
-    private let transitionUnblurDuration: CFTimeInterval = 0.4
+    private let transitionBlurDuration: CFTimeInterval = 0.12 * RelayMotion.durationScale
+    private let transitionUnblurDuration: CFTimeInterval = 0.4 * RelayMotion.durationScale
 
     override init(frame: NSRect) {
         titleLabel = NSTextField(labelWithString: "")
@@ -240,7 +239,7 @@ final class TranscriptionPill: NSView {
             showFrontCard(animated: false)
             // Fresh entrance
             applyLayout(width: pillWidth, height: pillHeight, animated: false)
-            slideIn(animated: animated)
+            animateEntrance(animated: animated)
         }
     }
 
@@ -300,7 +299,7 @@ final class TranscriptionPill: NSView {
                 bodyContainer.isHidden = false
             }
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.25
+                ctx.duration = 0.25 * RelayMotion.durationScale
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 bodyContainer.animator().alphaValue = 1
             }
@@ -310,7 +309,7 @@ final class TranscriptionPill: NSView {
             bodyContainer.isHidden = false
             bodyContainer.alphaValue = 1
             applyLayout(width: maxWidth, height: pillHeight, animated: false)
-            slideIn(animated: animated)
+            animateEntrance(animated: animated)
         }
     }
 
@@ -325,22 +324,12 @@ final class TranscriptionPill: NSView {
         guard alphaValue > 0.01 else { return }
 
         if animated {
-            // Blur out + slide down
-            animateBlur(from: 0, to: MotionStyle.exitBlurRadius, duration: exitDuration)
-
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = exitDuration
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-                var exitFrame = frame
-                exitFrame.origin.y = -frame.height - 20
-                animator().frame = exitFrame
-                animator().alphaValue = 0
-            }, completionHandler: { [weak self] in
+            RelayLayerMotion.animateOut(self, style: .surface, duration: exitDuration, hidesWhenDone: false) { [weak self] in
                 guard let self, self.visibilityGeneration == generation else { return }
                 self.resetBlurFilter()
                 self.bodyContainer.isHidden = true
                 self.bodyContainer.alphaValue = 0
-            })
+            }
         } else {
             alphaValue = 0
             showFrontCard(animated: false)
@@ -352,67 +341,32 @@ final class TranscriptionPill: NSView {
     // MARK: - Reply queue
 
     private var frontCardViews: [NSView] { [surfaceContainerView, titleLabel, bodyContainer] }
-    private static let frontCardSink: CGFloat = -24
-
-    /// The finished reply sinks and fades out of the front of the stack;
-    /// the stacked cards and the overlay stay until the next one arrives.
+    /// The finished reply contracts out while the queued cards stay visible.
     func dismissFrontCard() {
         guard alphaValue > 0.01, !isFrontCardDismissed else { return }
         isFrontCardDismissed = true
         visibilityGeneration &+= 1
         cancelBodyScroll()
         cancelContentTransition()
-        let animated = !sharedReduceMotion
         for view in frontCardViews {
-            if animated {
-                let sink = CABasicAnimation(keyPath: "transform.translation.y")
-                sink.fromValue = 0
-                sink.toValue = Self.frontCardSink
-                sink.duration = exitDuration
-                sink.timingFunction = CAMediaTimingFunction(name: .easeIn)
-                sink.fillMode = .forwards
-                sink.isRemovedOnCompletion = false
-                view.layer?.add(sink, forKey: "frontCardMotion")
-            }
-        }
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = animated ? exitDuration : 0
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            for view in frontCardViews { view.animator().alphaValue = 0 }
+            RelayLayerMotion.animateOut(view, duration: sharedReduceMotion ? 0 : exitDuration, hidesWhenDone: false)
         }
     }
 
-    /// The next reply comes down from the stack into the front card.
     private func showFrontCard(animated: Bool) {
         guard isFrontCardDismissed else { return }
         isFrontCardDismissed = false
-        let bodyAlpha: CGFloat = isCompact ? 0 : 1
         for view in frontCardViews {
-            view.layer?.removeAnimation(forKey: "frontCardMotion")
-            guard animated else { continue }
-            let rise = CABasicAnimation(keyPath: "transform.translation.y")
-            rise.fromValue = Self.stackPeek
-            rise.toValue = 0
-            rise.duration = entranceDuration
-            rise.timingFunction = springTiming
-            view.layer?.add(rise, forKey: "frontCardMotion")
-        }
-        guard animated else {
-            surfaceContainerView.alphaValue = 1
-            titleLabel.alphaValue = 1
-            bodyContainer.alphaValue = bodyAlpha
-            return
-        }
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = entranceDuration
-            ctx.timingFunction = springTiming
-            surfaceContainerView.animator().alphaValue = 1
-            titleLabel.animator().alphaValue = 1
-            bodyContainer.animator().alphaValue = bodyAlpha
+            if view === bodyContainer, isCompact {
+                RelayLayerMotion.animateIn(view, duration: 0)
+                view.alphaValue = 0
+                continue
+            }
+            RelayLayerMotion.animateIn(view, duration: animated ? entranceDuration : 0)
         }
     }
 
-    /// Replaces a label's copy, crossfading it horizontally through a blur
+    /// Replaces a label's copy, scaling it through a blur
     /// when the pill is already on screen.
     private func setText(_ text: String, on label: NSTextField, crossfade: Bool) {
         guard label.stringValue != text else { return }
@@ -427,31 +381,14 @@ final class TranscriptionPill: NSView {
 
     // MARK: - Animation: Entrance
 
-    private func slideIn(animated: Bool) {
+    private func animateEntrance(animated: Bool) {
         guard sharedDeparture == nil else { return }
         guard animated else {
-            alphaValue = 1
+            RelayLayerMotion.animateIn(self, style: .surface, duration: 0)
             return
         }
 
-        // Start below the screen edge — no particle hole until pill arrives
-        let targetFrame = frame
-        var startFrame = targetFrame
-        startFrame.origin.y = -targetFrame.height - 20
-        frame = startFrame
-        alphaValue = 0
-
-
-        // Use the exit values in both directions.
-        animateBlur(from: MotionStyle.entranceBlurRadius, to: 0, duration: entranceDuration)
-
-        // Match the exit timing.
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = entranceDuration
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            animator().frame = targetFrame
-            animator().alphaValue = 1
-        })
+        RelayLayerMotion.animateIn(self, style: .surface, duration: entranceDuration)
     }
 
     /// The screen pill and particles consume the same frame of the handoff.
@@ -470,9 +407,10 @@ final class TranscriptionPill: NSView {
         CATransaction.setDisableActions(true)
         setFrameOrigin(NSPoint(
             x: ((superview?.bounds.width ?? frame.width) - frame.width) / 2,
-            y: bottomOffset - (bottomOffset + frame.height + 20) * departure
+            y: bottomOffset
         ))
         alphaValue = 1 - departure
+        applyPresentationScale()
         resetBlurFilter()
         layer?.setValue(reduceMotion ? 0 : blurRadius, forKeyPath: "filters.motionBlur.inputRadius")
         CATransaction.commit()
@@ -480,6 +418,15 @@ final class TranscriptionPill: NSView {
             cancelBodyScroll()
             showFrontCard(animated: false)
         }
+    }
+
+    private func applyPresentationScale() {
+        guard let departure = sharedDeparture, let layer else { return }
+        let scale = sharedReduceMotion ? 1 : 1 - (1 - RelayMotion.Style.surface.hiddenScale) * departure
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.transform = RelayLayerMotion.centeredScale(scale, on: layer)
+        CATransaction.commit()
     }
 
     private func cancelContentTransition() {
@@ -580,13 +527,13 @@ final class TranscriptionPill: NSView {
         bodyLabel.textColor = textColor
     }
 
-    private func applyLayout(width: CGFloat, height: CGFloat, animated: Bool, duration: CFTimeInterval = 0.4) {
+    private func applyLayout(width: CGFloat, height: CGFloat, animated: Bool, duration: CFTimeInterval = 0.4 * RelayMotion.durationScale) {
         guard let superview = superview else { return }
 
         cardSize = NSSize(width: width, height: height)
         let peek = stackPeekHeight
         let x = (superview.bounds.width - width) / 2
-        let y = bottomOffset - (bottomOffset + height + peek + 20) * (sharedDeparture ?? 0)
+        let y = bottomOffset
         // The front card sits at the bottom; stacked cards peek above it.
         let targetFrame = NSRect(x: x, y: y, width: width, height: height + peek)
         let targetBounds = NSRect(x: 0, y: 0, width: width, height: height)
@@ -620,6 +567,9 @@ final class TranscriptionPill: NSView {
 
         layoutLabels(targetBounds: targetBounds, animated: animated, duration: duration)
         layoutStackCards(animated: animated && alphaValue > 0.01, duration: duration)
+        // AppKit can reset the backing transform when the pill's frame changes.
+        // Reapply the shared scale around the new bounds after laying out content.
+        applyPresentationScale()
     }
 
     // MARK: - Reply stack
@@ -642,42 +592,53 @@ final class TranscriptionPill: NSView {
 
     private var stackPeekHeight: CGFloat { CGFloat(visibleStackDepth) * Self.stackPeek }
 
-    /// Each card rises from behind the reply into its peek, fading and
-    /// unblurring; a leaving card sinks back behind it the same way.
+    /// Cards expand and sharpen at their peek position, then contract and
+    /// blur there when leaving. Layout changes keep the stack anchored.
     private func layoutStackCards(animated: Bool, duration: CFTimeInterval) {
         let depth = visibleStackDepth
         for (index, card) in stackCards.enumerated() {
             let inset = Self.stackInsets[index]
             let shown = index < depth
-            let rest = NSRect(
+            let target = NSRect(
                 x: inset,
-                y: 0,
+                y: CGFloat(index + 1) * Self.stackPeek,
                 width: max(0, cardSize.width - inset * 2),
                 height: cardSize.height
             )
-            var target = rest
-            if shown { target.origin.y = CGFloat(index + 1) * Self.stackPeek }
             let wasShown = !card.isHidden && card.alphaValue > 0.01
             let alpha: CGFloat = shown ? Self.stackAlphas[index] : 0
             guard animated, shown != wasShown || card.frame != target else {
                 card.frame = target
                 card.alphaValue = alpha
                 card.isHidden = !shown
+                card.layer?.removeAnimation(forKey: "stackScale")
+                card.layer?.removeAnimation(forKey: "stackBlur")
+                card.layer?.transform = CATransform3DIdentity
                 card.layer?.setValue(0, forKeyPath: "filters.stackBlur.inputRadius")
                 continue
             }
             if shown && !wasShown {
-                card.frame = rest
+                card.frame = target
                 card.alphaValue = 0
                 card.isHidden = false
             }
-            if shown != wasShown {
+            if shown != wasShown, let layer = card.layer {
+                let hidden = RelayLayerMotion.centeredScale(RelayMotion.Style.surface.hiddenScale, on: layer)
+                let scale = CABasicAnimation(keyPath: "transform")
+                scale.fromValue = layer.animation(forKey: "stackScale") != nil
+                    ? layer.presentation()?.transform ?? layer.transform
+                    : (shown ? hidden : CATransform3DIdentity)
+                scale.toValue = shown ? CATransform3DIdentity : hidden
+                scale.duration = duration
+                scale.timingFunction = springTiming
+                layer.transform = shown ? CATransform3DIdentity : hidden
+                layer.add(scale, forKey: "stackScale")
                 let blur = CABasicAnimation(keyPath: "filters.stackBlur.inputRadius")
                 blur.fromValue = shown ? 12 : 0
                 blur.toValue = shown ? 0 : 12
                 blur.duration = duration
                 blur.timingFunction = springTiming
-                card.layer?.add(blur, forKey: "stackBlur")
+                layer.add(blur, forKey: "stackBlur")
             }
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = duration
@@ -698,7 +659,7 @@ final class TranscriptionPill: NSView {
         borderLayer.frame = bounds
     }
 
-    private func layoutLabels(targetBounds: NSRect, animated: Bool, duration: CFTimeInterval = 0.4) {
+    private func layoutLabels(targetBounds: NSRect, animated: Bool, duration: CFTimeInterval = 0.4 * RelayMotion.durationScale) {
         let contentWidth = targetBounds.width - currentPadH * 2
         let titleHeight = titleLabel.sizeThatFits(NSSize(width: contentWidth, height: .greatestFiniteMagnitude)).height
 

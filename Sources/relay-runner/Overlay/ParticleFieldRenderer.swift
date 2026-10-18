@@ -97,7 +97,7 @@ final class ParticleFieldRenderer {
     /// Screen fields crossfade from the theme they were showing.
     private var previousTheme: Theme?
     private var themeChangedAt: CFTimeInterval = 0
-    static let themeCrossfadeDuration: TimeInterval = 0.45
+    static let themeCrossfadeDuration: TimeInterval = 0.45 * RelayMotion.durationScale
 
     private let spacing: CGFloat = 8
     private let maxDotRadius: CGFloat = 3
@@ -169,10 +169,10 @@ final class ParticleFieldRenderer {
     private func applyPresentation() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        particleLayer.frame = CGRect(
-            x: 0, y: -fieldSize.height * departure,
-            width: fieldSize.width, height: fieldSize.height
-        )
+        particleLayer.transform = CATransform3DIdentity
+        particleLayer.frame = CGRect(origin: .zero, size: fieldSize)
+        let scale = reduceMotion ? 1 : 1 - (1 - RelayMotion.Style.surface.hiddenScale) * departure
+        particleLayer.transform = RelayLayerMotion.centeredScale(scale, on: particleLayer)
         particleLayer.opacity = currentTheme == nil ? 0 : Float(intensityMultiplier * (1 - departure))
         gradientLayer.opacity = currentTheme == nil ? 0 : Float(intensityMultiplier * (1 - departure))
         if currentTheme != nil, !reduceMotion, departure > 0, departure < 1, blurRadius > 0 {

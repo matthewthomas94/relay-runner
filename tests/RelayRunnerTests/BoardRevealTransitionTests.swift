@@ -70,10 +70,10 @@ final class BoardRevealTransitionTests: XCTestCase {
 
     func testWorkspaceFirstMotionBudgetIsSeparateFromRevealDuration() {
         XCTAssertEqual(BoardRevealTransitionTiming.firstMotionBudget, 0.10)
-        XCTAssertEqual(BoardRevealTransitionTiming.expandToFullWidthDuration, 0.24)
-        XCTAssertEqual(BoardRevealTransitionTiming.expandDuration, 0.34)
-        XCTAssertEqual(BoardRevealTransitionTiming.contentRevealDuration, 0.38)
-        XCTAssertEqual(BoardRevealTransitionTiming.revealAnimationDuration, 0.96, accuracy: 0.001)
+        XCTAssertEqual(BoardRevealTransitionTiming.expandToFullWidthDuration, 0.24 * 0.75)
+        XCTAssertEqual(BoardRevealTransitionTiming.expandDuration, 0.34 * 0.75)
+        XCTAssertEqual(BoardRevealTransitionTiming.contentRevealDuration, 0.38 * 0.75)
+        XCTAssertEqual(BoardRevealTransitionTiming.revealAnimationDuration, 0.96 * 0.75, accuracy: 0.001)
         XCTAssertGreaterThan(BoardRevealTransitionTiming.revealAnimationDuration, 0.30)
     }
 
@@ -113,7 +113,7 @@ final class BoardRevealTransitionTests: XCTestCase {
         XCTAssertFalse(value.isAnimating)
     }
 
-    func testWorkspaceContentRisesSharpensAndSinksWithoutKeepingItsBlur() throws {
+    func testWorkspaceContentScalesAndSharpensWithoutKeepingItsBlur() throws {
         let frame = CGRect(x: 0, y: 0, width: 1_200, height: 700)
         let panel = BoardOverlayPanel()
         panel.setFrame(frame, display: false)
@@ -140,11 +140,11 @@ final class BoardRevealTransitionTests: XCTestCase {
                 to: rootLayer
             )
         }
-        func yOffsetAnimation() -> (from: Double, to: Double)? {
-            guard let animation = contentLayer.animation(forKey: "boardRevealContentYOffset") as? CABasicAnimation,
-                  let from = animation.fromValue as? NSNumber,
-                  let to = animation.toValue as? NSNumber else { return nil }
-            return (from.doubleValue, to.doubleValue)
+        func scaleAnimation() -> (from: CGFloat, to: CGFloat)? {
+            guard let animation = contentLayer.animation(forKey: "boardRevealContentScale") as? CABasicAnimation,
+                  let from = animation.fromValue as? NSValue,
+                  let to = animation.toValue as? NSValue else { return nil }
+            return (from.caTransform3DValue.m11, to.caTransform3DValue.m11)
         }
         let reduceMotion = RelayLayerMotion.reduceMotion
 
@@ -156,8 +156,8 @@ final class BoardRevealTransitionTests: XCTestCase {
         container.setLoading(false)
         XCTAssertFalse(contentContainer.isHidden)
         XCTAssertEqual(hasRelayBlurFilter(contentLayer), !reduceMotion, "Content sharpens as it arrives")
-        let rise = try XCTUnwrap(yOffsetAnimation())
-        XCTAssertEqual(rise.to, 0)
+        let rise = try XCTUnwrap(scaleAnimation())
+        XCTAssertEqual(rise.to, 1)
         // The content waits for the loading label to finish leaving.
         waitForAnimations(RelayMotion.replacementDelay + BoardRevealTransitionTiming.contentRevealDuration + 0.25)
 
@@ -171,20 +171,13 @@ final class BoardRevealTransitionTests: XCTestCase {
 
         XCTAssertTrue(contentContainer.isHidden)
         XCTAssertFalse(hasRelayBlurFilter(contentLayer))
-        let sink = try XCTUnwrap(yOffsetAnimation())
-        XCTAssertEqual(sink.from, 0)
-        XCTAssertEqual(sink.to, rise.from, "Content leaves to the offset it arrived from")
-        let sunkCenter = contentCenter()
-        if reduceMotion {
-            XCTAssertEqual(rise.from, 0)
-            XCTAssertEqual(sunkCenter.y, restingCenter.y, accuracy: 0.5)
-        } else {
-            XCTAssertGreaterThan(rise.from, 0)
-            let sitsBelowOnScreen = rootLayer.isGeometryFlipped
-                ? sunkCenter.y > restingCenter.y
-                : sunkCenter.y < restingCenter.y
-            XCTAssertTrue(sitsBelowOnScreen, "The hidden offset is below on screen: content rises in and sinks out")
-        }
+        let sink = try XCTUnwrap(scaleAnimation())
+        XCTAssertEqual(sink.from, 1)
+        XCTAssertEqual(sink.to, rise.from, "Content contracts to the scale it arrived from")
+        let hiddenCenter = contentCenter()
+        XCTAssertEqual(hiddenCenter.x, restingCenter.x, accuracy: 0.5)
+        XCTAssertEqual(hiddenCenter.y, restingCenter.y, accuracy: 0.5)
+        XCTAssertEqual(rise.from, reduceMotion ? 1 : RelayMotion.Style.surface.hiddenScale)
     }
 
     func testUpdateCheckLoaderFillsTheExpandedSurfaceAndLeavesOnceLoaded() throws {
@@ -233,10 +226,10 @@ final class BoardRevealTransitionTests: XCTestCase {
 
     func testWorkspaceFirstMotionBudgetIsSeparateFromDismissDuration() {
         XCTAssertEqual(BoardRevealTransitionTiming.firstMotionBudget, 0.10)
-        XCTAssertEqual(BoardRevealTransitionTiming.contentHideDuration, 0.22)
-        XCTAssertEqual(BoardRevealTransitionTiming.dismissToFullWidthDuration, 0.24)
-        XCTAssertEqual(BoardRevealTransitionTiming.compactDuration, 0.22)
-        XCTAssertEqual(BoardRevealTransitionTiming.dismissAnimationDuration, 0.68, accuracy: 0.001)
+        XCTAssertEqual(BoardRevealTransitionTiming.contentHideDuration, 0.22 * 0.75)
+        XCTAssertEqual(BoardRevealTransitionTiming.dismissToFullWidthDuration, 0.24 * 0.75)
+        XCTAssertEqual(BoardRevealTransitionTiming.compactDuration, 0.22 * 0.75)
+        XCTAssertEqual(BoardRevealTransitionTiming.dismissAnimationDuration, 0.68 * 0.75, accuracy: 0.001)
         XCTAssertGreaterThan(BoardRevealTransitionTiming.dismissAnimationDuration, 0.25)
     }
 

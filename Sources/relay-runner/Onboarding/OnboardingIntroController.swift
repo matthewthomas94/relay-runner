@@ -157,16 +157,15 @@ enum OnboardingPromptTiming {
 }
 
 enum OnboardingPostTitleTransition {
-    static let fadeOutDuration: TimeInterval = 0.24
-    static let fadeInDuration: TimeInterval = 0.24
+    static let fadeOutDuration: TimeInterval = 0.24 * RelayMotion.durationScale
+    static let fadeInDuration: TimeInterval = 0.24 * RelayMotion.durationScale
     /// The copy rests off screen for a beat between phrases.
     static let swapGap: TimeInterval = RelayMotion.replacementGap
     static let blurRadius: CGFloat = 6
-    /// Whole onboarding pages sink out and rise in by a surface's distance
+    /// Whole onboarding pages contract and expand like other surfaces
     /// while blurring as far as the hero copy does between phrases.
     static let contentStyle = RelayMotion.Style(
-        axis: .vertical,
-        distance: RelayMotion.Style.surface.distance,
+        hiddenScale: RelayMotion.Style.surface.hiddenScale,
         blurRadius: blurRadius
     )
 
@@ -573,8 +572,8 @@ struct OnboardingPromptTransitionQueue: Equatable {
 
 enum OnboardingFlowMotion {
     static let surfaceTransitionDuration = RelayMotion.replacementDelay + RelayMotion.enterDuration
-    static let contentTransitionDuration: TimeInterval = 0.42
-    static let controlsRevealDuration: TimeInterval = 0.36
+    static let contentTransitionDuration: TimeInterval = 0.42 * RelayMotion.durationScale
+    static let controlsRevealDuration: TimeInterval = 0.36 * RelayMotion.durationScale
     static let completedStepHold: TimeInterval = 0.85
 
     static var contentAnimation: Animation {
@@ -596,11 +595,11 @@ enum OnboardingIntroTextLayout {
         return (referenceTextTop + lineHeight + 54) * scale
     }
 
-    /// Hero copy sinks as it fades out and rises back as the next phrase
-    /// fades in, matching the vertical travel of every other text swap.
-    static func swapDrift(forOpacity opacity: CGFloat, reduceMotion: Bool) -> CGFloat {
-        guard !reduceMotion else { return 0 }
-        return (1 - min(max(opacity, 0), 1)) * RelayMotion.Style.text.distance
+    /// Hero copy contracts as it fades out and expands as the next phrase
+    /// fades in, matching every other text swap.
+    static func swapScale(forOpacity opacity: CGFloat, reduceMotion: Bool) -> CGFloat {
+        guard !reduceMotion else { return 1 }
+        return 1 - (1 - min(max(opacity, 0), 1)) * (1 - RelayMotion.Style.text.hiddenScale)
     }
 
     static func drawRect(
@@ -1199,8 +1198,8 @@ final class OnboardingIntroRootView: NSView {
             return
         }
 
-        // The outgoing page blurs, fades, and sinks; the incoming page then
-        // sharpens, fades in, and rises. Reduce Motion keeps only the fades.
+        // The outgoing page blurs, fades, and contracts; the incoming page then
+        // sharpens, fades in, and expands. Reduce Motion keeps only the fades.
         contentTransitionInProgress = true
         view.alphaValue = 0
         let style = OnboardingPostTitleTransition.contentStyle
@@ -1585,7 +1584,7 @@ private final class OnboardingIntroPromptSurfaceView: NSView {
         }
     }
 
-    /// Lets the current controls blur, fade, and sink away from a still copy
+    /// Lets the current controls blur, fade, and contract away from a still copy
     /// while the live hosting view is hidden immediately for the next step.
     private func dismissControls() {
         guard controlsVisible, !hostingView.isHidden, hostingView.alphaValue > 0.01,
@@ -2182,10 +2181,16 @@ private final class OnboardingIntroTextView: NSView {
             reserveWidth: reserveWidth,
             visibleWidth: visibleText.size(withAttributes: attributes).width
         )
-        let drift = OnboardingIntroTextLayout.swapDrift(
+        let textScale = OnboardingIntroTextLayout.swapScale(
             forOpacity: timelineFrame.textOpacity,
             reduceMotion: RelayLayerMotion.reduceMotion
         )
-        attributedText.draw(in: drawRect.offsetBy(dx: 0, dy: drift))
+        NSGraphicsContext.saveGraphicsState()
+        let context = NSGraphicsContext.current?.cgContext
+        context?.translateBy(x: drawRect.midX, y: drawRect.midY)
+        context?.scaleBy(x: textScale, y: textScale)
+        context?.translateBy(x: -drawRect.midX, y: -drawRect.midY)
+        attributedText.draw(in: drawRect)
+        NSGraphicsContext.restoreGraphicsState()
     }
 }

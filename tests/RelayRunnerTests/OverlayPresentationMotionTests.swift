@@ -14,15 +14,15 @@ final class OverlayPresentationMotionTests: XCTestCase {
                 } else {
                     scene.state.handleServiceEvent(source: "tts", newState: "speaking", text: "Response.")
                 }
-                for time in [0.0, 0.15, 0.31, 0.46, 0.62] {
+                for time in [0.0, VoiceOverlayMotion.travelDuration / 2, 0.31, 0.46, 0.62] {
                     scene.step(time)
                     assertAligned(scene)
-                    if time == 0.15 { XCTAssertEqual(scene.pill.alphaValue, 0.5, accuracy: 0.001) }
+                    if time == VoiceOverlayMotion.travelDuration / 2 { XCTAssertEqual(scene.pill.alphaValue, 0.5, accuracy: 0.001) }
                 }
                 XCTAssertEqual(scene.pill.alphaValue, 1)
                 scene.state.reset()
                 scene.step(1)
-                scene.step(1.15)
+                scene.step(1 + VoiceOverlayMotion.travelDuration / 2)
                 assertAligned(scene)
                 XCTAssertEqual(scene.pill.alphaValue, 0.5, accuracy: 0.001)
                 scene.step(1.31)
@@ -87,7 +87,7 @@ final class OverlayPresentationMotionTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.6))
         assertAligned(scene)
         XCTAssertEqual(scene.pill.alphaValue, 0)
-        XCTAssertLessThan(scene.pill.frame.maxY, 0)
+        XCTAssertEqual(scene.pill.frame.minY, 56, accuracy: 0.001)
         XCTAssertNil(scene.pill.layer?.animation(forKey: "motionBlurAnim"))
     }
 
@@ -104,14 +104,14 @@ final class OverlayPresentationMotionTests: XCTestCase {
         defer { reduced.stop() }
         reduced.state.updateSTT(isRecording: true, partial: "")
         reduced.controller.applyPresentation(reduced.state, now: 0, reduceMotion: true)
-        assertAligned(reduced)
+        assertAligned(reduced, reduceMotion: true)
         XCTAssertEqual(reduced.pill.alphaValue, 1)
         reduced.state.updateSTT(isRecording: true, partial: "Reduced motion transcription")
         reduced.controller.applyPresentation(reduced.state, now: 0.1, reduceMotion: true)
         XCTAssertNil(reduced.pill.layer?.animation(forKey: "motionBlurAnim"))
         reduced.state.setCancelled()
         reduced.controller.applyPresentation(reduced.state, now: 0.2, reduceMotion: true)
-        assertAligned(reduced)
+        assertAligned(reduced, reduceMotion: true)
         XCTAssertEqual(reduced.pill.alphaValue, 0)
     }
 
@@ -207,13 +207,15 @@ final class OverlayPresentationMotionTests: XCTestCase {
         XCTAssertFalse(scene.pill.isFrontCardDismissed)
     }
 
-    private func assertAligned(_ scene: Scene, file: StaticString = #filePath, line: UInt = #line) {
+    private func assertAligned(_ scene: Scene, reduceMotion: Bool = false, file: StaticString = #filePath, line: UInt = #line) {
         let departure = scene.motion.overlayDeparture
         XCTAssertEqual(scene.motion.pillDeparture, departure, accuracy: 0.001, file: file, line: line)
         XCTAssertEqual(scene.pill.alphaValue, 1 - departure, accuracy: 0.001, file: file, line: line)
         XCTAssertEqual(CGFloat(scene.particles.opacity), 0.6 * (1 - departure), accuracy: 0.001, file: file, line: line)
-        let pillDeparture = (56 - scene.pill.frame.minY) / (scene.pill.frame.height + 76)
-        XCTAssertEqual(pillDeparture, departure, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(scene.pill.frame.minY, 56, accuracy: 0.001, file: file, line: line)
+        let scale = reduceMotion ? 1 : 1 - (1 - RelayMotion.Style.surface.hiddenScale) * departure
+        XCTAssertEqual(scene.pill.layer?.transform.m11 ?? 0, scale, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(scene.particles.transform.m11, scale, accuracy: 0.001, file: file, line: line)
     }
 
     private final class Scene {

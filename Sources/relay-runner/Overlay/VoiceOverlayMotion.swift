@@ -24,7 +24,7 @@ final class VoiceOverlayMotion {
             departingTheme = theme
         }
         overlayTravel.move(to: theme == nil ? 1 : 0, immediately: reduceMotion, now: now)
-        // Keep rendering the last theme until it is below the screen.
+        // Keep rendering the last theme until it has faded away.
         if theme == nil, overlayTravel.value == 1 { departingTheme = nil }
         // Pill-only notices still work when screen particles are disabled.
         pillTravel.move(to: (showsPill ?? (theme != nil)) ? 0 : 1,

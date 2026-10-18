@@ -2530,7 +2530,7 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.phraseHold, 1.0)
         XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.finalPhraseHold, 1.4)
         XCTAssertEqual(OnboardingIntroTimeline.dotFieldTravel, 4.0, accuracy: 0.001)
-        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 8.5)
+        XCTAssertGreaterThanOrEqual(OnboardingIntroTimeline.duration, 8.0)
         XCTAssertLessThanOrEqual(OnboardingIntroTimeline.duration, 9.0)
         XCTAssertGreaterThanOrEqual(OnboardingPromptTransitionTimeline.initialHold, 0.35)
         XCTAssertGreaterThanOrEqual(OnboardingPromptTransitionTimeline.finalHold, 0.30)
@@ -2539,7 +2539,7 @@ final class OnboardingIntroTests: XCTestCase {
             RelayMotion.exitDuration + RelayMotion.replacementGap + RelayMotion.enterDuration,
             accuracy: 0.0001
         )
-        XCTAssertGreaterThanOrEqual(OnboardingFlowMotion.controlsRevealDuration, 0.35)
+        XCTAssertEqual(OnboardingFlowMotion.controlsRevealDuration, 0.27, accuracy: 0.001)
         XCTAssertGreaterThan(
             OnboardingFlowMotion.completedStepHold,
             OnboardingFlowMotion.surfaceTransitionDuration
@@ -2550,10 +2550,10 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(contentStyle.blurRadius, OnboardingPostTitleTransition.blurRadius)
         XCTAssertEqual(contentStyle.blur(hidden: true, reduceMotion: true), 0)
         XCTAssertEqual(
-            contentStyle.offset(hidden: true, reduceMotion: false),
-            CGSize(width: 0, height: RelayMotion.Style.surface.distance)
+            contentStyle.scale(hidden: true, reduceMotion: false),
+            RelayMotion.Style.surface.hiddenScale
         )
-        XCTAssertEqual(contentStyle.offset(hidden: true, reduceMotion: true), .zero)
+        XCTAssertEqual(contentStyle.scale(hidden: true, reduceMotion: true), 1)
     }
 
     func testRuntimeContentAnimationUsesSharedCurveAndReduceMotionCrossfade() {
@@ -2572,18 +2572,18 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(OnboardingIntroWhiteActionButton.hoverAnimation, RelayMotion.hover)
     }
 
-    func testHeroCopySinksAndRisesOnlyWhileFading() {
-        XCTAssertEqual(OnboardingIntroTextLayout.swapDrift(forOpacity: 1, reduceMotion: false), 0)
+    func testHeroCopyContractsAndExpandsOnlyWhileFading() {
+        XCTAssertEqual(OnboardingIntroTextLayout.swapScale(forOpacity: 1, reduceMotion: false), 1)
         XCTAssertEqual(
-            OnboardingIntroTextLayout.swapDrift(forOpacity: 0, reduceMotion: false),
-            RelayMotion.Style.text.distance
+            OnboardingIntroTextLayout.swapScale(forOpacity: 0, reduceMotion: false),
+            RelayMotion.Style.text.hiddenScale
         )
         XCTAssertEqual(
-            OnboardingIntroTextLayout.swapDrift(forOpacity: 0.5, reduceMotion: false),
-            RelayMotion.Style.text.distance / 2,
+            OnboardingIntroTextLayout.swapScale(forOpacity: 0.5, reduceMotion: false),
+            (1 + RelayMotion.Style.text.hiddenScale) / 2,
             accuracy: 0.001
         )
-        XCTAssertEqual(OnboardingIntroTextLayout.swapDrift(forOpacity: 0, reduceMotion: true), 0)
+        XCTAssertEqual(OnboardingIntroTextLayout.swapScale(forOpacity: 0, reduceMotion: true), 1)
 
         let source = "Preparing Codex /"
         let target = "Codex is ready /"
@@ -2593,9 +2593,9 @@ final class OnboardingIntroTests: XCTestCase {
             to: target,
             at: fadeStart + OnboardingPostTitleTransition.fadeOutDuration / 2
         )
-        XCTAssertGreaterThan(
-            OnboardingIntroTextLayout.swapDrift(forOpacity: outgoing.textOpacity, reduceMotion: false),
-            0
+        XCTAssertLessThan(
+            OnboardingIntroTextLayout.swapScale(forOpacity: outgoing.textOpacity, reduceMotion: false),
+            1
         )
     }
 

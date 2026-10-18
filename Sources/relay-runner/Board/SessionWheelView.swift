@@ -117,7 +117,7 @@ struct SessionWheelView: View {
                         }
                     }
                     Text(title)
-                        .font(AppTypography.font(.controlHeading))
+                        .font(AppTypography.font(.action, size: 11))
                         .lineLimit(2).multilineTextAlignment(.center)
                         .frame(width: 90, height: 30, alignment: .top)
                 }
@@ -196,10 +196,10 @@ struct SessionWheelView: View {
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .control, isHovered: hubHovered, reduceMotion: reduceMotion
         )
-        let title = model.hoveredSession?.name ?? "Sessions"
+        let title = model.workspaceActionTitle
         let detail = model.pickingProject
             ? model.notice ?? model.startUnavailableReason ?? (model.projects.isEmpty ? "No projects to start" : model.projectPage > 0 ? "Previous projects" : "Back to sessions")
-            : hubDetail
+            : model.notice ?? model.startUnavailableReason ?? ""
         return Button(action: selectCenter) {
             ZStack {
                 if model.pickingProject {
@@ -216,12 +216,14 @@ struct SessionWheelView: View {
                     VStack(spacing: 5) {
                         RelaySwap(title, style: .text) { title in
                             Text(title)
-                                .font(AppTypography.font(.projectTitle)).lineLimit(2)
+                                .font(AppTypography.font(.action, size: 13)).lineLimit(2)
                         }
-                        RelaySwap(detail, style: .text) { detail in
-                            Text(detail)
-                                .font(AppTypography.font(.caption)).lineLimit(3)
-                                .foregroundStyle(ProgramBoardStyle.mutedText)
+                        if !detail.isEmpty {
+                            RelaySwap(detail, style: .text) { detail in
+                                Text(detail)
+                                    .font(AppTypography.font(.caption)).lineLimit(3)
+                                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                            }
                         }
                     }
                     .multilineTextAlignment(.center)
@@ -234,8 +236,8 @@ struct SessionWheelView: View {
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(model.pickingProject ? (model.projectPage > 0 ? "Previous projects" : "Back to sessions") : "Toggle Workspace")
-        .help(model.pickingProject ? detail : "Show or hide Workspace")
+        .accessibilityLabel(model.pickingProject ? (model.projectPage > 0 ? "Previous projects" : "Back to sessions") : title)
+        .help(model.pickingProject ? detail : title)
         .onHover { hubHovered = $0 }
     }
 
@@ -252,16 +254,6 @@ struct SessionWheelView: View {
             if contrast == .increased { shape.stroke(.white.opacity(0.55), lineWidth: 1) }
         }
         .animation(presentation.animation, value: presentation)
-    }
-
-    private var hubDetail: String {
-        if let notice = model.notice { return notice }
-        if let session = model.hoveredSession {
-            return model.hoveredAction?.title(for: session) ?? (session.isRecording ? "Recording" : "Move outward")
-        }
-        if let reason = model.startUnavailableReason { return reason }
-        if model.hoveredSlot != nil { return "Choose a project" }
-        return "Hover to control"
     }
 
     private func initials(_ name: String) -> String {

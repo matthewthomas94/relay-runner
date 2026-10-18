@@ -93,7 +93,7 @@ enum ProgramWorkspaceModalMotion {
         RelayMotion.change(reduceMotion: reduceMotion)
     }
 
-    /// Modal panels rise in and sink out. A leaving modal stops taking clicks
+    /// Modal panels expand in and contract out. A leaving modal stops taking clicks
     /// so its click catcher never swallows the next click on the board. A
     /// modal that takes the place of another one (ticket detail to edit and
     /// back) arrives only once the outgoing modal has left.
@@ -1900,7 +1900,7 @@ private struct ProgramDropIndicator: View {
             .frame(height: ProgramBoardLayout.dropIndicatorHeight)
             .padding(.horizontal, 4)
             .padding(.bottom, ProgramBoardLayout.dropIndicatorBottomPadding)
-            .animation(.easeOut(duration: 0.10), value: target)
+            .animation(.easeOut(duration: 0.10 * RelayMotion.durationScale), value: target)
             .help(target?.isValid == false ? "Cannot drop this ticket here" : "Drop ticket here")
     }
 

@@ -286,6 +286,25 @@ final class TranscriptionPillScrollTests: XCTestCase {
         XCTAssertEqual(mounted.pill.frame.height, compactHeight, accuracy: 0.01)
     }
 
+    func testReplyStackScalesAtItsPeekPositionInBothDirections() throws {
+        let mounted = mountLongPill()
+        defer { mounted.close() }
+        mounted.pill.setStackDepth(1)
+        let card = try XCTUnwrap(mounted.pill.subviews.first {
+            $0.layer?.animation(forKey: "stackScale") != nil
+        })
+        let entrance = try XCTUnwrap(card.layer?.animation(forKey: "stackScale") as? CABasicAnimation)
+        let contracted = try XCTUnwrap((entrance.fromValue as? NSValue)?.caTransform3DValue)
+        XCTAssertEqual(contracted.m11, RelayMotion.Style.surface.hiddenScale, accuracy: 0.001)
+        XCTAssertEqual(card.frame.minY, TranscriptionPill.stackPeek, accuracy: 0.001)
+
+        mounted.pill.setStackDepth(0)
+        let exit = try XCTUnwrap(card.layer?.animation(forKey: "stackScale") as? CABasicAnimation)
+        let hidden = try XCTUnwrap((exit.toValue as? NSValue)?.caTransform3DValue)
+        XCTAssertEqual(hidden.m11, RelayMotion.Style.surface.hiddenScale, accuracy: 0.001)
+        XCTAssertEqual(card.frame.minY, TranscriptionPill.stackPeek, accuracy: 0.001)
+    }
+
     func testNewMessageResetsToTopAndNonScrollableStatesPassThrough() throws {
         let mounted = mountLongPill()
         defer { mounted.close() }

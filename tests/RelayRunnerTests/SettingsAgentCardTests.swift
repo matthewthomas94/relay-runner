@@ -39,7 +39,7 @@ final class SettingsAgentCardTests: XCTestCase {
         ), "No active session")
     }
 
-    func testOverlayTranslationSurvivesResizeAndKeepsExitPixelsVisible() throws {
+    func testOverlayReducedMotionStaysAnchoredWhileFadingAndResizing() throws {
         for theme in [ParticleFieldRenderer.Theme.stt, .tts] {
             let host = NSView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
             host.wantsLayer = true
@@ -47,22 +47,22 @@ final class SettingsAgentCardTests: XCTestCase {
             renderer.attach(to: host)
             renderer.setDeparture(1)
             renderer.transition(to: theme, reduceMotion: true)
-            XCTAssertEqual(renderer.renderedParticleFrame.maxY, 0, accuracy: 0.001)
+            XCTAssertEqual(renderer.renderedParticleFrame.minY, 0, accuracy: 0.001)
             let gradient = try XCTUnwrap(host.layer?.sublayers?.first)
             let particles = try XCTUnwrap(host.layer?.sublayers?.last)
             XCTAssertEqual(gradient.opacity, 0)
 
             renderer.setDeparture(0.5)
-            XCTAssertEqual(renderer.renderedParticleFrame.minY, -132, accuracy: 0.001)
+            XCTAssertEqual(renderer.renderedParticleFrame.minY, 0, accuracy: 0.001)
             XCTAssertEqual(particles.opacity, 0.3, accuracy: 0.001)
             XCTAssertEqual(gradient.opacity, 0.3, accuracy: 0.001)
             renderer.setIntensity(0.8)
             XCTAssertEqual(particles.opacity, 0.4, accuracy: 0.001)
             XCTAssertEqual(gradient.opacity, 0.4, accuracy: 0.001)
             renderer.layoutInBounds(CGRect(x: 0, y: 0, width: 1200, height: 900), backingScale: 2)
-            XCTAssertEqual(renderer.renderedParticleFrame.minY, -198, accuracy: 0.001)
+            XCTAssertEqual(renderer.renderedParticleFrame.minY, 0, accuracy: 0.001)
             renderer.setDeparture(1)
-            XCTAssertEqual(renderer.renderedParticleFrame.maxY, 0, accuracy: 0.001)
+            XCTAssertEqual(renderer.renderedParticleFrame.minY, 0, accuracy: 0.001)
             renderer.transition(to: nil)
             XCTAssertEqual(particles.opacity, 0)
             XCTAssertEqual(gradient.opacity, 0)
@@ -84,7 +84,7 @@ final class SettingsAgentCardTests: XCTestCase {
                 renderer.setDeparture(0.5, blurRadius: TranscriptionPill.MotionStyle.entranceBlurRadius / 2)
                 let entranceBlur = try XCTUnwrap(particles.filters?.first as? CIFilter)
                 XCTAssertEqual(entranceBlur.name, "motionBlur")
-                XCTAssertEqual(entranceBlur.value(forKey: kCIInputRadiusKey) as? CGFloat, 24)
+                XCTAssertEqual(entranceBlur.value(forKey: kCIInputRadiusKey) as? CGFloat, TranscriptionPill.MotionStyle.exitBlurRadius / 2)
                 XCTAssertEqual(particles.opacity, 0.3, accuracy: 0.001)
                 XCTAssertNil(host.layer?.filters)
 
@@ -97,7 +97,7 @@ final class SettingsAgentCardTests: XCTestCase {
 
                 renderer.setDeparture(0.5, blurRadius: TranscriptionPill.MotionStyle.exitBlurRadius / 2)
                 let exitBlur = try XCTUnwrap(particles.filters?.first as? CIFilter)
-                XCTAssertEqual(exitBlur.value(forKey: kCIInputRadiusKey) as? CGFloat, 24)
+                XCTAssertEqual(exitBlur.value(forKey: kCIInputRadiusKey) as? CGFloat, TranscriptionPill.MotionStyle.exitBlurRadius / 2)
                 XCTAssertEqual(particles.opacity, 0.3, accuracy: 0.001)
                 renderer.setDeparture(1, blurRadius: TranscriptionPill.MotionStyle.exitBlurRadius)
                 XCTAssertEqual(particles.opacity, 0)
@@ -117,11 +117,11 @@ final class SettingsAgentCardTests: XCTestCase {
     func testOverlayMotionReversesContinuouslyAndRetainsItsDepartingTheme() {
         let motion = VoiceOverlayMotion()
         XCTAssertEqual(motion.update(theme: .tts, reduceMotion: false, now: 10), .tts)
-        _ = motion.update(theme: .tts, reduceMotion: false, now: 10.15)
+        _ = motion.update(theme: .tts, reduceMotion: false, now: 10 + VoiceOverlayMotion.travelDuration / 2)
         XCTAssertEqual(motion.overlayDeparture, 0.5, accuracy: 0.001)
         XCTAssertEqual(motion.pillDeparture, motion.overlayDeparture)
-        XCTAssertEqual(motion.overlayBlurRadius, 24, accuracy: 0.001)
-        XCTAssertEqual(motion.update(theme: nil, reduceMotion: false, now: 10.15), .tts)
+        XCTAssertEqual(motion.overlayBlurRadius, TranscriptionPill.MotionStyle.exitBlurRadius / 2, accuracy: 0.001)
+        XCTAssertEqual(motion.update(theme: nil, reduceMotion: false, now: 10 + VoiceOverlayMotion.travelDuration / 2), .tts)
         XCTAssertEqual(motion.overlayDeparture, 0.5, accuracy: 0.001)
         _ = motion.update(theme: nil, reduceMotion: false, now: 10.2)
         let departure = motion.overlayDeparture
