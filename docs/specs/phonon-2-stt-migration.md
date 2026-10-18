@@ -61,14 +61,14 @@ The user authorized execution on 2026-10-18, starting RR-411 on the available Ap
 
 | Package | Scope and completion evidence | Dependencies | Assigned worker |
 | --- | --- | --- | --- |
-| A — RR-411: Dependency feasibility and baseline | Build candidate FluidAudio v0.17.5 with Relay's toolchain; identify required API changes, binary linkage, model revision/checksums, real sample-array transcription and timings. Compare commands and meeting clips against the configured v2 baseline and v3 where relevant. Produce an evidence-based proceed/stop result. | Supported test Mac and consented/public fixtures; macOS 14 environment for compatibility proof | codex:astra / high: dependency/API drift and performance uncertainty |
-| B — RR-412: Model selection and preparation | Integrate the accepted dependency revision, explicit model resolver, OS gating, existing-loader preparation, progress, readiness and stale-result handling. Prove offline reuse and failure recovery. | RR-411; explicit acceptance of feasibility is a required input | codex:astra / high: bounded integration with loading and compatibility checks |
-| C — RR-413: Ordinary workflow | Wire both command loops; retain gestures, partial/final text, tutorial ownership, cancellation and bridge delivery. Pass lifecycle/accumulation tests plus representative live dictation. | RR-412 | codex:astra / high: bounded integration with lifecycle races |
-| D — RR-414: Notes and recovery | Select Phonon in the existing note adapter; verify timing and punctuation; preserve dual-source ownership, backpressure, pause/stop tails and journal replay across upgrades. | RR-412 | codex:astra / high: durable audio and transcript-boundary correctness |
-| E — RR-415: Configuration and setup | Implement matching Swift/Python default policy and one-time migration, settings labeling, safe model changes, setup progress, retry and rollback. Keep automatic switching inactive pending release validation; manual selection supports validation. | RR-413, RR-414 | codex:astra / high: shared configuration and lifecycle compatibility |
-| F — RR-416: Release validation and activation | Verify both paths on the signed build, run the real-time meeting soak, validate platform/update metadata and notices, then enable the default switch only against passing recorded results and verify the final candidate. Public release publication is separate. | RR-415, transitively both workflows | codex:astra / high: installed behavior and multi-surface regression evidence |
+| A — RR-411: Dependency feasibility and baseline | Build candidate FluidAudio v0.17.5 with Relay's toolchain; identify required API changes, binary linkage, model revision/checksums, real sample-array transcription and timings. Compare commands and meeting clips against the configured v2 baseline and v3 where relevant. Produce an evidence-based proceed/stop result. | Supported test Mac and consented/public fixtures; macOS 14 environment for compatibility proof | claude:opus / medium: dependency/API drift and performance uncertainty |
+| B — RR-412: Model selection and preparation | Integrate the accepted dependency revision, explicit model resolver, OS gating, existing-loader preparation, progress, readiness and stale-result handling. Prove offline reuse and failure recovery. | RR-411; explicit acceptance of feasibility is a required input | claude:opus / medium: bounded integration with loading and compatibility checks |
+| C — RR-413: Ordinary workflow | Wire both command loops; retain gestures, partial/final text, tutorial ownership, cancellation and bridge delivery. Pass lifecycle/accumulation tests plus representative live dictation. | RR-412 | claude:opus / medium: bounded integration with lifecycle races |
+| D — RR-414: Notes and recovery | Select Phonon in the existing note adapter; verify timing and punctuation; preserve dual-source ownership, backpressure, pause/stop tails and journal replay across upgrades. | RR-412 | claude:opus / medium: durable audio and transcript-boundary correctness |
+| E — RR-415: Configuration and setup | Implement matching Swift/Python default policy and one-time migration, settings labeling, safe model changes, setup progress, retry and rollback. Keep automatic switching inactive pending release validation; manual selection supports validation. | RR-413, RR-414 | claude:opus / medium: shared configuration and lifecycle compatibility |
+| F — RR-416: Release validation and activation | Verify both paths on the signed build, run the real-time meeting soak, validate platform/update metadata and notices, then enable the default switch only against passing recorded results and verify the final candidate. Public release publication is separate. | RR-415, transitively both workflows | claude:opus / medium: installed behavior and multi-surface regression evidence |
 
-All six tickets use the user-selected `codex:astra` with `worker_effort: high` and require Codex worker execution. Product validation still covers the existing downstream Codex and Claude session paths. Physical validation and consented recordings must be recorded as required inputs before dispatching work that promises them.
+All six tickets use the user-selected `claude:opus` with `worker_effort: medium` (changed from `codex:astra` / high on 2026-10-18) and require Claude worker execution. Product validation still covers the existing downstream Codex and Claude session paths. Physical validation and consented recordings must be recorded as required inputs before dispatching work that promises them.
 
 **Acceptance and release gates.** The following numerical limits are proposed acceptance targets, not measured results. Record the test Mac, OS, power mode, model/runtime revisions, corpus, and both cold/warm runs. Fix the baseline corpus and thresholds before comparing implementations.
 
@@ -132,6 +132,17 @@ onsets/ends, whitespace assembly and actual confidence presence. Use fresh
 decoder state for each independent candidate snapshot to preserve the old
 source-specific reset behavior. No production model/default change is authorized
 by this evaluation; the PM must separately accept feasibility for RR-412.
+
+**PM acceptance and verification waiver (2026-10-18).** The PM accepted the
+RR-411 offline evidence as RR-412's feasibility input: FluidAudio v0.17.5 at
+`0b1f4628`, `FluidInference/phonon-2-coreml` pinned at `a812a0df`, operative
+public-v2 WER for Phonon versus v2 of +0.685 pp on commands and −0.787 pp on
+meetings, and zero punctuation assembly mismatches. The same day the user waived
+RR-411's remaining external verification. The following are **accepted risk, not
+verified**: (1) macOS 14 launch and legacy Parakeet inference; (2) consented
+critical-command and overlapping-source fixtures; (3) live partial, final and
+note final-window timing. RR-411 closes as done on this basis. The waiver does
+not satisfy the corresponding release gates for RR-416.
 
 ### Pre-measurement corpus amendment (public-v2)
 
