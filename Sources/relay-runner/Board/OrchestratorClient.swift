@@ -130,7 +130,7 @@ enum OrchestratorClient {
     private static let defaultPort = 7634
     private static let artifactReadTimeout: TimeInterval = 120
     private static let artifactMutationTimeout: TimeInterval = 600
-    static let programDashboardConnectionRetryDelaysNanoseconds: [UInt64] = [
+    static let programDashboardRetryDelaysNanoseconds: [UInt64] = [
         150_000_000,
         300_000_000,
         600_000_000,
@@ -669,33 +669,41 @@ enum OrchestratorClient {
     }
 
     static func fetchProgramDashboardEnsuringDaemon(
-        retryDelaysNanoseconds: [UInt64] = programDashboardConnectionRetryDelaysNanoseconds,
+        retryDelaysNanoseconds: [UInt64] = programDashboardRetryDelaysNanoseconds,
         fetchDashboard: @escaping () async throws -> ProgramDashboardSnapshot,
         ensureDaemon: @escaping () async -> OrchestratorDaemonEnsureResult,
         sleep: @escaping (UInt64) async throws -> Void = { delay in
             try await Task.sleep(nanoseconds: delay)
         }
     ) async throws -> ProgramDashboardSnapshot {
-        do {
-            return try await fetchDashboard()
-        } catch {
-            guard isTransientDaemonConnectionError(error) else { throw error }
-        }
+        var didEnsureDaemon = false
+        return try await fetchProgramDashboardRetryingTransientFailure(
+            retryDelaysNanoseconds: retryDelaysNanoseconds,
+            fetchDashboard: {
+                do {
+                    return try await fetchDashboard()
+                } catch {
+                    guard isTransientDaemonConnectionError(error), !didEnsureDaemon else {
+                        throw error
+                    }
+                }
 
-        switch await ensureDaemon() {
-        case .ready:
-            return try await fetchProgramDashboardRetryingTransientConnection(
-                retryDelaysNanoseconds: retryDelaysNanoseconds,
-                fetchDashboard: fetchDashboard,
-                sleep: sleep
-            )
-        case .failed(let message):
-            throw OrchestratorClientError.daemonRefreshFailed(message)
-        }
+                try Task.checkCancellation()
+                didEnsureDaemon = true
+                switch await ensureDaemon() {
+                case .ready:
+                    try Task.checkCancellation()
+                    return try await fetchDashboard()
+                case .failed(let message):
+                    throw OrchestratorClientError.daemonRefreshFailed(message)
+                }
+            },
+            sleep: sleep
+        )
     }
 
-    static func fetchProgramDashboardRetryingTransientConnection(
-        retryDelaysNanoseconds: [UInt64] = programDashboardConnectionRetryDelaysNanoseconds,
+    static func fetchProgramDashboardRetryingTransientFailure(
+        retryDelaysNanoseconds: [UInt64] = programDashboardRetryDelaysNanoseconds,
         fetchDashboard: @escaping () async throws -> ProgramDashboardSnapshot,
         sleep: @escaping (UInt64) async throws -> Void = { delay in
             try await Task.sleep(nanoseconds: delay)
@@ -703,10 +711,12 @@ enum OrchestratorClient {
     ) async throws -> ProgramDashboardSnapshot {
         var retryDelays = retryDelaysNanoseconds.makeIterator()
         while true {
+            try Task.checkCancellation()
             do {
                 return try await fetchDashboard()
             } catch {
-                guard isTransientDaemonConnectionError(error),
+                let serviceIsBusy = (error as? OrchestratorClientError)?.isRetryableServiceUnavailable == true
+                guard isTransientDaemonConnectionError(error) || serviceIsBusy,
                       let retryDelay = retryDelays.next() else {
                     throw error
                 }
@@ -1198,6 +1208,14 @@ enum OrchestratorClientError: Error, LocalizedError, Equatable {
     case timedOut
     case daemonRefreshDeferred
     case daemonRefreshFailed(String)
+
+    var isRetryableServiceUnavailable: Bool {
+        guard case .badStatus(503, let body) = self else { return false }
+        struct ServiceError: Decodable {
+            let retryable: Bool
+        }
+        return (try? JSONDecoder().decode(ServiceError.self, from: Data(body.utf8)))?.retryable == true
+    }
 
     var isStaleProjectScope: Bool {
         guard case .badStatus(422, let body) = self,

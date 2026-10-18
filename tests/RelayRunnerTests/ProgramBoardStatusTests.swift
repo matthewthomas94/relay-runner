@@ -1095,6 +1095,57 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.reloadState, .succeeded)
     }
 
+    func testProgramBoardFirstLoadStaysLoadingWhileServiceRefreshes() async throws {
+        let snapshot = try programBoardSnapshot(
+            clientPath: "/repo/client-dashboard",
+            toolsPath: "/repo/tools"
+        )
+        let spy = ProgramDashboardFetchSpy(results: [
+            .failure(OrchestratorClientError.badStatus(
+                503,
+                #"{"error":"Program Workspace refresh is still in progress; retry shortly.","retryable":true}"#
+            )),
+            .success(snapshot),
+        ])
+        let backoffStarted = expectation(description: "Waiting for the busy service")
+        let (backoff, resumeBackoff) = AsyncStream<Void>.makeStream()
+        defer { resumeBackoff.finish() }
+        let model = ProgramBoardViewModel(fetchDashboard: {
+            try await OrchestratorClient.fetchProgramDashboardEnsuringDaemon(
+                retryDelaysNanoseconds: [1],
+                fetchDashboard: spy.fetch,
+                ensureDaemon: {
+                    XCTFail("A refreshing service is already running")
+                    return .ready
+                },
+                sleep: { _ in
+                    backoffStarted.fulfill()
+                    for await _ in backoff { break }
+                }
+            )
+        })
+
+        let load = model.reload()
+        await fulfillment(of: [backoffStarted], timeout: 2)
+        XCTAssertEqual(model.reloadState, .loading)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertNil(model.supportBundlePreview)
+        XCTAssertNil(model.reloadIfIdle(inBackground: true))
+        XCTAssertEqual(ProgramBoardContentPresentation.resolve(
+            hasSnapshot: model.snapshot != nil,
+            hasRegisteredProjects: false,
+            reloadState: model.reloadState
+        ), .settingUp)
+
+        resumeBackoff.yield(())
+        await load.value
+        XCTAssertEqual(spy.callCount, 2)
+        XCTAssertEqual(model.snapshot, snapshot)
+        XCTAssertEqual(model.reloadState, .succeeded)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertNil(model.workspaceIncidentID)
+    }
+
     func testProgramBoardViewModelExplainsPersistentLocalServiceFailure() {
         XCTAssertEqual(
             ProgramBoardViewModel.reloadErrorMessage(for: URLError(.cannotConnectToHost)),

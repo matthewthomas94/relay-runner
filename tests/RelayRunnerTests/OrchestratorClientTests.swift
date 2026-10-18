@@ -346,7 +346,7 @@ final class OrchestratorClientTests: XCTestCase {
     func testProgramDashboardRetriesTransientDaemonRestartFailures() async throws {
         let recorder = FetchAttemptRecorder()
 
-        let snapshot = try await OrchestratorClient.fetchProgramDashboardRetryingTransientConnection(
+        let snapshot = try await OrchestratorClient.fetchProgramDashboardRetryingTransientFailure(
             retryDelaysNanoseconds: [0, 0],
             fetchDashboard: {
                 let attempt = await recorder.nextAttempt()
@@ -388,6 +388,120 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(ensureCount, 1)
         XCTAssertEqual(snapshot.summary.query, "summary")
     }
+
+    func testProgramDashboardRetriesBusyServiceWithoutInstallingDaemon() async throws {
+        let fetchRecorder = FetchAttemptRecorder()
+        let backoffRecorder = FetchAttemptRecorder()
+        let ensureRecorder = DaemonEnsureRecorder(result: .ready)
+
+        let snapshot = try await OrchestratorClient.fetchProgramDashboardEnsuringDaemon(
+            retryDelaysNanoseconds: [100, 200],
+            fetchDashboard: {
+                if await fetchRecorder.nextAttempt() < 3 {
+                    throw Self.workspaceRefreshInProgress
+                }
+                return self.dashboardSnapshot()
+            },
+            ensureDaemon: { await ensureRecorder.ensure() },
+            sleep: { delay in
+                let attempt = await backoffRecorder.nextAttempt()
+                XCTAssertEqual(delay, UInt64(attempt * 100))
+            }
+        )
+
+        let fetchCount = await fetchRecorder.count()
+        let backoffCount = await backoffRecorder.count()
+        let ensureCount = await ensureRecorder.count()
+        XCTAssertEqual(fetchCount, 3)
+        XCTAssertEqual(backoffCount, 2)
+        XCTAssertEqual(ensureCount, 0)
+        XCTAssertEqual(snapshot.summary.query, "summary")
+    }
+
+    func testProgramDashboardDoesNotRetryUnmarkedServiceFailures() async throws {
+        let failures: [OrchestratorClientError] = [
+            .badStatus(503, #"{"error":"unavailable","retryable":false}"#),
+            .badStatus(503, #"{"error":"unavailable"}"#),
+            .badStatus(503, #"{"retryable":"true"}"#),
+            .badStatus(503, #"{"retryable":1}"#),
+            .badStatus(503, "not JSON"),
+            .badStatus(422, #"{"error":"invalid scope","retryable":true}"#),
+        ]
+        for failure in failures {
+            let fetchRecorder = FetchAttemptRecorder()
+            do {
+                _ = try await OrchestratorClient.fetchProgramDashboardEnsuringDaemon(
+                    retryDelaysNanoseconds: [0, 0],
+                    fetchDashboard: {
+                        _ = await fetchRecorder.nextAttempt()
+                        throw failure
+                    },
+                    ensureDaemon: {
+                        XCTFail("An HTTP response must not trigger daemon installation")
+                        return .ready
+                    },
+                    sleep: { _ in XCTFail("An unmarked failure must not be retried") }
+                )
+                XCTFail("Expected the service failure to surface")
+            } catch {
+                XCTAssertEqual(error as? OrchestratorClientError, failure)
+            }
+            let fetchCount = await fetchRecorder.count()
+            XCTAssertEqual(fetchCount, 1)
+        }
+    }
+
+    func testProgramDashboardStopsAfterBoundedBusyServiceRetries() async throws {
+        let fetchRecorder = FetchAttemptRecorder()
+        do {
+            _ = try await OrchestratorClient.fetchProgramDashboardEnsuringDaemon(
+                retryDelaysNanoseconds: [0, 0],
+                fetchDashboard: {
+                    _ = await fetchRecorder.nextAttempt()
+                    throw Self.workspaceRefreshInProgress
+                },
+                ensureDaemon: {
+                    XCTFail("A busy daemon must not be reinstalled")
+                    return .ready
+                },
+                sleep: { _ in }
+            )
+            XCTFail("Expected persistent unavailability to surface")
+        } catch {
+            XCTAssertEqual(error as? OrchestratorClientError, Self.workspaceRefreshInProgress)
+        }
+        let fetchCount = await fetchRecorder.count()
+        XCTAssertEqual(fetchCount, 3)
+    }
+
+    func testProgramDashboardBusyServiceRetryStopsWhenCancelled() async throws {
+        let fetchRecorder = FetchAttemptRecorder()
+        do {
+            _ = try await OrchestratorClient.fetchProgramDashboardEnsuringDaemon(
+                retryDelaysNanoseconds: [1, 1],
+                fetchDashboard: {
+                    _ = await fetchRecorder.nextAttempt()
+                    throw Self.workspaceRefreshInProgress
+                },
+                ensureDaemon: {
+                    XCTFail("A busy daemon must not be reinstalled")
+                    return .ready
+                },
+                sleep: { _ in throw CancellationError() }
+            )
+            XCTFail("Expected cancellation during backoff")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        let fetchCount = await fetchRecorder.count()
+        XCTAssertEqual(fetchCount, 1)
+    }
+
+    private static let workspaceRefreshInProgress = OrchestratorClientError.badStatus(
+        503,
+        #"{"error":"Program Workspace refresh is still in progress; retry shortly.","retryable":true}"#
+    )
 
     func testProgramDashboardDoesNotEnsureDaemonForPermanentFailure() async throws {
         let ensureRecorder = DaemonEnsureRecorder(result: .ready)
@@ -447,7 +561,7 @@ final class OrchestratorClientTests: XCTestCase {
     func testProgramDashboardRetriesDelayedServiceReadinessBeyondInitialWindow() async throws {
         let recorder = FetchAttemptRecorder()
 
-        let snapshot = try await OrchestratorClient.fetchProgramDashboardRetryingTransientConnection(
+        let snapshot = try await OrchestratorClient.fetchProgramDashboardRetryingTransientFailure(
             fetchDashboard: {
                 let attempt = await recorder.nextAttempt()
                 if attempt < 7 {
@@ -462,7 +576,7 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(attemptCount, 7)
         XCTAssertEqual(snapshot.summary.query, "summary")
         XCTAssertGreaterThanOrEqual(
-            OrchestratorClient.programDashboardConnectionRetryDelaysNanoseconds.count,
+            OrchestratorClient.programDashboardRetryDelaysNanoseconds.count,
             6
         )
     }
@@ -471,7 +585,7 @@ final class OrchestratorClientTests: XCTestCase {
         let recorder = FetchAttemptRecorder()
 
         do {
-            _ = try await OrchestratorClient.fetchProgramDashboardRetryingTransientConnection(
+            _ = try await OrchestratorClient.fetchProgramDashboardRetryingTransientFailure(
                 retryDelaysNanoseconds: [0, 0],
                 fetchDashboard: {
                     _ = await recorder.nextAttempt()
@@ -495,7 +609,7 @@ final class OrchestratorClientTests: XCTestCase {
         let recorder = FetchAttemptRecorder()
 
         do {
-            _ = try await OrchestratorClient.fetchProgramDashboardRetryingTransientConnection(
+            _ = try await OrchestratorClient.fetchProgramDashboardRetryingTransientFailure(
                 retryDelaysNanoseconds: [0, 0],
                 fetchDashboard: {
                     _ = await recorder.nextAttempt()
@@ -518,7 +632,7 @@ final class OrchestratorClientTests: XCTestCase {
         let recorder = FetchAttemptRecorder()
 
         do {
-            _ = try await OrchestratorClient.fetchProgramDashboardRetryingTransientConnection(
+            _ = try await OrchestratorClient.fetchProgramDashboardRetryingTransientFailure(
                 retryDelaysNanoseconds: [1, 1],
                 fetchDashboard: {
                     _ = await recorder.nextAttempt()
