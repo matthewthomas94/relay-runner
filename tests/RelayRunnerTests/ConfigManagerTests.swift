@@ -197,6 +197,155 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertFalse(raw.contains("subagent_effort"))
     }
 
+    // MARK: - STT model policy (mirrors tests/test_config.py)
+
+    private let sonoma = OperatingSystemVersion(majorVersion: 14, minorVersion: 6, patchVersion: 0)
+    private let sequoia = OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+
+    func testFreshInstallSTTDefaultIsOSAwareAndInactiveUntilRR416() throws {
+        XCTAssertFalse(STTModelPolicy.phononDefaultActive)
+        for (os, active, expected, state) in [
+            (sonoma, false, "parakeet-tdt-v2", ""),
+            (sequoia, false, "parakeet-tdt-v2", ""),
+            (sonoma, true, "parakeet-tdt-v2", ""),
+            (sequoia, true, "phonon-2", "completed"),
+        ] {
+            let manager = ConfigManager(
+                configDir: temporaryConfigDir(),
+                operatingSystem: os,
+                phononDefaultActive: active
+            )
+            let loaded = manager.load()
+            let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
+            XCTAssertEqual(loaded.stt.model, expected)
+            XCTAssertEqual(loaded.stt.phonon_migration, state)
+            XCTAssertTrue(raw.contains("model = \"\(expected)\""))
+            XCTAssertNoThrow(try STTModel.resolve(loaded.stt.model, operatingSystem: os))
+        }
+    }
+
+    func testExistingSTTModelsAliasesAndUnknownIDsLoadWithoutMigration() throws {
+        for (raw, expected) in [
+            ("parakeet-tdt-v2", "parakeet-tdt-v2"),
+            ("parakeet-tdt-v3", "parakeet-tdt-v3"),
+            ("phonon-2", "phonon-2"),
+            ("medium.en", "parakeet-tdt-v2"),
+            ("tiny.en", "parakeet-tdt-v2"),
+            ("large-v3", "parakeet-tdt-v3"),
+            ("whisper-xl", "whisper-xl"),
+        ] {
+            let manager = ConfigManager(
+                configDir: temporaryConfigDir(),
+                operatingSystem: sequoia,
+                phononDefaultActive: true
+            )
+            try FileManager.default.createDirectory(
+                at: manager.configPath.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try "[stt]\nmodel = \"\(raw)\"\n".write(to: manager.configPath, atomically: true, encoding: .utf8)
+            let loaded = manager.load()
+            XCTAssertEqual(loaded.stt.model, expected, raw)
+            XCTAssertEqual(loaded.stt.phonon_migration, "", raw)
+        }
+        XCTAssertThrowsError(try STTModel.resolve("whisper-xl", operatingSystem: sequoia)) { error in
+            XCTAssertEqual(error as? STTModelSelectionError, .unknownModel("whisper-xl"))
+        }
+        XCTAssertThrowsError(try STTModel.resolve("phonon-2", operatingSystem: sonoma)) { error in
+            XCTAssertEqual(
+                error as? STTModelSelectionError,
+                .unsupportedOperatingSystem(model: .phonon2, requiredMajorVersion: 15)
+            )
+        }
+    }
+
+    func testPhononMigrationFieldsRoundTrip() throws {
+        let manager = ConfigManager(configDir: temporaryConfigDir())
+        var config = manager.load()
+        config.stt = config.stt.applyingPhononMigration()
+        try manager.save(config)
+
+        let loaded = manager.load()
+        XCTAssertEqual(loaded.stt.model, "phonon-2")
+        XCTAssertEqual(loaded.stt.phonon_migration, "completed")
+        XCTAssertEqual(loaded.stt.phonon_migration_previous_model, "parakeet-tdt-v2")
+    }
+
+    func testMigrationTargetsOnlyImplicitV2OnMacOS15WhenActive() {
+        let implicitV2 = SttConfig()
+        XCTAssertEqual(
+            STTModelPolicy.migrationTarget(for: implicitV2, operatingSystem: sequoia, phononDefaultActive: true),
+            .phonon2
+        )
+        XCTAssertNil(STTModelPolicy.migrationTarget(for: implicitV2, operatingSystem: sequoia, phononDefaultActive: false))
+        XCTAssertNil(STTModelPolicy.migrationTarget(for: implicitV2, operatingSystem: sonoma, phononDefaultActive: true))
+        for state in ["completed", "rolled_back", "explicit"] {
+            var stt = SttConfig()
+            stt.phonon_migration = state
+            XCTAssertNil(STTModelPolicy.migrationTarget(for: stt, operatingSystem: sequoia, phononDefaultActive: true))
+        }
+        var v3 = SttConfig()
+        v3.model = "parakeet-tdt-v3"
+        XCTAssertNil(STTModelPolicy.migrationTarget(for: v3, operatingSystem: sequoia, phononDefaultActive: true))
+    }
+
+    func testUserModelChangesAreRecordedSoTheyAreNeverReOverridden() {
+        // Explicit v3 before any migration.
+        var draft = SttConfig()
+        draft.model = "parakeet-tdt-v3"
+        let explicit = draft.recordingUserModelChange(from: SttConfig())
+        XCTAssertEqual(explicit.phonon_migration, "explicit")
+        XCTAssertNil(STTModelPolicy.migrationTarget(for: explicit, operatingSystem: sequoia, phononDefaultActive: true))
+
+        // Explicit rollback after the automatic migration.
+        let migrated = SttConfig().applyingPhononMigration()
+        var rollbackDraft = migrated
+        rollbackDraft.model = "parakeet-tdt-v2"
+        let rolledBack = rollbackDraft.recordingUserModelChange(from: migrated)
+        XCTAssertEqual(rolledBack.model, "parakeet-tdt-v2")
+        XCTAssertEqual(rolledBack.phonon_migration, "rolled_back")
+        XCTAssertNil(STTModelPolicy.migrationTarget(for: rolledBack, operatingSystem: sequoia, phononDefaultActive: true))
+
+        // A later OS upgrade cannot re-override a rollback either.
+        XCTAssertNil(STTModelPolicy.migrationTarget(
+            for: rolledBack,
+            operatingSystem: OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0),
+            phononDefaultActive: true
+        ))
+
+        // A Settings draft opened before the migration is not a rollback.
+        var staleDraft = SttConfig()
+        staleDraft.vad_sensitivity = "high"
+        let saved = staleDraft.recordingUserModelChange(from: migrated)
+        XCTAssertEqual(saved.model, "phonon-2")
+        XCTAssertEqual(saved.phonon_migration, "completed")
+        XCTAssertEqual(saved.vad_sensitivity, "high")
+
+        // Edits that keep the model leave a pending user eligible.
+        var vadOnly = SttConfig()
+        vadOnly.vad_sensitivity = "low"
+        XCTAssertEqual(vadOnly.recordingUserModelChange(from: SttConfig()).phonon_migration, "")
+    }
+
+    func testSettingsModelOptionsAreOSGated() {
+        let sonomaOptions = STTSettingsTab.modelOptions(operatingSystem: sonoma, phononDefaultActive: true)
+        XCTAssertEqual(sonomaOptions.map(\.value), ["parakeet-tdt-v2", "parakeet-tdt-v3"])
+        XCTAssertEqual(sonomaOptions.first?.label, "Parakeet v2 (English), recommended")
+        XCTAssertTrue(STTSettingsTab.modelDescription(SttConfig(), operatingSystem: sonoma)
+            .contains("Phonon 2 (English) requires macOS 15 or later."))
+
+        let sequoiaOptions = STTSettingsTab.modelOptions(operatingSystem: sequoia, phononDefaultActive: true)
+        XCTAssertEqual(sequoiaOptions.map(\.value), ["phonon-2", "parakeet-tdt-v2", "parakeet-tdt-v3"])
+        XCTAssertEqual(sequoiaOptions.first?.label, "Phonon 2 (English, macOS 15+), recommended")
+        XCTAssertEqual(sequoiaOptions.last?.label, "Parakeet v3 (multilingual, larger)")
+
+        let inactive = STTSettingsTab.modelOptions(operatingSystem: sequoia, phononDefaultActive: false)
+        XCTAssertEqual(inactive[1].label, "Parakeet v2 (English), recommended")
+
+        XCTAssertTrue(STTSettingsTab.modelDescription(SttConfig().applyingPhononMigration(), operatingSystem: sequoia)
+            .contains("Choose Parakeet v2 to roll back."))
+    }
+
     private func temporaryConfigDir() -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("relay-runner-config-\(UUID().uuidString)")

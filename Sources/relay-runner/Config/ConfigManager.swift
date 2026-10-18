@@ -13,9 +13,17 @@ final class ConfigManager {
     }()
 
     private let configDir: URL
+    private let operatingSystem: OperatingSystemVersion
+    private let phononDefaultActive: Bool
 
-    init(configDir: URL = ConfigManager.defaultConfigDir) {
+    init(
+        configDir: URL = ConfigManager.defaultConfigDir,
+        operatingSystem: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion,
+        phononDefaultActive: Bool = STTModelPolicy.phononDefaultActive
+    ) {
         self.configDir = configDir
+        self.operatingSystem = operatingSystem
+        self.phononDefaultActive = phononDefaultActive
     }
 
     var configPath: URL { configDir.appendingPathComponent("config.toml") }
@@ -30,7 +38,11 @@ final class ConfigManager {
             // diverged from Swift's intent (e.g. auto_play=True in Python vs
             // False in Swift) and caused TTS to fire on the very first session
             // before the user had a chance to configure anything.
-            let defaults = AppConfig()
+            var defaults = AppConfig()
+            defaults.stt = .freshInstall(
+                operatingSystem: operatingSystem,
+                phononDefaultActive: phononDefaultActive
+            )
             try? save(defaults)
             return defaults
         }
@@ -52,6 +64,10 @@ final class ConfigManager {
             if let v = tomlString(stt, "push_to_talk_key") { config.stt.push_to_talk_key = v }
             if let v = tomlString(stt, "activation_key") { config.stt.activation_key = v }
             if let v = tomlString(stt, "vad_sensitivity") { config.stt.vad_sensitivity = v }
+            if let v = tomlString(stt, "phonon_migration") { config.stt.phonon_migration = v }
+            if let v = tomlString(stt, "phonon_migration_previous_model") {
+                config.stt.phonon_migration_previous_model = v
+            }
         }
 
         // TTS
@@ -133,6 +149,8 @@ final class ConfigManager {
         lines.append("push_to_talk_key = \"\(c.stt.push_to_talk_key)\"")
         lines.append("activation_key = \"\(c.stt.activation_key)\"")
         lines.append("vad_sensitivity = \"\(c.stt.vad_sensitivity)\"")
+        lines.append("phonon_migration = \"\(c.stt.phonon_migration)\"")
+        lines.append("phonon_migration_previous_model = \"\(c.stt.phonon_migration_previous_model)\"")
         lines.append("")
 
         lines.append("[tts]")
@@ -187,14 +205,10 @@ final class ConfigManager {
         generalProviderWasExplicit: Bool,
         generalOrchestratorEffortWasExplicit: Bool
     ) {
-        // Whisper models -> Parakeet
-        switch config.stt.model {
-        case "tiny.en", "base.en", "small.en", "medium.en":
-            config.stt.model = "parakeet-tdt-v2"
-        case "large", "large-v3":
-            config.stt.model = "parakeet-tdt-v3"
-        default:
-            break
+        // Whisper models -> Parakeet. Unknown IDs stay verbatim so the
+        // resolver reports them instead of silently substituting a model.
+        if let replacement = STTModelPolicy.legacyWhisperAliases[config.stt.model] {
+            config.stt.model = replacement.rawValue
         }
 
         // say/piper -> kokoro

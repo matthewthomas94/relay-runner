@@ -43,7 +43,8 @@ enum SetupRuntimeReadiness: Equatable {
         case .preparing(let message):
             return message
         case .ready:
-            return "Loaded and listening"
+            // Model readiness only; the microphone opens when a session owns capture.
+            return "Model ready"
         case .failed(let message):
             return message
         }
@@ -61,6 +62,9 @@ enum SetupRuntimeReadiness: Equatable {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let rawError = engineError?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if rawError.contains("CancellationError") {
+            return .failed("Speech-to-Text setup was cancelled. Retry setup to continue.")
+        }
         if !rawError.isEmpty {
             return .failed(ErrorTranslator.translate(rawError).headline)
         }
