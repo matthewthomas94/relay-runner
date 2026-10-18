@@ -67,6 +67,9 @@ class SkillCleanupTests(unittest.TestCase):
     def test_manual_bridge_records_ready_only_from_python_and_records_launch_failure(self):
         script = (ROOT / "scripts" / "relay-bridge").read_text()
         launch = script.split("# -- Start voice bridge --", 1)[1]
+        # Joining an already-live daemon can report ready; a new manual
+        # bridge must wait for Python to establish readiness itself.
+        launch = launch.split("# Record the launching cwd", 1)[1]
 
         self.assertNotIn("record_support_event shell bridge_readiness ready", launch)
         self.assertIn('if "$PYTHON" "$SERVICES_BUNDLE/voice_bridge.py"', launch)

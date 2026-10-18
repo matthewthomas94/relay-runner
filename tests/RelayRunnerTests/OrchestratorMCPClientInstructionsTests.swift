@@ -2,9 +2,9 @@ import XCTest
 @testable import relay_orchestrator_mcp
 
 final class OrchestratorMCPClientInstructionsTests: XCTestCase {
-    // tools/list digest of the release before Claude-specific payloads
-    // (3be285a2), taken from a non-Claude client. It must not change for Codex.
-    private let releasedToolsListSHA256 = "b48fb7b52913ace373633b1bf8710573c51b54c9cb90d875907b0ce72109595d"
+    // tools/list digest shipped in v0.4.66, including the dependency-queue
+    // description (RR-410). Non-Claude clients must keep this same payload.
+    private let releasedToolsListSHA256 = "b855e00b80b75b569411c399155eb54a7f2ef655a531003e8ba12518a9383e0a"
 
     private func initialize(_ server: MCPServer, client: String) async throws -> [String: Any] {
         let result = try await server.dispatch(
