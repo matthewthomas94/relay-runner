@@ -1,5 +1,13 @@
 import SwiftUI
 
+enum WorkspaceTerminalLayout {
+    static let tabHeight: CGFloat = 40
+    static let tabGap: CGFloat = 8
+    static let tabCornerRadius: CGFloat = 12
+    static let shoulderRadius = tabCornerRadius + tabGap
+    static let horizontalPadding = BoardDarkSurfaceStyle.columnCornerRadius + shoulderRadius
+}
+
 /// The selected tab and terminal share one outline. Only that outline morphs
 /// on selection, leaving the live terminal's layout and hit targets stationary.
 struct WorkspaceTerminalSurface<Content: View>: View {
@@ -12,13 +20,10 @@ struct WorkspaceTerminalSurface<Content: View>: View {
     @ViewBuilder let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    static var tabHeight: CGFloat { 40 }
-    static var tabGap: CGFloat { 8 }
-
     var body: some View {
         VStack(spacing: 0) {
             if !tabs.isEmpty {
-                HStack(spacing: Self.tabGap) {
+                HStack(spacing: WorkspaceTerminalLayout.tabGap) {
                     ForEach(tabs, id: \.id) { tab in
                         WorkspaceSessionTab(
                             name: tab.name,
@@ -33,9 +38,9 @@ struct WorkspaceTerminalSurface<Content: View>: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .frame(height: Self.tabHeight)
-                .padding(.horizontal, 24)
-                .padding(.bottom, Self.tabGap)
+                .frame(height: WorkspaceTerminalLayout.tabHeight)
+                .padding(.horizontal, WorkspaceTerminalLayout.horizontalPadding)
+                .padding(.bottom, WorkspaceTerminalLayout.tabGap)
             }
             content()
         }
@@ -44,13 +49,13 @@ struct WorkspaceTerminalSurface<Content: View>: View {
                 let frame = anchors[selectedID].map { proxy[$0] } ?? .zero
                 WorkspaceTerminalOutline(
                     tabFrame: frame,
-                    contentTop: tabs.isEmpty ? 0 : Self.tabHeight + Self.tabGap
+                    contentTop: tabs.isEmpty ? 0 : WorkspaceTerminalLayout.tabHeight + WorkspaceTerminalLayout.tabGap
                 )
                 .fill(BoardDarkSurfaceStyle.panelFill)
                 .overlay {
                     WorkspaceTerminalOutline(
                         tabFrame: frame,
-                        contentTop: tabs.isEmpty ? 0 : Self.tabHeight + Self.tabGap
+                        contentTop: tabs.isEmpty ? 0 : WorkspaceTerminalLayout.tabHeight + WorkspaceTerminalLayout.tabGap
                     )
                     .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
                 }
@@ -85,30 +90,32 @@ struct WorkspaceTerminalOutline: Shape {
     func path(in rect: CGRect) -> Path {
         let bounds = rect.insetBy(dx: 0.5, dy: 0.5)
         let top = bounds.minY + contentTop
-        let radius = BoardDarkSurfaceStyle.columnCornerRadius
-        let shoulder: CGFloat = 8
-        let cap: CGFloat = 12
-        let left = max(bounds.minX + radius + shoulder, tabFrame.minX)
-        let right = min(bounds.maxX - radius - shoulder, tabFrame.maxX)
+        let radius = BoardDarkSurfaceStyle.columnCornerRadius - 0.5
+        // Stroke centers sit half a point inside each surface. The concave
+        // shoulder shares its center with the adjacent tab's convex corner.
+        let shoulder = WorkspaceTerminalLayout.shoulderRadius + 0.5
+        let cap = WorkspaceTerminalLayout.tabCornerRadius - 0.5
+        let left = max(bounds.minX + radius + shoulder, tabFrame.minX + 0.5)
+        let right = min(bounds.maxX - radius - shoulder, tabFrame.maxX - 0.5)
         var path = Path()
         path.move(to: CGPoint(x: bounds.minX, y: top + radius))
-        path.addQuadCurve(to: CGPoint(x: bounds.minX + radius, y: top), control: CGPoint(x: bounds.minX, y: top))
+        path.addArc(tangent1End: CGPoint(x: bounds.minX, y: top), tangent2End: CGPoint(x: bounds.minX + radius, y: top), radius: radius)
         if contentTop > 0, right - left > cap * 2 {
             path.addLine(to: CGPoint(x: left - shoulder, y: top))
-            path.addQuadCurve(to: CGPoint(x: left, y: top - shoulder), control: CGPoint(x: left, y: top))
+            path.addArc(tangent1End: CGPoint(x: left, y: top), tangent2End: CGPoint(x: left, y: top - shoulder), radius: shoulder)
             path.addLine(to: CGPoint(x: left, y: bounds.minY + cap))
-            path.addQuadCurve(to: CGPoint(x: left + cap, y: bounds.minY), control: CGPoint(x: left, y: bounds.minY))
+            path.addArc(tangent1End: CGPoint(x: left, y: bounds.minY), tangent2End: CGPoint(x: left + cap, y: bounds.minY), radius: cap)
             path.addLine(to: CGPoint(x: right - cap, y: bounds.minY))
-            path.addQuadCurve(to: CGPoint(x: right, y: bounds.minY + cap), control: CGPoint(x: right, y: bounds.minY))
+            path.addArc(tangent1End: CGPoint(x: right, y: bounds.minY), tangent2End: CGPoint(x: right, y: bounds.minY + cap), radius: cap)
             path.addLine(to: CGPoint(x: right, y: top - shoulder))
-            path.addQuadCurve(to: CGPoint(x: right + shoulder, y: top), control: CGPoint(x: right, y: top))
+            path.addArc(tangent1End: CGPoint(x: right, y: top), tangent2End: CGPoint(x: right + shoulder, y: top), radius: shoulder)
         }
         path.addLine(to: CGPoint(x: bounds.maxX - radius, y: top))
-        path.addQuadCurve(to: CGPoint(x: bounds.maxX, y: top + radius), control: CGPoint(x: bounds.maxX, y: top))
+        path.addArc(tangent1End: CGPoint(x: bounds.maxX, y: top), tangent2End: CGPoint(x: bounds.maxX, y: top + radius), radius: radius)
         path.addLine(to: CGPoint(x: bounds.maxX, y: bounds.maxY - radius))
-        path.addQuadCurve(to: CGPoint(x: bounds.maxX - radius, y: bounds.maxY), control: CGPoint(x: bounds.maxX, y: bounds.maxY))
+        path.addArc(tangent1End: CGPoint(x: bounds.maxX, y: bounds.maxY), tangent2End: CGPoint(x: bounds.maxX - radius, y: bounds.maxY), radius: radius)
         path.addLine(to: CGPoint(x: bounds.minX + radius, y: bounds.maxY))
-        path.addQuadCurve(to: CGPoint(x: bounds.minX, y: bounds.maxY - radius), control: CGPoint(x: bounds.minX, y: bounds.maxY))
+        path.addArc(tangent1End: CGPoint(x: bounds.minX, y: bounds.maxY), tangent2End: CGPoint(x: bounds.minX, y: bounds.maxY - radius), radius: radius)
         path.closeSubpath()
         return path
     }
@@ -157,11 +164,13 @@ private struct WorkspaceSessionTab: View {
         .foregroundStyle(ProgramBoardStyle.primaryText)
         .background {
             if !selected {
-                BoardDarkSurfaceBackground(
-                    cornerRadius: 12,
-                    fill: isHovered ? BoardDarkSurfaceStyle.hoverFill : BoardDarkSurfaceStyle.panelFill
-                )
-                .transition(.opacity)
+                RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
+                    .fill(isHovered ? BoardDarkSurfaceStyle.hoverFill : BoardDarkSurfaceStyle.panelFill)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
+                            .strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1)
+                    }
+                    .transition(.opacity)
             }
         }
         .onHover { isHovered = $0 }

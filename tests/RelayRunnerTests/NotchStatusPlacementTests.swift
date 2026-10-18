@@ -1556,6 +1556,46 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertEqual(NotchStatusAnimationPolicy.duration(0.22, reduceMotion: false), 0.22)
     }
 
+    func testNotchResizeEasesAtBothEnds() {
+        let curve = NotchStatusAnimationPolicy.resizeCurve
+        XCTAssertEqual(curve.progress(0), 0)
+        XCTAssertEqual(curve.progress(1), 1)
+        XCTAssertLessThan(curve.progress(0.1), 0.03)
+        XCTAssertEqual(curve.progress(0.5), 0.5, accuracy: 0.001)
+        XCTAssertGreaterThan(curve.progress(0.9), 0.97)
+        XCTAssertGreaterThan(NotchStatusAnimationPolicy.resizeDuration, RelayMotion.changeDuration)
+    }
+
+    @MainActor
+    func testStatusRefreshDoesNotSnapOrRestartAnInFlightNotchResize() {
+        _ = NSApplication.shared
+        let panel = NotchStatusPanel()
+        let compact = CGRect(x: 400, y: 400, width: 80, height: 32)
+        let expanded = CGRect(x: 220, y: 400, width: 260, height: 32)
+        panel.setFrame(compact, display: false)
+        defer { panel.stopFrameAnimation(); panel.orderOut(nil) }
+
+        for target in [expanded, compact] {
+            var completed = false
+            panel.animateFrame(to: target, duration: NotchStatusAnimationPolicy.resizeDuration) {
+                completed = true
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+            let intermediate = panel.frame
+            XCTAssertNotEqual(intermediate, target)
+
+            // AppState republishes the current status without requesting
+            // animation. It must not cancel the resize already in progress.
+            panel.animateFrame(to: target, duration: 0)
+            XCTAssertEqual(panel.frame, intermediate)
+            XCTAssertTrue(panel.isFrameAnimationRunning)
+            RunLoop.main.run(until: Date().addingTimeInterval(NotchStatusAnimationPolicy.resizeDuration + 0.1))
+            XCTAssertTrue(completed)
+            XCTAssertEqual(panel.frame, target)
+            XCTAssertFalse(panel.isFrameAnimationRunning)
+        }
+    }
+
     private func ticket(
         id: String,
         title: String? = nil,

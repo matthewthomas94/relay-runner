@@ -936,6 +936,9 @@ enum NotchActivityLabelPlanner {
 }
 
 enum NotchStatusAnimationPolicy {
+    static let resizeDuration: TimeInterval = 0.38
+    static let resizeCurve = RelayMotion.Curve(x1: 0.42, y1: 0, x2: 0.58, y2: 1)
+
     static func duration(_ defaultDuration: TimeInterval, reduceMotion: Bool) -> TimeInterval {
         reduceMotion ? 0 : defaultDuration
     }
@@ -1353,18 +1356,12 @@ final class NotchStatusController {
             show()
             return
         }
-        if animated {
-            // The outgoing label fades while the surface eases to its new
-            // width, so content updates alongside the frame animation.
-            updateStatusContent()
-            let duration = animationDuration(RelayMotion.changeDuration)
-            pillView.redrawDuringFrameAnimation(duration: duration)
-            panel.animateFrame(to: placement.visibleFrame, duration: duration, curve: RelayMotion.changeCurve)
-        } else {
-            panel.stopFrameAnimation()
-            panel.setFrame(placement.visibleFrame, display: true)
-            updateStatusContent()
-        }
+        // Refreshes of the same target keep an in-flight resize running.
+        // The outgoing label fades while the surface eases to its new width.
+        updateStatusContent()
+        let duration = animated ? animationDuration(NotchStatusAnimationPolicy.resizeDuration) : 0
+        pillView.redrawDuringFrameAnimation(duration: duration)
+        panel.animateFrame(to: placement.visibleFrame, duration: duration)
     }
 
     private func updateStatusContent() {
@@ -1587,6 +1584,7 @@ final class NotchStatusController {
 final class NotchStatusPanel: NSPanel {
     private var frameAnimationTimer: Timer?
     private var frameAnimationCompletion: (() -> Void)?
+    private var frameAnimationTarget: CGRect?
 
     var isFrameAnimationRunning: Bool {
         frameAnimationTimer != nil
@@ -1621,16 +1619,17 @@ final class NotchStatusPanel: NSPanel {
     func animateFrame(
         to targetFrame: CGRect,
         duration: TimeInterval,
-        curve: RelayMotion.Curve = RelayMotion.changeCurve,
+        curve: RelayMotion.Curve = NotchStatusAnimationPolicy.resizeCurve,
         completion: (() -> Void)? = nil
     ) {
+        guard frameAnimationTarget != targetFrame else { return }
         stopFrameAnimation()
 
         let transition = NotchStatusPanelFrameTransition(
             startFrame: frame,
             targetFrame: targetFrame
         )
-        guard duration > 0 else {
+        guard duration > 0, frame != targetFrame else {
             setFrame(targetFrame, display: true)
             completion?()
             return
@@ -1638,6 +1637,7 @@ final class NotchStatusPanel: NSPanel {
 
         let startTime = CACurrentMediaTime()
         frameAnimationCompletion = completion
+        frameAnimationTarget = targetFrame
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
             guard let self else {
                 timer.invalidate()
@@ -1651,6 +1651,7 @@ final class NotchStatusPanel: NSPanel {
             guard linearProgress >= 1 else { return }
             timer.invalidate()
             self.frameAnimationTimer = nil
+            self.frameAnimationTarget = nil
             let completion = self.frameAnimationCompletion
             self.frameAnimationCompletion = nil
             completion?()
@@ -1662,6 +1663,7 @@ final class NotchStatusPanel: NSPanel {
     func stopFrameAnimation() {
         frameAnimationTimer?.invalidate()
         frameAnimationTimer = nil
+        frameAnimationTarget = nil
         frameAnimationCompletion = nil
     }
 }

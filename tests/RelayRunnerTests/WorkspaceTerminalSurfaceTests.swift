@@ -29,15 +29,41 @@ final class WorkspaceTerminalSurfaceTests: XCTestCase {
         XCTAssertTrue(path.contains(CGPoint(x: 50, y: 80)))
     }
 
+    func testShouldersStayConcentricWithBothAdjacentTabCorners() {
+        // Core Graphics preserves curve precision for subpixel gap checks.
+        let outline = WorkspaceTerminalOutline(
+            tabFrame: CGRect(x: 200, y: 0, width: 140, height: 40), contentTop: 48
+        ).path(in: CGRect(x: 0, y: 0, width: 640, height: 300)).cgPath
+
+        // Adjacent tabs end at x=192 and start at x=348. Their bottom
+        // corners have centers at (180, 28) and (360, 28). Both outlines
+        // must remain circular about those centers to keep an 8pt clear gap.
+        let corners: [(CGFloat, CGFloat)] = [(180, 1), (360, -1)]
+        for (centerX, direction) in corners {
+            for degrees in stride(from: 0.0, through: 90.0, by: 15) {
+                let angle = CGFloat(degrees) * .pi / 180
+                func point(_ radius: CGFloat) -> CGPoint {
+                    CGPoint(x: centerX + direction * cos(angle) * radius,
+                            y: 28 + sin(angle) * radius)
+                }
+                // The outer border center is 20.5pt from the shared center;
+                // the detached tab's inset border is 11.5pt from it.
+                XCTAssertFalse(outline.contains(point(20.3)), "Gap pinched at \(degrees) degrees")
+                XCTAssertTrue(outline.contains(point(20.7)), "Gap widened at \(degrees) degrees")
+            }
+        }
+    }
+
     @MainActor
     func testTerminalSurfaceRendering() throws {
-        for selected in ["vial", "relay"] {
+        let tabs = [("vial", "vial-qmk"), ("relay", "relay-runner"), ("hidpress", "hidpress")]
+        for (selected, name) in tabs {
             let view = WorkspaceTerminalSurface(
-                tabs: [("vial", "vial-qmk"), ("relay", "relay-runner")],
+                tabs: tabs,
                 selectedID: selected, badges: [:], select: { _ in }, readOut: { _ in }, close: { _ in }
             ) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("~/dev/\(selected == "vial" ? "vial-qmk" : "relay-runner")")
+                    Text("~/dev/\(name)")
                         .foregroundStyle(ProgramBoardStyle.mutedText)
                     Text("› Ready for your next message")
                     Spacer()
