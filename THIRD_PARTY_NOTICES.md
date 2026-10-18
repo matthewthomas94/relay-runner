@@ -9,12 +9,15 @@ This inventory reflects `Package.resolved`, `services/requirements.txt`, and the
 | Component | Resolved version | Use | License |
 | --- | --- | --- | --- |
 | [FluidAudio](https://github.com/FluidInference/FluidAudio) | 0.17.5 (revision `0b1f462`) | Local Phonon and Parakeet speech recognition and audio processing | Apache License 2.0 |
+| [text-processing-rs](https://github.com/FluidInference/text-processing-rs) (`NemoTextProcessing.xcframework`) | 0.3.1, prebuilt static library linked through FluidAudio | Inverse text normalization for transcripts (FST engine) | Apache License 2.0; bundled crates are MIT and/or Apache License 2.0 |
 | [Swift Argument Parser](https://github.com/apple/swift-argument-parser) | 1.8.2, transitive through FluidAudio | Command parsing in resolved Swift dependencies | Apache License 2.0 |
 | [Sparkle](https://github.com/sparkle-project/Sparkle) | 2.9.3 | Signed in-app updates | Permissive MIT-style license in Sparkle's `LICENSE` |
 | [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) | 1.15.0 | Embedded terminal emulator | MIT License |
 | [TOMLKit](https://github.com/LebJe/TOMLKit) | 0.6.0 | TOML configuration parsing | MIT License |
 
 Sparkle and SwiftTerm credit additional upstream contributors in their license files. The packaging script copies the resolved checkout licenses rather than replacing those notices with a summary.
+
+text-processing-rs is copyright 2026 FluidInference. It is a Rust port of [NVIDIA NeMo Text Processing](https://github.com/NVIDIA/NeMo-text-processing) (Apache License 2.0), and its FST engine includes compiled grammars derived from NeMo Text Processing. It statically links rustfst, flate2 and other MIT- and/or Apache-2.0-licensed crates; its upstream `NOTICE` and `THIRD-PARTY-LICENSES.md` are authoritative. Because SwiftPM keeps this binary artifact outside `.build/checkouts`, the packaging script's copied license files do not include it; the Apache License 2.0 text shipped for FluidAudio applies.
 
 ## Installed into the local voice environment
 
