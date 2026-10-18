@@ -93,7 +93,7 @@ final class BoardHotkeyGestureTests: XCTestCase {
         for step in 0..<2 {
             let offset = Double(step) * 0.2
             XCTAssertFalse(gesture.handleFlagsChanged(.shift, at: start.addingTimeInterval(offset)))
-            // Shift+Left then Shift+Right (RR-408) reach the gesture as key downs.
+            // Shift+Left then Shift+Right reach the gesture as key downs.
             gesture.handleKeyDown()
             gesture.handleKeyDown()
             XCTAssertFalse(gesture.handleFlagsChanged([], at: start.addingTimeInterval(offset + 0.05)))

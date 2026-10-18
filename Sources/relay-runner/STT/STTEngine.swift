@@ -46,7 +46,6 @@ final class STTEngine: @unchecked Sendable {
     var playDetectedAt: Date?
     var boardToggleRequested = false
     var boardToggleRequestedAt: CFTimeInterval?
-    var sessionSwitchRequested: SessionSwitchDirection?
     var partialTranscription = ""
     var statusMessage = ""
     var recordingStartedSerial = 0
@@ -706,10 +705,6 @@ final class STTEngine: @unchecked Sendable {
                     boardToggleRequested = true
                     boardToggleRequestedAt = CACurrentMediaTime()
                     NSLog("[STTEngine] Workspace toggle requested (double-tap Shift)")
-                    continue
-
-                case .sessionSwitch(let direction):
-                    sessionSwitchRequested = direction
                     continue
                 }
             }

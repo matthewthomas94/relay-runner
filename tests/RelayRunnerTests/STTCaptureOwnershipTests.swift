@@ -343,4 +343,12 @@ final class STTCaptureOwnershipTests: XCTestCase {
     func testCommandCapturePolicyAllowsOnlyTheSessionControlsTutorialWhileIdle() {
         XCTAssertTrue(AppState.commandCaptureAllowed(hasActiveSession: false, sessionControlsTutorialActive: true, noteOwnsForeground: false))
     }
+
+    func testCommandCapturePolicyRefusesASessionStillStartingUp() {
+        // Nothing is ready to accept a command until the session's bridge is seen.
+        XCTAssertFalse(AppState.commandCaptureAllowed(hasActiveSession: true, sessionControlsTutorialActive: false,
+                                                      noteOwnsForeground: false, sessionStartingUp: true))
+        XCTAssertTrue(AppState.commandCaptureAllowed(hasActiveSession: false, sessionControlsTutorialActive: true,
+                                                     noteOwnsForeground: false, sessionStartingUp: true))
+    }
 }

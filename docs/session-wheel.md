@@ -12,7 +12,8 @@ limit still applies.
 
 - Hover a session to reveal three controls on the arc just outside its slot:
   **Play / Replay message**, **Record / Stop recording**, and **Stop session**.
-- Click a session itself to focus it through the existing session-selection path.
+- Click a session itself to switch voice to it. The terminal stays where it is;
+  the notch briefly reports the switch.
 - Click an empty slot to enter the project wheel. Click an available registered
   project to start its session without opening the Workspace. The center or Escape
   returns to sessions; paging arrows show more than six projects.
@@ -54,7 +55,7 @@ own session lifecycle and design system; no Vorssaint source files are vendored.
 Run the focused checks with:
 
 ```sh
-env -u SDKROOT swift test --filter 'FourFingerTapGestureTests|SessionWheelTests|VoiceReplyBadgeTests|SessionSwitchGestureTests|STT|VoiceBridgeFocusTests|CapsLockGestureTests'
+env -u SDKROOT swift test --filter 'FourFingerTapGestureTests|SessionWheelTests|VoiceReplyBadgeTests|STT|VoiceBridgeFocusTests|CapsLockGestureTests'
 ```
 
 Set `RELAY_WHEEL_RENDER_DIR` to an output directory to export SwiftUI previews

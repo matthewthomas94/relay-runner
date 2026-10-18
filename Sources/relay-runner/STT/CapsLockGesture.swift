@@ -9,9 +9,6 @@ import Foundation
 ///   - Double-tap Option: play queued TTS / replay last
 ///   - Double-tap Control: cancel recording / dismiss TTS
 ///   - Double-tap Shift: toggle the routed board surface
-///   - Shift+Right / Shift+Left: switch the voice target to the next / previous
-///     open session. The monitors are passive, so the keypress is not consumed
-///     and still reaches the frontmost app (it extends a text selection there).
 final class CapsLockGesture {
     typealias GlobalMonitorInstaller = (
         NSEvent.EventTypeMask,
@@ -31,7 +28,6 @@ final class CapsLockGesture {
         case interrupt
         case play
         case boardToggle
-        case sessionSwitch(SessionSwitchDirection)
     }
 
     /// Threshold before a held key counts as "recording" (not a tap)
@@ -75,7 +71,6 @@ final class CapsLockGesture {
     private var pendingPlay = false
     private var pendingCancel = false
     private var pendingBoardToggle = false
-    private var pendingSessionSwitch: SessionSwitchDirection?
     private var boardHotkeyGesture = BoardHotkeyGesture()
 
     /// Modal confirmation gate. When `stateMachine?.pendingConfirmation != nil`
@@ -164,10 +159,6 @@ final class CapsLockGesture {
         if pendingBoardToggle {
             pendingBoardToggle = false
             return .boardToggle
-        }
-        if let direction = pendingSessionSwitch {
-            pendingSessionSwitch = nil
-            return .sessionSwitch(direction)
         }
 
         let keyOn = isKeyOn
@@ -276,16 +267,7 @@ final class CapsLockGesture {
                 controlTaps.removeAll()
                 pendingCancel = false
             }
-            // The arrow still reaches the board gesture, so Shift+Arrow never
-            // counts as a clean Shift tap.
             boardHotkeyGesture.handleKeyDown()
-            if let direction = SessionSwitchGesture.direction(
-                keyCode: event.keyCode,
-                modifierFlags: event.modifierFlags,
-                isRepeat: event.isARepeat
-            ) {
-                pendingSessionSwitch = direction
-            }
         default:
             break
         }

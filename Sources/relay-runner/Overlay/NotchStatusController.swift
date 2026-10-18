@@ -498,6 +498,35 @@ enum NotchStatusSurfaceShape {
     }
 }
 
+/// What the notch says after a session wheel switch. Only a switch that
+/// happened is ever claimed as one.
+enum SessionSwitchNotice: Equatable {
+    case switched(to: String)
+    case nextRecording(to: String)
+    case pending(to: String)
+
+    static let displayDuration: TimeInterval = 2
+
+    init?(switchingTo name: String, focused: Bool, pending: Bool, recording: Bool) {
+        if focused {
+            // The in-flight recording keeps the session it started with.
+            self = recording ? .nextRecording(to: name) : .switched(to: name)
+        } else if pending {
+            self = .pending(to: name)
+        } else {
+            return nil
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .switched(let name): return "Switched to · \(name)"
+        case .nextRecording(let name): return "Next recording · \(name)"
+        case .pending(let name): return "Switch pending · \(name)"
+        }
+    }
+}
+
 struct NotchVisualLabelPresentation: Equatable {
     let labels: [String]
     let hoverLabel: String?
@@ -512,7 +541,7 @@ enum NotchVisualLabelAllowlist {
     /// `voiceTargetName` names the session a recording is delivered to when
     /// several sessions share the voice bridge (RR-398). `playbackTargetName`
     /// names the session whose reply is playing (RR-407). `switchNotice` is the
-    /// brief outcome of a Shift+Arrow session switch (RR-408); it shows over
+    /// brief outcome of a session wheel switch; it shows over
     /// the state's own label, including Playing, and pins until it expires.
     static func presentation(
         for state: OverlayState,

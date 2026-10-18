@@ -251,7 +251,8 @@ final class AppState {
     }
     @ObservationIgnored private let assistantSessionStore = AssistantSessionStore()
     @ObservationIgnored private var pendingContextSelection: AssistantSessionContext?
-    /// RR-408: the brief notch outcome of a Shift+Arrow session switch.
+    @ObservationIgnored private var pendingContextSelectionShowsTerminal = true
+    /// The brief notch outcome of a session wheel switch.
     @ObservationIgnored private var sessionSwitchNotice: SessionSwitchNotice?
     @ObservationIgnored private var sessionSwitchNoticeExpiry: DispatchWorkItem?
     @ObservationIgnored private var continuationSourceReady = false
@@ -518,12 +519,14 @@ final class AppState {
     /// an active Claude or Codex voice session (embedded, external bridge, or a
     /// bridge retained through provider reconnect) or the projectless onboarding
     /// voice tutorial. Note Taker owns its own capture, so command capture yields.
+    /// A session that is still starting up has nothing ready to accept a command.
     static func commandCaptureAllowed(
         hasActiveSession: Bool,
         sessionControlsTutorialActive: Bool,
-        noteOwnsForeground: Bool
+        noteOwnsForeground: Bool,
+        sessionStartingUp: Bool = false
     ) -> Bool {
-        !noteOwnsForeground && (hasActiveSession || sessionControlsTutorialActive)
+        !noteOwnsForeground && (sessionControlsTutorialActive || (hasActiveSession && !sessionStartingUp))
     }
 
     /// Whether a Settings reference recording may open the microphone now.
@@ -536,7 +539,9 @@ final class AppState {
         engine.setCaptureAllowed(Self.commandCaptureAllowed(
             hasActiveSession: hasActiveSession,
             sessionControlsTutorialActive: onboardingTutorialSpeechActive,
-            noteOwnsForeground: meetingNoteSnapshot.phase.ownsForeground
+            noteOwnsForeground: meetingNoteSnapshot.phase.ownsForeground,
+            // Never drop a recording already in flight for another session.
+            sessionStartingUp: bridgeStartingUp && !engine.isRecording
         ))
     }
 
@@ -944,7 +949,7 @@ final class AppState {
         sessionWheel.refresh = { [weak self] model, includesProjects in
             self?.refreshSessionWheel(model, includesProjects: includesProjects)
         }
-        sessionWheel.focusSession = { [weak self] in self?.focusSessionTab(contextID: $0) }
+        sessionWheel.focusSession = { [weak self] in self?.switchSessionFromWheel(contextID: $0) }
         sessionWheel.startProject = { [weak self] path in
             self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false
         }
@@ -1283,34 +1288,29 @@ final class AppState {
 
     /// RR-395: a Workspace terminal tab was selected; focus that context's
     /// live session (which also routes voice there).
-    func focusSessionTab(contextID: String) {
+    func focusSessionTab(contextID: String, showsTerminal: Bool = true) {
         guard contextID != activeContext.id,
               let context = assistantSessionStore.document.bindings[contextID]?.context else { return }
         if context.isGeneral {
-            selectGeneralContext()
+            selectGeneralContext(showsTerminal: showsTerminal)
         } else if let path = context.repositoryPath {
-            selectProjectContext(repositoryPath: path)
+            selectProjectContext(repositoryPath: path, showsTerminal: showsTerminal)
         }
     }
 
-    /// RR-408: Shift+Right / Shift+Left cycle the voice target through the
-    /// Workspace's session tabs. Focusing goes through `focusSessionTab`, so
-    /// the existing guards apply; the notch only claims what happened.
-    func switchVoiceTarget(_ direction: SessionSwitchDirection) {
-        let coordinator = SessionSwitchCoordinator<String>(
-            liveIDs: { [weak self] in self?.workspaceSessionTabs.map(\.id) ?? [] },
-            currentID: { [weak self] in
-                guard let self else { return nil }
-                let live = self.sessionRegistry.liveContextIDs
-                return [self.activeContext.id, self.voiceContextID].compactMap { $0 }.first(where: live.contains)
-            },
-            displayName: { [weak self] id in self?.workspaceSessionTabs.first { $0.id == id }?.name },
-            focus: { [weak self] in self?.focusSessionTab(contextID: $0) },
-            isFocused: { [weak self] in self?.activeContext.id == $0 },
-            isPending: { [weak self] in self?.pendingContextSelection?.id == $0 },
-            isRecording: { [weak self] in self?.sttEngine?.isRecording == true }
-        )
-        showSessionSwitchNotice(coordinator.switchTarget(direction))
+    /// The session wheel retargets voice without raising the terminal; the
+    /// notch claims only what actually happened.
+    private func switchSessionFromWheel(contextID: String) {
+        guard contextID != activeContext.id,
+              let name = workspaceSessionTabs.first(where: { $0.id == contextID })?.name else { return }
+        let recording = sttEngine?.isRecording == true
+        focusSessionTab(contextID: contextID, showsTerminal: false)
+        showSessionSwitchNotice(SessionSwitchNotice(
+            switchingTo: name,
+            focused: activeContext.id == contextID,
+            pending: pendingContextSelection?.id == contextID,
+            recording: recording
+        ))
     }
 
     private func showSessionSwitchNotice(_ notice: SessionSwitchNotice?) {
@@ -2152,11 +2152,12 @@ final class AppState {
     }
 
     @discardableResult
-    func selectGeneralContext(startsSession: Bool = true) -> Bool {
+    func selectGeneralContext(startsSession: Bool = true, showsTerminal: Bool = true) -> Bool {
         do {
             guard let registry = projectRegistryV2 else { return false }
             let project = try registry.ensureGeneralTasksProject()
-            return selectProjectContext(repositoryPath: project.lastResolvedPath, startsSession: startsSession)
+            return selectProjectContext(repositoryPath: project.lastResolvedPath, startsSession: startsSession,
+                                        showsTerminal: showsTerminal)
         } catch {
             contextSwitchMessage = "general-tasks could not be opened: \(error.localizedDescription)"
             return false
@@ -2166,7 +2167,7 @@ final class AppState {
     /// `startsSession: false` browses: a context with a live session is
     /// focused, any other context is selected without launching a process.
     @discardableResult
-    func selectProjectContext(repositoryPath: String, startsSession: Bool = true) -> Bool {
+    func selectProjectContext(repositoryPath: String, startsSession: Bool = true, showsTerminal: Bool = true) -> Bool {
         do {
             let context: AssistantSessionContext
             if let registry = projectRegistryV2 {
@@ -2185,7 +2186,7 @@ final class AppState {
                 publishConversationState()
                 return true
             }
-            return requestContextSelection(context)
+            return requestContextSelection(context, showsTerminal: showsTerminal)
         } catch {
             contextSwitchMessage = "This project's history is retained. Resolve its location before running work: \(error.localizedDescription)"
             surfaceProjectScopeFailure(String(describing: error))
@@ -2222,7 +2223,8 @@ final class AppState {
         } catch { contextSwitchMessage = "Continuation could not be cleared: \(error.localizedDescription)" }
     }
 
-    private func requestContextSelection(_ context: AssistantSessionContext, continuationID: String? = nil) -> Bool {
+    private func requestContextSelection(_ context: AssistantSessionContext, continuationID: String? = nil,
+                                         showsTerminal: Bool = true) -> Bool {
         if continuationID == nil {
             do {
                 let pending = assistantSessionStore.pendingContinuation
@@ -2238,11 +2240,12 @@ final class AppState {
         // forwarded continuation or a busy note capture waits.
         if continuationID != nil || (!canReplaceContextProvider && meetingNoteSnapshot.phase.ownsForeground) {
             pendingContextSelection = context
+            pendingContextSelectionShowsTerminal = showsTerminal
             contextSwitchMessage = "Switching to \(context.displayName) after the current recording, command or approval finishes."
             return true
         }
         pendingContextSelection = nil
-        return newSession(workingDirectory: context.repositoryPath)
+        return newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: showsTerminal)
     }
 
     private func reserveContextContinuation(_ request: [String: String], destination: AssistantSessionContext) throws -> String {
@@ -2387,7 +2390,8 @@ final class AppState {
             if let selection = pendingContextSelection, canReplaceContextProvider,
                assistantSessionStore.pendingContinuation == nil || continuationSourceReady {
                 pendingContextSelection = nil
-                _ = newSession(workingDirectory: selection.repositoryPath)
+                _ = newSession(workingDirectory: selection.repositoryPath,
+                               showsWorkspaceOnLaunch: pendingContextSelectionShowsTerminal)
                 return
             }
             if try assistantSessionStore.saveIfIdle(context: activeContext, now: now,
@@ -2510,6 +2514,7 @@ final class AppState {
             ) {
                 sessionRegistry.focus(contextID: previousContext.id)
                 pendingContextSelection = context
+                pendingContextSelectionShowsTerminal = showsWorkspaceOnLaunch
                 contextSwitchMessage = "Switching to \(context.displayName) after the current command or approval finishes."
                 return true
             }
@@ -3975,11 +3980,6 @@ final class AppState {
             self.observedCaptureOwnerRequestedSerial = engine.captureOwnerRequestedSerial
             self.publishOnboardingTutorialSTTEvents(from: engine, includeRecordingStart: false)
 
-            if let direction = engine.sessionSwitchRequested {
-                engine.sessionSwitchRequested = nil
-                self.switchVoiceTarget(direction)
-            }
-
             if engine.boardToggleRequested {
                 let recognizedAt = engine.boardToggleRequestedAt ?? CACurrentMediaTime()
                 engine.boardToggleRequested = false
@@ -4025,6 +4025,14 @@ final class AppState {
                     from: engine,
                     includeRecordingStart: true
                 )
+            } else if captureOwnerRequested && self.bridgeStartingUp
+                        && !self.onboarding.isSessionControlsTutorialActive {
+                // The mic stayed closed: nothing is ready to accept a command yet.
+                self.stateMachine.showProgramStatus(
+                    title: "Session starting up",
+                    body: "Relay Runner is still starting the session. Try again once it's ready."
+                )
+                self.syncNotchActivitySurface()
             } else if justStartedRecording
                         || (captureOwnerRequested && !self.onboarding.isSessionControlsTutorialActive) {
                 // An out-of-session gesture never opened the mic; it takes the
