@@ -8,7 +8,7 @@ This inventory reflects `Package.resolved`, `services/requirements.txt`, and the
 
 | Component | Resolved version | Use | License |
 | --- | --- | --- | --- |
-| [FluidAudio](https://github.com/FluidInference/FluidAudio) | 0.13.6 | Local Parakeet speech recognition and audio processing | Apache License 2.0 |
+| [FluidAudio](https://github.com/FluidInference/FluidAudio) | 0.17.5 (revision `0b1f462`) | Local Phonon and Parakeet speech recognition and audio processing | Apache License 2.0 |
 | [Swift Argument Parser](https://github.com/apple/swift-argument-parser) | 1.8.2, transitive through FluidAudio | Command parsing in resolved Swift dependencies | Apache License 2.0 |
 | [Sparkle](https://github.com/sparkle-project/Sparkle) | 2.9.3 | Signed in-app updates | Permissive MIT-style license in Sparkle's `LICENSE` |
 | [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) | 1.15.0 | Embedded terminal emulator | MIT License |
@@ -35,6 +35,7 @@ When no compatible system Python exists, setup downloads a checksum-verified [py
 
 | Model or data | Source | License / attribution |
 | --- | --- | --- |
+| Phonon 2 Core ML | [FluidInference/phonon-2-coreml](https://huggingface.co/FluidInference/phonon-2-coreml), pinned to revision `a812a0df` | Creative Commons Attribution 4.0; Fluid Inference |
 | Parakeet TDT v2 Core ML | [FluidInference/parakeet-tdt-0.6b-v2-coreml](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-coreml) | Creative Commons Attribution 4.0; converted by Fluid Inference from NVIDIA Parakeet |
 | Parakeet TDT v3 Core ML | [FluidInference/parakeet-tdt-0.6b-v3-coreml](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml) | Creative Commons Attribution 4.0; converted by Fluid Inference from NVIDIA Parakeet |
 | Kokoro v1.0 ONNX and voice data | [fastrtc/kokoro-onnx](https://huggingface.co/fastrtc/kokoro-onnx) and [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) | Preserve the download repository's notice and the upstream Kokoro Apache License 2.0 attribution |
