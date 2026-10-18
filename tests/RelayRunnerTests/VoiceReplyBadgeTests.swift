@@ -29,4 +29,17 @@ final class VoiceReplyBadgeTests: XCTestCase {
         )
         XCTAssertEqual(payload, ["session_key": "context-a"])
     }
+
+    func testWheelPlaybackAvailabilityRequiresALatestStoredMessage() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertFalse(VoiceReplyBadge.hasStoredReply(path: url.path))
+        for text in ["invalid", "{}", #"{"replies":[]}"#, #"{"replies":[{"text":"Old"},{"text":" "}]}"#] {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            XCTAssertFalse(VoiceReplyBadge.hasStoredReply(path: url.path))
+        }
+        try #"{"unread_count":0,"replies":[{"text":"Ready to replay"}]}"#
+            .write(to: url, atomically: true, encoding: .utf8)
+        XCTAssertTrue(VoiceReplyBadge.hasStoredReply(path: url.path))
+    }
 }

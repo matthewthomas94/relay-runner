@@ -143,6 +143,14 @@ struct VoiceReplyBadge: Equatable {
 
     var count: Int { unreadCount + outcomeCount }
 
+    static func hasStoredReply(path: String) -> Bool {
+        guard let data = FileManager.default.contents(atPath: path),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let replies = object["replies"] as? [[String: Any]],
+              let text = replies.last?["text"] as? String else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     static func load(path: String) -> VoiceReplyBadge {
         guard let data = FileManager.default.contents(atPath: path),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .init() }

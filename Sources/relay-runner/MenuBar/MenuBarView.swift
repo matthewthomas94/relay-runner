@@ -57,6 +57,9 @@ struct MenuBarView: View {
 
         Button("Show Workspace") { appState.toggleWorkspace() }
             .disabled(appState.isFirstRunExperienceActive)
+        Button("Show Session Wheel") { appState.toggleSessionWheel() }
+            .help("Four-finger tap on the trackpad")
+            .disabled(appState.isFirstRunExperienceActive)
         Button("Show Status") { appState.showProgramStatus() }
             .disabled(appState.isFirstRunExperienceActive)
 

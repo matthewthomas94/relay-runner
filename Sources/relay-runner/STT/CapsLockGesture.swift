@@ -227,6 +227,7 @@ final class CapsLockGesture {
     func reset() {
         recording = false
         transitions.removeAll()
+        manualKeyDown = nil
         prevKeyOn = isKeyOn
         // If the key is still physically held, suppress until released
         suppressed = isKeyOn

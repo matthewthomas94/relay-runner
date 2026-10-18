@@ -3,6 +3,22 @@ import XCTest
 @testable import relay_runner
 
 final class CapsLockGestureTests: XCTestCase {
+    func testCancelledManualRecordingCanStartWithOneClickAgain() {
+        let gesture = CapsLockGesture(
+            activationKey: "f13",
+            globalMonitorInstaller: { _, _ in nil },
+            localMonitorInstaller: { _, _ in nil },
+            monitorRemover: { _ in },
+            diagnosticLogger: { _ in }
+        )
+        gesture.toggleActivation()
+        XCTAssertEqual(gesture.poll(currentSegment: ""), .startRecording)
+        gesture.reset()
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+        gesture.toggleActivation()
+        XCTAssertEqual(gesture.poll(currentSegment: ""), .startRecording)
+    }
+
     func testGlobalModifierMonitorRetriesAfterInitialFailureWithoutDuplicates() {
         var globalInstallCount = 0
         var localInstallCount = 0

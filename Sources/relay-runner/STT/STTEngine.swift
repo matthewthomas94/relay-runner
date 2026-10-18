@@ -107,6 +107,7 @@ final class STTEngine: @unchecked Sendable {
     @ObservationIgnored private let voiceTargetLock = NSLock()
     @ObservationIgnored private var voiceTargetKey: String?
     @ObservationIgnored private var recordingTargetKey: String?
+    @ObservationIgnored private var requestedRecordingTargetKey: String?
 
     // MARK: - Init
 
@@ -271,17 +272,18 @@ final class STTEngine: @unchecked Sendable {
         }
     }
 
-    /// The key the current or latest recording was stamped with.
+    /// The key of a requested, current, or latest recording.
     var recordingVoiceTargetSessionKey: String? {
         voiceTargetLock.lock()
         defer { voiceTargetLock.unlock() }
-        return recordingTargetKey
+        return requestedRecordingTargetKey ?? recordingTargetKey
     }
 
     private func stampRecordingVoiceTarget() -> String? {
         voiceTargetLock.lock()
         defer { voiceTargetLock.unlock() }
-        recordingTargetKey = voiceTargetKey
+        recordingTargetKey = requestedRecordingTargetKey ?? voiceTargetKey
+        requestedRecordingTargetKey = nil
         return recordingTargetKey
     }
 
@@ -313,9 +315,16 @@ final class STTEngine: @unchecked Sendable {
         }
     }
 
-    func toggleRecording() {
-        guard !referenceAudioSuspended else { return }
+    @discardableResult
+    func toggleRecording(forSessionKey sessionKey: String? = nil) -> Bool {
+        guard !referenceAudioSuspended else { return false }
+        // Wheel actions name a session before the gesture loop polls. A focus
+        // change in that interval must not redirect the requested recording.
+        voiceTargetLock.lock()
+        requestedRecordingTargetKey = isRecording || requestedRecordingTargetKey != nil ? nil : sessionKey
+        voiceTargetLock.unlock()
         gesture.toggleActivation()
+        return true
     }
 
     private var referenceAudioSuspended: Bool {
@@ -366,7 +375,10 @@ final class STTEngine: @unchecked Sendable {
 
     /// Cancel an in-progress recording externally (e.g. no session to send to).
     func cancelRecording() {
-        guard isRecording else { return }
+        voiceTargetLock.lock()
+        let hasRequestedRecording = requestedRecordingTargetKey != nil
+        voiceTargetLock.unlock()
+        guard isRecording || hasRequestedRecording else { return }
         gesture.reset()
         resetRecordingBuffer()
         isRecording = false
@@ -400,6 +412,9 @@ final class STTEngine: @unchecked Sendable {
     }
 
     private func resetRecordingBuffer() {
+        voiceTargetLock.lock()
+        requestedRecordingTargetKey = nil
+        voiceTargetLock.unlock()
         audioBuffer.accepting = false
         audioBuffer.clear()
         audioBuffer.setMaxSamples(AudioBuffer.defaultMaxSamples)
@@ -592,6 +607,7 @@ final class STTEngine: @unchecked Sendable {
                     // and let AppState show the session affordance instead.
                     guard isCaptureAllowed else {
                         gesture.reset()
+                        resetRecordingBuffer()
                         isRecording = false
                         partialTranscription = ""
                         captureOwnerRequestedSerial += 1
@@ -599,6 +615,7 @@ final class STTEngine: @unchecked Sendable {
                     }
                     guard isCaptureReady() else {
                         gesture.reset()
+                        resetRecordingBuffer()
                         isRecording = false
                         partialTranscription = ""
                         writeVoiceOutput("__CONTINUITY__:capture_failed")

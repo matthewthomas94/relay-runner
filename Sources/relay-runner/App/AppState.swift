@@ -372,6 +372,7 @@ final class AppState {
     let stateMachine = StateMachine()
     private var overlayController: OverlayController?
     @ObservationIgnored private let programBoardOverlay = ProgramBoardOverlayController()
+    @ObservationIgnored private let sessionWheel = SessionWheelController()
     @ObservationIgnored private let notchStatusController = NotchStatusController()
     private var perimeterOverlay: PerimeterOverlayManager?
     private var eventBus: StateEventBus?
@@ -940,6 +941,16 @@ final class AppState {
         notchStatusController.setGlyphClickHandler { [weak self] in
             self?.toggleBoard()
         }
+        sessionWheel.refresh = { [weak self] model, includesProjects in
+            self?.refreshSessionWheel(model, includesProjects: includesProjects)
+        }
+        sessionWheel.focusSession = { [weak self] in self?.focusSessionTab(contextID: $0) }
+        sessionWheel.startProject = { [weak self] path in
+            self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false
+        }
+        sessionWheel.sessionAction = { [weak self] id, action in
+            self?.performSessionWheelAction(contextID: id, action: action) ?? false
+        }
         self.updateRelaunchObserver = NotificationCenter.default.addObserver(
             forName: .relayRunnerWillRelaunchForUpdate,
             object: nil,
@@ -1001,6 +1012,8 @@ final class AppState {
                 self.statusText = launchPlan.statusText ?? self.statusText
             }
             self.onboarding.showIfNeeded()
+            FourFingerTapMonitor.shared.onTap = { [weak self] in self?.toggleSessionWheel() }
+            FourFingerTapMonitor.shared.start()
             if self.refreshBundledServicesOnLaunch {
                 self.refreshBundledServicesAfterLaunch()
             }
@@ -1981,6 +1994,8 @@ final class AppState {
 
     /// Full shutdown (for app quit).
     func stopServices() {
+        sessionWheel.dismiss()
+        FourFingerTapMonitor.shared.stop()
         saveLiveAssistantSessions()
         pendingSessionLaunchID = nil
         stopMeetingNoteOptionGesture()
@@ -2016,6 +2031,8 @@ final class AppState {
     }
 
     func prepareForSparkleRelaunch() {
+        sessionWheel.dismiss()
+        FourFingerTapMonitor.shared.stop()
         saveLiveAssistantSessions()
         pendingSessionLaunchID = nil
         workspaceDiscoveryTask?.cancel()
@@ -2964,6 +2981,78 @@ final class AppState {
 
     func toggleWorkspace() {
         _ = toggleBoard()
+    }
+
+    func toggleSessionWheel() {
+        guard allowsAppShellAccess else { return }
+        sessionWheel.toggle()
+    }
+
+    private func refreshSessionWheel(_ model: SessionWheelModel, includesProjects: Bool) {
+        let recording = sttEngine?.isRecording == true
+        let recordingKey = sttEngine?.recordingVoiceTargetSessionKey
+        let ready = sttEngine != nil && sttSetupSucceeded && permissions.microphone == .granted
+            && !meetingNoteSnapshot.phase.ownsForeground
+        if includesProjects {
+            let running = runningSessionProjectPaths
+            model.projects = registeredProjectsV2()
+                .filter { project in !running.contains { AssistantSessionStore.samePath($0, project.lastResolvedPath) } }
+                .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+                .map { .init(id: $0.projectID, name: $0.displayName, path: $0.lastResolvedPath,
+                             isAvailable: $0.availability == .available) }
+        }
+        if sessionRegistry.liveContextIDs.count >= EmbeddedSessionRegistry.maxConcurrentSessions {
+            model.startUnavailableReason = "Session limit reached"
+        } else if pendingSessionLaunchID != nil {
+            model.startUnavailableReason = "Session starting"
+        } else if meetingNoteSnapshot.phase.ownsForeground {
+            model.startUnavailableReason = "Finish taking notes first"
+        } else {
+            model.startUnavailableReason = nil
+        }
+        model.refresh(sessions: workspaceSessionTabs.map { tab in
+            let spool = sessionRegistry.spool(for: tab.id)
+            let key = spool?.key
+            return SessionWheelSession(
+                id: tab.id, name: tab.name, unreadCount: sessionReplyBadges[tab.id] ?? 0,
+                isFocused: tab.id == activeContext.id,
+                isRecording: recording && key != nil && key == recordingKey,
+                canRecord: SessionWheelRecording.canToggle(targetKey: key, recording: recording,
+                                                          recordingKey: recordingKey, ready: ready),
+                canPlay: spool.map { VoiceReplyBadge.hasStoredReply(path: $0.replyBadge) } ?? false
+            )
+        })
+    }
+
+    private func performSessionWheelAction(contextID: String, action: SessionWheelAction) -> Bool {
+        guard sessionRegistry.isLive(contextID),
+              let context = assistantSessionStore.document.bindings[contextID]?.context else { return false }
+        switch action {
+        case .message:
+            guard let spool = sessionRegistry.spool(for: contextID),
+                  VoiceReplyBadge.hasStoredReply(path: spool.replyBadge),
+                  let key = spool.key, let message = Self.voiceReplayMessage(sessionKey: key) else { return false }
+            return SocketClient.bridgeSend(message)
+        case .recording:
+            guard let engine = sttEngine,
+                  let key = sessionRegistry.spool(for: contextID)?.key,
+                  SessionWheelRecording.canToggle(targetKey: key, recording: engine.isRecording,
+                                                  recordingKey: engine.recordingVoiceTargetSessionKey,
+                                                  ready: sttSetupSucceeded && permissions.microphone == .granted
+                                                    && !meetingNoteSnapshot.phase.ownsForeground) else { return false }
+            if !engine.isRecording {
+                guard newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: false),
+                      activeContext.id == contextID, syncVoiceFocus(force: true) else { return false }
+            }
+            return engine.toggleRecording(forSessionKey: key)
+        case .stop:
+            if let key = sessionRegistry.spool(for: contextID)?.key,
+               sttEngine?.recordingVoiceTargetSessionKey == key {
+                sttEngine?.cancelRecording()
+            }
+            closeSessionTab(contextID: contextID)
+            return true
+        }
     }
 
     func showWorkspaceSettings() {

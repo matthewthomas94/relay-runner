@@ -262,6 +262,42 @@ final class STTCaptureOwnershipTests: XCTestCase {
         XCTAssertFalse(backend.isRunning)
     }
 
+    func testWheelRecordingKeepsItsRequestedSessionAcrossAFocusChange() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.setCaptureAllowed(true)
+        engine.voiceTargetSessionKey = "session-a"
+        engine.toggleRecording(forSessionKey: "session-a")
+        engine.voiceTargetSessionKey = "session-b"
+        try await waitUntil { engine.recordingStartedSerial == 1 }
+        XCTAssertEqual(engine.recordingVoiceTargetSessionKey, "session-a")
+        XCTAssertTrue(output.lines.contains("__VOICE_TARGET__:session-a"))
+        XCTAssertFalse(output.lines.contains("__VOICE_TARGET__:session-b"))
+        engine.toggleRecording(forSessionKey: "session-a")
+        try await waitUntil { !engine.isRecording }
+        engine.toggleRecording()
+        try await waitUntil { engine.recordingStartedSerial == 2 }
+        XCTAssertEqual(engine.recordingVoiceTargetSessionKey, "session-b")
+    }
+
+    func testCancellingAWheelRequestBeforeModelLoadDoesNotLeakItsTarget() async throws {
+        let gate = ModelGate()
+        let engine = makeEngine(gate: gate)
+        let start = Task { try await engine.start() }
+        engine.setCaptureAllowed(true)
+        engine.toggleRecording(forSessionKey: "session-a")
+        XCTAssertEqual(engine.recordingVoiceTargetSessionKey, "session-a")
+        engine.cancelRecording()
+        engine.voiceTargetSessionKey = "session-b"
+        gate.release()
+        try await start.value
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(engine.recordingStartedSerial, 0)
+        engine.toggleRecording()
+        try await waitUntil { engine.recordingStartedSerial == 1 }
+        XCTAssertEqual(engine.recordingVoiceTargetSessionKey, "session-b")
+    }
+
     // MARK: - Ownership policy
 
     func testEndingTutorialReleasesCaptureUnlessProviderSessionRemains() async throws {
