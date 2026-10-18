@@ -22,7 +22,7 @@ struct STTEngineDependencies {
     var writeVoiceOutput: (String) -> Bool
 
     static let live = STTEngineDependencies(
-        loadModel: STTEngine.loadParakeetModel,
+        loadModel: STTEngine.loadSTTModel,
         makeCapture: { sampleHandler, isRecording in
             AudioCaptureLifecycle(sampleHandler: sampleHandler, isRecording: isRecording)
         },
@@ -150,7 +150,7 @@ final class STTEngine: @unchecked Sendable {
         // Load model (with download progress feedback)
         NSLog("[STTEngine] Loading model: \(modelName)...")
         statusMessage = "Loading STT model..."
-        _ = dependencies.writeVoiceOutput("__STATUS__:Loading Parakeet \(modelName) model...")
+        _ = dependencies.writeVoiceOutput("__STATUS__:Loading \(modelName) model...")
 
         let manager = try await dependencies.loadModel(modelName) { [weak self] message in
             Task { @MainActor in
@@ -162,6 +162,7 @@ final class STTEngine: @unchecked Sendable {
         // A model load that finishes after stop() must not reopen the mic.
         guard !isEngineStopped else {
             NSLog("[STTEngine] Model load finished after stop; capture stays closed.")
+            await manager.cleanup()
             return
         }
         self.asrManager = manager
@@ -193,25 +194,17 @@ final class STTEngine: @unchecked Sendable {
         }
     }
 
-    static func loadParakeetModel(
+    /// Resolves the explicit model name (rejecting unknown names and Phonon on
+    /// macOS 14 before any I/O), then prepares a verified, smoke-tested manager
+    /// through the shared coordinator Note Taker also uses.
+    static func loadSTTModel(
         modelName: String,
         progress: @escaping @Sendable (String) -> Void
     ) async throws -> AsrManager {
-        let modelVersion: AsrModelVersion = modelName.contains("v3") ? .v3 : .v2
-        let models = try await AsrModels.downloadAndLoad(version: modelVersion) { update in
-            let pct = Int(update.fractionCompleted * 100)
-            switch update.phase {
-            case .listing:
-                progress("Checking models...")
-            case .downloading(let completed, let total):
-                progress("Downloading model \(completed)/\(total) (\(pct)%)")
-            case .compiling(let name):
-                progress("Compiling \(name)...")
-            }
+        let model = try STTModel.resolve(modelName)
+        return try await STTModelPreparation.shared.prepareManager(for: model) { phase in
+            progress(phase.statusText(for: model))
         }
-        let manager = AsrManager()
-        try await manager.loadModels(models)
-        return manager
     }
 
     /// Session-level microphone ownership. The model and gestures stay live
@@ -535,7 +528,8 @@ final class STTEngine: @unchecked Sendable {
             _ = dependencies.writeVoiceOutput("__CONTINUITY__:transcription_started")
             let result = try await {
                 do {
-                    return try await manager.transcribe(audio, source: .microphone)
+                    var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+                    return try await manager.transcribe(audio, decoderState: &decoderState)
                 } catch {
                     _ = dependencies.writeVoiceOutput("__CONTINUITY__:transcription_failed")
                     throw error
@@ -784,7 +778,8 @@ final class STTEngine: @unchecked Sendable {
         }
         let result = try await {
             do {
-                return try await manager.transcribe(audio, source: .microphone)
+                var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+                return try await manager.transcribe(audio, decoderState: &decoderState)
             } catch {
                 writeVoiceOutput("__CONTINUITY__:transcription_failed")
                 throw error

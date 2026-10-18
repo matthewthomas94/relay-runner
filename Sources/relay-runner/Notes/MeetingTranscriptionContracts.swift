@@ -10,6 +10,7 @@ enum MeetingLocalModelState: Equatable, Sendable {
     case checking
     case downloading(completed: Int, total: Int)
     case compiling(String)
+    case verifying
     case ready(model: String)
     case failed(String)
 }

@@ -4,13 +4,26 @@ import Foundation
 /// A note-only local recognizer. It intentionally has no FIFO, provider,
 /// messenger, title, summary, or voice-command dependency.
 actor FluidAudioMeetingTranscriber: MeetingWindowTranscribing {
-    private let modelName: String
-    private let modelVersion: AsrModelVersion
-    private var manager: AsrManager?
+    typealias ManagerLoader = @Sendable (
+        _ model: STTModel,
+        _ progress: @escaping @Sendable (STTPreparationPhase) -> Void
+    ) async throws -> AsrManager
 
-    init(modelName: String) {
+    private let modelName: String
+    private let loadManager: ManagerLoader
+    private var manager: AsrManager?
+    /// Bumped by `release()` so a preparation it superseded cannot publish
+    /// readiness or install its manager.
+    private var generation = 0
+
+    init(
+        modelName: String,
+        loadManager: @escaping ManagerLoader = { model, progress in
+            try await STTModelPreparation.shared.prepareManager(for: model, progress: progress)
+        }
+    ) {
         self.modelName = modelName
-        self.modelVersion = modelName.contains("v3") ? .v3 : .v2
+        self.loadManager = loadManager
     }
 
     func prepare(
@@ -20,20 +33,26 @@ actor FluidAudioMeetingTranscriber: MeetingWindowTranscribing {
             onState(.ready(model: modelName))
             return
         }
+        let model = try STTModel.resolve(modelName)
+        let started = generation
         onState(.checking)
-        let models = try await AsrModels.downloadAndLoad(version: modelVersion) { progress in
-            switch progress.phase {
-            case .listing:
+        let prepared = try await loadManager(model) { phase in
+            switch phase {
+            case .checking:
                 onState(.checking)
-            case .downloading(let completed, let total):
+            case .downloading(let completed, let total, _):
                 onState(.downloading(completed: completed, total: total))
             case .compiling(let name):
                 onState(.compiling(name))
+            case .verifying:
+                onState(.verifying)
             }
         }
-        let manager = AsrManager()
-        try await manager.loadModels(models)
-        self.manager = manager
+        guard generation == started, manager == nil, !Task.isCancelled else {
+            await prepared.cleanup()
+            throw CancellationError()
+        }
+        manager = prepared
         onState(.ready(model: modelName))
     }
 
@@ -45,8 +64,8 @@ actor FluidAudioMeetingTranscriber: MeetingWindowTranscribing {
         if samples.count < 16_000 {
             samples.append(contentsOf: repeatElement(0, count: 16_000 - samples.count))
         }
-        let source: AudioSource = request.sourceID == .microphone ? .microphone : .system
-        let result = try await manager.transcribe(samples, source: source)
+        var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+        let result = try await manager.transcribe(samples, decoderState: &decoderState)
         let tokens = (result.tokenTimings ?? []).map {
             MeetingRecognizedToken(
                 text: $0.token,
@@ -63,6 +82,7 @@ actor FluidAudioMeetingTranscriber: MeetingWindowTranscribing {
     }
 
     func release() async {
+        generation += 1
         guard let manager else { return }
         self.manager = nil
         await manager.cleanup()
