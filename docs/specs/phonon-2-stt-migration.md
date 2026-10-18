@@ -266,3 +266,127 @@ regression against the same-run Parakeet baseline.
 
 Both are accepted risk. The FIFO payload and bridge contract are unchanged, so
 both providers receive the same single final line the tests assert.
+
+## RR-416 validation evidence and activation decision
+
+**Decision: activation stays disabled.** On the production post-Stop note path,
+Phonon's meeting WER is more than 1 point worse than Parakeet v2's. That fails
+the frozen gate. `STTModelPolicy.phononDefaultActive` and
+`PHONON_DEFAULT_ACTIVE` remain `false`, and the one-time migration stays inert.
+The gate was not relaxed after measurement.
+
+### Identity and environment
+
+- Source: `relay/rr-416` from `61d78455` (RR-415 merge). The app and the soak
+  harness were built from that tree plus this section's uncommitted notice and
+  harness files. Neither affects the app binary.
+- Signed local build: `scripts/build-dmg.sh --app-only` with
+  `RELAY_SKIP_APPLICATIONS_REFRESH=1`, version 0.4.67 (71). It is signed with
+  Developer ID team `QK9K4AQRNH` and timestamped, and
+  `codesign --verify --deep --strict` passes. It is not notarized, packaged or
+  installed, and the running `/Applications` copy was left untouched.
+  - `relay-runner` binary SHA-256:
+    `eb0e2ea28db451e1a0b22bc92d42d134ac1a5c15e702e89bacee62bcad23fce3`.
+- Runtime and models: FluidAudio v0.17.5 (`0b1f4628`).
+  - `phonon-2-coreml` `a812a0df`
+  - `parakeet-tdt-0.6b-v2-coreml` `ee09c569`
+  - `parakeet-tdt-0.6b-v3-coreml` `7dd20fe6`
+  - All loaded offline from a local cache.
+- Hardware: Mac16,1 (M4, 10 cores, 24 GB) on macOS 27.0.1 (26A434), AC power,
+  Low Power Mode off. Xcode 26.2 (17C52), Swift 6.2.3. This is the only Mac
+  available; it is not the lower-end test Mac.
+- Fixtures: RR-411 public-v2 (`corpus-v2.json`), held outside Git. No private
+  recordings were used.
+
+### Evidence types
+
+| Type | What ran |
+|---|---|
+| Unit | Full `swift test` at `61d78455`: 1404 tests, 4 skipped, 0 failures. Covers RR-412–RR-415 preparation, rollback, migration, journal replay and pending-tail cases. |
+| Real-model offline | The 60-minute note soak and window probe below; RR-413 dictation replay latency. |
+| Signed build | Local build, signature and bundle metadata only. Not launched against live audio. |
+| Installed / human | None. Waived; see below. |
+
+### 60-minute real-time two-source note soak
+
+`scripts/experiments/phonon2/notesoak.swift` drives the production
+`MeetingTranscriptProducer`, `MeetingRecordingTranscriber` and
+`FluidAudioMeetingTranscriber`. The sources are copied in by
+`build-notesoak.py`. Two sources run at a 100 ms wall-clock cadence; each
+interleaves meeting and command clips with low-level noise gaps.
+
+- **Record-only**, the shipping capture path: 57.6M samples accepted per
+  source, 0 drops.
+- **Live** Phonon windows, which measure load:
+  - 1435 finals, 0 drops, maximum queue depth 2.
+  - Final-window lag p50 195 ms, p95 332 ms (gate ≤ 2 s), maximum 3543 ms.
+  - Tick lateness p95 87 ms. Stop drain 189 ms.
+  - 0 duplicates and 0 overlaps.
+- **Memory** (process footprint): 50.1 MB loaded, 49.2 MB first-half maximum,
+  59.8 MB second-half maximum. Batch peak 545.7 MB during post-Stop
+  transcription. Steady state shows no unbounded growth.
+
+Post-Stop on the same spooled recording:
+
+| Model | Finals | Mic WER | System WER | Windows with lost speech (mic / system) | Wall time |
+|---|---|---|---|---|---|
+| Parakeet v2 | 1345 | 19.13 % | 20.24 % | 43 / 48 | 128 s |
+| Phonon 2 | 1391 | 21.99 % | 22.43 % | 27 / 21 | 158 s |
+| Δ Phonon − v2 | | **+2.86 pp** | **+2.19 pp** | | |
+
+Live Phonon WER was 21.1 % (mic) and 21.8 % (system).
+
+The +1 pp gate fails for both sources. This differs from RR-411's per-clip
+offline result (−0.787 pp on meetings). The soak instead uses the
+production's 6 s context / 5 s owned windows over continuous audio.
+
+### Lost post-Stop windows
+
+Post-Stop produced 44 fewer segments than live.
+
+- A 6-minute diagnostic run isolated three such windows; one is mic 105.0–110.0 s.
+- In each, the final window's owned text was empty. Live mode falls back to
+  the window's earlier partial; post-Stop has no partials, so that speech is
+  lost.
+- Single-window probe (`notesoak probe`):
+  - Phonon on 105–111 s returns only "Like something that remains.", with
+    every token after 5.12 s.
+  - Phonon on 105–110 s, and v2 on the same 105–111 s audio, both transcribe
+    the first 4 s ("take out … is there a limit? Thanks.").
+- So within the 6 s context Phonon sometimes omits the leading speech entirely.
+  This is model output, not the producer's onset filtering. The post-Stop path
+  turns those omissions into missing note content; Parakeet shows the same
+  mechanism more often. The cost is already counted in the WER above.
+
+### Other gates
+
+| Gate | Result |
+|---|---|
+| Command WER (RR-411 public-v2) | +0.685 pp: passes |
+| Warm command p95 release-to-final (RR-413 replay) | Phonon 396 ms vs v2 422 ms: passes |
+| Note final-window lag p95 (this soak, M4) | 332 ms: passes on this Mac only |
+| OS floor | `LSMinimumSystemVersion` 14.0 = `Package.swift` `.macOS(.v14)`; Sparkle `generate_appcast` reads it from the archive. No update metadata was generated or pushed. |
+| Attribution | Added the `NemoTextProcessing.xcframework` binary (text-processing-rs v0.3.1, Apache 2.0), new with FluidAudio v0.17.5, to `THIRD_PARTY_NOTICES.md`. `build-dmg.sh` copies licences only from `.build/checkouts`, so this artifact had none. |
+
+### Not verified (waived 2026-10-18)
+
+These remain accepted risk:
+
+- macOS 14 launch and Parakeet inference.
+- The 60-minute soak on a lower-end Mac.
+- Live capture: permissions, device changes, sleep/wake and crash/relaunch.
+- Human UAT.
+- Live Codex and Claude delivery.
+- Notarization and a preserving install.
+
+### Resume
+
+To activate, one of the following must happen first:
+
+- A follow-up change removes the post-Stop loss, for example by re-decoding an
+  empty final window over its owned range only. The soak must then show Phonon
+  within +1 pp of v2 on both sources.
+- The user explicitly revises the meeting gate.
+
+Then set both activation flags and update the two tests asserting the inactive
+default. Rerun `swift test`, the soak and the signed build.
