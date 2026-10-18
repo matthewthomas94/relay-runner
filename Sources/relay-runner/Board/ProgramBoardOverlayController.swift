@@ -113,7 +113,7 @@ final class ProgramBoardOverlayController {
     private var stopNoteTakerHandler: (() -> Void)?
     private var interruptedNoteProvider: () async -> [MeetingNoteRecoveryOffer] = { [] }
     private var resolveInterruptedNoteHandler: (
-        (String, MeetingNoteRecoveryResolution) async throws -> MeetingNoteCoordinatorSnapshot
+        (String, MeetingNoteRecoveryResolution, STTModel?) async throws -> MeetingNoteCoordinatorSnapshot
     )?
     private var resumeRecoveredNoteHandler: (() async throws -> MeetingNoteCoordinatorSnapshot)?
     private var sessionActiveProvider: () -> Bool = { false }
@@ -216,7 +216,8 @@ final class ProgramBoardOverlayController {
         offers: @escaping () async -> [MeetingNoteRecoveryOffer],
         resolve: @escaping (
             String,
-            MeetingNoteRecoveryResolution
+            MeetingNoteRecoveryResolution,
+            STTModel?
         ) async throws -> MeetingNoteCoordinatorSnapshot,
         resume: @escaping () async throws -> MeetingNoteCoordinatorSnapshot
     ) {
@@ -676,8 +677,8 @@ final class ProgramBoardOverlayController {
                 onNoteClose: { [weak self] in self?.closeNote() },
                 onNoteDelete: { [weak self] note in self?.deleteNote(note) },
                 onNoteMetadataRetry: { [weak self] note in self?.retryNoteMetadata(note) },
-                onNoteRecovery: { [weak self] resolution in
-                    self?.resolveSelectedNoteRecovery(resolution)
+                onNoteRecovery: { [weak self] resolution, transcriptionModel in
+                    self?.resolveSelectedNoteRecovery(resolution, transcriptionModel: transcriptionModel)
                 },
                 onResumeRecoveredNote: { [weak self] in self?.resumeSelectedRecoveredNote() },
                 onCreateStart: { [weak self] lane in self?.beginCreate(in: lane) },
@@ -1193,14 +1194,17 @@ final class ProgramBoardOverlayController {
         }
     }
 
-    private func resolveSelectedNoteRecovery(_ resolution: MeetingNoteRecoveryResolution) {
+    private func resolveSelectedNoteRecovery(
+        _ resolution: MeetingNoteRecoveryResolution,
+        transcriptionModel: STTModel?
+    ) {
         guard let offer = model.selectedNoteRecoveryOffer,
               let handler = resolveInterruptedNoteHandler,
               model.beginNoteRecovery() else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let snapshot = try await handler(offer.sessionID, resolution)
+                let snapshot = try await handler(offer.sessionID, resolution, transcriptionModel)
                 self.model.finishNoteRecovery(snapshot: snapshot)
                 if let item = self.model.selectedNoteDetail?.item {
                     self.openNote(item)

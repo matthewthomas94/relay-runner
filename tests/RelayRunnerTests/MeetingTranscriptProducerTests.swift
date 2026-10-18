@@ -1636,6 +1636,81 @@ final class MeetingTranscriptProducerTests: XCTestCase {
         }
     }
 
+    func testOnsetOwnershipIsHalfOpenAndConvertsWindowTimingToTimelineOnce() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-half-open-onset",
+            transcriber: FakeMeetingTranscriber { request in
+                // Window-relative onsets, as FluidAudio reports them.
+                let tokens: [MeetingRecognizedToken]
+                switch request.contextStartMilliseconds {
+                case 0:
+                    tokens = [
+                        .init(text: " start", startSeconds: 0.0, endSeconds: 0.1, confidence: 0.9),
+                        .init(text: " edge", startSeconds: 0.79, endSeconds: 0.8, confidence: 0.4),
+                        .init(text: ",", startSeconds: 0.795, endSeconds: 0.8, confidence: 0.4),
+                        .init(text: " seam", startSeconds: 0.8, endSeconds: 0.9, confidence: 0.9),
+                    ]
+                default:
+                    // The last window also owns the 100 ms tail past it.
+                    tokens = [
+                        .init(text: " seam", startSeconds: 0.0, endSeconds: 0.1, confidence: 0.9),
+                        .init(text: " tail", startSeconds: 0.7, endSeconds: 0.8, confidence: 0.9),
+                        .init(text: " end", startSeconds: 0.85, endSeconds: 0.88, confidence: 0.9),
+                        .init(text: ".", startSeconds: 0.89, endSeconds: 0.9, confidence: 0.9),
+                    ]
+                }
+                return MeetingTranscriptionResult(
+                    text: "unused fallback",
+                    tokens: tokens,
+                    processingMilliseconds: 1
+                )
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+
+        try await producer.start(initiallyPaused: false)
+        try await producer.ingest(.init(repeating: 0.4, count: 17), from: .microphone)
+        _ = try await producer.stop()
+
+        let revisions = events.revisions.filter { $0.sourceID == .microphone }
+        let finals = revisions.filter(\.isFinal)
+        // An onset at the owned start is kept; one at the owned end belongs
+        // to the next window, and the short tail keeps its last word.
+        XCTAssertEqual(finals.map(\.text), ["start edge,", "seam tail end."])
+        XCTAssertEqual(finals.map(\.startMilliseconds), [0, 800])
+        XCTAssertEqual(finals.map(\.endMilliseconds), [800, 1_700])
+        let partialWords = revisions.compactMap(\.recognizedWords).flatMap { $0 }
+        XCTAssertTrue(partialWords.contains { $0.startMilliseconds == 1_500 }, "\(partialWords)")
+        for revision in revisions {
+            for word in revision.recognizedWords ?? [] {
+                XCTAssertGreaterThanOrEqual(word.startMilliseconds, Double(revision.startMilliseconds))
+                XCTAssertLessThan(word.startMilliseconds, Double(revision.endMilliseconds))
+            }
+        }
+    }
+
+    func testUntimedResultIsAcceptedWithoutInventingWordTimings() async throws {
+        let events = MeetingEventRecorder()
+        let producer = MeetingTranscriptProducer(
+            sessionID: "fixture-untimed",
+            transcriber: FakeMeetingTranscriber { _ in
+                MeetingTranscriptionResult(text: " owned words ", tokens: [], processingMilliseconds: 1)
+            },
+            configuration: smallConfiguration,
+            eventSink: { events.record($0) }
+        )
+
+        try await producer.start(initiallyPaused: false)
+        try await producer.ingest(.init(repeating: 0.4, count: 16), from: .microphone)
+        _ = try await producer.stop()
+
+        let revisions = events.revisions.filter { $0.sourceID == .microphone }
+        XCTAssertEqual(revisions.filter(\.isFinal).map(\.text), ["owned words", "owned words"])
+        XCTAssertTrue(revisions.allSatisfy { $0.recognizedWords == nil })
+    }
+
     func testStopRetriesTransientFinalWindowBeforeLeavingAcceptedAudioPending() async throws {
         let accepted = MeetingAcceptedAudioRecorder()
         let events = MeetingEventRecorder()

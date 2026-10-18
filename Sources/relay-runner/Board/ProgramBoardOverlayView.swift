@@ -226,7 +226,7 @@ struct ProgramBoardOverlayView: View {
     var onNoteClose: () -> Void = {}
     var onNoteDelete: (ProgramBoardNoteItem) -> Void = { _ in }
     var onNoteMetadataRetry: (ProgramBoardNoteItem) -> Void = { _ in }
-    var onNoteRecovery: (MeetingNoteRecoveryResolution) -> Void = { _ in }
+    var onNoteRecovery: (MeetingNoteRecoveryResolution, STTModel?) -> Void = { _, _ in }
     var onResumeRecoveredNote: () -> Void = {}
     let onCreateStart: (ProgramBoardLane) -> Void
     let onCreateCommit: (ProgramBoardCreateRequest) -> Void
@@ -2624,8 +2624,14 @@ private struct ProgramNoteDetailPanel: View {
     let recoveryOffer: MeetingNoteRecoveryOffer?
     let recoveryInFlight: Bool
     let recoveryErrorMessage: String?
-    let onRecover: (MeetingNoteRecoveryResolution) -> Void
+    let onRecover: (MeetingNoteRecoveryResolution, STTModel?) -> Void
     let onResume: () -> Void
+    @State private var chosenTranscriptionModel: STTModel?
+
+    /// Replay waits for an explicit model when the tail has no reproducible one.
+    private var awaitsTranscriptionModel: Bool {
+        recoveryOffer?.requiresTranscriptionModelChoice == true && chosenTranscriptionModel == nil
+    }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isCurrentCapture: Bool {
@@ -2729,23 +2735,34 @@ private struct ProgramNoteDetailPanel: View {
                     }
                     .transition(.relayReplacing(.element))
                 }
-                if recoveryOffer != nil, !isCurrentCapture {
+                if let recoveryOffer, !isCurrentCapture {
+                    if recoveryOffer.requiresTranscriptionModelChoice {
+                        Menu(chosenTranscriptionModel?.displayName ?? "Choose model") {
+                            ForEach(recoveryOffer.transcriptionModelChoices, id: \.self) { model in
+                                Button(model.displayName) { chosenTranscriptionModel = model }
+                            }
+                        }
+                        .fixedSize()
+                        .disabled(recoveryInFlight)
+                        .help("Choose the model that transcribes this recording's unsaved audio")
+                        .transition(.relayReplacing(.element))
+                    }
                     ProgramDetailActionButton(
                         systemName: "pause.fill",
                         title: "Recover paused",
-                        disabled: recoveryInFlight,
+                        disabled: recoveryInFlight || awaitsTranscriptionModel,
                         help: "Replay the saved local tail and keep capture paused"
                     ) {
-                        onRecover(.recoverPaused)
+                        onRecover(.recoverPaused, chosenTranscriptionModel)
                     }
                     .transition(.relayReplacing(.element))
                     ProgramDetailActionButton(
                         systemName: "checkmark",
                         title: "Finalize",
-                        disabled: recoveryInFlight,
+                        disabled: recoveryInFlight || awaitsTranscriptionModel,
                         help: "Replay the saved local tail and finish this note"
                     ) {
-                        onRecover(.finalize)
+                        onRecover(.finalize, chosenTranscriptionModel)
                     }
                     .transition(.relayReplacing(.element))
                     ProgramDetailActionButton(
@@ -2754,7 +2771,7 @@ private struct ProgramNoteDetailPanel: View {
                         disabled: recoveryInFlight,
                         help: "Finish the note without replaying its incomplete local audio tail"
                     ) {
-                        onRecover(.discardIncompleteTail)
+                        onRecover(.discardIncompleteTail, nil)
                     }
                     .transition(.relayReplacing(.element))
                 }
@@ -2789,6 +2806,12 @@ private struct ProgramNoteDetailPanel: View {
                     message: "Interrupted recording found. Recovery uses the original note and project and stays paused until you choose Resume."
                 )
                 .transition(.relayReplacing(.element))
+                if recoveryOffer?.requiresTranscriptionModelChoice == true {
+                    ProgramDetailNotice(
+                        message: "This recording's unsaved audio has no model this version can reproduce. Choose one to transcribe it; saved text is kept as is."
+                    )
+                    .transition(.relayReplacing(.element))
+                }
             }
             if let recoveryErrorMessage {
                 ProgramDetailNotice(message: recoveryErrorMessage)
