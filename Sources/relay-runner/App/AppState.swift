@@ -207,6 +207,12 @@ final class AppState {
     @ObservationIgnored private var meetingNoteOptionGesture: NoteOptionGesture?
     @ObservationIgnored private var meetingNoteGestureGeneration = 0
     @ObservationIgnored private var meetingNoteTransitionID = 0
+    /// Model changes apply at the next recording: a restart waits here while
+    /// a command capture is still recording or finalizing.
+    @ObservationIgnored private var pendingSTTRestartTask: Task<Void, Never>?
+    /// One-time Parakeet v2 → Phonon 2 migration; inert until RR-416 sets
+    /// `STTModelPolicy.phononDefaultActive`.
+    private(set) var phononMigration: STTPhononMigration?
 
     var serviceLifecycleMessage: String?
 
@@ -218,8 +224,8 @@ final class AppState {
     private var sttSetupSucceeded = false
 
     /// Shared finite STT setup state for Settings and onboarding. Preparing
-    /// status is allowed to be temporary only; success becomes Loaded and
-    /// listening, while errors and timeouts become retryable failures.
+    /// status is allowed to be temporary only; success becomes Model ready
+    /// (the mic is not claimed), while errors and timeouts become retryable failures.
     var setupRuntimeReadiness: SetupRuntimeReadiness {
         Self.setupRuntimeReadiness(
             engineStatusMessage: sttEngine?.statusMessage,
@@ -1182,6 +1188,7 @@ final class AppState {
         startConfiguredSTT(reason: "awareness-start", failureLogPrefix: "STT engine failed to start")
         isRunning = true
         statusText = "Ready"
+        startPhononMigrationIfEligible()
 
         startBridgeWatchdog()
 
@@ -2061,7 +2068,71 @@ final class AppState {
         processManager.stopServicesForBundleReplacement()
     }
 
+    /// Saves a user edit (Settings or onboarding). A model change is recorded
+    /// against the Phonon migration so relaunch or an OS upgrade never
+    /// re-overrides an explicit choice or rollback.
     func saveConfig(_ newConfig: AppConfig, forceWorkspaceDiscovery: Bool = false) {
+        var newConfig = newConfig
+        newConfig.stt = newConfig.stt.recordingUserModelChange(from: config.stt)
+        persistConfig(newConfig, forceWorkspaceDiscovery: forceWorkspaceDiscovery)
+    }
+
+    private func startPhononMigrationIfEligible() {
+        if phononMigration == nil {
+            phononMigration = STTPhononMigration(environment: .init(
+                prepare: { model, progress in
+                    let manager = try await STTModelPreparation.shared.prepareManager(for: model) { phase in
+                        progress(phase.statusText(for: model))
+                    }
+                    await manager.cleanup()
+                },
+                currentConfig: { [weak self] in self?.config.stt ?? SttConfig() },
+                isIdle: { [weak self] in self?.sttModelSwitchIsIdle ?? false },
+                apply: { [weak self] stt in
+                    guard let self else { return }
+                    var next = self.config
+                    next.stt = stt
+                    self.persistConfig(next)
+                }
+            ))
+        }
+        phononMigration?.startIfEligible()
+    }
+
+    /// No command capture or Note Taker session (including a pending start or
+    /// recovery tail) owns a model, so a model switch cannot cut one off.
+    private var sttModelSwitchIsIdle: Bool {
+        Self.sttModelSwitchIsIdle(
+            commandRecording: sttEngine?.isRecording == true,
+            notePhase: meetingNoteSnapshot.phase,
+            noteStartPending: meetingNoteStartTask != nil,
+            noteRecoveryPending: meetingNoteRecoveryTask != nil
+        )
+    }
+
+    static func sttModelSwitchIsIdle(
+        commandRecording: Bool,
+        notePhase: MeetingNoteCoordinatorPhase,
+        noteStartPending: Bool,
+        noteRecoveryPending: Bool
+    ) -> Bool {
+        !commandRecording && !notePhase.ownsForeground && !noteStartPending && !noteRecoveryPending
+    }
+
+    /// An idle cached note coordinator captured the old model; drop it so the
+    /// next note uses the new selection. An active note or recovery keeps its own.
+    static func shouldInvalidateMeetingNoteCoordinator(
+        oldModel: String,
+        newModel: String,
+        notePhase: MeetingNoteCoordinatorPhase,
+        noteStartPending: Bool,
+        noteRecoveryPending: Bool
+    ) -> Bool {
+        oldModel != newModel
+            && !notePhase.ownsForeground && !noteStartPending && !noteRecoveryPending
+    }
+
+    private func persistConfig(_ newConfig: AppConfig, forceWorkspaceDiscovery: Bool = false) {
         let oldConfig = config
         config = newConfig
 
@@ -2080,6 +2151,17 @@ final class AppState {
             updateSleepPreventionMonitoring()
         }
 
+        if Self.shouldInvalidateMeetingNoteCoordinator(
+            oldModel: oldConfig.stt.model,
+            newModel: newConfig.stt.model,
+            notePhase: meetingNoteSnapshot.phase,
+            noteStartPending: meetingNoteStartTask != nil,
+            noteRecoveryPending: meetingNoteRecoveryTask != nil
+        ) {
+            meetingNoteCoordinator = nil
+            meetingNoteCoordinatorNotificationID = nil
+        }
+
         // Hot-reload running services
         guard isRunning else { return }
 
@@ -2091,10 +2173,23 @@ final class AppState {
             overlayController?.updateConfig(newConfig.awareness)
         }
 
-        // Restart STT if settings changed
+        // Restart STT if settings changed, after any in-flight command capture.
         if oldConfig.stt != newConfig.stt {
-            sttEngine?.stop()
-            startConfiguredSTT(reason: "settings-change", failureLogPrefix: "STT engine restart failed")
+            restartSTTAfterCurrentRecording()
+        }
+    }
+
+    private func restartSTTAfterCurrentRecording() {
+        pendingSTTRestartTask?.cancel()
+        pendingSTTRestartTask = Task { @MainActor [weak self] in
+            while self?.sttEngine?.isRecording == true {
+                try? await Task.sleep(for: .milliseconds(250))
+                if Task.isCancelled { return }
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.pendingSTTRestartTask = nil
+            self.sttEngine?.stop()
+            self.startConfiguredSTT(reason: "settings-change", failureLogPrefix: "STT engine restart failed")
         }
     }
 

@@ -22,7 +22,7 @@ final class SetupRuntimeReadinessTests: XCTestCase {
         XCTAssertFalse(readiness.isReady)
     }
 
-    func testListeningConvergesToLoadedAndListeningEvenAfterTimeoutWindow() {
+    func testListeningConvergesToModelReadyEvenAfterTimeoutWindow() {
         let startedAt = Date(timeIntervalSince1970: 100)
 
         let readiness = SetupRuntimeReadiness.resolve(
@@ -34,7 +34,7 @@ final class SetupRuntimeReadinessTests: XCTestCase {
         )
 
         XCTAssertEqual(readiness, .ready)
-        XCTAssertEqual(readiness.statusDetail, "Loaded and listening")
+        XCTAssertEqual(readiness.statusDetail, "Model ready")
         XCTAssertFalse(readiness.canRetry)
     }
 

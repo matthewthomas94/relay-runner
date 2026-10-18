@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import sys
 
 from codex_model_catalog import (
@@ -23,6 +24,56 @@ except ImportError:
 
 # Kokoro voices offered in Settings; any other saved voice loads as Puck.
 STANDARD_VOICES = ("am_puck", "bm_george", "bf_isabella", "af_sky")
+
+# Persisted [stt] model IDs and their minimum macOS major version. Mirrors
+# STTModel / STTModelPolicy in Sources/relay-runner/STT/STTModelSelection.swift.
+STT_MODELS = {"phonon-2": 15, "parakeet-tdt-v2": 14, "parakeet-tdt-v3": 14}
+LEGACY_WHISPER_ALIASES = {
+    "tiny.en": "parakeet-tdt-v2",
+    "base.en": "parakeet-tdt-v2",
+    "small.en": "parakeet-tdt-v2",
+    "medium.en": "parakeet-tdt-v2",
+    "large": "parakeet-tdt-v3",
+    "large-v3": "parakeet-tdt-v3",
+}
+# RR-416 activation point; must match STTModelPolicy.phononDefaultActive.
+PHONON_DEFAULT_ACTIVE = False
+
+
+def current_macos_major() -> int:
+    """Running macOS major version, or 0 when unknown/non-macOS."""
+    release = platform.mac_ver()[0]
+    try:
+        return int(release.split(".")[0])
+    except ValueError:
+        return 0
+
+
+def stt_model_supported(model: str, macos_major: int) -> bool:
+    """True for a known model whose OS floor the given macOS meets."""
+    required = STT_MODELS.get(model)
+    return required is not None and macos_major >= required
+
+
+def default_stt_model(macos_major: int, phonon_default_active: bool = PHONON_DEFAULT_ACTIVE) -> str:
+    """Fresh-install model: Phonon on macOS 15+ once active, else Parakeet v2."""
+    if phonon_default_active and stt_model_supported("phonon-2", macos_major):
+        return "phonon-2"
+    return "parakeet-tdt-v2"
+
+
+def stt_migration_target(
+    stt: dict, macos_major: int, phonon_default_active: bool = PHONON_DEFAULT_ACTIVE
+) -> str | None:
+    """Phonon when an implicit v2 user is still eligible for the one-time migration."""
+    if (
+        phonon_default_active
+        and stt.get("phonon_migration", "") == ""
+        and stt.get("model") == "parakeet-tdt-v2"
+        and stt_model_supported("phonon-2", macos_major)
+    ):
+        return "phonon-2"
+    return None
 
 
 def _parse_toml_simple(text: str) -> dict:
@@ -71,7 +122,11 @@ def _default_config_path() -> str:
     return os.path.join(base, "relay-runner", "config.toml")
 
 
-def load_config(config_path: str | None = None) -> dict:
+def load_config(
+    config_path: str | None = None,
+    macos_major: int | None = None,
+    phonon_default_active: bool = PHONON_DEFAULT_ACTIVE,
+) -> dict:
     """Load config from TOML file. Returns nested dict with defaults."""
     if config_path is None:
         # Check --config CLI arg
@@ -84,7 +139,8 @@ def load_config(config_path: str | None = None) -> dict:
             config_path = _default_config_path()
 
     config: dict = {}
-    if os.path.exists(config_path):
+    config_exists = os.path.exists(config_path)
+    if config_exists:
         with open(config_path, "rb") as f:
             raw = f.read()
         if tomllib is not None:
@@ -101,14 +157,26 @@ def load_config(config_path: str | None = None) -> dict:
         and "orchestrator_effort" in config.get("general", {})
     )
 
+    # Missing file: same fresh-install default Swift bootstraps. Existing file
+    # without a model key: the legacy Parakeet v2 default.
+    if config_exists:
+        stt_model = "parakeet-tdt-v2"
+    else:
+        stt_model = default_stt_model(
+            current_macos_major() if macos_major is None else macos_major,
+            phonon_default_active,
+        )
+
     # Apply defaults
     defaults = {
         "stt": {
-            "model": "parakeet-tdt-v2",
+            "model": stt_model,
             "input_device": "default",
             "input_mode": "caps_lock_toggle",
             "push_to_talk_key": "",
             "vad_sensitivity": "medium",
+            "phonon_migration": "completed" if stt_model == "phonon-2" else "",
+            "phonon_migration_previous_model": "",
         },
         "tts": {
             "engine": "kokoro",
@@ -210,11 +278,10 @@ def _migrate_config(
         tts["rate"] = round(max(0.5, min(2.0, 2.0 - (rate - 100) * 1.5 / 200)), 1)
 
     # Migrate old Whisper STT models to Parakeet
+    # Unknown IDs stay verbatim so the Swift resolver can report them.
     stt = config.get("stt", {})
-    if stt.get("model") in ("tiny.en", "base.en", "small.en", "medium.en"):
-        stt["model"] = "parakeet-tdt-v2"
-    elif stt.get("model") in ("large", "large-v3"):
-        stt["model"] = "parakeet-tdt-v3"
+    if stt.get("model") in LEGACY_WHISPER_ALIASES:
+        stt["model"] = LEGACY_WHISPER_ALIASES[stt["model"]]
 
     general = config.get("general", {})
     if not general_had_provider:

@@ -29,7 +29,9 @@ Python modules under `services/` own the voice bridge, tool-free messenger, tick
 
 ## Voice loop
 
-Parakeet converts captured audio to text on the Mac. Each current voice turn reaches the foreground provider session and a persistent tool-free messenger. The foreground orchestrator is authoritative for decisions and project work; the messenger sees only the user turn plus bounded public progress and produces concise spoken wording. Kokoro synthesizes that speech locally.
+The configured on-device model (Phonon 2 on macOS 15 or later, or Parakeet) converts captured audio to text on the Mac. Each current voice turn reaches the foreground provider session and a persistent tool-free messenger. The foreground orchestrator is authoritative for decisions and project work; the messenger sees only the user turn plus bounded public progress and produces concise spoken wording. Kokoro synthesizes that speech locally.
+
+`STTModel` resolves the persisted `[stt] model` identifier and its macOS floor before any download or load. `STTModelPolicy` is the OS-aware default and one-time Phonon migration policy, mirrored in `services/config.py`. Its `phononDefaultActive` flag, and `PHONON_DEFAULT_ACTIVE` in Python, are the single activation point for RR-416; both stay `false` until rollout. `STTPhononMigration` prepares and validates Phonon before `AppState` applies it at an idle boundary. `AppState` restarts command STT only after any in-flight recording and drops an idle cached Note Taker coordinator on a model change, so each recording keeps the model it started with.
 
 Freshness identifiers prevent a superseded voice command from speaking or mutating as though it were current. Raw transcripts remain private coordination metadata and are not valid ticket content.
 

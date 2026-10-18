@@ -10,7 +10,12 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
-from config import load_config  # noqa: E402
+from config import (  # noqa: E402
+    default_stt_model,
+    load_config,
+    stt_migration_target,
+    stt_model_supported,
+)
 
 
 class ConfigTests(unittest.TestCase):
@@ -366,6 +371,77 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(config["general"]["messenger_model"], expected_model)
             self.assertEqual(config["general"]["messenger_effort"], expected_effort)
+
+    def _load_stt(self, text: str | None, **kwargs) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            if text is not None:
+                config_path.write_text(text, encoding="utf-8")
+            return load_config(str(config_path), **kwargs)["stt"]
+
+    def test_fresh_stt_default_is_os_aware_and_inactive_until_rr416(self):
+        self.assertEqual(self._load_stt(None, macos_major=14)["model"], "parakeet-tdt-v2")
+        self.assertEqual(self._load_stt(None, macos_major=15)["model"], "parakeet-tdt-v2")
+        fresh_14 = self._load_stt(None, macos_major=14, phonon_default_active=True)
+        self.assertEqual(fresh_14["model"], "parakeet-tdt-v2")
+        self.assertEqual(fresh_14["phonon_migration"], "")
+        fresh_15 = self._load_stt(None, macos_major=15, phonon_default_active=True)
+        self.assertEqual(fresh_15["model"], "phonon-2")
+        self.assertEqual(fresh_15["phonon_migration"], "completed")
+
+    def test_existing_stt_models_aliases_and_unknown_ids_load_verbatim(self):
+        for raw, expected in (
+            ("parakeet-tdt-v2", "parakeet-tdt-v2"),
+            ("parakeet-tdt-v3", "parakeet-tdt-v3"),
+            ("phonon-2", "phonon-2"),
+            ("medium.en", "parakeet-tdt-v2"),
+            ("tiny.en", "parakeet-tdt-v2"),
+            ("large-v3", "parakeet-tdt-v3"),
+            ("whisper-xl", "whisper-xl"),
+        ):
+            with self.subTest(raw=raw):
+                stt = self._load_stt(
+                    f'[stt]\nmodel = "{raw}"\n', macos_major=15, phonon_default_active=True
+                )
+                self.assertEqual(stt["model"], expected)
+                self.assertEqual(stt["phonon_migration"], "")
+        # An existing file without a model key keeps the legacy v2 default.
+        stt = self._load_stt('[stt]\nvad_sensitivity = "low"\n', macos_major=15, phonon_default_active=True)
+        self.assertEqual(stt["model"], "parakeet-tdt-v2")
+
+    def test_stt_os_support_matches_swift(self):
+        self.assertFalse(stt_model_supported("phonon-2", 14))
+        self.assertTrue(stt_model_supported("phonon-2", 15))
+        self.assertTrue(stt_model_supported("parakeet-tdt-v2", 14))
+        self.assertTrue(stt_model_supported("parakeet-tdt-v3", 14))
+        self.assertFalse(stt_model_supported("whisper-xl", 26))
+        self.assertEqual(default_stt_model(14, True), "parakeet-tdt-v2")
+        self.assertEqual(default_stt_model(15, True), "phonon-2")
+        self.assertEqual(default_stt_model(26, False), "parakeet-tdt-v2")
+
+    def test_stt_migration_targets_only_implicit_v2_on_macos15(self):
+        implicit_v2 = {"model": "parakeet-tdt-v2", "phonon_migration": ""}
+        self.assertEqual(stt_migration_target(implicit_v2, 15, True), "phonon-2")
+        self.assertIsNone(stt_migration_target(implicit_v2, 15, False))
+        self.assertIsNone(stt_migration_target(implicit_v2, 14, True))
+        for state in ("completed", "rolled_back", "explicit"):
+            with self.subTest(state=state):
+                stt = {"model": "parakeet-tdt-v2", "phonon_migration": state}
+                self.assertIsNone(stt_migration_target(stt, 15, True))
+        self.assertIsNone(
+            stt_migration_target({"model": "parakeet-tdt-v3", "phonon_migration": ""}, 15, True)
+        )
+
+    def test_stt_migration_fields_round_trip(self):
+        stt = self._load_stt(
+            '[stt]\nmodel = "parakeet-tdt-v2"\nphonon_migration = "rolled_back"\n'
+            'phonon_migration_previous_model = "parakeet-tdt-v2"\n',
+            macos_major=26,
+            phonon_default_active=True,
+        )
+        self.assertEqual(stt["phonon_migration"], "rolled_back")
+        self.assertEqual(stt["phonon_migration_previous_model"], "parakeet-tdt-v2")
+        self.assertIsNone(stt_migration_target(stt, 26, True))
 
 
 if __name__ == "__main__":

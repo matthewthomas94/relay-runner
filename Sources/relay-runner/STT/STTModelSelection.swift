@@ -65,3 +65,50 @@ enum STTModelSelectionError: LocalizedError, Equatable {
         }
     }
 }
+
+/// OS-aware default and one-time Phonon migration policy. Mirrored by
+/// `services/config.py` (`PHONON_DEFAULT_ACTIVE`, `default_stt_model`,
+/// `stt_migration_target`); keep both in step.
+enum STTModelPolicy {
+    /// RR-416 activation point. While false, fresh installs keep Parakeet v2
+    /// and no existing user is migrated; Phonon is only an explicit choice.
+    /// RR-416 flips this (and `PHONON_DEFAULT_ACTIVE`) after rollout sign-off.
+    static let phononDefaultActive = false
+
+    /// Pre-Parakeet Whisper identifiers and their persisted replacements.
+    static let legacyWhisperAliases: [String: STTModel] = [
+        "tiny.en": .parakeetV2, "base.en": .parakeetV2,
+        "small.en": .parakeetV2, "medium.en": .parakeetV2,
+        "large": .parakeetV3, "large-v3": .parakeetV3,
+    ]
+
+    static func isSupported(_ model: STTModel, operatingSystem: OperatingSystemVersion) -> Bool {
+        operatingSystem.majorVersion >= model.minimumMacOSMajorVersion
+    }
+
+    /// Model a fresh install persists: Phonon on macOS 15+ once active,
+    /// otherwise Parakeet v2 (always on macOS 14).
+    static func defaultModel(
+        operatingSystem: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion,
+        phononDefaultActive: Bool = phononDefaultActive
+    ) -> STTModel {
+        phononDefaultActive && isSupported(.phonon2, operatingSystem: operatingSystem)
+            ? .phonon2 : .parakeetV2
+    }
+
+    /// Phonon when `stt` is still eligible for the one-time migration: active
+    /// policy, supported OS, implicit v2 and no recorded migration decision.
+    /// Explicit v3, explicit choices and rollbacks are never re-overridden.
+    static func migrationTarget(
+        for stt: SttConfig,
+        operatingSystem: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion,
+        phononDefaultActive: Bool = phononDefaultActive
+    ) -> STTModel? {
+        guard phononDefaultActive,
+              stt.phonon_migration == SttConfig.PhononMigration.pending,
+              stt.model == STTModel.parakeetV2.rawValue,
+              isSupported(.phonon2, operatingSystem: operatingSystem)
+        else { return nil }
+        return .phonon2
+    }
+}

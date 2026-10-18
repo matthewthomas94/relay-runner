@@ -300,6 +300,6 @@ final class AppStateLaunchTests: XCTestCase {
         )
 
         XCTAssertEqual(readiness, .ready)
-        XCTAssertEqual(readiness.statusDetail, "Loaded and listening")
+        XCTAssertEqual(readiness.statusDetail, "Model ready")
     }
 }

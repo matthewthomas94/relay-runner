@@ -31,6 +31,69 @@ struct SttConfig: Codable, Equatable {
     var push_to_talk_key: String = ""
     var activation_key: String = "Caps Lock"
     var vad_sensitivity: String = "medium"
+    /// One-time Phonon migration decision; see `PhononMigration`.
+    var phonon_migration: String = PhononMigration.pending
+    /// Model active before the automatic migration, kept for rollback.
+    var phonon_migration_previous_model: String = ""
+
+    enum PhononMigration {
+        /// No decision recorded; an implicit v2 user may still be migrated.
+        static let pending = ""
+        /// Phonon was applied automatically (or is the fresh default).
+        static let completed = "completed"
+        /// The user left Phonon after an automatic migration.
+        static let rolledBack = "rolled_back"
+        /// The user chose a model before any migration; never override it.
+        static let explicit = "explicit"
+    }
+
+    /// Settings for a config.toml that does not exist yet.
+    static func freshInstall(
+        operatingSystem: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion,
+        phononDefaultActive: Bool = STTModelPolicy.phononDefaultActive
+    ) -> SttConfig {
+        var stt = SttConfig()
+        let model = STTModelPolicy.defaultModel(
+            operatingSystem: operatingSystem,
+            phononDefaultActive: phononDefaultActive
+        )
+        stt.model = model.rawValue
+        if model == .phonon2 { stt.phonon_migration = PhononMigration.completed }
+        return stt
+    }
+
+    /// Records a user edit saved over `current` so relaunch or a later OS
+    /// upgrade cannot re-override the chosen model. Migration fields are
+    /// app-owned: a Settings draft opened before an automatic migration still
+    /// carries the previous model, which is not a rollback.
+    func recordingUserModelChange(from current: SttConfig) -> SttConfig {
+        var next = self
+        next.phonon_migration = current.phonon_migration
+        next.phonon_migration_previous_model = current.phonon_migration_previous_model
+        if phonon_migration != current.phonon_migration,
+           model == current.phonon_migration_previous_model {
+            next.model = current.model
+        }
+        guard next.model != current.model else { return next }
+        switch current.phonon_migration {
+        case PhononMigration.completed where current.model == STTModel.phonon2.rawValue:
+            next.phonon_migration = PhononMigration.rolledBack
+        case PhononMigration.pending:
+            next.phonon_migration = PhononMigration.explicit
+        default:
+            break
+        }
+        return next
+    }
+
+    /// The validated automatic switch to Phonon, remembering the prior model.
+    func applyingPhononMigration() -> SttConfig {
+        var next = self
+        next.phonon_migration_previous_model = model
+        next.model = STTModel.phonon2.rawValue
+        next.phonon_migration = PhononMigration.completed
+        return next
+    }
 }
 
 struct TtsConfig: Codable, Equatable {

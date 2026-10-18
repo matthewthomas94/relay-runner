@@ -285,7 +285,11 @@ private struct SettingsContent: View {
         case .permissions:
             PermissionsSettingsTab(appState: appState)
         case .speechToText:
-            STTSettingsTab(config: $draft.stt)
+            STTSettingsTab(
+                config: $draft.stt,
+                migrationState: appState.phononMigration?.state,
+                onRetryMigration: { appState.phononMigration?.retry() }
+            )
         case .textToSpeech:
             TTSSettingsTab(config: $draft.tts, appState: appState)
         case .general:

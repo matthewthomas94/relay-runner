@@ -2,16 +2,34 @@ import SwiftUI
 
 struct STTSettingsTab: View {
     @Binding var config: SttConfig
+    var migrationState: STTPhononMigration.State?
+    var onRetryMigration: () -> Void = {}
+    var operatingSystem = ProcessInfo.processInfo.operatingSystemVersion
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         SettingsStack {
             SettingsSection("Recognition") {
-                SettingsControlRow("STT Model") {
-                    SettingsMenuPicker("STT Model", selection: $config.model, options: [
-                        (label: "Parakeet v2 (recommended)", value: "parakeet-tdt-v2"),
-                        (label: "Parakeet v3 (most accurate, larger)", value: "parakeet-tdt-v3"),
-                    ])
+                SettingsControlRow(
+                    "STT Model",
+                    description: Self.modelDescription(config, operatingSystem: operatingSystem)
+                ) {
+                    SettingsMenuPicker(
+                        "STT Model",
+                        selection: $config.model,
+                        options: Self.modelOptions(operatingSystem: operatingSystem)
+                    )
+                }
+
+                if let migrationState, let message = Self.migrationMessage(migrationState) {
+                    SettingsDivider()
+                    SettingsControlRow("Phonon 2 Setup", description: message) {
+                        if case .failed = migrationState {
+                            SettingsActionButton(title: "Retry", systemImage: "arrow.clockwise") {
+                                onRetryMigration()
+                            }
+                        }
+                    }
                 }
 
                 SettingsDivider()
@@ -66,6 +84,51 @@ struct STTSettingsTab: View {
             }
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: config.input_mode)
+    }
+
+    /// Models this Mac can load. Phonon 2 needs macOS 15, so macOS 14 only
+    /// offers Parakeet; the recommended label follows the OS-aware default.
+    static func modelOptions(
+        operatingSystem: OperatingSystemVersion,
+        phononDefaultActive: Bool = STTModelPolicy.phononDefaultActive
+    ) -> [(label: String, value: String)] {
+        let recommended = STTModelPolicy.defaultModel(
+            operatingSystem: operatingSystem,
+            phononDefaultActive: phononDefaultActive
+        )
+        return STTModel.allCases
+            .filter { STTModelPolicy.isSupported($0, operatingSystem: operatingSystem) }
+            .map { model in
+                let base: String
+                switch model {
+                case .phonon2: base = "Phonon 2 (English, macOS 15+)"
+                case .parakeetV2: base = "Parakeet v2 (English)"
+                case .parakeetV3: base = "Parakeet v3 (multilingual, larger)"
+                }
+                return (label: model == recommended ? "\(base), recommended" : base, value: model.rawValue)
+            }
+    }
+
+    static func modelDescription(_ config: SttConfig, operatingSystem: OperatingSystemVersion) -> String {
+        var parts = ["Changes apply from the next recording; a recording or note in progress keeps its model."]
+        if !STTModelPolicy.isSupported(.phonon2, operatingSystem: operatingSystem) {
+            parts.append("Phonon 2 (English) requires macOS 15 or later.")
+        }
+        if config.phonon_migration == SttConfig.PhononMigration.completed,
+           config.model == STTModel.phonon2.rawValue,
+           let previous = STTModel(rawValue: config.phonon_migration_previous_model) {
+            parts.append("Switched automatically from \(previous.displayName). Choose \(previous.displayName) to roll back.")
+        }
+        return parts.joined(separator: " ")
+    }
+
+    static func migrationMessage(_ state: STTPhononMigration.State) -> String? {
+        switch state {
+        case .idle, .completed: return nil
+        case .preparing(let status): return status
+        case .waitingForIdle: return "Phonon 2 is ready. Switching after the current recording or note."
+        case .failed(let message): return message
+        }
     }
 
     static func inputDeviceDisplayName(_ device: String) -> String {
