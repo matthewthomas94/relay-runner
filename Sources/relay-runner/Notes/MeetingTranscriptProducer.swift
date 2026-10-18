@@ -1005,6 +1005,8 @@ actor MeetingTranscriptProducer {
         from result: MeetingTranscriptionResult,
         request: MeetingTranscriptionRequest
     ) -> String {
+        // Untimed text is accepted whole: a transcriber that cannot time its
+        // words transcribes only the owned audio, never the overlap.
         guard !result.tokens.isEmpty else { return clean(result.text) }
         return clean(ownedWords(from: result.tokens, request: request).map(\.text).joined())
     }

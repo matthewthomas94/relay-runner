@@ -869,11 +869,12 @@ final class AppState {
             offers: { [weak self] in
                 await self?.interruptedMeetingNotes() ?? []
             },
-            resolve: { [weak self] sessionID, resolution in
+            resolve: { [weak self] sessionID, resolution, transcriptionModel in
                 guard let self else { throw MeetingNoteCoordinatorError.recoveryNotFound }
                 return try await self.resolveInterruptedMeetingNote(
                     sessionID: sessionID,
-                    resolution: resolution
+                    resolution: resolution,
+                    transcriptionModel: transcriptionModel
                 )
             },
             resume: { [weak self] in
@@ -1663,7 +1664,8 @@ final class AppState {
     @discardableResult
     func resolveInterruptedMeetingNote(
         sessionID: String,
-        resolution: MeetingNoteRecoveryResolution
+        resolution: MeetingNoteRecoveryResolution,
+        transcriptionModel: STTModel? = nil
     ) async throws -> MeetingNoteCoordinatorSnapshot {
         guard meetingNoteRecoveryTask == nil else {
             throw MeetingNoteCoordinatorError.foregroundBusy
@@ -1708,7 +1710,8 @@ final class AppState {
             return try await coordinator.resolveRecovery(
                 sessionID: sessionID,
                 projectScopeToken: context.scopeToken,
-                resolution: resolution
+                resolution: resolution,
+                transcriptionModel: transcriptionModel
             )
         }
         meetingNoteRecoveryTask = task

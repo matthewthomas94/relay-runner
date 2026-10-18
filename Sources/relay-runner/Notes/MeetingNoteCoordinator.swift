@@ -131,6 +131,13 @@ struct MeetingNoteRecoveryOffer: Equatable, Sendable {
     let phase: MeetingNoteCoordinatorPhase
     let updatedAt: String
     let pendingAudioChunkCount: Int
+    /// Recognizer the recording started with; nil for journals from before
+    /// transcription identities were recorded.
+    var transcriptionIdentity: MeetingTranscriptionIdentity? = nil
+    /// The unsaved tail cannot be replayed exactly, so Recover paused and
+    /// Finalize need an explicit model from `transcriptionModelChoices`.
+    var requiresTranscriptionModelChoice = false
+    var transcriptionModelChoices: [STTModel] = []
 }
 
 enum MeetingNoteCoordinatorError: LocalizedError, Equatable {
@@ -143,6 +150,12 @@ enum MeetingNoteCoordinatorError: LocalizedError, Equatable {
     /// The note writer rejected or missed a checkpoint. The journal and
     /// recording remain on this Mac.
     case publicationFailed(String)
+    /// An unsaved tail without a reproducible transcription identity needs an
+    /// explicit model before replay. Nothing was changed.
+    case transcriptionModelRequired
+    /// This build cannot reproduce the recording's recognizer. The journal and
+    /// recording remain on this Mac.
+    case transcriptionIdentityUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -158,6 +171,11 @@ enum MeetingNoteCoordinatorError: LocalizedError, Equatable {
             return message
         case .localSaveFailed(let message), .publicationFailed(let message):
             return "The note could not be saved locally: \(message)"
+        case .transcriptionModelRequired:
+            return "Choose a transcription model before replaying this interrupted recording."
+        case .transcriptionIdentityUnavailable(let model):
+            return "This version of Relay Runner cannot reproduce the \(model) transcription this recording started with. "
+                + "The recording is kept; choose a model to replay it."
         }
     }
 }
@@ -199,6 +217,8 @@ struct MeetingNoteRecoveryJournal: Codable, Equatable, Sendable {
     var captureEndedAt: String?
     var lastError: String?
     var updatedAt: String
+    /// Fixed when recording starts. Optional so older journals still decode.
+    var transcriptionIdentity: MeetingTranscriptionIdentity? = nil
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -213,6 +233,7 @@ struct MeetingNoteRecoveryJournal: Codable, Equatable, Sendable {
         case captureEndedAt = "capture_ended_at"
         case lastError = "last_error"
         case updatedAt = "updated_at"
+        case transcriptionIdentity = "transcription_identity"
     }
 }
 
@@ -351,6 +372,11 @@ actor MeetingNoteCoordinator {
         _ durableCheckpointSink: @escaping MeetingTranscriptProducer.DurableCheckpointSink,
         _ eventSink: @escaping MeetingTranscriptProducer.EventSink
     ) -> any MeetingNoteCaptureControlling
+    /// Builds the post-stop transcriber for a journal's recorded identity, or
+    /// throws when this build cannot reproduce it.
+    typealias RecordingTranscriberFactory = @Sendable (
+        MeetingTranscriptionIdentity
+    ) throws -> any MeetingRecordingTranscribing
 
     private struct Runtime {
         let id: UUID
@@ -362,6 +388,10 @@ actor MeetingNoteCoordinator {
     private let writer: any MeetingNoteArtifactWriting
     private let recoveryStore: any MeetingNoteRecoveryStoring
     private let recordingTranscriber: any MeetingRecordingTranscribing
+    /// Identity recorded for new sessions. When set, a journal without one
+    /// predates identities and its unsaved tail needs an explicit choice.
+    private let transcriptionIdentity: MeetingTranscriptionIdentity?
+    private let recordingTranscriberFactory: RecordingTranscriberFactory?
     private let captureFactory: CaptureFactory
     private let policy: MeetingNoteCheckpointPolicy
     private let now: @Sendable () -> String
@@ -398,11 +428,15 @@ actor MeetingNoteCoordinator {
         snapshotSink: @escaping SnapshotSink = { _ in },
         scopeTokenRefresher: ScopeTokenRefresher? = nil,
         recordingTranscriber: any MeetingRecordingTranscribing,
+        transcriptionIdentity: MeetingTranscriptionIdentity? = nil,
+        recordingTranscriberFactory: RecordingTranscriberFactory? = nil,
         captureFactory: @escaping CaptureFactory
     ) {
         self.writer = writer
         self.recoveryStore = recoveryStore
         self.recordingTranscriber = recordingTranscriber
+        self.transcriptionIdentity = transcriptionIdentity
+        self.recordingTranscriberFactory = recordingTranscriberFactory
         self.policy = policy
         self.now = now
         self.snapshotSink = snapshotSink
@@ -423,7 +457,17 @@ actor MeetingNoteCoordinator {
             scopeTokenRefresher: scopeTokenRefresher,
             recordingTranscriber: MeetingRecordingTranscriber(
                 transcriber: FluidAudioMeetingTranscriber(modelName: modelName)
-            )
+            ),
+            transcriptionIdentity: (try? STTModel.resolve(modelName)).map {
+                MeetingTranscriptionIdentity.current(for: $0)
+            },
+            recordingTranscriberFactory: { identity in
+                MeetingRecordingTranscriber(
+                    transcriber: FluidAudioMeetingTranscriber(
+                        modelName: try identity.reproducibleModel().rawValue
+                    )
+                )
+            }
         ) { sessionID, acceptedAudioSink, durableCheckpointSink, eventSink in
             // Recording loads no model; the transcriber runs only after Stop.
             let producer = MeetingTranscriptProducer(
@@ -499,7 +543,8 @@ actor MeetingNoteCoordinator {
             syncState: nil,
             captureEndedAt: nil,
             lastError: nil,
-            updatedAt: timestamp
+            updatedAt: timestamp,
+            transcriptionIdentity: transcriptionIdentity
         )
         self.journal = journal
 
@@ -681,29 +726,67 @@ actor MeetingNoteCoordinator {
             let recorded = (try? await recoveryStore.loadRecording(
                 sessionID: journal.sessionID
             ))?.segments.count ?? 0
+            let pending = (journal.producerCheckpoint?.pendingAudio.count ?? 0) + recorded
+            let requiresChoice = requiresTranscriptionModelChoice(
+                journal,
+                pendingAudioChunkCount: pending
+            )
             offers.append(MeetingNoteRecoveryOffer(
                 sessionID: journal.sessionID,
                 noteID: journal.identity?.noteID,
                 project: journal.project,
                 phase: journal.phase,
                 updatedAt: journal.updatedAt,
-                pendingAudioChunkCount: (journal.producerCheckpoint?.pendingAudio.count ?? 0)
-                    + recorded
+                pendingAudioChunkCount: pending,
+                transcriptionIdentity: journal.transcriptionIdentity,
+                requiresTranscriptionModelChoice: requiresChoice,
+                transcriptionModelChoices: requiresChoice
+                    ? STTModel.allCases.filter { (try? STTModel.resolve($0.rawValue)) != nil }
+                    : []
             ))
         }
         return offers
     }
 
+    /// Only an unsaved tail is ever replayed; saved text is never re-transcribed.
+    private func requiresTranscriptionModelChoice(
+        _ journal: MeetingNoteRecoveryJournal,
+        pendingAudioChunkCount: Int
+    ) -> Bool {
+        guard pendingAudioChunkCount > 0 else { return false }
+        guard let identity = journal.transcriptionIdentity else {
+            return transcriptionIdentity != nil
+        }
+        guard recordingTranscriberFactory != nil else { return false }
+        return (try? identity.reproducibleModel()) == nil
+    }
+
+    /// `transcriptionModel` is used only when the offer requires a choice;
+    /// otherwise the recording's own identity stays fixed.
     func resolveRecovery(
         sessionID: String,
         projectScopeToken: String?,
-        resolution: MeetingNoteRecoveryResolution
+        resolution: MeetingNoteRecoveryResolution,
+        transcriptionModel: STTModel? = nil
     ) async throws -> MeetingNoteCoordinatorSnapshot {
         guard phase == .idle || phase == .saved || phase == .interrupted || phase == .error,
               var journal = try await recoveryStore.load(sessionID: sessionID)
         else { throw MeetingNoteCoordinatorError.recoveryNotFound }
 
         guard runtime == nil else { throw MeetingNoteCoordinatorError.foregroundBusy }
+        if resolution != .discardIncompleteTail {
+            let recorded = (try? await recoveryStore.loadRecording(sessionID: sessionID))?
+                .segments.count ?? 0
+            let pending = (journal.producerCheckpoint?.pendingAudio.count ?? 0) + recorded
+            if requiresTranscriptionModelChoice(journal, pendingAudioChunkCount: pending) {
+                guard let transcriptionModel else {
+                    throw MeetingNoteCoordinatorError.transcriptionModelRequired
+                }
+                journal.transcriptionIdentity = MeetingTranscriptionIdentity.current(
+                    for: try STTModel.resolve(transcriptionModel.rawValue)
+                )
+            }
+        }
         captureInterrupted = false
         activeScopeToken = projectScopeToken
         hasPersistedRecoveryJournal = true
@@ -932,6 +1015,7 @@ actor MeetingNoteCoordinator {
         captureEndedAt: String
     ) async throws -> MeetingNoteCoordinatorSnapshot {
         var journal = journal
+        let recordingTranscriber = try recordingTranscriber(for: journal)
         phase = .transcribing
         journal.phase = .transcribing
         journal.captureEndedAt = captureEndedAt
@@ -989,6 +1073,16 @@ actor MeetingNoteCoordinator {
         try await recoveryStore.removeSession(sessionID: journal.sessionID)
         hasPersistedRecoveryJournal = false
         return snapshot()
+    }
+
+    private func recordingTranscriber(
+        for journal: MeetingNoteRecoveryJournal
+    ) throws -> any MeetingRecordingTranscribing {
+        guard let factory = recordingTranscriberFactory,
+              let identity = journal.transcriptionIdentity else {
+            return recordingTranscriber
+        }
+        return try factory(identity)
     }
 
     @discardableResult
@@ -1487,6 +1581,8 @@ actor MeetingNoteCoordinator {
             case .captureFailed: return "capture_failed"
             case .localSaveFailed: return "local_save_failed"
             case .publicationFailed: return "publication_failed"
+            case .transcriptionModelRequired: return "transcription_model_required"
+            case .transcriptionIdentityUnavailable: return "transcription_identity_unavailable"
             }
         case let error as MeetingNoteRecoveryStoreError:
             switch error {

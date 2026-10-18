@@ -58,9 +58,14 @@ ordered chunks and timing epochs on that shared timeline. Pause/resume, route
 recovery, and producer restart create new epochs without allocating a new note.
 
 The default ASR window is six seconds with one second of right overlap. A
-window owns only its first five seconds; token midpoints in the overlap are
-context and are emitted by the next window. The final tail owns its complete
-accepted range. Stable segment IDs derive from source, epoch, and owned start
+window owns the half-open range `[owned start, owned end)` of its first five
+seconds. Recognizer subword pieces are joined into words at whitespace markers.
+Each word, including its trailing punctuation, belongs to the window that owns
+its **onset**. An onset exactly at the owned end belongs to the next window.
+Word onsets in the overlap are context and are emitted by the next window. The
+final tail owns its complete accepted range. Window-relative token times are
+converted to the note timeline exactly once, by adding the window's context
+start. Stable segment IDs derive from source, epoch, and owned start
 sample. Partial hypotheses increase `revision` for that ID; a final revision
 closes it. Late lower revisions are rejected. A repeated sentence in a later
 owned range has a different segment ID and is retained; there is no global
@@ -72,6 +77,69 @@ timeline and timing epochs and hands every accepted chunk to the recorder, but
 it never prepares a model, submits a window, or emits a partial hypothesis.
 After Stop, `MeetingRecordingTranscriber` runs the finished recording through
 the same windows and segment IDs once, forwarding final revisions only.
+
+### Recognizer output contract (RR-414)
+
+`FluidAudioMeetingTranscriber` resolves its model through `STTModel.resolve`:
+Phonon 2 on macOS 15 and later, and Parakeet on macOS 14 or by explicit
+rollback. Every window uses a fresh TDT decoder state. A window shorter than
+one second is zero-padded to one second. Model punctuation and leading-space
+word markers pass through unchanged.
+
+Token timings are used only when every onset is finite and non-negative. If the
+recognizer returns text without usable timings, the adapter re-transcribes only
+the window's owned audio. It returns that text without word timings, so overlap
+speech cannot be duplicated and no word-level precision is invented. Token
+confidence is retained as a library value only. It is not a calibrated
+probability and never filters text.
+
+`MeetingTranscriptionIdentity` records the backend, model id, FluidAudio runtime
+revision, immutable model revision and decoding parameters. The model revision
+is nil for the legacy unpinned Parakeet cache. A new recovery journal stores
+this identity when recording starts (`transcription_identity`). The journal
+schema version is unchanged, and older journals without the field still decode.
+A recovered tail is transcribed with the journal's identity, regardless of a
+later settings change or relaunch. The coordinator offers a model choice before
+replay in two cases:
+
+- an unsaved tail whose journal has no identity;
+- a tail whose identity this build cannot reproduce exactly (a different
+  runtime or model revision, or an unsupported OS).
+
+Recover paused and Finalize stay unavailable until the user picks a model.
+Discard is always available. The chosen identity is persisted before
+transcription. Saved segments and completed canonical notes are never
+re-transcribed. Missing model assets or a failed model load leave the journal
+and recording in place for a later retry. An active recording's recognizer is
+never replaced.
+
+**Evidence, kept separate:**
+
+- **Real-model replay (RR-411, local only).** These results come from
+  `docs/validation/rr-411/README.md` at commit `eec42416`. Public fixtures were
+  replayed through pinned FluidAudio 0.17.5 and Phonon
+  `a812a0dfef205660787ef6234317ab79acf4d5d6`.
+  - All 1,264 successful outputs reassembled to the library text with Relay's
+    whitespace-marked word assembly, punctuation included.
+  - Every emitted token carried a confidence. Phonon's observed range was
+    0.327881–1.0.
+  - No candidate token had a non-finite or negative onset, or an end before its
+    onset.
+  - Phonon token times differ from Parakeet's, so seam ownership still needs
+    real validation.
+- **Synthetic tests (RR-414).** `MeetingTranscriptProducerTests` and
+  `MeetingNoteCoordinatorTests` use fixture tokens and fake recognizers. They
+  cover:
+  - onset ownership at both owned edges, subword and punctuation tokens,
+    repeated words, overlap seams, short tails and timeline conversion done
+    once;
+  - untimed results;
+  - identity persistence, legacy decoding, the model choice, and recovery after
+    a model failure;
+  - note/voice-pipeline separation.
+- **Unverified.** Consented real meeting recordings, live capture timing,
+  real-model seam ownership, and macOS 14 Parakeet inference remain unverified.
+  These synthetic tests do not establish them.
 
 `MeetingTranscriptSegmentRevision.projectNoteSegment` maps final producer
 output into the RR-364 storage type. The coordinator publishes those finals in
