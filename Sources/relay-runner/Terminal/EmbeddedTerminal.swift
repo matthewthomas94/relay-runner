@@ -485,6 +485,17 @@ final class RelayTerminalView: TerminalView {
     var sendsShiftSelectionKeys = true
     private var rendererActivationAttempted = false
     private var bellFlashLayer: CALayer?
+    /// Which hosted CLI's prompt layout Shift-arrow selection reads; nil
+    /// leaves Shift-arrows to `editingKey`.
+    var promptStyle: RelayPromptLayout.Style?
+    /// True while human keys are held back from the CLI, so the screen
+    /// will not follow selection presses.
+    var inputIsBuffered: () -> Bool = { false }
+    var promptSelection: RelayPromptSelection?
+    var promptSelectionCheck: DispatchWorkItem?
+    var promptSelectionCheckDate: Date?
+    var promptSelectionFailed = false
+    var promptSelectionLayers: [CALayer] = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -534,15 +545,42 @@ final class RelayTerminalView: TerminalView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        clearPromptSelection()
         window?.makeFirstResponder(self)
         super.mouseDown(with: event)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if handleEditingKey(event) || handleKeyCommand(event) {
+        if handlePromptSelectionKey(event) || handleEditingKey(event) || handleKeyCommand(event) {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    override func copy(_ sender: Any) {
+        guard let selection = promptSelection, !selection.range.isEmpty else {
+            super.copy(sender)
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(selection.layout.text(selection.range), forType: .string)
+    }
+
+    override func paste(_ sender: Any) {
+        // Pasting over a prompt selection replaces it.
+        deletePromptSelection()
+        super.paste(sender)
+    }
+
+    override func scrolled(source terminal: Terminal, yDisp: Int) {
+        clearPromptSelection()
+        super.scrolled(source: terminal, yDisp: yDisp)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        if promptSelection != nil { clearPromptSelection() }
     }
 
     override func send(source: Terminal, data: ArraySlice<UInt8>) {
@@ -664,7 +702,7 @@ final class RelayTerminalView: TerminalView {
             // SwiftTerm's keyDown is not overridable; set Meta per event so
             // right Option still composes characters (e.g. UK Option-3 = #).
             self.optionAsMetaKey = Self.optionActsAsMeta(rawModifierFlags: event.modifierFlags.rawValue)
-            guard self.handleEditingKey(event) || self.handleKeyCommand(event) else {
+            guard self.handlePromptSelectionKey(event) || self.handleEditingKey(event) || self.handleKeyCommand(event) else {
                 self.handledKeyDownCodes.remove(event.keyCode)
                 return event
             }
@@ -683,7 +721,7 @@ final class RelayTerminalView: TerminalView {
     func perform(_ command: KeyCommand) {
         switch command {
         case .copy:
-            if selectionActive { copy(self) }
+            if hasPromptSelection || selectionActive { copy(self) }
         case .paste:
             paste(self)
         case .selectAll:
@@ -698,6 +736,7 @@ final class RelayTerminalView: TerminalView {
             // CSI 3J is parsed locally; nothing reaches the provider.
             feed(text: "\u{1B}[3J")
         case .zoomIn, .zoomOut, .zoomReset:
+            clearPromptSelection()
             let size = Self.zoomedFontSize(from: font.pointSize, command: command)
             if size != font.pointSize {
                 font = AppTypography.terminalGridFont(size: size, weight: .regular)
@@ -824,6 +863,7 @@ final class RelayTerminalView: TerminalView {
             paths: urls.map(\.path),
             bracketedPaste: getTerminal().bracketedPasteMode
         )
+        clearPromptSelection()
         send(data: ArraySlice(Array(payload.utf8)))
         window?.makeFirstResponder(self)
         return true
@@ -1923,6 +1963,17 @@ final class RelayVoiceCommandDelivery {
         var pending = false
         performOnDeliveryQueue { pending = inputTracker.hasUnsubmittedInput || manualInputBufferKey != nil || continuationInputBuffer != nil }
         return pending
+    }
+
+    /// Human input is held back while a continuation or voice prompt is written.
+    var buffersUserInput: Bool {
+        continuationCancellationLock.lock()
+        let inserted = insertedContinuation != nil
+        continuationCancellationLock.unlock()
+        if inserted { return true }
+        var buffered = false
+        performOnDeliveryQueue { buffered = continuationInputBuffer != nil || manualInputBufferKey != nil }
+        return buffered
     }
 
     private var manualInputBufferKey: RelayCommandKey? {
@@ -3411,6 +3462,8 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
         voiceDelivery = nil
         usesAppOwnedInput = launch.voiceDelivery == .appOwned
         terminalView.sendsShiftSelectionKeys = launch.target != .codex
+        terminalView.promptStyle = launch.target == .codex ? .codex : .claude
+        terminalView.inputIsBuffered = { [weak self] in self?.voiceDelivery?.buffersUserInput == true }
         appOwnedInputGeneration += 1
         appOwnedInputChannel?.close(flags: .stop)
         appOwnedInputChannel = nil
@@ -3602,6 +3655,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     }
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        terminalView.clearPromptSelection()
         guard localProcess.running else { return }
         var size = getWindowSize()
         _ = PseudoTerminalHelpers.setWinSize(
@@ -3643,6 +3697,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
             voiceDelivery?.recordProviderOutputProgress()
         }
         terminalView.feed(byteArray: slice)
+        terminalView.providerOutputDidArrive()
         considerInteractiveReadiness(after: slice)
     }
 

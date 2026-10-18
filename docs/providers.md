@@ -112,7 +112,15 @@ The embedded terminal sends the standard macOS editing keys to Claude Code and C
 
 Fn-Delete, Home, End, Cmd-Home/End, Shift-PageUp/PageDown, Backspace, Ctrl-C, copy, paste, find, zoom, and mouse selection keep SwiftTerm's handling. Only the left Option key acts as Meta for other keys, so the right Option key still composes characters.
 
-Shift selection depends on the provider. Claude Code moves the cursor for the Shift keys but has no prompt selection, so they behave like their unshifted forms. Codex ignores Shift-modified arrows entirely, so for Codex sessions the app drops Shift and sends the plain movement; the keys move but cannot select. Use mouse selection to copy prompt text in either provider.
+Neither Claude Code nor Codex selects prompt text on Shift-arrows, so the terminal draws the selection itself. It reads the provider's prompt back from the screen (Claude Code's ruled input box, Codex's `›` prompt), highlights the selected characters, and moves the provider's own cursor to the selection's moving end with plain Left/Right presses. While text is selected:
+
+- Cmd-C copies it.
+- Delete or Fn-Delete deletes it, sent as Backspace or Forward Delete presses depending on which end the cursor is at.
+- Typing or pasting replaces it.
+- Left / Right collapse it to its start or end.
+- Any other key, a click, scrolling, resizing, zooming, or a provider redraw of the prompt clears it.
+
+When the prompt cannot be read exactly, the Shift keys fall back to the sequences in the table; for Codex the app drops Shift and sends the plain movement. That happens with a pasted-text or image chip, scrolled-back output, input held for a voice turn, or a provider that does not follow the presses within a second. Delete or typing in the few milliseconds before the provider redraws also clears the selection and goes through as a normal key.
 
 ## Shared behavior
 
