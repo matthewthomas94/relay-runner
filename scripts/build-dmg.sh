@@ -86,6 +86,24 @@ submit_notarization() {
     fi
 }
 
+stapler_with_retry() {
+    local attempt status
+    for attempt in 1 2 3 4 5; do
+        if xcrun stapler "$@"; then
+            return 0
+        else
+            status=$?
+        fi
+        # After notarisation is accepted, Apple's ticket service can still
+        # return EX_NOHOST (68) for a dropped connection or delayed ticket.
+        if [ "$status" -ne 68 ] || [ "$attempt" -eq 5 ]; then
+            return "$status"
+        fi
+        echo "==> Apple's ticket service is unavailable; retrying stapler in $((attempt * 5)) seconds..." >&2
+        sleep "$((attempt * 5))"
+    done
+}
+
 echo "==> Building ($CONFIG)..."
 if [ "$CONFIG" = "release" ]; then
     swift build -c "$CONFIG" -Xswiftc -g
@@ -381,8 +399,8 @@ if [ -n "$SIGN_IDENTITY" ] && [ -n "$NOTARY_PROFILE" ]; then
     submit_notarization "$APP_NOTARY_ZIP" "app"
 
     echo "==> Stapling app notarisation ticket..."
-    xcrun stapler staple "$APP_DIR"
-    xcrun stapler validate "$APP_DIR"
+    stapler_with_retry staple "$APP_DIR"
+    stapler_with_retry validate "$APP_DIR"
     spctl -a -vv -t exec "$APP_DIR"
     rm -f "$APP_NOTARY_ZIP"
 elif [ -n "$SIGN_IDENTITY" ]; then
@@ -478,8 +496,8 @@ if [ -n "$SIGN_IDENTITY" ] && [ -n "$NOTARY_PROFILE" ]; then
     echo "==> Submitting DMG for notarisation (profile: $NOTARY_PROFILE)..."
     submit_notarization "$DIST_DIR/$DMG_NAME.dmg" "dmg"
     echo "==> Stapling DMG notarisation ticket..."
-    xcrun stapler staple "$DIST_DIR/$DMG_NAME.dmg"
-    xcrun stapler validate "$DIST_DIR/$DMG_NAME.dmg"
+    stapler_with_retry staple "$DIST_DIR/$DMG_NAME.dmg"
+    stapler_with_retry validate "$DIST_DIR/$DMG_NAME.dmg"
 elif [ -n "$SIGN_IDENTITY" ]; then
     echo "  (SIGN_IDENTITY set but NOTARY_PROFILE unset — skipping notarisation."
     echo "   The DMG and Sparkle zip are signed but not notarised, so Gatekeeper will warn users.)"

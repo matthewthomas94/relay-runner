@@ -17,6 +17,7 @@ on:
       - "scripts/**"
       - "services/**"
       - "tests/test_app_signing.py"
+      - "tests/test_notarization_retry.py"
       - ".github/workflows/build-dmg.yml"
   # Allow manual trigger. Dispatching on a `v*` tag ref publishes that tag;
   # `skip_notarization` keeps Developer ID signing but skips Apple's notary
@@ -94,6 +95,9 @@ jobs:
 
       - name: Verify permission identity policy
         run: python3 -m unittest discover -s tests -p 'test_app_signing.py'
+
+      - name: Verify notarisation ticket retries
+        run: python3 -m unittest discover -s tests -p 'test_notarization_retry.py'
 
       # dmgbuild produces the styled installer DMG without Apple Events /
       # Finder. Installed to user site-packages — `python3 -m dmgbuild`
