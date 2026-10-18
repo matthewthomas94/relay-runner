@@ -135,6 +135,16 @@ struct VoiceSessionSpool: Equatable {
     }
 }
 
+enum SessionVoicePlayback: String, Decodable {
+    case play, replay, stop
+
+    static func resolve(live: Self?, unreadCount: Int, hasStoredReply: Bool) -> Self? {
+        if live == .stop { return .stop }
+        if live == .play || (unreadCount > 0 && hasStoredReply) { return .play }
+        return live ?? (hasStoredReply ? .replay : nil)
+    }
+}
+
 /// RR-401: a background session's unheard replies and undelivered worker
 /// outcomes, as the bridge records them in `VoiceSessionSpool.replyBadge`.
 struct VoiceReplyBadge: Equatable {

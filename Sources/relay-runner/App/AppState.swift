@@ -949,6 +949,7 @@ final class AppState {
         sessionWheel.refresh = { [weak self] model, includesProjects in
             self?.refreshSessionWheel(model, includesProjects: includesProjects)
         }
+        sessionWheel.toggleWorkspace = { [weak self] in self?.toggleWorkspace() }
         sessionWheel.focusSession = { [weak self] in self?.switchSessionFromWheel(contextID: $0) }
         sessionWheel.startProject = { [weak self] path in
             self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false
@@ -3018,15 +3019,32 @@ final class AppState {
         model.refresh(sessions: workspaceSessionTabs.map { tab in
             let spool = sessionRegistry.spool(for: tab.id)
             let key = spool?.key
+            let playback = sessionWheelPlayback(spool: spool)
             return SessionWheelSession(
                 id: tab.id, name: tab.name, unreadCount: sessionReplyBadges[tab.id] ?? 0,
                 isFocused: tab.id == activeContext.id,
                 isRecording: recording && key != nil && key == recordingKey,
                 canRecord: SessionWheelRecording.canToggle(targetKey: key, recording: recording,
                                                           recordingKey: recordingKey, ready: ready),
-                canPlay: spool.map { VoiceReplyBadge.hasStoredReply(path: $0.replyBadge) } ?? false
+                canPlay: playback != nil,
+                playback: playback ?? .replay
             )
         })
+    }
+
+    private func sessionWheelPlayback(spool: VoiceSessionSpool?) -> SessionVoicePlayback? {
+        guard let spool, let key = spool.key else { return nil }
+        return SessionVoicePlayback.resolve(
+            live: stateMachine.sessionPlayback[key],
+            unreadCount: VoiceReplyBadge.load(path: spool.replyBadge).unreadCount,
+            hasStoredReply: VoiceReplyBadge.hasStoredReply(path: spool.replyBadge)
+        )
+    }
+
+    static func sessionPlaybackMessage(sessionKey: String, action: SessionVoicePlayback) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: ["session_key": sessionKey, "action": action.rawValue]),
+              let json = String(data: data, encoding: .utf8) else { return nil }
+        return "__SESSION_PLAYBACK__:" + json
     }
 
     private func performSessionWheelAction(contextID: String, action: SessionWheelAction) -> Bool {
@@ -3035,8 +3053,8 @@ final class AppState {
         switch action {
         case .message:
             guard let spool = sessionRegistry.spool(for: contextID),
-                  VoiceReplyBadge.hasStoredReply(path: spool.replyBadge),
-                  let key = spool.key, let message = Self.voiceReplayMessage(sessionKey: key) else { return false }
+                  let playback = sessionWheelPlayback(spool: spool), let key = spool.key,
+                  let message = Self.sessionPlaybackMessage(sessionKey: key, action: playback) else { return false }
             return SocketClient.bridgeSend(message)
         case .recording:
             guard let engine = sttEngine,

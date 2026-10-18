@@ -3,6 +3,39 @@ import XCTest
 
 /// RR-401: background-session replies are badged, then read out on request.
 final class VoiceReplyBadgeTests: XCTestCase {
+    func testSessionPlaybackUsesLiveQueueBeforeSavedReplayAndIgnoresOutcomeBadges() {
+        XCTAssertEqual(SessionVoicePlayback.resolve(live: .play, unreadCount: 0, hasStoredReply: false), .play)
+        XCTAssertEqual(SessionVoicePlayback.resolve(live: .stop, unreadCount: 2, hasStoredReply: true), .stop)
+        XCTAssertEqual(SessionVoicePlayback.resolve(live: .replay, unreadCount: 1, hasStoredReply: true), .play)
+        XCTAssertEqual(SessionVoicePlayback.resolve(live: .replay, unreadCount: 0, hasStoredReply: false), .replay)
+        XCTAssertEqual(SessionVoicePlayback.resolve(live: nil, unreadCount: 0, hasStoredReply: true), .replay)
+        XCTAssertNil(SessionVoicePlayback.resolve(live: nil, unreadCount: 0, hasStoredReply: false))
+    }
+
+    func testPlaybackControlsCarrySessionAndExplicitAction() throws {
+        for action in [SessionVoicePlayback.play, .replay, .stop] {
+            let message = try XCTUnwrap(AppState.sessionPlaybackMessage(sessionKey: "context-a", action: action))
+            XCTAssertTrue(message.hasPrefix("__SESSION_PLAYBACK__:"))
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(
+                with: Data(message.dropFirst("__SESSION_PLAYBACK__:".count).utf8)) as? [String: String])
+            XCTAssertEqual(payload, ["session_key": "context-a", "action": action.rawValue])
+        }
+    }
+
+    @MainActor
+    func testPlaybackSnapshotSurvivesRecordingAndDoesNotReplaceTheNotchState() {
+        let state = StateMachine()
+        state.updateSTT(isRecording: true, partial: "")
+        state.handleServiceEvent(source: "bridge", newState: "session_playback",
+                                 text: #"{"a":"play","b":"stop","c":"replay"}"#)
+        XCTAssertEqual(state.state, .recording)
+        XCTAssertEqual(state.sessionPlayback, ["a": .play, "b": .stop, "c": .replay])
+        state.updateSTT(isRecording: false, partial: "")
+        XCTAssertEqual(state.sessionPlayback["a"], .play)
+        state.handleServiceEvent(source: "bridge", newState: "session_playback", text: "{}")
+        XCTAssertTrue(state.sessionPlayback.isEmpty)
+    }
+
     func testBadgeCountsUnheardRepliesAndOutcomesFromTheBridgeFile() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
         defer { try? FileManager.default.removeItem(atPath: root) }

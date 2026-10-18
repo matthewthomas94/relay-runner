@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import os
 import queue
+import socket
 import sys
+import threading
 import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from test_voice_bridge_focus import FocusTestCase, voice_bridge  # noqa: E402
+from test_voice_bridge_focus import FocusTestCase, voice_bridge, wait_until  # noqa: E402
 
 
 class FakeTTS:
@@ -24,6 +26,68 @@ class FakeTTS:
 
 
 class BackgroundReplyTests(FocusTestCase):
+    def test_wheel_controls_route_through_the_bridge_socket_without_changing_focus(self):
+        self.focus("a", "codex")
+        self.focus("b", "claude")
+        self.tts.control_session = mock.Mock(return_value=True)
+        self.tts.session_playback_states = mock.Mock(return_value={"a": "play"})
+        shutdown = threading.Event()
+        path = os.path.join(self.root, "wheel.sock")
+        with mock.patch.object(voice_bridge, "BRIDGE_CONTROL_SOCK", path), \
+                mock.patch.object(voice_bridge, "_notify_state") as notify:
+            thread = threading.Thread(target=voice_bridge._start_control_socket, args=(self.tts, shutdown), daemon=True)
+            thread.start()
+            try:
+                self.assertTrue(wait_until(lambda: os.path.exists(path)))
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+                    message = voice_bridge.VOICE_SESSION_PLAYBACK_PREFIX + json.dumps({"session_key": "a", "action": "play"})
+                    client.sendto(message.encode(), path)
+                    self.assertTrue(wait_until(lambda: self.tts.control_session.called))
+                self.tts.control_session.assert_called_with("a", "play", waiting_session_key="")
+                self.assertEqual(voice_bridge._current_voice_target().session_key, "b")
+                self.assertTrue(notify.called)
+            finally:
+                shutdown.set()
+                thread.join(2)
+            self.assertFalse(thread.is_alive())
+
+    def test_wheel_plays_unread_messages_in_order_then_replays_for_both_providers(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider):
+                target = self.focus(provider, provider)
+                self.tts.control_session = mock.Mock(return_value=False)
+                self.tts.read_out = mock.Mock(return_value=True)
+                voice_bridge._record_background_reply(target, "First", {})
+                voice_bridge._record_background_reply(target, "Second", {})
+                payload = {"session_key": target.session_key, "action": "play"}
+                for expected, unread in (("First", 1), ("Second", 0), ("Second", 0)):
+                    self.assertTrue(voice_bridge._handle_session_playback(payload, self.tts))
+                    self.tts.read_out.assert_called_with(expected, session_key=target.session_key)
+                    self.assertEqual(self.badge(target)["unread_count"], unread)
+
+    def test_wheel_play_and_stop_do_not_require_a_stored_background_reply(self):
+        self.focus("a")
+        self.tts.control_session = mock.Mock(return_value=True)
+        for action in ("play", "stop"):
+            self.assertTrue(voice_bridge._handle_session_playback({"session_key": "a", "action": action}, self.tts))
+            self.tts.control_session.assert_called_with("a", action, waiting_session_key="")
+        self.tts.read_out.assert_not_called()
+        self.tts.control_session.return_value = False
+        self.assertFalse(voice_bridge._handle_session_playback({"session_key": "a", "action": "stop"}, self.tts))
+        self.tts.read_out.assert_not_called()
+
+    def test_wheel_cannot_control_a_stopped_or_unknown_session(self):
+        self.tts.control_session = mock.Mock()
+        self.assertFalse(voice_bridge._handle_session_playback({"session_key": "missing", "action": "play"}, self.tts))
+        self.tts.control_session.assert_not_called()
+
+    def test_playback_snapshot_contains_state_and_session_keys_only(self):
+        self.tts.session_playback_states = mock.Mock(return_value={"a": "play", "b": "stop"})
+        with mock.patch.object(voice_bridge, "_notify_state") as notify:
+            voice_bridge._publish_session_playback(self.tts)
+        self.assertEqual(notify.call_args.args, ("session_playback",))
+        self.assertEqual(json.loads(notify.call_args.kwargs["text"]), {"a": "play", "b": "stop"})
+
     def setUp(self):
         super().setUp()
         voice_bridge._reset_foreground_reply_delivery_for_tests()

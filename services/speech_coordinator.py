@@ -322,16 +322,77 @@ class SpeechCoordinator:
         with self._lock:
             return self._playing_id is not None
 
-    def read_out(self, text: str) -> None:
+    def session_playback_states(self, *, waiting_session_key: str = "") -> dict[str, str]:
+        """Session controls reflect the speech queue even while the notch records."""
+        with self._lock:
+            states = {
+                item.session_key: "replay" for item in self._replayable_history
+                if item.session_key and not self._expired(item)
+            }
+            for item in [self._intent_for(self._committed_id), *self._backlog]:
+                if item and item.session_key and self._fresh(item):
+                    states[item.session_key] = "play"
+            if self._waiting_preview is not None and waiting_session_key:
+                states[waiting_session_key] = "play"
+            active = self._intent_for(self._playing_id or self._play_dispatched_id)
+            if active and active.session_key:
+                states[active.session_key] = "stop"
+            return states
+
+    def control_session(self, session_key: str, action: str, *, waiting_session_key: str = "") -> bool:
+        """A stale wheel action must never stop or replay another session."""
+        selected = None
+        with self._lock:
+            active = self._intent_for(self._playing_id or self._play_dispatched_id)
+            pending = self._intent_for(self._committed_id)
+            if action == "stop":
+                if active is None or active.session_key != session_key:
+                    return False
+            elif active is not None:
+                return active.session_key == session_key
+            elif ((pending is not None and pending.session_key == session_key and self._fresh(pending))
+                    or (self._waiting_preview is not None and waiting_session_key == session_key)):
+                action = "play"
+            else:
+                selected = next((item for item in self._backlog
+                                 if item.session_key == session_key and self._fresh(item)), None)
+                if selected is not None:
+                    self._backlog.remove(selected)
+                    if pending is not None:
+                        self._backlog.insert(0, pending)
+                    self._clear_play_request_locked()
+                    self._committed_id = selected.utterance_id
+                    action = "play"
+                elif action != "replay":
+                    return False
+        if selected is not None:
+            self.worker.skip()
+            self._enqueue_worker(selected)
+        if action == "stop":
+            self.stop_playback(session_key=session_key)
+        elif action == "play":
+            self.play(session_key=session_key, waiting_session_key=waiting_session_key)
+        else:
+            return self.replay(session_key=session_key)
+        return True
+
+    def read_out(self, text: str, *, session_key: str = "") -> bool:
         """Speak explicit text now, such as a stored background reply (RR-401)."""
         text = str(text or "").strip()
         if not text:
-            return
+            return False
         if self.submit(SpeechIntent.build(
             spoken_text=text,
             dedup_key=f"read_out:{uuid.uuid4().hex}",
+            session_key=session_key,
+            replayable=True,
         )):
-            self.play()
+            if session_key:
+                self.control_session(session_key, "play")
+            else:
+                self.play()
+            return True
+        return False
 
     def played_coverage(self, command_seq: int, command_id: str) -> tuple[dict[str, Any], ...]:
         """Return bounded semantic coverage from speech that finished playing."""
@@ -591,11 +652,13 @@ class SpeechCoordinator:
         for intent in stale:
             self._diagnostic("interrupted", intent, reason="speech_only_barge_in")
 
-    def stop_playback(self, *, reason: str = "user_stop") -> None:
+    def stop_playback(self, *, reason: str = "user_stop", session_key: str | None = None) -> None:
         """Stop one active attempt without revoking its replay eligibility."""
         normalized_reason = str(reason or "user_stop").strip() or "user_stop"
         with self._lock:
-            intent = self._intent_for(self._playing_id)
+            intent = self._intent_for(self._playing_id or self._play_dispatched_id)
+            if session_key is not None and (intent is None or intent.session_key != session_key):
+                return
             if intent is not None:
                 self._stopped_attempt_reasons[intent.utterance_id] = normalized_reason
                 self._clear_play_request_locked()
@@ -637,9 +700,15 @@ class SpeechCoordinator:
         for intent in stale:
             self._diagnostic("interrupted", intent, reason="skip")
 
-    def play(self) -> None:
+    def play(self, *, session_key: str | None = None, waiting_session_key: str = "") -> None:
         with self._lock:
             if self._playing_id:
+                return
+            pending = self._intent_for(self._committed_id)
+            if session_key is not None and not (
+                (pending is not None and pending.session_key == session_key)
+                or (self._waiting_preview is not None and waiting_session_key == session_key)
+            ):
                 return
             if not self._committed_id and self._waiting_preview is None:
                 return
@@ -671,12 +740,13 @@ class SpeechCoordinator:
         self.play()
         return True
 
-    def replay(self) -> bool:
+    def replay(self, *, session_key: str | None = None) -> bool:
         with self._lock:
             history = tuple(self._replayable_history)
             timing = dict(self._play_timing) if self._play_timing is not None else None
         previous = next(
-            (intent for intent in reversed(history) if not self._expired(intent)),
+            (intent for intent in reversed(history) if not self._expired(intent)
+             and (session_key is None or intent.session_key == session_key)),
             None,
         )
         if previous is None:
@@ -702,9 +772,11 @@ class SpeechCoordinator:
         )
         with self._lock:
             self._waiting_preview = None
-            self._play_requested = True
+            self._play_requested = session_key is None
         accepted = self.submit(replay)
         if accepted:
+            if session_key is not None:
+                self.control_session(session_key, "play")
             self._diagnostic("replayed", replay, replay_of=replay.replay_of)
         else:
             with self._lock:

@@ -7,6 +7,7 @@ final class SessionWheelController {
     var focusSession: ((String) -> Void)?
     var startProject: ((String) -> Bool)?
     var sessionAction: ((String, SessionWheelAction) -> Bool)?
+    var toggleWorkspace: (() -> Void)?
 
     private var panel: SessionWheelPanel?
     private var monitors: [Any] = []
@@ -27,12 +28,9 @@ final class SessionWheelController {
             model: model,
             selectSlot: { [weak self] index, fromPointer in self?.selectSlot(index, fromPointer: fromPointer) },
             performAction: { [weak self] id, action in self?.performAction(id, action) },
+            selectCenter: { [weak self] in self?.selectCenter() },
             back: { [weak self] in self?.back() },
-            dismiss: { [weak self] in self?.dismiss() },
-            turnPage: { [weak self] delta in
-                guard let self else { return }
-                self.model.turnPage(delta, at: self.pointerLocation)
-            }
+            dismiss: { [weak self] in self?.dismiss() }
         ).scaleEffect(size / SessionWheelGeometry.diameter).frame(width: size, height: size)
         panel.contentView = SessionWheelHostingView(rootView: view)
         refresh?(model, true)
@@ -75,18 +73,35 @@ final class SessionWheelController {
         if !model.back(at: pointerLocation) { dismiss() }
     }
 
-    private func selectSlot(_ index: Int, fromPointer: Bool) {
+    func selectCenter() {
+        guard isVisible else { return }
+        if model.pickingProject {
+            back()
+        } else {
+            dismiss()
+            toggleWorkspace?()
+        }
+    }
+
+    func selectSlot(_ index: Int, fromPointer: Bool) {
         guard isVisible, model.slots.indices.contains(index) else { return }
         if model.pickingProject {
             // Moving after entering a submenu prevents a double-click from
             // launching the project that inherited the parent's position.
             let isMouseEvent = NSApp.currentEvent.map { [.leftMouseDown, .leftMouseUp].contains($0.type) } ?? false
-            guard (!fromPointer || !isMouseEvent || model.hoveredSlot == index),
-                  model.visibleProjects.indices.contains(index),
+            guard !fromPointer || !isMouseEvent || model.hoveredSlot == index else { return }
+            if model.isMoreProjectsSlot(index) {
+                model.turnPage(1, at: pointerLocation)
+                return
+            }
+            guard model.visibleProjects.indices.contains(index),
                   model.canStartSession else { return }
             let project = model.visibleProjects[index]
             guard project.isAvailable else { return }
-            if startProject?(project.path) == true { dismiss() }
+            if startProject?(project.path) == true {
+                model.reset(at: pointerLocation)
+                refresh?(model, true)
+            }
             else { model.notice = "Couldn't start session" }
         } else if let session = model.slots[index] {
             dismiss()
@@ -97,11 +112,15 @@ final class SessionWheelController {
         }
     }
 
-    private func performAction(_ id: String, _ action: SessionWheelAction) {
+    func performAction(_ id: String, _ action: SessionWheelAction) {
         guard isVisible, let session = model.slots.compactMap({ $0 }).first(where: { $0.id == id }),
               action.isEnabled(for: session) else { return }
-        if sessionAction?(id, action) == true { dismiss() }
-        else { model.notice = "Action unavailable" }
+        guard sessionAction?(id, action) == true else {
+            model.notice = "Action unavailable"
+            return
+        }
+        model.notice = nil
+        refresh?(model, true)
     }
 
     private func installMonitors() {

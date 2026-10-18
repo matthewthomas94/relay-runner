@@ -832,6 +832,7 @@ def _apply_voice_focus(
 VOICE_REPLY_BADGE_FILENAME = "voice_reply_badge.json"
 VOICE_REPLY_BADGE_LIMIT = 5
 VOICE_REPLAY_PREFIX = "__REPLAY__:"
+VOICE_SESSION_PLAYBACK_PREFIX = "__SESSION_PLAYBACK__:"
 _VOICE_BADGE_LOCK = threading.Lock()
 # The focused session's reply most recently handed to speech.
 _SPOKEN_REPLY: dict | None = None
@@ -1085,6 +1086,44 @@ def _handle_session_replay(payload: dict, tts_worker) -> bool:
         return False
     tts_worker.read_out(text)
     return True
+
+
+def _handle_session_playback(payload: dict, tts_worker) -> bool:
+    target = _voice_target_for(payload.get("session_key"))
+    action = payload.get("action")
+    if target is None or action not in {"play", "replay", "stop"} or tts_worker is None:
+        return False
+    waiting_key = (_SPOKEN_REPLY or {}).get("session_key", "")
+    control = getattr(tts_worker, "control_session", None)
+    if not callable(control):
+        return False
+    # Prefer queued speech over replay history, including a newly arrived reply
+    # between the wheel's refresh and the click reaching the bridge.
+    if control(target.session_key, "stop" if action == "stop" else "play", waiting_session_key=waiting_key):
+        return True
+    if action == "stop":
+        return False
+    badge = _read_json_file(_reply_badge_path(target))
+    replies = badge.get("replies") or []
+    unread = min(max(0, int(badge.get("unread_count") or 0)), len(replies))
+    if not unread and control(target.session_key, "replay", waiting_session_key=waiting_key):
+        return True
+    entry = replies[-unread] if unread else (replies[-1] if replies else {})
+    text = str(entry.get("text") or "").strip()
+    if not text or not tts_worker.read_out(text, session_key=target.session_key):
+        return False
+    if unread:
+        def mark_heard(current):
+            current["unread_count"] = max(0, current["unread_count"] - 1)
+        _update_reply_badge(target, mark_heard)
+    return True
+
+
+def _publish_session_playback(tts_worker) -> None:
+    snapshot = getattr(tts_worker, "session_playback_states", None)
+    if callable(snapshot):
+        states = snapshot(waiting_session_key=(_SPOKEN_REPLY or {}).get("session_key", ""))
+        _notify_state("session_playback", text=json.dumps(states))
 
 
 VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS = 0.0
@@ -3753,6 +3792,7 @@ def _start_control_socket(
     try:
         while not shutdown_event.is_set():
             try:
+                _publish_session_playback(tts_worker)
                 data, _ = sock.recvfrom(4096)
                 cmd = data.decode("utf-8", errors="replace").strip()
                 cmd_lower = cmd.lower()
@@ -3784,6 +3824,14 @@ def _start_control_socket(
                         replay_payload = None
                     if isinstance(replay_payload, dict):
                         _handle_session_replay(replay_payload, tts_worker)
+                    continue
+                if cmd.startswith(VOICE_SESSION_PLAYBACK_PREFIX):
+                    try:
+                        playback_payload = json.loads(cmd[len(VOICE_SESSION_PLAYBACK_PREFIX):])
+                    except json.JSONDecodeError:
+                        playback_payload = None
+                    if isinstance(playback_payload, dict):
+                        _handle_session_playback(playback_payload, tts_worker)
                     continue
                 if cmd.startswith("{"):
                     try:

@@ -76,6 +76,76 @@ def intent(
 
 
 class SpeechCoordinatorTests(unittest.TestCase):
+    def test_session_controls_follow_waiting_preparing_playing_and_replay(self):
+        worker, coordinator, _ = self.make_coordinator()
+        speech = SpeechIntent.build(spoken_text="A reply", session_key="a", kind="final")
+        coordinator.submit(speech)
+        payload = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(coordinator.session_playback_states(), {"a": "play"})
+        self.assertTrue(coordinator.control_session("a", "play"))
+        self.assertEqual(coordinator.session_playback_states(), {"a": "stop"})
+        self.assertFalse(coordinator.control_session("b", "stop"))
+        self.assertNotIn("stop", worker.calls)
+        worker.observer("started", payload)
+        self.assertTrue(coordinator.control_session("a", "stop"))
+        self.assertIn("stop", worker.calls)
+        worker.observer("cancelled", payload)
+        self.assertEqual(coordinator.session_playback_states(), {"a": "replay"})
+        self.assertTrue(coordinator.control_session("a", "replay"))
+        replay = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(replay["session_key"], "a")
+        self.assertEqual(replay["replay_of"], speech.utterance_id)
+
+    def test_session_replay_prefers_new_pending_speech_and_filters_history(self):
+        worker, coordinator, _ = self.make_coordinator()
+        for key in ("a", "b"):
+            coordinator.read_out(f"Reply {key}", session_key=key)
+            payload = worker.input_queue.get_nowait()["_speech_intent"]
+            worker.observer("started", payload)
+            worker.observer("completed", payload)
+        self.assertEqual(coordinator.session_playback_states(), {"a": "replay", "b": "replay"})
+        self.assertTrue(coordinator.control_session("a", "replay"))
+        replay = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(replay["session_key"], "a")
+        worker.observer("started", replay)
+        worker.observer("completed", replay)
+        coordinator.submit(SpeechIntent.build(spoken_text="New A", session_key="a", kind="final"))
+        pending = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(coordinator.session_playback_states()["a"], "play")
+        self.assertTrue(coordinator.control_session("a", "replay"))
+        self.assertTrue(worker.input_queue.empty(), "Play must not manufacture a replay while a new message waits")
+        self.assertEqual(coordinator._play_dispatched_id, pending["utterance_id"])
+
+    def test_session_play_latches_before_messenger_finishes_without_changing_other_session(self):
+        worker, coordinator, _ = self.make_coordinator()
+        coordinator.arm_waiting_playback(1, "one", kind="final")
+        self.assertEqual(coordinator.session_playback_states(waiting_session_key="a"), {"a": "play"})
+        self.assertFalse(coordinator.control_session("b", "play", waiting_session_key="a"))
+        self.assertTrue(coordinator.control_session("a", "play", waiting_session_key="a"))
+        coordinator.submit(SpeechIntent.build(spoken_text="A reply", session_key="a", kind="final",
+                                              command_seq=1, command_id="one"))
+        self.assertIn("play", worker.calls)
+
+    def test_stop_during_preparation_preserves_other_queued_messages(self):
+        worker, coordinator, _ = self.make_coordinator()
+        coordinator.read_out("A reply", session_key="a")
+        active = worker.input_queue.get_nowait()["_speech_intent"]
+        coordinator.submit(SpeechIntent.build(spoken_text="Next B", session_key="b"))
+        self.assertTrue(coordinator.control_session("a", "stop"))
+        worker.observer("cancelled", active)
+        self.assertEqual(coordinator.session_playback_states(), {"a": "replay", "b": "play"})
+        self.assertTrue(coordinator.control_session("b", "play"))
+        self.assertEqual(worker.input_queue.get_nowait()["_speech_intent"]["session_key"], "b")
+
+    def test_reading_a_background_reply_plays_that_session_and_keeps_the_other_waiting(self):
+        worker, coordinator, _ = self.make_coordinator()
+        coordinator.submit(SpeechIntent.build(spoken_text="A waiting", session_key="a"))
+        worker.input_queue.get_nowait()
+        self.assertTrue(coordinator.read_out("B requested", session_key="b"))
+        selected = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(selected["session_key"], "b")
+        self.assertEqual(coordinator.session_playback_states(), {"a": "play", "b": "stop"})
+
     def make_coordinator(
         self,
         *,

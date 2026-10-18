@@ -991,13 +991,14 @@ private extension View {
     }
 }
 
-private enum ProgramBoardControlShape {
+enum ProgramBoardControlShape {
     case capsule
     case circle
     case rounded(CGFloat)
+    case custom(AnyShape)
 }
 
-private struct ProgramBoardInteractiveBackground: View {
+struct ProgramBoardInteractiveBackground: View {
     let shape: ProgramBoardControlShape
     let presentation: ProgramBoardInteractionPresentation
     let disabled: Bool
@@ -1026,6 +1027,11 @@ private struct ProgramBoardInteractiveBackground: View {
                     RoundedRectangle(cornerRadius: radius)
                         .strokeBorder(strokeColor, lineWidth: 1)
                 )
+        case .custom(let shape):
+            shape
+                .fill(backgroundColor)
+                .overlay(shape.fill(Color.white.opacity(usesCardStyle ? 0 : presentation.fillOverlayOpacity)))
+                .overlay(shape.stroke(strokeColor, lineWidth: 1))
         }
     }
 

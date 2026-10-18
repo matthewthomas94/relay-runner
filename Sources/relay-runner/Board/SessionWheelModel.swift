@@ -9,6 +9,7 @@ struct SessionWheelSession: Identifiable, Equatable {
     var isRecording = false
     var canRecord = true
     var canPlay = true
+    var playback: SessionVoicePlayback = .replay
 }
 
 struct SessionWheelProject: Identifiable, Equatable {
@@ -23,7 +24,12 @@ enum SessionWheelAction: Int, CaseIterable {
 
     func title(for session: SessionWheelSession) -> String {
         switch self {
-        case .message: return session.unreadCount > 0 ? "Play message" : "Replay message"
+        case .message:
+            switch session.playback {
+            case .play: return "Play message"
+            case .stop: return "Stop playback"
+            case .replay: return "Replay message"
+            }
         case .recording: return session.isRecording ? "Stop recording" : "Record"
         case .stop: return "Stop session"
         }
@@ -31,7 +37,12 @@ enum SessionWheelAction: Int, CaseIterable {
 
     func symbol(for session: SessionWheelSession) -> String {
         switch self {
-        case .message: return session.unreadCount > 0 ? "play.fill" : "arrow.counterclockwise"
+        case .message:
+            switch session.playback {
+            case .play: return "play.fill"
+            case .stop: return "stop.fill"
+            case .replay: return "arrow.counterclockwise"
+            }
         case .recording: return session.isRecording ? "stop.circle.fill" : "mic.fill"
         case .stop: return "stop.fill"
         }
@@ -50,9 +61,13 @@ enum SessionWheelGeometry {
     static let slotCount = 6
     static let diameter: CGFloat = 528
     static let hubRadius: CGFloat = 52
-    static let wheelRadius: CGFloat = 176
-    static let actionInnerRadius: CGFloat = 184
-    static let actionOuterRadius: CGFloat = 218
+    static let wheelRadius: CGFloat = 180
+    static let segmentGap: CGFloat = 8
+    static let segmentInnerRadius = hubRadius + segmentGap
+    static let segmentOuterRadius = wheelRadius - segmentGap
+    // Leave a gap outside the wheel, then padding inside the detached backing.
+    static let actionInnerRadius = wheelRadius + segmentGap * 2
+    static let actionOuterRadius = actionInnerRadius + 34
     static let actionRadius = (actionInnerRadius + actionOuterRadius) / 2
     static let actionLabelSize = CGSize(width: 52, height: 21)
     static let center = CGPoint(x: diameter / 2, y: diameter / 2)
@@ -105,9 +120,15 @@ final class SessionWheelModel {
     private var pointerOrigin: CGPoint = SessionWheelGeometry.center
     private var pointerActivated = false
 
-    var pageCount: Int { max(1, (projects.count + SessionWheelGeometry.slotCount - 1) / SessionWheelGeometry.slotCount) }
+    private var projectsPerPage: Int { SessionWheelGeometry.slotCount - 1 }
+    var pageCount: Int { max(1, (projects.count + projectsPerPage - 2) / projectsPerPage) }
+    var hasMoreProjects: Bool { projectPage < pageCount - 1 }
+    func isMoreProjectsSlot(_ index: Int) -> Bool {
+        pickingProject && hasMoreProjects && index == SessionWheelGeometry.slotCount - 1
+    }
     var visibleProjects: [SessionWheelProject] {
-        Array(projects.dropFirst(projectPage * SessionWheelGeometry.slotCount).prefix(SessionWheelGeometry.slotCount))
+        Array(projects.dropFirst(projectPage * projectsPerPage)
+            .prefix(hasMoreProjects ? projectsPerPage : SessionWheelGeometry.slotCount))
     }
     var hoveredSession: SessionWheelSession? {
         guard !pickingProject, let hoveredSlot else { return nil }
@@ -145,12 +166,14 @@ final class SessionWheelModel {
     /// Returns true when Back consumed a project submenu; otherwise dismiss.
     func back(at pointer: CGPoint) -> Bool {
         guard pickingProject else { return false }
-        reset(at: pointer)
+        if projectPage > 0 { turnPage(-1, at: pointer) }
+        else { reset(at: pointer) }
         return true
     }
 
     func turnPage(_ direction: Int, at pointer: CGPoint) {
-        projectPage = (projectPage + direction + pageCount) % pageCount
+        projectPage = min(max(0, projectPage + direction), pageCount - 1)
+        notice = nil
         rearmPointer(at: pointer)
     }
 

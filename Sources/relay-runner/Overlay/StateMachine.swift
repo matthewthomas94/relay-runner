@@ -155,6 +155,7 @@ final class StateMachine: @unchecked Sendable {
     private(set) var messagePreview: String?
     private(set) var replayRetained = false
     private(set) var speechPresentation: SpeechPresentation?
+    private(set) var sessionPlayback: [String: SessionVoicePlayback] = [:]
     private(set) var workingProgress: String?
     private(set) var workingProgressUpdatedAt: Date?
 
@@ -220,6 +221,13 @@ final class StateMachine: @unchecked Sendable {
             return
         }
         switch (source, newState) {
+        case ("bridge", "session_playback"):
+            if let data = text?.data(using: .utf8),
+               let states = try? JSONDecoder().decode([String: SessionVoicePlayback].self, from: data),
+               states != sessionPlayback {
+                sessionPlayback = states
+            }
+
         case ("tts", "message_waiting"):
             guard canApplyWaitingPresentation(presentation) else { break }
             pendingAcknowledgement = nil
@@ -554,6 +562,7 @@ final class StateMachine: @unchecked Sendable {
 
     /// Reset to idle (services stopped).
     func reset() {
+        sessionPlayback = [:]
         storyboardRecording = false
         state = .idle
         partialTranscription = ""
