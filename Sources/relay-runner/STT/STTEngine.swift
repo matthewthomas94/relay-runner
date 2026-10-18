@@ -14,8 +14,11 @@ struct STTEngineDependencies {
         _ sampleHandler: @escaping ([Float]) -> Void,
         _ isRecording: @escaping () -> Bool
     ) -> AudioCaptureLifecycle
+    /// One bounded snapshot inference, returning the recognizer's raw text.
+    typealias Transcriber = (_ manager: AsrManager, _ audio: [Float]) async throws -> String
 
     var loadModel: ModelLoader
+    var transcribe: Transcriber
     var makeCapture: CaptureFactory
     var makeGesture: (_ activationKey: String) -> CapsLockGesture
     var prepareVoiceOutput: () -> Void
@@ -23,6 +26,11 @@ struct STTEngineDependencies {
 
     static let live = STTEngineDependencies(
         loadModel: STTEngine.loadSTTModel,
+        transcribe: { manager, audio in
+            // Snapshots are independent, so each gets a fresh decoder state.
+            var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+            return try await manager.transcribe(audio, decoderState: &decoderState).text
+        },
         makeCapture: { sampleHandler, isRecording in
             AudioCaptureLifecycle(sampleHandler: sampleHandler, isRecording: isRecording)
         },
@@ -75,11 +83,6 @@ final class STTEngine: @unchecked Sendable {
 
     private let vadThresholds: [String: Float] = ["low": 0.01, "medium": 0.004, "high": 0.001]
     private var vadThreshold: Float { vadThresholds[vadSensitivity] ?? 0.008 }
-
-    private let hallucinations: Set<String> = [
-        "", "you", "thank you", "thanks for watching",
-        "bye", "the end", "thanks", "thank you for watching",
-    ]
 
     // MARK: - Internal state
 
@@ -371,6 +374,10 @@ final class STTEngine: @unchecked Sendable {
         let hasRequestedRecording = requestedRecordingTargetKey != nil
         voiceTargetLock.unlock()
         guard isRecording || hasRequestedRecording else { return }
+        // An in-flight partial or final inference must not publish cancelled text.
+        captureInterruptionLock.lock()
+        captureInterruptionEpoch &+= 1
+        captureInterruptionLock.unlock()
         gesture.reset()
         resetRecordingBuffer()
         isRecording = false
@@ -407,6 +414,10 @@ final class STTEngine: @unchecked Sendable {
         voiceTargetLock.lock()
         requestedRecordingTargetKey = nil
         voiceTargetLock.unlock()
+        resetAudioBuffer()
+    }
+
+    private func resetAudioBuffer() {
         audioBuffer.accepting = false
         audioBuffer.clear()
         audioBuffer.setMaxSamples(AudioBuffer.defaultMaxSamples)
@@ -526,21 +537,16 @@ final class STTEngine: @unchecked Sendable {
             guard let manager = asrManager else { continue }
             let captureEpoch = currentCaptureEpoch()
             _ = dependencies.writeVoiceOutput("__CONTINUITY__:transcription_started")
-            let result = try await {
-                do {
-                    var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
-                    return try await manager.transcribe(audio, decoderState: &decoderState)
-                } catch {
-                    _ = dependencies.writeVoiceOutput("__CONTINUITY__:transcription_failed")
-                    throw error
-                }
-            }()
-            guard captureEpochIsCurrent(captureEpoch) else { continue }
-            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
-
-            let lower = text.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: " ."))
-            guard !hallucinations.contains(lower) else { continue }
+            let rawText: String
+            do {
+                rawText = try await dependencies.transcribe(manager, audio)
+            } catch {
+                _ = dependencies.writeVoiceOutput("__CONTINUITY__:transcription_failed")
+                throw error
+            }
+            guard captureEpochIsCurrent(captureEpoch),
+                  let text = TranscriptFilter.meaningfulText(rawText)
+            else { continue }
 
             if writeVoiceOutput(text) { NSLog("[STTEngine] >> \(text)") }
             audioBuffer.clearExceptKeep(keepSamples)
@@ -558,8 +564,9 @@ final class STTEngine: @unchecked Sendable {
         var transcribeCounter = 0
         var mediaSettleDeadline: Date?
 
-        // Don't accumulate audio while idle — saves memory over long sessions
-        resetRecordingBuffer()
+        // Don't accumulate audio while idle — saves memory over long sessions.
+        // A wheel request made before this loop started keeps its target.
+        resetAudioBuffer()
 
         while !Task.isCancelled {
             try await Task.sleep(for: .milliseconds(pollMs))
@@ -743,17 +750,20 @@ final class STTEngine: @unchecked Sendable {
             guard audio.count >= minSamples else { continue }
 
             let captureEpoch = currentCaptureEpoch()
-            guard let text = try await transcribeMeaningfulText(audio),
-                  captureEpochIsCurrent(captureEpoch)
-            else { continue }
+            let text = try await transcribeMeaningfulText(audio)
+            guard captureEpochIsCurrent(captureEpoch) else { continue }
 
-            transcript.refine(text)
-            speechDetectedSerial += 1
-            let renderedTranscript = transcript.transcript
-            partialTranscription = renderedTranscript
-            NSLog("[STTEngine] (refining) \(renderedTranscript)")
-            writeVoiceOutput("__STATUS__:(refining) \(renderedTranscript)")
+            if let text {
+                transcript.refine(text)
+                speechDetectedSerial += 1
+                let renderedTranscript = transcript.transcript
+                partialTranscription = renderedTranscript
+                NSLog("[STTEngine] (refining) \(renderedTranscript)")
+                writeVoiceOutput("__STATUS__:(refining) \(renderedTranscript)")
+            }
 
+            // Roll over even when the chunk was silent, so a long pause cannot
+            // grow the snapshot (and each inference) without bound.
             if audio.count >= recordingChunkSamples {
                 transcript.commitLiveSegment()
                 audioBuffer.discardPrefix(upTo: audio.count, keeping: recordingKeepSamples)
@@ -776,22 +786,12 @@ final class STTEngine: @unchecked Sendable {
         if rms >= vadThreshold {
             writeVoiceOutput("__CONTINUITY__:transcription_started")
         }
-        let result = try await {
-            do {
-                var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
-                return try await manager.transcribe(audio, decoderState: &decoderState)
-            } catch {
-                writeVoiceOutput("__CONTINUITY__:transcription_failed")
-                throw error
-            }
-        }()
-        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
-
-        let lower = text.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: " ."))
-        guard !hallucinations.contains(lower) else { return nil }
-
-        return text
+        do {
+            return TranscriptFilter.meaningfulText(try await dependencies.transcribe(manager, audio))
+        } catch {
+            writeVoiceOutput("__CONTINUITY__:transcription_failed")
+            throw error
+        }
     }
 
     @discardableResult

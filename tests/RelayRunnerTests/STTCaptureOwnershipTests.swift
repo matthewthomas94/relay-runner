@@ -73,17 +73,68 @@ final class STTCaptureOwnershipTests: XCTestCase {
         }
     }
 
+    /// Fake snapshot recognizer: records each snapshot length and, while
+    /// holding, parks every call until the test releases it.
+    private final class Recognizer: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _text = ""
+        private var _holding = false
+        private var _snapshots: [Int] = []
+        private var parked: [CheckedContinuation<Void, Never>] = []
+
+        var text: String {
+            get { lock.lock(); defer { lock.unlock() }; return _text }
+            set { lock.lock(); _text = newValue; lock.unlock() }
+        }
+        var holding: Bool {
+            get { lock.lock(); defer { lock.unlock() }; return _holding }
+            set { lock.lock(); _holding = newValue; lock.unlock() }
+        }
+        var snapshots: [Int] { lock.lock(); defer { lock.unlock() }; return _snapshots }
+        var parkedCount: Int { lock.lock(); defer { lock.unlock() }; return parked.count }
+
+        func transcribe(_ audio: [Float]) async -> String {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                _snapshots.append(audio.count)
+                if _holding {
+                    parked.append(continuation)
+                    lock.unlock()
+                } else {
+                    lock.unlock()
+                    continuation.resume()
+                }
+            }
+            return text
+        }
+
+        func releaseParked() {
+            lock.lock()
+            let released = parked
+            parked = []
+            lock.unlock()
+            released.forEach { $0.resume() }
+        }
+    }
+
     private var backend: Backend!
     private var output: Output!
+    private var recognizer: Recognizer!
+    /// The engine's capture sink, so tests feed samples as the microphone would.
+    private var feed: (([Float]) -> Void)?
     private var engines: [STTEngine] = []
 
     override func setUp() {
         super.setUp()
         backend = Backend()
         output = Output()
+        recognizer = Recognizer()
     }
 
     override func tearDown() {
+        recognizer.holding = false
+        recognizer.releaseParked()
+        feed = nil
         engines.forEach { $0.stop() }
         engines = []
         super.tearDown()
@@ -92,6 +143,7 @@ final class STTCaptureOwnershipTests: XCTestCase {
     private func makeEngine(gate: ModelGate? = nil) -> STTEngine {
         let backend = backend!
         let output = output!
+        let recognizer = recognizer!
         var config = SttConfig()
         config.activation_key = "f13"
         let engine = STTEngine(config: config, dependencies: STTEngineDependencies(
@@ -99,8 +151,10 @@ final class STTCaptureOwnershipTests: XCTestCase {
                 await gate?.wait()
                 return AsrManager()
             },
-            makeCapture: { sampleHandler, isRecording in
-                AudioCaptureLifecycle(
+            transcribe: { _, audio in await recognizer.transcribe(audio) },
+            makeCapture: { [weak self] sampleHandler, isRecording in
+                self?.feed = sampleHandler
+                return AudioCaptureLifecycle(
                     backend: backend,
                     routeMonitor: Monitor(),
                     recoveryDelay: 60,
@@ -296,6 +350,164 @@ final class STTCaptureOwnershipTests: XCTestCase {
         engine.toggleRecording()
         try await waitUntil { engine.recordingStartedSerial == 1 }
         XCTAssertEqual(engine.recordingVoiceTargetSessionKey, "session-b")
+    }
+
+    // MARK: - Command delivery
+
+    private func speech(seconds: Double) -> [Float] {
+        [Float](repeating: 0.1, count: Int(seconds * 16_000))
+    }
+
+    /// Starts a Caps Lock recording and waits out the media settle.
+    private func startRecording(_ engine: STTEngine) async throws {
+        engine.toggleRecording()
+        try await waitUntil { engine.partialTranscription == "Preparing\u{2026}" }
+        try await waitUntil { engine.partialTranscription.isEmpty }
+    }
+
+    private func deliveries(of text: String) -> Int {
+        output.lines.filter { $0 == text }.count
+    }
+
+    func testReleaseDeliversTheFinalTranscriptExactlyOnce() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.setCaptureAllowed(true)
+        recognizer.text = "Open the board."
+        try await startRecording(engine)
+        feed?(speech(seconds: 1.2))
+        try await waitUntil { engine.speechDetectedSerial >= 1 }
+        XCTAssertEqual(engine.partialTranscription, "Open the board.")
+        XCTAssertEqual(deliveries(of: "Open the board."), 0)
+
+        engine.toggleRecording()
+        try await waitUntil { engine.deliveredTranscriptSerial == 1 }
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(deliveries(of: "Open the board."), 1)
+        XCTAssertEqual(engine.deliveredTranscriptSerial, 1)
+        XCTAssertFalse(engine.isRecording)
+    }
+
+    func testTutorialConsumesTheFinalTranscriptLocally() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.tutorialActive = true
+        engine.setCaptureAllowed(true)
+        recognizer.text = "Open the board."
+        try await startRecording(engine)
+        feed?(speech(seconds: 1.2))
+        try await waitUntil { engine.speechDetectedSerial >= 1 }
+        engine.toggleRecording()
+        try await waitUntil { engine.tutorialTranscriptSerial == 1 }
+        XCTAssertEqual(engine.deliveredTranscriptSerial, 0)
+        XCTAssertEqual(deliveries(of: "Open the board."), 0)
+    }
+
+    func testSilenceFilterDropsPhantomPhraseAtRelease() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.setCaptureAllowed(true)
+        recognizer.text = "Thank you."
+        try await startRecording(engine)
+        feed?(speech(seconds: 1.2))
+        // A partial inference proves the hold registered, so the toggle is a release.
+        try await waitUntil { self.recognizer.snapshots.count >= 1 }
+        engine.toggleRecording()
+        try await waitUntil { !engine.isRecording }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(engine.deliveredTranscriptSerial, 0)
+        XCTAssertEqual(deliveries(of: "Thank you."), 0)
+    }
+
+    /// Parks the final inference, applies `interrupt`, then lets it finish.
+    private func assertInterruptedFinalIsDropped(
+        _ interrupt: (STTEngine) async throws -> Void,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.setCaptureAllowed(true)
+        recognizer.text = "Dispatch the ready ticket."
+        try await startRecording(engine)
+        recognizer.holding = true
+        feed?(speech(seconds: 1.2))
+        // The first parked call is a partial; releasing it after the stop
+        // gesture lets the loop reach the final inference, which parks next.
+        try await waitUntil { self.recognizer.parkedCount == 1 }
+        engine.toggleRecording()
+        recognizer.releaseParked()
+        try await waitUntil { self.recognizer.snapshots.count == 2 && self.recognizer.parkedCount == 1 }
+        XCTAssertEqual(engine.partialTranscription, "Dispatch the ready ticket.", file: file, line: line)
+        let statusesBefore = output.lines.filter { $0.hasPrefix("__STATUS__:(refining)") }.count
+        try await interrupt(engine)
+        recognizer.holding = false
+        recognizer.releaseParked()
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(engine.deliveredTranscriptSerial, 0, file: file, line: line)
+        XCTAssertEqual(deliveries(of: "Dispatch the ready ticket."), 0, file: file, line: line)
+        XCTAssertEqual(output.lines.filter { $0.hasPrefix("__STATUS__:(refining)") }.count, statusesBefore,
+                       file: file, line: line)
+        XCTAssertFalse(engine.isRecording, file: file, line: line)
+    }
+
+    func testCancelDuringFinalInferenceDeliversNothing() async throws {
+        try await assertInterruptedFinalIsDropped { $0.cancelRecording() }
+    }
+
+    func testStopDuringFinalInferenceDeliversNothing() async throws {
+        try await assertInterruptedFinalIsDropped { $0.stop() }
+    }
+
+    func testSwitchingToNotesDuringFinalInferenceDeliversNothing() async throws {
+        try await assertInterruptedFinalIsDropped { engine in
+            engine.setCaptureAllowed(AppState.commandCaptureAllowed(
+                hasActiveSession: true, sessionControlsTutorialActive: false, noteOwnsForeground: true
+            ))
+        }
+    }
+
+    func testDeviceChangeDuringFinalInferenceDeliversNothing() async throws {
+        try await assertInterruptedFinalIsDropped { _ in
+            self.backend.onConfigurationChange?("engine-configuration")
+            // Route recovery announces the reconfiguration on its own queue.
+            try await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    func testCancelDuringPartialInferencePublishesNothing() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.setCaptureAllowed(true)
+        recognizer.text = "Open the"
+        try await startRecording(engine)
+        recognizer.holding = true
+        feed?(speech(seconds: 1.2))
+        try await waitUntil { self.recognizer.parkedCount == 1 }
+        engine.cancelRecording()
+        recognizer.holding = false
+        recognizer.releaseParked()
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(engine.speechDetectedSerial, 0)
+        XCTAssertEqual(engine.partialTranscription, "")
+        XCTAssertFalse(output.lines.contains { $0.hasPrefix("__STATUS__:(refining)") })
+        XCTAssertFalse(engine.isRecording)
+    }
+
+    func testSilentChunkStillRollsOverSoSnapshotsStayBounded() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.setCaptureAllowed(true)
+        recognizer.text = ""
+        try await startRecording(engine)
+        feed?(speech(seconds: 26))
+        try await waitUntil { self.recognizer.snapshots.count >= 2 }
+        let snapshots = recognizer.snapshots
+        XCTAssertGreaterThanOrEqual(snapshots[0], 25 * 16_000)
+        // The next snapshot holds only the one-second overlap.
+        XCTAssertEqual(snapshots[1], 16_000)
+        engine.toggleRecording()
+        try await waitUntil { !engine.isRecording }
+        XCTAssertEqual(engine.deliveredTranscriptSerial, 0)
     }
 
     // MARK: - Ownership policy
