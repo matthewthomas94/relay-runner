@@ -59,4 +59,6 @@ PY
 
 The installed daemon may bind a different port. If `/tmp/relay_orchestrator.port` exists, read that integer and use it instead of `7634`. For `verification_blocked`, add `verification_blocker` and `verification_resume` strings.
 
+**Verification close-out.** If the ticket snapshot has `verification_resumed_run_id`, this run resumes a verification-blocked ticket whose source merge already stands. When the resumed verification passes and no source needs to change, make no commit at all — never a placeholder commit. Submit `completed` with `changed_paths: []` (the script above yields this on an unchanged HEAD), `source_commit` set to that unchanged HEAD, at least one `verification` item naming the evidence, and no blocker fields. The daemon then publishes `done` and progresses dependents without a source merge or review. If the source does need to change, commit it and submit the normal outcome.
+
 The daemon independently checks that the declared source commit is worker HEAD, the exact changed-path set matches the committed diff, the branch contains no lifecycle paths, the payload passes privacy/size policy, review accepts the source diff, and the reviewed source commit is actually merged before it publishes canonical `done` or advances dependencies.
