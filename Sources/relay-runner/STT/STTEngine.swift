@@ -274,6 +274,12 @@ final class STTEngine: @unchecked Sendable {
         return requestedRecordingTargetKey ?? recordingTargetKey
     }
 
+    /// Read-only UI meter; a different session must never show this capture.
+    func recordingLevel(forSessionKey sessionKey: String) -> Float {
+        guard isRecording, recordingVoiceTargetSessionKey == sessionKey else { return 0 }
+        return min(1, audioBuffer.recentRMS() * 20)
+    }
+
     private func stampRecordingVoiceTarget() -> String? {
         voiceTargetLock.lock()
         defer { voiceTargetLock.unlock() }

@@ -352,6 +352,28 @@ final class STTCaptureOwnershipTests: XCTestCase {
         XCTAssertEqual(engine.recordingVoiceTargetSessionKey, "session-b")
     }
 
+    func testWheelMeterTracksSpeechOnlyForTheRecordingOwnerAndClearsOnCancel() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.setCaptureAllowed(true)
+        engine.voiceTargetSessionKey = "session-a"
+        XCTAssertEqual(engine.recordingLevel(forSessionKey: "session-a"), 0)
+        try await startRecording(engine)
+
+        feed?([Float](repeating: 0.01, count: 1_600))
+        XCTAssertEqual(engine.recordingLevel(forSessionKey: "session-a"), 0.2, accuracy: 0.0001)
+        engine.voiceTargetSessionKey = "session-b"
+        XCTAssertEqual(engine.recordingLevel(forSessionKey: "session-b"), 0)
+        XCTAssertEqual(engine.recordingLevel(forSessionKey: "session-a"), 0.2, accuracy: 0.0001)
+        feed?([Float](repeating: 0, count: 1_600))
+        XCTAssertEqual(engine.recordingLevel(forSessionKey: "session-a"), 0)
+        feed?(speech(seconds: 0.1))
+        XCTAssertEqual(engine.recordingLevel(forSessionKey: "session-a"), 1)
+        engine.cancelRecording()
+        XCTAssertEqual(engine.recordingLevel(forSessionKey: "session-a"), 0)
+        XCTAssertEqual(engine.deliveredTranscriptSerial, 0)
+    }
+
     // MARK: - Command delivery
 
     private func speech(seconds: Double) -> [Float] {

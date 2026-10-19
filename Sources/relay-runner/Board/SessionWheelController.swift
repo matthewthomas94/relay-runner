@@ -7,6 +7,7 @@ final class SessionWheelController {
     var focusSession: ((String) -> Void)?
     var startProject: ((String) -> Bool)?
     var sessionAction: ((String, SessionWheelAction) -> Bool)?
+    var recordingLevel: ((String) -> Float)?
     var toggleWorkspace: (() -> Void)?
 
     private var panel: SessionWheelPanel?
@@ -30,7 +31,8 @@ final class SessionWheelController {
             performAction: { [weak self] id, action in self?.performAction(id, action) },
             selectCenter: { [weak self] in self?.selectCenter() },
             back: { [weak self] in self?.back() },
-            dismiss: { [weak self] in self?.dismiss() }
+            dismiss: { [weak self] in self?.dismiss() },
+            recordingLevel: { [weak self] id in self?.recordingLevel?(id) ?? 0 }
         ).scaleEffect(size / SessionWheelGeometry.diameter).frame(width: size, height: size)
         panel.contentView = SessionWheelHostingView(rootView: view)
         refresh?(model, true)

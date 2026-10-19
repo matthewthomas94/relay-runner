@@ -964,6 +964,10 @@ final class AppState {
         sessionWheel.sessionAction = { [weak self] id, action in
             self?.performSessionWheelAction(contextID: id, action: action) ?? false
         }
+        sessionWheel.recordingLevel = { [weak self] id in
+            guard let self, let key = self.sessionRegistry.spool(for: id)?.key else { return 0 }
+            return self.sttEngine?.recordingLevel(forSessionKey: key) ?? 0
+        }
         self.updateRelaunchObserver = NotificationCenter.default.addObserver(
             forName: .relayRunnerWillRelaunchForUpdate,
             object: nil,

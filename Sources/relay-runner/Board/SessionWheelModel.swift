@@ -30,7 +30,7 @@ enum SessionWheelAction: Int, CaseIterable {
             case .stop: return "Stop playback"
             case .replay: return "Replay message"
             }
-        case .recording: return session.isRecording ? "Stop recording" : "Record"
+        case .recording: return session.isRecording ? "Stop recording and send message" : "Record"
         case .stop: return "Stop session"
         }
     }
@@ -41,10 +41,10 @@ enum SessionWheelAction: Int, CaseIterable {
             switch session.playback {
             case .play: return "play.fill"
             case .stop: return "stop.fill"
-            case .replay: return "arrow.counterclockwise"
+            case .replay: return "play.fill"
             }
-        case .recording: return session.isRecording ? "stop.circle.fill" : "mic.fill"
-        case .stop: return "stop.fill"
+        case .recording: return session.isRecording ? "waveform" : "mic.fill"
+        case .stop: return "power"
         }
     }
 

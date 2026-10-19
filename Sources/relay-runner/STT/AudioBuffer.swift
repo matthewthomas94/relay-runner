@@ -54,6 +54,15 @@ final class AudioBuffer: @unchecked Sendable {
         return copy
     }
 
+    /// Meter only the latest 100 ms at 16 kHz without copying the recording.
+    func recentRMS() -> Float {
+        lock.lock()
+        defer { lock.unlock() }
+        let recent = samples.suffix(1_600)
+        guard !recent.isEmpty else { return 0 }
+        return sqrt(recent.reduce(Float(0)) { $0 + $1 * $1 } / Float(recent.count))
+    }
+
     func clear() {
         lock.lock()
         samples.removeAll()

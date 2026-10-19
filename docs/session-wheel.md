@@ -11,11 +11,16 @@ their positions as other sessions start or stop. Relay's existing four-session
 limit still applies.
 
 - Click the session wheel's center to dismiss the wheel and toggle the Workspace:
-  open it when hidden, or close it when already visible. Project wheels keep
+  the animated four-dot app glyph opens it when hidden; the close glyph closes it
+  when already visible. The loader reuses the notch's native glyph motion.
+  Project wheels keep
   **Back** in the center; Escape still backs out or dismisses without toggling Workspace.
 - Hover a session to reveal three controls on the arc just outside its slot:
-  **Play / Stop playback / Replay message**, **Record / Stop recording**, and **Stop session**.
-- All submenu actions keep the wheel open. Click **Stop recording** to send the
+  an icon-only **Play / Stop playback / Replay message**, **Record / Stop recording
+  and send message**, and **Stop session**. Tooltips and VoiceOver retain these labels.
+  Play and replay share the triangle; the square stops playback. The microphone
+  becomes a live, speech-reactive waveform while recording; the power icon ends the session.
+- All submenu actions keep the wheel open. Click the active waveform to send the
   message to that session; its controls stay available afterward. Ending a session
   frees its slot without closing the wheel.
 - Click a session itself to switch voice to it. The terminal stays where it is;
@@ -42,13 +47,14 @@ limit still applies.
   session slots.
 
 The UI uses the workspace cards' shared dark fills, hover and selection treatment,
-and subtle borders, with Bai Jamjuree typography and red stop controls. The wheel has
+and subtle borders, with Bai Jamjuree typography, purple session dots, and a red
+end-session control. Playback and recording icons use the primary text color. The wheel has
 no outer border. Segments use consistent 8-point spacing between their straight
 edges, around the center and outer perimeter. The 34-point-deep outer
-controls follow the wheel's tangent, keeping their icons and labels upright on
-the lower half, with compact labels and icons padded inside each segment. Main
+controls follow the wheel's tangent, keeping their icons upright on
+the lower half, with each icon centered inside its segment. Main
 wedges use Relay's 14-point card corners; submenu segments use its 6-point control
-corners. Submenus, project pages, and changing center labels use Relay's
+corners. Submenus, project pages, and changing center content use Relay's
 shared entry, exit, and replacement transitions, including Reduce Motion and
 increased contrast handling. The active submenu has a detached solid black
 backdrop, separated from the wheel by an 8-point gap. It follows the controls'
@@ -57,6 +63,11 @@ enter and exit together using Relay's shared replacement transition; Reduce
 Motion keeps the fade and removes travel and blur. Hover stays active across
 the gap so the controls remain reachable. Project navigation rearms pointer hover so a double-click on
 an empty slot cannot launch a project in the same position.
+
+The recording waveform reads a bounded 100 ms RMS window from the existing audio
+buffer only for the session that owns the recording. It never consumes samples
+or opens another microphone capture. Reduce Motion holds both the waveform and
+four-dot glyph at rest.
 
 ## Input and lifecycle
 

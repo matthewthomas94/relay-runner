@@ -344,8 +344,14 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(SessionWheelAction.message.symbol(for: item), "stop.fill")
         item.playback = .replay
         XCTAssertEqual(SessionWheelAction.message.title(for: item), "Replay message")
+        XCTAssertEqual(SessionWheelAction.message.symbol(for: item), "play.fill")
+        XCTAssertEqual(SessionWheelAction.recording.symbol(for: item), "mic.fill")
         item.isRecording = true
-        XCTAssertEqual(SessionWheelAction.recording.title(for: item), "Stop recording")
+        XCTAssertEqual(SessionWheelAction.recording.title(for: item), "Stop recording and send message")
+        XCTAssertEqual(SessionWheelAction.recording.symbol(for: item), "waveform")
+        item.playback = .stop
+        XCTAssertEqual(SessionWheelAction.message.symbol(for: item), "stop.fill", "Stopping playback must stay separate from sending the recording")
+        XCTAssertEqual(SessionWheelAction.stop.symbol(for: item), "power")
     }
 
     /// Set RELAY_WHEEL_RENDER_DIR to export the actual SwiftUI view for visual QA.
@@ -360,8 +366,9 @@ final class SessionWheelTests: XCTestCase {
         model.projects = ["Vial QMK", "Hidpress Web", "ESP32 Bridge", "Website", "Voice Notes", "Research", "Playground"]
             .enumerated().map { .init(id: "\($0.offset)", name: $0.element, path: "/\($0.offset)") }
         let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
-                                    selectCenter: {}, back: {}, dismiss: {})
-        for state in ["sessions", "workspace-open", "controls", "play-hover", "recording-controls", "projects", "last-page", "limit"]
+                                    selectCenter: {}, back: {}, dismiss: {}, recordingLevel: { _ in 1 })
+        for state in ["sessions", "workspace-open", "controls", "play-hover", "recording-controls", "projects", "last-page", "limit",
+                      "design-recording", "design-idle", "design-play", "design-playback"]
             + (0..<geometry.slotCount).map({ "contour-\($0)" }) {
             switch state {
             case "workspace-open": model.isWorkspaceVisible = true
@@ -376,6 +383,23 @@ final class SessionWheelTests: XCTestCase {
             case "projects": model.showProjects(at: geometry.center)
             case "last-page": model.turnPage(1, at: geometry.center)
             case "limit": model.startUnavailableReason = "Session limit reached"
+            case "design-recording", "design-idle", "design-play", "design-playback":
+                model.reset(at: geometry.center)
+                model.startUnavailableReason = nil
+                model.isWorkspaceVisible = state == "design-recording" || state == "design-play"
+                let sessions: [SessionWheelSession] = [
+                    .init(id: "general", name: "General Tasks", isFocused: true,
+                          isRecording: state == "design-recording",
+                          canPlay: state == "design-play" || state == "design-playback",
+                          playback: state == "design-playback" ? .stop : .play),
+                    .init(id: "hidpress", name: "Hidpress Web"),
+                    .init(id: "placeholder", name: ""),
+                    .init(id: "relay", name: "Relay Runner")
+                ]
+                model.refresh(sessions: [])
+                model.refresh(sessions: sessions)
+                model.refresh(sessions: sessions.filter { $0.id != "placeholder" })
+                model.hover(at: geometry.position(slot: 0, radius: 119))
             default:
                 if state.hasPrefix("contour-"), let slot = Int(state.suffix(1)) {
                     model.reset(at: geometry.center)

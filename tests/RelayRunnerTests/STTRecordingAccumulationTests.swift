@@ -120,6 +120,20 @@ final class STTRecordingAccumulationTests: XCTestCase {
         XCTAssertEqual(buffer.get(), [3])
     }
 
+    func testAudioMeterReadsOnlyRecentSamplesWithoutConsumingTheRecording() {
+        let buffer = AudioBuffer()
+        XCTAssertEqual(buffer.recentRMS(), 0)
+        buffer.append([0.03, -0.04])
+        XCTAssertEqual(buffer.recentRMS(), sqrt(0.00125), accuracy: 0.00001)
+        buffer.append([Float](repeating: 0, count: 1_600))
+        XCTAssertEqual(buffer.recentRMS(), 0, "Earlier speech must not keep the waveform active during silence")
+        XCTAssertEqual(buffer.get().count, 1_602)
+        buffer.append([Float](repeating: 0.1, count: 1_600))
+        XCTAssertEqual(buffer.recentRMS(), 0.1, accuracy: 0.00001)
+        buffer.clear()
+        XCTAssertEqual(buffer.recentRMS(), 0)
+    }
+
     func testTutorialVoiceOutputNeverPublishesToTheVoiceFIFO() {
         var published: [String] = []
 
