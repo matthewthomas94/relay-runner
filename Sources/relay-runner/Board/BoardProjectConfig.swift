@@ -36,8 +36,6 @@ enum BoardProjectConfig {
         forRepoAt repoURL: URL,
         projectScopeToken: String? = nil
     ) throws -> (prefix: String, id: Int) {
-        try ensureExists(forRepoAt: repoURL)
-
         if usesArtifactWriter(forRepoAt: repoURL) {
             return try OrchestratorClient.claimArtifactTicketID(
                 repoPath: repoURL.path,
@@ -45,21 +43,66 @@ enum BoardProjectConfig {
             )
         }
 
+        try ensureExists(forRepoAt: repoURL)
+
         let configURL = configURL(forRepoAt: repoURL)
         let config = try readConfig(at: configURL)
         try writeConfig(prefix: config.prefix, nextId: config.nextId + 1, to: configURL)
         return (config.prefix, config.nextId)
     }
 
+    /// Repos observed as artifact-managed this process. The daemon swaps the
+    /// projected `.orchestrator/` folder in two renames, so `config.toml` can
+    /// be briefly absent; a sticky decision keeps that window fail-closed.
+    private static let artifactManagedRepos = LockedSet()
+
+    private final class LockedSet: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values = Set<String>()
+        func contains(_ value: String) -> Bool { lock.lock(); defer { lock.unlock() }; return values.contains(value) }
+        func insert(_ value: String) { lock.lock(); defer { lock.unlock() }; values.insert(value) }
+    }
+
+    /// Readable config decides. When it can't be read or parsed (swap window,
+    /// partial write), fall back to durable state: an earlier artifact-managed
+    /// observation, or the `relay/artifacts` ref in the repo's git storage.
     static func usesArtifactWriter(forRepoAt repoURL: URL) -> Bool {
+        let key = repoURL.standardizedFileURL.path
         let configURL = configURL(forRepoAt: repoURL)
         guard let raw = try? String(contentsOf: configURL, encoding: .utf8),
               let table = try? TOMLTable(string: raw) else {
-            return false
+            return artifactManagedRepos.contains(key) || hasArtifactRef(forRepoAt: repoURL)
         }
-        return table["schema_version"]?.tomlValue.int == 2
+        let enabled = table["schema_version"]?.tomlValue.int == 2
             && table["artifact_lifecycle"]?.tomlValue.string == "enabled"
             && table["artifact_ref"]?.tomlValue.string == "refs/heads/relay/artifacts"
+        if enabled { artifactManagedRepos.insert(key) }
+        return enabled
+    }
+
+    private static func hasArtifactRef(forRepoAt repoURL: URL) -> Bool {
+        let fm = FileManager.default
+        var gitDir = repoURL.appendingPathComponent(".git")
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: gitDir.path, isDirectory: &isDir) else { return false }
+        if !isDir.boolValue {
+            guard let pointer = try? String(contentsOf: gitDir, encoding: .utf8),
+                  pointer.hasPrefix("gitdir:") else { return false }
+            let path = pointer.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            gitDir = URL(fileURLWithPath: path, relativeTo: repoURL)
+        }
+        if let common = try? String(contentsOf: gitDir.appendingPathComponent("commondir"), encoding: .utf8) {
+            gitDir = URL(
+                fileURLWithPath: common.trimmingCharacters(in: .whitespacesAndNewlines),
+                relativeTo: gitDir
+            )
+        }
+        let ref = "refs/heads/relay/artifacts"
+        if fm.fileExists(atPath: gitDir.appendingPathComponent(ref).path) { return true }
+        guard let packed = try? String(contentsOf: gitDir.appendingPathComponent("packed-refs"), encoding: .utf8) else {
+            return false
+        }
+        return packed.split(separator: "\n").contains { $0.hasSuffix(" \(ref)") }
     }
 
     static func derivedPrefix(forRepoNamed repoName: String) -> String {
