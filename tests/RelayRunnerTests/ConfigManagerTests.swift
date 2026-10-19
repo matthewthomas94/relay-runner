@@ -337,7 +337,7 @@ final class ConfigManagerTests: XCTestCase {
 
         let sequoiaOptions = STTSettingsTab.modelOptions(operatingSystem: sequoia, phononDefaultActive: true)
         XCTAssertEqual(sequoiaOptions.map(\.value), ["phonon-2", "parakeet-tdt-v2", "parakeet-tdt-v3"])
-        XCTAssertEqual(sequoiaOptions.first?.label, "Phonon 2 (English, macOS 15+), recommended")
+        XCTAssertEqual(sequoiaOptions.first?.label, "Phonon 2 (English)")
         XCTAssertEqual(sequoiaOptions.last?.label, "Parakeet v3 (multilingual, larger)")
 
         let inactive = STTSettingsTab.modelOptions(operatingSystem: sequoia, phononDefaultActive: false)

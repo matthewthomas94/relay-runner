@@ -12,13 +12,14 @@ struct STTSettingsTab: View {
             SettingsSection("Recognition") {
                 SettingsControlRow(
                     "STT Model",
-                    description: Self.modelDescription(config, operatingSystem: operatingSystem)
+                    description: "Applies to new recordings and notes."
                 ) {
                     SettingsMenuPicker(
                         "STT Model",
                         selection: $config.model,
                         options: Self.modelOptions(operatingSystem: operatingSystem)
                     )
+                    .help(Self.modelDescription(config, operatingSystem: operatingSystem))
                 }
 
                 if let migrationState, let message = Self.migrationMessage(migrationState) {
@@ -101,11 +102,11 @@ struct STTSettingsTab: View {
             .map { model in
                 let base: String
                 switch model {
-                case .phonon2: base = "Phonon 2 (English, macOS 15+)"
+                case .phonon2: base = "Phonon 2 (English)"
                 case .parakeetV2: base = "Parakeet v2 (English)"
                 case .parakeetV3: base = "Parakeet v3 (multilingual, larger)"
                 }
-                return (label: model == recommended ? "\(base), recommended" : base, value: model.rawValue)
+                return (label: model == recommended && model != .phonon2 ? "\(base), recommended" : base, value: model.rawValue)
             }
     }
 
