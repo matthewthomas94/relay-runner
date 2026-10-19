@@ -60,6 +60,43 @@ final class BoardProjectConfigTests: XCTestCase {
         XCTAssertFalse(BoardProjectConfig.usesArtifactWriter(forRepoAt: repo))
     }
 
+    func testArtifactManagedDecisionSurvivesMissingConfigDuringProjectionSwap() throws {
+        let repo = try makeTempRepo(named: "artifact-swap")
+        defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
+        let directory = repo.appendingPathComponent(".orchestrator", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let configURL = directory.appendingPathComponent("config.toml")
+        try Data("""
+        schema_version = 2
+        project_id = "project-1"
+        prefix = "AB"
+        artifact_ref = "refs/heads/relay/artifacts"
+        artifact_lifecycle = "enabled"
+        next_id = 1
+
+        """.utf8).write(to: configURL)
+        XCTAssertTrue(BoardProjectConfig.usesArtifactWriter(forRepoAt: repo))
+
+        try FileManager.default.removeItem(at: configURL)
+        XCTAssertTrue(BoardProjectConfig.usesArtifactWriter(forRepoAt: repo))
+
+        try Data("not = [valid".utf8).write(to: configURL)
+        XCTAssertTrue(BoardProjectConfig.usesArtifactWriter(forRepoAt: repo))
+    }
+
+    func testArtifactRefKeepsFreshProcessFailClosedWhenConfigMissing() throws {
+        let repo = try makeTempRepo(named: "artifact-ref")
+        defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
+        XCTAssertFalse(BoardProjectConfig.usesArtifactWriter(forRepoAt: repo))
+
+        let ref = repo.appendingPathComponent(".git/refs/heads/relay/artifacts")
+        try FileManager.default.createDirectory(
+            at: ref.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data("0000000000000000000000000000000000000000\n".utf8).write(to: ref)
+        XCTAssertTrue(BoardProjectConfig.usesArtifactWriter(forRepoAt: repo))
+    }
+
     func testMintInitializesMouseAssistAndBumpsNextId() throws {
         let repo = try makeTempRepo(named: "mouse-assist")
         defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
