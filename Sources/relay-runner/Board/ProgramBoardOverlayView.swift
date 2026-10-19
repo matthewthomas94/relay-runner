@@ -59,11 +59,6 @@ enum ProgramBoardLayout {
     static var workScrollContentInsets: EdgeInsets {
         EdgeInsets(top: workScrollTopPadding, leading: 0, bottom: 28, trailing: 0)
     }
-    static var emptyLaneBodyHeight: CGFloat {
-        BoardSurfaceLayout.columnHeight
-            - workCardTopOffset
-            - panelVerticalPadding
-    }
     static let projectCardHeight: CGFloat = 136
     static let projectCardSpacing: CGFloat = 8
     static let statePanelHeight: CGFloat = BoardSurfaceLayout.columnHeight
@@ -1751,7 +1746,7 @@ struct ProgramWorkColumnPanel: View {
             .frame(height: ProgramBoardLayout.workHeaderHeight)
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: canCreate)
 
-            ProgramColumnTicketScrollView(resetID: scrollResetID) {
+            ProgramColumnTicketScrollView(resetID: scrollResetID, isEmpty: laneItems.isEmpty) {
                 VStack(alignment: .leading, spacing: 0) {
                     ProgramDropIndicator(target: activeTarget)
                     if laneItems.isEmpty {
@@ -1874,19 +1869,28 @@ private struct ProgramNoteCard: View {
 
 struct ProgramColumnTicketScrollView<Content: View>: View {
     let resetID: AnyHashable?
+    let isEmpty: Bool
     @ViewBuilder let content: Content
 
-    init(resetID: AnyHashable? = nil, @ViewBuilder content: () -> Content) {
+    init(resetID: AnyHashable? = nil, isEmpty: Bool = false, @ViewBuilder content: () -> Content) {
         self.resetID = resetID
+        self.isEmpty = isEmpty
         self.content = content()
     }
 
     var body: some View {
-        BoardOverlayScrollView(contentInsets: ProgramBoardLayout.workScrollContentInsets, resetID: resetID) {
-            content
-                .frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+            if isEmpty {
+                content
+                    .padding(ProgramBoardLayout.workScrollContentInsets)
+            } else {
+                BoardOverlayScrollView(contentInsets: ProgramBoardLayout.workScrollContentInsets, resetID: resetID) {
+                    content
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
-        .frame(maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
     }
 }
@@ -4269,8 +4273,7 @@ private struct ProgramColumnEmpty: View {
             .lineLimit(1)
             .frame(
                 maxWidth: .infinity,
-                minHeight: ProgramBoardLayout.emptyLaneBodyHeight,
-                maxHeight: ProgramBoardLayout.emptyLaneBodyHeight,
+                maxHeight: .infinity,
                 alignment: .center
             )
     }

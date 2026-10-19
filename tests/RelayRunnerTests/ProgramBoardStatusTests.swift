@@ -126,7 +126,6 @@ final class ProgramBoardStatusTests: XCTestCase {
     func testProgramBoardEmptyLanePresentationMatchesFigmaBody() {
         let disabled = ProgramBoardStyle.disabledTextNSColor.usingColorSpace(.sRGB)
 
-        XCTAssertEqual(ProgramBoardLayout.emptyLaneBodyHeight, 551)
         XCTAssertEqual(disabled?.redComponent ?? 0, 100 / 255, accuracy: 0.001)
         XCTAssertEqual(disabled?.greenComponent ?? 0, 116 / 255, accuracy: 0.001)
         XCTAssertEqual(disabled?.blueComponent ?? 0, 139 / 255, accuracy: 0.001)

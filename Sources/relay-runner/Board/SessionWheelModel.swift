@@ -111,6 +111,7 @@ final class SessionWheelModel {
     private(set) var slots: [SessionWheelSession?] = Array(repeating: nil, count: SessionWheelGeometry.slotCount)
     var projects: [SessionWheelProject] = []
     var isWorkspaceVisible = false
+    var notchStatus: NotchSessionStatus = .notWorking
     var workspaceActionTitle: String { isWorkspaceVisible ? "Close workspace" : "Open workspace" }
     var startUnavailableReason: String?
     var canStartSession: Bool { startUnavailableReason == nil }

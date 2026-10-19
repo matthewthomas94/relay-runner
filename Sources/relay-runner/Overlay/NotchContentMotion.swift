@@ -246,6 +246,31 @@ struct NotchContentMotion {
         return dots
     }
 
+    /// Shared by the notch and wheel so status colours, motion and settling agree.
+    func renderedGlyphDots(
+        status: NotchSessionStatus,
+        now: CFTimeInterval,
+        reduceMotion: Bool
+    ) -> [RenderedDot] {
+        let motionStatus = motionStatus(for: status, now: now)
+        let animates = NotchStatusGlyphMotion.shouldAnimate(status: motionStatus, reduceMotion: reduceMotion)
+        let phase = animates ? NotchStatusGlyphMotion.phase(at: now) : 0
+        return glyphDots(target: status.glyph, now: now, reduceMotion: reduceMotion) { point in
+            guard animates else { return point }
+            return NotchStatusGlyphMotion.transformedCenter(
+                for: NotchStatusGlyphDot(x: point.x, y: point.y, diameter: 3,
+                                        color: Self.isCore(point) ? .white : .orange, opacity: 1),
+                status: motionStatus, phase: phase
+            )
+        }.map { dot in
+            let shimmer = status.usesGlyphShimmer && !reduceMotion
+                ? 0.72 + 0.28 * ((Darwin.sin(now * 5.2 + Double(dot.index) * 0.62) + 1) / 2)
+                : 1
+            return RenderedDot(center: dot.center, diameter: dot.diameter, color: dot.color,
+                               alpha: dot.alpha * shimmer, softness: dot.softness, index: dot.index)
+        }
+    }
+
     // MARK: Hover
 
     mutating func hoverChanged(to hovered: Bool, now: CFTimeInterval) {

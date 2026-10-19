@@ -10,24 +10,31 @@ The six slots show live project sessions, including general-tasks. Sessions keep
 their positions as other sessions start or stop. Relay's existing four-session
 limit still applies.
 
-- Click the session wheel's center to dismiss the wheel and toggle the Workspace:
-  the animated four-dot app glyph opens it when hidden; the close glyph closes it
-  when already visible. The loader reuses the notch's native glyph motion.
-  Project wheels keep
-  **Back** in the center; Escape still backs out or dismisses without toggling Workspace.
+- Click the session wheel's center to toggle the Workspace while keeping the wheel
+  open. Its glyph uses the notch's live status, colours and motion: an upright
+  four-dot square at rest, rotating while working, orange while listening and
+  purple for response/playback states. Opening Workspace merges the dots into
+  one bead, then stretches it into a thin X; closing reverses the liquid morph.
+  Another click can reverse the morph immediately.
+  Project wheels show a left arrow in the center. It morphs through the same bead
+  when switching to or from the dots or X. Escape still backs out or dismisses
+  without toggling Workspace.
 - Hover a session to reveal three controls on the arc just outside its slot:
   an icon-only **Play / Stop playback / Replay message**, **Record / Stop recording
   and send message**, and **Stop session**. Tooltips and VoiceOver retain these labels.
   Play and replay share the triangle; the square stops playback. The microphone
   becomes a live, speech-reactive waveform while recording; the power icon ends the session.
-- All submenu actions keep the wheel open. Click the active waveform to send the
-  message to that session; its controls stay available afterward. Ending a session
-  frees its slot without closing the wheel.
+- Stop playback cancels the selected session's audio and dismisses the wheel once
+  the stop command is sent. Other submenu actions keep the wheel open. Click the
+  active waveform to send the message to that session; its controls stay available
+  afterward. Ending a session frees its slot without closing the wheel.
 - Click a session itself to switch voice to it. The terminal stays where it is;
   the notch briefly reports the switch.
 - Click an empty slot to enter the project wheel. Click an available registered
   project to start its session without opening the Workspace. The center shows
-  the Workspace's detail action text styling with a left-chevron icon beside **Back**.
+  an icon-only left arrow, with **Back** retained in tooltips and VoiceOver labels.
+  The center has no subtitle; notices and availability details stay in its tooltip
+  and accessibility hint.
   The entire center is the hover and click target. When projects overflow, the
   sixth segment becomes **More projects**, with an ellipsis icon, and opens the next nested wheel.
   Back or Escape returns one wheel at a time, then to sessions. Starting a project
@@ -67,7 +74,7 @@ an empty slot cannot launch a project in the same position.
 The recording waveform reads a bounded 100 ms RMS window from the existing audio
 buffer only for the session that owns the recording. It never consumes samples
 or opens another microphone capture. Reduce Motion holds both the waveform and
-four-dot glyph at rest.
+four-dot glyph at rest and crossfades between the glyph, X and Back arrow instead of morphing.
 
 ## Input and lifecycle
 

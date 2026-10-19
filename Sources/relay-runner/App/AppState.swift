@@ -703,6 +703,7 @@ final class AppState {
     }
 
     private func syncNotchActivitySurface() {
+        defer { sessionWheel.model.notchStatus = notchStatusController.status }
         if let presentation = Self.setupNotchPresentation(
             onboardingActive: onboardingNotchOverrideActive,
             permissionState: permissionSetupNotchState
@@ -3109,6 +3110,7 @@ final class AppState {
 
     private func refreshSessionWheel(_ model: SessionWheelModel, includesProjects: Bool) {
         model.isWorkspaceVisible = programBoardOverlay.isVisible
+        model.notchStatus = notchStatusController.status
         let recording = sttEngine?.isRecording == true
         let recordingKey = sttEngine?.recordingVoiceTargetSessionKey
         let ready = sttEngine != nil && sttSetupSucceeded && permissions.microphone == .granted

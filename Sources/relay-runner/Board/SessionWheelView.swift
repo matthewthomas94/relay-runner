@@ -1,4 +1,3 @@
-import QuartzCore
 import SwiftUI
 
 struct SessionWheelView: View {
@@ -197,47 +196,23 @@ struct SessionWheelView: View {
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .control, isHovered: hubHovered, reduceMotion: reduceMotion
         )
-        let title = model.workspaceActionTitle
-        let detail = model.pickingProject
-            ? model.notice ?? model.startUnavailableReason ?? (model.projects.isEmpty ? "No projects to start" : model.projectPage > 0 ? "Previous projects" : "Back to sessions")
-            : model.notice ?? model.startUnavailableReason ?? ""
+        let title = model.pickingProject
+            ? (model.projectPage > 0 ? "Previous projects" : "Back to sessions")
+            : model.workspaceActionTitle
+        let detail = model.notice ?? model.startUnavailableReason
+            ?? (model.pickingProject && model.projects.isEmpty ? "No projects to start" : "")
         return Button(action: selectCenter) {
-            ZStack {
-                if model.pickingProject {
-                    HStack(alignment: .center, spacing: 4) {
-                        Image(systemName: "chevron.left")
-                            .font(AppTypography.symbolFont(size: 11, weight: .semibold))
-                            .accessibilityHidden(true)
-                        Text("Back")
-                            .font(AppTypography.font(.action, size: 12))
-                            .lineLimit(1)
-                    }
-                    .transition(.relayReplacing(.text))
-                } else {
-                    VStack(spacing: 5) {
-                        RelaySwap(model.isWorkspaceVisible) { isVisible in
-                            SessionWheelWorkspaceGlyph(isWorkspaceVisible: isVisible)
-                        }
-                        if !detail.isEmpty {
-                            RelaySwap(detail, style: .text) { detail in
-                                Text(detail)
-                                    .font(AppTypography.font(.caption)).lineLimit(3)
-                                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                            }
-                        }
-                    }
-                    .multilineTextAlignment(.center)
-                    .padding(6)
-                    .transition(.relayReplacing(.text))
-                }
-            }
-            .frame(width: geometry.hubRadius * 2, height: geometry.hubRadius * 2)
-            .background(controlBackground(Circle(), presentation: presentation))
-            .contentShape(Circle())
+            SessionWheelWorkspaceGlyph(isWorkspaceVisible: model.isWorkspaceVisible,
+                                       isPickingProject: model.pickingProject,
+                                       status: model.notchStatus)
+                .frame(width: geometry.hubRadius * 2, height: geometry.hubRadius * 2)
+                .background(controlBackground(Circle(), presentation: presentation))
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(model.pickingProject ? (model.projectPage > 0 ? "Previous projects" : "Back to sessions") : title)
-        .help(model.pickingProject ? detail : title)
+        .accessibilityLabel(title)
+        .accessibilityHint(detail)
+        .help(detail.isEmpty ? title : "\(title). \(detail)")
         .onHover { hubHovered = $0 }
     }
 
@@ -265,36 +240,6 @@ struct SessionWheelView: View {
 private struct SessionWheelActionButtonStyle: ButtonStyle {
     // The wheel dims only the disabled icon, keeping the segment's fill intact.
     func makeBody(configuration: Configuration) -> some View { configuration.label }
-}
-
-private struct SessionWheelWorkspaceGlyph: View {
-    let isWorkspaceVisible: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        TimelineView(.animation(paused: isWorkspaceVisible || reduceMotion)) { _ in
-            Canvas { context, _ in
-                if isWorkspaceVisible {
-                    var cross = Path()
-                    cross.move(to: CGPoint(x: 8, y: 8))
-                    cross.addLine(to: CGPoint(x: 16, y: 16))
-                    cross.move(to: CGPoint(x: 16, y: 8))
-                    cross.addLine(to: CGPoint(x: 8, y: 16))
-                    context.stroke(cross, with: .color(.white), style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                } else {
-                    let phase = reduceMotion ? 0 : NotchStatusGlyphMotion.phase(at: CACurrentMediaTime())
-                    for dot in NotchStatusGlyph.neutral.dots {
-                        let center = NotchStatusGlyphMotion.transformedCenter(for: dot, status: .working, phase: phase)
-                        let rect = CGRect(x: 10 + (center.x - 12) * 1.6, y: 10 + (center.y - 12) * 1.6,
-                                          width: 4, height: 4)
-                        context.fill(Path(ellipseIn: rect), with: .color(.white))
-                    }
-                }
-            }
-        }
-        .frame(width: 24, height: 24)
-        .accessibilityHidden(true)
-    }
 }
 
 private struct SessionWheelRecordingWaveform: View {

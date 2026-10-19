@@ -182,6 +182,50 @@ final class BoardOverlayScrollViewTests: XCTestCase {
         )
     }
 
+    func testEmptyWorkColumnsHaveNoScrollRangeOrThumb() throws {
+        let model = ProgramBoardViewModel()
+        model.snapshot = programDashboardSnapshot(doneItems: [])
+
+        for lane in ProgramBoardLane.allCases {
+            let host = NSHostingView(rootView: programWorkColumnHost(model: model, lane: lane))
+            layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+
+            for container in findScrollContainers(in: host) {
+                let views = try scrollViews(in: container)
+                XCTAssertEqual(views.documentView.frame.height, views.scrollView.contentView.bounds.height,
+                               accuracy: 0.5, "Empty \(lane.title) must not scroll")
+                XCTAssertTrue(try XCTUnwrap(thumbView(in: container)).frame.isEmpty)
+            }
+        }
+    }
+
+    func testWorkColumnBecomesStaticWhenEmptiedAndScrollsAgainWhenRefilled() throws {
+        let model = ProgramBoardViewModel()
+        let populated = programDashboardSnapshot(doneItems: doneTickets(start: 100, count: 12))
+        model.snapshot = populated
+        let host = NSHostingView(rootView: AnyView(programWorkColumnHost(model: model, lane: .done)))
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+        let initialViews = try scrollViews(in: XCTUnwrap(findScrollContainer(in: host)))
+        XCTAssertGreaterThan(scrollToBottom(views: initialViews), 0)
+
+        model.snapshot = programDashboardSnapshot(doneItems: [])
+        host.rootView = AnyView(programWorkColumnHost(model: model, lane: .done))
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+        for container in findScrollContainers(in: host) {
+            let views = try scrollViews(in: container)
+            XCTAssertEqual(views.documentView.frame.height, views.scrollView.contentView.bounds.height, accuracy: 0.5)
+            XCTAssertEqual(views.scrollView.documentVisibleRect.minY, 0, accuracy: 0.5)
+            XCTAssertTrue(try XCTUnwrap(thumbView(in: container)).frame.isEmpty)
+        }
+
+        model.snapshot = populated
+        host.rootView = AnyView(programWorkColumnHost(model: model, lane: .done))
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+        let restoredViews = try scrollViews(in: XCTUnwrap(findScrollContainer(in: host)))
+        XCTAssertEqual(restoredViews.scrollView.documentVisibleRect.minY, 0, accuracy: 0.5)
+        XCTAssertGreaterThan(scrollToBottom(views: restoredViews), 0)
+    }
+
     func testProgramLaneScopeChangeReturnsRealColumnStackToTop() throws {
         let host = NSHostingView(rootView: AnyView(
             programColumnHost(

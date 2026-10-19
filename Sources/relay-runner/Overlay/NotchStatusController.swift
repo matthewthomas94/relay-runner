@@ -1145,7 +1145,7 @@ final class NotchStatusController {
     private var panel: NotchStatusPanel?
     private let pillView = NotchStatusPillContentView()
     private var active = false
-    private var status: NotchSessionStatus = .notWorking
+    private(set) var status: NotchSessionStatus = .notWorking
     private var activityLabels: [String] = []
     private var workingProgressLabel: String?
     private var workingGlyphHovered = false
@@ -2046,29 +2046,6 @@ final class NotchStatusPillContentView: NSView {
             x: glyphFrame.minX + (glyphSize.width - NotchStatusGlyph.artworkSize.width) / 2,
             y: glyphFrame.minY + (glyphSize.height - NotchStatusGlyph.artworkSize.height) / 2
         )
-        let activeShimmer = status.usesGlyphShimmer && !reduceMotion
-        let motionStatus = contentMotion.motionStatus(for: status, now: now)
-        let animatesMotion = NotchStatusGlyphMotion.shouldAnimate(
-            status: motionStatus,
-            reduceMotion: reduceMotion
-        )
-        let motionPhase = animatesMotion ? NotchStatusGlyphMotion.phase(at: now) : 0
-        let motionCenter: (CGPoint) -> CGPoint = { point in
-            guard animatesMotion else { return point }
-            let probe = NotchStatusGlyphDot(
-                x: point.x,
-                y: point.y,
-                diameter: 3,
-                color: NotchContentMotion.isCore(point) ? .white : .orange,
-                opacity: 1
-            )
-            return NotchStatusGlyphMotion.transformedCenter(
-                for: probe,
-                status: motionStatus,
-                phase: motionPhase
-            )
-        }
-
         let hoverAmount = contentMotion.hoverAmount(now: now)
         if hoverAmount > 0.001 {
             NSColor(calibratedWhite: 0.85, alpha: 0.25 * hoverAmount).setFill()
@@ -2077,17 +2054,9 @@ final class NotchStatusPillContentView: NSView {
             ).fill()
         }
 
-        let dots = contentMotion.glyphDots(
-            target: status.glyph,
-            now: now,
-            reduceMotion: reduceMotion,
-            center: motionCenter
-        )
+        let dots = contentMotion.renderedGlyphDots(status: status, now: now, reduceMotion: reduceMotion)
         for dot in dots {
-            let shimmer = activeShimmer
-                ? 0.72 + 0.28 * ((Darwin.sin(now * 5.2 + Double(dot.index) * 0.62) + 1) / 2)
-                : 1
-            let alpha = dot.alpha * shimmer
+            let alpha = dot.alpha
             guard alpha > 0.001 else { continue }
             let center = CGPoint(x: dotOrigin.x + dot.center.x, y: dotOrigin.y + dot.center.y)
             let color = dot.color.nsColor

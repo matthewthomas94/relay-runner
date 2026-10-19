@@ -80,8 +80,9 @@ final class SessionWheelController {
         if model.pickingProject {
             back()
         } else {
-            dismiss()
             toggleWorkspace?()
+            refresh?(model, false)
+            panel?.orderFrontRegardless()
         }
     }
 
@@ -122,7 +123,11 @@ final class SessionWheelController {
             return
         }
         model.notice = nil
-        refresh?(model, true)
+        if action == .message, session.playback == .stop {
+            dismiss()
+        } else {
+            refresh?(model, true)
+        }
     }
 
     private func installMonitors() {
