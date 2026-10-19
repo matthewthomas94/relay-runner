@@ -70,10 +70,10 @@ enum STTModelSelectionError: LocalizedError, Equatable {
 /// `services/config.py` (`PHONON_DEFAULT_ACTIVE`, `default_stt_model`,
 /// `stt_migration_target`); keep both in step.
 enum STTModelPolicy {
-    /// RR-416 activation point. While false, fresh installs keep Parakeet v2
-    /// and no existing user is migrated; Phonon is only an explicit choice.
-    /// RR-416 flips this (and `PHONON_DEFAULT_ACTIVE`) after rollout sign-off.
-    static let phononDefaultActive = false
+    /// RR-416 activation point (mirrors `PHONON_DEFAULT_ACTIVE`). When true,
+    /// fresh macOS 15+ installs use Phonon and implicit v2 users migrate once;
+    /// when false, Parakeet v2 stays the default and Phonon is only a choice.
+    static let phononDefaultActive = true
 
     /// Pre-Parakeet Whisper identifiers and their persisted replacements.
     static let legacyWhisperAliases: [String: STTModel] = [
@@ -110,5 +110,19 @@ enum STTModelPolicy {
               isSupported(.phonon2, operatingSystem: operatingSystem)
         else { return nil }
         return .phonon2
+    }
+
+    /// An eligible implicit v2 user with no Parakeet v2 cache is set up like a
+    /// fresh install: Phonon is adopted before the engine starts, so Parakeet
+    /// is never downloaded only to be replaced by the migration.
+    static func adoptsPhononWithoutParakeet(
+        for stt: SttConfig,
+        parakeetV2Cached: Bool,
+        operatingSystem: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion,
+        phononDefaultActive: Bool = phononDefaultActive
+    ) -> Bool {
+        !parakeetV2Cached && migrationTarget(
+            for: stt, operatingSystem: operatingSystem, phononDefaultActive: phononDefaultActive
+        ) != nil
     }
 }

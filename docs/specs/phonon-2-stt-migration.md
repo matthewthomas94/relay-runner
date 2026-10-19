@@ -269,6 +269,40 @@ both providers receive the same single final line the tests assert.
 
 ## RR-416 validation evidence and activation decision
 
+**Update (2026-10-19): activated.** The user revised the meeting gate and
+accepted the result below. Both activation flags are now `true`:
+
+- **Fresh macOS 15+ installs** set up and download only Phonon 2.
+- **macOS 14** keeps Parakeet v2 as the install and default model.
+- **Parakeet v2 and v3** stay selectable in Settings and download only when
+  chosen.
+- **Implicit v2 users on macOS 15+:**
+  - With no cached v2, Phonon is adopted before the engine starts, so v2 is
+    never downloaded.
+  - Otherwise the one-time migration runs. After a successful switch it deletes
+    the superseded v2 cache.
+  - A failed migration, an explicit choice and a rollback keep every Parakeet
+    cache.
+- **Pending note recovery pinned to v2** re-downloads v2 on demand.
+
+Activation evidence (M4, macOS 27, same fixtures and pinned models as below):
+
+- Unit: full `swift test` ran 1409 tests with 4 skipped. Two UI/PTY timing
+  tests failed while the Python suite loaded the CPU, then passed in isolation.
+  Full Python suite: 1339 tests. Three unrelated failures: the queue-drain test
+  also fails on the base commit, and the shell-lock and voice-bridge tests are
+  load flakes.
+- Soak: a 60-minute real-time two-source rerun matched the post-Stop WER below
+  exactly, with 0 drops, duplicates or overlaps. Live final-window lag p95 was
+  774 ms (gate ≤ 2 s), measured while the Python suite was running.
+- Signed build: `scripts/build-dmg.sh --app-only` with
+  `RELAY_SKIP_APPLICATIONS_REFRESH=1`, version 0.4.67 (71), Developer ID
+  `QK9K4AQRNH`. `codesign --verify --deep --strict` passes and
+  `LSMinimumSystemVersion` is 14.0. Not notarized or installed.
+- The waived items below are still unverified.
+
+The original decision follows.
+
 **Decision: activation stays disabled.** On the production post-Stop note path,
 Phonon's meeting WER is more than 1 point worse than Parakeet v2's. That fails
 the frozen gate. `STTModelPolicy.phononDefaultActive` and

@@ -3,7 +3,8 @@ import Foundation
 /// One-time automatic switch from implicit Parakeet v2 to Phonon 2. Phonon is
 /// downloaded, compiled and smoke-tested first; only after validation does the
 /// config change, and only at an idle boundary (no recording, no Note Taker
-/// session). A failure leaves the previous model in place and offers retry.
+/// session). A failure leaves the previous model in place and offers retry;
+/// a success removes the superseded Parakeet cache.
 @Observable
 final class STTPhononMigration {
     enum State: Equatable {
@@ -20,6 +21,8 @@ final class STTPhononMigration {
         var currentConfig: () -> SttConfig
         var isIdle: () -> Bool
         var apply: (SttConfig) -> Void
+        /// Deletes the superseded model's cache once Phonon is applied.
+        var removeSupersededModel: (STTModel) async -> Void
         var operatingSystem: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion
         var phononDefaultActive: Bool = STTModelPolicy.phononDefaultActive
         var idlePollInterval: Duration = .milliseconds(500)
@@ -105,5 +108,8 @@ final class STTPhononMigration {
         }
         environment.apply(config.applyingPhononMigration())
         state = .completed
+        if let previous = STTModel(rawValue: config.model) {
+            await environment.removeSupersededModel(previous)
+        }
     }
 }

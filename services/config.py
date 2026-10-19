@@ -37,7 +37,7 @@ LEGACY_WHISPER_ALIASES = {
     "large-v3": "parakeet-tdt-v3",
 }
 # RR-416 activation point; must match STTModelPolicy.phononDefaultActive.
-PHONON_DEFAULT_ACTIVE = False
+PHONON_DEFAULT_ACTIVE = True
 
 
 def current_macos_major() -> int:
