@@ -361,6 +361,140 @@ class ArtifactLifecycleTests(unittest.TestCase):
         self.assertIn("verification_blocker:", files[".orchestrator/RR-1.md"].decode())
         self.assertIn("status: backlog", files[".orchestrator/RR-2.md"].decode())
 
+    def test_resumed_verification_closeout_publishes_done_without_source_change(self):
+        self.write_ticket("RR-1", "Physical proof")
+        self.write_ticket("RR-2", "Dependent", status="backlog", depends_on=("RR-1",))
+        self.block_and_merge(run_id=4)
+        self.coordinator.resume_verification(
+            run_id=4, ticket_id="RR-1", provider="codex", reason="Signed build installed."
+        )
+        self.assertIn("verification_resumed_run_id: 4", self.ticket_text("RR-1"))
+        worktree = self.create_worktree("run-5")
+        self.coordinator.claim_and_materialize(
+            ticket_id="RR-1", run_id=5, provider="claude", workspace_path=worktree
+        )
+        head = self.git(worktree, "rev-parse", "HEAD")
+
+        self.coordinator.submit_outcome(
+            run_id=5, ticket_id="RR-1", provider="claude",
+            payload=self.closeout_payload(head),
+        )
+        outcome, reason = self.coordinator.validate_worker_completion(
+            workspace_path=worktree, ticket_id="RR-1", run_id=5, provider="claude", start_head=head,
+        )
+        self.assertEqual((outcome, reason), ("verification_closeout", "verification-only close-out accepted"))
+        result = self.coordinator.publish_verification_closeout(
+            run_id=5, ticket_id="RR-1", provider="claude"
+        )
+
+        self.assertEqual(result.promoted_ticket_ids, ("RR-2",))
+        ticket = self.ticket_text("RR-1")
+        self.assertIn("status: done", ticket)
+        self.assertNotIn("verification_resumed_run_id", ticket)
+        self.assertIn("verification-only close-out after run 4", ticket)
+        self.assertIn("physical input confirmed on the signed build", ticket)
+        self.assertIn("status: ready", self.ticket_text("RR-2"))
+        self.assertEqual(self.coordinator.leases.active(), ())
+        self.assertEqual(self.coordinator.outcome(5).changed_paths, ())
+        duplicate = self.coordinator.publish_verification_closeout(
+            run_id=5, ticket_id="RR-1", provider="claude"
+        )
+        self.assertTrue(duplicate.idempotent)
+
+    def test_empty_changed_paths_rejected_for_ordinary_run(self):
+        self.write_ticket("RR-1", "Ordinary")
+        worktree = self.create_worktree("run-4")
+        self.coordinator.claim_and_materialize(
+            ticket_id="RR-1", run_id=4, provider="codex", workspace_path=worktree
+        )
+        with self.assertRaisesRegex(Exception, "changed_paths is empty or exceeds its bound"):
+            self.coordinator.submit_outcome(
+                run_id=4, ticket_id="RR-1", provider="codex",
+                payload=self.closeout_payload(self.git(worktree, "rev-parse", "HEAD")),
+            )
+
+    def test_empty_changed_paths_rejected_for_resume_without_recorded_merge(self):
+        self.write_ticket(
+            "RR-1",
+            "Forged resume",
+            extra_fields=("run_state: verification_resumed", "verification_resumed_run_id: 4"),
+        )
+        worktree = self.create_worktree("run-5")
+        self.coordinator.claim_and_materialize(
+            ticket_id="RR-1", run_id=5, provider="codex", workspace_path=worktree
+        )
+        self.assertIn("verification_resumed_run_id: 4", self.ticket_text("RR-1"))
+        with self.assertRaisesRegex(Exception, "changed_paths is empty or exceeds its bound"):
+            self.coordinator.submit_outcome(
+                run_id=5, ticket_id="RR-1", provider="codex",
+                payload=self.closeout_payload(self.git(worktree, "rev-parse", "HEAD")),
+            )
+
+    def test_empty_changed_paths_rejected_for_blocked_or_unverified_closeout(self):
+        self.write_ticket("RR-1", "Physical proof")
+        self.block_and_merge(run_id=4)
+        self.coordinator.resume_verification(
+            run_id=4, ticket_id="RR-1", provider="codex", reason="Signed build installed."
+        )
+        worktree = self.create_worktree("run-5")
+        self.coordinator.claim_and_materialize(
+            ticket_id="RR-1", run_id=5, provider="codex", workspace_path=worktree
+        )
+        head = self.git(worktree, "rev-parse", "HEAD")
+        blocked = {
+            **self.closeout_payload(head),
+            "status": "verification_blocked",
+            "verification_blocker": "Physical input is still unavailable.",
+            "verification_resume": "Perform physical input on the signed build.",
+        }
+        unverified = {**self.closeout_payload(head), "verification": []}
+        for payload in (blocked, unverified):
+            with self.subTest(status=payload["status"], verification=payload["verification"]):
+                with self.assertRaisesRegex(Exception, "changed_paths is empty or exceeds its bound"):
+                    self.coordinator.submit_outcome(
+                        run_id=5, ticket_id="RR-1", provider="codex", payload=payload,
+                    )
+
+    def block_and_merge(self, *, run_id):
+        worktree = self.create_worktree(f"run-{run_id}")
+        self.coordinator.claim_and_materialize(
+            ticket_id="RR-1", run_id=run_id, provider="codex", workspace_path=worktree
+        )
+        (worktree / "source.txt").write_text("reviewable\n")
+        self.commit(worktree, "fix: reviewable")
+        self.coordinator.submit_outcome(
+            run_id=run_id,
+            ticket_id="RR-1",
+            provider="codex",
+            payload={
+                "status": "verification_blocked",
+                "summary": "Source implementation is complete.",
+                "changed_paths": ["source.txt"],
+                "verification": ["source tests passed"],
+                "source_commit": self.git(worktree, "rev-parse", "HEAD"),
+                "verification_blocker": "Signed installed app needs physical input.",
+                "verification_resume": "Install signed build and perform physical input.",
+            },
+        )
+        self.coordinator.begin_review(run_id=run_id, provider="claude")
+        self.git(self.repo, "merge", "--no-ff", "--quiet", f"run-{run_id}", "-m", f"merge run {run_id}")
+        self.coordinator.publish_merge_success(
+            run_id=run_id,
+            ticket_id="RR-1",
+            provider="codex",
+            merged_source_commit=self.git(self.repo, "rev-parse", "HEAD"),
+        )
+
+    @staticmethod
+    def closeout_payload(source_commit):
+        return {
+            "status": "completed",
+            "summary": "External verification passed; no source change was needed.",
+            "changed_paths": [],
+            "verification": ["physical input confirmed on the signed build"],
+            "source_commit": source_commit,
+        }
+
     def test_failure_retry_cancel_merge_conflict_and_restart_leases_are_idempotent(self):
         self.write_ticket("RR-1", "Lifecycle")
         worktree = self.create_worktree("run-5")
@@ -524,6 +658,7 @@ class ArtifactLifecycleTests(unittest.TestCase):
         depends_on=(),
         canceled=False,
         draft=False,
+        extra_fields=(),
     ):
         fields = [
             f"id: {ticket_id}",
@@ -540,6 +675,7 @@ class ArtifactLifecycleTests(unittest.TestCase):
             "worker_effort: high",
             "worker_sizing_rationale: fixture",
             "worker_provider_notes: provider-neutral fixture",
+            *extra_fields,
         ]
         markdown = (
             "---\n" + "\n".join(fields) + "\n---\n\n## Description\n\n" + title + "\n"

@@ -248,6 +248,11 @@ class ArtifactLifecycleCoordinator:
                 "run_state": "claimed",
                 "claimed_at": instant,
                 "activity_at": instant,
+                "verification_resumed_run_id": (
+                    fields.get("verification_resumed_run_id")
+                    if fields.get("run_state") == "verification_resumed"
+                    else None
+                ),
             },
         )
         if prior is None:
@@ -429,6 +434,12 @@ class ArtifactLifecycleCoordinator:
         current_head = _git_text(workspace_path, "rev-parse", "HEAD")
         if not current_head or current_head != outcome.source_commit:
             return None, "structured outcome source_commit does not match worker HEAD"
+        if not outcome.changed_paths:
+            if start_head is None or current_head != start_head:
+                return None, "verification-only close-out must not commit source changes"
+            if _dirty_source_lines(workspace_path):
+                return None, "worker left uncommitted source changes"
+            return "verification_closeout", "verification-only close-out accepted"
         if start_head is None or current_head == start_head:
             return None, "worker made no source commit"
         changed = tuple(
@@ -445,14 +456,7 @@ class ArtifactLifecycleCoordinator:
             return None, "worker source branch contains lifecycle paths: " + ", ".join(forbidden)
         if changed != outcome.changed_paths:
             return None, "structured outcome changed_paths do not match committed source diff"
-        dirty = []
-        for line in _git_text(
-            workspace_path, "status", "--porcelain=v1", "--untracked-files=all"
-        ).splitlines():
-            path = line[3:] if len(line) > 3 else line
-            if not _is_lifecycle_path(path):
-                dirty.append(line)
-        if dirty:
+        if _dirty_source_lines(workspace_path):
             return None, "worker left uncommitted source changes"
         if outcome.status == WorkerOutcomeStatus.VERIFICATION_BLOCKED:
             return outcome.status.value, (
@@ -681,55 +685,16 @@ class ArtifactLifecycleCoordinator:
             "activity_at": instant,
             "verification_blocker": outcome.verification_blocker,
             "verification_resume": outcome.verification_resume,
+            "verification_resumed_run_id": None,
         }
         log = self._run_summary(outcome, merged_source_commit)
         finished = _append_run_log(_rewrite_ticket(ticket_bytes, updates), run_id, log)
         operations: list[TicketWrite] = [TicketWrite(ticket_id, artifact_id, finished)]
         promoted: list[str] = []
         if status == "done":
-            statuses = self._status_map(snapshot.files)
-            statuses[ticket_id] = "done"
-            manager = ArtifactRetentionManager(
-                self.store,
-                lease_store=self.leases,
-                enabled=True,
+            promoted = self._promote_dependents_of_done(
+                snapshot.files, ticket_id, instant, operations
             )
-            for candidate_path in sorted(snapshot.files):
-                if not _is_ticket_path(candidate_path) or candidate_path == path:
-                    continue
-                content = snapshot.files[candidate_path]
-                candidate_fields, _ = _split_ticket(content)
-                if candidate_fields.get("status") != "backlog":
-                    continue
-                if _truthy(candidate_fields.get("canceled", "false")) or _truthy(
-                    candidate_fields.get("draft", "false")
-                ):
-                    continue
-                dependencies = _parse_list(candidate_fields.get("depends_on", "[]"))
-                if not dependencies or not self._dependencies_allow_automatic_promotion(
-                    dependencies,
-                    statuses=statuses,
-                    manager=manager,
-                ):
-                    continue
-                candidate_id = PurePosixPath(candidate_path).stem
-                candidate_artifact_id = candidate_fields.get("artifact_id")
-                if not candidate_artifact_id:
-                    raise ArtifactValidationError(
-                        f"dependent ticket {candidate_id} has no immutable artifact_id"
-                    )
-                advanced = _rewrite_ticket(
-                    content,
-                    {
-                        "status": "ready",
-                        "run_state": "dependency_ready",
-                        "dependency_updated_at": instant,
-                        "activity_at": instant,
-                    },
-                )
-                operations.append(TicketWrite(candidate_id, candidate_artifact_id, advanced))
-                statuses[candidate_id] = "ready"
-                promoted.append(candidate_id)
         result = self.store.mutate(
             ArtifactMutation(
                 event_id=event_id,
@@ -748,6 +713,130 @@ class ArtifactLifecycleCoordinator:
             promoted_ticket_ids=tuple(promoted),
             idempotent=result.idempotent,
         )
+
+    def publish_verification_closeout(
+        self,
+        *,
+        run_id: int,
+        ticket_id: str,
+        provider: str,
+    ) -> LifecycleWriteResult:
+        """Close a resumed verification-blocked ticket whose earlier source merge stands."""
+        event_id = f"lifecycle:run:{run_id}:verification-closeout"
+        prior = self._prior_event(event_id)
+        if prior is not None:
+            self._release_run_leases(run_id, "done")
+            return prior
+        outcome = self.outcome(run_id)
+        if outcome is None:
+            raise ArtifactValidationError(f"run {run_id} has no structured outcome")
+        if outcome.ticket_id != ticket_id or outcome.provider != provider:
+            raise ArtifactValidationError("close-out outcome ownership does not match the run")
+        if outcome.changed_paths:
+            raise ArtifactValidationError("close-out outcome changed source and needs review")
+        source_run_id = self._verification_closeout_source(run_id, ticket_id)
+        if source_run_id is None:
+            raise ArtifactValidationError(
+                f"run {run_id} is not a resumed close-out of a recorded source merge"
+            )
+        snapshot = self.store.snapshot()
+        path = f".orchestrator/{ticket_id}.md"
+        ticket_bytes = snapshot.files[path]
+        fields, _ = _split_ticket(ticket_bytes)
+        artifact_id = fields.get("artifact_id")
+        if not artifact_id:
+            raise ArtifactValidationError(f"ticket {ticket_id} has no immutable artifact_id")
+        instant = _format_instant(self.now())
+        updates: dict[str, str | None] = {
+            "status": "done",
+            "run_id": str(run_id),
+            "run_state": "verification_closed",
+            "run_outcome_at": instant,
+            "activity_at": instant,
+            "verification_resumed_run_id": None,
+        }
+        log = _bounded_text(
+            f"verification-only close-out after run {source_run_id}: {outcome.summary} "
+            f"Verification: {'; '.join(outcome.verification)}",
+            "run summary",
+            MAX_SUMMARY_BYTES,
+        )
+        finished = _append_run_log(_rewrite_ticket(ticket_bytes, updates), run_id, log)
+        operations: list[TicketWrite] = [TicketWrite(ticket_id, artifact_id, finished)]
+        promoted = self._promote_dependents_of_done(snapshot.files, ticket_id, instant, operations)
+        result = self.store.mutate(
+            ArtifactMutation(
+                event_id=event_id,
+                actor_type="system",
+                device_id=self.device_id,
+                provider=provider,
+                expected_base=snapshot.commit_id,
+                operations=tuple(operations),
+                summary=f"Publish verification-only close-out for {ticket_id} run {run_id}",
+            )
+        )
+        self._release_run_leases(run_id, "done")
+        return LifecycleWriteResult(
+            event_id=event_id,
+            commit_id=result.commit_id,
+            promoted_ticket_ids=tuple(promoted),
+            idempotent=result.idempotent,
+        )
+
+    def _promote_dependents_of_done(
+        self,
+        files: Mapping[str, bytes],
+        ticket_id: str,
+        instant: str,
+        operations: list[TicketWrite],
+    ) -> list[str]:
+        """Append promotions for backlog dependents unblocked by `ticket_id` becoming done."""
+        path = f".orchestrator/{ticket_id}.md"
+        statuses = self._status_map(files)
+        statuses[ticket_id] = "done"
+        manager = ArtifactRetentionManager(
+            self.store,
+            lease_store=self.leases,
+            enabled=True,
+        )
+        promoted: list[str] = []
+        for candidate_path in sorted(files):
+            if not _is_ticket_path(candidate_path) or candidate_path == path:
+                continue
+            content = files[candidate_path]
+            candidate_fields, _ = _split_ticket(content)
+            if candidate_fields.get("status") != "backlog":
+                continue
+            if _truthy(candidate_fields.get("canceled", "false")) or _truthy(
+                candidate_fields.get("draft", "false")
+            ):
+                continue
+            dependencies = _parse_list(candidate_fields.get("depends_on", "[]"))
+            if not dependencies or not self._dependencies_allow_automatic_promotion(
+                dependencies,
+                statuses=statuses,
+                manager=manager,
+            ):
+                continue
+            candidate_id = PurePosixPath(candidate_path).stem
+            candidate_artifact_id = candidate_fields.get("artifact_id")
+            if not candidate_artifact_id:
+                raise ArtifactValidationError(
+                    f"dependent ticket {candidate_id} has no immutable artifact_id"
+                )
+            advanced = _rewrite_ticket(
+                content,
+                {
+                    "status": "ready",
+                    "run_state": "dependency_ready",
+                    "dependency_updated_at": instant,
+                    "activity_at": instant,
+                },
+            )
+            operations.append(TicketWrite(candidate_id, candidate_artifact_id, advanced))
+            statuses[candidate_id] = "ready"
+            promoted.append(candidate_id)
+        return promoted
 
     def promote_unblocked_dependents(self) -> tuple[str, ...]:
         """Promote artifact-backed backlog tickets through the canonical writer."""
@@ -897,6 +986,7 @@ class ArtifactLifecycleCoordinator:
             clear_run_id=True,
             log_summary=f"verification resumed: {reason}",
             clear_verification=True,
+            extra_updates={"verification_resumed_run_id": str(run_id)},
         )
 
     def recover_leases(
@@ -1186,8 +1276,20 @@ class ArtifactLifecycleCoordinator:
         )
         if sum(len(item.encode("utf-8")) for item in verification) > MAX_VERIFICATION_BYTES:
             raise ArtifactValidationError("structured outcome verification exceeds its total bound")
+        blocker = _optional_bounded(payload.get("verification_blocker"), MAX_SUMMARY_BYTES)
+        resume = _optional_bounded(payload.get("verification_resume"), MAX_SUMMARY_BYTES)
         raw_paths = payload.get("changed_paths")
-        if not isinstance(raw_paths, list) or not raw_paths or len(raw_paths) > MAX_CHANGED_PATHS:
+        verification_only = (
+            raw_paths == []
+            and status == WorkerOutcomeStatus.COMPLETED
+            and not blocker
+            and not resume
+            and bool(verification)
+            and self._allows_verification_only(run_id, ticket_id)
+        )
+        if not isinstance(raw_paths, list) or (not raw_paths and not verification_only) or len(
+            raw_paths
+        ) > MAX_CHANGED_PATHS:
             raise ArtifactValidationError("structured outcome changed_paths is empty or exceeds its bound")
         changed_paths = tuple(sorted({_validate_source_path(item) for item in raw_paths}))
         if len(changed_paths) != len(raw_paths):
@@ -1195,8 +1297,6 @@ class ArtifactLifecycleCoordinator:
         source_commit = str(payload.get("source_commit") or "")
         if not _OID_RE.fullmatch(source_commit):
             raise ArtifactValidationError("structured outcome source_commit is invalid")
-        blocker = _optional_bounded(payload.get("verification_blocker"), MAX_SUMMARY_BYTES)
-        resume = _optional_bounded(payload.get("verification_resume"), MAX_SUMMARY_BYTES)
         if status == WorkerOutcomeStatus.VERIFICATION_BLOCKED and (not blocker or not resume):
             raise ArtifactValidationError(
                 "verification-blocked outcome requires blocker and explicit resume condition"
@@ -1220,6 +1320,27 @@ class ArtifactLifecycleCoordinator:
             verification_resume=resume,
         )
 
+    def _verification_closeout_source(self, run_id: int, ticket_id: str) -> int | None:
+        """Return the blocked run whose recorded merge this resumed run may close out."""
+        content = self.store.snapshot().files.get(f".orchestrator/{ticket_id}.md")
+        if content is None:
+            return None
+        fields, _ = _split_ticket(content)
+        if fields.get("status") != "in_progress" or fields.get("run_id") != str(run_id):
+            return None
+        source = fields.get("verification_resumed_run_id", "")
+        if not source.isdigit() or int(source) <= 0 or int(source) == run_id:
+            return None
+        for suffix in ("merge", "verification-resume"):
+            if self._prior_event(f"lifecycle:run:{source}:{suffix}") is None:
+                return None
+        return int(source)
+
+    def _allows_verification_only(self, run_id: int, ticket_id: str) -> bool:
+        if self._prior_event(f"lifecycle:run:{run_id}:verification-closeout") is not None:
+            return True
+        return self._verification_closeout_source(run_id, ticket_id) is not None
+
     def _update_ticket_event(
         self,
         *,
@@ -1232,6 +1353,7 @@ class ArtifactLifecycleCoordinator:
         clear_run_id: bool,
         log_summary: str,
         clear_verification: bool = False,
+        extra_updates: Mapping[str, str | None] | None = None,
     ) -> LifecycleWriteResult:
         self._validate_provider(provider)
         prior = self._prior_event(event_id)
@@ -1268,6 +1390,8 @@ class ArtifactLifecycleCoordinator:
         if clear_verification:
             updates["verification_blocker"] = None
             updates["verification_resume"] = None
+        if extra_updates:
+            updates.update(extra_updates)
         updated = _append_run_log(
             _rewrite_ticket(content, updates),
             run_id,
@@ -1391,6 +1515,17 @@ class ArtifactLifecycleCoordinator:
     def _validate_provider(provider: str) -> None:
         if provider not in {"codex", "claude"}:
             raise ArtifactValidationError(f"unsupported worker provider: {provider!r}")
+
+
+def _dirty_source_lines(workspace_path: Path) -> list[str]:
+    dirty = []
+    for line in _git_text(
+        workspace_path, "status", "--porcelain=v1", "--untracked-files=all"
+    ).splitlines():
+        path = line[3:] if len(line) > 3 else line
+        if not _is_lifecycle_path(path):
+            dirty.append(line)
+    return dirty
 
 
 def _outcome_json(outcome: StructuredWorkerOutcome) -> dict[str, object]:

@@ -99,6 +99,7 @@ Free-form prose explaining the work.
 | `worker_provider_notes` | string | for `ready` | Provider-parity note. Use `none` only when the selected model/tier and effort are intentionally provider-neutral with no caveats. Otherwise name the Codex/Claude difference or limitation. |
 | `verification_blocker` | string | for `verification_blocked` | Exact external condition that prevented required verification. |
 | `verification_resume` | string | for `verification_blocked` | Explicit condition/action that permits the daemon to resume the ticket. |
+| `verification_resumed_run_id` | integer | no | Daemon-written on an artifact-backed resume: the verification-blocked run whose source merge stands. Lets the resumed worker close the ticket with a verification-only outcome; cleared on completion. |
 | `verification_origin` | enum | no | `inline` only. Permits an explicitly foreground-executed ticket to record an external verification blocker without fabricating a worker `run_id`. |
 
 Anything else under `---` is ignored, leaving room for future fields without breaking old parsers.
@@ -194,6 +195,7 @@ Backlog → Queued → In Progress → Done
 | `in_progress → verification_blocked` | Sub-agent + reviewer | Worker commits the exact external blocker and resume condition; review merges useful work without closing the ticket or progressing dependents. |
 | `backlog → verification_blocked` | Foreground PM, inline execution only | The user explicitly requested inline execution; the PM records `verification_origin: inline`, an exact blocker, and an exact resume condition without inventing a daemon run. |
 | `verification_blocked → ready` | Daemon via explicit resume action | `resume_verification_blocked` appends what changed to the run log, commits the canonical transition, clears blocker fields, and optionally dispatches a fresh attempt. |
+| resumed `in_progress → done` | Daemon, artifact projects | A resumed worker's verification-only outcome (empty `changed_paths`, verification items, no blocker) publishes `done` and progresses dependents without a source merge or review. |
 | any → `canceled: true`        | Daemon or human             | `cancel_run` called, or manual cancel.      |
 
 Cancellation does **not** move the ticket to a new column. It flips `canceled: true` and the card renders with a strikethrough or muted treatment in whatever column it sat in. Re-opening clears the flag.

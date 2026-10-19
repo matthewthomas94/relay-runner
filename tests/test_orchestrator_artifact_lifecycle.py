@@ -618,6 +618,79 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
             self.git("ls-tree", "-r", "--name-only", "HEAD"),
         )
 
+    def test_resumed_verification_closeout_finishes_done_without_review(self):
+        # RR-409: a resumed verification-blocked ticket had nothing left to change.
+        self.write_ticket("RR-2", status="backlog", depends_on=("RR-1",))
+        with patch.object(Worker, "start", autospec=True):
+            blocked_run = self.daemon.dispatch(
+                ticket_id="RR-1", repo_path=str(self.repo), project_scope_token=self.scope_token(),
+            )["run"]
+        blocked_id = int(blocked_run["id"])
+        workspace = Path(blocked_run["workspace_path"])
+        (workspace / "source.txt").write_text("implemented\n", encoding="utf-8")
+        self.git("-C", str(workspace), "add", "source.txt")
+        self.git("-C", str(workspace), "commit", "--quiet", "-m", "implement source")
+        self.daemon.submit_worker_outcome(blocked_id, {
+            "status": "verification_blocked",
+            "summary": "Source is complete; physical input is pending.",
+            "changed_paths": ["source.txt"],
+            "verification": ["unit tests passed"],
+            "source_commit": self.git("-C", str(workspace), "rev-parse", "HEAD"),
+            "verification_blocker": "Signed build needs physical input.",
+            "verification_resume": "Install the signed build and perform physical input.",
+        })
+        lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+        self.daemon.runs.update(blocked_id, state="AwaitingReview")
+        lifecycle.begin_review(run_id=blocked_id, provider="codex")
+        with self.daemon._workers_lock:
+            self.daemon._workers.pop(blocked_id, None)
+        self.assertTrue(self.daemon.accept_worker_run(blocked_id)["accepted"])
+        self.assertEqual(self.daemon.runs.get(blocked_id)["state"], "VerificationBlocked")
+
+        with patch.object(Worker, "start", autospec=True):
+            resumed = self.daemon.resume_verification_blocked(
+                blocked_id, reason="Signed build installed and physical input passed.",
+            )
+        closeout_run = resumed["redispatched"]["run"]
+        closeout_id = int(closeout_run["id"])
+        closeout_workspace = Path(closeout_run["workspace_path"])
+        head = self.git("-C", str(closeout_workspace), "rev-parse", "HEAD")
+        accepted = self.daemon.submit_worker_outcome(closeout_id, {
+            "status": "completed",
+            "summary": "Physical verification passed; no source change was needed.",
+            "changed_paths": [],
+            "verification": ["physical input confirmed on the signed build"],
+            "source_commit": head,
+        })
+        self.assertTrue(accepted["accepted"])
+
+        worker = self.daemon._workers[closeout_id]
+        with (
+            patch.object(worker, "_command", return_value=[sys.executable, "-c", "pass"]),
+            patch.object(self.daemon, "dispatch_review_worker") as review,
+            patch.object(Worker, "start", autospec=True),
+        ):
+            worker._run()
+
+        review.assert_not_called()
+        self.assertEqual(self.daemon.runs.get(closeout_id)["state"], "Merged")
+        files = self.store.snapshot().files
+        canonical = files[".orchestrator/RR-1.md"].decode("utf-8")
+        self.assertIn("status: done", canonical)
+        self.assertIn(f"verification-only close-out after run {blocked_id}", canonical)
+        self.assertIn("physical input confirmed on the signed build", canonical)
+        self.assertNotIn("verification_resumed_run_id", canonical)
+        dependent = files[".orchestrator/RR-2.md"].decode("utf-8")
+        self.assertNotIn("status: backlog", dependent)
+        self.assertIn(
+            "RR-2", [run["ticket_id"] for run in self.daemon.runs.list() if int(run["id"]) > closeout_id],
+        )
+        self.assertFalse(closeout_workspace.exists())
+        self.assertEqual(
+            [lease.run_id for lease in lifecycle.leases.active()],
+            [str(max(int(run["id"]) for run in self.daemon.runs.list()))],
+        )
+
     def test_session_capture_requires_same_confirmed_scope_and_publishes_artifact_first(self):
         with self.assertRaisesRegex(Exception, "confirmed project scope token"):
             self.daemon.session_capture(

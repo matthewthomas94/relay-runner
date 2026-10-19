@@ -4696,7 +4696,22 @@ class Worker:
                             run_id=self.run_id,
                             start_head=start_head,
                         )
-                    if outcome in {"done", "completed", VERIFICATION_BLOCKED_STATUS}:
+                    if outcome == "verification_closeout":
+                        self.store.update(
+                            self.run_id,
+                            state="Merged",
+                            last_error=None,
+                            ended=True,
+                            exit_code=rc,
+                        )
+                        self._emit_lifecycle(
+                            "run-merged",
+                            message=(
+                                f"{self.run['ticket_id']} closed out after verification resumed; "
+                                "no source change was needed"
+                            ),
+                        )
+                    elif outcome in {"done", "completed", VERIFICATION_BLOCKED_STATUS}:
                         self.store.update(
                             self.run_id,
                             state="AwaitingReview",
@@ -5237,6 +5252,7 @@ class Daemon:
         self._orchestrator_action_request_ids: set[str] = set()
         self._workers: dict[int, Worker] = {}
         self._workers_lock = threading.Lock()
+        self._verification_closeouts: dict[int, tuple[str, ...]] = {}
         self._spike_completion_lock = threading.Lock()
         self._review_workers: dict[int, ReviewWorker] = {}
         self._review_workers_lock = threading.Lock()
@@ -8365,7 +8381,8 @@ Title: {ticket['title']}
                     (
                         lambda start_head, lifecycle=artifact_lifecycle,
                         path=workspace_path, tid=ticket_id, rid=run_id,
-                        provider=worker_provider: lifecycle.validate_worker_completion(
+                        provider=worker_provider: self._validate_artifact_completion(
+                            lifecycle,
                             workspace_path=path,
                             ticket_id=tid,
                             run_id=rid,
@@ -8741,6 +8758,11 @@ Title: {ticket['title']}
                         run_id,
                         last_error=f"{reason}; artifact lifecycle publication failed: {error}",
                     )
+            with self._workers_lock:
+                closeout_promoted = self._verification_closeouts.pop(run_id, None)
+            if closeout_promoted is not None and run.get("state") == "Merged":
+                self._finish_verification_closeout(run, artifact_lifecycle, closeout_promoted)
+                return
         if run.get("state") in {"AwaitingReview", "Succeeded"}:
             try:
                 self.dispatch_review_worker(run_id, source="worker-completion")
@@ -8768,6 +8790,73 @@ Title: {ticket['title']}
             repo_path=run.get("repo_path"),
             trigger="worker-completion",
             drive_reviews=False,
+        )
+
+    def _validate_artifact_completion(
+        self,
+        lifecycle: ArtifactLifecycleCoordinator,
+        *,
+        workspace_path: Path,
+        ticket_id: str,
+        run_id: int,
+        provider: str,
+        start_head: str | None,
+    ) -> tuple[str | None, str]:
+        outcome, reason = lifecycle.validate_worker_completion(
+            workspace_path=workspace_path,
+            ticket_id=ticket_id,
+            run_id=run_id,
+            provider=provider,
+            start_head=start_head,
+        )
+        if outcome != "verification_closeout":
+            return outcome, reason
+        # The earlier run's source merge already stands, so nothing is left to
+        # review: publish `done` before the run ledger reports the close-out.
+        try:
+            with self._merge_mutex():
+                result = lifecycle.publish_verification_closeout(
+                    run_id=run_id, ticket_id=ticket_id, provider=provider,
+                )
+        except Exception as error:  # noqa: BLE001 - fail the run honestly.
+            return None, f"verification-only close-out publication failed: {error}"
+        with self._workers_lock:
+            self._verification_closeouts[run_id] = result.promoted_ticket_ids
+        return outcome, reason
+
+    def _finish_verification_closeout(
+        self,
+        run: dict,
+        lifecycle: ArtifactLifecycleCoordinator,
+        promoted: tuple[str, ...],
+    ) -> None:
+        repo_path = str(run["repo_path"])
+        workspace_path = Path(str(run["workspace_path"]))
+        lifecycle.cleanup_snapshot(workspace_path)
+        removed, worktree_error = remove_worktree(repo_path, workspace_path)
+        delete_branch(repo_path, str(run["branch"]))
+        if not removed or worktree_error:
+            self.runs.update(
+                int(run["id"]),
+                last_error=f"close-out published; {worktree_error or 'worker worktree cleanup failed'}",
+            )
+        for dependent_id in promoted:
+            try:
+                self.dispatch(
+                    ticket_id=dependent_id,
+                    repo_path=repo_path,
+                    source="dependency-progression",
+                    internally_confirmed_project_id=lifecycle.store.project_id,
+                )
+            except (ValueError, RuntimeError) as error:
+                print(
+                    f"[orchestrator] artifact dependent dispatch declined for {dependent_id}: {error}",
+                    file=sys.stderr,
+                )
+        self._record_queue_drain_after_event(
+            repo_path=repo_path,
+            trigger="verification-closeout",
+            drive_reviews=True,
         )
 
     def _on_review_worker_complete(self, run_id: int) -> None:

@@ -59,6 +59,7 @@ The persistent orchestrator may have attached extra context for this ticket. Tre
    - Edit the YAML frontmatter: `status: done` on success.
    - If implementation is complete but a genuinely external condition prevents required verification, use `status: verification_blocked` and add both `verification_blocker: <exact unavailable condition>` and `verification_resume: <explicit condition/action that permits retry>`. Do not use this for ambiguity, failed tests, incomplete implementation, or ordinary follow-up work; leave those `in_progress`.
    - If a clean, committed `done` or `verification_blocked` ticket survives but its declared historical run row does not, use `reconcile_preserved_run` to restore the terminal ledger identity. If that id is occupied by a different ticket in the same repository, use the explicit `recover_preserved_run_collision` action to preserve the occupied row and commit a replacement canonical run link. Neither action resumes, dispatches, progresses dependencies, or satisfies external verification. A verification-blocked ticket still requires `resume_verification_blocked` after its named external condition changes.
+   - If this run resumed a verification-blocked ticket and verification now passes with nothing to change, make no placeholder code commit; this ticket update is the run's only commit.
    - Otherwise leave `status: in_progress` if you're stopping partial.
    - Append a `## Run log` section at the end of the body (create if missing) with:
      - **Run {{run_id}}** (attempt {{attempt}}) — branch `{{branch}}`
