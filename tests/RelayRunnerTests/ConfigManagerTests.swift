@@ -202,8 +202,8 @@ final class ConfigManagerTests: XCTestCase {
     private let sonoma = OperatingSystemVersion(majorVersion: 14, minorVersion: 6, patchVersion: 0)
     private let sequoia = OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
 
-    func testFreshInstallSTTDefaultIsOSAwareAndInactiveUntilRR416() throws {
-        XCTAssertFalse(STTModelPolicy.phononDefaultActive)
+    func testFreshInstallSTTDefaultIsOSAwareAndActive() throws {
+        XCTAssertTrue(STTModelPolicy.phononDefaultActive)
         for (os, active, expected, state) in [
             (sonoma, false, "parakeet-tdt-v2", ""),
             (sequoia, false, "parakeet-tdt-v2", ""),
@@ -262,7 +262,8 @@ final class ConfigManagerTests: XCTestCase {
     func testPhononMigrationFieldsRoundTrip() throws {
         let manager = ConfigManager(configDir: temporaryConfigDir())
         var config = manager.load()
-        config.stt = config.stt.applyingPhononMigration()
+        // Start from an implicit v2 user; a fresh install may already be Phonon.
+        config.stt = SttConfig().applyingPhononMigration()
         try manager.save(config)
 
         let loaded = manager.load()

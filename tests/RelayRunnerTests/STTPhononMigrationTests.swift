@@ -16,6 +16,7 @@ final class STTPhononMigrationTests: XCTestCase {
         var idle = true
         var prepared: [STTModel] = []
         var applied: [SttConfig] = []
+        var removed: [STTModel] = []
         var prepareError: Error?
         var onPrepare: () -> Void = {}
     }
@@ -40,6 +41,9 @@ final class STTPhononMigrationTests: XCTestCase {
                 harness.applied.append(stt)
                 harness.stt = stt
             },
+            removeSupersededModel: { model in
+                await MainActor.run { harness.removed.append(model) }
+            },
             operatingSystem: operatingSystem ?? sequoia,
             phononDefaultActive: active,
             idlePollInterval: .milliseconds(5)
@@ -57,6 +61,7 @@ final class STTPhononMigrationTests: XCTestCase {
         XCTAssertEqual(harness.stt.model, "phonon-2")
         XCTAssertEqual(harness.stt.phonon_migration, "completed")
         XCTAssertEqual(harness.stt.phonon_migration_previous_model, "parakeet-tdt-v2")
+        XCTAssertEqual(harness.removed, [.parakeetV2], "superseded Parakeet cache is cleaned up")
         // Relaunch: a completed migration never runs again.
         XCTAssertNil(makeMigration(harness).startIfEligible())
     }
@@ -74,11 +79,13 @@ final class STTPhononMigrationTests: XCTestCase {
         XCTAssertTrue(message.contains("Parakeet v2 is still active"))
         XCTAssertTrue(harness.applied.isEmpty)
         XCTAssertEqual(harness.stt, SttConfig())
+        XCTAssertTrue(harness.removed.isEmpty, "a failed migration keeps Parakeet")
 
         harness.prepareError = nil
         await migration.retry()?.value
         XCTAssertEqual(migration.state, .completed)
         XCTAssertEqual(harness.stt.model, "phonon-2")
+        XCTAssertEqual(harness.removed, [.parakeetV2])
     }
 
     func testSwitchWaitsForIdleBoundary() async throws {
@@ -113,6 +120,7 @@ final class STTPhononMigrationTests: XCTestCase {
         XCTAssertTrue(harness.applied.isEmpty)
         XCTAssertEqual(harness.stt.model, "parakeet-tdt-v3")
         XCTAssertEqual(harness.stt.phonon_migration, "explicit")
+        XCTAssertTrue(harness.removed.isEmpty, "an explicit choice keeps every Parakeet cache")
     }
 
     func testIneligibleUsersAreNeverPreparedOrMigrated() {
@@ -127,6 +135,48 @@ final class STTPhononMigrationTests: XCTestCase {
         XCTAssertNil(makeMigration(v3User).startIfEligible())
 
         XCTAssertTrue(inactive.prepared.isEmpty && sonomaUser.prepared.isEmpty && v3User.prepared.isEmpty)
+        XCTAssertTrue(inactive.removed.isEmpty && sonomaUser.removed.isEmpty && v3User.removed.isEmpty)
+    }
+
+    func testExplicitParakeetV2ChoiceIsNeverMigratedOrCleanedUp() {
+        let explicit = Harness()
+        explicit.stt.phonon_migration = "explicit"
+        XCTAssertNil(makeMigration(explicit).startIfEligible())
+
+        // Rolling back from Phonon to v2 is also an explicit, durable choice.
+        let rolledBack = Harness()
+        var migrated = SttConfig().applyingPhononMigration()
+        migrated.model = "parakeet-tdt-v2"
+        rolledBack.stt = migrated.recordingUserModelChange(from: SttConfig().applyingPhononMigration())
+        XCTAssertEqual(rolledBack.stt.phonon_migration, "rolled_back")
+        XCTAssertNil(makeMigration(rolledBack).startIfEligible())
+
+        XCTAssertTrue(explicit.prepared.isEmpty && explicit.removed.isEmpty)
+        XCTAssertTrue(rolledBack.prepared.isEmpty && rolledBack.removed.isEmpty)
+    }
+
+    // MARK: - Direct adoption
+
+    func testImplicitV2WithoutCacheAdoptsPhononDirectlyOnSequoiaOnly() {
+        let implicit = SttConfig()
+        XCTAssertTrue(STTModelPolicy.adoptsPhononWithoutParakeet(
+            for: implicit, parakeetV2Cached: false, operatingSystem: sequoia, phononDefaultActive: true
+        ))
+        // A cached v2 keeps working until the validated migration replaces it.
+        XCTAssertFalse(STTModelPolicy.adoptsPhononWithoutParakeet(
+            for: implicit, parakeetV2Cached: true, operatingSystem: sequoia, phononDefaultActive: true
+        ))
+        XCTAssertFalse(STTModelPolicy.adoptsPhononWithoutParakeet(
+            for: implicit, parakeetV2Cached: false, operatingSystem: sonoma, phononDefaultActive: true
+        ))
+        XCTAssertFalse(STTModelPolicy.adoptsPhononWithoutParakeet(
+            for: implicit, parakeetV2Cached: false, operatingSystem: sequoia, phononDefaultActive: false
+        ))
+        var explicit = implicit
+        explicit.phonon_migration = "explicit"
+        XCTAssertFalse(STTModelPolicy.adoptsPhononWithoutParakeet(
+            for: explicit, parakeetV2Cached: false, operatingSystem: sequoia, phononDefaultActive: true
+        ))
     }
 
     // MARK: - Next-recording rule

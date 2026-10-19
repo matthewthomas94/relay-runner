@@ -11,6 +11,7 @@ SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
 from config import (  # noqa: E402
+    PHONON_DEFAULT_ACTIVE,
     default_stt_model,
     load_config,
     stt_migration_target,
@@ -379,9 +380,12 @@ class ConfigTests(unittest.TestCase):
                 config_path.write_text(text, encoding="utf-8")
             return load_config(str(config_path), **kwargs)["stt"]
 
-    def test_fresh_stt_default_is_os_aware_and_inactive_until_rr416(self):
+    def test_fresh_stt_default_is_os_aware_and_active(self):
+        self.assertTrue(PHONON_DEFAULT_ACTIVE)
         self.assertEqual(self._load_stt(None, macos_major=14)["model"], "parakeet-tdt-v2")
-        self.assertEqual(self._load_stt(None, macos_major=15)["model"], "parakeet-tdt-v2")
+        self.assertEqual(self._load_stt(None, macos_major=15)["model"], "phonon-2")
+        inactive_15 = self._load_stt(None, macos_major=15, phonon_default_active=False)
+        self.assertEqual(inactive_15["model"], "parakeet-tdt-v2")
         fresh_14 = self._load_stt(None, macos_major=14, phonon_default_active=True)
         self.assertEqual(fresh_14["model"], "parakeet-tdt-v2")
         self.assertEqual(fresh_14["phonon_migration"], "")

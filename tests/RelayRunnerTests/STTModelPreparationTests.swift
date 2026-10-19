@@ -258,6 +258,46 @@ final class STTModelPreparationTests: XCTestCase {
         XCTAssertEqual(fake.downloads, [Download(model: .parakeetV3, force: false)])
     }
 
+    // MARK: - Install-time model set
+
+    /// Prepares exactly what a fresh install's engine and migration would.
+    private func freshInstallDownloads(_ operatingSystem: OperatingSystemVersion) async throws -> [Download] {
+        let fake = FakeHub(root: root)
+        let stt = SttConfig.freshInstall(operatingSystem: operatingSystem, phononDefaultActive: true)
+        XCTAssertNil(STTModelPolicy.migrationTarget(
+            for: stt, operatingSystem: operatingSystem, phononDefaultActive: true))
+        let model = try STTModel.resolve(stt.model, operatingSystem: operatingSystem)
+        _ = try await fake.coordinator().ensureAssets(for: model) { _ in }
+        return fake.downloads
+    }
+
+    func testMacOS15FreshInstallPreparesOnlyPhonon() async throws {
+        let sequoia = OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+        let downloads = try await freshInstallDownloads(sequoia)
+        XCTAssertEqual(downloads, [Download(model: .phonon2, force: false)])
+    }
+
+    func testMacOS14FreshInstallFallsBackToParakeetV2() async throws {
+        let sonoma = OperatingSystemVersion(majorVersion: 14, minorVersion: 6, patchVersion: 0)
+        let downloads = try await freshInstallDownloads(sonoma)
+        XCTAssertEqual(downloads, [Download(model: .parakeetV2, force: false)])
+    }
+
+    func testSupersededParakeetCacheIsRemovedButPhononNeverIs() async throws {
+        let fake = FakeHub(root: root)
+        fake.writeGood()
+        let parakeetFile = fake.writeParakeetCache()
+        let coordinator = fake.coordinator()
+
+        await coordinator.removeCachedAssets(for: .phonon2)
+        XCTAssertTrue(fake.removed.isEmpty)
+
+        await coordinator.removeCachedAssets(for: .parakeetV2)
+        XCTAssertEqual(fake.removed, [parakeetFile.deletingLastPathComponent()])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parakeetFile.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fake.phononDirectory.appendingPathComponent("config.json").path))
+    }
+
     // MARK: - Stale note preparation
 
     func testReleaseDuringPrepareDiscardsManagerAndNeverPublishesReady() async throws {

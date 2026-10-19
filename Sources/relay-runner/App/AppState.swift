@@ -210,7 +210,7 @@ final class AppState {
     /// Model changes apply at the next recording: a restart waits here while
     /// a command capture is still recording or finalizing.
     @ObservationIgnored private var pendingSTTRestartTask: Task<Void, Never>?
-    /// One-time Parakeet v2 → Phonon 2 migration; inert until RR-416 sets
+    /// One-time Parakeet v2 → Phonon 2 migration, gated by
     /// `STTModelPolicy.phononDefaultActive`.
     private(set) var phononMigration: STTPhononMigration?
 
@@ -1184,6 +1184,14 @@ final class AppState {
     /// start a session or run /relay-bridge manually.
     private func startAwareness() {
         guard sttEngine == nil else { return }
+        if STTModelPolicy.adoptsPhononWithoutParakeet(
+            for: config.stt,
+            parakeetV2Cached: STTModelPreparation.hasCachedParakeetAssets(.parakeetV2)
+        ) {
+            var next = config
+            next.stt = next.stt.applyingPhononMigration()
+            persistConfig(next)
+        }
 
         startConfiguredSTT(reason: "awareness-start", failureLogPrefix: "STT engine failed to start")
         isRunning = true
@@ -2093,6 +2101,9 @@ final class AppState {
                     var next = self.config
                     next.stt = stt
                     self.persistConfig(next)
+                },
+                removeSupersededModel: { model in
+                    await STTModelPreparation.shared.removeCachedAssets(for: model)
                 }
             ))
         }

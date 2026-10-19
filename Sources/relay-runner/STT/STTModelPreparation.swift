@@ -244,6 +244,26 @@ actor STTModelPreparation {
         return STTPreparationError.downloadFailed(model, error.localizedDescription)
     }
 
+    // MARK: - Cleanup
+
+    /// Deletes a superseded Parakeet cache after the automatic Phonon
+    /// migration so both models are not kept on disk. Phonon and a model being
+    /// prepared are never touched; choosing Parakeet later re-downloads it.
+    func removeCachedAssets(for model: STTModel) {
+        guard model != .phonon2, inFlight[model] == nil else { return }
+        do {
+            try environment.removeDirectory(environment.modelDirectory(model))
+            Self.logger.info("Removed superseded \(model.rawValue, privacy: .public) cache")
+        } catch {
+            Self.logger.warning("Could not remove superseded \(model.rawValue, privacy: .public) cache")
+        }
+    }
+
+    /// Whether a Parakeet model's legacy FluidAudio cache already holds its files.
+    static func hasCachedParakeetAssets(_ model: STTModel) -> Bool {
+        AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory(for: model.asrVersion), version: model.asrVersion)
+    }
+
     // MARK: - Managers
 
     /// Prepares assets, loads a caller-owned manager and runs a local smoke
