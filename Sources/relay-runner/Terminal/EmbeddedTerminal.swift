@@ -3945,19 +3945,22 @@ struct EmbeddedTerminalTab: View {
             }
 
             ZStack {
-                // The terminal only fades, and only once the empty state has
-                // left; a restart (new presentation revision) swaps in place.
+                // Mount after the empty state leaves; a restart (new
+                // presentation revision) swaps the terminal in place.
                 if session.presentsTerminal {
                     ZStack {
                         EmbeddedTerminalRepresentable(session: session)
                             .id(session.presentationRevision)
                     }
                     .background(Color(nsColor: BoardDarkSurfaceStyle.panelFillNSColor))
-                    // Stays mounted, sized, and hidden while the loader stands
-                    // in, then arrives once the loader has left.
-                    .opacity(session.loadingStatus == nil ? 1 : 0)
+                    // Keep SwiftTerm mounted and sized while its real output
+                    // assembles from the sketch, without restarting the session.
+                    .modifier(SkeletonAssemblyEffect(progress: session.loadingStatus == nil ? 1 : 0))
+                    .allowsHitTesting(session.loadingStatus == nil)
+                    .accessibilityHidden(session.loadingStatus != nil)
                     .animation(
-                        session.loadingStatus == nil ? RelayMotion.replacingEnter : RelayMotion.exit,
+                        session.loadingStatus == nil
+                            ? SkeletonAssembly.animation(reduceMotion: reduceMotion) : RelayMotion.exit,
                         value: session.loadingStatus == nil
                     )
                     .transition(.asymmetric(
@@ -3968,13 +3971,13 @@ struct EmbeddedTerminalTab: View {
                 ZStack {
                     if let loadingStatus = session.loadingStatus {
                         SkeletonLoader(layout: .terminal, label: loadingStatus)
-                            .transition(.relayReplacing(.surface))
+                            .transition(SkeletonAssembly.loaderTransition)
                     } else if !session.presentsTerminal {
                         emptyState
                             .transition(.relayReplacing(.surface))
                     }
                 }
-                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: session.loadingStatus == nil)
+                .animation(SkeletonAssembly.animation(reduceMotion: reduceMotion), value: session.loadingStatus == nil)
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: session.presentsTerminal)
             }
         }

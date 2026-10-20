@@ -113,7 +113,7 @@ final class BoardRevealTransitionTests: XCTestCase {
         XCTAssertFalse(value.isAnimating)
     }
 
-    func testWorkspaceContentScalesAndSharpensWithoutKeepingItsBlur() throws {
+    func testWorkspaceContentAssemblesAndSharpensWithoutKeepingItsMaskOrBlur() throws {
         let frame = CGRect(x: 0, y: 0, width: 1_200, height: 700)
         let panel = BoardOverlayPanel()
         panel.setFrame(frame, display: false)
@@ -157,13 +157,16 @@ final class BoardRevealTransitionTests: XCTestCase {
         XCTAssertFalse(contentContainer.isHidden)
         XCTAssertEqual(hasRelayBlurFilter(contentLayer), !reduceMotion, "Content sharpens as it arrives")
         let rise = try XCTUnwrap(scaleAnimation())
+        XCTAssertEqual(rise.from, 1, "Real content stays aligned with its sketch during assembly")
         XCTAssertEqual(rise.to, 1)
-        // The content waits for the loading label to finish leaving.
-        waitForAnimations(RelayMotion.replacementDelay + BoardRevealTransitionTiming.contentRevealDuration + 0.25)
+        XCTAssertEqual(contentLayer.mask?.name == SkeletonAssembly.maskName, !reduceMotion)
+        XCTAssertEqual(skeletonLoader(in: container)?.isHandingOff == true, !reduceMotion)
+        waitForAnimations(SkeletonAssembly.duration(reduceMotion: reduceMotion) + 0.25)
 
         let restingCenter = contentCenter()
         XCTAssertEqual(contentContainer.alphaValue, 1, accuracy: 0.01)
         XCTAssertFalse(hasRelayBlurFilter(contentLayer), "The settled Workspace renders without a blur pass")
+        XCTAssertNil(contentLayer.mask, "The settled Workspace retains no assembly mask")
 
         let dismissed = expectation(description: "Workspace dismissed")
         container.animateDismiss { dismissed.fulfill() }
@@ -173,11 +176,10 @@ final class BoardRevealTransitionTests: XCTestCase {
         XCTAssertFalse(hasRelayBlurFilter(contentLayer))
         let sink = try XCTUnwrap(scaleAnimation())
         XCTAssertEqual(sink.from, 1)
-        XCTAssertEqual(sink.to, rise.from, "Content contracts to the scale it arrived from")
+        XCTAssertEqual(sink.to, reduceMotion ? 1 : RelayMotion.Style.surface.hiddenScale)
         let hiddenCenter = contentCenter()
         XCTAssertEqual(hiddenCenter.x, restingCenter.x, accuracy: 0.5)
         XCTAssertEqual(hiddenCenter.y, restingCenter.y, accuracy: 0.5)
-        XCTAssertEqual(rise.from, reduceMotion ? 1 : RelayMotion.Style.surface.hiddenScale)
     }
 
     func testUpdateCheckLoaderFillsTheExpandedSurfaceAndLeavesOnceLoaded() throws {
@@ -212,8 +214,8 @@ final class BoardRevealTransitionTests: XCTestCase {
         XCTAssertEqual(loader.accessibilityLabel(), BoardUpdateStatus.workingLabel)
 
         container.setLoading(false)
-        waitForAnimations(RelayMotion.exitDuration + 0.25)
-        XCTAssertNil(skeletonLoader(in: container), "It leaves the hierarchy so its shimmer stops")
+        waitForAnimations(SkeletonAssembly.duration(reduceMotion: RelayLayerMotion.reduceMotion) + 0.25)
+        XCTAssertNil(skeletonLoader(in: container), "It leaves the hierarchy so its dot sweep stops")
     }
 
     private func skeletonLoader(in view: NSView) -> SkeletonLoaderView? {
