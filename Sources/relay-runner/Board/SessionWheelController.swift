@@ -11,6 +11,9 @@ final class SessionWheelController {
     var toggleWorkspace: (() -> Void)?
 
     private var panel: SessionWheelPanel?
+    private let motion = SessionWheelMotion()
+    private var motionCompletion: DispatchWorkItem?
+    private var motionGeneration = 0
     private var monitors: [Any] = []
     private var refreshTimer: Timer?
     private var screenObserver: NSObjectProtocol?
@@ -19,31 +22,45 @@ final class SessionWheelController {
 
     func toggle() {
         if isVisible { dismiss(); return }
+        if let panel {
+            // Reuse the closing panel so a rapid reopen reverses in place.
+            present(panel)
+            return
+        }
         let cursor = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(cursor) }) ?? NSScreen.main else { return }
         let panel = makePanel()
         self.panel = panel
         panel.setFrame(SessionWheelGeometry.frame(at: cursor, visibleFrame: screen.visibleFrame), display: false)
         let size = panel.frame.width
-        let view = SessionWheelView(
-            model: model,
-            selectSlot: { [weak self] index, fromPointer in self?.selectSlot(index, fromPointer: fromPointer) },
-            performAction: { [weak self] id, action in self?.performAction(id, action) },
-            selectCenter: { [weak self] in self?.selectCenter() },
-            back: { [weak self] in self?.back() },
-            dismiss: { [weak self] in self?.dismiss() },
-            recordingLevel: { [weak self] id in self?.recordingLevel?(id) ?? 0 }
-        ).scaleEffect(size / SessionWheelGeometry.diameter).frame(width: size, height: size)
+        let view = SessionWheelAnimatedView(motion: motion) { [model, weak self] presentation in
+            SessionWheelView(
+                model: model,
+                selectSlot: { [weak self] index, fromPointer in self?.selectSlot(index, fromPointer: fromPointer) },
+                performAction: { [weak self] id, action in self?.performAction(id, action) },
+                selectCenter: { [weak self] in self?.selectCenter() },
+                back: { [weak self] in self?.back() },
+                dismiss: { [weak self] in self?.dismiss() },
+                recordingLevel: { [weak self] id in self?.recordingLevel?(id) ?? 0 },
+                presentation: presentation
+            )
+        }.scaleEffect(size / SessionWheelGeometry.diameter).frame(width: size, height: size)
         panel.contentView = SessionWheelHostingView(rootView: view)
         refresh?(model, true)
         model.reset(at: pointerLocation)
+        present(panel)
+    }
+
+    private func present(_ panel: SessionWheelPanel) {
         isVisible = true
+        panel.ignoresMouseEvents = false
         installMonitors()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.refresh?(self.model, false)
         }
-        RelayWindowMotion.present(panel, style: .element)
+        animate(visible: true, panel: panel)
+        panel.orderFrontRegardless()
     }
 
     func dismiss() {
@@ -59,9 +76,37 @@ final class SessionWheelController {
         sleepObservers.removeAll()
         if let panel {
             panel.ignoresMouseEvents = true
-            RelayWindowMotion.dismiss(panel, style: .element)
+            animate(visible: false, panel: panel)
         }
-        panel = nil
+    }
+
+    private func animate(visible: Bool, panel: SessionWheelPanel) {
+        motionCompletion?.cancel()
+        motionGeneration += 1
+        let generation = motionGeneration
+        let duration = motion.setVisible(visible,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+            at: ProcessInfo.processInfo.systemUptime)
+        let completion = DispatchWorkItem { [weak self, weak panel] in
+            guard let self, let panel, self.motionGeneration == generation, self.panel === panel else { return }
+            self.motion.finish()
+            self.motionCompletion = nil
+            if !self.isVisible {
+                panel.orderOut(nil)
+                self.panel = nil
+            }
+        }
+        motionCompletion = completion
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: completion)
+    }
+
+    deinit {
+        motionCompletion?.cancel()
+        refreshTimer?.invalidate()
+        for monitor in monitors { NSEvent.removeMonitor(monitor) }
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        for observer in sleepObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+        panel?.orderOut(nil)
     }
 
     private var pointerLocation: CGPoint {

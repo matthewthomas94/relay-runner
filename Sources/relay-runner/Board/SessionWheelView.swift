@@ -8,49 +8,100 @@ struct SessionWheelView: View {
     let back: () -> Void
     let dismiss: () -> Void
     var recordingLevel: (String) -> Float = { _ in 0 }
+    var presentation = SessionWheelPresentation()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
     @State private var hubHovered = false
+    @State var menuMotion = SessionWheelMenuMotion()
 
     private let geometry = SessionWheelGeometry.self
     private var pageID: Int { model.pickingProject ? model.projectPage : -1 }
+    private var contentAnimation: Animation { SessionWheelPresentation.animation(reduceMotion: reduceMotion) }
 
     var body: some View {
+        let requestedMenu = SessionWheelMenu(model)
+        TimelineView(.animation(paused: !menuMotion.motion.isAnimating)) { _ in
+            let menuProgress = menuMotion.motion.progress(at: ProcessInfo.processInfo.systemUptime)
+            let progress = reduceMotion ? menuProgress : min(presentation.progress, menuProgress)
+            wheel(menu: menuMotion.displayed ?? requestedMenu,
+                  tiles: SessionWheelPresentation(progress: progress, reduceMotion: reduceMotion))
+        }
+        .task(id: requestedMenu) {
+            await menuMotion.update(to: requestedMenu, reduceMotion: reduceMotion)
+        }
+    }
+
+    func wheel(menu: SessionWheelMenu, tiles: SessionWheelPresentation) -> some View {
         ZStack {
-            Color.clear.contentShape(Rectangle()).onTapGesture(perform: dismiss)
+            Color.clear.contentShape(Rectangle()).onTapGesture { point in
+                let outsideWheel = hypot(point.x - geometry.center.x, point.y - geometry.center.y) > geometry.wheelRadius
+                if outsideWheel || !menuMotion.motion.isAnimating { dismiss() }
+            }
             Circle()
                 .fill(.black)
                 .frame(width: geometry.wheelRadius * 2, height: geometry.wheelRadius * 2)
                 .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
+                .scaleEffect(presentation.discScale)
+                .opacity(presentation.discScale == 0 ? 0 : 1)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             ZStack {
                 ForEach(0..<geometry.slotCount, id: \.self) { index in
-                    slot(index)
+                    slot(index, menu: menu)
+                        .compositingGroup()
+                        .blur(radius: tiles.segmentBlur)
+                        .offset(tiles.segmentOffset(index))
                 }
             }
-            .id(pageID)
-            .transition(.relayReplacing(.element))
-            if let session = model.hoveredSession, let index = model.hoveredSlot {
-                ZStack {
-                    SessionWheelSector(slot: index, innerRadius: geometry.actionInnerRadius,
-                                       outerRadius: geometry.actionOuterRadius,
-                                       cornerRadius: SharedActionButtonMetrics.cornerRadius,
-                                       padding: geometry.segmentGap)
-                        .fill(.black)
-                        .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                    ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
-                        actionButton(action, session: session, slot: index)
+            .mask {
+                Circle().frame(width: geometry.wheelRadius * 2, height: geometry.wheelRadius * 2)
+            }
+            .scaleEffect(tiles.discScale)
+            .opacity(tiles.segmentVisibility * tiles.opacity)
+            .allowsHitTesting(!menuMotion.motion.isAnimating && menu.identity == SessionWheelMenu(model).identity)
+            .accessibilityHidden(menuMotion.motion.isAnimating)
+            .transaction { $0.animation = nil }
+            ZStack {
+                if let session = model.hoveredSession, let index = model.hoveredSlot {
+                    ZStack {
+                        SessionWheelSector(slot: index, innerRadius: geometry.actionInnerRadius,
+                                           outerRadius: geometry.actionOuterRadius,
+                                           cornerRadius: SharedActionButtonMetrics.cornerRadius,
+                                           padding: geometry.segmentGap)
+                            .fill(.black)
+                            .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                        ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
+                            ZStack {
+                                actionButton(action, session: session, slot: index)
+                                    .id(action.symbol(for: session))
+                                    .transition(.sessionWheel(slot: index, reduceMotion: reduceMotion, replacing: true))
+                            }
+                            .animation(contentAnimation, value: action.symbol(for: session))
+                        }
                     }
+                    .id(session.id)
+                    .transition(.sessionWheel(slot: index, reduceMotion: reduceMotion))
+                    .compositingGroup()
+                    .blur(radius: presentation.segmentBlur)
+                    .offset(presentation.segmentOffset(index))
+                    .scaleEffect(presentation.discScale)
+                    .opacity(presentation.segmentVisibility)
                 }
-                .id(session.id)
-                .transition(.relayReplacing(.element))
             }
+            .animation(contentAnimation, value: model.hoveredSession?.id)
             hub
+                .compositingGroup()
+                .blur(radius: presentation.hubBlur)
+                .opacity(presentation.hubVisibility)
+                .mask {
+                    Circle().frame(width: geometry.wheelRadius * 2, height: geometry.wheelRadius * 2)
+                        .scaleEffect(presentation.discScale)
+                }
         }
         .frame(width: geometry.diameter, height: geometry.diameter)
+        .opacity(presentation.opacity)
         .foregroundStyle(ProgramBoardStyle.primaryText)
         .preferredColorScheme(.dark)
         .onContinuousHover { phase in
@@ -59,28 +110,26 @@ struct SessionWheelView: View {
             case .ended: model.clearHover()
             }
         }
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: pageID)
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.hoveredSession?.id)
         .onExitCommand(perform: back)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(model.pickingProject ? "Start a project session" : "Session wheel")
     }
 
-    private func slot(_ index: Int) -> some View {
-        let pickingProject = model.pickingProject
-        let page = pageID
-        let session = model.slots[index]
-        let project = model.visibleProjects.indices.contains(index) ? model.visibleProjects[index] : nil
-        let more = model.isMoreProjectsSlot(index)
+    private func slot(_ index: Int, menu: SessionWheelMenu) -> some View {
+        let pickingProject = menu.pickingProject
+        let page = menu.page
+        let session = menu.sessions[index]
+        let project = menu.projects.indices.contains(index) ? menu.projects[index] : nil
+        let more = pickingProject && menu.hasMoreProjects && index == geometry.slotCount - 1
         let empty = pickingProject ? project == nil && !more : session == nil
         let title = more ? "More projects" : pickingProject ? (project?.name ?? "") : (session?.name ?? "Start session")
         let enabled = pickingProject
-            ? more || (project?.isAvailable == true && model.canStartSession)
+            ? more || (project?.isAvailable == true && menu.canStartSession)
             : true
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .projectCard, isEnabled: enabled,
             isSelected: !pickingProject && session?.isFocused == true,
-            isHovered: model.hoveredSlot == index, reduceMotion: reduceMotion
+            isHovered: !menuMotion.motion.isAnimating && model.hoveredSlot == index, reduceMotion: reduceMotion
         )
         let shape = SessionWheelSector(slot: index, innerRadius: geometry.segmentInnerRadius,
                                        outerRadius: geometry.segmentOuterRadius)
@@ -113,7 +162,6 @@ struct SessionWheelView: View {
                                     .padding(.horizontal, 4).padding(.vertical, 2)
                                     .background(.blue, in: Capsule())
                                     .offset(x: 7, y: 31)
-                                    .transition(.relayElement)
                             }
                         }
                     }
@@ -132,13 +180,13 @@ struct SessionWheelView: View {
         .opacity(enabled ? 1 : 0.55)
         .animation(presentation.animation, value: presentation)
         .accessibilityLabel(title.isEmpty ? "Empty slot" : title)
-        .accessibilityHint(more ? "Next project wheel" : model.pickingProject ? "Start session" : (session == nil ? "Choose a project" : "Focus session. Move outward for session controls."))
+        .accessibilityHint(more ? "Next project wheel" : pickingProject ? "Start session" : (session == nil ? "Choose a project" : "Focus session. Move outward for session controls."))
         .accessibilityAction {
             guard pageID == page else { return }
             selectSlot(index, false)
         }
         .accessibilityActions {
-            if !model.pickingProject, let session {
+            if !pickingProject, let session {
                 ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
                     if action.isEnabled(for: session) {
                         Button(action.title(for: session)) { performAction(session.id, action) }
@@ -151,6 +199,7 @@ struct SessionWheelView: View {
 
     private func actionButton(_ action: SessionWheelAction, session: SessionWheelSession, slot: Int) -> some View {
         let enabled = action.isEnabled(for: session)
+        let symbol = action.symbol(for: session)
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .control, isEnabled: enabled,
             isHovered: model.hoveredAction == action && model.hoveredSession?.id == session.id,
@@ -164,7 +213,7 @@ struct SessionWheelView: View {
         } label: {
             ZStack {
                 controlBackground(shape, presentation: presentation)
-                RelaySwap(action.symbol(for: session)) { symbol in
+                Group {
                     if symbol == "waveform" {
                         SessionWheelRecordingWaveform(level: { recordingLevel(session.id) })
                     } else if symbol == "power" {
