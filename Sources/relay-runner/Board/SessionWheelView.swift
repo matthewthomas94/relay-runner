@@ -7,6 +7,7 @@ struct SessionWheelView: View {
     let selectCenter: () -> Void
     let back: () -> Void
     let dismiss: () -> Void
+    var performNoteAction: (SessionWheelNoteAction) -> Void = { _ in }
     var recordingLevel: (String) -> Float = { _ in 0 }
     var presentation = SessionWheelPresentation()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -15,8 +16,8 @@ struct SessionWheelView: View {
     @State var menuMotion = SessionWheelMenuMotion()
 
     private let geometry = SessionWheelGeometry.self
-    private var pageID: Int { model.pickingProject ? model.projectPage : -1 }
-    private var submenuSlot: Int? { model.hoveredSession == nil ? nil : model.hoveredSlot }
+    private var pageID: Int { model.pageID }
+    private var submenuSlot: Int? { model.submenuSlot }
 
     var body: some View {
         let requestedMenu = SessionWheelMenu(model)
@@ -68,7 +69,20 @@ struct SessionWheelView: View {
             ZStack {
                 ForEach(0..<geometry.slotCount, id: \.self) { index in
                     let frame = SessionWheelSubmenuPresentation(progress: submenus[index], reduceMotion: reduceMotion)
-                    if let session = model.slots[index] ?? menu.sessions[index], frame.progress > 0 {
+                    if index == SessionWheelShortcut.noteTaker.rawValue,
+                       menu.shortcut(at: index) == .noteTaker, frame.progress > 0 {
+                        ZStack {
+                            ForEach(SessionWheelNoteAction.allCases, id: \.rawValue) { action in
+                                noteActionButton(action)
+                            }
+                        }
+                        .scaleEffect(frame.scale)
+                        .opacity(frame.controlsOpacity)
+                        .allowsHitTesting(model.isHoveringNoteTaker && (reduceMotion || frame.progress >= 0.95))
+                        .accessibilityHidden(!model.isHoveringNoteTaker)
+                        .transition(.identity)
+                        .transaction { $0.animation = nil }
+                    } else if let session = model.slots[index] ?? menu.sessions[index], frame.progress > 0 {
                         ZStack {
                             ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
                                 actionButton(action, session: session, slot: index)
@@ -114,19 +128,25 @@ struct SessionWheelView: View {
         let pickingProject = menu.pickingProject
         let page = menu.page
         let session = menu.sessions[index]
+        let shortcut = menu.shortcut(at: index)
         let project = menu.projects.indices.contains(index) ? menu.projects[index] : nil
-        let more = pickingProject && menu.hasMoreProjects && index == geometry.slotCount - 1
-        let empty = pickingProject ? project == nil && !more : session == nil
-        let title = more ? "More projects" : pickingProject ? (project?.name ?? "") : (session?.name ?? "Start session")
+        let moreProjects = pickingProject && menu.hasMoreProjects && index == geometry.slotCount - 1
+        let moreSessions = !pickingProject && !menu.showingAllSessions && menu.hasMoreSessions
+            && index == geometry.sessionSlots.last
+        let more = moreProjects || moreSessions
+        let empty = pickingProject ? project == nil && !more : session == nil && shortcut == nil && !more
+        let title = moreProjects ? "More projects" : moreSessions ? "More sessions"
+            : pickingProject ? (project?.name ?? "") : shortcut?.title ?? session?.name ?? "Start session"
         let sessionHint = session?.isFocused == true
             ? "Open this session's terminal in Workspace."
             : "Switch session. Move outward for session controls."
         let enabled = pickingProject
             ? more || (project?.isAvailable == true && menu.canStartSession)
-            : true
+            : !menu.showingAllSessions || session != nil
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .projectCard, isEnabled: enabled,
-            isSelected: !pickingProject && session?.isFocused == true,
+            isSelected: !pickingProject && (session?.isFocused == true
+                || (shortcut == .noteTaker && model.notePhase.ownsForeground)),
             isHovered: !menuMotion.motion.isAnimating && model.hoveredSlot == index, reduceMotion: reduceMotion
         )
         let shape = SessionWheelSector(slot: index, innerRadius: geometry.segmentInnerRadius,
@@ -144,6 +164,8 @@ struct SessionWheelView: View {
                             .overlay {
                                 if more {
                                     Image(systemName: "ellipsis").font(AppTypography.symbolFont(size: 17, weight: .medium))
+                                } else if let shortcut {
+                                    Image(systemName: shortcut.symbol).font(AppTypography.symbolFont(size: 17, weight: .regular))
                                 } else if empty {
                                     Image(systemName: "plus").font(AppTypography.symbolFont(size: 17, weight: .medium))
                                 } else {
@@ -169,7 +191,7 @@ struct SessionWheelView: View {
                         .frame(width: 90, height: 30, alignment: .top)
                 }
                 .position(geometry.position(slot: index, radius: 119))
-                .opacity(pickingProject && empty ? 0 : 1)
+                .opacity((pickingProject || menu.showingAllSessions) && empty ? 0 : 1)
             }
             .contentShape(shape)
         }
@@ -178,12 +200,22 @@ struct SessionWheelView: View {
         .opacity(enabled ? 1 : 0.55)
         .animation(presentation.animation, value: presentation)
         .accessibilityLabel(title.isEmpty ? "Empty slot" : title)
-        .accessibilityHint(more ? "Next project wheel" : pickingProject ? "Start session" : (session == nil ? "Choose a project" : sessionHint))
+        .accessibilityHint(moreProjects ? "Next project wheel" : moreSessions ? "Show all active sessions"
+            : pickingProject ? "Start session" : shortcut == .noteTaker
+            ? "Open Note Taker. Move outward for recording controls."
+            : shortcut != nil ? "Open \(title)" : session == nil ? "Choose a project" : sessionHint)
         .accessibilityAction {
             guard pageID == page else { return }
             selectSlot(index, false)
         }
         .accessibilityActions {
+            if shortcut == .noteTaker {
+                ForEach(SessionWheelNoteAction.allCases, id: \.rawValue) { action in
+                    if action.isEnabled(for: model.notePhase) {
+                        Button(action.title(for: model.notePhase)) { performNoteAction(action) }
+                    }
+                }
+            }
             if !pickingProject, let session {
                 ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
                     if action.isEnabled(for: session) {
@@ -197,23 +229,43 @@ struct SessionWheelView: View {
 
     private func actionButton(_ action: SessionWheelAction, session: SessionWheelSession, slot: Int) -> some View {
         let enabled = action.isEnabled(for: session)
-        let symbol = action.symbol(for: session)
+        return submenuButton(index: action.rawValue, slot: slot,
+                             title: "\(action.title(for: session)) for \(session.name)",
+                             help: enabled ? action.title(for: session) : (action == .message ? "No message yet" : "Recording unavailable"),
+                             symbol: action.symbol(for: session), enabled: enabled,
+                             hovered: model.hoveredAction == action && model.hoveredSession?.id == session.id,
+                             destructive: action == .stop, level: { recordingLevel(session.id) }) {
+            guard model.hoveredSession?.id == session.id else { return }
+            performAction(session.id, action)
+        }
+    }
+
+    private func noteActionButton(_ action: SessionWheelNoteAction) -> some View {
+        submenuButton(index: action.rawValue, slot: SessionWheelShortcut.noteTaker.rawValue,
+                      title: action.title(for: model.notePhase), help: action.help(for: model.notePhase),
+                      symbol: action.symbol(for: model.notePhase), enabled: action.isEnabled(for: model.notePhase),
+                      hovered: model.hoveredNoteAction == action, destructive: action == .cancel) {
+            guard model.isHoveringNoteTaker else { return }
+            performNoteAction(action)
+        }
+    }
+
+    private func submenuButton(index: Int, slot: Int, title: String, help: String, symbol: String,
+                               enabled: Bool, hovered: Bool, destructive: Bool,
+                               level: @escaping () -> Float = { 0 }, perform: @escaping () -> Void) -> some View {
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .control, isEnabled: enabled,
-            isHovered: model.hoveredAction == action && model.hoveredSession?.id == session.id,
+            isHovered: hovered,
             reduceMotion: reduceMotion
         )
         let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
-                                       outerRadius: geometry.actionOuterRadius, subdivision: action.rawValue)
-        return Button {
-            guard model.hoveredSession?.id == session.id else { return }
-            performAction(session.id, action)
-        } label: {
+                                       outerRadius: geometry.actionOuterRadius, subdivision: index)
+        return Button(action: perform) {
             ZStack {
                 controlBackground(shape, presentation: presentation)
                 Group {
                     if symbol == "waveform" {
-                        SessionWheelRecordingWaveform(level: { recordingLevel(session.id) })
+                        SessionWheelRecordingWaveform(level: level)
                     } else if symbol == "power" {
                         Image(systemName: symbol)
                             .resizable().scaledToFit()
@@ -228,31 +280,31 @@ struct SessionWheelView: View {
                 .frame(width: geometry.actionLabelSize.width, height: geometry.actionLabelSize.height)
                 .foregroundStyle(!enabled
                                  ? (contrast == .increased ? ProgramBoardStyle.disabledText : Color(.sRGB, red: 24 / 255, green: 27 / 255, blue: 33 / 255, opacity: 1))
-                                 : action == .stop ? ProgramBoardStyle.red : ProgramBoardStyle.primaryText)
-                .rotationEffect(.radians(geometry.actionLabelRotation(slot: slot, action: action)))
-                .position(geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(action)))
+                                 : destructive ? ProgramBoardStyle.red : ProgramBoardStyle.primaryText)
+                .rotationEffect(.radians(geometry.actionLabelRotation(slot: slot, index: index)))
+                .position(geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(index)))
             }
             .contentShape(shape)
         }
         .buttonStyle(SessionWheelActionButtonStyle())
         .disabled(!enabled)
         .animation(presentation.animation, value: presentation)
-        .accessibilityLabel("\(action.title(for: session)) for \(session.name)")
-        .help(enabled ? action.title(for: session) : (action == .message ? "No message yet" : "Recording unavailable"))
+        .accessibilityLabel(title)
+        .help(help)
     }
 
     private var hub: some View {
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .control, isHovered: hubHovered, reduceMotion: reduceMotion
         )
-        let title = model.pickingProject
+        let title = model.isNested
             ? (model.projectPage > 0 ? "Previous projects" : "Back to sessions")
             : model.workspaceActionTitle
         let detail = model.notice ?? model.startUnavailableReason
             ?? (model.pickingProject && model.projects.isEmpty ? "No projects to start" : "")
         return Button(action: selectCenter) {
             SessionWheelWorkspaceGlyph(isWorkspaceVisible: model.isWorkspaceVisible,
-                                       isPickingProject: model.pickingProject,
+                                       isPickingProject: model.isNested,
                                        status: model.notchStatus)
                 .frame(width: geometry.hubRadius * 2, height: geometry.hubRadius * 2)
                 .background(controlBackground(Circle(), presentation: presentation))

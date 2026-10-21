@@ -6,9 +6,12 @@ fingers lift; selection requires a click. Tap again or click outside to dismiss.
 Wheel actions and clicks in its gaps keep it open. Near a display edge, the complete wheel and
 its outer controls move inside the usable screen area.
 
-The six slots show live project sessions, including general-tasks. Sessions keep
-their positions as other sessions start or stop. Relay's existing four-session
-limit still applies.
+The top three slots show live project sessions, including general-tasks, or
+**Start session** when empty. The bottom three are **Workspace**, **Note Taker**,
+and **Settings**, from left to right. Sessions keep their positions as other
+sessions start or stop. Relay's existing four-session limit still applies:
+when a fourth session is running, **More sessions** opens a nested wheel with all
+sessions. An overflow session fills a top slot when one becomes free.
 
 - Click the session wheel's center to toggle the Workspace while keeping the wheel
   open. Its glyph uses the notch's live status, colours and motion: an upright
@@ -16,9 +19,21 @@ limit still applies.
   purple for response/playback states. Opening Workspace merges the dots into
   one bead, then stretches it into a thin X; closing reverses the liquid morph.
   Another click can reverse the morph immediately.
-  Project wheels show a left arrow in the center. It morphs through the same bead
+  Nested wheels show a left arrow in the center. It morphs through the same bead
   when switching to or from the dots or X. Escape backs out of project wheels
   without closing the session wheel or toggling Workspace.
+- Click Workspace, Note Taker, or Settings to open that Workspace tab, including
+  when the Workspace is already open. The wheel stays open.
+- Hover Note Taker to reveal **Start / Stop**, **Pause / Resume**, and **Cancel**,
+  from left to right, on the same liquid submenu used for sessions. Start becomes
+  Stop while recording or paused; Stop saves and transcribes the recording.
+  Pause becomes Resume while paused. The red circled X cancels the active note,
+  deleting its draft and recording without saving or transcribing. Stop uses
+  the normal text colour. Cancel is disabled without an active recording, and
+  can retry a pending cancellation; capture and save transitions disable the
+  other unavailable controls. These controls reuse the
+  app's recorder and its existing session restrictions without another capture
+  or provider process. The wheel remains open throughout.
 - Hover a session to reveal three controls on the arc just outside its slot:
   an icon-only **Play / Stop playback / Replay message**, **Record / Stop recording
   and send message**, and **Stop session**. Tooltips and VoiceOver retain these labels.
@@ -109,7 +124,7 @@ package is not embedded; the interactive controls retain Relay's own styling.
 Run the focused checks with:
 
 ```sh
-env -u SDKROOT swift test --filter 'FourFingerTapGestureTests|SessionWheelTests|SessionWheelMotionTests|VoiceReplyBadgeTests|STT|VoiceBridgeFocusTests|CapsLockGestureTests'
+env -u SDKROOT swift test --filter 'FourFingerTapGestureTests|SessionWheelTests|SessionWheelMotionTests|MeetingNoteCoordinatorTests|ProgramBoardOverlayControllerTests|VoiceReplyBadgeTests|STT|VoiceBridgeFocusTests|CapsLockGestureTests'
 ```
 
 Set `RELAY_WHEEL_RENDER_DIR` to an output directory to export SwiftUI previews

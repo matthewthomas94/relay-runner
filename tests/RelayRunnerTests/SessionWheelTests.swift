@@ -22,15 +22,15 @@ final class SessionWheelTests: XCTestCase {
     func testSessionPositionsSurviveRefreshAndAnEmptySlotIsReused() {
         let model = SessionWheelModel()
         model.refresh(sessions: [session("a"), session("b"), session("c")])
-        model.hover(at: geometry.position(slot: 2, radius: 119))
+        model.hover(at: geometry.position(slot: 5, radius: 119))
         model.refresh(sessions: [session("c"), session("b")])
         XCTAssertNil(model.slots[0])
         XCTAssertEqual(model.slots[1]?.id, "b")
-        XCTAssertEqual(model.slots[2]?.id, "c")
+        XCTAssertEqual(model.slots[5]?.id, "c")
         XCTAssertEqual(model.hoveredSession?.id, "c")
         model.refresh(sessions: [session("d"), session("c"), session("b")])
         XCTAssertEqual(model.slots[0]?.id, "d")
-        XCTAssertEqual(model.slots[2]?.id, "c")
+        XCTAssertEqual(model.slots[5]?.id, "c")
         XCTAssertEqual(model.slots.count, 6)
     }
 
@@ -38,6 +38,7 @@ final class SessionWheelTests: XCTestCase {
         for slot in 0..<geometry.slotCount {
             let model = SessionWheelModel()
             model.refresh(sessions: (0..<6).map { session("\($0)") })
+            model.showAllSessions(at: geometry.center)
             model.hover(at: geometry.position(slot: slot, radius: 119))
             XCTAssertEqual(model.hoveredSlot, slot)
             model.hover(at: geometry.position(slot: slot, radius: (geometry.wheelRadius + geometry.actionInnerRadius) / 2))
@@ -73,6 +74,156 @@ final class SessionWheelTests: XCTestCase {
             let outside = geometry.position(slot: slot, radius: geometry.actionOuterRadius + geometry.segmentGap + 1)
             XCTAssertFalse(geometry.contains(outside, submenuSlot: slot))
         }
+    }
+
+    func testRootReservesTopThreeSlotsForSessionsAndBottomThreeForShortcuts() {
+        let model = SessionWheelModel()
+        XCTAssertEqual((0..<6).filter { model.shortcut(at: $0) == nil }, [0, 1, 5])
+        XCTAssertEqual([4, 3, 2].compactMap { model.shortcut(at: $0) }, [.workspace, .noteTaker, .settings])
+        let positions = [4, 3, 2].map { geometry.position(slot: $0, radius: 119) }
+        XCTAssertTrue(positions.allSatisfy { $0.y > geometry.center.y })
+        XCTAssertLessThan(positions[0].x, positions[1].x)
+        XCTAssertLessThan(positions[1].x, positions[2].x)
+        model.refresh(sessions: [session("a"), session("b"), session("c")])
+        XCTAssertEqual([0, 1, 5].compactMap { model.slots[$0]?.id }, ["a", "b", "c"])
+        XCTAssertTrue([2, 3, 4].allSatisfy { model.slots[$0] == nil })
+        model.showProjects(at: geometry.center)
+        XCTAssertTrue((0..<6).allSatisfy { model.shortcut(at: $0) == nil })
+    }
+
+    func testOverflowSessionsRemainReachableAndReturnToFreeTopSlots() {
+        let model = SessionWheelModel()
+        model.refresh(sessions: ["a", "b", "c", "d"].map(session))
+        XCTAssertTrue(model.isMoreSessionsSlot(5))
+        XCTAssertNil(model.slots[5])
+        model.showAllSessions(at: geometry.center)
+        XCTAssertEqual(model.slots.compactMap { $0?.id }, ["a", "b", "c", "d"])
+        XCTAssertTrue(model.isNested)
+        model.hover(at: geometry.position(slot: 3, radius: 119))
+        XCTAssertEqual(model.hoveredSession?.id, "d")
+        XCTAssertFalse(model.isHoveringNoteTaker)
+        XCTAssertTrue(model.back(at: geometry.center))
+        model.refresh(sessions: ["a", "b", "d"].map(session))
+        XCTAssertFalse(model.hasMoreSessions)
+        XCTAssertEqual(model.slots[5]?.id, "d")
+    }
+
+    func testNoteControlsRetainHoverAcrossGapAndSessionRefresh() {
+        let model = SessionWheelModel()
+        let slot = SessionWheelShortcut.noteTaker.rawValue
+        model.hover(at: geometry.position(slot: slot, radius: 119))
+        XCTAssertEqual(model.submenuSlot, slot)
+        model.hover(at: geometry.position(slot: slot, radius: geometry.wheelRadius + 4))
+        XCTAssertTrue(model.isHoveringNoteTaker)
+        for action in SessionWheelNoteAction.allCases {
+            model.hover(at: geometry.position(slot: slot, radius: geometry.actionRadius,
+                                              offset: geometry.actionOffset(action.rawValue)))
+            model.refresh(sessions: [session("a")])
+            XCTAssertEqual(model.hoveredNoteAction, action)
+            XCTAssertNil(model.hoveredAction)
+            XCTAssertEqual(model.submenuSlot, slot)
+        }
+        model.showProjects(at: geometry.center)
+        model.hover(at: geometry.position(slot: slot, radius: 119))
+        XCTAssertNil(model.submenuSlot)
+        XCTAssertNil(model.hoveredNoteAction)
+    }
+
+    func testNoteControlsFollowCaptureLifecycle() {
+        for phase in [MeetingNoteCoordinatorPhase.idle, .saved] {
+            XCTAssertTrue(SessionWheelNoteAction.recording.isEnabled(for: phase))
+            XCTAssertEqual(SessionWheelNoteAction.recording.symbol(for: phase), "record.circle")
+            XCTAssertFalse(SessionWheelNoteAction.cancel.isEnabled(for: phase))
+            XCTAssertFalse(SessionWheelNoteAction.pause.isEnabled(for: phase))
+        }
+        for phase in [MeetingNoteCoordinatorPhase.recording, .paused] {
+            XCTAssertTrue(SessionWheelNoteAction.recording.isEnabled(for: phase))
+            XCTAssertEqual(SessionWheelNoteAction.recording.symbol(for: phase), "stop.fill")
+            XCTAssertTrue(SessionWheelNoteAction.cancel.isEnabled(for: phase))
+            XCTAssertTrue(SessionWheelNoteAction.pause.isEnabled(for: phase))
+        }
+        for phase in [MeetingNoteCoordinatorPhase.preparing, .transcribing, .stopping, .interrupted, .error] {
+            XCTAssertFalse(SessionWheelNoteAction.recording.isEnabled(for: phase))
+            XCTAssertFalse(SessionWheelNoteAction.pause.isEnabled(for: phase))
+            XCTAssertFalse(SessionWheelNoteAction.cancel.isEnabled(for: phase))
+        }
+        XCTAssertFalse(SessionWheelNoteAction.recording.isEnabled(for: .cancelling))
+        XCTAssertFalse(SessionWheelNoteAction.pause.isEnabled(for: .cancelling))
+        XCTAssertTrue(SessionWheelNoteAction.cancel.isEnabled(for: .cancelling), "Can retry cancellation")
+        XCTAssertEqual(SessionWheelNoteAction.cancel.symbol(for: .recording), "xmark.circle")
+        XCTAssertEqual(SessionWheelNoteAction.recording.title(for: .recording), "Stop Note Taker")
+        let positions = SessionWheelNoteAction.allCases.map {
+            geometry.position(slot: 3, radius: geometry.actionRadius, offset: geometry.actionOffset($0.rawValue)).x
+        }
+        XCTAssertEqual(positions, positions.sorted(), "Start/Stop, Pause/Resume, Cancel read left to right")
+        XCTAssertEqual(SessionWheelNoteAction.pause.title(for: .paused), "Resume Note Taker")
+        XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .paused), "play.fill")
+        XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .recording), "pause.fill")
+    }
+
+    @MainActor
+    func testShortcutsAndNoteActionsKeepTheWheelOpenAndRespectDisabledStates() {
+        _ = NSApplication.shared
+        let controller = SessionWheelController()
+        defer { controller.dismiss() }
+        var phase = MeetingNoteCoordinatorPhase.idle
+        controller.refresh = { model, _ in model.notePhase = phase }
+        var shortcuts: [SessionWheelShortcut] = []
+        controller.openShortcut = { shortcuts.append($0) }
+        var actions: [SessionWheelNoteAction] = []
+        controller.noteAction = { action in
+            actions.append(action)
+            switch action {
+            case .recording: phase = phase.ownsForeground ? .transcribing : .recording
+            case .pause: phase = phase == .paused ? .recording : .paused
+            case .cancel: phase = .idle
+            }
+            return true
+        }
+        controller.toggle()
+        for slot in [4, 3, 2] {
+            controller.selectSlot(slot, fromPointer: false)
+            XCTAssertTrue(controller.isVisible)
+            XCTAssertFalse(controller.model.pickingProject)
+        }
+        XCTAssertEqual(shortcuts, [.workspace, .noteTaker, .settings])
+        controller.performNoteAction(.pause)
+        controller.performNoteAction(.cancel)
+        XCTAssertTrue(actions.isEmpty)
+        controller.model.hover(at: geometry.position(slot: 3, radius: 119))
+        for action in [SessionWheelNoteAction.recording, .pause, .pause, .cancel, .recording, .recording] {
+            controller.performNoteAction(action)
+            XCTAssertTrue(controller.isVisible)
+            XCTAssertEqual(controller.model.notePhase, phase)
+            XCTAssertEqual(controller.model.submenuSlot, 3)
+        }
+        XCTAssertEqual(actions, [.recording, .pause, .pause, .cancel, .recording, .recording])
+        controller.performNoteAction(.recording)
+        controller.performNoteAction(.cancel)
+        XCTAssertEqual(actions.count, 6, "Cannot stop or cancel while transcribing")
+        controller.dismiss()
+        controller.selectSlot(3, fromPointer: false)
+        XCTAssertEqual(shortcuts.count, 3)
+    }
+
+    @MainActor
+    func testOverflowNavigationPreservesSessionsAndWheelVisibility() {
+        _ = NSApplication.shared
+        let controller = SessionWheelController()
+        defer { controller.dismiss() }
+        controller.refresh = { model, _ in model.refresh(sessions: ["a", "b", "c", "d"].map(self.session)) }
+        var focused: String?
+        controller.focusSession = { focused = $0 }
+        controller.openShortcut = { _ in XCTFail("The nested session slot must not open a shortcut") }
+        controller.toggle()
+        controller.selectSlot(5, fromPointer: false)
+        XCTAssertTrue(controller.model.showingAllSessions)
+        controller.selectSlot(3, fromPointer: false)
+        XCTAssertEqual(focused, "d")
+        XCTAssertTrue(controller.isVisible)
+        controller.selectCenter()
+        XCTAssertFalse(controller.model.isNested)
+        XCTAssertTrue(controller.isVisible)
     }
 
     func testContourLabelsStayUprightAndFitInsideEveryThinActionSegment() {
@@ -571,7 +722,9 @@ final class SessionWheelTests: XCTestCase {
         let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
                                     selectCenter: {}, back: {}, dismiss: {}, recordingLevel: { _ in 1 })
         for state in ["sessions", "working", "response-ready", "listening", "paused", "workspace-open", "session-notice", "controls", "play-hover", "recording-controls", "projects", "last-page", "limit",
-                      "design-recording", "design-idle", "design-play", "design-playback"]
+                      "design-recording", "design-idle", "design-play", "design-playback",
+                      "shortcuts-empty", "notes-idle", "notes-recording", "notes-paused", "notes-saving",
+                      "more-sessions", "all-sessions"]
             + (0..<geometry.slotCount).map({ "contour-\($0)" }) {
             switch state {
             case "working": model.notchStatus = .working
@@ -592,6 +745,22 @@ final class SessionWheelTests: XCTestCase {
             case "projects": model.showProjects(at: geometry.center)
             case "last-page": model.turnPage(1, at: geometry.center)
             case "limit": model.startUnavailableReason = "Session limit reached"
+            case "shortcuts-empty":
+                model.reset(at: geometry.center)
+                model.refresh(sessions: [])
+                model.startUnavailableReason = nil
+                model.isWorkspaceVisible = false
+                model.notchStatus = .notWorking
+            case "notes-idle", "notes-recording", "notes-paused", "notes-saving":
+                model.notePhase = state == "notes-recording" ? .recording
+                    : state == "notes-paused" ? .paused
+                    : state == "notes-saving" ? .transcribing : .idle
+                model.hover(at: geometry.position(slot: SessionWheelShortcut.noteTaker.rawValue, radius: 119))
+            case "more-sessions", "all-sessions":
+                model.reset(at: geometry.center)
+                model.notePhase = .idle
+                model.refresh(sessions: (0..<4).map { .init(id: "\($0)", name: "Project \($0 + 1)") })
+                if state == "all-sessions" { model.showAllSessions(at: geometry.center) }
             case "design-recording", "design-idle", "design-play", "design-playback":
                 model.reset(at: geometry.center)
                 model.startUnavailableReason = nil
@@ -616,6 +785,7 @@ final class SessionWheelTests: XCTestCase {
                     model.refresh(sessions: (0..<geometry.slotCount).map {
                         .init(id: "\($0)", name: "Project \($0 + 1)", isRecording: $0 == 1, canPlay: $0 != 2)
                     })
+                    model.showAllSessions(at: geometry.center)
                     model.hover(at: geometry.position(slot: slot, radius: 119))
                 }
             }

@@ -6125,9 +6125,11 @@ class Daemon:
         self._schedule_note_metadata(manager, result)
         return manager.get(note_id)
 
-    def artifact_note_delete(self, *, repo_path, project_scope_token, note_id, artifact_id, request_id):
+    def artifact_note_delete(self, *, repo_path, project_scope_token, note_id, artifact_id, request_id,
+                             cancel_recording=False):
         manager = self._artifact_note_manager(repo_path, project_scope_token)
-        return manager.delete(note_id=note_id, artifact_id=artifact_id, request_id=request_id)
+        return manager.delete(note_id=note_id, artifact_id=artifact_id, request_id=request_id,
+                              cancel_recording=cancel_recording)
 
     def artifact_note_archive(
         self,
@@ -12332,7 +12334,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if (method == "POST" and len(segments) == 5
                     and segments[:3] == ["v1", "artifacts", "notes"]
-                    and segments[4] == "delete"):
+                    and segments[4] in {"delete", "cancel"}):
                 body = _read_body(self)
                 return 200, self.daemon.artifact_note_delete(
                     repo_path=body.get("repo_path", ""),
@@ -12340,6 +12342,7 @@ class Handler(BaseHTTPRequestHandler):
                     note_id=unquote(segments[3]),
                     artifact_id=body.get("artifact_id", ""),
                     request_id=body.get("request_id", ""),
+                    cancel_recording=segments[4] == "cancel",
                 )
 
             if method == "POST" and segments == ["v1", "artifacts", "tickets", "write"]:

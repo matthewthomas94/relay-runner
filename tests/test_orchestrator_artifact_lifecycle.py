@@ -1012,6 +1012,40 @@ Saved through the daemon-owned typed writer.
         )
         self.assertEqual([ticket["id"] for ticket in orchestrator.scan_repo(self.repo)], ["RR-1"])
 
+    def test_cancel_note_http_is_scoped_and_does_not_schedule_transcription_metadata(self):
+        from services.global_notes import GlobalNoteLibrary
+        self.daemon.global_notes = GlobalNoteLibrary(self.state, "global-test", lambda: [])
+        handler = object.__new__(orchestrator.Handler)
+        handler.daemon = self.daemon
+        for provider, repo in (("codex", str(self.repo)), ("claude", "")):
+            with self.subTest(provider=provider, repo=repo):
+                scope = self.scope_token() if repo else None
+                created = self.daemon.artifact_note_create(
+                    repo_path=repo, project_scope_token=scope, request_id="cancel-" + provider,
+                    created_at="2026-09-20T08:00:00Z", capture_started_at="2026-09-20T08:00:00Z",
+                    captured_at="2026-09-20T08:00:00Z", recording_state="recording",
+                    checkpoint_reason="checkpoint", segments=[], provider=provider,
+                )
+                identity = created["note"]["identity"]
+                payload = dict(repo_path=repo, project_scope_token=None,
+                               artifact_id=identity["artifact_id"], request_id="cancel-http-" + provider)
+                path = f"/v1/artifacts/notes/{identity['note_id']}/cancel"
+                if repo:
+                    with patch.object(orchestrator, "_read_body", return_value=payload):
+                        status, failure = handler._route("POST", path)
+                    self.assertEqual(status, 422)
+                    self.assertIn("confirmed project scope token", failure["error"])
+                payload["project_scope_token"] = scope
+                self.daemon.note_metadata.schedule.reset_mock()
+                with patch.object(orchestrator, "_read_body", return_value=payload):
+                    for _ in range(2):
+                        status, response = handler._route("POST", path)
+                        self.assertEqual(status, 200)
+                        self.assertTrue(response["deleted"])
+                self.daemon.note_metadata.schedule.assert_not_called()
+                self.assertEqual(self.daemon.artifact_note_list(
+                    repo_path=repo, project_scope_token=scope)["notes"], [])
+
     def test_project_note_delete_http_requires_scope_and_removes_note(self):
         created = self.daemon.artifact_note_create(
             repo_path=str(self.repo), project_scope_token=self.scope_token(), request_id="delete-create",

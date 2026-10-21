@@ -107,24 +107,33 @@ final class SessionWheelMotion {
 /// Freeze the outgoing menu until it has contracted completely.
 struct SessionWheelMenu: Equatable {
     let pickingProject: Bool
+    let showingAllSessions: Bool
     let page: Int
     let sessions: [SessionWheelSession?]
     let projects: [SessionWheelProject]
     let hasMoreProjects: Bool
+    let hasMoreSessions: Bool
     let canStartSession: Bool
 
     init(_ model: SessionWheelModel) {
         pickingProject = model.pickingProject
-        page = model.pickingProject ? model.projectPage : -1
+        showingAllSessions = model.showingAllSessions
+        page = model.pageID
         sessions = model.slots
         projects = model.visibleProjects
         hasMoreProjects = model.hasMoreProjects
+        hasMoreSessions = model.hasMoreSessions
         canStartSession = model.canStartSession
     }
 
     var identity: [String?] {
         [String(page)] + (pickingProject ? projects.map(\.id) : sessions.map { $0?.id })
-            + [pickingProject && hasMoreProjects ? "more" : nil]
+            + [pickingProject && hasMoreProjects ? "more" : nil,
+               !pickingProject && !showingAllSessions && hasMoreSessions ? "more-sessions" : nil]
+    }
+
+    func shortcut(at index: Int) -> SessionWheelShortcut? {
+        pickingProject || showingAllSessions ? nil : SessionWheelShortcut(rawValue: index)
     }
 }
 

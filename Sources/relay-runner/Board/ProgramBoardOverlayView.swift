@@ -2645,7 +2645,7 @@ private struct ProgramNoteDetailPanel: View {
     }
 
     private var showsStop: Bool {
-        isCurrentCapture && captureSnapshot.phase.ownsForeground
+        isCurrentCapture && captureSnapshot.phase.ownsForeground && captureSnapshot.phase != .cancelling
     }
 
     private var noteFileURL: URL? {
@@ -2739,7 +2739,18 @@ private struct ProgramNoteDetailPanel: View {
                     }
                     .transition(.relayReplacing(.element))
                 }
-                if let recoveryOffer, !isCurrentCapture {
+                if let recoveryOffer, !isCurrentCapture, recoveryOffer.phase == .cancelling {
+                    ProgramDetailActionButton(
+                        systemName: "xmark.circle", title: "Retry cancellation",
+                        disabled: recoveryInFlight,
+                        help: "Discard this note and recording without transcription",
+                        destructive: true
+                    ) {
+                        onRecover(.discardIncompleteTail, nil)
+                    }
+                    .transition(.relayReplacing(.element))
+                }
+                if let recoveryOffer, !isCurrentCapture, recoveryOffer.phase != .cancelling {
                     if recoveryOffer.requiresTranscriptionModelChoice {
                         Menu(chosenTranscriptionModel?.displayName ?? "Choose model") {
                             ForEach(recoveryOffer.transcriptionModelChoices, id: \.self) { model in
@@ -4499,7 +4510,13 @@ struct ProgramNoteToolbarPresentation: Equatable {
     let help: String
 
     static func resolve(phase: MeetingNoteCoordinatorPhase) -> ProgramNoteToolbarPresentation {
-        phase.ownsForeground
+        if phase == .cancelling {
+            return ProgramNoteToolbarPresentation(
+                title: "Retry cancellation", systemName: "xmark.circle",
+                help: "Discard the note and recording without transcription"
+            )
+        }
+        return phase.ownsForeground
             ? ProgramNoteToolbarPresentation(
                 title: "Stop",
                 systemName: "stop.fill",

@@ -958,6 +958,16 @@ final class AppState {
             self?.refreshSessionWheel(model, includesProjects: includesProjects)
         }
         sessionWheel.toggleWorkspace = { [weak self] in self?.toggleWorkspace() }
+        sessionWheel.openShortcut = { [weak self] shortcut in
+            guard let self, self.allowsAppShellAccess else { return }
+            if self.overlayController == nil { self.startOverlay() }
+            switch shortcut {
+            case .workspace: self.programBoardOverlay.showWork()
+            case .noteTaker: self.programBoardOverlay.showNotes()
+            case .settings: self.programBoardOverlay.showSettings()
+            }
+        }
+        sessionWheel.noteAction = { [weak self] in self?.performNoteWheelAction($0) ?? false }
         sessionWheel.focusSession = { [weak self] in self?.switchSessionFromWheel(contextID: $0) }
         sessionWheel.startProject = { [weak self] path in
             self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false
@@ -1647,6 +1657,10 @@ final class AppState {
     /// restores ordinary awareness/Caps Lock routing; failure leaves recovery
     /// ownership intact and does not restart the microphone.
     func stopNoteTaker() {
+        if meetingNoteSnapshot.phase == .cancelling {
+            cancelNoteTaker()
+            return
+        }
         guard let coordinator = meetingNoteCoordinator,
               meetingNoteSnapshot.phase.ownsForeground else { return }
         let pendingStartTask = meetingNoteStartTask
@@ -1674,6 +1688,35 @@ final class AppState {
                 guard transitionID == self.meetingNoteTransitionID else { return }
                 self.meetingNoteRecoveryTask = nil
                 self.applyMeetingNoteSnapshot(snapshot)
+            }
+        }
+    }
+
+    private func cancelNoteTaker() {
+        guard let coordinator = meetingNoteCoordinator,
+              SessionWheelNoteAction.cancel.isEnabled(for: meetingNoteSnapshot.phase) else { return }
+        meetingNoteTransitionID &+= 1
+        let transitionID = meetingNoteTransitionID
+        stopMeetingNoteOptionGesture()
+        applyMeetingNoteSnapshot(MeetingNoteCoordinatorSnapshot(
+            phase: .cancelling, noteID: meetingNoteSnapshot.noteID,
+            project: meetingNoteSnapshot.project, liveHypothesisCount: 0,
+            durableSegmentCount: meetingNoteSnapshot.durableSegmentCount,
+            syncState: meetingNoteSnapshot.syncState, errorMessage: nil
+        ))
+        startMeetingNoteOptionGesture()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let snapshot = try await coordinator.cancel()
+                guard transitionID == self.meetingNoteTransitionID else { return }
+                self.applyMeetingNoteSnapshot(snapshot)
+                self.restoreOrdinaryAwarenessAfterNote()
+            } catch {
+                let snapshot = await coordinator.snapshot()
+                guard transitionID == self.meetingNoteTransitionID else { return }
+                self.applyMeetingNoteSnapshot(snapshot)
+                self.sessionWheel.model.notice = "Could not cancel the note. Try Cancel again."
             }
         }
     }
@@ -1746,7 +1789,7 @@ final class AppState {
             applyMeetingNoteSnapshot(snapshot)
             if snapshot.phase == .paused {
                 startMeetingNoteOptionGesture()
-            } else if snapshot.phase == .saved {
+            } else if snapshot.phase == .saved || snapshot.phase == .idle {
                 restoreOrdinaryAwarenessAfterNote()
             }
             return snapshot
@@ -1836,6 +1879,7 @@ final class AppState {
 
     private func applyMeetingNoteSnapshot(_ snapshot: MeetingNoteCoordinatorSnapshot) {
         meetingNoteSnapshot = snapshot
+        sessionWheel.model.notePhase = snapshot.phase
         if snapshot.phase.ownsForeground {
             meetingNoteOptionGesture?.setOptionEnabled(
                 snapshot.phase == .recording || snapshot.phase == .paused
@@ -1849,6 +1893,7 @@ final class AppState {
         case .preparing: "Preparing notes"
         case .transcribing: "Transcribing notes"
         case .stopping: snapshot.captureInterrupted ? "Recording interrupted" : "Saving notes"
+        case .cancelling: snapshot.errorMessage == nil ? "Cancelling note" : "Note cancellation failed"
         case .saved: "Note saved"
         case .interrupted: "Note interrupted"
         case .error: snapshot.captureInterrupted ? "Recording interrupted" : "Note save failed"
@@ -1882,6 +1927,7 @@ final class AppState {
                     guard let self,
                           self.meetingNoteCoordinatorNotificationID == notificationID,
                           self.meetingNoteSnapshot.phase.ownsForeground,
+                          self.meetingNoteSnapshot.phase != .cancelling || snapshot.phase == .cancelling,
                           self.meetingNoteSnapshot.project == snapshot.project,
                           self.meetingNoteSnapshot.noteID == nil
                             || self.meetingNoteSnapshot.noteID == snapshot.noteID else { return }
@@ -3114,6 +3160,7 @@ final class AppState {
     private func refreshSessionWheel(_ model: SessionWheelModel, includesProjects: Bool) {
         model.isWorkspaceVisible = programBoardOverlay.isVisible
         model.notchStatus = notchStatusController.status
+        model.notePhase = meetingNoteSnapshot.phase
         let recording = sttEngine?.isRecording == true
         let recordingKey = sttEngine?.recordingVoiceTargetSessionKey
         let ready = sttEngine != nil && sttSetupSucceeded && permissions.microphone == .granted
@@ -3195,6 +3242,33 @@ final class AppState {
             closeSessionTab(contextID: contextID)
             return true
         }
+    }
+
+    private func performNoteWheelAction(_ action: SessionWheelNoteAction) -> Bool {
+        guard allowsAppShellAccess, action.isEnabled(for: meetingNoteSnapshot.phase) else { return false }
+        switch action {
+        case .recording:
+            if !meetingNoteSnapshot.phase.ownsForeground {
+                return startNoteTaker(workingDirectory: GlobalNoteStore.repositoryPath)
+            }
+            guard meetingNoteCoordinator != nil else { return false }
+            stopNoteTaker()
+        case .cancel:
+            guard meetingNoteCoordinator != nil else { return false }
+            cancelNoteTaker()
+        case .pause:
+            guard let coordinator = meetingNoteCoordinator else { return false }
+            let paused = meetingNoteSnapshot.phase != .paused
+            let transitionID = meetingNoteTransitionID
+            Task { @MainActor [weak self] in
+                guard let self, transitionID == self.meetingNoteTransitionID else { return }
+                await coordinator.setPaused(paused)
+                let snapshot = await coordinator.snapshot()
+                guard transitionID == self.meetingNoteTransitionID else { return }
+                self.applyMeetingNoteSnapshot(snapshot)
+            }
+        }
+        return true
     }
 
     func showWorkspaceSettings() {

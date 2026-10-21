@@ -296,6 +296,7 @@ final class SessionWheelMotionTests: XCTestCase {
         let geometry = SessionWheelGeometry.self
         let model = SessionWheelModel()
         model.refresh(sessions: (0..<6).map { .init(id: "\($0)", name: "Project \($0 + 1)", canPlay: true) })
+        model.showAllSessions(at: geometry.center)
         let wheel = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
                                     selectCenter: {}, back: {}, dismiss: {})
         for slot in 0..<6 {

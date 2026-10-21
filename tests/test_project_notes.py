@@ -83,6 +83,32 @@ class ProjectNoteTests(unittest.TestCase):
             self.manager.delete(note_id=identity["note_id"], artifact_id="wrong-artifact", request_id="wrong-delete")
         self.assertEqual(len(self.manager.list()["notes"]), 1)
 
+    def test_cancel_recording_removes_draft_and_rejects_late_checkpoints(self):
+        for state in ("recording", "paused"):
+            with self.subTest(state=state):
+                created = self.create("cancel-" + state)
+                note = created["note"]
+                identity = note["identity"]
+                if state == "paused":
+                    note = {**note, "recording_state": state, "checkpoint_reason": "pause"}
+                    self.manager.update(request_id="pause-cancel", update=note)
+                args = dict(note_id=identity["note_id"], artifact_id=identity["artifact_id"],
+                            request_id="cancel-" + state, cancel_recording=True)
+                self.assertTrue(self.manager.delete(**args)["deleted"])
+                head = self.store._head()
+                self.assertTrue(self.manager.delete(**args)["deleted"])
+                self.assertEqual(self.store._head(), head)
+                self.assertEqual(self.manager.list()["notes"], [])
+                with self.assertRaises((ArtifactIdentityError, ArtifactValidationError)):
+                    self.manager.update(request_id="late-" + state, update=note)
+
+    def test_cancel_cannot_remove_a_saved_note(self):
+        identity = self.completed_note()["note"]["identity"]
+        with self.assertRaises(ArtifactValidationError):
+            self.manager.delete(note_id=identity["note_id"], artifact_id=identity["artifact_id"],
+                                request_id="cancel-saved", cancel_recording=True)
+        self.assertEqual(len(self.manager.list()["notes"]), 1)
+
     def test_delete_archived_note_removes_history_catalog_entry(self):
         note = self.completed_note()["note"]
         identity = note["identity"]

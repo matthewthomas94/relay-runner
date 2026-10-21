@@ -9,13 +9,14 @@ enum MeetingNoteCoordinatorPhase: String, Codable, Equatable, Sendable {
     /// Stop has finalized the recording and local transcription is running.
     case transcribing
     case stopping
+    case cancelling
     case saved
     case interrupted
     case error
 
     var ownsForeground: Bool {
         switch self {
-        case .preparing, .recording, .paused, .transcribing, .stopping, .interrupted, .error:
+        case .preparing, .recording, .paused, .transcribing, .stopping, .cancelling, .interrupted, .error:
             return true
         case .idle, .saved:
             return false
@@ -105,6 +106,10 @@ struct MeetingNoteCoordinatorSnapshot: Equatable, Sendable {
             return (.working, "Saving notes", true)
         case .error:
             return (.notWorking, captureInterrupted ? "Recording interrupted" : "Note save failed", false)
+        case .cancelling:
+            return errorMessage == nil
+                ? (.working, "Cancelling note", true)
+                : (.notWorking, "Note cancellation failed", false)
         case .preparing, .interrupted:
             return (.working, nil, false)
         case .idle, .saved:
@@ -253,9 +258,27 @@ protocol MeetingNoteArtifactWriting: Sendable {
         repositoryPath: String,
         projectScopeToken: String?
     ) async throws -> RelayProjectNoteResponse
+    func cancel(
+        _ identity: RelayProjectNoteIdentity,
+        requestID: String,
+        repositoryPath: String,
+        projectScopeToken: String?
+    ) async throws
 }
 
 struct OrchestratorMeetingNoteWriter: MeetingNoteArtifactWriting {
+    func cancel(
+        _ identity: RelayProjectNoteIdentity,
+        requestID: String,
+        repositoryPath: String,
+        projectScopeToken: String?
+    ) async throws {
+        try await OrchestratorClient.cancelProjectNote(
+            identity, requestID: requestID,
+            repoPath: repositoryPath, projectScopeToken: projectScopeToken
+        )
+    }
+
     func create(
         _ request: RelayProjectNoteCreateRequest,
         repositoryPath: String,
@@ -404,6 +427,7 @@ actor MeetingNoteCoordinator {
     private var desiredPaused = false
     private var pauseReconciliationRunning = false
     private var stopTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
+    private var cancelTask: Task<MeetingNoteCoordinatorSnapshot, Error>?
     private var captureStatePersistenceTail: Task<Void, Error>?
     private var captureStatePersistenceGeneration = 0
     private var checkpointPublicationActive = false
@@ -607,6 +631,7 @@ actor MeetingNoteCoordinator {
     }
 
     private func reconcileDesiredPause() async {
+        let sessionID = journal?.sessionID
         if !pauseReconciliationRunning {
             pauseReconciliationRunning = true
             do {
@@ -622,7 +647,9 @@ actor MeetingNoteCoordinator {
                 }
             } catch {
                 pauseReconciliationRunning = false
-                try? await markInterrupted(error)
+                if journal?.sessionID == sessionID, phase != .cancelling {
+                    try? await markInterrupted(error)
+                }
                 return
             }
             pauseReconciliationRunning = false
@@ -635,7 +662,9 @@ actor MeetingNoteCoordinator {
                 clearCaptureStatePersistenceTail(ifGeneration: generation)
             } catch {
                 clearCaptureStatePersistenceTail(ifGeneration: generation)
-                try? await markInterrupted(error)
+                if journal?.sessionID == sessionID, phase != .cancelling {
+                    try? await markInterrupted(error)
+                }
             }
         }
     }
@@ -683,6 +712,7 @@ actor MeetingNoteCoordinator {
     }
 
     func stop() async throws -> MeetingNoteCoordinatorSnapshot {
+        guard phase != .cancelling else { throw MeetingNoteCoordinatorError.foregroundBusy }
         if interruptionTeardownActive {
             // A failure is already stopping capture. Let it finish so Stop
             // finalizes from the recovery journal instead of racing it.
@@ -716,6 +746,75 @@ actor MeetingNoteCoordinator {
             stopTask = nil
             throw error
         }
+    }
+
+    /// Cancel owns teardown separately from Stop: no final transcript or completed
+    /// note is ever published. Repeated requests join the same deletion.
+    func cancel() async throws -> MeetingNoteCoordinatorSnapshot {
+        if let cancelTask { return try await cancelTask.value }
+        guard stopTask == nil,
+              phase == .recording || phase == .paused || phase == .cancelling,
+              journal?.identity != nil else { throw MeetingNoteCoordinatorError.captureUnavailable }
+        phase = .cancelling
+        journal?.phase = .cancelling
+        journal?.lastError = nil
+        snapshotSink(snapshot())
+        let task = Task { try await self.performCancel() }
+        cancelTask = task
+        defer { cancelTask = nil }
+        do {
+            return try await task.value
+        } catch {
+            // Keep cancellation intent for retry/relaunch; Stop must never turn
+            // a failed cancellation into a transcription request.
+            journal?.phase = .cancelling
+            journal?.lastError = safeMessage(error)
+            if let journal { try? await recoveryStore.save(journal) }
+            snapshotSink(snapshot())
+            throw error
+        }
+    }
+
+    private func performCancel() async throws -> MeetingNoteCoordinatorSnapshot {
+        if let runtime {
+            await runtime.capture.quiesceCaptureSources()
+            // Close file handles even if the recording itself cannot finalize;
+            // its contents will be discarded, not sent to the transcriber.
+            try? await runtime.recorder.close()
+            self.runtime = nil
+        }
+        // Remember the discard choice even while an older checkpoint is waiting
+        // on the daemon, so a relaunch cannot offer to transcribe this recording.
+        if let journal { try await recoveryStore.save(journal) }
+        if let captureStatePersistenceTail {
+            let generation = captureStatePersistenceGeneration
+            _ = try? await captureStatePersistenceTail.value
+            clearCaptureStatePersistenceTail(ifGeneration: generation)
+        }
+        // A pause/resume checkpoint must finish before deleting its draft.
+        await acquireCheckpointPublication()
+        defer { releaseCheckpointPublication() }
+        guard var journal, let identity = journal.identity else {
+            throw MeetingNoteCoordinatorError.captureUnavailable
+        }
+        journal.phase = .cancelling
+        journal.pendingUpdate = nil
+        journal.updatedAt = now()
+        self.journal = journal
+        try await recoveryStore.save(journal)
+        try await withScopeRenewal(for: journal.project) { scopeToken in
+            try await self.writer.cancel(
+                identity, requestID: "note-\(journal.sessionID)-cancel",
+                repositoryPath: journal.project.repositoryPath, projectScopeToken: scopeToken
+            )
+        }
+        try await recoveryStore.removeSession(sessionID: journal.sessionID)
+        self.journal = nil
+        activeScopeToken = nil
+        hasPersistedRecoveryJournal = false
+        captureInterrupted = false
+        phase = .idle
+        return snapshot()
     }
 
     /// Reads journals and recording manifests only; no model, microphone, or
@@ -753,7 +852,7 @@ actor MeetingNoteCoordinator {
         _ journal: MeetingNoteRecoveryJournal,
         pendingAudioChunkCount: Int
     ) -> Bool {
-        guard pendingAudioChunkCount > 0 else { return false }
+        guard journal.phase != .cancelling, pendingAudioChunkCount > 0 else { return false }
         guard let identity = journal.transcriptionIdentity else {
             return transcriptionIdentity != nil
         }
@@ -774,6 +873,13 @@ actor MeetingNoteCoordinator {
         else { throw MeetingNoteCoordinatorError.recoveryNotFound }
 
         guard runtime == nil else { throw MeetingNoteCoordinatorError.foregroundBusy }
+        if journal.phase == .cancelling {
+            self.journal = journal
+            activeScopeToken = projectScopeToken
+            hasPersistedRecoveryJournal = true
+            phase = .cancelling
+            return try await cancel()
+        }
         if resolution != .discardIncompleteTail {
             let recorded = (try? await recoveryStore.loadRecording(sessionID: sessionID))?
                 .segments.count ?? 0
@@ -1331,6 +1437,7 @@ actor MeetingNoteCoordinator {
     }
 
     private func markInterrupted(_ error: Error) async throws {
+        guard phase != .cancelling else { return }
         if interruptionTeardownActive {
             await withCheckedContinuation { continuation in
                 interruptionTeardownWaiters.append(continuation)

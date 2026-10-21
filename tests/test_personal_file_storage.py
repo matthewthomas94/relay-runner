@@ -498,6 +498,30 @@ class PersonalStorageTests(unittest.TestCase):
         restored = library.manager.get(code)
         self.assertEqual(restored["note"]["identity"], saved["note"]["identity"])
         self.assertEqual(restored["note"]["segments"], saved["note"]["segments"])
+
+    def test_cancel_note_after_storage_migration_discards_draft_without_resurrection(self):
+        library = GlobalNoteLibrary(self.root, "test-device", lambda: [])
+        self.storage.attach_notes(library)
+        saved = self.note(library)
+        self.connect()
+        self.storage.sync(approve=True)
+        self.assertIsInstance(library.manager, PersonalNoteManager)
+        for state in ("recording", "paused"):
+            note = self.note(library, request="cancel-" + state, state=state)["note"]
+            identity = note["identity"]
+            args = dict(note_id=identity["note_id"], artifact_id=identity["artifact_id"],
+                        request_id="cancel-" + state, cancel_recording=True)
+            self.assertTrue(library.manager.delete(**args)["deleted"])
+            self.assertTrue(library.manager.delete(**args)["deleted"])
+            with self.assertRaises(ArtifactValidationError):
+                library.manager.update(request_id="late-" + state, update=note)
+        identity = saved["note"]["identity"]
+        with self.assertRaises(ArtifactValidationError):
+            library.manager.delete(note_id=identity["note_id"], artifact_id=identity["artifact_id"],
+                                   request_id="cancel-saved", cancel_recording=True)
+        self.storage.sync()
+        restarted = PersonalNoteManager(self.storage, "restarted")
+        self.assertEqual([card["note_id"] for card in restarted.list()["notes"]], [identity["note_id"]])
         bundle = self.storage.read("legacy-global-notes-history")
         bundle_path = self.root / "recovered.bundle"
         bundle_path.write_bytes(bundle)

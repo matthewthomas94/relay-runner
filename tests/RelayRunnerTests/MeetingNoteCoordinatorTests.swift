@@ -60,6 +60,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(snapshot(phase: .transcribing).notchPresentation?.pinsLabel, true)
         XCTAssertEqual(snapshot(phase: .stopping).notchPresentation?.label, "Saving notes")
         XCTAssertEqual(snapshot(phase: .stopping).notchPresentation?.pinsLabel, true)
+        XCTAssertEqual(snapshot(phase: .cancelling).notchPresentation?.label, "Cancelling note")
         XCTAssertEqual(snapshot(phase: .error).notchPresentation?.label, "Note save failed")
         XCTAssertEqual(snapshot(phase: .error).notchPresentation?.status, .notWorking)
         for phase in [
@@ -342,6 +343,156 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(captures.count, 2)
         XCTAssertFalse(firstStillRecording)
         XCTAssertTrue(secondIsRecording)
+    }
+
+    func testCancelDiscardsRecordingAndPausedNotesWithoutTranscribingOrSaving() async throws {
+        for paused in [false, true] {
+            let writer = FakeMeetingNoteWriter()
+            let store = InMemoryMeetingNoteRecoveryStore()
+            let captures = FakeMeetingNoteCaptureFactory()
+            let transcriber = FakeMeetingRecordingTranscriber()
+            let coordinator = makeCoordinator(
+                writer: writer, store: store, captures: captures, recordingTranscriber: transcriber
+            )
+            let started = try await coordinator.start(
+                project: project, projectScopeToken: "scope-original", initiallyPaused: false
+            )
+            let capture = try XCTUnwrap(captures.latest())
+            try await capture.emitAudio(sampleCount: 1_600)
+            if paused { await coordinator.setPaused(true) }
+            let cancelled = try await coordinator.cancel()
+            let ingressClosed = await capture.ingressClosed
+            let stopCount = await capture.stopCount
+            let updates = await writer.updates
+            let identities = await writer.cancelledIdentities
+            let storeIsEmpty = await store.isEmpty
+
+            XCTAssertEqual(cancelled.phase, .idle)
+            XCTAssertFalse(cancelled.phase.ownsForeground)
+            XCTAssertNil(cancelled.noteID)
+            XCTAssertTrue(ingressClosed)
+            XCTAssertEqual(stopCount, 0, "Cancel does not finalize the producer for transcription")
+            XCTAssertEqual(transcriber.callCount, 0)
+            XCTAssertFalse(updates.contains { $0.update.recordingState == .completed })
+            XCTAssertEqual(identities.map(\.noteID), [started.noteID])
+            XCTAssertEqual(identities.map(\.artifactID), ["note-artifact-1"])
+            XCTAssertTrue(storeIsEmpty, "Cancel removes the journal and compressed audio")
+            let restarted = try await coordinator.start(
+                project: project, projectScopeToken: "scope-original", initiallyPaused: false
+            )
+            XCTAssertEqual(restarted.phase, .recording)
+            _ = try await coordinator.cancel()
+        }
+    }
+
+    func testCancelClosesIngressAndWaitsForInFlightPauseCheckpointBeforeDeleting() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let transcriber = FakeMeetingRecordingTranscriber()
+        let coordinator = makeCoordinator(
+            writer: writer, store: store, captures: captures, recordingTranscriber: transcriber
+        )
+        _ = try await coordinator.start(
+            project: project, projectScopeToken: "scope-original", initiallyPaused: true
+        )
+        await writer.suspendNextUpdate()
+        let resumeTask = Task { await coordinator.setPaused(false) }
+        await writer.waitForSuspendedUpdate()
+        let cancelTask = Task { try await coordinator.cancel() }
+        let capture = try XCTUnwrap(captures.latest())
+        for _ in 0..<200 {
+            if await capture.ingressClosed,
+               try await store.loadAll().first?.phase == .cancelling { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let ingressClosed = await capture.ingressClosed
+        let persistedPhase = try await store.loadAll().first?.phase
+        let pending = await coordinator.snapshot()
+        let deletionsWhileWriting = await writer.cancelledIdentities
+        XCTAssertTrue(ingressClosed)
+        XCTAssertEqual(pending.phase, .cancelling)
+        XCTAssertEqual(persistedPhase, .cancelling)
+        XCTAssertTrue(deletionsWhileWriting.isEmpty)
+
+        await writer.resumeSuspendedUpdate()
+        await resumeTask.value
+        let cancelled = try await cancelTask.value
+        let updates = await writer.updates
+        let identities = await writer.cancelledIdentities
+        let storeIsEmpty = await store.isEmpty
+        XCTAssertEqual(cancelled.phase, .idle)
+        XCTAssertEqual(updates.map(\.update.checkpointReason), [.resume])
+        XCTAssertEqual(identities.count, 1)
+        XCTAssertEqual(transcriber.callCount, 0)
+        XCTAssertTrue(storeIsEmpty, "The late checkpoint cannot recreate the cancelled journal")
+    }
+
+    func testFailedCancelCanRetryButCannotSaveOrTranscribe() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let transcriber = FakeMeetingRecordingTranscriber()
+        let coordinator = makeCoordinator(
+            writer: writer, store: store, captures: captures, recordingTranscriber: transcriber
+        )
+        _ = try await coordinator.start(
+            project: project, projectScopeToken: "scope-original", initiallyPaused: false
+        )
+        await writer.failNextCancel()
+        do {
+            _ = try await coordinator.cancel()
+            XCTFail("Expected cancellation failure")
+        } catch { XCTAssertEqual(error as? FakeMeetingNoteError, .injectedSaveFailure) }
+        let failed = await coordinator.snapshot()
+        XCTAssertEqual(failed.phase, .cancelling)
+        XCTAssertEqual(failed.notchPresentation?.label, "Note cancellation failed")
+        do {
+            _ = try await coordinator.stop()
+            XCTFail("A cancelled note must not become a save")
+        } catch { XCTAssertEqual(error as? MeetingNoteCoordinatorError, .foregroundBusy) }
+
+        let cancelled = try await coordinator.cancel()
+        let requests = await writer.cancelRequestIDs
+        let storeIsEmpty = await store.isEmpty
+        XCTAssertEqual(cancelled.phase, .idle)
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(Set(requests).count, 1)
+        XCTAssertEqual(transcriber.callCount, 0)
+        XCTAssertTrue(storeIsEmpty)
+    }
+
+    func testRelaunchRetainsCancellationIntentAndNeverRecoversAudioForTranscription() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let store = InMemoryMeetingNoteRecoveryStore()
+        let captures = FakeMeetingNoteCaptureFactory()
+        let transcriber = FakeMeetingRecordingTranscriber()
+        let coordinator = makeCoordinator(
+            writer: writer, store: store, captures: captures, recordingTranscriber: transcriber
+        )
+        _ = try await coordinator.start(
+            project: project, projectScopeToken: "scope-original", initiallyPaused: false
+        )
+        let capture = try XCTUnwrap(captures.latest())
+        try await capture.emitAudio(sampleCount: 1_600)
+        await writer.failNextCancel()
+        _ = try? await coordinator.cancel()
+        let relaunched = makeCoordinator(
+            writer: writer, store: store, captures: captures, recordingTranscriber: transcriber
+        )
+        let offers = try await relaunched.recoveryOffers()
+        let offer = try XCTUnwrap(offers.first)
+        XCTAssertEqual(offer.phase, .cancelling)
+        XCTAssertFalse(offer.requiresTranscriptionModelChoice)
+        // Even an old Finalize action cannot override the persisted cancel intent.
+        let cancelled = try await relaunched.resolveRecovery(
+            sessionID: offer.sessionID, projectScopeToken: "scope-original", resolution: .finalize
+        )
+        let storeIsEmpty = await store.isEmpty
+        XCTAssertEqual(cancelled.phase, .idle)
+        XCTAssertEqual(captures.count, 1)
+        XCTAssertEqual(transcriber.callCount, 0)
+        XCTAssertTrue(storeIsEmpty)
     }
 
     func testStopSerializesCompletionAfterInFlightPauseCheckpoint() async throws {
@@ -1475,7 +1626,7 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
                 String($0.prefix { $0.isLetter })
             })
             XCTAssertTrue(
-                calls.isSubset(of: ["createProjectNote", "updateProjectNote", "fetchProjectNote"]),
+                calls.isSubset(of: ["createProjectNote", "updateProjectNote", "fetchProjectNote", "cancelProjectNote"]),
                 "\(name) calls \(calls.sorted())"
             )
         }
@@ -2534,6 +2685,7 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
     )
     private var savedSegments: [RelayProjectNoteSegment] = []
     private var shouldFailNextUpdate = false
+    private var shouldFailNextCancel = false
     private var shouldSuspendNextUpdate = false
     private var suspendedUpdate: CheckedContinuation<Void, Never>?
     private var suspendedUpdateWaiters: [CheckedContinuation<Void, Never>] = []
@@ -2542,6 +2694,8 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
     private var cancellableUpdateWaiters: [CheckedContinuation<Void, Never>] = []
     private var fetchState: RelayProjectNoteRecordingState = .paused
     private(set) var createCount = 0
+    private(set) var cancelledIdentities: [RelayProjectNoteIdentity] = []
+    private(set) var cancelRequestIDs: [String] = []
     private(set) var createRequests: [RelayProjectNoteCreateRequest] = []
     private(set) var updates: [RelayProjectNoteCheckpointRequest] = []
     private(set) var attemptedRequestIDs: [String] = []
@@ -2553,6 +2707,20 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
 
     func failNextUpdate() {
         shouldFailNextUpdate = true
+    }
+
+    func failNextCancel() { shouldFailNextCancel = true }
+
+    func cancel(
+        _ identity: RelayProjectNoteIdentity, requestID: String,
+        repositoryPath: String, projectScopeToken: String?
+    ) throws {
+        cancelRequestIDs.append(requestID)
+        if shouldFailNextCancel {
+            shouldFailNextCancel = false
+            throw FakeMeetingNoteError.injectedSaveFailure
+        }
+        cancelledIdentities.append(identity)
     }
 
     func suspendNextUpdate() {
@@ -2728,6 +2896,13 @@ private actor ScopeAwareMeetingNoteWriter: MeetingNoteArtifactWriting {
 
     func loseNextCommittedUpdateResponse() {
         shouldLoseNextCommittedResponse = true
+    }
+
+    func cancel(
+        _ identity: RelayProjectNoteIdentity, requestID: String,
+        repositoryPath: String, projectScopeToken: String?
+    ) throws {
+        try validate(projectScopeToken)
     }
 
     func create(

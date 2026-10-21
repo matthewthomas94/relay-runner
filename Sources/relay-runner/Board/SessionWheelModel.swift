@@ -57,8 +57,66 @@ enum SessionWheelAction: Int, CaseIterable {
     }
 }
 
+enum SessionWheelShortcut: Int, CaseIterable {
+    case workspace = 4, noteTaker = 3, settings = 2
+
+    var title: String {
+        switch self {
+        case .workspace: return "Workspace"
+        case .noteTaker: return "Note Taker"
+        case .settings: return "Settings"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .workspace: return "rectangle.split.3x1"
+        case .noteTaker: return "note.text"
+        case .settings: return "gearshape"
+        }
+    }
+}
+
+enum SessionWheelNoteAction: Int, CaseIterable {
+    // The bottom arc reads left to right, opposite the top session arc.
+    case recording = 2, pause = 1, cancel = 0
+
+    func title(for phase: MeetingNoteCoordinatorPhase) -> String {
+        switch self {
+        case .recording: return phase.ownsForeground ? "Stop Note Taker" : "Start Note Taker"
+        case .pause: return phase == .paused ? "Resume Note Taker" : "Pause Note Taker"
+        case .cancel: return "Cancel Note Taker"
+        }
+    }
+
+    func symbol(for phase: MeetingNoteCoordinatorPhase) -> String {
+        switch self {
+        case .recording: return phase.ownsForeground ? "stop.fill" : "record.circle"
+        case .pause: return phase == .paused ? "play.fill" : "pause.fill"
+        case .cancel: return "xmark.circle"
+        }
+    }
+
+    func isEnabled(for phase: MeetingNoteCoordinatorPhase) -> Bool {
+        switch self {
+        case .recording: return !phase.ownsForeground || phase == .recording || phase == .paused
+        case .pause: return phase == .recording || phase == .paused
+        case .cancel: return phase == .recording || phase == .paused || phase == .cancelling
+        }
+    }
+
+    func help(for phase: MeetingNoteCoordinatorPhase) -> String {
+        switch self {
+        case .recording where phase.ownsForeground: return "Stop, save and transcribe this note"
+        case .cancel: return "Discard this note and its recording without saving or transcribing"
+        default: return title(for: phase)
+        }
+    }
+}
+
 enum SessionWheelGeometry {
     static let slotCount = 6
+    static let sessionSlots = [0, 1, 5]
     static let diameter: CGFloat = 528
     static let hubRadius: CGFloat = 52
     static let wheelRadius: CGFloat = 180
@@ -95,12 +153,20 @@ enum SessionWheelGeometry {
     }
 
     static func actionOffset(_ action: SessionWheelAction) -> CGFloat {
-        CGFloat(action.rawValue - 1) * sliceAngle / 3
+        actionOffset(action.rawValue)
+    }
+
+    static func actionOffset(_ index: Int) -> CGFloat {
+        CGFloat(index - 1) * sliceAngle / 3
     }
 
     /// Follow the tangent, reversing the lower half so labels stay upright.
     static func actionLabelRotation(slot: Int, action: SessionWheelAction) -> CGFloat {
-        let angle = CGFloat(slot) * sliceAngle + actionOffset(action)
+        actionLabelRotation(slot: slot, index: action.rawValue)
+    }
+
+    static func actionLabelRotation(slot: Int, index: Int) -> CGFloat {
+        let angle = CGFloat(slot) * sliceAngle + actionOffset(index)
         return atan2(sin(2 * angle), cos(2 * angle)) / 2
     }
 
@@ -115,8 +181,17 @@ enum SessionWheelGeometry {
 
 @Observable
 final class SessionWheelModel {
-    private(set) var slots: [SessionWheelSession?] = Array(repeating: nil, count: SessionWheelGeometry.slotCount)
+    private var sessions: [SessionWheelSession?] = Array(repeating: nil, count: SessionWheelGeometry.slotCount)
+    var slots: [SessionWheelSession?] {
+        if showingAllSessions { return sessions }
+        var slots = Array<SessionWheelSession?>(repeating: nil, count: SessionWheelGeometry.slotCount)
+        for (index, slot) in SessionWheelGeometry.sessionSlots.enumerated() {
+            if !isMoreSessionsSlot(slot) { slots[slot] = sessions[index] }
+        }
+        return slots
+    }
     var projects: [SessionWheelProject] = []
+    var notePhase: MeetingNoteCoordinatorPhase = .idle
     var isWorkspaceVisible = false
     var notchStatus: NotchSessionStatus = .notWorking
     var workspaceActionTitle: String { isWorkspaceVisible ? "Close workspace" : "Open workspace" }
@@ -124,9 +199,29 @@ final class SessionWheelModel {
     var canStartSession: Bool { startUnavailableReason == nil }
     var notice: String?
     private(set) var pickingProject = false
+    private(set) var showingAllSessions = false
     private(set) var projectPage = 0
     private(set) var hoveredSlot: Int?
-    private(set) var hoveredAction: SessionWheelAction?
+    private var hoveredControl: Int?
+    var hoveredAction: SessionWheelAction? {
+        hoveredSession == nil ? nil : hoveredControl.flatMap(SessionWheelAction.init(rawValue:))
+    }
+    var hoveredNoteAction: SessionWheelNoteAction? {
+        isHoveringNoteTaker ? hoveredControl.flatMap(SessionWheelNoteAction.init(rawValue:)) : nil
+    }
+    var isNested: Bool { pickingProject || showingAllSessions }
+    var pageID: Int { pickingProject ? projectPage : showingAllSessions ? -2 : -1 }
+    var hasMoreSessions: Bool { sessions.dropFirst(3).contains { $0 != nil } }
+    var isHoveringNoteTaker: Bool { !isNested && hoveredSlot == SessionWheelShortcut.noteTaker.rawValue }
+    var submenuSlot: Int? { hoveredSession != nil || isHoveringNoteTaker ? hoveredSlot : nil }
+
+    func shortcut(at index: Int) -> SessionWheelShortcut? {
+        isNested ? nil : SessionWheelShortcut(rawValue: index)
+    }
+
+    func isMoreSessionsSlot(_ index: Int) -> Bool {
+        !isNested && hasMoreSessions && index == SessionWheelGeometry.sessionSlots.last
+    }
     private var pointerOrigin: CGPoint = SessionWheelGeometry.center
     private var pointerActivated = false
 
@@ -148,19 +243,27 @@ final class SessionWheelModel {
     func refresh(sessions: [SessionWheelSession]) {
         let hoveredID = hoveredSession?.id
         // Preserve positions as sessions stop/start, including while a submenu is open.
-        for index in slots.indices {
-            if let old = slots[index] { slots[index] = sessions.first { $0.id == old.id } }
+        for index in self.sessions.indices {
+            if let old = self.sessions[index] { self.sessions[index] = sessions.first { $0.id == old.id } }
         }
-        for session in sessions where !slots.contains(where: { $0?.id == session.id }) {
-            if let empty = slots.firstIndex(where: { $0 == nil }) { slots[empty] = session }
+        // Bring overflow back into a free top slot when another session ends.
+        for index in 3..<self.sessions.count where self.sessions[index] != nil {
+            if let empty = self.sessions.prefix(3).firstIndex(where: { $0 == nil }) {
+                self.sessions[empty] = self.sessions[index]
+                self.sessions[index] = nil
+            }
+        }
+        for session in sessions where !self.sessions.contains(where: { $0?.id == session.id }) {
+            if let empty = self.sessions.firstIndex(where: { $0 == nil }) { self.sessions[empty] = session }
         }
         if hoveredID != hoveredSession?.id { clearHover() }
-        if hoveredSession == nil { hoveredAction = nil }
+        if submenuSlot == nil { hoveredControl = nil }
         projectPage = min(projectPage, pageCount - 1)
     }
 
     func reset(at pointer: CGPoint) {
         pickingProject = false
+        showingAllSessions = false
         projectPage = 0
         notice = nil
         rearmPointer(at: pointer)
@@ -168,13 +271,25 @@ final class SessionWheelModel {
 
     func showProjects(at pointer: CGPoint) {
         pickingProject = true
+        showingAllSessions = false
         projectPage = 0
+        notice = nil
+        rearmPointer(at: pointer)
+    }
+
+    func showAllSessions(at pointer: CGPoint) {
+        showingAllSessions = true
+        pickingProject = false
         notice = nil
         rearmPointer(at: pointer)
     }
 
     /// Returns true when Back consumed a project submenu.
     func back(at pointer: CGPoint) -> Bool {
+        if showingAllSessions {
+            reset(at: pointer)
+            return true
+        }
         guard pickingProject else { return false }
         if projectPage > 0 { turnPage(-1, at: pointer) }
         else { reset(at: pointer) }
@@ -195,7 +310,7 @@ final class SessionWheelModel {
 
     func clearHover() {
         hoveredSlot = nil
-        hoveredAction = nil
+        hoveredControl = nil
     }
 
     func hover(at pointer: CGPoint) {
@@ -205,16 +320,16 @@ final class SessionWheelModel {
         }
         let geometry = SessionWheelGeometry.self
         let distance = hypot(pointer.x - geometry.center.x, pointer.y - geometry.center.y)
-        hoveredAction = nil
+        hoveredControl = nil
         if distance <= geometry.hubRadius || distance > geometry.actionOuterRadius + 8 {
             hoveredSlot = nil
         } else if distance <= geometry.wheelRadius {
             hoveredSlot = geometry.slot(at: pointer)
-        } else if !pickingProject, hoveredSession != nil,
+        } else if submenuSlot != nil,
                   geometry.slot(at: pointer) == hoveredSlot,
                   distance >= geometry.actionInnerRadius, distance <= geometry.actionOuterRadius {
             let localAngle = geometry.angle(at: pointer).truncatingRemainder(dividingBy: geometry.sliceAngle)
-            hoveredAction = SessionWheelAction(rawValue: min(2, Int(localAngle / (geometry.sliceAngle / 3))))
+            hoveredControl = min(2, Int(localAngle / (geometry.sliceAngle / 3)))
         }
         // The radial gap retains its parent, so travelling into the submenu is continuous.
     }

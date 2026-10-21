@@ -9,6 +9,8 @@ final class SessionWheelController {
     var sessionAction: ((String, SessionWheelAction) -> Bool)?
     var recordingLevel: ((String) -> Float)?
     var toggleWorkspace: (() -> Void)?
+    var openShortcut: ((SessionWheelShortcut) -> Void)?
+    var noteAction: ((SessionWheelNoteAction) -> Bool)?
 
     private var panel: SessionWheelPanel?
     private let motion = SessionWheelMotion()
@@ -41,6 +43,7 @@ final class SessionWheelController {
                 selectCenter: { [weak self] in self?.selectCenter() },
                 back: { [weak self] in self?.back() },
                 dismiss: { [weak self] in self?.dismiss() },
+                performNoteAction: { [weak self] in self?.performNoteAction($0) },
                 recordingLevel: { [weak self] id in self?.recordingLevel?(id) ?? 0 },
                 presentation: presentation
             )
@@ -122,7 +125,7 @@ final class SessionWheelController {
 
     func selectCenter() {
         guard isVisible else { return }
-        if model.pickingProject {
+        if model.isNested {
             back()
         } else {
             toggleWorkspace?()
@@ -133,11 +136,22 @@ final class SessionWheelController {
 
     func selectSlot(_ index: Int, fromPointer: Bool) {
         guard isVisible, model.slots.indices.contains(index) else { return }
-        if model.pickingProject {
-            // Moving after entering a submenu prevents a double-click from
-            // launching the project that inherited the parent's position.
+        if let shortcut = model.shortcut(at: index) {
+            openShortcut?(shortcut)
+            refresh?(model, false)
+            panel?.orderFrontRegardless()
+            return
+        }
+        if model.isMoreSessionsSlot(index) {
+            model.showAllSessions(at: pointerLocation)
+            return
+        }
+        if model.isNested {
+            // Fresh movement keeps a double-click from activating an inherited slot.
             let isMouseEvent = NSApp.currentEvent.map { [.leftMouseDown, .leftMouseUp].contains($0.type) } ?? false
             guard !fromPointer || !isMouseEvent || model.hoveredSlot == index else { return }
+        }
+        if model.pickingProject {
             if model.isMoreProjectsSlot(index) {
                 model.turnPage(1, at: pointerLocation)
                 return
@@ -155,7 +169,7 @@ final class SessionWheelController {
             focusSession?(session.id)
             refresh?(model, true)
             panel?.orderFrontRegardless()
-        } else {
+        } else if !model.showingAllSessions {
             refresh?(model, true)
             model.showProjects(at: pointerLocation)
         }
@@ -170,6 +184,17 @@ final class SessionWheelController {
         }
         model.notice = nil
         refresh?(model, true)
+    }
+
+    func performNoteAction(_ action: SessionWheelNoteAction) {
+        guard isVisible, !model.isNested, action.isEnabled(for: model.notePhase) else { return }
+        guard noteAction?(action) == true else {
+            model.notice = "Note Taker action unavailable"
+            return
+        }
+        model.notice = nil
+        refresh?(model, true)
+        panel?.orderFrontRegardless()
     }
 
     private func installMonitors() {

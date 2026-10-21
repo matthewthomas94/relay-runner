@@ -335,6 +335,18 @@ enum OrchestratorClient {
         _ = try await response(NoteDeleteResponse.self, for: request)
     }
 
+    static func cancelProjectNote(
+        _ identity: RelayProjectNoteIdentity, requestID: String,
+        repoPath: String, projectScopeToken: String?
+    ) async throws {
+        guard let request = artifactRequest(
+            path: "/v1/artifacts/notes/\(pathComponent(identity.noteID))/cancel",
+            repoPath: GlobalNoteStore.requestPath(repoPath), projectScopeToken: projectScopeToken,
+            values: ["artifact_id": identity.artifactID, "request_id": requestID], port: readPort()
+        ) else { throw OrchestratorClientError.invalidRequest }
+        _ = try await response(NoteDeleteResponse.self, for: request)
+    }
+
     static func fetchProjectNotes(
         repoPath: String,
         projectScopeToken: String?,

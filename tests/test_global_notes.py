@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services.global_notes import GlobalNoteLibrary
+from services.artifact_store import ArtifactIdentityError, ArtifactValidationError
 from tests import test_project_notes as fixtures
 
 CREATED = fixtures.CREATED
@@ -40,6 +41,31 @@ class GlobalNoteTests(unittest.TestCase):
         reopened = GlobalNoteLibrary(self.root, 'new-device', lambda: [])
         self.assertEqual(len(reopened.list()['notes']), 1)
         self.assertEqual(reopened.manager.get(identity['artifact_id'])['note'], saved['note'])
+
+    def test_cancel_removes_active_draft_without_resurrection_and_protects_saved_notes(self):
+        self.library.sources = lambda: []
+        saved = self.create_global()["note"]
+        for state in ("recording", "paused"):
+            note = self.library.manager.create(
+                request_id="cancel-" + state, created_at=CREATED, capture_started_at=CREATED,
+                captured_at=CREATED, recording_state=state, checkpoint_reason="checkpoint",
+                segments=[],
+            )["note"]
+            identity = note["identity"]
+            args = dict(note_id=identity["note_id"], artifact_id=identity["artifact_id"],
+                        request_id="cancel-" + state, cancel_recording=True)
+            with self.assertRaises(ArtifactIdentityError):
+                self.library.manager.delete(**{**args, "note_id": "RR-N999"})
+            self.assertTrue(self.library.manager.delete(**args)["deleted"])
+            self.assertTrue(self.library.manager.delete(**args)["deleted"])
+            with self.assertRaises((ArtifactIdentityError, ArtifactValidationError)):
+                self.library.manager.update(request_id="late-" + state, update=note)
+        identity = saved["identity"]
+        with self.assertRaises(ArtifactValidationError):
+            self.library.manager.delete(note_id=identity["note_id"], artifact_id=identity["artifact_id"],
+                                        request_id="cancel-saved", cancel_recording=True)
+        restarted = GlobalNoteLibrary(self.root, "restart", lambda: [])
+        self.assertEqual([card["note_id"] for card in restarted.list()["notes"]], [identity["note_id"]])
 
     def test_import_archived_transcript_is_atomic_and_delete_does_not_resurrect(self):
         saved = self.legacy.completed_note()

@@ -489,7 +489,11 @@ final class ProgramBoardOverlayController {
 
     @discardableResult
     func showWork() -> Bool {
-        show(initialTab: .work)
+        if isVisible {
+            selectWorkspaceTab(.work)
+            return true
+        }
+        return show(initialTab: .work)
     }
 
     @discardableResult
@@ -795,6 +799,14 @@ final class ProgramBoardOverlayController {
                     self.model.errorMessage = "Diagnostics export failed. The incident journal remains stored locally."
                 }
             }
+        }
+    }
+
+    func showNotes() {
+        if isVisible {
+            selectWorkspaceTab(.notes)
+        } else {
+            show(initialTab: .notes)
         }
     }
 
@@ -1206,12 +1218,17 @@ final class ProgramBoardOverlayController {
             do {
                 let snapshot = try await handler(offer.sessionID, resolution, transcriptionModel)
                 self.model.finishNoteRecovery(snapshot: snapshot)
-                if let item = self.model.selectedNoteDetail?.item {
+                if offer.phase == .cancelling, snapshot.phase == .idle {
+                    self.closeNote()
+                    await self.refreshNotes()
+                } else if let item = self.model.selectedNoteDetail?.item {
                     self.openNote(item)
                 }
             } catch {
                 self.model.failNoteRecovery(
-                    "Recovery could not continue. The original note and local recovery data were left unchanged."
+                    offer.phase == .cancelling
+                        ? "The note could not be cancelled. Retry cancellation to discard it without transcription."
+                        : "Recovery could not continue. The original note and local recovery data were left unchanged."
                 )
             }
         }

@@ -253,8 +253,8 @@ class PersonalNoteManager:
             self._save(entry, NoteDocument(identity, current.update, metadata), _event_id("metadata", uuid.uuid4().hex), _digest(metadata))
             return True
 
-    def delete(self, *, note_id, artifact_id, request_id):
-        _event_id("delete", request_id)
+    def delete(self, *, note_id, artifact_id, request_id, cancel_recording=False):
+        _event_id("cancel" if cancel_recording else "delete", request_id)
         with self.lock:
             try:
                 entry = self._entry(artifact_id)
@@ -262,7 +262,9 @@ class PersonalNoteManager:
                 return {"deleted": True}
             if entry["note_id"] != note_id:
                 raise ArtifactIdentityError("Note delete identity does not match the catalog")
-            if entry["recording_state"] != "completed":
+            if cancel_recording and entry["recording_state"] == "completed":
+                raise ArtifactValidationError("A saved note cannot be cancelled")
+            if not cancel_recording and entry["recording_state"] != "completed":
                 raise ArtifactValidationError("Stop and save this note before deleting it")
             self.db.execute("UPDATE personal_notes SET deleted=1 WHERE artifact_id=?", (artifact_id,))
             if self.storage._get("connected"):
