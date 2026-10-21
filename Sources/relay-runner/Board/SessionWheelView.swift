@@ -272,7 +272,7 @@ struct SessionWheelView: View {
                             .frame(width: 10, height: 10)
                     } else {
                         Image(systemName: symbol)
-                            .font(AppTypography.symbolFont(size: 9, weight: .medium))
+                            .font(AppTypography.symbolFont(size: 9, weight: symbol == "xmark" ? .semibold : .medium))
                     }
                 }
                 .contentTransition(.opacity)

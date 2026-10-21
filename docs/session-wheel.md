@@ -23,12 +23,13 @@ sessions. An overflow session fills a top slot when one becomes free.
   when switching to or from the dots or X. Escape backs out of project wheels
   without closing the session wheel or toggling Workspace.
 - Click Workspace, Note Taker, or Settings to open that Workspace tab, including
-  when the Workspace is already open. The wheel stays open.
-- Hover Note Taker to reveal **Start / Stop**, **Pause / Resume**, and **Cancel**,
+  when the Workspace is already open. The wheel stays open and above Workspace,
+  even when a tab takes keyboard focus.
+- Hover Note Taker to reveal **Pause / Resume**, **Start / Stop**, and **Cancel**,
   from left to right, on the same liquid submenu used for sessions. Start becomes
   Stop while recording or paused; Stop saves and transcribes the recording.
-  Pause becomes Resume while paused. The red circled X cancels the active note,
-  deleting its draft and recording without saving or transcribing. Stop uses
+  Pause becomes a continuation arrow for Resume while paused. The plain red X
+  cancels the active note, deleting its draft and recording without saving or transcribing. Stop uses
   the normal text colour. Cancel is disabled without an active recording, and
   can retry a pending cancellation; capture and save transitions disable the
   other unavailable controls. These controls reuse the

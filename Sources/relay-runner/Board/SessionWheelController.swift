@@ -224,7 +224,8 @@ final class SessionWheelController {
     private func makePanel() -> SessionWheelPanel {
         let panel = SessionWheelPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                       backing: .buffered, defer: true)
-        panel.level = .screenSaver
+        // Workspace tabs can retake keyboard focus after a wheel shortcut returns.
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.backgroundColor = .clear
         panel.isOpaque = false

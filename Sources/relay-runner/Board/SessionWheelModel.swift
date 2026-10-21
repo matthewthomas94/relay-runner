@@ -79,7 +79,7 @@ enum SessionWheelShortcut: Int, CaseIterable {
 
 enum SessionWheelNoteAction: Int, CaseIterable {
     // The bottom arc reads left to right, opposite the top session arc.
-    case recording = 2, pause = 1, cancel = 0
+    case pause = 2, recording = 1, cancel = 0
 
     func title(for phase: MeetingNoteCoordinatorPhase) -> String {
         switch self {
@@ -92,8 +92,8 @@ enum SessionWheelNoteAction: Int, CaseIterable {
     func symbol(for phase: MeetingNoteCoordinatorPhase) -> String {
         switch self {
         case .recording: return phase.ownsForeground ? "stop.fill" : "record.circle"
-        case .pause: return phase == .paused ? "play.fill" : "pause.fill"
-        case .cancel: return "xmark.circle"
+        case .pause: return phase == .paused ? "arrow.right.to.line" : "pause.fill"
+        case .cancel: return "xmark"
         }
     }
 

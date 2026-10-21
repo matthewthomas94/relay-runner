@@ -150,14 +150,14 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertFalse(SessionWheelNoteAction.recording.isEnabled(for: .cancelling))
         XCTAssertFalse(SessionWheelNoteAction.pause.isEnabled(for: .cancelling))
         XCTAssertTrue(SessionWheelNoteAction.cancel.isEnabled(for: .cancelling), "Can retry cancellation")
-        XCTAssertEqual(SessionWheelNoteAction.cancel.symbol(for: .recording), "xmark.circle")
+        XCTAssertEqual(SessionWheelNoteAction.cancel.symbol(for: .recording), "xmark")
         XCTAssertEqual(SessionWheelNoteAction.recording.title(for: .recording), "Stop Note Taker")
-        let positions = SessionWheelNoteAction.allCases.map {
+        let positions = [SessionWheelNoteAction.pause, .recording, .cancel].map {
             geometry.position(slot: 3, radius: geometry.actionRadius, offset: geometry.actionOffset($0.rawValue)).x
         }
-        XCTAssertEqual(positions, positions.sorted(), "Start/Stop, Pause/Resume, Cancel read left to right")
+        XCTAssertEqual(positions, positions.sorted(), "Pause/Resume, Start/Stop, Cancel read left to right")
         XCTAssertEqual(SessionWheelNoteAction.pause.title(for: .paused), "Resume Note Taker")
-        XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .paused), "play.fill")
+        XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .paused), "arrow.right.to.line")
         XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .recording), "pause.fill")
     }
 
@@ -204,6 +204,42 @@ final class SessionWheelTests: XCTestCase {
         controller.dismiss()
         controller.selectSlot(3, fromPointer: false)
         XCTAssertEqual(shortcuts.count, 3)
+    }
+
+    @MainActor
+    func testWheelStaysAboveWorkspaceWhenShortcutTabsRetakeKeyboardFocus() async throws {
+        _ = NSApplication.shared
+        let workspace = BoardOverlayPanel()
+        workspace.keyEligible = true
+        let controller = SessionWheelController()
+        controller.openShortcut = { _ in workspace.makeKeyAndOrderFront(nil) }
+        defer {
+            controller.dismiss()
+            workspace.orderOut(nil)
+        }
+        controller.toggle()
+        let wheel = try XCTUnwrap(NSApp.windows.first {
+            String(describing: type(of: $0)) == "SessionWheelPanel" && $0.isVisible
+        })
+
+        for shortcut in [SessionWheelShortcut.noteTaker, .settings] {
+            controller.selectSlot(shortcut.rawValue, fromPointer: false)
+            // SwiftUI's tab change re-applies keyboard focus after the shortcut
+            // has already brought the wheel forward.
+            await Task.yield()
+            workspace.makeKeyAndOrderFront(nil)
+            workspace.orderFrontRegardless()
+            try await Task.sleep(for: .milliseconds(25))
+            let orderedWindows = try XCTUnwrap(CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID)
+                as? [[String: Any]]).compactMap { $0[kCGWindowNumber as String] as? Int }
+            XCTAssertLessThan(
+                try XCTUnwrap(orderedWindows.firstIndex(of: wheel.windowNumber)),
+                try XCTUnwrap(orderedWindows.firstIndex(of: workspace.windowNumber)),
+                "\(shortcut.title) must not cover the wheel when it takes keyboard focus"
+            )
+            XCTAssertTrue(controller.isVisible)
+            XCTAssertTrue(workspace.keyEligible)
+        }
     }
 
     @MainActor
