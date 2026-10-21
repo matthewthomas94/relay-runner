@@ -213,12 +213,13 @@ struct SettingsMenuPicker<Value: Hashable>: View {
         .frame(maxWidth: .infinity)
         .accessibilityLabel(title)
         .accessibilityValue(selectedLabel)
-        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            SettingsMenuOptions(title: title, selection: $selection, options: options) {
-                isPresented = false
+        .background {
+            SettingsDropdownPresenter(isPresented: $isPresented) {
+                SettingsMenuOptions(title: title, selection: $selection, options: options) {
+                    isPresented = false
+                }
+                .environment(\.colorScheme, .dark)
             }
-            .presentationBackground(BoardDarkSurfaceStyle.panelFill)
-            .environment(\.colorScheme, .dark)
         }
     }
 }

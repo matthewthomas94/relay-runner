@@ -14,7 +14,9 @@ final class SettingsInputControlsTests: XCTestCase {
         try click(NSPoint(x: 140, y: 17), in: window)
         let popup = try XCTUnwrap(NSApp.windows.first { !existingWindows.contains($0.windowNumber) && $0.isVisible })
         defer { popup.orderOut(nil) }
-        if let directory = ProcessInfo.processInfo.environment["RELAY_SETTINGS_RENDER_DIR"], let view = popup.contentView {
+        XCTAssertTrue(popup.styleMask.contains(.borderless))
+        XCTAssertEqual(window.frame.minY - popup.frame.maxY, 8, accuracy: 0.5)
+        if let directory = ProcessInfo.processInfo.environment["RELAY_SETTINGS_RENDER_DIR"], let view = popup.contentView?.superview {
             let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
             view.cacheDisplay(in: view.bounds, to: bitmap)
             let url = URL(fileURLWithPath: directory).appendingPathComponent("settings-dropdown.png")
@@ -23,6 +25,7 @@ final class SettingsInputControlsTests: XCTestCase {
         }
         try sendKey(125, characters: String(UnicodeScalar(NSDownArrowFunctionKey)!), to: popup)
         try sendKey(36, characters: "\r", to: popup)
+        settle()
         XCTAssertEqual(selection, 4)
         XCTAssertFalse(popup.isVisible)
     }
@@ -45,6 +48,44 @@ final class SettingsInputControlsTests: XCTestCase {
         try sendKey(53, characters: "\u{1b}", to: window)
         XCTAssertEqual(dismissals, 2)
         XCTAssertEqual(selection, 2, "Escape must not change the selected value")
+    }
+
+    func testPickerDismissesAndReopensWithoutChangingSelection() throws {
+        var selection = 3
+        let window = host(VStack(spacing: 0) {
+            SettingsMenuPicker("Effort", selection: Binding(get: { selection }, set: { selection = $0 }),
+                               options: effortOptions)
+            Color.clear.frame(height: 66)
+        }, size: NSSize(width: 280, height: 100))
+        defer { window.close() }
+        let field = NSPoint(x: 140, y: 83)
+
+        try click(field, in: window)
+        let firstPopup = try XCTUnwrap(window.childWindows?.first { $0.isVisible })
+        try sendKey(53, characters: "\u{1b}", to: firstPopup)
+        settle()
+        XCTAssertFalse(firstPopup.isVisible)
+
+        try click(field, in: window)
+        let secondPopup = try XCTUnwrap(window.childWindows?.first { $0.isVisible })
+        try click(NSPoint(x: 140, y: 10), in: window, throughApplication: true)
+        settle()
+        XCTAssertFalse(secondPopup.isVisible)
+
+        try click(field, in: window)
+        let thirdPopup = try XCTUnwrap(window.childWindows?.first { $0.isVisible })
+        try click(field, in: window, throughApplication: true)
+        settle()
+        XCTAssertFalse(thirdPopup.isVisible)
+        XCTAssertFalse(window.childWindows?.contains { $0.isVisible } ?? false, "Clicking the field must not reopen the menu")
+        XCTAssertEqual(selection, 3)
+
+        try click(field, in: window)
+        let finalPopup = try XCTUnwrap(window.childWindows?.first { $0.isVisible })
+        window.close()
+        settle()
+        settle()
+        XCTAssertFalse(finalPopup.isVisible)
     }
 
     func testCheckboxTogglesAndRespectsDisabledState() throws {
@@ -145,13 +186,14 @@ final class SettingsInputControlsTests: XCTestCase {
         return window
     }
 
-    private func click(_ point: NSPoint, in window: NSWindow) throws {
-        window.makeKey()
+    private func click(_ point: NSPoint, in window: NSWindow, throughApplication: Bool = false) throws {
+        if !throughApplication { window.makeKey() }
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
                 with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1
-            )))
+            ))
+            if throughApplication { NSApp.sendEvent(event) } else { window.sendEvent(event) }
         }
         settle()
     }
