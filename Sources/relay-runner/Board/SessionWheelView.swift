@@ -118,6 +118,9 @@ struct SessionWheelView: View {
         let more = pickingProject && menu.hasMoreProjects && index == geometry.slotCount - 1
         let empty = pickingProject ? project == nil && !more : session == nil
         let title = more ? "More projects" : pickingProject ? (project?.name ?? "") : (session?.name ?? "Start session")
+        let sessionHint = session?.isFocused == true
+            ? "Open this session's terminal in Workspace."
+            : "Switch session and close the wheel. Move outward for session controls."
         let enabled = pickingProject
             ? more || (project?.isAvailable == true && menu.canStartSession)
             : true
@@ -175,7 +178,7 @@ struct SessionWheelView: View {
         .opacity(enabled ? 1 : 0.55)
         .animation(presentation.animation, value: presentation)
         .accessibilityLabel(title.isEmpty ? "Empty slot" : title)
-        .accessibilityHint(more ? "Next project wheel" : pickingProject ? "Start session" : (session == nil ? "Choose a project" : "Focus session. Move outward for session controls."))
+        .accessibilityHint(more ? "Next project wheel" : pickingProject ? "Start session" : (session == nil ? "Choose a project" : sessionHint))
         .accessibilityAction {
             guard pageID == page else { return }
             selectSlot(index, false)

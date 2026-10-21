@@ -209,6 +209,32 @@ final class SessionWheelTests: XCTestCase {
     }
 
     @MainActor
+    func testSessionSelectionDismissesBeforeHandingOffAndIgnoresFurtherClicks() {
+        _ = NSApplication.shared
+        for isFocused in [false, true] {
+            for fromPointer in [false, true] {
+                let controller = SessionWheelController()
+                defer { controller.dismiss() }
+                controller.refresh = { model, _ in
+                    model.refresh(sessions: [.init(id: "a", name: "Project A", isFocused: isFocused)])
+                }
+                var selections: [String] = []
+                controller.focusSession = { id in
+                    XCTAssertFalse(controller.isVisible, "Dismiss before switching voice or opening the terminal")
+                    selections.append(id)
+                }
+                controller.toggle()
+                controller.selectSlot(0, fromPointer: fromPointer)
+                XCTAssertFalse(controller.isVisible)
+                XCTAssertEqual(selections, ["a"])
+
+                controller.selectSlot(0, fromPointer: fromPointer)
+                XCTAssertEqual(selections, ["a"], "A second click during dismissal must not open the terminal")
+            }
+        }
+    }
+
+    @MainActor
     func testProjectCenterGoesBackOnePageWithoutTogglingWorkspace() {
         _ = NSApplication.shared
         let controller = SessionWheelController()

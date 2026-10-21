@@ -28,8 +28,9 @@ limit still applies.
   the stop command is sent. Other submenu actions keep the wheel open. Click the
   active waveform to send the message to that session; its controls stay available
   afterward. Ending a session frees its slot without closing the wheel.
-- Click a session itself to switch voice to it. The terminal stays where it is;
-  the notch briefly reports the switch.
+- Click an unselected session to switch voice to it and close the wheel without
+  opening Workspace; the notch briefly reports the switch. Click the currently
+  selected session to close the wheel and open Workspace directly to its terminal.
 - Click an empty slot to enter the project wheel. Click an available registered
   project to start its session without opening the Workspace. The center shows
   an icon-only left arrow, with **Back** retained in tooltips and VoiceOver labels.

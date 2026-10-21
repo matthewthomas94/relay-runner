@@ -1320,11 +1320,14 @@ final class AppState {
         }
     }
 
-    /// The session wheel retargets voice without raising the terminal; the
-    /// notch claims only what actually happened.
+    /// Selecting the focused session opens its terminal. Switching sessions
+    /// retargets voice without raising Workspace; the notch reports the result.
     private func switchSessionFromWheel(contextID: String) {
-        guard contextID != activeContext.id,
-              let name = workspaceSessionTabs.first(where: { $0.id == contextID })?.name else { return }
+        guard let name = workspaceSessionTabs.first(where: { $0.id == contextID })?.name else { return }
+        if contextID == activeContext.id {
+            programBoardOverlay.showTerminal()
+            return
+        }
         let recording = sttEngine?.isRecording == true
         focusSessionTab(contextID: contextID, showsTerminal: false)
         showSessionSwitchNotice(SessionSwitchNotice(
