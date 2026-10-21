@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import SwiftUI
 import XCTest
 @testable import relay_runner
@@ -291,58 +292,149 @@ final class SessionWheelMotionTests: XCTestCase {
     }
 
     @MainActor
-    func testContentTransitionsConvergeThenCollapseLikeTheWheelAndReduceMotionKeepsTheirPosition() throws {
-        let progress = 1 - SessionWheelPresentation.segmentDuration / SessionWheelPresentation.duration
+    func testLiquidSubmenusGrowFromTheWheelAndSettleWithTheExistingGap() throws {
+        let geometry = SessionWheelGeometry.self
+        let model = SessionWheelModel()
+        model.refresh(sessions: (0..<6).map { .init(id: "\($0)", name: "Project \($0 + 1)", canPlay: true) })
+        let wheel = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
+                                    selectCenter: {}, back: {}, dismiss: {})
         for slot in 0..<6 {
-            let point = SessionWheelGeometry.position(slot: slot, radius: 119)
-            func render(_ progress: Double, reduced: Bool = false, name: String)
-                throws -> (center: CGPoint, peak: CGFloat, alpha: CGFloat) {
-                let view = Circle().fill(.white).frame(width: 20, height: 20)
-                    .position(point).frame(width: 528, height: 528)
-                    .modifier(SessionWheelContentEffect(progress: progress, slot: slot, reduceMotion: reduced))
-                let bitmap = try renderBitmap(view)
-                var alpha: CGFloat = 0
-                var weighted = CGPoint.zero
-                var peak: CGFloat = 0
-                for y in stride(from: 0, to: 528, by: 4) {
-                    for x in stride(from: 0, to: 528, by: 4) {
-                        let sample = try XCTUnwrap(bitmap.colorAt(x: x, y: y)).alphaComponent
-                        alpha += sample
-                        weighted.x += CGFloat(x) * sample
-                        weighted.y += CGFloat(y) * sample
-                        peak = max(peak, sample)
+            model.hover(at: geometry.position(slot: slot, radius: 119))
+            for progress in [0.0, 0.3, 0.5, 0.7, 0.9, 0.95, 1.0] {
+                let submenus = SessionWheelSubmenuProgress(slot: slot, progress: progress)
+                let bitmap = try renderBitmap(SessionWheelLiquidBackdrop(progress: submenus, reduceMotion: false)
+                    .frame(width: 528, height: 528))
+                func alpha(at radius: CGFloat) throws -> CGFloat {
+                    let point = geometry.position(slot: slot, radius: radius)
+                    return try XCTUnwrap(bitmap.colorAt(x: Int(point.x.rounded()), y: Int(point.y.rounded()))).alphaComponent
+                }
+                XCTAssertEqual(try alpha(at: 175), 1, accuracy: 0.01, "The main disc remains solid")
+                if progress == 0 {
+                    XCTAssertEqual(try alpha(at: 184), 0, accuracy: 0.01)
+                    XCTAssertEqual(try alpha(at: 213), 0, accuracy: 0.01)
+                } else if progress == 0.7 || progress == 0.9 {
+                    for radius in stride(from: 180.0, through: 200, by: 2) {
+                        XCTAssertGreaterThan(try alpha(at: radius), 0.9,
+                                             "The submenu must be joined to its source while pulling out")
                     }
+                } else if progress == 1 {
+                    XCTAssertEqual(try alpha(at: 184), 0, accuracy: 0.01, "Restore the 8-point detached gap")
+                    XCTAssertEqual(try alpha(at: 190), 1, accuracy: 0.01)
+                    XCTAssertEqual(try alpha(at: 236), 1, accuracy: 0.01)
+                    XCTAssertEqual(try alpha(at: 240), 0, accuracy: 0.01)
                 }
                 if let directory = ProcessInfo.processInfo.environment["RELAY_WHEEL_RENDER_DIR"] {
                     let url = URL(fileURLWithPath: directory, isDirectory: true)
                     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-                    try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-                        .write(to: url.appendingPathComponent("content-\(slot)-\(name).png"))
+                    let view = wheel.wheel(menu: SessionWheelMenu(model), tiles: .init(), submenus: submenus)
+                        .transaction { $0.animation = nil; $0.disablesAnimations = true }
+                        .background(Color(red: 0.14, green: 0.15, blue: 0.17))
+                    let preview = try renderBitmap(view)
+                    try XCTUnwrap(preview.representation(using: .png, properties: [:]))
+                        .write(to: url.appendingPathComponent("liquid-\(slot)-\(Int(progress * 100)).png"))
                 }
-                return (alpha > 0 ? CGPoint(x: weighted.x / alpha, y: weighted.y / alpha) : .zero,
-                        peak, alpha)
             }
-            let visible = try render(1, name: "visible")
-            let converging = try render(progress, name: "converging")
-            let collapsing = try render(1 - 0.15 / SessionWheelPresentation.duration, name: "collapsing")
-            let reduced = try render(progress, reduced: true, name: "reduced")
-            let hidden = try render(0, name: "hidden")
-            XCTAssertLessThan(hypot(converging.center.x - 264, converging.center.y - 264),
-                              hypot(visible.center.x - 264, visible.center.y - 264) - 10)
-            let travel = hypot(converging.center.x - visible.center.x, converging.center.y - visible.center.y)
-            XCTAssertGreaterThan(travel, 16.5)
-            XCTAssertLessThan(travel, 21, "Convergence uses 67% of the original travel, about 17–20 points")
-            XCTAssertLessThan(converging.peak, visible.peak * 0.5, "The moving content visibly blurs")
-            XCTAssertGreaterThan(converging.alpha, visible.alpha * 0.8,
-                                 "Keep the tile visible, as in wheel dismissal, until convergence finishes")
-            XCTAssertLessThan(hypot(collapsing.center.x - 264, collapsing.center.y - 264),
-                              hypot(converging.center.x - 264, converging.center.y - 264) * 0.75,
-                              "Page tiles must collapse to the wheel centre, not linger near their slot")
-            XCTAssertLessThan(collapsing.alpha, converging.alpha * 0.4)
-            XCTAssertEqual(reduced.center.x, visible.center.x, accuracy: 1)
-            XCTAssertEqual(reduced.center.y, visible.center.y, accuracy: 1)
-            XCTAssertEqual(reduced.peak, visible.peak * progress, accuracy: 0.01)
-            XCTAssertEqual(hidden.alpha, 0)
+        }
+    }
+
+    @MainActor
+    func testReducedLiquidSubmenuFadesWithoutMovingOrJoiningTheWheel() throws {
+        let geometry = SessionWheelGeometry.self
+        for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let frame = SessionWheelSubmenuPresentation(progress: progress, reduceMotion: true)
+            XCTAssertEqual(frame.scale, 1)
+            XCTAssertEqual(frame.blur, 0)
+            XCTAssertEqual(frame.controlsOpacity, progress)
+            let bitmap = try renderBitmap(SessionWheelLiquidBackdrop(
+                progress: .init(slot: 0, progress: progress), reduceMotion: true).frame(width: 528, height: 528))
+            for radius in [190.0, 213.0, 236.0] {
+                let point = geometry.position(slot: 0, radius: radius)
+                XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: Int(point.x), y: Int(point.y))).alphaComponent,
+                               progress, accuracy: 0.01)
+            }
+            XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 264, y: 80)).alphaComponent, 0)
+            XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 264, y: 90)).alphaComponent, 1)
+        }
+    }
+
+    @MainActor
+    func testNativeSubmenuSpringReversesAndSwitchesSlotsWithoutJumping() async throws {
+        _ = NSApplication.shared
+        let model = SessionWheelModel()
+        model.refresh(sessions: [.init(id: "a", name: "First"), .init(id: "b", name: "Second")])
+        var frames: [SessionWheelSubmenuProgress] = []
+        var times: [TimeInterval] = []
+        var slots: [Int?] = []
+        let view = TimelineView(.animation(paused: true)) { _ in
+            let slot = model.hoveredSession == nil ? nil : model.hoveredSlot
+            SessionWheelSubmenuAnimation(progress: .init(slot: slot)) { progress in
+                let _ = frames.append(progress)
+                let _ = times.append(ProcessInfo.processInfo.systemUptime)
+                let _ = slots.append(slot)
+                SessionWheelLiquidBackdrop(progress: progress, reduceMotion: false)
+            }
+            .animation(SessionWheelSubmenuPresentation.animation(reduceMotion: false), value: slot)
+        }
+        .frame(width: 528, height: 528)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 528, height: 528),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: view)
+        window.orderBack(nil)
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(100))
+        model.hover(at: SessionWheelGeometry.position(slot: 0, radius: 119))
+        try await Task.sleep(for: .milliseconds(90))
+        let opening = try XCTUnwrap(frames.last)[0]
+        XCTAssertGreaterThan(opening, 0)
+        XCTAssertLessThan(opening, 1)
+        let reversal = frames.count
+        model.clearHover()
+        try await Task.sleep(for: .milliseconds(65))
+        let closing = try XCTUnwrap(frames.last)[0]
+        XCTAssertGreaterThan(closing, 0, "Removal keeps its outgoing surface alive")
+        XCTAssertLessThan(closing, 1)
+        XCTAssertEqual(try XCTUnwrap(frames.dropFirst(reversal).first)[0], opening, accuracy: 0.2)
+        model.hover(at: SessionWheelGeometry.position(slot: 1, radius: 119))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(frames.contains { $0[0] > 0.01 && $0[1] > 0.01 },
+                      "Old and new slots share the liquid layer during handoff")
+        try await Task.sleep(for: .milliseconds(650))
+        XCTAssertEqual(try XCTUnwrap(frames.last)[0], 0, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(frames.last)[1], 1, accuracy: 0.001)
+        let settled = frames.count
+        model.refresh(sessions: [.init(id: "a", name: "First"), .init(id: "b", name: "Second", isRecording: true)])
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(frames.dropFirst(settled).allSatisfy { abs($0[1] - 1) < 0.001 },
+                      "Playback and recording changes must not restart the submenu entrance")
+        model.clearHover()
+        try await Task.sleep(for: .milliseconds(650))
+        XCTAssertEqual(try XCTUnwrap(frames.last).magnitudeSquared, 0, accuracy: 0.001)
+        let stopped = frames.count
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(frames.count, stopped, "No per-frame work after the springs settle")
+        if let directory = ProcessInfo.processInfo.environment["RELAY_WHEEL_RENDER_DIR"] {
+            let url = URL(fileURLWithPath: directory, isDirectory: true).appendingPathComponent("liquid-hover.gif")
+            let gif = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, "com.compuserve.gif" as CFString,
+                                                                  frames.count, nil))
+            CGImageDestinationSetProperties(gif, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+            let preview = SessionWheelModel()
+            preview.refresh(sessions: [.init(id: "a", name: "General Tasks", canPlay: true),
+                                       .init(id: "b", name: "Relay Runner", canPlay: true)])
+            let wheel = SessionWheelView(model: preview, selectSlot: { _, _ in }, performAction: { _, _ in },
+                                        selectCenter: {}, back: {}, dismiss: {})
+            for index in frames.indices {
+                if let slot = slots[index] { preview.hover(at: SessionWheelGeometry.position(slot: slot, radius: 119)) }
+                else { preview.clearHover() }
+                let view = wheel.wheel(menu: SessionWheelMenu(preview), tiles: .init(), submenus: frames[index])
+                    .transaction { $0.animation = nil; $0.disablesAnimations = true }
+                    .background(Color(red: 0.14, green: 0.15, blue: 0.17))
+                let image = try XCTUnwrap(try renderBitmap(view).cgImage)
+                let delay = index + 1 < times.count ? max(0.02, times[index + 1] - times[index]) : 0.4
+                CGImageDestinationAddImage(gif, image,
+                    [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFUnclampedDelayTime: delay]] as CFDictionary)
+            }
+            XCTAssertTrue(CGImageDestinationFinalize(gif))
         }
     }
 

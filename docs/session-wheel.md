@@ -61,13 +61,20 @@ edges, around the center and outer perimeter. The 34-point-deep outer
 controls follow the wheel's tangent, keeping their icons upright on
 the lower half, with each icon centered inside its segment. Main
 wedges use Relay's 14-point card corners; submenu segments use its 6-point control
-corners. Submenus, project pages, and changing center content use Relay's
-shared entry, exit, and replacement transitions, including Reduce Motion and
-increased contrast handling. The active submenu has a detached solid black
+corners. Project pages and changing center content retain their existing wheel
+transitions, including Reduce Motion and increased contrast handling.
+The active submenu has a detached solid black
 backdrop, separated from the wheel by an 8-point gap. It follows the controls'
-arc, side edges, and corners with 8-point padding. The backdrop and controls
-enter and exit together using Relay's shared replacement transition; Reduce
-Motion keeps the fade and removes travel and blur. Hover stays active across
+arc, side edges, and corners with 8-point padding. On hover, this backdrop grows
+out of the main disc as a joined liquid surface, then separates into its detached
+resting shape. Leaving reverses the morph. The disc and emerging submenu share a
+blur-and-alpha-threshold silhouette beneath the unfiltered controls. One native
+spring drives the surface and controls together, reverses from its current position
+and velocity, and lets an outgoing slot merge back while another opens. Controls
+emerge from behind the disc and become clickable as they settle outside it;
+playback or recording icon changes do not restart the submenu entrance.
+Reduce Motion fades the submenu in its final position without merging, travel,
+or blur. Hover stays active across
 the gap so the controls remain reachable. Project navigation rearms pointer hover so a double-click on
 an empty slot cannot launch a project in the same position.
 
@@ -90,20 +97,23 @@ The reference behavior was inspected in
 [Vorssaint at commit 5d1ffa07](https://github.com/vorssaint/vorssaint-utils/tree/5d1ffa07c83665c83123fdf734a70843cd1f8771/Sources/Vorssaint/Services/RadialMenu)
 and its adjacent MiddleClick service. Relay's implementation is written for its
 own session lifecycle and design system; no Vorssaint source files are vendored.
-The separate submenu backdrop is inspired by
-[Libraries.dev's Gooey component at commit bfcb8632](https://github.com/Jakubantalik/Libraries.dev/tree/bfcb86329da15235a5ee2dcdb6417c8a80f82bb1/packages/liquid-gooey),
-implemented with native SwiftUI geometry and Relay's existing motion.
+The submenu morph follows the shared-silhouette technique in
+[Libraries.dev's Gooey component at commit d243bdd3](https://github.com/Jakubantalik/Libraries.dev/tree/d243bdd327a1215753e6b605e1e1957d7e0dcc59/packages/liquid-gooey),
+implemented with SwiftUI Canvas filters and native interruptible springs. The React
+package is not embedded; the interactive controls retain Relay's own styling.
 
 ## Verification
 
 Run the focused checks with:
 
 ```sh
-env -u SDKROOT swift test --filter 'FourFingerTapGestureTests|SessionWheelTests|VoiceReplyBadgeTests|STT|VoiceBridgeFocusTests|CapsLockGestureTests'
+env -u SDKROOT swift test --filter 'FourFingerTapGestureTests|SessionWheelTests|SessionWheelMotionTests|VoiceReplyBadgeTests|STT|VoiceBridgeFocusTests|CapsLockGestureTests'
 ```
 
 Set `RELAY_WHEEL_RENDER_DIR` to an output directory to export SwiftUI previews
-from `SessionWheelTests.testWheelRendering`. Tests use fake capture and temporary
+from `SessionWheelTests.testWheelRendering`. The motion tests also export each
+submenu's liquid keyframes and a GIF sampled from the native hover/reversal spring.
+Tests use fake capture and temporary
 spools; they do not open the microphone or send commands to live sessions.
 
 Installed-app checks still require a physical trackpad and live sessions: open

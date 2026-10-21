@@ -64,44 +64,6 @@ struct SessionWheelPresentation: Equatable {
     }
 }
 
-/// Use the wheel's complete tile transform, including its final collapse to the centre.
-struct SessionWheelContentEffect: AnimatableModifier {
-    var progress: Double
-    let slot: Int
-    let reduceMotion: Bool
-
-    var animatableData: Double {
-        get { progress }
-        set { progress = newValue }
-    }
-
-    func body(content: Content) -> some View {
-        let frame = SessionWheelPresentation(progress: progress, reduceMotion: reduceMotion)
-        content
-            .compositingGroup()
-            .blur(radius: frame.segmentBlur)
-            .offset(frame.segmentOffset(slot))
-            .scaleEffect(frame.discScale)
-            .opacity(frame.opacity * frame.segmentVisibility)
-            .allowsHitTesting(progress >= 1)
-            .accessibilityHidden(progress < 1)
-    }
-}
-
-extension AnyTransition {
-    static func sessionWheel(slot: Int, reduceMotion: Bool, replacing: Bool = false) -> AnyTransition {
-        let effect = AnyTransition.modifier(
-            active: SessionWheelContentEffect(progress: 0, slot: slot, reduceMotion: reduceMotion),
-            identity: SessionWheelContentEffect(progress: 1, slot: slot, reduceMotion: reduceMotion))
-        let animation = SessionWheelPresentation.animation(reduceMotion: reduceMotion)
-        // Exchange pages at the collapsed frame, never overlay two expanding/converging menus.
-        return .asymmetric(
-            insertion: effect.animation(animation.delay(
-                replacing && !reduceMotion ? SessionWheelPresentation.duration : 0)),
-            removal: effect.animation(animation))
-    }
-}
-
 @Observable
 final class SessionWheelMotion {
     private var from: Double = 0

@@ -16,30 +16,34 @@ struct SessionWheelView: View {
 
     private let geometry = SessionWheelGeometry.self
     private var pageID: Int { model.pickingProject ? model.projectPage : -1 }
-    private var contentAnimation: Animation { SessionWheelPresentation.animation(reduceMotion: reduceMotion) }
+    private var submenuSlot: Int? { model.hoveredSession == nil ? nil : model.hoveredSlot }
 
     var body: some View {
         let requestedMenu = SessionWheelMenu(model)
         TimelineView(.animation(paused: !menuMotion.motion.isAnimating)) { _ in
             let menuProgress = menuMotion.motion.progress(at: ProcessInfo.processInfo.systemUptime)
             let progress = reduceMotion ? menuProgress : min(presentation.progress, menuProgress)
-            wheel(menu: menuMotion.displayed ?? requestedMenu,
-                  tiles: SessionWheelPresentation(progress: progress, reduceMotion: reduceMotion))
+            SessionWheelSubmenuAnimation(progress: .init(slot: submenuSlot)) { submenus in
+                wheel(menu: menuMotion.displayed ?? requestedMenu,
+                      tiles: SessionWheelPresentation(progress: progress, reduceMotion: reduceMotion),
+                      submenus: submenus)
+            }
+            .animation(SessionWheelSubmenuPresentation.animation(reduceMotion: reduceMotion), value: submenuSlot)
         }
         .task(id: requestedMenu) {
             await menuMotion.update(to: requestedMenu, reduceMotion: reduceMotion)
         }
     }
 
-    func wheel(menu: SessionWheelMenu, tiles: SessionWheelPresentation) -> some View {
-        ZStack {
+    func wheel(menu: SessionWheelMenu, tiles: SessionWheelPresentation,
+               submenus: SessionWheelSubmenuProgress? = nil) -> some View {
+        let submenus = submenus ?? .init(slot: submenuSlot)
+        return ZStack {
             Color.clear.contentShape(Rectangle()).onTapGesture { point in
                 let outsideWheel = hypot(point.x - geometry.center.x, point.y - geometry.center.y) > geometry.wheelRadius
                 if outsideWheel || !menuMotion.motion.isAnimating { dismiss() }
             }
-            Circle()
-                .fill(.black)
-                .frame(width: geometry.wheelRadius * 2, height: geometry.wheelRadius * 2)
+            SessionWheelLiquidBackdrop(progress: submenus, reduceMotion: reduceMotion)
                 .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
                 .scaleEffect(presentation.discScale)
                 .opacity(presentation.discScale == 0 ? 0 : 1)
@@ -62,35 +66,26 @@ struct SessionWheelView: View {
             .accessibilityHidden(menuMotion.motion.isAnimating)
             .transaction { $0.animation = nil }
             ZStack {
-                if let session = model.hoveredSession, let index = model.hoveredSlot {
-                    ZStack {
-                        SessionWheelSector(slot: index, innerRadius: geometry.actionInnerRadius,
-                                           outerRadius: geometry.actionOuterRadius,
-                                           cornerRadius: SharedActionButtonMetrics.cornerRadius,
-                                           padding: geometry.segmentGap)
-                            .fill(.black)
-                            .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(true)
-                        ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
-                            ZStack {
+                ForEach(0..<geometry.slotCount, id: \.self) { index in
+                    let frame = SessionWheelSubmenuPresentation(progress: submenus[index], reduceMotion: reduceMotion)
+                    if let session = model.slots[index] ?? menu.sessions[index], frame.progress > 0 {
+                        ZStack {
+                            ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
                                 actionButton(action, session: session, slot: index)
-                                    .id(action.symbol(for: session))
-                                    .transition(.sessionWheel(slot: index, reduceMotion: reduceMotion, replacing: true))
                             }
-                            .animation(contentAnimation, value: action.symbol(for: session))
                         }
+                        .scaleEffect(frame.scale)
+                        .opacity(frame.controlsOpacity)
+                        .allowsHitTesting(model.hoveredSession?.id == session.id && (reduceMotion || frame.progress >= 0.95))
+                        .accessibilityHidden(model.hoveredSession?.id != session.id)
+                        .transition(.identity)
+                        .transaction { $0.animation = nil }
                     }
-                    .id(session.id)
-                    .transition(.sessionWheel(slot: index, reduceMotion: reduceMotion))
-                    .compositingGroup()
-                    .blur(radius: presentation.segmentBlur)
-                    .offset(presentation.segmentOffset(index))
-                    .scaleEffect(presentation.discScale)
-                    .opacity(presentation.segmentVisibility)
                 }
             }
-            .animation(contentAnimation, value: model.hoveredSession?.id)
+            .mask { SessionWheelSubmenuExterior().fill(style: FillStyle(eoFill: true)) }
+            .scaleEffect(presentation.discScale)
+            .opacity(presentation.segmentVisibility)
             hub
                 .compositingGroup()
                 .blur(radius: presentation.hubBlur)
@@ -225,6 +220,8 @@ struct SessionWheelView: View {
                             .font(AppTypography.symbolFont(size: 9, weight: .medium))
                     }
                 }
+                .contentTransition(.opacity)
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: symbol)
                 .frame(width: geometry.actionLabelSize.width, height: geometry.actionLabelSize.height)
                 .foregroundStyle(!enabled
                                  ? (contrast == .increased ? ProgramBoardStyle.disabledText : Color(.sRGB, red: 24 / 255, green: 27 / 255, blue: 33 / 255, opacity: 1))
