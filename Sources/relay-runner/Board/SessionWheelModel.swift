@@ -83,7 +83,7 @@ enum SessionWheelNoteAction: Int, CaseIterable {
 
     func title(for phase: MeetingNoteCoordinatorPhase) -> String {
         switch self {
-        case .recording: return phase.ownsForeground ? "Stop Note Taker" : "Start Note Taker"
+        case .recording: return phase.ownsForeground ? "Save note" : "Start Note Taker"
         case .pause: return phase == .paused ? "Resume Note Taker" : "Pause Note Taker"
         case .cancel: return "Cancel Note Taker"
         }
@@ -91,7 +91,7 @@ enum SessionWheelNoteAction: Int, CaseIterable {
 
     func symbol(for phase: MeetingNoteCoordinatorPhase) -> String {
         switch self {
-        case .recording: return phase.ownsForeground ? "stop.fill" : "record.circle"
+        case .recording: return phase.ownsForeground ? "checkmark" : "mic.fill"
         case .pause: return phase == .paused ? "arrow.right.to.line" : "pause.fill"
         case .cancel: return "xmark"
         }

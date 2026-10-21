@@ -25,11 +25,12 @@ sessions. An overflow session fills a top slot when one becomes free.
 - Click Workspace, Note Taker, or Settings to open that Workspace tab, including
   when the Workspace is already open. The wheel stays open and above Workspace,
   even when a tab takes keyboard focus.
-- Hover Note Taker to reveal **Pause / Resume**, **Start / Stop**, and **Cancel**,
-  from left to right, on the same liquid submenu used for sessions. Start becomes
-  Stop while recording or paused; Stop saves and transcribes the recording.
+- Hover Note Taker to reveal **Pause / Resume**, **Start / Save**, and **Cancel**,
+  from left to right, on the same liquid submenu used for sessions. Start uses
+  the session microphone icon and becomes the app's Save checkmark while recording
+  or paused; Save stops, saves and transcribes the recording.
   Pause becomes a continuation arrow for Resume while paused. The plain red X
-  cancels the active note, deleting its draft and recording without saving or transcribing. Stop uses
+  cancels the active note, deleting its draft and recording without saving or transcribing. Save uses
   the normal text colour. Cancel is disabled without an active recording, and
   can retry a pending cancellation; capture and save transitions disable the
   other unavailable controls. These controls reuse the

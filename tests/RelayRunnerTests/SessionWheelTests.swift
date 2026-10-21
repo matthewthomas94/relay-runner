@@ -132,13 +132,13 @@ final class SessionWheelTests: XCTestCase {
     func testNoteControlsFollowCaptureLifecycle() {
         for phase in [MeetingNoteCoordinatorPhase.idle, .saved] {
             XCTAssertTrue(SessionWheelNoteAction.recording.isEnabled(for: phase))
-            XCTAssertEqual(SessionWheelNoteAction.recording.symbol(for: phase), "record.circle")
+            XCTAssertEqual(SessionWheelNoteAction.recording.symbol(for: phase), "mic.fill")
             XCTAssertFalse(SessionWheelNoteAction.cancel.isEnabled(for: phase))
             XCTAssertFalse(SessionWheelNoteAction.pause.isEnabled(for: phase))
         }
         for phase in [MeetingNoteCoordinatorPhase.recording, .paused] {
             XCTAssertTrue(SessionWheelNoteAction.recording.isEnabled(for: phase))
-            XCTAssertEqual(SessionWheelNoteAction.recording.symbol(for: phase), "stop.fill")
+            XCTAssertEqual(SessionWheelNoteAction.recording.symbol(for: phase), "checkmark")
             XCTAssertTrue(SessionWheelNoteAction.cancel.isEnabled(for: phase))
             XCTAssertTrue(SessionWheelNoteAction.pause.isEnabled(for: phase))
         }
@@ -151,11 +151,11 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertFalse(SessionWheelNoteAction.pause.isEnabled(for: .cancelling))
         XCTAssertTrue(SessionWheelNoteAction.cancel.isEnabled(for: .cancelling), "Can retry cancellation")
         XCTAssertEqual(SessionWheelNoteAction.cancel.symbol(for: .recording), "xmark")
-        XCTAssertEqual(SessionWheelNoteAction.recording.title(for: .recording), "Stop Note Taker")
+        XCTAssertEqual(SessionWheelNoteAction.recording.title(for: .recording), "Save note")
         let positions = [SessionWheelNoteAction.pause, .recording, .cancel].map {
             geometry.position(slot: 3, radius: geometry.actionRadius, offset: geometry.actionOffset($0.rawValue)).x
         }
-        XCTAssertEqual(positions, positions.sorted(), "Pause/Resume, Start/Stop, Cancel read left to right")
+        XCTAssertEqual(positions, positions.sorted(), "Pause/Resume, Start/Save, Cancel read left to right")
         XCTAssertEqual(SessionWheelNoteAction.pause.title(for: .paused), "Resume Note Taker")
         XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .paused), "arrow.right.to.line")
         XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .recording), "pause.fill")
