@@ -51,7 +51,7 @@ struct SettingsMenuOptions<Value: Hashable>: View {
                 .padding(6)
             }
             .frame(width: SettingsLayout.controlMaxWidth, height: min(284, CGFloat(options.count) * 34 + 10))
-            .background(BoardDarkSurfaceBackground(cornerRadius: SettingsLayout.sidebarCornerRadius))
+            .background(BoardDarkSurfaceBackground(cornerRadius: 12))
             .onAppear { focusedIndex = options.firstIndex { $0.value == selection } ?? options.indices.first }
             .onChange(of: focusedIndex) { _, index in
                 if let index { proxy.scrollTo(index) }
