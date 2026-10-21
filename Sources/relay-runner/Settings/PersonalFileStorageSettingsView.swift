@@ -188,18 +188,18 @@ struct PersonalFileStorageSettingsView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Notes and general task files stay in Relay Runner’s app folder. GitHub storage is optional and can be connected at any time.")
                     Text(model.status?.disclosure ?? "Only approved personal files are synchronized to a private repository in your GitHub account.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(SettingsSurfaceColor.secondaryText)
                     if let destination = model.status?.destination {
                         Link(destination.fullName, destination: URL(string: destination.htmlURL)!)
                     }
-                    if let message = model.status?.message { Text(message).foregroundStyle(.secondary) }
-                    if let error = model.error { Text(error).foregroundStyle(.red) }
+                    if let message = model.status?.message { Text(message).foregroundStyle(SettingsSurfaceColor.secondaryText) }
+                    if let error = model.error { Text(error).foregroundStyle(SettingsSurfaceColor.error) }
                     if let code = model.deviceCode {
                         Text("GitHub sign-in code: \(code)").textSelection(.enabled)
                     }
-                    HStack {
-                        Button("Open local files", action: model.revealFolder)
-                        Button("Refresh") { Task { await model.refresh() } }
+                    HStack(spacing: 8) {
+                        SettingsActionButton(title: "Open local files", systemImage: "folder", isEnabled: !model.busy, action: model.revealFolder)
+                        SettingsActionButton(title: "Refresh", systemImage: "arrow.clockwise", isEnabled: !model.busy) { Task { await model.refresh() } }
                         if model.busy { ProgressView().controlSize(.small) }
                     }
                 }
@@ -208,47 +208,39 @@ struct PersonalFileStorageSettingsView: View {
             if model.status?.connected != true {
                 SettingsRow {
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Button("Sign in to GitHub") { Task { await model.signIn() } }
-                            Button("Check signed-in account") { Task { await model.checkAccount() } }
+                        HStack(spacing: 8) {
+                            SettingsActionButton(title: "Sign in to GitHub", systemImage: "person.crop.circle", isEnabled: !model.busy) { Task { await model.signIn() } }
+                            SettingsActionButton(title: "Check signed-in account", systemImage: "arrow.clockwise", isEnabled: !model.busy) { Task { await model.checkAccount() } }
                         }
                         if let login = model.accountLogin {
-                            Text("Signed in as \(login)").foregroundStyle(.secondary)
+                            Text("Signed in as \(login)").foregroundStyle(SettingsSurfaceColor.secondaryText)
                             TextField("Private repository name", text: $model.repositoryName)
-                            Button("Connect private repository…") { confirmConnect = true }
-                                .disabled(model.repositoryName.isEmpty)
+                                .textFieldStyle(.plain)
+                                .font(AppTypography.font(.field))
+                                .padding(.horizontal, 10)
+                                .frame(height: 34)
+                                .background(BoardDarkSurfaceBackground(cornerRadius: SettingsLayout.sidebarCornerRadius,
+                                                                       fill: BoardDarkSurfaceStyle.contentFill))
+                            SettingsActionButton(title: "Connect private repository…", systemImage: "link",
+                                                 isEnabled: !model.busy && !model.repositoryName.isEmpty) { confirmConnect = true }
                         }
                     }
                 }
             } else {
                 SettingsRow {
-                    HStack {
-                        Button("Approve and sync personal files…") { confirmUpload = true }
-                        Button("Retry approved files") { Task { await model.mutate("sync") } }
-                        Button("Disconnect") { Task { await model.mutate("disconnect") } }
+                    HStack(spacing: 8) {
+                        SettingsActionButton(title: "Approve and sync personal files…", systemImage: "arrow.triangle.2.circlepath", isEnabled: !model.busy) { confirmUpload = true }
+                        SettingsActionButton(title: "Retry approved files", systemImage: "arrow.clockwise", isEnabled: !model.busy) { Task { await model.mutate("sync") } }
+                        SettingsActionButton(title: "Disconnect", systemImage: "xmark", isEnabled: !model.busy) { Task { await model.mutate("disconnect") } }
                     }
                 }
             }
             SettingsDivider()
             SettingsControlRow("Local cache budget", description: "Default 256 MB. Unsynced, pinned and active files are preserved if the cache exceeds this amount.") {
-                HStack(spacing: 8) {
-                    Text("\(model.budgetMB) MB")
-                        .monospacedDigit()
-                        .fixedSize()
-                        .accessibilityHidden(true)
-                    Stepper("Local cache budget", value: $model.budgetMB, in: 1...100_000)
-                        .accessibilityValue("\(model.budgetMB) megabytes")
-                }
+                SettingsStepper(title: "Local cache budget", value: $model.budgetMB, range: 1...100_000, unit: "MB")
             }
             SettingsControlRow("Keep recently used files", description: "Synced files older than this can be retrieved from GitHub when opened. Default 30 days.") {
-                HStack(spacing: 8) {
-                    Text("\(model.retentionDays) days")
-                        .monospacedDigit()
-                        .fixedSize()
-                        .accessibilityHidden(true)
-                    Stepper("Keep recently used files", value: $model.retentionDays, in: 0...3650)
-                        .accessibilityValue("\(model.retentionDays) days")
-                }
+                SettingsStepper(title: "Keep recently used files", value: $model.retentionDays, range: 0...3650, unit: "days")
             }
             SettingsRow {
                 VStack(alignment: .leading, spacing: 6) {
@@ -261,11 +253,11 @@ struct PersonalFileStorageSettingsView: View {
                         storageUsage("Storage catalog and metadata", bytes: status.usage.metadataBytes)
                         if status.usage.unmanagedBytes > 0 {
                             Text("Unsynced files include \(ByteCountFormatter.string(fromByteCount: status.usage.unmanagedBytes, countStyle: .file)) of other local files. Open the folder to export or delete files you no longer need.")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(SettingsSurfaceColor.secondaryText)
                         }
-                        ForEach(status.overageReasons, id: \.self) { Text($0).foregroundStyle(.secondary) }
+                        ForEach(status.overageReasons, id: \.self) { Text($0).foregroundStyle(SettingsSurfaceColor.secondaryText) }
                     }
-                    Button("Apply storage policy") { Task { await model.savePolicy() } }
+                    SettingsActionButton(title: "Apply storage policy", systemImage: "checkmark", isEnabled: !model.busy) { Task { await model.savePolicy() } }
                 }
             }
         }
@@ -292,6 +284,6 @@ struct PersonalFileStorageSettingsView: View {
             Text(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))
                 .monospacedDigit()
         }
-        .foregroundStyle(.secondary)
+        .foregroundStyle(SettingsSurfaceColor.secondaryText)
     }
 }

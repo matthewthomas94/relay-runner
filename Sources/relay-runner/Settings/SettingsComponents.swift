@@ -9,6 +9,7 @@ struct SettingsStack<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .toggleStyle(SettingsCheckboxStyle())
     }
 }
 
@@ -84,6 +85,7 @@ struct SettingsControlRow<Control: View>: View {
             Spacer(minLength: SettingsLayout.labelControlSpacing)
             control
                 .labelsHidden()
+                .toggleStyle(SettingsCheckboxStyle(showsLabel: false))
                 .controlSize(.small)
                 .frame(maxWidth: SettingsLayout.controlMaxWidth, alignment: .trailing)
         }
@@ -160,6 +162,11 @@ struct SettingsMenuPicker<Value: Hashable>: View {
     let title: String
     @Binding var selection: Value
     let options: [(label: String, value: Value)]
+    @State private var isPresented = false
+    @State private var isHovered = false
+    @FocusState private var isFocused: Bool
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(_ title: String, selection: Binding<Value>, options: [(label: String, value: Value)]) {
         self.title = title
@@ -172,20 +179,7 @@ struct SettingsMenuPicker<Value: Hashable>: View {
     }
 
     var body: some View {
-        Menu {
-            ForEach(options.indices, id: \.self) { index in
-                let option = options[index]
-                Button {
-                    selection = option.value
-                } label: {
-                    if option.value == selection {
-                        Label(option.label, systemImage: "checkmark")
-                    } else {
-                        Text(option.label)
-                    }
-                }
-            }
-        } label: {
+        Button { isPresented.toggle() } label: {
             HStack(spacing: 8) {
                 RelaySwap(selectedLabel, style: .text, alignment: .leading) { selectedLabel in
                     Text(selectedLabel)
@@ -197,25 +191,35 @@ struct SettingsMenuPicker<Value: Hashable>: View {
                     .font(AppTypography.symbolFont(size: 9, weight: .semibold))
                     .accessibilityHidden(true)
             }
-            .foregroundStyle(ProgramBoardStyle.primaryText)
+            .foregroundStyle(isEnabled ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.disabledText)
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity)
             .frame(height: 34)
             .background(BoardDarkSurfaceBackground(
                 cornerRadius: SettingsLayout.sidebarCornerRadius,
-                fill: BoardDarkSurfaceStyle.contentFill
+                fill: isEnabled && (isHovered || isFocused || isPresented)
+                    ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.contentFill
             ))
             .contentShape(
                 RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
             )
         }
-        .menuStyle(.button)
         .buttonStyle(.plain)
-        .menuIndicator(.hidden)
+        .focusable(isEnabled)
+        .focused($isFocused)
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        .onHover { isHovered = $0 }
+        .animation(reduceMotion ? nil : RelayMotion.hover, value: isHovered || isFocused || isPresented)
         .frame(maxWidth: .infinity)
         .accessibilityLabel(title)
         .accessibilityValue(selectedLabel)
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            SettingsMenuOptions(title: title, selection: $selection, options: options) {
+                isPresented = false
+            }
+            .presentationBackground(BoardDarkSurfaceStyle.panelFill)
+            .environment(\.colorScheme, .dark)
+        }
     }
 }
 

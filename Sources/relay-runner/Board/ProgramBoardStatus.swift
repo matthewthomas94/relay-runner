@@ -400,6 +400,16 @@ struct ProgramBoardNoteDetail: Equatable {
     var transcript: String?
     var isLoading: Bool
     var errorMessage: String?
+    var markdown: String? = nil
+
+    var canCopyNote: Bool { !isLoading && markdown?.isEmpty == false }
+
+    @discardableResult
+    func copyNote(to pasteboard: NSPasteboard = .general) -> Bool {
+        guard canCopyNote, let markdown else { return false }
+        pasteboard.clearContents()
+        return pasteboard.setString(markdown, forType: .string)
+    }
 }
 
 struct ProgramBoardCreateDraft: Equatable {
@@ -1808,7 +1818,8 @@ final class ProgramBoardViewModel {
                     item: refreshed,
                     transcript: selectedNoteDetail.transcript,
                     isLoading: selectedNoteDetail.isLoading,
-                    errorMessage: selectedNoteDetail.errorMessage
+                    errorMessage: selectedNoteDetail.errorMessage,
+                    markdown: selectedNoteDetail.markdown
                 )
             } else {
                 self.selectedNoteDetail = nil
@@ -1854,7 +1865,8 @@ final class ProgramBoardViewModel {
             item: item,
             transcript: response.note.segments.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n"),
             isLoading: false,
-            errorMessage: nil
+            errorMessage: nil,
+            markdown: response.markdown
         )
     }
 

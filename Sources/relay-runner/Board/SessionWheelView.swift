@@ -202,7 +202,7 @@ struct SessionWheelView: View {
         .accessibilityLabel(title.isEmpty ? "Empty slot" : title)
         .accessibilityHint(moreProjects ? "Next project wheel" : moreSessions ? "Show all active sessions"
             : pickingProject ? "Start session" : shortcut == .noteTaker
-            ? "Open Note Taker. Move outward for recording controls."
+            ? "Open Notetaker. Move outward for recording controls."
             : shortcut != nil ? "Open \(title)" : session == nil ? "Choose a project" : sessionHint)
         .accessibilityAction {
             guard pageID == page else { return }

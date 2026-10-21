@@ -156,7 +156,7 @@ final class SessionWheelTests: XCTestCase {
             geometry.position(slot: 3, radius: geometry.actionRadius, offset: geometry.actionOffset($0.rawValue)).x
         }
         XCTAssertEqual(positions, positions.sorted(), "Pause/Resume, Start/Save, Cancel read left to right")
-        XCTAssertEqual(SessionWheelNoteAction.pause.title(for: .paused), "Resume Note Taker")
+        XCTAssertEqual(SessionWheelNoteAction.pause.title(for: .paused), "Resume Notetaker")
         XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .paused), "arrow.right.to.line")
         XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .recording), "pause.fill")
     }

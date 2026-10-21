@@ -63,7 +63,7 @@ enum SessionWheelShortcut: Int, CaseIterable {
     var title: String {
         switch self {
         case .workspace: return "Workspace"
-        case .noteTaker: return "Note Taker"
+        case .noteTaker: return "Notetaker"
         case .settings: return "Settings"
         }
     }
@@ -83,9 +83,9 @@ enum SessionWheelNoteAction: Int, CaseIterable {
 
     func title(for phase: MeetingNoteCoordinatorPhase) -> String {
         switch self {
-        case .recording: return phase.ownsForeground ? "Save note" : "Start Note Taker"
-        case .pause: return phase == .paused ? "Resume Note Taker" : "Pause Note Taker"
-        case .cancel: return "Cancel Note Taker"
+        case .recording: return phase.ownsForeground ? "Save note" : "Start Notetaker"
+        case .pause: return phase == .paused ? "Resume Notetaker" : "Pause Notetaker"
+        case .cancel: return "Cancel Notetaker"
         }
     }
 

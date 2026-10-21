@@ -1444,9 +1444,11 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(model.noteItems.isEmpty)
     }
 
-    func testNoteDetailUsesStructuredTranscriptWithoutStorageMetadata() {
+    @MainActor
+    func testNoteDetailDisplaysTranscriptButCopiesCompleteMarkdown() async throws {
         let item = noteItem(id: "RR-N1", number: 1, projectName: "Relay Runner", path: "/repo/relay-runner")
         let model = ProgramBoardViewModel()
+        let markdown = "---\nnote_id: RR-N1\n---\n# Planning — café\n\n## Summary\nA complete note.\n\n## Transcript\n<!-- relay-note-segment -->\nFirst paragraph.\n\nSecond paragraph.\n"
         let response = RelayProjectNoteResponse(
             note: RelayProjectNoteUpdate(
                 identity: RelayProjectNoteIdentity(
@@ -1460,14 +1462,29 @@ final class ProgramBoardStatusTests: XCTestCase {
                 ],
                 captureEndedAt: item.card.updatedAt
             ),
-            markdownBase64: Data("---\nprivate: metadata\n---\n<!-- relay-note-segment -->".utf8).base64EncodedString(),
+            markdownBase64: Data(markdown.utf8).base64EncodedString(),
             materialized: true, artifactCommit: "commit", reference: item.card.reference,
             idempotent: false, sync: item.sync
         )
         model.beginNoteDetail(item)
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("Previous clipboard", forType: .string)
+        XCTAssertFalse(try XCTUnwrap(model.selectedNoteDetail).copyNote(to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "Previous clipboard")
         model.finishNoteDetail(response, for: item)
         XCTAssertEqual(model.selectedNoteDetail?.transcript, "First paragraph.\n\nSecond paragraph.")
         XCTAssertNil(model.selectedNoteDetail?.errorMessage)
+        XCTAssertTrue(try XCTUnwrap(model.selectedNoteDetail).copyNote(to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), markdown)
+
+        model.setNoteFetcher { _ in ProgramBoardNoteLoadResult(notes: [item], errorMessage: nil) }
+        await model.refreshNotes()
+        XCTAssertEqual(model.selectedNoteDetail?.markdown, markdown, "Refreshing cards must retain the loaded note document")
+
+        model.failNoteDetail("Unavailable", for: item)
+        XCTAssertFalse(try XCTUnwrap(model.selectedNoteDetail).copyNote(to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), markdown)
     }
 
     func testArchivedNoteUsesHistoryStatusAndRetryableReadFailure() {

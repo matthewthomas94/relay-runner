@@ -20,15 +20,15 @@ struct KeyCaptureView: View {
                 Spacer()
             }
             KeyCaptureField(label: label, value: $value, isCapturing: $isCapturing)
-                .frame(width: 150, height: 24)
-            if showsReset {
-                Button {
-                    value = "Caps Lock"
-                } label: {
-                    Image(systemName: "arrow.counterclockwise.circle.fill")
-                        .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+                .alignmentGuide(.firstTextBaseline) { dimensions in
+                    dimensions[VerticalAlignment.center] + AppTypography.appKitFont(.field).capHeight / 2
                 }
-                .buttonStyle(.plain)
+            if showsReset {
+                SettingsActionButton(title: "Reset \(label) to Caps Lock", systemImage: "arrow.counterclockwise", prominence: .icon) {
+                    value = "Caps Lock"
+                }
                 .accessibilityLabel("Reset \(label) to Caps Lock")
                 .help("Reset \(label) to Caps Lock")
                 .transition(.relayElement)
@@ -96,9 +96,9 @@ private final class KeyInputView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        titleLabel.font = AppTypography.appKitFont(.body)
+        titleLabel.font = AppTypography.appKitFont(.field)
         titleLabel.alignment = .center
-        titleLabel.textColor = .labelColor
+        titleLabel.textColor = SettingsSurfaceColor.primaryTextNSColor
         titleLabel.setAccessibilityElement(false)
         addSubview(titleLabel)
     }
@@ -106,6 +106,20 @@ private final class KeyInputView: NSView {
     required init?(coder: NSCoder) { nil }
 
     override var acceptsFirstResponder: Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        animateHighlight(to: 1)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        animateHighlight(to: isHighlighted ? 1 : 0)
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         super.hitTest(point) == nil ? nil : self
@@ -179,7 +193,7 @@ private final class KeyInputView: NSView {
     }
 
     private func refreshAppearance() {
-        let color: NSColor = isHighlighted ? .secondaryLabelColor : .labelColor
+        let color = isHighlighted ? SettingsSurfaceColor.secondaryTextNSColor : SettingsSurfaceColor.primaryTextNSColor
         if titleLabel.stringValue != displayText || titleLabel.textColor != color {
             let text = displayText
             RelayLayerMotion.crossfade(titleLabel) {
@@ -266,21 +280,22 @@ private final class KeyInputView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let bg = Self.blend(
-            .controlBackgroundColor,
-            SettingsSurfaceColor.neutralAccentNSColor.withAlphaComponent(0.15),
+            BoardDarkSurfaceStyle.contentFillNSColor,
+            BoardDarkSurfaceStyle.cardActiveFillNSColor,
             highlightAmount
         )
         bg.setFill()
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5)
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+                                xRadius: SettingsLayout.sidebarCornerRadius, yRadius: SettingsLayout.sidebarCornerRadius)
         path.fill()
 
         let stroke = Self.blend(
-            .separatorColor,
-            SettingsSurfaceColor.neutralAccentNSColor.withAlphaComponent(0.65),
+            BoardDarkSurfaceStyle.borderNSColor,
+            SettingsSurfaceColor.neutralAccentNSColor.withAlphaComponent(0.24),
             highlightAmount
         )
         stroke.setStroke()
-        path.lineWidth = 0.5
+        path.lineWidth = 1
         path.stroke()
     }
 

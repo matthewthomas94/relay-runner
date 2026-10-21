@@ -2688,13 +2688,11 @@ private struct ProgramNoteDetailPanel: View {
                     confirmsDelete = true
                 }
                 ProgramDetailActionButton(
-                    systemName: "doc.on.doc", title: "Copy transcript",
-                    disabled: detail.isLoading || detail.transcript?.isEmpty != false,
-                    help: "Copy the transcript as plain text"
+                    systemName: "doc.on.doc", title: "Copy note",
+                    disabled: !detail.canCopyNote,
+                    help: "Copy the complete note.md as Markdown"
                 ) {
-                    guard let transcript = detail.transcript, !transcript.isEmpty else { return }
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(transcript, forType: .string)
+                    detail.copyNote()
                 }
                 ProgramDetailActionButton(
                     systemName: "folder", title: "Reveal",

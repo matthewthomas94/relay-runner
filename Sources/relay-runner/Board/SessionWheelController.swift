@@ -189,7 +189,7 @@ final class SessionWheelController {
     func performNoteAction(_ action: SessionWheelNoteAction) {
         guard isVisible, !model.isNested, action.isEnabled(for: model.notePhase) else { return }
         guard noteAction?(action) == true else {
-            model.notice = "Note Taker action unavailable"
+            model.notice = "Notetaker action unavailable"
             return
         }
         model.notice = nil
