@@ -229,6 +229,7 @@ final class StateMachine: @unchecked Sendable {
             }
 
         case ("tts", "message_waiting"):
+            guard !isLatePlaybackEvent(presentation) else { break }
             guard canApplyWaitingPresentation(presentation) else { break }
             pendingAcknowledgement = nil
             clearWorkingProgress()
@@ -263,7 +264,7 @@ final class StateMachine: @unchecked Sendable {
             }
 
         case ("tts", "preparing"):
-            guard !isLateOriginalPlaybackEvent(presentation) else { break }
+            guard !isLatePlaybackEvent(presentation) else { break }
             guard canApplyPlaybackPresentation(presentation) else { break }
             pendingAcknowledgement = nil
             clearWorkingProgress()
@@ -275,7 +276,7 @@ final class StateMachine: @unchecked Sendable {
             state = .preparing
 
         case ("tts", "speaking"):
-            guard !isLateOriginalPlaybackEvent(presentation) else { break }
+            guard !isLatePlaybackEvent(presentation) else { break }
             guard canApplyPlaybackPresentation(presentation) else { break }
             pendingAcknowledgement = nil
             clearWorkingProgress()
@@ -287,7 +288,7 @@ final class StateMachine: @unchecked Sendable {
             state = .speaking
 
         case ("tts", "failed"):
-            guard !isLateOriginalPlaybackEvent(presentation) else { break }
+            guard !isLatePlaybackEvent(presentation) else { break }
             guard canApplyPlaybackPresentation(presentation) else { break }
             pendingAcknowledgement = nil
             clearWorkingProgress()
@@ -302,6 +303,11 @@ final class StateMachine: @unchecked Sendable {
             guard canFinishSpeechPresentation(presentation) else { break }
             switch state {
             case .speaking, .preparing, .messageWaiting:
+                if presentation?.stopReason == "wheel_stop" {
+                    speechPresentation = presentation
+                    setCancelled()
+                    break
+                }
                 stateBeforeIdle = state
                 lastIdleTransitionTime = now()
                 state = .idle
@@ -726,12 +732,10 @@ final class StateMachine: @unchecked Sendable {
         speechPresentation = nil
     }
 
-    private func isLateOriginalPlaybackEvent(_ presentation: SpeechPresentation?) -> Bool {
-        guard replayRetained,
-              let retained = speechPresentation,
-              retained.mode == .retainedReplay,
-              let presentation else { return false }
-        return presentation.utteranceID == retained.utteranceID
-            && presentation.mode == .newDelivery
+    private func isLatePlaybackEvent(_ presentation: SpeechPresentation?) -> Bool {
+        guard let current = speechPresentation, let presentation,
+              presentation.utteranceID == current.utteranceID else { return false }
+        return current.stopReason == "wheel_stop"
+            || (replayRetained && current.mode == .retainedReplay && presentation.mode == .newDelivery)
     }
 }

@@ -116,6 +116,25 @@ class SpeechCoordinatorTests(unittest.TestCase):
         self.assertTrue(worker.input_queue.empty(), "Play must not manufacture a replay while a new message waits")
         self.assertEqual(coordinator._play_dispatched_id, pending["utterance_id"])
 
+    def test_wheel_stop_does_not_advance_the_reply_queue(self):
+        worker, coordinator, _ = self.make_coordinator()
+        finished = []
+        coordinator._on_reply_finished = finished.append
+        speech = SpeechIntent.build(spoken_text="A reply", session_key="a", kind="final")
+        coordinator.submit(speech)
+        payload = worker.input_queue.get_nowait()["_speech_intent"]
+        coordinator.control_session("a", "play")
+        worker.observer("started", payload)
+
+        self.assertTrue(coordinator.control_session("a", "stop"))
+        self.assertEqual(coordinator._stopped_attempt_reasons[speech.utterance_id], "wheel_stop")
+        worker.observer("cancelled", payload)
+
+        self.assertEqual(finished, [], "Stopping from the wheel must not surface the next reply")
+        self.assertEqual(coordinator.session_playback_states(), {"a": "replay"})
+        self.assertTrue(coordinator.control_session("a", "replay"))
+        self.assertEqual(worker.input_queue.get_nowait()["_speech_intent"]["replay_of"], speech.utterance_id)
+
     def test_session_play_latches_before_messenger_finishes_without_changing_other_session(self):
         worker, coordinator, _ = self.make_coordinator()
         coordinator.arm_waiting_playback(1, "one", kind="final")
@@ -461,6 +480,7 @@ class SpeechCoordinatorTests(unittest.TestCase):
             ("completed", None, ["completed"]),
             ("cancelled", "user_stop", ["user_stop"]),
             ("cancelled", "focus_switch", []),
+            ("cancelled", "wheel_stop", []),
         ):
             with self.subTest(state=state, reason=reason):
                 worker = FakeWorker()

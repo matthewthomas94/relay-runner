@@ -39,8 +39,8 @@ LIFECYCLE_ROLES = frozenset({
 })
 REALIZATION_DECISIONS = frozenset({"full", "delta", "suppress"})
 REPLAY_HISTORY_LIMIT = 32
-# A focus switch stops like the user does, but does not count as finishing it.
-REPLAY_RETAINING_STOP_REASONS = frozenset({"user_stop", "focus_switch"})
+# Focus switches and wheel stops retain replay without advancing the reply queue.
+REPLAY_RETAINING_STOP_REASONS = frozenset({"user_stop", "focus_switch", "wheel_stop"})
 MESSENGER_TIMING_STAGES = frozenset({
     "user_turn_received",
     "messenger_submitted",
@@ -369,7 +369,7 @@ class SpeechCoordinator:
             self.worker.skip()
             self._enqueue_worker(selected)
         if action == "stop":
-            self.stop_playback(session_key=session_key)
+            self.stop_playback(reason="wheel_stop", session_key=session_key)
         elif action == "play":
             self.play(session_key=session_key, waiting_session_key=waiting_session_key)
         else:

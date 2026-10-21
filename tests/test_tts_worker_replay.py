@@ -491,6 +491,36 @@ class TTSWorkerReplayTests(unittest.TestCase):
                 self.assertFalse(worker._playing)
                 self.assertEqual(events, [("cancelled", "speech-1")])
 
+    def test_wheel_stop_publishes_matching_overlay_cancellation_after_audio_stops(self):
+        from speech_coordinator import SpeechCoordinator, SpeechIntent
+
+        worker = self.make_worker()
+        finished = []
+        coordinator = SpeechCoordinator(worker, is_current=lambda seq, command_id: True,
+                                        on_reply_finished=finished.append)
+        speech = SpeechIntent.build(spoken_text="Response.", session_key="a", kind="final")
+        coordinator.submit(speech)
+        payload = worker.input_queue.get_nowait()["_speech_intent"]
+        worker._current_speech_intent = payload
+        worker._playing = True
+        worker._observe_speech("started", payload)
+        events = []
+
+        def notify(state, **fields):
+            self.assertFalse(worker._playing, "Hide the overlay only after audio has stopped")
+            events.append({"state": state, **fields})
+
+        with patch.object(tts_worker, "_notify_state", side_effect=notify):
+            self.assertTrue(coordinator.control_session("a", "stop"))
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["state"], "idle")
+        self.assertEqual(events[0]["stop_reason"], "wheel_stop")
+        self.assertEqual(events[0]["utterance_id"], speech.utterance_id)
+        self.assertEqual(events[0]["session_key"], "a")
+        self.assertEqual(finished, [])
+        self.assertEqual(coordinator.session_playback_states(), {"a": "replay"})
+
     def test_stopped_generation_reports_one_terminal_lifecycle(self):
         worker = self.make_worker()
         intent = {"utterance_id": "speech-1"}

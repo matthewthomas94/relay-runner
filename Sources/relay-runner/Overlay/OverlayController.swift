@@ -368,7 +368,7 @@ final class OverlayController {
         let preview = sm.messagePreview
 
         let showsStatePill = Self.showsPill(for: state, replayRetained: sm.replayRetained)
-        if showsStatePill {
+        if showsStatePill || sm.speechPresentation?.stopReason == "wheel_stop" {
             replyQueueHoldUntil = nil
         } else if let holdUntil = replyQueueHoldUntil {
             if now >= holdUntil {

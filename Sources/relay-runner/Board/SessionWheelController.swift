@@ -116,8 +116,8 @@ final class SessionWheelController {
         return CGPoint(x: (cursor.x - panel.frame.minX) * scale, y: (panel.frame.maxY - cursor.y) * scale)
     }
 
-    private func back() {
-        if !model.back(at: pointerLocation) { dismiss() }
+    func back() {
+        _ = model.back(at: pointerLocation)
     }
 
     func selectCenter() {
@@ -152,8 +152,9 @@ final class SessionWheelController {
             }
             else { model.notice = "Couldn't start session" }
         } else if let session = model.slots[index] {
-            dismiss()
             focusSession?(session.id)
+            refresh?(model, true)
+            panel?.orderFrontRegardless()
         } else {
             refresh?(model, true)
             model.showProjects(at: pointerLocation)
@@ -168,11 +169,7 @@ final class SessionWheelController {
             return
         }
         model.notice = nil
-        if action == .message, session.playback == .stop {
-            dismiss()
-        } else {
-            refresh?(model, true)
-        }
+        refresh?(model, true)
     }
 
     private func installMonitors() {

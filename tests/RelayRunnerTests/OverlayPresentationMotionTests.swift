@@ -145,6 +145,44 @@ final class OverlayPresentationMotionTests: XCTestCase {
         }
     }
 
+    func testWheelStopDismissesPillAndParticlesEvenWithQueuedReplies() {
+        for phase in ["preparing", "speaking"] {
+            for depth in [0, 1] {
+                let scene = Scene(showsCard: true)
+                defer { scene.stop() }
+                scene.controller.setReplyStackDepth(depth, now: 0)
+                let active = SpeechPresentation(utteranceID: "reply", originalUtteranceID: "reply",
+                                                mode: .newDelivery, sessionKey: "a")
+                scene.state.handleServiceEvent(source: "tts", newState: phase,
+                                               text: "Response.", presentation: active)
+                for time in [0.0, 0.31, 0.62] { scene.step(time) }
+
+                let stopped = SpeechPresentation(utteranceID: "reply", originalUtteranceID: "reply",
+                                                 mode: .newDelivery, stopReason: "wheel_stop", sessionKey: "a")
+                scene.state.handleServiceEvent(source: "tts", newState: "idle", text: nil, presentation: stopped)
+                scene.step(1)
+                scene.step(1.31)
+                assertAligned(scene)
+                XCTAssertEqual(scene.pill.alphaValue, 0)
+                XCTAssertEqual(scene.particles.opacity, 0)
+                XCTAssertFalse(scene.pill.isFrontCardDismissed)
+
+                // Late updates from the stopped attempt cannot restore its UI.
+                scene.state.handleServiceEvent(source: "tts", newState: phase,
+                                               text: "Response.", presentation: active)
+                scene.step(1.4)
+                XCTAssertEqual(scene.pill.alphaValue, 0)
+
+                let replay = SpeechPresentation(utteranceID: "replay", originalUtteranceID: "reply",
+                                                replayOf: "reply", mode: .explicitReplay, sessionKey: "a")
+                scene.state.handleServiceEvent(source: "tts", newState: "preparing",
+                                               text: "Response.", presentation: replay)
+                for time in [2.0, 2.31, 2.62] { scene.step(time) }
+                XCTAssertEqual(scene.pill.alphaValue, 1, "An explicit replay can show the UI again")
+            }
+        }
+    }
+
     func testReplyQueueHoldExpiresWhenNoReplyComesForward() {
         let scene = Scene(showsCard: true)
         defer { scene.stop() }

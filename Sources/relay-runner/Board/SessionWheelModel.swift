@@ -82,6 +82,13 @@ enum SessionWheelGeometry {
         min(slotCount - 1, Int(angle(at: point) / sliceAngle))
     }
 
+    /// Include the black gaps and submenu padding in the wheel's click area.
+    static func contains(_ point: CGPoint, submenuSlot: Int? = nil) -> Bool {
+        let radius = hypot(point.x - center.x, point.y - center.y)
+        if radius <= wheelRadius { return true }
+        return submenuSlot == slot(at: point) && radius <= actionOuterRadius + segmentGap
+    }
+
     static func position(slot: Int, radius: CGFloat, offset: CGFloat = 0) -> CGPoint {
         let angle = CGFloat(slot) * sliceAngle + offset
         return CGPoint(x: center.x + sin(angle) * radius, y: center.y - cos(angle) * radius)
@@ -166,7 +173,7 @@ final class SessionWheelModel {
         rearmPointer(at: pointer)
     }
 
-    /// Returns true when Back consumed a project submenu; otherwise dismiss.
+    /// Returns true when Back consumed a project submenu.
     func back(at pointer: CGPoint) -> Bool {
         guard pickingProject else { return false }
         if projectPage > 0 { turnPage(-1, at: pointer) }

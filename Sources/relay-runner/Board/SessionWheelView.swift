@@ -40,8 +40,8 @@ struct SessionWheelView: View {
         let submenus = submenus ?? .init(slot: submenuSlot)
         return ZStack {
             Color.clear.contentShape(Rectangle()).onTapGesture { point in
-                let outsideWheel = hypot(point.x - geometry.center.x, point.y - geometry.center.y) > geometry.wheelRadius
-                if outsideWheel || !menuMotion.motion.isAnimating { dismiss() }
+                let slot = geometry.slot(at: point)
+                if !geometry.contains(point, submenuSlot: submenus[slot] > 0 ? slot : nil) { dismiss() }
             }
             SessionWheelLiquidBackdrop(progress: submenus, reduceMotion: reduceMotion)
                 .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
@@ -120,7 +120,7 @@ struct SessionWheelView: View {
         let title = more ? "More projects" : pickingProject ? (project?.name ?? "") : (session?.name ?? "Start session")
         let sessionHint = session?.isFocused == true
             ? "Open this session's terminal in Workspace."
-            : "Switch session and close the wheel. Move outward for session controls."
+            : "Switch session. Move outward for session controls."
         let enabled = pickingProject
             ? more || (project?.isAvailable == true && menu.canStartSession)
             : true

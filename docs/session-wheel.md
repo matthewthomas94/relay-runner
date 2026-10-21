@@ -2,8 +2,8 @@
 
 A short, stationary **four-finger trackpad tap** toggles the wheel at the pointer.
 The menu bar also has **Show Session Wheel**. The wheel remains open after the
-fingers lift; selection requires a click. Tap again, click outside, or press Escape
-to dismiss. Near a display edge, the complete wheel and
+fingers lift; selection requires a click. Tap again or click outside to dismiss.
+Wheel actions and clicks in its gaps keep it open. Near a display edge, the complete wheel and
 its outer controls move inside the usable screen area.
 
 The six slots show live project sessions, including general-tasks. Sessions keep
@@ -17,20 +17,21 @@ limit still applies.
   one bead, then stretches it into a thin X; closing reverses the liquid morph.
   Another click can reverse the morph immediately.
   Project wheels show a left arrow in the center. It morphs through the same bead
-  when switching to or from the dots or X. Escape still backs out or dismisses
-  without toggling Workspace.
+  when switching to or from the dots or X. Escape backs out of project wheels
+  without closing the session wheel or toggling Workspace.
 - Hover a session to reveal three controls on the arc just outside its slot:
   an icon-only **Play / Stop playback / Replay message**, **Record / Stop recording
   and send message**, and **Stop session**. Tooltips and VoiceOver retain these labels.
   Play and replay share the triangle; the square stops playback. The microphone
   becomes a live, speech-reactive waveform while recording; the power icon ends the session.
-- Stop playback cancels the selected session's audio and dismisses the wheel once
-  the stop command is sent. Other submenu actions keep the wheel open. Click the
+- Stop playback cancels the selected session's audio and dismisses its playback
+  pill and particle overlay. The wheel stays open, and queued replies remain
+  available to play later. All submenu actions keep the wheel open. Click the
   active waveform to send the message to that session; its controls stay available
   afterward. Ending a session frees its slot without closing the wheel.
-- Click an unselected session to switch voice to it and close the wheel without
+- Click an unselected session to switch voice to it without
   opening Workspace; the notch briefly reports the switch. Click the currently
-  selected session to close the wheel and open Workspace directly to its terminal.
+  selected session to open Workspace directly to its terminal. Both keep the wheel open.
 - Click an empty slot to enter the project wheel. Click an available registered
   project to start its session without opening the Workspace. The center shows
   an icon-only left arrow, with **Back** retained in tooltips and VoiceOver labels.

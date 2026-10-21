@@ -56,6 +56,25 @@ final class SessionWheelTests: XCTestCase {
         }
     }
 
+    func testWheelAndSubmenuGapsAreInsideTheClickArea() {
+        XCTAssertTrue(geometry.contains(geometry.center))
+        for slot in 0..<geometry.slotCount {
+            let segmentGap = geometry.position(slot: slot, radius: 120, offset: geometry.sliceAngle / 2)
+            XCTAssertTrue(geometry.contains(segmentGap))
+            XCTAssertTrue(geometry.contains(geometry.position(slot: slot, radius: geometry.hubRadius + 4)))
+            XCTAssertTrue(geometry.contains(geometry.position(slot: slot, radius: geometry.wheelRadius - 4)))
+
+            for radius in [geometry.wheelRadius + 4, geometry.actionRadius, geometry.actionOuterRadius + 4] {
+                let point = geometry.position(slot: slot, radius: radius)
+                XCTAssertTrue(geometry.contains(point, submenuSlot: slot))
+                XCTAssertFalse(geometry.contains(point), "An absent submenu is outside the wheel")
+                XCTAssertFalse(geometry.contains(point, submenuSlot: (slot + 1) % geometry.slotCount))
+            }
+            let outside = geometry.position(slot: slot, radius: geometry.actionOuterRadius + geometry.segmentGap + 1)
+            XCTAssertFalse(geometry.contains(outside, submenuSlot: slot))
+        }
+    }
+
     func testContourLabelsStayUprightAndFitInsideEveryThinActionSegment() {
         let bounds = CGRect(origin: .zero, size: CGSize(width: geometry.diameter, height: geometry.diameter))
         for slot in 0..<geometry.slotCount {
@@ -209,27 +228,34 @@ final class SessionWheelTests: XCTestCase {
     }
 
     @MainActor
-    func testSessionSelectionDismissesBeforeHandingOffAndIgnoresFurtherClicks() {
+    func testSessionSelectionKeepsWheelOpenAndRefreshesFocus() {
         _ = NSApplication.shared
         for isFocused in [false, true] {
             for fromPointer in [false, true] {
                 let controller = SessionWheelController()
                 defer { controller.dismiss() }
+                var focused = isFocused
                 controller.refresh = { model, _ in
-                    model.refresh(sessions: [.init(id: "a", name: "Project A", isFocused: isFocused)])
+                    model.refresh(sessions: [.init(id: "a", name: "Project A", isFocused: focused)])
                 }
                 var selections: [String] = []
                 controller.focusSession = { id in
-                    XCTAssertFalse(controller.isVisible, "Dismiss before switching voice or opening the terminal")
+                    XCTAssertTrue(controller.isVisible)
+                    focused = true
                     selections.append(id)
                 }
                 controller.toggle()
                 controller.selectSlot(0, fromPointer: fromPointer)
-                XCTAssertFalse(controller.isVisible)
+                XCTAssertTrue(controller.isVisible)
+                XCTAssertEqual(controller.model.slots[0]?.isFocused, true)
                 XCTAssertEqual(selections, ["a"])
 
                 controller.selectSlot(0, fromPointer: fromPointer)
-                XCTAssertEqual(selections, ["a"], "A second click during dismissal must not open the terminal")
+                XCTAssertTrue(controller.isVisible)
+                XCTAssertEqual(selections, ["a", "a"])
+                controller.dismiss()
+                controller.selectSlot(0, fromPointer: fromPointer)
+                XCTAssertEqual(selections.count, 2)
             }
         }
     }
@@ -253,6 +279,26 @@ final class SessionWheelTests: XCTestCase {
         controller.selectCenter()
         XCTAssertFalse(controller.model.pickingProject)
         XCTAssertTrue(controller.isVisible)
+    }
+
+    @MainActor
+    func testEscapeNavigatesBackButOnlyTheToggleClosesTheRootWheel() {
+        _ = NSApplication.shared
+        let controller = SessionWheelController()
+        defer { controller.dismiss() }
+        controller.refresh = { model, _ in model.projects = self.projects(7) }
+        controller.toggle()
+        controller.selectSlot(0, fromPointer: false)
+        controller.selectSlot(5, fromPointer: false)
+        controller.back()
+        XCTAssertEqual(controller.model.projectPage, 0)
+        XCTAssertTrue(controller.model.pickingProject)
+        controller.back()
+        XCTAssertFalse(controller.model.pickingProject)
+        controller.back()
+        XCTAssertTrue(controller.isVisible)
+        controller.toggle()
+        XCTAssertFalse(controller.isVisible)
     }
 
     @MainActor
@@ -358,7 +404,7 @@ final class SessionWheelTests: XCTestCase {
     }
 
     @MainActor
-    func testStopPlaybackDismissesWheelOnlyAfterTheStopIsSent() {
+    func testStopPlaybackKeepsWheelOpenAndRefreshesThePlaybackControl() {
         _ = NSApplication.shared
         let controller = SessionWheelController()
         defer { controller.dismiss() }
@@ -382,11 +428,11 @@ final class SessionWheelTests: XCTestCase {
 
         acceptsAction = true
         controller.performAction("a", .message)
-        XCTAssertFalse(controller.isVisible, "Stopping playback must dismiss the wheel")
-        XCTAssertEqual(item.playback, .replay)
+        XCTAssertTrue(controller.isVisible, "Stopping playback must leave the wheel open")
+        XCTAssertEqual(controller.model.slots[0]?.playback, .replay)
         XCTAssertNil(controller.model.notice)
         controller.performAction("a", .message)
-        XCTAssertEqual(attempts, 2, "The dismissed overlay must not send another playback action")
+        XCTAssertEqual(attempts, 3, "Replay remains reachable after stopping playback")
     }
 
     func testUnavailableActionsAndRecordingLabelsReflectSessionState() {
