@@ -253,6 +253,7 @@ struct SessionWheelView: View {
     private func submenuButton(index: Int, slot: Int, title: String, help: String, symbol: String,
                                enabled: Bool, hovered: Bool, destructive: Bool,
                                level: @escaping () -> Float = { 0 }, perform: @escaping () -> Void) -> some View {
+        let isNoteMark = symbol == "checkmark" || symbol == "xmark"
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .control, isEnabled: enabled,
             isHovered: hovered,
@@ -272,7 +273,8 @@ struct SessionWheelView: View {
                             .frame(width: 10, height: 10)
                     } else {
                         Image(systemName: symbol)
-                            .font(AppTypography.symbolFont(size: 9, weight: symbol == "xmark" ? .semibold : .medium))
+                            .font(AppTypography.symbolFont(size: isNoteMark ? 11 : 9,
+                                                           weight: isNoteMark ? .bold : .medium))
                     }
                 }
                 .contentTransition(.opacity)

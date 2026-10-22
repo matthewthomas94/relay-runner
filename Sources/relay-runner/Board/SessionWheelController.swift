@@ -161,6 +161,7 @@ final class SessionWheelController {
             let project = model.visibleProjects[index]
             guard project.isAvailable else { return }
             if startProject?(project.path) == true {
+                model.didStartProject(project)
                 model.reset(at: pointerLocation)
                 refresh?(model, true)
             }
@@ -171,7 +172,7 @@ final class SessionWheelController {
             panel?.orderFrontRegardless()
         } else if !model.showingAllSessions {
             refresh?(model, true)
-            model.showProjects(at: pointerLocation)
+            model.showProjects(from: index, at: pointerLocation)
         }
     }
 

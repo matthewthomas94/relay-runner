@@ -92,7 +92,7 @@ enum SessionWheelNoteAction: Int, CaseIterable {
     func symbol(for phase: MeetingNoteCoordinatorPhase) -> String {
         switch self {
         case .recording: return phase.ownsForeground ? "checkmark" : "mic.fill"
-        case .pause: return phase == .paused ? "arrow.right.to.line" : "pause.fill"
+        case .pause: return phase == .paused ? "play.fill" : "pause.fill"
         case .cancel: return "xmark"
         }
     }
@@ -182,6 +182,8 @@ enum SessionWheelGeometry {
 @Observable
 final class SessionWheelModel {
     private var sessions: [SessionWheelSession?] = Array(repeating: nil, count: SessionWheelGeometry.slotCount)
+    private var projectSlot: Int?
+    private var pendingSessionPlacement: (id: String, index: Int)?
     var slots: [SessionWheelSession?] {
         if showingAllSessions { return sessions }
         var slots = Array<SessionWheelSession?>(repeating: nil, count: SessionWheelGeometry.slotCount)
@@ -246,6 +248,14 @@ final class SessionWheelModel {
         for index in self.sessions.indices {
             if let old = self.sessions[index] { self.sessions[index] = sessions.first { $0.id == old.id } }
         }
+        // Startup is asynchronous: match the requested context before filling other empty slots.
+        if let pending = pendingSessionPlacement, let session = sessions.first(where: { $0.id == pending.id }) {
+            if self.sessions[pending.index] == nil,
+               !self.sessions.contains(where: { $0?.id == session.id }) {
+                self.sessions[pending.index] = session
+            }
+            pendingSessionPlacement = nil
+        }
         // Bring overflow back into a free top slot when another session ends.
         for index in 3..<self.sessions.count where self.sessions[index] != nil {
             if let empty = self.sessions.prefix(3).firstIndex(where: { $0 == nil }) {
@@ -264,17 +274,25 @@ final class SessionWheelModel {
     func reset(at pointer: CGPoint) {
         pickingProject = false
         showingAllSessions = false
+        projectSlot = nil
         projectPage = 0
         notice = nil
         rearmPointer(at: pointer)
     }
 
-    func showProjects(at pointer: CGPoint) {
+    func showProjects(from slot: Int? = nil, at pointer: CGPoint) {
+        projectSlot = slot.flatMap { SessionWheelGeometry.sessionSlots.firstIndex(of: $0) }
         pickingProject = true
         showingAllSessions = false
         projectPage = 0
         notice = nil
         rearmPointer(at: pointer)
+    }
+
+    func didStartProject(_ project: SessionWheelProject) {
+        guard let projectSlot, sessions[projectSlot] == nil else { return }
+        let context = AssistantSessionContext(kind: .project, projectID: project.id, repositoryPath: project.path)
+        pendingSessionPlacement = (context.id, projectSlot)
     }
 
     func showAllSessions(at pointer: CGPoint) {

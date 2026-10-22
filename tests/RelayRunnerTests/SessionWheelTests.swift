@@ -157,7 +157,7 @@ final class SessionWheelTests: XCTestCase {
         }
         XCTAssertEqual(positions, positions.sorted(), "Pause/Resume, Start/Save, Cancel read left to right")
         XCTAssertEqual(SessionWheelNoteAction.pause.title(for: .paused), "Resume Notetaker")
-        XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .paused), "arrow.right.to.line")
+        XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .paused), "play.fill")
         XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .recording), "pause.fill")
     }
 
@@ -507,6 +507,77 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(started, projects(7)[6].path)
         XCTAssertTrue(controller.isVisible)
         XCTAssertFalse(controller.model.pickingProject)
+    }
+
+    @MainActor
+    func testNewSessionUsesTheChosenEmptySlotAfterProjectPagination() {
+        _ = NSApplication.shared
+        for slot in geometry.sessionSlots {
+            for delayed in [false, true] {
+                let controller = SessionWheelController()
+                defer { controller.dismiss() }
+                let project = projects(7)[6]
+                let context = AssistantSessionContext(kind: .project, projectID: project.id, repositoryPath: project.path)
+                let startedSession = session(context.id)
+                var live: [SessionWheelSession] = []
+                controller.refresh = { model, _ in
+                    model.projects = self.projects(7)
+                    model.refresh(sessions: live)
+                }
+                controller.startProject = { path in
+                    XCTAssertEqual(path, project.path)
+                    if !delayed { live = [startedSession] }
+                    return true
+                }
+                controller.toggle()
+                controller.selectSlot(slot, fromPointer: false)
+                controller.selectSlot(5, fromPointer: false)
+                controller.selectSlot(1, fromPointer: false)
+                XCTAssertFalse(controller.model.pickingProject)
+                XCTAssertTrue(controller.isVisible)
+                if delayed {
+                    controller.model.refresh(sessions: [])
+                    controller.model.refresh(sessions: [])
+                    live = [startedSession]
+                    controller.model.refresh(sessions: live)
+                }
+                XCTAssertEqual(controller.model.slots[slot]?.id, context.id,
+                               "The root slot, not the project page or first free slot, owns the new session")
+                XCTAssertEqual(controller.model.slots.compactMap { $0?.id }, [context.id])
+                controller.model.refresh(sessions: live)
+                XCTAssertEqual(controller.model.slots[slot]?.id, context.id)
+            }
+        }
+    }
+
+    @MainActor
+    func testFailedStartDoesNotReuseTheAbandonedSlotAndExistingSessionsStayPut() {
+        _ = NSApplication.shared
+        let controller = SessionWheelController()
+        defer { controller.dismiss() }
+        let project = projects(1)[0]
+        let context = AssistantSessionContext(kind: .project, projectID: project.id, repositoryPath: project.path)
+        var live = [session("existing")]
+        controller.refresh = { model, _ in
+            model.projects = [project]
+            model.refresh(sessions: live)
+        }
+        controller.startProject = { _ in false }
+        controller.toggle()
+        controller.selectSlot(5, fromPointer: false)
+        controller.selectSlot(0, fromPointer: false)
+        XCTAssertTrue(controller.model.pickingProject)
+        XCTAssertEqual(controller.model.notice, "Couldn't start session")
+        controller.selectCenter()
+        controller.selectSlot(1, fromPointer: false)
+        controller.startProject = { _ in
+            live.append(self.session(context.id))
+            return true
+        }
+        controller.selectSlot(0, fromPointer: false)
+        XCTAssertEqual(controller.model.slots[0]?.id, "existing")
+        XCTAssertEqual(controller.model.slots[1]?.id, context.id)
+        XCTAssertNil(controller.model.slots[5])
     }
 
     func testWheelStartsAtCursorAndKeepsOuterControlsInsideEveryDisplayEdge() {

@@ -29,7 +29,7 @@ sessions. An overflow session fills a top slot when one becomes free.
   from left to right, on the same liquid submenu used for sessions. Start uses
   the session microphone icon and becomes the app's Save checkmark while recording
   or paused; Save stops, saves and transcribes the recording.
-  Pause becomes a continuation arrow for Resume while paused. The plain red X
+  Pause becomes a play icon for Resume while paused. The plain red X
   cancels the active note, deleting its draft and recording without saving or transcribing. Save uses
   the normal text colour. Cancel is disabled without an active recording, and
   can retry a pending cancellation; capture and save transitions disable the
@@ -57,7 +57,10 @@ sessions. An overflow session fills a top slot when one becomes free.
   The entire center is the hover and click target. When projects overflow, the
   sixth segment becomes **More projects**, with an ellipsis icon, and opens the next nested wheel.
   Back or Escape returns one wheel at a time, then to sessions. Starting a project
-  returns to the session wheel and keeps it open.
+  returns to the session wheel and keeps it open. The new session occupies the
+  original empty slot, including after paging through projects or waiting for startup.
+  Session changes update tiles in place without replaying the whole wheel's transition;
+  navigating between menus retains that transition.
 - Playback shows **Play message** for queued speech, **Stop playback** while
   preparing or playing, and **Replay message** when only replay history remains.
   State comes from the shared speech coordinator independently of notch recording

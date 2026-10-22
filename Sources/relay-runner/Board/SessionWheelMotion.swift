@@ -151,7 +151,8 @@ final class SessionWheelMenuMotion {
             return
         }
         do {
-            if displayed?.identity != menu.identity {
+            // Only navigation replaces the wheel. Live session changes update their slots in place.
+            if displayed?.page != menu.page {
                 let duration = motion.setVisible(false, reduceMotion: reduceMotion,
                                                  at: ProcessInfo.processInfo.systemUptime)
                 try await Task.sleep(for: .seconds(duration))
