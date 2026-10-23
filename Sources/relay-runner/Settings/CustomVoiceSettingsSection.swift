@@ -75,6 +75,7 @@ struct CustomVoiceSettingsSection: View {
                 .transition(.relayElement)
                 if let profile = selected {
                     SettingsRow {
+                        Spacer(minLength: 0)
                         SettingsActionButton(title: "Original", systemImage: "play.fill", isEnabled: audioActionsEnabled) {
                             playOriginal(profile)
                         }
@@ -115,6 +116,7 @@ struct CustomVoiceSettingsSection: View {
             SettingsDivider()
 
             SettingsRow {
+                Spacer(minLength: 0)
                 SettingsActionButton(
                     title: importing ? "Importing…" : "Import Audio", systemImage: "square.and.arrow.down",
                     isEnabled: !importing && !preview.isBusy && !recorder.isBusy,
@@ -278,6 +280,7 @@ struct CustomVoiceSettingsSection: View {
                     .onChange(of: affirmed) { _, _ in discardStaged() }
             }
             SettingsRow {
+                Spacer(minLength: 0)
                 SettingsActionButton(title: "Original", systemImage: "play.fill", isEnabled: audioActionsEnabled) {
                     preview.playOriginal(samples: selectedSamples, appState: appState)
                 }
