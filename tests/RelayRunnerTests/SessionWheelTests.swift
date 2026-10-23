@@ -14,6 +14,9 @@ final class SessionWheelTests: XCTestCase {
     }
 
     private let geometry = SessionWheelGeometry.self
+    private func makeController() -> SessionWheelController {
+        SessionWheelController(haptics: .init(perform: { _ in }))
+    }
     private func session(_ id: String) -> SessionWheelSession { .init(id: id, name: id) }
     private func projects(_ count: Int) -> [SessionWheelProject] {
         (0..<count).map { .init(id: "\($0)", name: "Project \($0)", path: "/projects/\($0)") }
@@ -164,7 +167,7 @@ final class SessionWheelTests: XCTestCase {
     @MainActor
     func testShortcutsAndNoteActionsKeepTheWheelOpenAndRespectDisabledStates() {
         _ = NSApplication.shared
-        let controller = SessionWheelController()
+        let controller = makeController()
         defer { controller.dismiss() }
         var phase = MeetingNoteCoordinatorPhase.idle
         controller.refresh = { model, _ in model.notePhase = phase }
@@ -211,7 +214,7 @@ final class SessionWheelTests: XCTestCase {
         _ = NSApplication.shared
         let workspace = BoardOverlayPanel()
         workspace.keyEligible = true
-        let controller = SessionWheelController()
+        let controller = makeController()
         controller.openShortcut = { _ in workspace.makeKeyAndOrderFront(nil) }
         defer {
             controller.dismiss()
@@ -245,7 +248,7 @@ final class SessionWheelTests: XCTestCase {
     @MainActor
     func testOverflowNavigationPreservesSessionsAndWheelVisibility() {
         _ = NSApplication.shared
-        let controller = SessionWheelController()
+        let controller = makeController()
         defer { controller.dismiss() }
         controller.refresh = { model, _ in model.refresh(sessions: ["a", "b", "c", "d"].map(self.session)) }
         var focused: String?
@@ -387,7 +390,7 @@ final class SessionWheelTests: XCTestCase {
     @MainActor
     func testSessionCenterTogglesWorkspaceWithoutDismissingTheWheel() {
         _ = NSApplication.shared
-        let controller = SessionWheelController()
+        let controller = makeController()
         defer { controller.dismiss() }
         var workspaceVisible = false
         var toggleCount = 0
@@ -419,7 +422,7 @@ final class SessionWheelTests: XCTestCase {
         _ = NSApplication.shared
         for isFocused in [false, true] {
             for fromPointer in [false, true] {
-                let controller = SessionWheelController()
+                let controller = makeController()
                 defer { controller.dismiss() }
                 var focused = isFocused
                 controller.refresh = { model, _ in
@@ -450,7 +453,7 @@ final class SessionWheelTests: XCTestCase {
     @MainActor
     func testProjectCenterGoesBackOnePageWithoutTogglingWorkspace() {
         _ = NSApplication.shared
-        let controller = SessionWheelController()
+        let controller = makeController()
         defer { controller.dismiss() }
         controller.refresh = { model, _ in model.projects = self.projects(7) }
         controller.toggleWorkspace = { XCTFail("Back must not toggle Workspace") }
@@ -471,7 +474,7 @@ final class SessionWheelTests: XCTestCase {
     @MainActor
     func testEscapeNavigatesBackButOnlyTheToggleClosesTheRootWheel() {
         _ = NSApplication.shared
-        let controller = SessionWheelController()
+        let controller = makeController()
         defer { controller.dismiss() }
         controller.refresh = { model, _ in model.projects = self.projects(7) }
         controller.toggle()
@@ -491,7 +494,7 @@ final class SessionWheelTests: XCTestCase {
     @MainActor
     func testMoreSegmentNavigatesAtSessionLimitAndStartingAProjectKeepsWheelOpen() {
         _ = NSApplication.shared
-        let controller = SessionWheelController()
+        let controller = makeController()
         defer { controller.dismiss() }
         controller.refresh = { model, _ in model.projects = self.projects(7) }
         var started: String?
@@ -514,7 +517,7 @@ final class SessionWheelTests: XCTestCase {
         _ = NSApplication.shared
         for slot in geometry.sessionSlots {
             for delayed in [false, true] {
-                let controller = SessionWheelController()
+                let controller = makeController()
                 defer { controller.dismiss() }
                 let project = projects(7)[6]
                 let context = AssistantSessionContext(kind: .project, projectID: project.id, repositoryPath: project.path)
@@ -553,7 +556,7 @@ final class SessionWheelTests: XCTestCase {
     @MainActor
     func testFailedStartDoesNotReuseTheAbandonedSlotAndExistingSessionsStayPut() {
         _ = NSApplication.shared
-        let controller = SessionWheelController()
+        let controller = makeController()
         defer { controller.dismiss() }
         let project = projects(1)[0]
         let context = AssistantSessionContext(kind: .project, projectID: project.id, repositoryPath: project.path)
@@ -608,7 +611,7 @@ final class SessionWheelTests: XCTestCase {
     @MainActor
     func testRecordingAndSendingKeepWheelOpenForTheSameSession() {
         _ = NSApplication.shared
-        let controller = SessionWheelController()
+        let controller = makeController()
         defer { controller.dismiss() }
         var recording = false
         var targets: [String] = []
@@ -643,7 +646,7 @@ final class SessionWheelTests: XCTestCase {
     @MainActor
     func testPlaybackAndStopSessionKeepWheelOpenAndRefreshItsSlots() {
         _ = NSApplication.shared
-        let controller = SessionWheelController()
+        let controller = makeController()
         defer { controller.dismiss() }
         var sessions = [session("a")]
         controller.refresh = { model, _ in model.refresh(sessions: sessions) }
@@ -664,7 +667,7 @@ final class SessionWheelTests: XCTestCase {
     @MainActor
     func testStopPlaybackKeepsWheelOpenAndRefreshesThePlaybackControl() {
         _ = NSApplication.shared
-        let controller = SessionWheelController()
+        let controller = makeController()
         defer { controller.dismiss() }
         var item = session("a")
         item.playback = .stop

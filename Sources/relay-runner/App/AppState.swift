@@ -957,6 +957,7 @@ final class AppState {
         sessionWheel.refresh = { [weak self] model, includesProjects in
             self?.refreshSessionWheel(model, includesProjects: includesProjects)
         }
+        sessionWheel.haptics.isEnabled = { [weak self] in self?.config.general.wheel_haptics ?? false }
         sessionWheel.toggleWorkspace = { [weak self] in self?.toggleWorkspace() }
         sessionWheel.openShortcut = { [weak self] shortcut in
             guard let self, self.allowsAppShellAccess else { return }

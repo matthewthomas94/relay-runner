@@ -3,6 +3,7 @@ import SwiftUI
 
 final class SessionWheelController {
     let model = SessionWheelModel()
+    let haptics: SessionWheelHaptics
     var refresh: ((SessionWheelModel, Bool) -> Void)?
     var focusSession: ((String) -> Void)?
     var startProject: ((String) -> Bool)?
@@ -21,6 +22,10 @@ final class SessionWheelController {
     private var screenObserver: NSObjectProtocol?
     private var sleepObservers: [NSObjectProtocol] = []
     private(set) var isVisible = false
+
+    init(haptics: SessionWheelHaptics = SessionWheelHaptics()) {
+        self.haptics = haptics
+    }
 
     func toggle() {
         if isVisible { dismiss(); return }
@@ -45,6 +50,7 @@ final class SessionWheelController {
                 dismiss: { [weak self] in self?.dismiss() },
                 performNoteAction: { [weak self] in self?.performNoteAction($0) },
                 recordingLevel: { [weak self] id in self?.recordingLevel?(id) ?? 0 },
+                hoverFeedback: { [weak self] point, target in self?.hoverFeedback(at: point, target: target) },
                 presentation: presentation
             )
         }.scaleEffect(size / SessionWheelGeometry.diameter).frame(width: size, height: size)
@@ -56,6 +62,7 @@ final class SessionWheelController {
 
     private func present(_ panel: SessionWheelPanel) {
         isVisible = true
+        haptics.reset(at: pointerLocation)
         panel.ignoresMouseEvents = false
         installMonitors()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
@@ -120,7 +127,12 @@ final class SessionWheelController {
     }
 
     func back() {
-        _ = model.back(at: pointerLocation)
+        if isVisible, model.back(at: pointerLocation) { haptics.activate() }
+    }
+
+    func hoverFeedback(at point: CGPoint?, target: SessionWheelHaptics.Target?) {
+        guard isVisible else { return }
+        haptics.hover(target, at: point)
     }
 
     func selectCenter() {
@@ -128,7 +140,10 @@ final class SessionWheelController {
         if model.isNested {
             back()
         } else {
-            toggleWorkspace?()
+            if let toggleWorkspace {
+                toggleWorkspace()
+                haptics.activate()
+            }
             refresh?(model, false)
             panel?.orderFrontRegardless()
         }
@@ -137,13 +152,17 @@ final class SessionWheelController {
     func selectSlot(_ index: Int, fromPointer: Bool) {
         guard isVisible, model.slots.indices.contains(index) else { return }
         if let shortcut = model.shortcut(at: index) {
-            openShortcut?(shortcut)
+            if let openShortcut {
+                openShortcut(shortcut)
+                haptics.activate()
+            }
             refresh?(model, false)
             panel?.orderFrontRegardless()
             return
         }
         if model.isMoreSessionsSlot(index) {
             model.showAllSessions(at: pointerLocation)
+            haptics.activate()
             return
         }
         if model.isNested {
@@ -154,6 +173,7 @@ final class SessionWheelController {
         if model.pickingProject {
             if model.isMoreProjectsSlot(index) {
                 model.turnPage(1, at: pointerLocation)
+                haptics.activate()
                 return
             }
             guard model.visibleProjects.indices.contains(index),
@@ -161,18 +181,23 @@ final class SessionWheelController {
             let project = model.visibleProjects[index]
             guard project.isAvailable else { return }
             if startProject?(project.path) == true {
+                haptics.activate()
                 model.didStartProject(project)
                 model.reset(at: pointerLocation)
                 refresh?(model, true)
             }
             else { model.notice = "Couldn't start session" }
         } else if let session = model.slots[index] {
-            focusSession?(session.id)
+            if let focusSession {
+                focusSession(session.id)
+                haptics.activate()
+            }
             refresh?(model, true)
             panel?.orderFrontRegardless()
         } else if !model.showingAllSessions {
             refresh?(model, true)
             model.showProjects(from: index, at: pointerLocation)
+            haptics.activate()
         }
     }
 
@@ -184,6 +209,7 @@ final class SessionWheelController {
             return
         }
         model.notice = nil
+        haptics.activate()
         refresh?(model, true)
     }
 
@@ -194,6 +220,7 @@ final class SessionWheelController {
             return
         }
         model.notice = nil
+        haptics.activate()
         refresh?(model, true)
         panel?.orderFrontRegardless()
     }

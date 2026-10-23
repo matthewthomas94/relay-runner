@@ -107,6 +107,15 @@ four-dot glyph at rest and crossfades between the glyph, X and Back arrow instea
 
 ## Input and lifecycle
 
+**Settings → General → Session wheel → Wheel haptics** is on by default. On a
+Force Touch trackpad, moving into an enabled cell, center, or submenu control gives
+an alignment tick; accepted actions give a confirmation pulse. Hover ticks have an
+80 ms cooldown and do not repeat while staying on a control. Gaps, disabled
+controls, background refreshes, and opening under a stationary pointer stay silent.
+Feedback uses the current macOS haptic performer and respects system preferences;
+macOS may suppress it when fingers are off the trackpad. The four-finger gesture's
+timing is unchanged, and there is no delayed opening pulse.
+
 Global trackpad contacts are read through the optional macOS
 `MultitouchSupport` framework, loaded dynamically. If its required symbols are
 unavailable, the menu-bar entry remains usable. The reader rejects swipes,
@@ -129,7 +138,7 @@ package is not embedded; the interactive controls retain Relay's own styling.
 Run the focused checks with:
 
 ```sh
-env -u SDKROOT swift test --filter 'FourFingerTapGestureTests|SessionWheelTests|SessionWheelMotionTests|MeetingNoteCoordinatorTests|ProgramBoardOverlayControllerTests|VoiceReplyBadgeTests|STT|VoiceBridgeFocusTests|CapsLockGestureTests'
+env -u SDKROOT swift test --filter 'FourFingerTapGestureTests|SessionWheelTests|SessionWheelHapticsTests|SessionWheelMotionTests|MeetingNoteCoordinatorTests|ProgramBoardOverlayControllerTests|VoiceReplyBadgeTests|STT|VoiceBridgeFocusTests|CapsLockGestureTests'
 ```
 
 Set `RELAY_WHEEL_RENDER_DIR` to an output directory to export SwiftUI previews
