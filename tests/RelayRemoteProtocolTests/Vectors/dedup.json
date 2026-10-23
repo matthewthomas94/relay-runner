@@ -1,0 +1,21 @@
+{
+ "window": 3,
+ "ids": [
+  "aaaa8a52-6c1e-4f0a-9d57-0b7a1c2e4d10",
+  "bbbb8a52-6c1e-4f0a-9d57-0b7a1c2e4d10",
+  "AAAA8a52-6c1e-4f0a-9d57-0b7a1c2e4d10",
+  "cccc8a52-6c1e-4f0a-9d57-0b7a1c2e4d10",
+  "dddd8a52-6c1e-4f0a-9d57-0b7a1c2e4d10",
+  "aaaa8a52-6c1e-4f0a-9d57-0b7a1c2e4d10",
+  "cccc8a52-6c1e-4f0a-9d57-0b7a1c2e4d10"
+ ],
+ "expected_duplicates": [
+  false,
+  false,
+  true,
+  false,
+  false,
+  false,
+  true
+ ]
+}
