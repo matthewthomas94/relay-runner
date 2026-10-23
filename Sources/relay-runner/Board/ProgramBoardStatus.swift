@@ -1630,6 +1630,11 @@ final class ProgramBoardViewModel {
         reloadInFlight
     }
 
+    /// The reload another caller started, so a loading surface can wait on it.
+    var inFlightReloadTask: Task<Void, Never>? {
+        reloadInFlight ? reloadTask : nil
+    }
+
     func cancelReload() {
         reloadTask?.cancel()
         reloadTask = nil

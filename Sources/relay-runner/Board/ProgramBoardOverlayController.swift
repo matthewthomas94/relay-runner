@@ -1046,7 +1046,16 @@ final class ProgramBoardOverlayController {
             loadingStateHandler?(.idle)
             return
         }
-        guard !model.hasReloadInFlight else { return }
+        if model.hasReloadInFlight {
+            // Another caller owns this reload; a blocked surface must still
+            // learn when it lands instead of staying on the sketch.
+            if updateCheckTask == nil, contentLoadBlocked, let reloadTask = model.inFlightReloadTask {
+                revealContainer?.setLoading(true)
+                loadingStateHandler?(.loadingContent)
+                observeReload(reloadTask, blocksContent: true)
+            }
+            return
+        }
         let route = boardRouteResolver()
         let nextScope = Self.projectScope(
             for: route,
@@ -1071,7 +1080,10 @@ final class ProgramBoardOverlayController {
         guard let reloadTask = model.reloadIfIdle(inBackground: inBackground) else {
             return
         }
-        let blocksContent = contentLoadBlocked
+        observeReload(reloadTask, blocksContent: contentLoadBlocked)
+    }
+
+    private func observeReload(_ reloadTask: Task<Void, Never>, blocksContent: Bool) {
         updateCheckTask = Task { @MainActor [weak self] in
             await reloadTask.value
             guard !Task.isCancelled, let self else { return }

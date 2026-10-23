@@ -37,8 +37,8 @@ enum SkeletonConstruction {
     /// Start-to-end ratio of the growing contour. No overshoot.
     static let startScale: CGFloat = 0.42
     static let scatterDuration: TimeInterval = 0.3
-    static let scatterJitter: CGFloat = 10
-    static let scatterSpacing: CGFloat = 15
+    static let scatterJitter: CGFloat = 22
+    static let scatterSpacing: CGFloat = 10
     static let outlineDelay: TimeInterval = 0.1
     static let growDuration: TimeInterval = 0.4
     /// The contour grows on a plain ease-out. The kit's enter curve settles in
@@ -51,12 +51,14 @@ enum SkeletonConstruction {
     static let chromeArrival: TimeInterval = 0.2
 
     /// Resting (fully constructed) chrome opacities.
-    static let handleOpacity: Float = 0.55
-    static let guideOpacity: Float = 0.14
-    static let readoutOpacity: Float = 0.62
-    static let bracketOpacity: Float = 0.4
-    static let gridOpacity: Float = 0.08
-    static let gridConstructionOpacity: Float = 0.22
+    static let handleOpacity: Float = 0.9
+    static let guideOpacity: Float = 0.3
+    static let readoutOpacity: Float = 0.85
+    static let bracketOpacity: Float = 0.7
+    static let gridOpacity: Float = 0.18
+    static let gridConstructionOpacity: Float = 0.6
+    /// Hollow corner handles, as the lander draws them.
+    static let handleSize: CGFloat = 4.5
 
     /// Width a contour needs before it earns design-tool chrome.
     static let annotatedMinimumWidth: CGFloat = 200
@@ -75,6 +77,11 @@ enum SkeletonConstruction {
 
     static func counter(placed: Int, total: Int) -> String {
         String(format: "%03d·%03d", placed, total)
+    }
+
+    /// The inner content frame label sitting on the outline, e.g. `FRAME 300×120`.
+    static func innerLabel(width: CGFloat, height: CGFloat) -> String {
+        String(format: "FRAME %d×%d", Int(width.rounded()), Int(height.rounded()))
     }
 
     /// Surfaces earn chrome when the layout has them; otherwise its widest
@@ -129,6 +136,8 @@ final class SkeletonLoaderView: NSView {
     private var annotations: [Annotation] = []
     private var drawnBounds: CGRect?
     private var animating = false
+    private var handoffGeneration = 0
+    private var handoffCompletion: (() -> Void)?
 
     private(set) var bones: [SkeletonBone] = []
 
@@ -145,8 +154,11 @@ final class SkeletonLoaderView: NSView {
         let brackets: CAShapeLayer
         let readout: CATextLayer
         let counter: CATextLayer
+        let frameLabel: CATextLayer
         let cursor: CAShapeLayer
+        let trail: CAShapeLayer
         let cursorPath: CGPath
+        let handlesStart: CGPath
     }
 
     override var isFlipped: Bool { true }
@@ -162,16 +174,16 @@ final class SkeletonLoaderView: NSView {
         sketchLayer.addSublayer(panelsLayer)
 
         let ink = SettingsSurfaceColor.mutedTextNSColor
-        fieldLayer.fillColor = ink.withAlphaComponent(0.10).cgColor
+        fieldLayer.fillColor = ink.withAlphaComponent(0.16).cgColor
         sketchLayer.addSublayer(fieldLayer)
         sketchLayer.addSublayer(guideChromeLayer)
         sketchLayer.addSublayer(scatterLayer)
         bonesGradient.colors = [
-            ink.withAlphaComponent(0.32).cgColor,
-            ink.withAlphaComponent(0.32).cgColor,
-            ink.withAlphaComponent(0.72).cgColor,
-            ink.withAlphaComponent(0.32).cgColor,
-            ink.withAlphaComponent(0.32).cgColor,
+            ink.withAlphaComponent(0.55).cgColor,
+            ink.withAlphaComponent(0.55).cgColor,
+            ink.withAlphaComponent(1.0).cgColor,
+            ink.withAlphaComponent(0.55).cgColor,
+            ink.withAlphaComponent(0.55).cgColor,
         ]
         bonesGradient.startPoint = CGPoint(x: 0, y: 0)
         bonesGradient.endPoint = CGPoint(x: 1, y: 1)
@@ -236,7 +248,7 @@ final class SkeletonLoaderView: NSView {
                 let stroke = CAShapeLayer()
                 stroke.fillColor = nil
                 stroke.strokeColor = NSColor.black.cgColor
-                stroke.lineWidth = 1.8
+                stroke.lineWidth = 2.2
                 stroke.lineCap = .round
                 stroke.lineJoin = .round
                 stroke.lineDashPattern = [0.01, NSNumber(value: Double(Self.dotSpacing - 0.01))]
@@ -253,7 +265,7 @@ final class SkeletonLoaderView: NSView {
             stroke.contentsScale = scale
             var shift = CGAffineTransform(translationX: -box.minX, y: -box.minY)
             stroke.path = path.copy(using: &shift)
-            stroke.opacity = index < surfaces.count ? 0.45 : (bone.style == .outline ? 0.7 : 1)
+            stroke.opacity = index < surfaces.count ? 0.8 : (bone.style == .outline ? 0.9 : 1)
         }
 
         scatterLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
@@ -308,17 +320,18 @@ final class SkeletonLoaderView: NSView {
             parent.addSublayer(shape)
             return shape
         }
-        func label(_ text: String, origin: CGPoint) -> CATextLayer {
+        func label(_ text: String, origin: CGPoint, width: CGFloat? = nil,
+                   alignment: CATextLayerAlignmentMode = .left) -> CATextLayer {
             let label = CATextLayer()
             label.contentsScale = scale
             label.font = AppTypography.terminalGridFont(size: 9, weight: .medium)
             label.fontSize = 9
             label.foregroundColor = inked
-            label.alignmentMode = .left
+            label.alignmentMode = alignment
             label.truncationMode = .none
             label.isWrapped = false
             label.string = text
-            label.frame = CGRect(origin: origin, size: CGSize(width: max(40, rect.width), height: 12))
+            label.frame = CGRect(origin: origin, size: CGSize(width: width ?? max(40, rect.width), height: 12))
             label.opacity = SkeletonConstruction.readoutOpacity
             handleChromeLayer.addSublayer(label)
             return label
@@ -328,15 +341,18 @@ final class SkeletonLoaderView: NSView {
         let contourRadius = max(0, radius - 1)
         let points = Self.perimeterPoints(of: contour, radius: contourRadius, spacing: SkeletonConstruction.scatterSpacing)
         let scatter = shape(scatterLayer, fill: true)
-        scatter.path = Self.dots(at: points, radius: 1.3)
+        scatter.path = Self.dots(at: points, radius: 1.9)
         scatter.opacity = 0
-        let scatterStart = Self.dots(at: Self.scattered(points, seed: strokeIndex), radius: 1.3)
+        let scatterStart = Self.dots(at: Self.scattered(points, seed: strokeIndex), radius: 1.9)
 
-        let handles = shape(handleChromeLayer, fill: true)
-        handles.path = Self.handlesPath(around: rect)
+        let handles = shape(handleChromeLayer, fill: false, lineWidth: 1)
+        handles.path = Self.handlesPath(around: rect, size: SkeletonConstruction.handleSize)
+        let startRect = rect.insetBy(dx: rect.width * (1 - SkeletonConstruction.startScale) / 2,
+                                     dy: rect.height * (1 - SkeletonConstruction.startScale) / 2)
+        let handlesStart = Self.handlesPath(around: startRect, size: SkeletonConstruction.handleSize)
         handles.opacity = SkeletonConstruction.handleOpacity
 
-        let guides = shape(guideChromeLayer, fill: false, dash: [1, 3])
+        let guides = shape(guideChromeLayer, fill: false, lineWidth: 1.2, dash: [1, 3])
         guides.path = Self.guidesPath(around: rect, in: bounds)
         guides.opacity = SkeletonConstruction.guideOpacity
 
@@ -345,35 +361,48 @@ final class SkeletonLoaderView: NSView {
         grid.path = Self.innerGridPath(in: inner)
         grid.opacity = SkeletonConstruction.gridOpacity
 
-        let brackets = shape(guideChromeLayer, fill: false)
+        let brackets = shape(guideChromeLayer, fill: false, lineWidth: 1.2)
         brackets.path = Self.bracketsPath(around: inner)
         brackets.opacity = SkeletonConstruction.bracketOpacity
 
         let total = Int((Self.perimeter(of: contour, radius: contourRadius) / Self.dotSpacing).rounded())
-        let readoutAbove = rect.minY - bounds.minY >= 16
+        let readoutAbove = rect.minY - bounds.minY >= 20
         let readout = label(
             SkeletonConstruction.readout(width: rect.width, height: rect.height,
                                          time: SkeletonConstruction.readoutDuration),
-            origin: readoutAbove ? CGPoint(x: rect.minX, y: rect.minY - 15) : CGPoint(x: rect.minX + 10, y: rect.minY + 8)
+            origin: readoutAbove ? CGPoint(x: rect.minX, y: rect.minY - 19) : CGPoint(x: inner.minX + 12, y: inner.minY + 4)
         )
-        let counterBelow = bounds.maxY - rect.maxY >= 16
+        // The lander's inner frame label sits on the top edge, right of the handle.
+        let frameLabel = label(
+            SkeletonConstruction.innerLabel(width: inner.width, height: inner.height),
+            origin: CGPoint(x: rect.minX + SkeletonConstruction.handleSize + 6, y: rect.minY - 6)
+        )
+        // The dot counter rides inside, centred along the bottom edge the cursor walks.
         let counter = label(
             SkeletonConstruction.counter(placed: total, total: total),
-            origin: counterBelow ? CGPoint(x: rect.minX, y: rect.maxY + 3) : CGPoint(x: inner.minX + 12, y: inner.maxY - 13)
+            origin: CGPoint(x: rect.midX - 30, y: rect.maxY - 15), width: 60, alignment: .center
         )
 
         let cursor = shape(handleChromeLayer, fill: true)
         cursor.bounds = CGRect(x: 0, y: 0, width: 5, height: 5)
         cursor.path = CGPath(ellipseIn: cursor.bounds, transform: nil)
-        cursor.position = points.first ?? CGPoint(x: contour.minX + contourRadius, y: contour.minY)
+        cursor.position = CGPoint(x: contour.minX + contourRadius, y: contour.maxY)
         cursor.opacity = 0
+        let trail = shape(handleChromeLayer, fill: true)
+        trail.bounds = CGRect(x: 0, y: 0, width: 4.5, height: 4.5)
+        trail.path = CGPath(ellipseIn: trail.bounds, transform: nil)
+        trail.position = cursor.position
+        trail.opacity = 0
+        // Two bright dots travel the bottom edge, as on the lander.
         let cursorPath = CGMutablePath()
-        cursorPath.addRoundedRect(in: contour, cornerWidth: contourRadius, cornerHeight: contourRadius)
+        cursorPath.move(to: CGPoint(x: contour.minX + contourRadius, y: contour.maxY))
+        cursorPath.addLine(to: CGPoint(x: contour.maxX - contourRadius, y: contour.maxY))
 
         return Annotation(
             rect: rect, strokeIndex: strokeIndex, total: total, scatter: scatter, scatterStart: scatterStart,
             handles: handles, guides: guides, grid: grid, brackets: brackets, readout: readout,
-            counter: counter, cursor: cursor, cursorPath: cursorPath
+            counter: counter, frameLabel: frameLabel, cursor: cursor, trail: trail, cursorPath: cursorPath,
+            handlesStart: handlesStart
         )
     }
 
@@ -395,7 +424,8 @@ final class SkeletonLoaderView: NSView {
             strokes.forEach { $0.removeAllAnimations() }
             for annotation in annotations {
                 [annotation.scatter, annotation.handles, annotation.guides, annotation.grid, annotation.brackets,
-                 annotation.readout, annotation.counter, annotation.cursor].forEach { $0.removeAllAnimations() }
+                 annotation.readout, annotation.counter, annotation.frameLabel, annotation.cursor,
+                 annotation.trail].forEach { $0.removeAllAnimations() }
             }
             return
         }
@@ -451,19 +481,32 @@ final class SkeletonLoaderView: NSView {
                              at: t0 + SkeletonConstruction.outlineDelay, on: stroke), forKey: Self.arrivalKey)
 
             let scatter = annotation.scatter
-            scatter.add(basic("path", from: annotation.scatterStart, to: scatter.path as Any,
-                              duration: SkeletonConstruction.scatterDuration, at: t0, on: scatter), forKey: Self.traceKey)
-            scatter.add(keyframes("opacity", values: [0, 0.55, 0.55, 0], keyTimes: [0, 0.1, 0.5, 1],
+            let converge = basic("path", from: annotation.scatterStart, to: scatter.path as Any,
+                                 duration: SkeletonConstruction.scatterDuration, at: t0, on: scatter)
+            converge.timingFunction = SkeletonConstruction.growCurve.mediaTimingFunction
+            scatter.add(converge, forKey: Self.traceKey)
+            scatter.add(keyframes("opacity", values: [0, 0.95, 0.95, 0], keyTimes: [0, 0.1, 0.5, 1],
                                   duration: SkeletonConstruction.outlineDelay + SkeletonConstruction.growDuration,
                                   at: t0, on: scatter), forKey: Self.arrivalKey)
 
-            for chrome in [annotation.handles, annotation.guides, annotation.brackets] as [CALayer] {
+            for chrome in [annotation.handles, annotation.guides] as [CALayer] {
                 chrome.add(basic("opacity", from: 0, to: chrome.opacity, duration: SkeletonConstruction.chromeArrival,
                                  at: t0 + 0.05, on: chrome), forKey: Self.arrivalKey)
             }
+            // Crop marks and the frame label arrive with the inner content.
+            for chrome in [annotation.brackets, annotation.frameLabel] as [CALayer] {
+                chrome.add(basic("opacity", from: 0, to: chrome.opacity, duration: SkeletonConstruction.chromeArrival,
+                                 at: t0 + SkeletonConstruction.innerDelay, on: chrome), forKey: Self.arrivalKey)
+            }
+            // The handles track the growing contour so the box visibly scales up.
+            let handleGrow = basic("path", from: annotation.handlesStart, to: annotation.handles.path as Any,
+                                   duration: SkeletonConstruction.growDuration,
+                                   at: t0 + SkeletonConstruction.outlineDelay, on: annotation.handles)
+            handleGrow.timingFunction = SkeletonConstruction.growCurve.mediaTimingFunction
+            annotation.handles.add(handleGrow, forKey: Self.traceKey)
             // Guides sit bolder while the contour settles between them.
             annotation.guides.add(keyframes(
-                "opacity", values: [0, 0.3, 0.3, SkeletonConstruction.guideOpacity], keyTimes: [0, 0.25, 0.6, 1],
+                "opacity", values: [0, 0.5, 0.5, SkeletonConstruction.guideOpacity], keyTimes: [0, 0.25, 0.6, 1],
                 duration: SkeletonConstruction.innerDelay + 0.2, at: t0 + 0.05, on: annotation.guides
             ), forKey: Self.arrivalKey)
             // The inner grid fills bold while contents are placed, then recedes.
@@ -518,6 +561,17 @@ final class SkeletonLoaderView: NSView {
             annotation.cursor.add(keyframes("opacity", values: [0, 1, 1, 0], keyTimes: [0, 0.1, 0.85, 1],
                                             duration: SkeletonConstruction.cursorDuration + 0.12, at: cursorAt,
                                             on: annotation.cursor), forKey: Self.arrivalKey)
+            let trailWalk = CAKeyframeAnimation(keyPath: "position")
+            trailWalk.path = annotation.cursorPath
+            trailWalk.calculationMode = .paced
+            trailWalk.duration = SkeletonConstruction.cursorDuration
+            trailWalk.beginTime = annotation.trail.convertTime(now, from: nil) + cursorAt + 0.05
+            trailWalk.fillMode = .backwards
+            trailWalk.timingFunction = RelayMotion.changeCurve.mediaTimingFunction
+            annotation.trail.add(trailWalk, forKey: Self.traceKey)
+            annotation.trail.add(keyframes("opacity", values: [0, 0.8, 0.8, 0], keyTimes: [0, 0.1, 0.85, 1],
+                                           duration: SkeletonConstruction.cursorDuration + 0.12, at: cursorAt + 0.05,
+                                           on: annotation.trail), forKey: Self.arrivalKey)
         }
 
         let annotatedStrokes = Set(annotations.map(\.strokeIndex))
@@ -527,6 +581,9 @@ final class SkeletonLoaderView: NSView {
             if let parent = annotation(containing: bone) {
                 let fraction = max(0, min(1, (bone.rect.minY - parent.rect.minY) / max(1, parent.rect.height)))
                 time = start(of: parent.rect) + SkeletonConstruction.innerDelay + fraction * Self.traceStagger
+                // Content is sketched faint first, then densifies into its final weight.
+                stroke.add(basic("opacity", from: 0.35, to: stroke.opacity, duration: Self.traceDuration + 0.2,
+                                 at: time, on: stroke), forKey: Self.arrivalKey)
             } else {
                 time = start(of: bone.rect) + SkeletonConstruction.outlineDelay
             }
@@ -579,11 +636,19 @@ final class SkeletonLoaderView: NSView {
         linger.duration = duration
         linger.timingFunction = RelayMotion.enterCurve.mediaTimingFunction
 
+        handoffGeneration &+= 1
+        let generation = handoffGeneration
+        handoffCompletion = completion
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         CATransaction.setCompletionBlock { [weak self, weak mask] in
-            guard let self, let mask, self.sketchLayer.mask === mask else { return }
-            self.sketchLayer.mask = nil
+            // The host's completion removes this loader, so it must run once
+            // the scan ends even if the mask was swapped meanwhile; only a
+            // cancellation discards it.
+            guard let self, self.handoffGeneration == generation else { return }
+            if let mask, self.sketchLayer.mask === mask { self.sketchLayer.mask = nil }
+            let completion = self.handoffCompletion
+            self.handoffCompletion = nil
             completion?()
         }
         mask.path = CGPath(rect: end, transform: nil)
@@ -596,6 +661,8 @@ final class SkeletonLoaderView: NSView {
 
     /// Keeps a reused loader whole, without running a stale completion.
     func cancelHandoff() {
+        handoffGeneration &+= 1
+        handoffCompletion = nil
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if isHandingOff { sketchLayer.mask = nil }
@@ -698,7 +765,7 @@ final class SkeletonLoaderView: NSView {
     }
 
     /// Square handles centred on the bounding-box corners.
-    static func handlesPath(around rect: CGRect, size: CGFloat = 3) -> CGPath {
+    static func handlesPath(around rect: CGRect, size: CGFloat = SkeletonConstruction.handleSize) -> CGPath {
         let path = CGMutablePath()
         for corner in [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
                        CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.maxY)] {
@@ -710,7 +777,7 @@ final class SkeletonLoaderView: NSView {
     /// Dotted guides extend each edge to the page, leaving the contour clear.
     static func guidesPath(around rect: CGRect, in bounds: CGRect) -> CGPath {
         let path = CGMutablePath()
-        let gap: CGFloat = 6
+        let gap: CGFloat = 3
         for y in [rect.minY, rect.maxY] {
             if rect.minX - gap > bounds.minX {
                 path.move(to: CGPoint(x: bounds.minX, y: y))
@@ -744,7 +811,7 @@ final class SkeletonLoaderView: NSView {
         while y <= rect.maxY - spacing / 4 {
             var x = rect.minX + spacing / 2
             while x <= rect.maxX - spacing / 4 {
-                path.addEllipse(in: CGRect(x: x - 0.75, y: y - 0.75, width: 1.5, height: 1.5))
+                path.addEllipse(in: CGRect(x: x - 1.1, y: y - 1.1, width: 2.2, height: 2.2))
                 x += spacing
             }
             y += spacing
@@ -753,7 +820,7 @@ final class SkeletonLoaderView: NSView {
     }
 
     /// Crop marks bracket the content area inside the contour.
-    static func bracketsPath(around rect: CGRect, arm: CGFloat = 6) -> CGPath {
+    static func bracketsPath(around rect: CGRect, arm: CGFloat = 8) -> CGPath {
         let path = CGMutablePath()
         guard rect.width > arm * 2, rect.height > arm * 2 else { return path }
         for (corner, dx, dy) in [
@@ -773,7 +840,8 @@ final class SkeletonLoaderView: NSView {
     /// The contour's resting path scaled about the centre of its layer.
     static func contourStart(for stroke: CAShapeLayer) -> CGPath {
         guard let path = stroke.path else { return CGMutablePath() }
-        let centre = CGPoint(x: stroke.bounds.midX, y: stroke.bounds.midY)
+        let box = path.boundingBoxOfPath
+        let centre = CGPoint(x: box.midX, y: box.midY)
         var transform = CGAffineTransform(translationX: centre.x, y: centre.y)
             .scaledBy(x: SkeletonConstruction.startScale, y: SkeletonConstruction.startScale)
             .translatedBy(x: -centre.x, y: -centre.y)

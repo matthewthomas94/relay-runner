@@ -115,6 +115,7 @@ final class SkeletonLoaderTests: XCTestCase {
     func testSkeletonsDrawOnlyConstructionChrome() throws {
         let readout = try NSRegularExpression(pattern: "^\\d+ × \\d+  t\\+\\d\\.\\d\\ds$")
         let counter = try NSRegularExpression(pattern: "^\\d{3}·\\d{3}$")
+        let frame = try NSRegularExpression(pattern: "^FRAME \\d+×\\d+$")
         for (layout, size) in [
             (SkeletonLoaderLayout.board(columnTop: boardTop), CGSize(width: 1_400, height: 760)),
             (.terminal, CGSize(width: 900, height: 420)),
@@ -130,12 +131,14 @@ final class SkeletonLoaderTests: XCTestCase {
             XCTAssertEqual(view.accessibilityLabel(), BoardUpdateStatus.workingLabel, "VoiceOver still hears the status")
             XCTAssertFalse(view.annotatedRects.isEmpty, "\(layout) annotates its main surfaces")
             let texts = textLayers(in: view.layer)
-            XCTAssertEqual(texts.count, view.annotatedRects.count * 2, "\(layout): one readout and one counter per surface")
+            XCTAssertEqual(texts.count, view.annotatedRects.count * 3,
+                           "\(layout): one readout, one frame label and one counter per surface")
             for text in texts {
                 let string = try XCTUnwrap(text.string as? String)
                 let range = NSRange(string.startIndex..., in: string)
                 XCTAssertTrue(readout.firstMatch(in: string, range: range) != nil
-                              || counter.firstMatch(in: string, range: range) != nil,
+                              || counter.firstMatch(in: string, range: range) != nil
+                              || frame.firstMatch(in: string, range: range) != nil,
                               "\(layout): \"\(string)\" is design-tool chrome, not copy")
                 XCTAssertTrue(try XCTUnwrap(text.font as? NSFont).isFixedPitch, "\(layout): readouts are monospaced")
             }
