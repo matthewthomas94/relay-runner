@@ -64,6 +64,7 @@ let package = Package(
                 .target(name: "relay-runner"),
                 .target(name: "relay-actions-mcp"),
                 .target(name: "relay-orchestrator-mcp"),
+                .target(name: "relay-remote-shell"),
                 .target(name: "relay-vision-mcp"),
             ],
             path: "tests/RelayRunnerTests"
