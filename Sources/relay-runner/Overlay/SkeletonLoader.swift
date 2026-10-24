@@ -29,59 +29,37 @@ struct SkeletonBone: Equatable {
     var style: Style
 }
 
-/// The construction timeline of one annotated surface, in seconds after the
-/// surface's own start. Scattered dots converge on the contour while it grows
-/// from a small dotted square into place; a cursor dot then walks the contour
-/// counting dots placed, and the contents inside sketch in last.
+/// The design-tool readouts the sketch writes while it constructs, and which
+/// surfaces earn the full treatment. Motion lives in `SkeletonGeneration`.
 enum SkeletonConstruction {
-    /// Start-to-end ratio of the growing contour. No overshoot.
-    static let startScale: CGFloat = 0.42
-    static let scatterDuration: TimeInterval = 0.3
-    static let scatterJitter: CGFloat = 22
-    static let scatterSpacing: CGFloat = 10
-    static let outlineDelay: TimeInterval = 0.1
-    static let growDuration: TimeInterval = 0.4
-    /// The contour grows on a plain ease-out. The kit's enter curve settles in
-    /// the first fifth of its duration, which hides the growth at any frame rate.
-    static let growCurve = RelayMotion.Curve(x1: 0.2, y1: 0, x2: 0.2, y2: 1)
-    static let cursorDelay: TimeInterval = 0.3
-    static let cursorDuration: TimeInterval = 0.36
-    static let readoutDuration: TimeInterval = 0.9
-    static let innerDelay: TimeInterval = 0.42
-    static let chromeArrival: TimeInterval = 0.2
-
-    /// Resting (fully constructed) chrome opacities.
-    static let handleOpacity: Float = 0.9
-    static let guideOpacity: Float = 0.3
-    static let readoutOpacity: Float = 0.85
-    static let bracketOpacity: Float = 0.7
-    static let gridOpacity: Float = 0.18
-    static let gridConstructionOpacity: Float = 0.6
-    /// Hollow corner handles, as the lander draws them.
-    static let handleSize: CGFloat = 4.5
-
     /// Width a contour needs before it earns design-tool chrome.
     static let annotatedMinimumWidth: CGFloat = 200
     static let annotatedMinimumHeight: CGFloat = 40
     static let annotatedLimit = 3
 
-    /// How long one loader takes to finish constructing after it appears.
+    /// How long one element takes to finish constructing after it appears.
     static var duration: TimeInterval {
-        0.04 + SkeletonLoaderView.traceStagger + innerDelay
-            + SkeletonLoaderView.traceDuration + SkeletonLoaderView.traceStagger
+        SkeletonGeneration.duration * SkeletonGeneration.holdProgress
     }
 
+    /// `320 × 180  t+0.00s`: the size counting up, and the clock.
     static func readout(width: CGFloat, height: CGFloat, time: TimeInterval) -> String {
         String(format: "%d × %d  t+%.2fs", Int(width.rounded()), Int(height.rounded()), time)
     }
 
-    static func counter(placed: Int, total: Int) -> String {
-        String(format: "%03d·%03d", placed, total)
+    /// `300 × 120`: a key box's size counting up.
+    static func dimension(width: CGFloat, height: CGFloat) -> String {
+        String(format: "%d × %d", Int(width.rounded()), Int(height.rounded()))
     }
 
-    /// The inner content frame label sitting on the outline, e.g. `FRAME 300×120`.
-    static func innerLabel(width: CGFloat, height: CGFloat) -> String {
-        String(format: "FRAME %d×%d", Int(width.rounded()), Int(height.rounded()))
+    /// `022·130`: where the live head is, in the element's space.
+    static func coordinates(x: CGFloat, y: CGFloat) -> String {
+        String(format: "%03d·%03d", max(0, Int(x.rounded())), max(0, Int(y.rounded())))
+    }
+
+    /// `FRAME 300×120`: the part under the reticle.
+    static func tag(name: String, width: CGFloat, height: CGFloat) -> String {
+        String(format: "%@ %d×%d", name.uppercased(), Int(width.rounded()), Int(height.rounded()))
     }
 
     /// Surfaces earn chrome when the layout has them; otherwise its widest
@@ -101,95 +79,70 @@ enum SkeletonConstruction {
     }
 }
 
-/// A dot-matrix sketch of the incoming screen, constructed the way a design
-/// tool draws a layout: dots scatter and converge on each surface's contour,
-/// the contour grows into place between corner handles and dotted guides, a
-/// monospace readout and dot counter annotate it, and the contents trace in.
-/// A quiet sweep keeps longer waits alive. The host owns the transition to
-/// real content; this drawing never delays readiness. Core Animation runs
-/// the motion without per-frame main-thread work.
+/// A dot-matrix sketch of the incoming screen, generated the way the
+/// libraries.dev hero generates its tiles: a dot field wakes from the centre,
+/// a probe sweeps, guides and the contour trace in with dots crawling along
+/// them, flyers land on the contour as it reaches them, corner handles pop
+/// in, every part traces under a reticle with its tag, and monospace readouts
+/// count the size, the clock and the live head's position. The host owns the
+/// transition to real content; this drawing never delays readiness. A display
+/// link evaluates each frame from `SkeletonGeneration` into pooled layers.
 final class SkeletonLoaderView: NSView {
-    static let dotSpacing: CGFloat = 5
-    static let fieldSpacing: CGFloat = 16
-    static let traceDuration: TimeInterval = 0.36
-    static let traceStagger: TimeInterval = 0.18
-    static let traceKey = "skeletonTrace"
-    static let arrivalKey = "skeletonArrival"
-    static let sweepKey = "skeletonSweep"
     static let handoffKey = "skeletonHandoff"
-    private static let restingLocations: [NSNumber] = [0, 0, 0, 0, 1]
+    static let alphaBuckets = 12
 
     let skeleton: SkeletonLoaderLayout
 
     /// Everything the ready UI replaces along the scan edge.
     private let sketchLayer = CALayer()
-    private let panelsLayer = CAShapeLayer()
-    private let fieldLayer = CAShapeLayer()
-    private let scatterLayer = CALayer()
-    private let bonesGradient = CAGradientLayer()
-    private let bonesMask = CALayer()
-    private let guideChromeLayer = CALayer()
-    /// Handles, readouts, counters and cursors outlive the scan and fade last.
+    private let fieldInkPool: [CAShapeLayer]
+    private let fieldStrongPool: [CAShapeLayer]
+    private let wireLinePool: [CAShapeLayer]
+    private let wireStrongPool: [CAShapeLayer]
+    /// Handles, reticles and readouts outlive the scan and fade last.
     private let handleChromeLayer = CALayer()
-    private var strokes: [CAShapeLayer] = []
-    private var drawing: [SkeletonBone] = []
-    private var annotations: [Annotation] = []
+    private let handlePool: [CAShapeLayer]
+    private var reticleLayers: [CAShapeLayer] = []
+    private var readoutLayers: [CATextLayer] = []
+    private var tagLayers: [CATextLayer] = []
+    private var coordinateLayers: [CATextLayer] = []
+    private var keyLayers: [[CATextLayer]] = []
+    private var scene = SkeletonGeneration.Scene(bounds: .zero, elements: [], dots: [])
     private var drawnBounds: CGRect?
-    private var animating = false
+    private var displayLink: CADisplayLink?
+    private var exitStart: CFTimeInterval?
+    private var handoffProgress: CGFloat?
     private var handoffGeneration = 0
     private var handoffCompletion: (() -> Void)?
 
     private(set) var bones: [SkeletonBone] = []
+    /// When the construction began; a layout pass never moves it.
+    private(set) var constructionStart: CFTimeInterval?
+    private(set) var isAnimating = false
+    /// Each element's progress at the last rendered frame.
+    private(set) var renderedProgress: [Double] = []
 
-    /// The design-tool chrome around one annotated surface.
-    private struct Annotation {
-        let rect: CGRect
-        let strokeIndex: Int
-        let total: Int
-        let scatter: CAShapeLayer
-        let scatterStart: CGPath
-        let handles: CAShapeLayer
-        let guides: CAShapeLayer
-        let grid: CAShapeLayer
-        let brackets: CAShapeLayer
-        let readout: CATextLayer
-        let counter: CATextLayer
-        let frameLabel: CATextLayer
-        let cursor: CAShapeLayer
-        let trail: CAShapeLayer
-        let cursorPath: CGPath
-        let handlesStart: CGPath
+    private enum Palette {
+        static let slate = NSColor(srgbRed: 148 / 255, green: 163 / 255, blue: 184 / 255, alpha: 1)
+        static let ink = slate.withAlphaComponent(0.3).cgColor
+        static let line = slate.withAlphaComponent(0.62).cgColor
+        static let strong = NSColor(srgbRed: 203 / 255, green: 213 / 255, blue: 225 / 255, alpha: 1).cgColor
+        static let surface = BoardDarkSurfaceStyle.panelFillNSColor.cgColor
     }
 
     override var isFlipped: Bool { true }
 
     init(layout: SkeletonLoaderLayout, label: String) {
         self.skeleton = layout
+        fieldInkPool = Self.pool(fill: Palette.ink, stroke: nil, in: sketchLayer)
+        fieldStrongPool = Self.pool(fill: Palette.strong, stroke: nil, in: sketchLayer)
+        wireLinePool = Self.pool(fill: Palette.line, stroke: nil, in: sketchLayer)
+        wireStrongPool = Self.pool(fill: Palette.strong, stroke: nil, in: sketchLayer)
+        handlePool = Self.pool(fill: Palette.surface, stroke: Palette.strong, in: handleChromeLayer)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = true
         layer?.addSublayer(sketchLayer)
-
-        panelsLayer.fillColor = BoardDarkSurfaceStyle.panelFillNSColor.cgColor
-        sketchLayer.addSublayer(panelsLayer)
-
-        let ink = SettingsSurfaceColor.mutedTextNSColor
-        fieldLayer.fillColor = ink.withAlphaComponent(0.16).cgColor
-        sketchLayer.addSublayer(fieldLayer)
-        sketchLayer.addSublayer(guideChromeLayer)
-        sketchLayer.addSublayer(scatterLayer)
-        bonesGradient.colors = [
-            ink.withAlphaComponent(0.55).cgColor,
-            ink.withAlphaComponent(0.55).cgColor,
-            ink.withAlphaComponent(1.0).cgColor,
-            ink.withAlphaComponent(0.55).cgColor,
-            ink.withAlphaComponent(0.55).cgColor,
-        ]
-        bonesGradient.startPoint = CGPoint(x: 0, y: 0)
-        bonesGradient.endPoint = CGPoint(x: 1, y: 1)
-        bonesGradient.locations = Self.restingLocations
-        bonesGradient.mask = bonesMask
-        sketchLayer.addSublayer(bonesGradient)
         layer?.addSublayer(handleChromeLayer)
 
         setAccessibilityElement(true)
@@ -206,16 +159,37 @@ final class SkeletonLoaderView: NSView {
     }
 
     deinit {
+        displayLink?.invalidate()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    /// One layer per opacity step, so thousands of dots are a dozen paths.
+    private static func pool(fill: CGColor?, stroke: CGColor?, in parent: CALayer) -> [CAShapeLayer] {
+        (0..<alphaBuckets).map { bucket in
+            let layer = CAShapeLayer()
+            layer.fillColor = fill
+            layer.strokeColor = stroke
+            layer.lineWidth = 1
+            layer.opacity = Float(bucket + 1) / Float(alphaBuckets)
+            parent.addSublayer(layer)
+            return layer
+        }
+    }
+
+    private static func bucket(_ alpha: Double) -> Int {
+        min(alphaBuckets - 1, max(0, Int((alpha * Double(alphaBuckets)).rounded(.up)) - 1))
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
     }
 
-    /// The surfaces that carry handles, guides, a readout and a dot counter.
-    var annotatedRects: [CGRect] { annotations.map(\.rect) }
+    /// The surfaces that carry an outline, handles, guides and readouts.
+    var annotatedRects: [CGRect] { scene.elements.map(\.rect) }
+
+    /// The boxes inside them that earn guides, handles and a size label.
+    var keyRects: [CGRect] { scene.keyRects }
 
     /// Whether the ready UI is currently replacing this sketch.
     var isHandingOff: Bool { sketchLayer.mask?.name == SkeletonAssembly.maskName }
@@ -225,60 +199,60 @@ final class SkeletonLoaderView: NSView {
         guard drawnBounds != bounds else { refreshAnimation(); return }
         drawnBounds = bounds
         bones = Self.bones(for: skeleton, in: bounds)
+        scene = SkeletonGeneration.scene(bounds: bounds, surfaces: Self.panels(for: skeleton, in: bounds), bones: bones)
         let scale = window?.backingScaleFactor ?? 2
-        let ink = SettingsSurfaceColor.mutedTextNSColor
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let surfaces = Self.panels(for: skeleton, in: bounds)
-        let panels = CGMutablePath()
-        for panel in surfaces {
-            panels.addRoundedRect(in: panel.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 16, cornerHeight: 16)
+        var sized: [CALayer] = [sketchLayer, handleChromeLayer]
+        sized += fieldInkPool
+        sized += fieldStrongPool
+        sized += wireLinePool
+        sized += wireStrongPool
+        sized += handlePool
+        for layer in sized {
+            layer.frame = bounds
+            layer.contentsScale = scale
         }
-        for container in [sketchLayer, panelsLayer, fieldLayer, scatterLayer, bonesGradient, bonesMask,
-                          guideChromeLayer, handleChromeLayer] {
-            container.frame = bounds
+        (reticleLayers + readoutLayers + tagLayers + coordinateLayers + keyLayers.flatMap { $0 })
+            .forEach { $0.removeFromSuperlayer() }
+        reticleLayers = scene.elements.map { _ in
+            let reticle = CAShapeLayer()
+            reticle.frame = bounds
+            reticle.contentsScale = scale
+            reticle.fillColor = nil
+            reticle.strokeColor = Palette.strong
+            reticle.lineWidth = 1.2
+            reticle.lineCap = .round
+            reticle.opacity = 0
+            handleChromeLayer.addSublayer(reticle)
+            return reticle
         }
-        panelsLayer.path = panels
-        fieldLayer.path = Self.fieldPath(in: bounds)
-        drawing = surfaces.map { SkeletonBone(rect: $0, radius: 16, style: .outline) } + bones
-        while strokes.count > drawing.count { strokes.removeLast().removeFromSuperlayer() }
-        for (index, bone) in drawing.enumerated() {
-            if index == strokes.count {
-                let stroke = CAShapeLayer()
-                stroke.fillColor = nil
-                stroke.strokeColor = NSColor.black.cgColor
-                // 3pt dots on a 5pt pitch: the notch glyph's own dot.
-                stroke.lineWidth = 3
-                stroke.lineCap = .round
-                stroke.lineJoin = .round
-                stroke.lineDashPattern = [0.01, NSNumber(value: Double(Self.dotSpacing - 0.01))]
-                bonesMask.addSublayer(stroke)
-                strokes.append(stroke)
-            }
-            // Local coordinates let a contour grow about its own centre.
-            let stroke = strokes[index]
-            let path = Self.wirePath(for: bone)
-            let box = path.boundingBoxOfPath.isNull ? bone.rect : path.boundingBoxOfPath
-            stroke.bounds = CGRect(origin: .zero, size: box.size)
-            stroke.position = CGPoint(x: box.midX, y: box.midY)
-            stroke.transform = CATransform3DIdentity
-            stroke.contentsScale = scale
-            var shift = CGAffineTransform(translationX: -box.minX, y: -box.minY)
-            stroke.path = path.copy(using: &shift)
-            stroke.opacity = index < surfaces.count ? 0.8 : (bone.style == .outline ? 0.9 : 1)
+        readoutLayers = scene.elements.map { _ in makeLabel(size: 9, strong: false, scale: scale) }
+        tagLayers = scene.elements.map { _ in makeLabel(size: 8, strong: true, scale: scale) }
+        keyLayers = scene.elements.map { element in
+            element.parts.filter(\.key).map { _ in makeLabel(size: 8, strong: true, scale: scale) }
         }
-
-        scatterLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
-        guideChromeLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
-        handleChromeLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
-        annotations = SkeletonConstruction.annotatedRects(surfaces: surfaces, bones: bones).compactMap { rect in
-            guard let strokeIndex = drawing.firstIndex(where: { $0.rect == rect }) else { return nil }
-            return makeAnnotation(for: rect, radius: drawing[strokeIndex].radius, strokeIndex: strokeIndex,
-                                  ink: ink, scale: scale)
-        }
+        coordinateLayers = scene.elements.map { _ in makeLabel(size: 8, strong: true, scale: scale) }
         CATransaction.commit()
+
+        renderCurrent(now: CACurrentMediaTime())
         refreshAnimation()
+    }
+
+    private func makeLabel(size: CGFloat, strong: Bool, scale: CGFloat) -> CATextLayer {
+        let label = CATextLayer()
+        label.contentsScale = scale
+        label.font = AppTypography.terminalGridFont(size: size, weight: .medium)
+        label.fontSize = size
+        label.foregroundColor = strong ? Palette.strong : Palette.line
+        label.alignmentMode = .left
+        label.truncationMode = .none
+        label.isWrapped = false
+        label.frame = CGRect(x: 0, y: 0, width: 240, height: size + 4)
+        label.opacity = 0
+        handleChromeLayer.addSublayer(label)
+        return label
     }
 
     override func viewDidMoveToWindow() {
@@ -303,321 +277,145 @@ final class SkeletonLoaderView: NSView {
         )
     }
 
-    // MARK: Chrome
-
-    private func makeAnnotation(
-        for rect: CGRect, radius: CGFloat, strokeIndex: Int, ink: NSColor, scale: CGFloat
-    ) -> Annotation {
-        let inked = ink.cgColor
-        func shape(_ parent: CALayer, fill: Bool, lineWidth: CGFloat = 1, dash: [NSNumber]? = nil) -> CAShapeLayer {
-            let shape = CAShapeLayer()
-            shape.frame = bounds
-            shape.contentsScale = scale
-            shape.fillColor = fill ? inked : nil
-            shape.strokeColor = fill ? nil : inked
-            shape.lineWidth = lineWidth
-            shape.lineCap = .round
-            shape.lineDashPattern = dash
-            parent.addSublayer(shape)
-            return shape
-        }
-        func label(_ text: String, origin: CGPoint, width: CGFloat? = nil,
-                   alignment: CATextLayerAlignmentMode = .left) -> CATextLayer {
-            let label = CATextLayer()
-            label.contentsScale = scale
-            label.font = AppTypography.terminalGridFont(size: 9, weight: .medium)
-            label.fontSize = 9
-            label.foregroundColor = inked
-            label.alignmentMode = alignment
-            label.truncationMode = .none
-            label.isWrapped = false
-            label.string = text
-            label.frame = CGRect(origin: origin, size: CGSize(width: width ?? max(40, rect.width), height: 12))
-            label.opacity = SkeletonConstruction.readoutOpacity
-            handleChromeLayer.addSublayer(label)
-            return label
-        }
-
-        let contour = rect.insetBy(dx: 1, dy: 1)
-        let contourRadius = max(0, radius - 1)
-        let points = Self.perimeterPoints(of: contour, radius: contourRadius, spacing: SkeletonConstruction.scatterSpacing)
-        let scatter = shape(scatterLayer, fill: true)
-        scatter.path = Self.dots(at: points, radius: 1.5)
-        scatter.opacity = 0
-        let scatterStart = Self.dots(at: Self.scattered(points, seed: strokeIndex), radius: 1.5)
-
-        let handles = shape(handleChromeLayer, fill: false, lineWidth: 1)
-        handles.path = Self.handlesPath(around: rect, size: SkeletonConstruction.handleSize)
-        let startRect = rect.insetBy(dx: rect.width * (1 - SkeletonConstruction.startScale) / 2,
-                                     dy: rect.height * (1 - SkeletonConstruction.startScale) / 2)
-        let handlesStart = Self.handlesPath(around: startRect, size: SkeletonConstruction.handleSize)
-        handles.opacity = SkeletonConstruction.handleOpacity
-
-        let guides = shape(guideChromeLayer, fill: false, lineWidth: 1.2, dash: [1, 3])
-        guides.path = Self.guidesPath(around: rect, in: bounds)
-        guides.opacity = SkeletonConstruction.guideOpacity
-
-        let inner = rect.insetBy(dx: 10, dy: 10)
-        let grid = shape(guideChromeLayer, fill: true)
-        grid.path = Self.innerGridPath(in: inner)
-        grid.opacity = SkeletonConstruction.gridOpacity
-
-        let brackets = shape(guideChromeLayer, fill: false, lineWidth: 1.2)
-        brackets.path = Self.bracketsPath(around: inner)
-        brackets.opacity = SkeletonConstruction.bracketOpacity
-
-        let total = Int((Self.perimeter(of: contour, radius: contourRadius) / Self.dotSpacing).rounded())
-        let readoutAbove = rect.minY - bounds.minY >= 20
-        let readout = label(
-            SkeletonConstruction.readout(width: rect.width, height: rect.height,
-                                         time: SkeletonConstruction.readoutDuration),
-            origin: readoutAbove ? CGPoint(x: rect.minX, y: rect.minY - 19) : CGPoint(x: inner.minX + 12, y: inner.minY + 4)
-        )
-        // The lander's inner frame label sits on the top edge, right of the handle.
-        let frameLabel = label(
-            SkeletonConstruction.innerLabel(width: inner.width, height: inner.height),
-            origin: CGPoint(x: rect.minX + SkeletonConstruction.handleSize + 6, y: rect.minY - 6)
-        )
-        // The dot counter rides inside, centred along the bottom edge the cursor walks.
-        let counter = label(
-            SkeletonConstruction.counter(placed: total, total: total),
-            origin: CGPoint(x: rect.midX - 30, y: rect.maxY - 15), width: 60, alignment: .center
-        )
-
-        let cursor = shape(handleChromeLayer, fill: true)
-        cursor.bounds = CGRect(x: 0, y: 0, width: 5, height: 5)
-        cursor.path = CGPath(ellipseIn: cursor.bounds, transform: nil)
-        cursor.position = CGPoint(x: contour.minX + contourRadius, y: contour.maxY)
-        cursor.opacity = 0
-        let trail = shape(handleChromeLayer, fill: true)
-        trail.bounds = CGRect(x: 0, y: 0, width: 4.5, height: 4.5)
-        trail.path = CGPath(ellipseIn: trail.bounds, transform: nil)
-        trail.position = cursor.position
-        trail.opacity = 0
-        // Two bright dots travel the bottom edge, as on the lander.
-        let cursorPath = CGMutablePath()
-        cursorPath.move(to: CGPoint(x: contour.minX + contourRadius, y: contour.maxY))
-        cursorPath.addLine(to: CGPoint(x: contour.maxX - contourRadius, y: contour.maxY))
-
-        return Annotation(
-            rect: rect, strokeIndex: strokeIndex, total: total, scatter: scatter, scatterStart: scatterStart,
-            handles: handles, guides: guides, grid: grid, brackets: brackets, readout: readout,
-            counter: counter, frameLabel: frameLabel, cursor: cursor, trail: trail, cursorPath: cursorPath,
-            handlesStart: handlesStart
-        )
-    }
-
-    private func annotation(containing bone: SkeletonBone) -> Annotation? {
-        annotations.first { $0.rect != bone.rect && $0.rect.contains(bone.rect) }
-    }
-
     // MARK: Motion
 
-    /// Hidden loaders and Reduce Motion keep the completed sketch, without
-    /// running animations. A geometry/layout pass must not restart the trace.
+    /// Hidden loaders and Reduce Motion show the completed sketch without a
+    /// display link. A geometry/layout pass must not restart the construction.
     func updateAnimation(visible: Bool, reduceMotion: Bool) {
-        let active = visible && !reduceMotion && !bones.isEmpty
-        guard active != animating else { return }
-        animating = active
+        let active = visible && !reduceMotion && !scene.elements.isEmpty
+        guard active != isAnimating else { return }
+        isAnimating = active
+        displayLink?.invalidate()
+        displayLink = nil
         guard active else {
-            fieldLayer.removeAllAnimations()
-            bonesGradient.removeAllAnimations()
-            strokes.forEach { $0.removeAllAnimations() }
-            for annotation in annotations {
-                [annotation.scatter, annotation.handles, annotation.guides, annotation.grid, annotation.brackets,
-                 annotation.readout, annotation.counter, annotation.frameLabel, annotation.cursor,
-                 annotation.trail].forEach { $0.removeAllAnimations() }
-            }
+            renderCurrent(now: CACurrentMediaTime())
             return
         }
+        if constructionStart == nil { constructionStart = CACurrentMediaTime() }
+        let link = displayLink(target: self, selector: #selector(tick(_:)))
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+        renderCurrent(now: CACurrentMediaTime())
+    }
 
-        let enter = RelayMotion.enterCurve.mediaTimingFunction
-        let fieldArrival = CABasicAnimation(keyPath: "opacity")
-        fieldArrival.fromValue = 0
-        fieldArrival.toValue = 1
-        fieldArrival.duration = RelayMotion.enterDuration
-        fieldArrival.timingFunction = enter
-        fieldLayer.add(fieldArrival, forKey: Self.traceKey)
+    @objc private func tick(_ link: CADisplayLink) {
+        renderCurrent(now: link.targetTimestamp)
+    }
 
-        let now = CACurrentMediaTime()
-        func start(of rect: CGRect) -> TimeInterval {
-            let fraction = max(0, min(1, (rect.minY - bounds.minY) / max(1, bounds.height)))
-            return 0.04 + fraction * Self.traceStagger
+    /// Elapsed time once every element has finished constructing.
+    private var completeElapsed: TimeInterval {
+        SkeletonGeneration.duration + SkeletonGeneration.elementStagger * Double(scene.elements.count)
+    }
+
+    private func renderCurrent(now: CFTimeInterval) {
+        let elapsed = isAnimating ? (constructionStart.map { now - $0 } ?? 0) : completeElapsed
+        var exit = handoffProgress.map(Double.init)
+        if exit == nil, let exitStart {
+            exit = SkeletonGeneration.clamp((now - exitStart) / SkeletonAssembly.duration)
         }
-        func basic(_ keyPath: String, from: Any, to: Any, duration: TimeInterval, at time: TimeInterval,
-                   on layer: CALayer) -> CABasicAnimation {
-            let animation = CABasicAnimation(keyPath: keyPath)
-            animation.fromValue = from
-            animation.toValue = to
-            animation.duration = duration
-            animation.beginTime = layer.convertTime(now, from: nil) + time
-            animation.fillMode = .backwards
-            animation.timingFunction = enter
-            return animation
-        }
-        func keyframes(_ keyPath: String, values: [Any], keyTimes: [NSNumber], duration: TimeInterval,
-                       at time: TimeInterval, on layer: CALayer, discrete: Bool = false) -> CAKeyframeAnimation {
-            let animation = CAKeyframeAnimation(keyPath: keyPath)
-            animation.values = values
-            animation.keyTimes = keyTimes
-            animation.duration = duration
-            animation.beginTime = layer.convertTime(now, from: nil) + time
-            animation.fillMode = .backwards
-            animation.calculationMode = discrete ? .discrete : .linear
-            animation.timingFunction = discrete ? nil : enter
-            return animation
-        }
+        renderFrame(elapsed: elapsed, exitFraction: exit)
+    }
 
-        for annotation in annotations {
-            let t0 = start(of: annotation.rect)
-            let stroke = strokes[annotation.strokeIndex]
-            // The path grows rather than the layer, so the dots keep their
-            // spacing and fill in along the contour as it reaches full size.
-            let grow = basic("path", from: Self.contourStart(for: stroke), to: stroke.path as Any,
-                             duration: SkeletonConstruction.growDuration,
-                             at: t0 + SkeletonConstruction.outlineDelay, on: stroke)
-            grow.timingFunction = SkeletonConstruction.growCurve.mediaTimingFunction
-            stroke.add(grow, forKey: Self.traceKey)
-            stroke.add(basic("opacity", from: 0, to: stroke.opacity, duration: 0.1,
-                             at: t0 + SkeletonConstruction.outlineDelay, on: stroke), forKey: Self.arrivalKey)
-
-            let scatter = annotation.scatter
-            let converge = basic("path", from: annotation.scatterStart, to: scatter.path as Any,
-                                 duration: SkeletonConstruction.scatterDuration, at: t0, on: scatter)
-            converge.timingFunction = SkeletonConstruction.growCurve.mediaTimingFunction
-            scatter.add(converge, forKey: Self.traceKey)
-            scatter.add(keyframes("opacity", values: [0, 0.95, 0.95, 0], keyTimes: [0, 0.1, 0.5, 1],
-                                  duration: SkeletonConstruction.outlineDelay + SkeletonConstruction.growDuration,
-                                  at: t0, on: scatter), forKey: Self.arrivalKey)
-
-            for chrome in [annotation.handles, annotation.guides] as [CALayer] {
-                chrome.add(basic("opacity", from: 0, to: chrome.opacity, duration: SkeletonConstruction.chromeArrival,
-                                 at: t0 + 0.05, on: chrome), forKey: Self.arrivalKey)
+    /// Draws the sketch as it stands `elapsed` seconds after construction
+    /// began. `exitFraction` plays the hand-off part of the timeline.
+    func renderFrame(elapsed: TimeInterval, exitFraction: Double? = nil) {
+        let progress = scene.elements.indices.map { index -> Double in
+            let local = elapsed - Double(index) * SkeletonGeneration.elementStagger
+            var a = min(SkeletonGeneration.holdProgress, max(0, local / SkeletonGeneration.duration))
+            if let exitFraction {
+                a = max(a, SkeletonGeneration.holdProgress
+                    + (SkeletonGeneration.endProgress - SkeletonGeneration.holdProgress) * exitFraction)
             }
-            // Crop marks and the frame label arrive with the inner content.
-            for chrome in [annotation.brackets, annotation.frameLabel] as [CALayer] {
-                chrome.add(basic("opacity", from: 0, to: chrome.opacity, duration: SkeletonConstruction.chromeArrival,
-                                 at: t0 + SkeletonConstruction.innerDelay, on: chrome), forKey: Self.arrivalKey)
-            }
-            // The handles track the growing contour so the box visibly scales up.
-            let handleGrow = basic("path", from: annotation.handlesStart, to: annotation.handles.path as Any,
-                                   duration: SkeletonConstruction.growDuration,
-                                   at: t0 + SkeletonConstruction.outlineDelay, on: annotation.handles)
-            handleGrow.timingFunction = SkeletonConstruction.growCurve.mediaTimingFunction
-            annotation.handles.add(handleGrow, forKey: Self.traceKey)
-            // Guides sit bolder while the contour settles between them.
-            annotation.guides.add(keyframes(
-                "opacity", values: [0, 0.5, 0.5, SkeletonConstruction.guideOpacity], keyTimes: [0, 0.25, 0.6, 1],
-                duration: SkeletonConstruction.innerDelay + 0.2, at: t0 + 0.05, on: annotation.guides
-            ), forKey: Self.arrivalKey)
-            // The inner grid fills bold while contents are placed, then recedes.
-            let gridSpan = SkeletonConstruction.innerDelay + Self.traceDuration
-            annotation.grid.add(keyframes(
-                "opacity",
-                values: [0, SkeletonConstruction.gridConstructionOpacity, SkeletonConstruction.gridConstructionOpacity,
-                         SkeletonConstruction.gridOpacity],
-                keyTimes: [0, NSNumber(value: 0.15 / gridSpan), NSNumber(value: SkeletonConstruction.innerDelay / gridSpan), 1],
-                duration: gridSpan, at: t0 + 0.15, on: annotation.grid
-            ), forKey: Self.arrivalKey)
+            return a
+        }
+        renderedProgress = progress
+        apply(SkeletonGeneration.evaluate(scene, progress: progress, elapsedMs: elapsed * 1_000))
+    }
 
-            // The readout clock runs while this surface is under construction.
-            let ticks = 22
-            annotation.readout.add(keyframes(
-                "string",
-                values: (0...ticks).map {
-                    SkeletonConstruction.readout(
-                        width: annotation.rect.width, height: annotation.rect.height,
-                        time: SkeletonConstruction.readoutDuration * Double($0) / Double(ticks)
-                    )
-                },
-                keyTimes: (0...ticks).map { NSNumber(value: Double($0) / Double(ticks)) },
-                duration: SkeletonConstruction.readoutDuration, at: t0, on: annotation.readout, discrete: true
-            ), forKey: Self.traceKey)
-            annotation.readout.add(basic("opacity", from: 0, to: annotation.readout.opacity,
-                                         duration: SkeletonConstruction.chromeArrival, at: t0, on: annotation.readout),
-                                   forKey: Self.arrivalKey)
-
-            // The cursor walks the contour once, placing and counting dots.
-            let cursorAt = t0 + SkeletonConstruction.cursorDelay
-            let steps = 16
-            annotation.counter.add(keyframes(
-                "string",
-                values: (0...steps).map {
-                    SkeletonConstruction.counter(placed: annotation.total * $0 / steps, total: annotation.total)
-                },
-                keyTimes: (0...steps).map { NSNumber(value: Double($0) / Double(steps)) },
-                duration: SkeletonConstruction.cursorDuration, at: cursorAt, on: annotation.counter, discrete: true
-            ), forKey: Self.traceKey)
-            annotation.counter.add(basic("opacity", from: 0, to: annotation.counter.opacity,
-                                         duration: SkeletonConstruction.chromeArrival, at: cursorAt - 0.1,
-                                         on: annotation.counter), forKey: Self.arrivalKey)
-            let walk = CAKeyframeAnimation(keyPath: "position")
-            walk.path = annotation.cursorPath
-            walk.calculationMode = .paced
-            walk.duration = SkeletonConstruction.cursorDuration
-            walk.beginTime = annotation.cursor.convertTime(now, from: nil) + cursorAt
-            walk.fillMode = .backwards
-            walk.timingFunction = RelayMotion.changeCurve.mediaTimingFunction
-            annotation.cursor.add(walk, forKey: Self.traceKey)
-            annotation.cursor.add(keyframes("opacity", values: [0, 1, 1, 0], keyTimes: [0, 0.1, 0.85, 1],
-                                            duration: SkeletonConstruction.cursorDuration + 0.12, at: cursorAt,
-                                            on: annotation.cursor), forKey: Self.arrivalKey)
-            let trailWalk = CAKeyframeAnimation(keyPath: "position")
-            trailWalk.path = annotation.cursorPath
-            trailWalk.calculationMode = .paced
-            trailWalk.duration = SkeletonConstruction.cursorDuration
-            trailWalk.beginTime = annotation.trail.convertTime(now, from: nil) + cursorAt + 0.05
-            trailWalk.fillMode = .backwards
-            trailWalk.timingFunction = RelayMotion.changeCurve.mediaTimingFunction
-            annotation.trail.add(trailWalk, forKey: Self.traceKey)
-            annotation.trail.add(keyframes("opacity", values: [0, 0.8, 0.8, 0], keyTimes: [0, 0.1, 0.85, 1],
-                                           duration: SkeletonConstruction.cursorDuration + 0.12, at: cursorAt + 0.05,
-                                           on: annotation.trail), forKey: Self.arrivalKey)
+    private func apply(_ frame: SkeletonGeneration.Frame) {
+        let buckets = Self.alphaBuckets
+        var fieldInk = [CGMutablePath?](repeating: nil, count: buckets)
+        var fieldStrong = fieldInk
+        var wireLine = fieldInk
+        var wireStrong = fieldInk
+        var handles = fieldInk
+        func add(_ dot: SkeletonGeneration.Frame.Dot, to paths: inout [CGMutablePath?]) {
+            let bucket = Self.bucket(dot.alpha)
+            let path = paths[bucket] ?? CGMutablePath()
+            path.addEllipse(in: CGRect(x: dot.center.x - dot.radius, y: dot.center.y - dot.radius,
+                                       width: dot.radius * 2, height: dot.radius * 2))
+            paths[bucket] = path
+        }
+        for dot in frame.field { dot.strong ? add(dot, to: &fieldStrong) : add(dot, to: &fieldInk) }
+        for dot in frame.wires { dot.strong ? add(dot, to: &wireStrong) : add(dot, to: &wireLine) }
+        for handle in frame.handles {
+            let bucket = Self.bucket(handle.alpha)
+            let path = handles[bucket] ?? CGMutablePath()
+            path.addRect(CGRect(x: handle.center.x - handle.size / 2, y: handle.center.y - handle.size / 2,
+                                width: handle.size, height: handle.size))
+            handles[bucket] = path
         }
 
-        let annotatedStrokes = Set(annotations.map(\.strokeIndex))
-        for (index, bone) in drawing.enumerated() where !annotatedStrokes.contains(index) {
-            let stroke = strokes[index]
-            let time: TimeInterval
-            if let parent = annotation(containing: bone) {
-                let fraction = max(0, min(1, (bone.rect.minY - parent.rect.minY) / max(1, parent.rect.height)))
-                time = start(of: parent.rect) + SkeletonConstruction.innerDelay + fraction * Self.traceStagger
-                // Content is sketched faint first, then densifies into its final weight.
-                stroke.add(basic("opacity", from: 0.35, to: stroke.opacity, duration: Self.traceDuration + 0.2,
-                                 at: time, on: stroke), forKey: Self.arrivalKey)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (pool, paths) in [(fieldInkPool, fieldInk), (fieldStrongPool, fieldStrong), (wireLinePool, wireLine),
+                              (wireStrongPool, wireStrong), (handlePool, handles)] {
+            for (layer, path) in zip(pool, paths) { layer.path = path }
+        }
+        for (index, layer) in reticleLayers.enumerated() {
+            if let reticle = frame.reticles.first(where: { $0.element == index }) {
+                layer.path = Self.reticlePath(around: reticle.rect, arm: reticle.arm)
+                layer.opacity = Float(reticle.alpha)
             } else {
-                time = start(of: bone.rect) + SkeletonConstruction.outlineDelay
+                layer.opacity = 0
             }
-            let trace = basic("strokeEnd", from: 0, to: 1, duration: Self.traceDuration, at: time, on: stroke)
-            stroke.add(trace, forKey: Self.traceKey)
         }
+        tagLayers.forEach { $0.opacity = 0 }
+        for label in frame.labels {
+            let layer: CATextLayer?
+            switch label.kind {
+            case .readout: layer = readoutLayers.indices.contains(label.element) ? readoutLayers[label.element] : nil
+            case .tag: layer = tagLayers.indices.contains(label.element) ? tagLayers[label.element] : nil
+            case .coordinates: layer = coordinateLayers.indices.contains(label.element) ? coordinateLayers[label.element] : nil
+            case .keyDimension:
+                layer = keyLayers.indices.contains(label.element) && keyLayers[label.element].indices.contains(label.key)
+                    ? keyLayers[label.element][label.key] : nil
+            }
+            guard let layer else { continue }
+            layer.string = label.text
+            layer.frame.origin = CGPoint(x: label.baseline.x, y: label.baseline.y - layer.fontSize - 1)
+            layer.opacity = Float(label.alpha)
+        }
+        CATransaction.commit()
+    }
 
-        let sweep = CAKeyframeAnimation(keyPath: "locations")
-        // Keep every stop in 0...1, including while the band enters/leaves.
-        // Out-of-range stops can make a masked gradient disappear on macOS.
-        sweep.values = [Self.restingLocations, [0, 0, 0.15, 0.3, 1], [0, 0.7, 0.85, 1, 1], [0, 1, 1, 1, 1]]
-        sweep.keyTimes = [0, 0.15, 0.85, 1]
-        sweep.duration = 2.2
-        sweep.timingFunction = RelayMotion.changeCurve.mediaTimingFunction
-        let cycle = CAAnimationGroup()
-        cycle.animations = [sweep]
-        cycle.duration = sweep.duration + 0.9
-        cycle.beginTime = bonesGradient.convertTime(now, from: nil) + SkeletonConstruction.duration
-        cycle.repeatCount = .infinity
-        bonesGradient.add(cycle, forKey: Self.sweepKey)
+    /// Corner brackets, open along the edges.
+    static func reticlePath(around rect: CGRect, arm: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        for (corner, dx, dy) in [
+            (CGPoint(x: rect.minX, y: rect.minY), arm, arm), (CGPoint(x: rect.maxX, y: rect.minY), -arm, arm),
+            (CGPoint(x: rect.maxX, y: rect.maxY), -arm, -arm), (CGPoint(x: rect.minX, y: rect.maxY), arm, -arm),
+        ] {
+            path.move(to: CGPoint(x: corner.x, y: corner.y + dy))
+            path.addLine(to: corner)
+            path.addLine(to: CGPoint(x: corner.x + dx, y: corner.y))
+        }
+        return path
     }
 
     // MARK: Handoff
 
-    /// The ready UI replaces the sketch along one scan edge; handles and
-    /// readouts linger past the edge and fade last, as a design tool's chrome
-    /// does once the layout resolves.
+    /// The ready UI replaces the sketch along one scan edge while the
+    /// timeline plays out its release: guides, readouts, key chrome, handles
+    /// and dots let go in the reference order; handles and readouts linger
+    /// past the edge and fade last.
     func animateHandoff(reduceMotion: Bool = RelayLayerMotion.reduceMotion, completion: (() -> Void)? = nil) {
         cancelHandoff()
         guard !reduceMotion else {
             completion?()
             return
         }
+        exitStart = CACurrentMediaTime()
         let duration = SkeletonAssembly.duration
         let mask = CAShapeLayer()
         mask.name = SkeletonAssembly.maskName
@@ -658,25 +456,34 @@ final class SkeletonLoaderView: NSView {
         handleChromeLayer.opacity = 0
         handleChromeLayer.add(linger, forKey: Self.handoffKey)
         CATransaction.commit()
+        if !isAnimating { renderCurrent(now: CACurrentMediaTime()) }
     }
 
     /// Keeps a reused loader whole, without running a stale completion.
     func cancelHandoff() {
         handoffGeneration &+= 1
         handoffCompletion = nil
+        exitStart = nil
+        handoffProgress = nil
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if isHandingOff { sketchLayer.mask = nil }
         handleChromeLayer.removeAnimation(forKey: Self.handoffKey)
         handleChromeLayer.opacity = 1
         CATransaction.commit()
+        if !isAnimating { renderCurrent(now: CACurrentMediaTime()) }
     }
 
     /// SwiftUI drives the handoff frame by frame through its transition.
     func setHandoffProgress(_ progress: CGFloat?) {
+        let changed = handoffProgress != progress
+        handoffProgress = progress
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        defer { CATransaction.commit() }
+        defer {
+            CATransaction.commit()
+            if changed, !isAnimating { renderCurrent(now: CACurrentMediaTime()) }
+        }
         guard let progress else {
             if isHandingOff { sketchLayer.mask = nil }
             handleChromeLayer.opacity = 1
@@ -699,184 +506,7 @@ final class SkeletonLoaderView: NSView {
         setAccessibilityLabel(label)
     }
 
-    // MARK: Chrome geometry
-
-    static func perimeter(of rect: CGRect, radius: CGFloat) -> CGFloat {
-        let r = min(radius, rect.width / 2, rect.height / 2)
-        return 2 * (rect.width - 2 * r) + 2 * (rect.height - 2 * r) + 2 * .pi * r
-    }
-
-    /// Points along a rounded contour, clockwise from the top-left corner's
-    /// end, in the loader's flipped coordinates.
-    static func perimeterPoints(of rect: CGRect, radius: CGFloat, spacing: CGFloat) -> [CGPoint] {
-        let r = min(radius, rect.width / 2, rect.height / 2)
-        let w = rect.width - 2 * r
-        let h = rect.height - 2 * r
-        let arc = CGFloat.pi * r / 2
-        let length = perimeter(of: rect, radius: r)
-        guard length > 0, spacing > 0 else { return [] }
-        let count = max(4, Int((length / spacing).rounded()))
-        func point(at distance: CGFloat) -> CGPoint {
-            var s = distance
-            if s < w { return CGPoint(x: rect.minX + r + s, y: rect.minY) }
-            s -= w
-            if s < arc { return onArc(center: CGPoint(x: rect.maxX - r, y: rect.minY + r), r, from: -.pi / 2, s) }
-            s -= arc
-            if s < h { return CGPoint(x: rect.maxX, y: rect.minY + r + s) }
-            s -= h
-            if s < arc { return onArc(center: CGPoint(x: rect.maxX - r, y: rect.maxY - r), r, from: 0, s) }
-            s -= arc
-            if s < w { return CGPoint(x: rect.maxX - r - s, y: rect.maxY) }
-            s -= w
-            if s < arc { return onArc(center: CGPoint(x: rect.minX + r, y: rect.maxY - r), r, from: .pi / 2, s) }
-            s -= arc
-            if s < h { return CGPoint(x: rect.minX, y: rect.maxY - r - s) }
-            s -= h
-            return onArc(center: CGPoint(x: rect.minX + r, y: rect.minY + r), r, from: .pi, min(s, arc))
-        }
-        return (0..<count).map { point(at: length * CGFloat($0) / CGFloat(count)) }
-    }
-
-    private static func onArc(center: CGPoint, _ r: CGFloat, from angle: CGFloat, _ distance: CGFloat) -> CGPoint {
-        let theta = angle + (r > 0 ? distance / r : 0)
-        return CGPoint(x: center.x + r * cos(theta), y: center.y + r * sin(theta))
-    }
-
-    /// Deterministic jitter so a loader re-sketches the same way each time.
-    static func scattered(_ points: [CGPoint], seed: Int) -> [CGPoint] {
-        points.enumerated().map { index, point in
-            CGPoint(x: point.x + jitter(index * 2, seed: seed), y: point.y + jitter(index * 2 + 1, seed: seed))
-        }
-    }
-
-    private static func jitter(_ index: Int, seed: Int) -> CGFloat {
-        var hash = UInt32(truncatingIfNeeded: index &* 73_856_093) ^ UInt32(truncatingIfNeeded: seed &* 19_349_663)
-        hash ^= hash >> 13
-        hash = hash &* 0x5bd1_e995
-        hash ^= hash >> 15
-        return (CGFloat(hash % 1_000) / 1_000 - 0.5) * 2 * SkeletonConstruction.scatterJitter
-    }
-
-    static func dots(at points: [CGPoint], radius: CGFloat) -> CGPath {
-        let path = CGMutablePath()
-        for point in points {
-            path.addEllipse(in: CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2))
-        }
-        return path
-    }
-
-    /// Square handles centred on the bounding-box corners.
-    static func handlesPath(around rect: CGRect, size: CGFloat = SkeletonConstruction.handleSize) -> CGPath {
-        let path = CGMutablePath()
-        for corner in [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
-                       CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.maxY)] {
-            path.addRect(CGRect(x: corner.x - size / 2, y: corner.y - size / 2, width: size, height: size))
-        }
-        return path
-    }
-
-    /// Dotted guides extend each edge to the page, leaving the contour clear.
-    static func guidesPath(around rect: CGRect, in bounds: CGRect) -> CGPath {
-        let path = CGMutablePath()
-        let gap: CGFloat = 3
-        for y in [rect.minY, rect.maxY] {
-            if rect.minX - gap > bounds.minX {
-                path.move(to: CGPoint(x: bounds.minX, y: y))
-                path.addLine(to: CGPoint(x: rect.minX - gap, y: y))
-            }
-            if rect.maxX + gap < bounds.maxX {
-                path.move(to: CGPoint(x: rect.maxX + gap, y: y))
-                path.addLine(to: CGPoint(x: bounds.maxX, y: y))
-            }
-        }
-        for x in [rect.minX, rect.maxX] {
-            if rect.minY - gap > bounds.minY {
-                path.move(to: CGPoint(x: x, y: bounds.minY))
-                path.addLine(to: CGPoint(x: x, y: rect.minY - gap))
-            }
-            if rect.maxY + gap < bounds.maxY {
-                path.move(to: CGPoint(x: x, y: rect.maxY + gap))
-                path.addLine(to: CGPoint(x: x, y: bounds.maxY))
-            }
-        }
-        return path
-    }
-
-    /// A second dot grid, offset half a step from the field, doubles the dot
-    /// density inside the surface under construction.
-    static func innerGridPath(in rect: CGRect) -> CGPath {
-        let path = CGMutablePath()
-        let spacing = fieldSpacing
-        guard rect.width > spacing, rect.height > spacing else { return path }
-        var y = rect.minY + spacing / 2
-        while y <= rect.maxY - spacing / 4 {
-            var x = rect.minX + spacing / 2
-            while x <= rect.maxX - spacing / 4 {
-                path.addEllipse(in: CGRect(x: x - 1.5, y: y - 1.5, width: 3, height: 3))
-                x += spacing
-            }
-            y += spacing
-        }
-        return path
-    }
-
-    /// Crop marks bracket the content area inside the contour.
-    static func bracketsPath(around rect: CGRect, arm: CGFloat = 8) -> CGPath {
-        let path = CGMutablePath()
-        guard rect.width > arm * 2, rect.height > arm * 2 else { return path }
-        for (corner, dx, dy) in [
-            (CGPoint(x: rect.minX, y: rect.minY), arm, arm), (CGPoint(x: rect.maxX, y: rect.minY), -arm, arm),
-            (CGPoint(x: rect.minX, y: rect.maxY), arm, -arm), (CGPoint(x: rect.maxX, y: rect.maxY), -arm, -arm),
-        ] {
-            path.move(to: CGPoint(x: corner.x + dx, y: corner.y))
-            path.addLine(to: corner)
-            path.addLine(to: CGPoint(x: corner.x, y: corner.y + dy))
-        }
-        return path
-    }
-
-    // MARK: Geometry
-
-    /// Text becomes a dotted baseline; icons and containers keep their contour.
-    /// The contour's resting path scaled about the centre of its layer.
-    static func contourStart(for stroke: CAShapeLayer) -> CGPath {
-        guard let path = stroke.path else { return CGMutablePath() }
-        let box = path.boundingBoxOfPath
-        let centre = CGPoint(x: box.midX, y: box.midY)
-        var transform = CGAffineTransform(translationX: centre.x, y: centre.y)
-            .scaledBy(x: SkeletonConstruction.startScale, y: SkeletonConstruction.startScale)
-            .translatedBy(x: -centre.x, y: -centre.y)
-        return path.copy(using: &transform) ?? path
-    }
-
-    static func wirePath(for bone: SkeletonBone) -> CGPath {
-        let path = CGMutablePath()
-        let rect = bone.rect.insetBy(dx: 1, dy: 1)
-        guard rect.width > 0, rect.height > 0 else { return path }
-        if bone.style == .fill && bone.rect.width > bone.rect.height * 2 {
-            path.move(to: CGPoint(x: rect.minX, y: rect.midY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
-        } else if bone.style == .fill && bone.rect.width <= dotSpacing * 2 {
-            path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
-        } else {
-            let radius = max(0, bone.radius - 1)
-            path.addRoundedRect(in: rect, cornerWidth: radius, cornerHeight: radius)
-        }
-        return path
-    }
-
-    static func fieldPath(in bounds: CGRect) -> CGPath {
-        let path = CGMutablePath()
-        guard bounds.width > 0, bounds.height > 0 else { return path }
-        let inset = Self.fieldSpacing / 2
-        for y in stride(from: bounds.minY + inset, through: bounds.maxY - inset, by: Self.fieldSpacing) {
-            for x in stride(from: bounds.minX + inset, through: bounds.maxX - inset, by: Self.fieldSpacing) {
-                path.addEllipse(in: CGRect(x: x - 0.75, y: y - 0.75, width: 1.5, height: 1.5))
-            }
-        }
-        return path
-    }
+    // MARK: Layouts
 
     /// The surfaces behind the bones: the board's columns, the Notes
     /// library, or the Settings pane and its agent card. History sits on

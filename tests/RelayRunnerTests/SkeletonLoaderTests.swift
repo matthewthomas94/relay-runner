@@ -114,8 +114,9 @@ final class SkeletonLoaderTests: XCTestCase {
 
     func testSkeletonsDrawOnlyConstructionChrome() throws {
         let readout = try NSRegularExpression(pattern: "^\\d+ × \\d+  t\\+\\d\\.\\d\\ds$")
-        let counter = try NSRegularExpression(pattern: "^\\d{3}·\\d{3}$")
-        let frame = try NSRegularExpression(pattern: "^FRAME \\d+×\\d+$")
+        let coordinates = try NSRegularExpression(pattern: "^\\d{3}·\\d{3}$")
+        let tag = try NSRegularExpression(pattern: "^[A-Z]+ \\d+×\\d+$")
+        let dimension = try NSRegularExpression(pattern: "^\\d+ × \\d+$")
         for (layout, size) in [
             (SkeletonLoaderLayout.board(columnTop: boardTop), CGSize(width: 1_400, height: 760)),
             (.terminal, CGSize(width: 900, height: 420)),
@@ -131,14 +132,12 @@ final class SkeletonLoaderTests: XCTestCase {
             XCTAssertEqual(view.accessibilityLabel(), BoardUpdateStatus.workingLabel, "VoiceOver still hears the status")
             XCTAssertFalse(view.annotatedRects.isEmpty, "\(layout) annotates its main surfaces")
             let texts = textLayers(in: view.layer)
-            XCTAssertEqual(texts.count, view.annotatedRects.count * 3,
-                           "\(layout): one readout, one frame label and one counter per surface")
+            XCTAssertEqual(texts.count, view.annotatedRects.count * 3 + view.keyRects.count,
+                           "\(layout): a readout, a tag and a coordinate per element, a size per key box")
             for text in texts {
                 let string = try XCTUnwrap(text.string as? String)
                 let range = NSRange(string.startIndex..., in: string)
-                XCTAssertTrue(readout.firstMatch(in: string, range: range) != nil
-                              || counter.firstMatch(in: string, range: range) != nil
-                              || frame.firstMatch(in: string, range: range) != nil,
+                XCTAssertTrue([readout, coordinates, tag, dimension].contains { $0.firstMatch(in: string, range: range) != nil },
                               "\(layout): \"\(string)\" is design-tool chrome, not copy")
                 XCTAssertTrue(try XCTUnwrap(text.font as? NSFont).isFixedPitch, "\(layout): readouts are monospaced")
             }
@@ -150,15 +149,6 @@ final class SkeletonLoaderTests: XCTestCase {
         var found = (layer as? CATextLayer).map { [$0] } ?? []
         for sublayer in layer.sublayers ?? [] { found += textLayers(in: sublayer) }
         return found + textLayers(in: layer.mask)
-    }
-
-    private func gradient(in layer: CALayer?) -> CAGradientLayer? {
-        guard let layer else { return nil }
-        if let gradient = layer as? CAGradientLayer { return gradient }
-        for sublayer in layer.sublayers ?? [] {
-            if let gradient = gradient(in: sublayer) { return gradient }
-        }
-        return nil
     }
 
     func testConstructionAnnotatesTheLargestTopLevelSurfaces() {
@@ -176,20 +166,152 @@ final class SkeletonLoaderTests: XCTestCase {
                        "Panels are the construction surfaces when a layout has them")
     }
 
-    func testConstructionReadoutsAndDotCountsMatchTheLander() {
+    func testConstructionReadoutsMatchTheLander() {
         XCTAssertEqual(SkeletonConstruction.readout(width: 320.4, height: 180, time: 0), "320 × 180  t+0.00s")
         XCTAssertEqual(SkeletonConstruction.readout(width: 1_024, height: 64, time: 0.5), "1024 × 64  t+0.50s")
-        XCTAssertEqual(SkeletonConstruction.counter(placed: 22, total: 130), "022·130")
-        XCTAssertEqual(SkeletonConstruction.counter(placed: 130, total: 130), "130·130")
-        let rect = CGRect(x: 10, y: 10, width: 300, height: 120)
-        let points = SkeletonLoaderView.perimeterPoints(of: rect, radius: 16, spacing: 15)
-        XCTAssertGreaterThan(points.count, 20)
-        XCTAssertEqual(SkeletonLoaderView.scattered(points, seed: 3).count, points.count,
-                       "Every scattered dot converges onto exactly one contour dot")
-        for point in points {
-            XCTAssertTrue(rect.insetBy(dx: -1, dy: -1).contains(point), "\(point)")
+        XCTAssertEqual(SkeletonConstruction.coordinates(x: 22, y: 130), "022·130")
+        XCTAssertEqual(SkeletonConstruction.coordinates(x: -3, y: 130.4), "000·130")
+        XCTAssertEqual(SkeletonConstruction.dimension(width: 108, height: 108), "108 × 108")
+        XCTAssertEqual(SkeletonConstruction.tag(name: "svg", width: 108, height: 108), "SVG 108×108")
+    }
+
+    func testGenerationTimelineMatchesTheLander() {
+        XCTAssertEqual(SkeletonGeneration.dotsWindow, 0.0...0.3)
+        XCTAssertEqual(SkeletonGeneration.outlineWindow, 0.1...0.42)
+        XCTAssertEqual(SkeletonGeneration.partsWindow, 0.28...0.74)
+        XCTAssertEqual(SkeletonGeneration.revealWindow.lowerBound, 0.74)
+        XCTAssertGreaterThanOrEqual(SkeletonGeneration.holdProgress, SkeletonGeneration.partsWindow.upperBound,
+                                    "The sketch holds once every part has traced")
+        XCTAssertLessThanOrEqual(SkeletonGeneration.holdProgress, SkeletonGeneration.revealWindow.lowerBound,
+                                 "and before anything starts to release")
+        XCTAssertLessThan(SkeletonGeneration.holdProgress, SkeletonGeneration.cleanWindow.lowerBound)
+        for value in [0.06, 0.3, 0.5, 0.96] {
+            XCTAssertEqual(SkeletonGeneration.eased(SkeletonGeneration.inverseEaseOut(value)), value, accuracy: 0.001,
+                           "A flyer lands exactly when the traced outline reaches its point")
         }
-        XCTAssertNotEqual(SkeletonLoaderView.scattered(points, seed: 3), SkeletonLoaderView.scattered(points, seed: 4))
+        XCTAssertEqual(SkeletonGeneration.smooth(0, 1, 0.5), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(SkeletonGeneration.smooth(0.2, 0.4, 0.1), 0)
+        XCTAssertEqual(SkeletonGeneration.smooth(0.2, 0.4, 0.9), 1)
+        XCTAssertEqual(SkeletonGeneration.span(0.1...0.5, 0.3), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(SkeletonGeneration.hash(3), SkeletonGeneration.hash(3), "The sketch repeats exactly")
+        XCTAssertNotEqual(SkeletonGeneration.hash(3), SkeletonGeneration.hash(4))
+        XCTAssertEqual(SkeletonGeneration.wireDotRadius * 2, 3, "Wire dots are the notch glyph's 3pt dot")
+        XCTAssertEqual(SkeletonGeneration.wireGap, 5, "on the glyph's 5pt pitch")
+    }
+
+    func testTracedPathsPlaceWholeDotsThatCrawl() throws {
+        let rect = CGRect(x: 10, y: 10, width: 300, height: 120)
+        let right = SkeletonGeneration.SampledPath.half(of: rect, radius: 16, right: true)
+        let left = SkeletonGeneration.SampledPath.half(of: rect, radius: 16, right: false)
+        let perimeter = 2 * (300 - 32) + 2 * (120 - 32) + 2 * CGFloat.pi * 16
+        XCTAssertEqual(right.length + left.length, perimeter, accuracy: 1)
+        XCTAssertEqual(right.point(at: 0), CGPoint(x: rect.midX, y: rect.minY), "Both halves start at top centre")
+        XCTAssertEqual(left.point(at: 0), CGPoint(x: rect.midX, y: rect.minY))
+        XCTAssertEqual(right.point(at: right.length).y, rect.maxY, accuracy: 0.001, "and end at bottom centre")
+        XCTAssertEqual(left.point(at: left.length).y, rect.maxY, accuracy: 0.001)
+        for half in [right, left] {
+            for distance in stride(from: CGFloat(0), through: half.length, by: 7) {
+                XCTAssertTrue(rect.insetBy(dx: -0.5, dy: -0.5).contains(half.point(at: distance)), "\(distance)")
+            }
+        }
+        let closed = SkeletonGeneration.SampledPath.roundedRect(rect, radius: 16)
+        XCTAssertEqual(closed.length, perimeter, accuracy: 1)
+
+        let full = SkeletonGeneration.trace(right, progress: 1, elapsedMs: 0, gap: 5)
+        XCTAssertNil(full.head, "A finished trace has no head")
+        XCTAssertEqual(full.dots.count, Int(right.length / 5) + 1)
+        let partial = SkeletonGeneration.trace(right, progress: 0.5, elapsedMs: 0, gap: 5)
+        XCTAssertEqual(partial.dots.count, Int(right.length * 0.5 / 5) + 1, "Dots are placed whole, never clipped")
+        XCTAssertEqual(try XCTUnwrap(partial.head), try XCTUnwrap(partial.dots.last), "The head rides the last placed dot")
+        let crawled = SkeletonGeneration.trace(right, progress: 0.5, elapsedMs: 100, gap: 5)
+        XCTAssertNotEqual(crawled.dots.first, partial.dots.first, "Dots crawl along the path over time")
+        XCTAssertEqual(SkeletonGeneration.trace(right, progress: 0, elapsedMs: 0, gap: 5).dots.count, 0)
+    }
+
+    func testSceneTurnsSurfacesIntoElementsAndBonesIntoParts() throws {
+        let bounds = CGRect(x: 0, y: 0, width: 1_400, height: 760)
+        let layout = SkeletonLoaderLayout.board(columnTop: boardTop)
+        let panels = SkeletonLoaderView.panels(for: layout, in: bounds)
+        let bones = SkeletonLoaderView.bones(for: layout, in: bounds)
+        let scene = SkeletonGeneration.scene(bounds: bounds, surfaces: panels, bones: bones)
+        XCTAssertEqual(scene.elements.map(\.rect), panels, "Each column is an element")
+        XCTAssertEqual(scene.elements.map(\.parts.count).reduce(0, +), bones.count, "Every bone is some element's part")
+        for element in scene.elements {
+            XCTAssertEqual(element.flyers.count, SkeletonGeneration.flyerCount)
+            XCTAssertEqual(element.guides.count, 4)
+            XCTAssertEqual(element.halves.count, 2)
+            let keys = element.parts.filter(\.key)
+            XCTAssertFalse(keys.isEmpty, "The largest cards are keys")
+            XCTAssertLessThanOrEqual(keys.count, SkeletonGeneration.maxKeysPerElement)
+            XCTAssertTrue(keys.allSatisfy { $0.kind == .frame && $0.strokes.count == 2 }, "Key boxes trace as two halves")
+            for part in element.parts {
+                XCTAssertTrue(element.rect.contains(part.rect))
+                XCTAssertGreaterThanOrEqual(part.start, SkeletonGeneration.partsWindow.lowerBound)
+                XCTAssertLessThanOrEqual(part.end, SkeletonGeneration.partsWindow.upperBound + 0.0001)
+                if part.kind == .text {
+                    let stroke = try XCTUnwrap(part.strokes.first)
+                    XCTAssertEqual(stroke.path.point(at: 0).y, stroke.path.point(at: stroke.path.length).y,
+                                   "Text is one dotted baseline, not a filled bar")
+                    XCTAssertTrue(stroke.caps)
+                }
+            }
+            XCTAssertTrue(zip(element.parts, element.parts.dropFirst()).allSatisfy { $0.start <= $1.start },
+                          "Parts start in reading order")
+            for flyer in element.flyers {
+                XCTAssertGreaterThan(flyer.arrival, flyer.start)
+                XCTAssertTrue(SkeletonGeneration.outlineWindow.contains(flyer.arrival))
+                XCTAssertTrue(element.rect.insetBy(dx: -1, dy: -1).contains(flyer.to), "Flyers land on the contour")
+            }
+        }
+        XCTAssertFalse(scene.dots.isEmpty)
+        for dot in scene.dots {
+            XCTAssertTrue(bounds.contains(dot.center))
+            XCTAssertTrue((0...1).contains(dot.edge))
+            XCTAssertTrue(scene.elements.indices.contains(dot.element))
+        }
+        XCTAssertEqual(scene.keyRects.count, scene.elements.map { $0.parts.filter(\.key).count }.reduce(0, +))
+    }
+
+    func testFramesBuildUpThenHoldThenRelease() throws {
+        let bounds = CGRect(x: 0, y: 0, width: 900, height: 520)
+        let bones = SkeletonLoaderView.bones(for: .terminal, in: bounds)
+        let scene = SkeletonGeneration.scene(bounds: bounds, surfaces: [], bones: bones)
+        let count = scene.elements.count
+        XCTAssertGreaterThan(count, 0)
+        func frame(_ a: Double, ms: Double = 0) -> SkeletonGeneration.Frame {
+            SkeletonGeneration.evaluate(scene, progress: Array(repeating: a, count: count), elapsedMs: ms)
+        }
+        let start = frame(0)
+        XCTAssertTrue(start.wires.isEmpty, "Nothing is traced before the outline window")
+        XCTAssertTrue(start.handles.isEmpty)
+        XCTAssertLessThan(start.field.count, scene.dots.count / 2, "The field wakes from the centre, not all at once")
+
+        let outlining = frame(0.25)
+        XCTAssertFalse(outlining.wires.filter(\.strong).isEmpty, "Heads and flyers show while the contour traces")
+        XCTAssertEqual(outlining.handles.count, count * 2, "The top handles have popped, the bottom pair not yet")
+        let readout = try XCTUnwrap(outlining.labels.first { $0.kind == .readout })
+        XCTAssertGreaterThan(readout.alpha, 0)
+        XCTAssertTrue(readout.text.hasSuffix("s"))
+        XCTAssertEqual(outlining.labels.first { $0.kind == .coordinates }?.alpha, 1, "The coordinate readout follows a live head")
+
+        let building = frame(0.5)
+        XCTAssertFalse(building.reticles.isEmpty, "A reticle frames the part under construction")
+        XCTAssertTrue(building.labels.contains { $0.kind == .tag && $0.alpha > 0.5 })
+
+        let held = frame(SkeletonGeneration.holdProgress, ms: 5_000)
+        XCTAssertEqual(held.labels.first { $0.kind == .coordinates }?.alpha, 0, "Every trace has finished")
+        XCTAssertEqual(held.handles.count, count * 4 + scene.keyRects.count * 4)
+        XCTAssertGreaterThanOrEqual(held.field.count, scene.dots.filter { $0.edge > 0.05 }.count,
+                                    "Every dot within reach of an element shows while the sketch holds")
+        XCTAssertFalse(held.wires.isEmpty)
+        let heldLater = frame(SkeletonGeneration.holdProgress, ms: 5_100)
+        XCTAssertNotEqual(held.wires.map(\.center), heldLater.wires.map(\.center), "Dots keep crawling while the sketch holds")
+
+        let released = frame(1.05)
+        XCTAssertTrue(released.handles.isEmpty, "Handles have shrunk away")
+        XCTAssertTrue(released.reticles.isEmpty)
+        XCTAssertTrue(released.field.isEmpty, "The field has cleaned up")
+        XCTAssertTrue(released.wires.allSatisfy { $0.alpha < 0.05 }, "The wireframe has faded")
     }
 
     func testHandoffProgressScansTheSketchAndFadesChromeLast() throws {
@@ -201,6 +323,8 @@ final class SkeletonLoaderTests: XCTestCase {
         XCTAssertTrue(view.isHandingOff)
         let chrome = try XCTUnwrap(view.layer?.sublayers?.last)
         XCTAssertEqual(chrome.opacity, 1, "Handles stay whole past the scan edge")
+        XCTAssertTrue(view.renderedProgress.allSatisfy { $0 > SkeletonGeneration.holdProgress },
+                      "The handoff plays the release part of the timeline")
         view.setHandoffProgress(0.8)
         XCTAssertEqual(chrome.opacity, 0.5, accuracy: 0.001)
         view.setHandoffProgress(1)
@@ -208,6 +332,7 @@ final class SkeletonLoaderTests: XCTestCase {
         view.setHandoffProgress(nil)
         XCTAssertFalse(view.isHandingOff, "A reused loader comes back whole")
         XCTAssertEqual(chrome.opacity, 1)
+        XCTAssertEqual(view.renderedProgress, Array(repeating: SkeletonGeneration.holdProgress, count: view.annotatedRects.count))
 
         view.animateHandoff(reduceMotion: false)
         XCTAssertTrue(view.isHandingOff)
@@ -220,60 +345,31 @@ final class SkeletonLoaderTests: XCTestCase {
         XCTAssertEqual(completions, 1)
     }
 
-    func testDotSketchTracesOnceWithoutTakingClicks() throws {
+    func testSketchAnimatesOnlyWhileVisibleAndNeverRestarts() throws {
         let view = SkeletonLoaderView(layout: .terminal, label: "Starting Claude")
         view.frame = CGRect(x: 0, y: 0, width: 900, height: 667)
         view.layoutSubtreeIfNeeded()
         XCTAssertNil(view.hitTest(CGPoint(x: 450, y: 333)))
         XCTAssertEqual(view.accessibilityLabel(), "Starting Claude")
+        XCTAssertFalse(view.isAnimating, "Detached loaders do no animation work")
+        let held = Array(repeating: SkeletonGeneration.holdProgress, count: view.annotatedRects.count)
+        XCTAssertEqual(view.renderedProgress, held, "A still loader shows the completed sketch")
 
-        let gradient = try XCTUnwrap(gradient(in: view.layer))
-        XCTAssertNil(gradient.animation(forKey: SkeletonLoaderView.sweepKey), "Detached loaders do no animation work")
         view.updateAnimation(visible: true, reduceMotion: false)
-        let strokes = try XCTUnwrap(gradient.mask?.sublayers?.compactMap { $0 as? CAShapeLayer })
-        XCTAssertEqual(strokes.count, view.bones.count)
-        let traces = try strokes.map { try XCTUnwrap($0.animation(forKey: SkeletonLoaderView.traceKey) as? CABasicAnimation) }
-        for trace in traces {
-            XCTAssertTrue(["strokeEnd", "path"].contains(trace.keyPath ?? ""),
-                          "Contours grow into place or trace along their path")
-            XCTAssertEqual(trace.repeatCount, 0, "The drawing does not repeatedly empty and rebuild")
-            XCTAssertLessThan(trace.duration, 0.6)
-        }
-        XCTAssertGreaterThan(try XCTUnwrap(traces.last).beginTime, try XCTUnwrap(traces.first).beginTime)
+        XCTAssertTrue(view.isAnimating)
+        let started = try XCTUnwrap(view.constructionStart)
+        XCTAssertTrue(view.renderedProgress.allSatisfy { $0 < 0.05 }, "Construction starts from nothing")
         view.updateAnimation(visible: true, reduceMotion: false)
-        XCTAssertEqual(strokes[0].animation(forKey: SkeletonLoaderView.traceKey)?.beginTime, traces[0].beginTime,
-                       "Refreshing an already visible loader does not restart it")
-        let cycle = try XCTUnwrap(gradient.animation(forKey: SkeletonLoaderView.sweepKey) as? CAAnimationGroup)
-        XCTAssertEqual(cycle.repeatCount, .infinity)
-        let sweep = try XCTUnwrap(cycle.animations?.first as? CAKeyframeAnimation)
-        XCTAssertEqual(sweep.keyPath, "locations")
-        XCTAssertLessThan(sweep.duration, cycle.duration, "Each pass rests before the next")
-        XCTAssertNotEqual(sweep.timingFunction, CAMediaTimingFunction(name: .linear))
-        let stops = try XCTUnwrap(sweep.values as? [[NSNumber]])
-        for frame in stops {
-            let values = frame.map(\.doubleValue)
-            XCTAssertEqual(values, values.sorted())
-            XCTAssertTrue(values.allSatisfy { (0...1).contains($0) }, "The gradient stays renderable at every keyframe")
-        }
-    }
-
-    func testHiddenAndReducedMotionLoadersStopAndRemainComplete() throws {
-        let view = SkeletonLoaderView(layout: .notes, label: "Loading notes")
-        view.frame = CGRect(x: 0, y: 0, width: 1_400, height: 760)
+        view.needsLayout = true
         view.layoutSubtreeIfNeeded()
-        let gradient = try XCTUnwrap(gradient(in: view.layer))
-        let strokes = try XCTUnwrap(gradient.mask?.sublayers?.compactMap { $0 as? CAShapeLayer })
-        for (visible, reduceMotion) in [(false, false), (true, true)] {
-            view.updateAnimation(visible: true, reduceMotion: false)
-            XCTAssertNotNil(gradient.animation(forKey: SkeletonLoaderView.sweepKey))
-            view.updateAnimation(visible: visible, reduceMotion: reduceMotion)
-            XCTAssertNil(gradient.animationKeys())
-            for stroke in strokes {
-                XCTAssertNil(stroke.animationKeys())
-                XCTAssertEqual(stroke.strokeEnd, 1, "Stopping motion shows the completed drawing")
-                XCTAssertFalse(try XCTUnwrap(stroke.path).isEmpty)
-            }
-        }
+        XCTAssertEqual(view.constructionStart, started, "Refreshing or laying out a visible loader does not restart it")
+
+        view.updateAnimation(visible: false, reduceMotion: false)
+        XCTAssertFalse(view.isAnimating)
+        XCTAssertEqual(view.renderedProgress, held, "Stopping motion shows the completed drawing")
+        view.updateAnimation(visible: true, reduceMotion: true)
+        XCTAssertFalse(view.isAnimating, "Reduce Motion shows the completed sketch")
+        XCTAssertEqual(view.renderedProgress, held)
     }
 
     @MainActor
@@ -294,44 +390,29 @@ final class SkeletonLoaderTests: XCTestCase {
         window.orderFrontRegardless()
         view.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.04))
-        let gradient = try XCTUnwrap(gradient(in: view.layer))
-        let cycle = try XCTUnwrap(gradient.animation(forKey: SkeletonLoaderView.sweepKey))
+        XCTAssertTrue(view.isAnimating)
+        let started = try XCTUnwrap(view.constructionStart)
         view.needsLayout = true
         view.layoutSubtreeIfNeeded()
-        XCTAssertEqual(gradient.animation(forKey: SkeletonLoaderView.sweepKey)?.beginTime, cycle.beginTime)
+        XCTAssertEqual(view.constructionStart, started)
 
         if let directory = ProcessInfo.processInfo.environment["RELAY_SKELETON_RENDER_DIR"] {
             let url = URL(fileURLWithPath: directory).appendingPathComponent("motion", isDirectory: true)
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-            let started = Date()
             for frame in 0..<72 {
-                RunLoop.main.run(until: started.addingTimeInterval(Double(frame) / 18))
-                let bitmap = try render(try XCTUnwrap(view.layer?.presentation()), size: size)
+                view.renderFrame(elapsed: Double(frame) / 18)
+                let bitmap = try render(try XCTUnwrap(view.layer), size: size)
                 try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
                     .write(to: url.appendingPathComponent(String(format: "%03d.png", frame)))
             }
         }
 
         parent.isHidden = true
-        XCTAssertNil(gradient.animationKeys(), "Hiding an ancestor stops offscreen work")
+        XCTAssertFalse(view.isAnimating, "Hiding an ancestor stops offscreen work")
         parent.isHidden = false
-        XCTAssertNotNil(gradient.animation(forKey: SkeletonLoaderView.sweepKey))
+        XCTAssertTrue(view.isAnimating)
         view.removeFromSuperview()
-        XCTAssertNil(gradient.animationKeys(), "Detaching the loader stops its repeating animation")
-    }
-
-    func testDotDrawingUsesBaselinesAndKeepsContoursInsideTheirBounds() {
-        let text = SkeletonBone(rect: CGRect(x: 16, y: 30, width: 160, height: 12), radius: 6, style: .fill)
-        let line = SkeletonLoaderView.wirePath(for: text).boundingBoxOfPath
-        XCTAssertEqual(line.height, 0, "Text is one row of dots, not a filled bar")
-        XCTAssertEqual(line.midY, text.rect.midY)
-        let card = SkeletonBone(rect: CGRect(x: 10, y: 10, width: 260, height: 140), radius: 14, style: .outline)
-        let outline = SkeletonLoaderView.wirePath(for: card).boundingBoxOfPath
-        XCTAssertEqual(outline, card.rect.insetBy(dx: 1, dy: 1))
-        for bounds in [CGRect.zero, CGRect(x: 0, y: 0, width: 12, height: 12), CGRect(x: 8, y: 20, width: 900, height: 667)] {
-            let field = SkeletonLoaderView.fieldPath(in: bounds)
-            if !field.isEmpty { XCTAssertTrue(bounds.contains(field.boundingBoxOfPath)) }
-        }
+        XCTAssertFalse(view.isAnimating, "Detaching the loader stops its display link")
     }
 
     /// Export the actual native layers for visual QA, without launching Relay.
