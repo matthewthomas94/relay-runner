@@ -5736,7 +5736,10 @@ def main():
             messenger=messenger,
             shutdown_event=shutdown_event,
         )
-        remote_server: RelayRemoteServer | None = RelayRemoteServer(RemoteIngress())
+        remote_server: RelayRemoteServer | None = RelayRemoteServer(
+            RemoteIngress(),
+            speech=tts_worker,
+        )
         try:
             remote_server.start()
         except OSError as exc:

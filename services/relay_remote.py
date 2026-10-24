@@ -3,7 +3,8 @@
 Owned by voice_bridge.py. Accepts the forced-command helper on a Unix socket,
 keys sessions by device id, and feeds utterances and controls into the
 bridge's ingress queue so remote and microphone input share one ordered path
-through ``_begin_relay_command``. Speech back to the device is RR-424.
+through ``_begin_relay_command``. Each session is also the SpeechCoordinator's
+remote sink (RR-424): speech becomes ``speech`` frames and acks feed realization.
 """
 
 from __future__ import annotations
@@ -117,6 +118,7 @@ class DeviceSession:
         self._clock = clock
         self.lock = threading.RLock()
         self.conn: socket.socket | None = None
+        self.disconnected_at: float | None = None
         self.seq = proto.SeqCounter()
         self.replay = proto.ReplayBuffer()
         self.dedup = proto.ClientIDDeduplicator()
@@ -132,16 +134,41 @@ class DeviceSession:
                 return True
             except OSError:
                 self.conn = None
+                self.disconnected_at = self._clock()
                 _close(conn)
                 return False
 
     def emit(self, build: Callable[[int], Any]) -> Any:
         """Send a sequenced Mac-to-phone frame, keeping it for replay."""
         with self.lock:
-            frame = build(self.seq.next())
+            frame = build(self.seq.last + 1)
+            proto.encode(frame)  # Reject an invalid frame before it takes a seq.
+            self.seq.next()
             self.replay.record(frame, self._clock())
             self.send(frame)
             return frame
+
+    def routable(self) -> bool:
+        """Connected, or disconnected within the replay window."""
+        with self.lock:
+            if self.conn is not None:
+                return True
+            return (
+                self.disconnected_at is not None
+                and self._clock() - self.disconnected_at <= proto.REPLAY_MAX_AGE
+            )
+
+    def speech(self, *, kind: str, source: str, text: str, relay_command_seq: int | None) -> int:
+        return self.emit(lambda seq: proto.Speech(
+            seq=seq,
+            kind=kind,
+            source=source,
+            text=text,
+            relay_command_seq=relay_command_seq,
+        )).seq
+
+    def speech_control(self, action: str, reason: str) -> int:
+        return self.emit(lambda seq: proto.SpeechControl(seq=seq, action=action, reason=reason)).seq
 
     def accept(self, client_id: str, relay_command: dict) -> None:
         frame = proto.Accepted(
@@ -179,8 +206,11 @@ class RelayRemoteServer:
         *,
         peer_uid: Callable[[socket.socket], int] = peer_uid,
         clock: Callable[[], float] = time.monotonic,
+        speech: Any = None,
     ):
         self.ingress = ingress
+        # The SpeechCoordinator: attach_remote_sink, detach_remote_sink, remote_ack.
+        self.speech = speech
         self.path = path
         self._peer_uid = peer_uid
         self._clock = clock
@@ -212,6 +242,8 @@ class RelayRemoteServer:
                 conn, session.conn = session.conn, None
             if conn is not None:
                 _close(conn)
+            if self.speech is not None:
+                self.speech.detach_remote_sink(session.device_id)
         self.ingress.close()
         try:
             os.unlink(self.path)
@@ -274,6 +306,7 @@ class RelayRemoteServer:
                 with session.lock:
                     if session.conn is conn:
                         session.conn = None
+                        session.disconnected_at = self._clock()
             _close(conn)
 
     def _reply(self, conn, session: DeviceSession | None, code: str, message: str) -> None:
@@ -308,6 +341,8 @@ class RelayRemoteServer:
             ))
             for missed in resume.frames:
                 session.send(missed)
+        if self.speech is not None:
+            self.speech.attach_remote_sink(session)
         return session
 
     def _handle(self, session: DeviceSession, frame: Any) -> None:
@@ -316,6 +351,8 @@ class RelayRemoteServer:
         elif isinstance(frame, proto.Ack):
             with session.lock:
                 session.replay.ack(frame.seq)
+            if self.speech is not None:
+                self.speech.remote_ack(session.device_id, frame.seq, frame.played)
         elif isinstance(frame, (proto.Utterance, proto.Control)):
             self._submit(session, frame)
         else:
