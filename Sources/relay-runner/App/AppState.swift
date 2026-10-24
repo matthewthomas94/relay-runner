@@ -383,6 +383,20 @@ final class AppState {
     @ObservationIgnored private let notchStatusController = NotchStatusController()
     private var perimeterOverlay: PerimeterOverlayManager?
     private var eventBus: StateEventBus?
+    /// `Remote: <device>` while a Relay Remote phone is connected.
+    private(set) var remoteStatusLabel: String?
+    @ObservationIgnored private lazy var remoteDeviceSession: RelayRemoteDeviceSession = {
+        let session = RelayRemoteDeviceSession(
+            gate: AppStateRemoteGate(owner: self),
+            keepAwake: IOKitKeepAwake()
+        )
+        session.onChange = { [weak self] in
+            guard let self else { return }
+            self.remoteStatusLabel = self.remoteDeviceSession.statusLabel
+            self.syncNotchActivitySurface()
+        }
+        return session
+    }()
     private var actionsBus: ActionsConfirmBus?
     private var sttPollTimer: Timer?
     private var notchActivityPollingActive = false
@@ -742,6 +756,7 @@ final class AppState {
         let voiceTargetName = listeningVoiceTargetName
         let playbackTargetName = playingVoiceTargetName
         let switchNotice = sessionSwitchNotice
+        let remoteDeviceLabel = remoteStatusLabel
         let labels = NotchActivityLabelPlanner.labels(
             for: stateMachine.state,
             foregroundActivity: foregroundActivityLabel,
@@ -752,7 +767,8 @@ final class AppState {
             boardContentLoading: boardContentLoading,
             voiceTargetName: voiceTargetName,
             playbackTargetName: playbackTargetName,
-            switchNotice: switchNotice
+            switchNotice: switchNotice,
+            remoteDeviceLabel: remoteDeviceLabel
         )
         let hoverActivityLabel = NotchActivityLabelPlanner.hoverLabel(
             for: stateMachine.state,
@@ -765,6 +781,7 @@ final class AppState {
             voiceTargetName: voiceTargetName,
             playbackTargetName: playbackTargetName,
             switchNotice: switchNotice,
+            remoteDeviceLabel: remoteDeviceLabel,
             ticketForRun: { [notchActivityTicketsByRunKey] run in
                 let repoPath = URL(fileURLWithPath: run.repoPath).resolvingSymlinksInPath().path
                 return notchActivityTicketsByRunKey[
@@ -784,7 +801,7 @@ final class AppState {
         notchStatusController.setPresentation(
             status: NotchSessionStatus.resolve(
                 for: stateMachine.state,
-                hasActivityLabels: hasActiveWork || switchNotice != nil,
+                hasActivityLabels: hasActiveWork || switchNotice != nil || remoteDeviceLabel != nil,
                 boardIsLoading: boardIsLoading
             ),
             activityLabels: labels,
@@ -1161,6 +1178,10 @@ final class AppState {
         let engine = STTEngine(config: config.stt)
         engine.tutorialActive = onboardingTutorialSpeechActive
         sttEngine = engine
+        engine.onRemoteTakeover = { [weak self] in
+            Task { @MainActor in self?.remoteDeviceSession.userTookOver() }
+        }
+        if remoteDeviceSession.activeDeviceID != nil { engine.suspendForRemoteDevice() }
         syncCommandCaptureOwnership()
         resetObservedTutorialSTTSerials()
         sttSetupStartedAt = Date()
@@ -3138,6 +3159,7 @@ final class AppState {
             permissions.requestMicrophonePrompt { _ in }
             return
         }
+        remoteDeviceSession.userTookOver()
         sttEngine?.toggleRecording()
     }
 
@@ -3230,6 +3252,7 @@ final class AppState {
                                                   recordingKey: engine.recordingVoiceTargetSessionKey,
                                                   ready: sttSetupSucceeded && permissions.microphone == .granted
                                                     && !meetingNoteSnapshot.phase.ownsForeground) else { return false }
+            remoteDeviceSession.userTookOver()
             if !engine.isRecording {
                 guard newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: false),
                       activeContext.id == contextID, syncVoiceFocus(force: true) else { return false }
@@ -4082,6 +4105,9 @@ final class AppState {
             onRecoveryAction: { [weak self] request in
                 self?.performContinuityRecoveryAction(request)
                     ?? .failed("component_action_unavailable")
+            },
+            onRemoteDeviceEvent: { [weak self] event in
+                self?.remoteDeviceSession.apply(event)
             }
         )
         eventBus = bus
@@ -4816,4 +4842,15 @@ final class AppState {
         syncNotchStatusSurface()
     }
 
+}
+
+/// Forwards the remote gate to whichever engine is current, so a restarted
+/// engine does not strand the session.
+private final class AppStateRemoteGate: RemoteMicrophoneGate {
+    private weak var owner: AppState?
+    init(owner: AppState) { self.owner = owner }
+    func suspendForRemoteDevice() { owner?.sttEngine?.suspendForRemoteDevice() }
+    func resumeAfterRemoteDevice(preservingGesture: Bool) {
+        owner?.sttEngine?.resumeAfterRemoteDevice(preservingGesture: preservingGesture)
+    }
 }
