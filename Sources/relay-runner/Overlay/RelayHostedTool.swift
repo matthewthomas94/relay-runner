@@ -18,7 +18,7 @@ enum RelayHostedTool {
         switch tool {
         case "click", "type", "key", "scroll":
             return .accessibility
-        case "screenshot":
+        case "screenshot", "record":
             return .screenRecording
         default:
             return nil
@@ -49,6 +49,8 @@ enum RelayHostedTool {
                 return .success(try performScroll(arguments: arguments))
             case "screenshot":
                 return .success(try await performScreenshot(arguments: arguments))
+            case "record":
+                return .success(try await performRecord(arguments: arguments))
             default:
                 return .failure("Relay Runner does not host a tool named '\(tool)'.")
             }
@@ -207,10 +209,16 @@ enum RelayHostedTool {
 
     // MARK: - Screenshot
 
-    private static func performScreenshot(arguments: [String: Any]) async throws -> [[String: Any]] {
-        let displayIndex = arguments["display_index"] as? Int ?? 0
-        try ensureScreenRecording(purpose: arguments["purpose"] as? String ?? "take a screenshot")
+    private struct CaptureTarget {
+        let display: SCDisplay
+        let filter: SCContentFilter
+        let nativeWidth: Int
+        let nativeHeight: Int
+    }
 
+    /// Resolves a display index to a content filter that leaves Relay Runner's own overlays out
+    /// of the capture. Shared by `screenshot` and `record`.
+    private static func captureTarget(displayIndex: Int) async throws -> CaptureTarget {
         let content: SCShareableContent
         do {
             content = try await SCShareableContent.excludingDesktopWindows(
@@ -241,8 +249,18 @@ enum RelayHostedTool {
             )
         }
         let filter = SCContentFilter(display: display, excludingWindows: excludedWindows)
-        let (configWidth, configHeight) = nativePixelDimensions(forDisplayID: display.displayID)
+        let (width, height) = nativePixelDimensions(forDisplayID: display.displayID)
             ?? (display.width, display.height)
+        return CaptureTarget(display: display, filter: filter, nativeWidth: width, nativeHeight: height)
+    }
+
+    private static func performScreenshot(arguments: [String: Any]) async throws -> [[String: Any]] {
+        let displayIndex = arguments["display_index"] as? Int ?? 0
+        try ensureScreenRecording(purpose: arguments["purpose"] as? String ?? "take a screenshot")
+
+        let target = try await captureTarget(displayIndex: displayIndex)
+        let filter = target.filter
+        let (configWidth, configHeight) = (target.nativeWidth, target.nativeHeight)
 
         let config = SCStreamConfiguration()
         config.width = configWidth
@@ -275,6 +293,33 @@ enum RelayHostedTool {
                 "text": "Captured display \(displayIndex) at \(configWidth)x\(configHeight) pixels. Click/scroll coordinates are in this same pixel space.",
             ],
         ]
+    }
+
+    private static func performRecord(arguments: [String: Any]) async throws -> [[String: Any]] {
+        let request = RelayScreenRecordingRequest(arguments: arguments)
+        try ensureScreenRecording(purpose: arguments["purpose"] as? String ?? "record the screen")
+
+        let target = try await captureTarget(displayIndex: request.displayIndex)
+        let recorder = RelayScreenRecorder(
+            request: request,
+            nativeWidth: target.nativeWidth,
+            nativeHeight: target.nativeHeight
+        )
+        let summary = try await recorder.record(filter: target.filter)
+        return [[
+            "type": "text",
+            "text": String(
+                format: "Recorded display %d for %.1fs at %d fps: %d frames, %dx%d px, %@ saved to %@",
+                request.displayIndex,
+                request.duration,
+                request.framesPerSecond,
+                summary.framesWritten,
+                summary.width,
+                summary.height,
+                ByteCountFormatter.string(fromByteCount: Int64(summary.fileSize), countStyle: .file),
+                request.outputURL.path
+            ),
+        ]]
     }
 
     private static func ensureScreenRecording(purpose: String) throws {

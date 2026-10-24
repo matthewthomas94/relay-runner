@@ -4,7 +4,7 @@ import Foundation
 //
 // Split out of relay-actions-mcp (RR-10): RelayActions now owns manipulation
 // (click/type/scroll/key/list_windows/frontmost_app) and RelayVision owns
-// observation (screenshot, initially). They share the same `tool_fired`
+// observation (screenshot and record). They share the same `tool_fired`
 // notification to the menu-bar app, so ActionGlow pulses identically no matter
 // which server fired.
 //
@@ -29,6 +29,7 @@ final class MCPServer {
     init() {
         let registered: [any MCPTool] = [
             ScreenshotTool(),
+            RecordTool(),
         ]
         var byName: [String: any MCPTool] = [:]
         for tool in registered {

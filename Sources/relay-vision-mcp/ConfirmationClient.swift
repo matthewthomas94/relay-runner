@@ -63,7 +63,7 @@ enum ConfirmationClient {
         _ = sendJSONLine(fd: fd, payload: payload)
     }
 
-    static func requestHostedTool(name: String, arguments: [String: Any]) -> HostedToolOutcome {
+    static func requestHostedTool(name: String, arguments: [String: Any], timeoutSeconds: Int = 30) -> HostedToolOutcome {
         let payload: [String: Any] = [
             "type": "perform_tool",
             "tool": name,
@@ -76,7 +76,7 @@ enum ConfirmationClient {
             return .menuBarUnavailable
         }
 
-        var tv = timeval(tv_sec: 30, tv_usec: 0)
+        var tv = timeval(tv_sec: timeoutSeconds, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
         guard let line = readLine(fd: fd, maxBytes: maxReplyBytes),

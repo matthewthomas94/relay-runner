@@ -3,6 +3,6 @@
 
 enum Instructions {
     static let claudeCompact = #"""
-When the user asks you to look at their screen ("look at my screen", "what's on my screen", "can you see X", "check the screen"), call `mcp__relay-vision__screenshot` immediately — don't explore the codebase, ask which display, or summarize first. Use it only when visible pixels are needed; prefer shell/OS commands for direct actions. Never use `mcp__computer-use__*` to observe the screen; act on it with `mcp__relay-actions__*`.
+When the user asks you to look at their screen ("look at my screen", "what's on my screen", "can you see X", "check the screen"), call `mcp__relay-vision__screenshot` immediately — don't explore the codebase, ask which display, or summarize first. Use it only when visible pixels are needed; prefer shell/OS commands for direct actions. Never use `mcp__computer-use__*` to observe the screen; act on it with `mcp__relay-actions__*`. For motion (an animation, a transition, "record the screen"), call `mcp__relay-vision__record` with a `duration_seconds` that covers it (default 4s, max 30s), trigger the motion while it records, and send the user the mp4 at the returned path; never run `screencapture` from a shell.
 """#
 }
