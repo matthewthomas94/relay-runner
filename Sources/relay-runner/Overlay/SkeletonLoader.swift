@@ -248,7 +248,8 @@ final class SkeletonLoaderView: NSView {
                 let stroke = CAShapeLayer()
                 stroke.fillColor = nil
                 stroke.strokeColor = NSColor.black.cgColor
-                stroke.lineWidth = 2.2
+                // 3pt dots on a 5pt pitch: the notch glyph's own dot.
+                stroke.lineWidth = 3
                 stroke.lineCap = .round
                 stroke.lineJoin = .round
                 stroke.lineDashPattern = [0.01, NSNumber(value: Double(Self.dotSpacing - 0.01))]
@@ -341,9 +342,9 @@ final class SkeletonLoaderView: NSView {
         let contourRadius = max(0, radius - 1)
         let points = Self.perimeterPoints(of: contour, radius: contourRadius, spacing: SkeletonConstruction.scatterSpacing)
         let scatter = shape(scatterLayer, fill: true)
-        scatter.path = Self.dots(at: points, radius: 1.9)
+        scatter.path = Self.dots(at: points, radius: 1.5)
         scatter.opacity = 0
-        let scatterStart = Self.dots(at: Self.scattered(points, seed: strokeIndex), radius: 1.9)
+        let scatterStart = Self.dots(at: Self.scattered(points, seed: strokeIndex), radius: 1.5)
 
         let handles = shape(handleChromeLayer, fill: false, lineWidth: 1)
         handles.path = Self.handlesPath(around: rect, size: SkeletonConstruction.handleSize)
@@ -811,7 +812,7 @@ final class SkeletonLoaderView: NSView {
         while y <= rect.maxY - spacing / 4 {
             var x = rect.minX + spacing / 2
             while x <= rect.maxX - spacing / 4 {
-                path.addEllipse(in: CGRect(x: x - 1.1, y: y - 1.1, width: 2.2, height: 2.2))
+                path.addEllipse(in: CGRect(x: x - 1.5, y: y - 1.5, width: 3, height: 3))
                 x += spacing
             }
             y += spacing
