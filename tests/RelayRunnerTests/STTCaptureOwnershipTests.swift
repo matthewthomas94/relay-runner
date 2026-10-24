@@ -279,6 +279,43 @@ final class STTCaptureOwnershipTests: XCTestCase {
         XCTAssertTrue(backend.isRunning)
     }
 
+    func testRemoteDeviceSuspendsThenResumesCapture() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.setCaptureAllowed(true)
+        XCTAssertTrue(backend.isRunning)
+        engine.suspendForRemoteDevice()
+        XCTAssertFalse(backend.isRunning)
+        engine.setCaptureAllowed(true)
+        XCTAssertFalse(backend.isRunning)
+        engine.resumeAfterRemoteDevice()
+        XCTAssertTrue(backend.isRunning)
+    }
+
+    func testReferenceAudioThenRemoteResumesOnlyAfterBoth() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.setCaptureAllowed(true)
+        let token = try engine.suspendForReferenceAudio()
+        engine.suspendForRemoteDevice()
+        engine.resumeAfterReferenceAudio(token)
+        XCTAssertFalse(backend.isRunning)
+        engine.resumeAfterRemoteDevice()
+        XCTAssertTrue(backend.isRunning)
+    }
+
+    func testRemoteThenReferenceAudioResumesOnlyAfterBoth() async throws {
+        let engine = makeEngine()
+        try await engine.start()
+        engine.setCaptureAllowed(true)
+        engine.suspendForRemoteDevice()
+        let token = try engine.suspendForReferenceAudio()
+        engine.resumeAfterRemoteDevice()
+        XCTAssertFalse(backend.isRunning)
+        engine.resumeAfterReferenceAudio(token)
+        XCTAssertTrue(backend.isRunning)
+    }
+
     func testCaptureStartFailureReportsUnavailableWithoutThrowingFromOwnerChange() async throws {
         let engine = makeEngine()
         try await engine.start()
