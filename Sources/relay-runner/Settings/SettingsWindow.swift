@@ -77,8 +77,8 @@ enum SettingsContentStyle {
 
     var footerPadding: EdgeInsets {
         switch self {
-        case .window: return EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16)
-        case .workspace: return EdgeInsets(top: 12, leading: 18, bottom: 14, trailing: 18)
+        case .window: return EdgeInsets(top: 12, leading: 20, bottom: 14, trailing: 20)
+        case .workspace: return EdgeInsets(top: 12, leading: 22, bottom: 14, trailing: 22)
         }
     }
 
@@ -90,10 +90,7 @@ enum SettingsContentStyle {
     }
 
     var detailMaxWidth: CGFloat {
-        switch self {
-        case .window: return 620
-        case .workspace: return SettingsLayout.detailMaxWidth
-        }
+        SettingsLayout.detailMaxWidth
     }
 
     var usesStandaloneChrome: Bool {

@@ -39,10 +39,10 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertNil(SettingsContentStyle.workspace.fixedFrame)
     }
 
-    func testSettingsContentUsesReadableMaximumWidth() {
-        XCTAssertEqual(SettingsContentStyle.window.detailMaxWidth, 620)
-        XCTAssertEqual(SettingsContentStyle.workspace.detailMaxWidth, SettingsLayout.detailMaxWidth)
-        XCTAssertEqual(SettingsLayout.detailMaxWidth, 680)
+    func testSettingsContentFillsAvailableWidth() {
+        XCTAssertEqual(SettingsContentStyle.window.detailMaxWidth, .infinity)
+        XCTAssertEqual(SettingsContentStyle.workspace.detailMaxWidth, .infinity)
+        XCTAssertEqual(SettingsLayout.detailMaxWidth, .infinity)
     }
 
     func testWorkspaceSettingsDoesNotAddStandaloneChrome() {
