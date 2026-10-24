@@ -184,12 +184,10 @@ final class BoardRevealContainerView: NSView {
             return
         }
 
-        let assembling = self.loading && !loading && revealExpanded && !contentVisible
-            && revealView.hasVisibleLoader
         self.loading = loading
-        revealView.setLoading(loading, assemblingContent: assembling)
+        revealView.setLoading(loading)
         glyphView.setLoading(loading)
-        revealContentIfReady(assembling: assembling)
+        revealContentIfReady()
     }
 
     func canReuse(displayGeometry: NotchStatusDisplayGeometry) -> Bool {
@@ -204,8 +202,6 @@ final class BoardRevealContainerView: NSView {
     }
 
     func prepareForOpening(startsLoading: Bool) {
-        SkeletonAssembly.cancel(on: contentContainerView)
-        contentBlurGeneration += 1
         revealView.cancelAnimation()
         revealView.showCompact()
         revealExpanded = false
@@ -257,7 +253,6 @@ final class BoardRevealContainerView: NSView {
         firstMotion: @escaping () -> Void,
         completion: @escaping () -> Void
     ) {
-        SkeletonAssembly.cancel(on: contentContainerView)
         guard !reduceMotion else {
             firstMotion()
             revealView.cancelAnimation()
@@ -283,7 +278,7 @@ final class BoardRevealContainerView: NSView {
         animateDismiss(firstMotion: {}, completion: completion)
     }
 
-    private func revealContentIfReady(assembling: Bool = false, completion: (() -> Void)? = nil) {
+    private func revealContentIfReady(completion: (() -> Void)? = nil) {
         guard revealExpanded else {
             completion?()
             return
@@ -300,37 +295,28 @@ final class BoardRevealContainerView: NSView {
         contentVisible = true
         contentContainerView.isHidden = false
         contentContainerView.alphaValue = 0
-        let startScale: CGFloat = assembling ? 1 : hiddenContentScale
-        setContentScale(startScale)
-        let duration = assembling ? SkeletonAssembly.duration(reduceMotion: reduceMotion)
-            : BoardRevealTransitionTiming.contentRevealDuration
-        // A ready Workspace builds over the sketch along the same edge.
-        // Other replacements retain Relay's normal exit/entrance separation.
+        setContentScale(hiddenContentScale)
+        // The Workspace takes the loader's place only once it has left.
         let loaderExit = revealView.loadingExitRemaining
-        let delay = !assembling && loaderExit > 0 ? loaderExit + RelayMotion.replacementGap : 0
-        if assembling {
-            let scanBounds = convert(revealView.loadingFrame, to: contentContainerView)
-            SkeletonAssembly.animateMask(on: contentContainerView, sketch: false,
-                                          scanBounds: scanBounds, reduceMotion: reduceMotion)
-        }
+        let delay = loaderExit > 0 ? loaderExit + RelayMotion.replacementGap : 0
         animateContentScale(
-            from: startScale,
+            from: hiddenContentScale,
             to: 1,
-            duration: duration,
+            duration: BoardRevealTransitionTiming.contentRevealDuration,
             timing: Self.revealTiming,
             delay: delay
         )
         let blurGeneration = animateContentBlur(
-            from: assembling ? SkeletonAssembly.blurRadius : hiddenContentBlurRadius,
+            from: hiddenContentBlurRadius,
             to: 0,
-            duration: duration,
+            duration: BoardRevealTransitionTiming.contentRevealDuration,
             timing: Self.revealTiming,
             delay: delay
         )
         let fade: () -> Void = { [weak self] in
             guard let self else { return }
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = duration
+                context.duration = BoardRevealTransitionTiming.contentRevealDuration
                 context.timingFunction = Self.revealTiming
                 self.contentContainerView.animator().alphaValue = 1
             } completionHandler: { [weak self] in
@@ -353,7 +339,6 @@ final class BoardRevealContainerView: NSView {
     }
 
     private func hideContentIfNeeded(completion: @escaping () -> Void) {
-        SkeletonAssembly.cancel(on: contentContainerView)
         guard contentVisible else {
             completion()
             return
@@ -413,7 +398,7 @@ final class BoardRevealContainerView: NSView {
         setContentScale(to)
     }
 
-    /// Blurs the hosted Workspace only while it assembles or scales; the filter is
+    /// Blurs the hosted Workspace only while it scales; the filter is
     /// removed once the content settles so the resting surface renders
     /// without an offscreen pass.
     private func animateContentBlur(
@@ -486,9 +471,6 @@ private final class BoardRevealSurfaceView: NSView {
         max(0, loadingExitEndsAt - CACurrentMediaTime())
     }
 
-    var hasVisibleLoader: Bool { loadingVisible && loadingView != nil }
-    var loadingFrame: CGRect { loadingView?.frame ?? plan.expandedFrame }
-
     init(frame: NSRect, plan: BoardRevealTransitionPlan) {
         self.plan = plan
         self.surfaceFrame = plan.compactFrame
@@ -540,10 +522,10 @@ private final class BoardRevealSurfaceView: NSView {
         needsDisplay = true
     }
 
-    func setLoading(_ loading: Bool, assemblingContent: Bool = false) {
+    func setLoading(_ loading: Bool) {
         guard self.loading != loading else { return }
         self.loading = loading
-        updateLoadingIndicator(animated: true, assemblingContent: assemblingContent)
+        updateLoadingIndicator(animated: true)
     }
 
     func animateToFullWidth(
@@ -644,10 +626,10 @@ private final class BoardRevealSurfaceView: NSView {
     }
 
     /// Shows the update-check loader across the expanded surface, below the
-    /// notch strip, once the surface has room for it. Ready content replaces it
-    /// along the assembly edge; dismissal uses the normal surface exit.
-    /// Removing it from the hierarchy stops its repeating dot sweep.
-    private func updateLoadingIndicator(animated: Bool, assemblingContent: Bool = false) {
+    /// notch strip, once the surface has room for it. It expands in and contracts
+    /// out like any surface, and leaves the view hierarchy once it has gone
+    /// so its animation stops.
+    private func updateLoadingIndicator(animated: Bool) {
         let visible = loading && surfaceFrame.height > plan.fullWidthFrame.height + 40
         guard visible != loadingVisible else { return }
         loadingVisible = visible
@@ -657,26 +639,19 @@ private final class BoardRevealSurfaceView: NSView {
         if visible {
             loadingExitEndsAt = 0
             let view = loadingView ?? makeLoadingView()
-            view.cancelHandoff()
             RelayLayerMotion.animateIn(view, style: .surface, duration: duration) { [weak self, weak view] in
-                // The dot sweep continues while loading; discard the entrance blur pass.
+                // The shimmer never stops, so the loader rests without a blur pass.
                 guard let self, self.loadingVisible, let layer = view?.layer else { return }
                 layer.filters = layer.filters?.filter {
                     ($0 as? CIFilter)?.name != RelayLayerMotion.blurFilterName
                 }
             }
         } else if let view = loadingView {
-            let remove = { [weak self, weak view] in
+            loadingExitEndsAt = CACurrentMediaTime() + duration
+            RelayLayerMotion.animateOut(view, style: .surface, duration: duration) { [weak self, weak view] in
                 guard let self, !self.loadingVisible, let view, self.loadingView === view else { return }
                 view.removeFromSuperview()
                 self.loadingView = nil
-            }
-            if assemblingContent && !RelayLayerMotion.reduceMotion {
-                loadingExitEndsAt = CACurrentMediaTime() + SkeletonAssembly.duration
-                view.animateHandoff(completion: remove)
-            } else {
-                loadingExitEndsAt = CACurrentMediaTime() + duration
-                RelayLayerMotion.animateOut(view, style: .surface, duration: duration, completion: remove)
             }
         }
     }

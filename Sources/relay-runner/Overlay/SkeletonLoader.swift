@@ -29,476 +29,109 @@ struct SkeletonBone: Equatable {
     var style: Style
 }
 
-/// The design-tool readouts the sketch writes while it constructs, and which
-/// surfaces earn the full treatment. Motion lives in `SkeletonGeneration`.
-enum SkeletonConstruction {
-    /// Width a contour needs before it earns design-tool chrome.
-    static let annotatedMinimumWidth: CGFloat = 200
-    static let annotatedMinimumHeight: CGFloat = 40
-    static let annotatedLimit = 3
-
-    /// How long one element takes to finish constructing after it appears.
-    static var duration: TimeInterval {
-        SkeletonGeneration.duration * SkeletonGeneration.holdProgress
-    }
-
-    /// `320 × 180  t+0.00s`: the size counting up, and the clock.
-    static func readout(width: CGFloat, height: CGFloat, time: TimeInterval) -> String {
-        String(format: "%d × %d  t+%.2fs", Int(width.rounded()), Int(height.rounded()), time)
-    }
-
-    /// `300 × 120`: a key box's size counting up.
-    static func dimension(width: CGFloat, height: CGFloat) -> String {
-        String(format: "%d × %d", Int(width.rounded()), Int(height.rounded()))
-    }
-
-    /// `022·130`: where the live head is, in the element's space.
-    static func coordinates(x: CGFloat, y: CGFloat) -> String {
-        String(format: "%03d·%03d", max(0, Int(x.rounded())), max(0, Int(y.rounded())))
-    }
-
-    /// `FRAME 300×120`: the part under the reticle.
-    static func tag(name: String, width: CGFloat, height: CGFloat) -> String {
-        String(format: "%@ %d×%d", name.uppercased(), Int(width.rounded()), Int(height.rounded()))
-    }
-
-    /// Surfaces earn chrome when the layout has them; otherwise its widest
-    /// outlines do, so the terminal welcome and prompt get the treatment.
-    static func annotatedRects(surfaces: [CGRect], bones: [SkeletonBone]) -> [CGRect] {
-        if !surfaces.isEmpty { return surfaces }
-        let candidates = bones.filter {
-            $0.style == .outline && $0.rect.width >= annotatedMinimumWidth && $0.rect.height >= annotatedMinimumHeight
-        }
-        var chosen: [CGRect] = []
-        for bone in candidates.sorted(by: { $0.rect.width * $0.rect.height > $1.rect.width * $1.rect.height }) {
-            guard chosen.count < annotatedLimit else { break }
-            guard !chosen.contains(where: { $0.contains(bone.rect) || bone.rect.contains($0) }) else { continue }
-            chosen.append(bone.rect)
-        }
-        return chosen.sorted { ($0.minY, $0.minX) < ($1.minY, $1.minX) }
-    }
-}
-
-/// A dot-matrix sketch of the incoming screen, generated the way the
-/// libraries.dev hero generates its tiles: a dot field wakes from the centre,
-/// a probe sweeps, guides and the contour trace in with dots crawling along
-/// them, flyers land on the contour as it reaches them, corner handles pop
-/// in, every part traces under a reticle with its tag, and monospace readouts
-/// count the size, the clock and the live head's position. The host owns the
-/// transition to real content; this drawing never delays readiness. A display
-/// link evaluates each frame from `SkeletonGeneration` into pooled layers.
+/// A loading state that sketches the screen it stands in for: bare shapes
+/// with a slow shimmer passing over them. It shows no text; its label is
+/// for VoiceOver only.
+///
+/// The shimmer is a Core Animation gradient, so it runs on the render
+/// server without per-frame work on the main thread. Reduce Motion holds
+/// it still.
 final class SkeletonLoaderView: NSView {
-    static let handoffKey = "skeletonHandoff"
-    static let alphaBuckets = 12
+    static let boneBaseColor = NSColor(srgbRed: 22 / 255, green: 27 / 255, blue: 36 / 255, alpha: 1)
+    static let boneHighlightColor = NSColor(srgbRed: 36 / 255, green: 43 / 255, blue: 55 / 255, alpha: 1)
+    static let outlineWidth: CGFloat = 1.5
+    static let boneOpacity: Float = 0.33
+    static let shimmerKey = "skeletonShimmer"
 
     let skeleton: SkeletonLoaderLayout
 
-    /// Everything the ready UI replaces along the scan edge.
-    private let sketchLayer = CALayer()
-    private let fieldInkPool: [CAShapeLayer]
-    private let fieldStrongPool: [CAShapeLayer]
-    private let wireLinePool: [CAShapeLayer]
-    private let wireStrongPool: [CAShapeLayer]
-    /// Handles, reticles and readouts outlive the scan and fade last.
-    private let handleChromeLayer = CALayer()
-    private let handlePool: [CAShapeLayer]
-    private var reticleLayers: [CAShapeLayer] = []
-    private var readoutLayers: [CATextLayer] = []
-    private var tagLayers: [CATextLayer] = []
-    private var coordinateLayers: [CATextLayer] = []
-    private var keyLayers: [[CATextLayer]] = []
-    private var scene = SkeletonGeneration.Scene(bounds: .zero, elements: [], dots: [])
-    private var drawnBounds: CGRect?
-    private var displayLink: CADisplayLink?
-    private var exitStart: CFTimeInterval?
-    private var handoffProgress: CGFloat?
-    private var handoffGeneration = 0
-    private var handoffCompletion: (() -> Void)?
+    private let panelsLayer = CAShapeLayer()
+    private let bonesGradient = CAGradientLayer()
+    private let bonesMask = CALayer()
+    private let fillMask = CAShapeLayer()
+    private let outlineMask = CAShapeLayer()
 
     private(set) var bones: [SkeletonBone] = []
-    /// When the construction began; a layout pass never moves it.
-    private(set) var constructionStart: CFTimeInterval?
-    private(set) var isAnimating = false
-    /// Each element's progress at the last rendered frame.
-    private(set) var renderedProgress: [Double] = []
-
-    private enum Palette {
-        static let slate = NSColor(srgbRed: 148 / 255, green: 163 / 255, blue: 184 / 255, alpha: 1)
-        static let ink = slate.withAlphaComponent(0.3).cgColor
-        static let line = slate.withAlphaComponent(0.62).cgColor
-        static let strong = NSColor(srgbRed: 203 / 255, green: 213 / 255, blue: 225 / 255, alpha: 1).cgColor
-        static let surface = BoardDarkSurfaceStyle.panelFillNSColor.cgColor
-    }
 
     override var isFlipped: Bool { true }
 
     init(layout: SkeletonLoaderLayout, label: String) {
         self.skeleton = layout
-        fieldInkPool = Self.pool(fill: Palette.ink, stroke: nil, in: sketchLayer)
-        fieldStrongPool = Self.pool(fill: Palette.strong, stroke: nil, in: sketchLayer)
-        wireLinePool = Self.pool(fill: Palette.line, stroke: nil, in: sketchLayer)
-        wireStrongPool = Self.pool(fill: Palette.strong, stroke: nil, in: sketchLayer)
-        handlePool = Self.pool(fill: Palette.surface, stroke: Palette.strong, in: handleChromeLayer)
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.masksToBounds = true
-        layer?.addSublayer(sketchLayer)
-        layer?.addSublayer(handleChromeLayer)
+
+        panelsLayer.fillColor = BoardDarkSurfaceStyle.panelFillNSColor.cgColor
+        panelsLayer.strokeColor = BoardDarkSurfaceStyle.borderNSColor.cgColor
+        panelsLayer.lineWidth = 1
+        layer?.addSublayer(panelsLayer)
+
+        bonesGradient.colors = [
+            Self.boneBaseColor.cgColor,
+            Self.boneHighlightColor.cgColor,
+            Self.boneBaseColor.cgColor,
+        ]
+        bonesGradient.startPoint = CGPoint(x: 0, y: 0.4)
+        bonesGradient.endPoint = CGPoint(x: 1, y: 0.6)
+        bonesGradient.locations = ShimmerAnimation.restingLocations
+        fillMask.fillColor = NSColor.black.cgColor
+        outlineMask.fillColor = nil
+        outlineMask.strokeColor = NSColor.black.cgColor
+        outlineMask.lineWidth = Self.outlineWidth
+        bonesMask.addSublayer(fillMask)
+        bonesMask.addSublayer(outlineMask)
+        bonesGradient.mask = bonesMask
+        bonesGradient.opacity = Self.boneOpacity
+        layer?.addSublayer(bonesGradient)
 
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
         setAccessibilityLabel(label)
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self, selector: #selector(refreshAnimation),
-            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil
-        )
     }
 
     required init?(coder: NSCoder) {
         nil
     }
 
-    deinit {
-        displayLink?.invalidate()
-        NotificationCenter.default.removeObserver(self)
-        NSWorkspace.shared.notificationCenter.removeObserver(self)
-    }
-
-    /// One layer per opacity step, so thousands of dots are a dozen paths.
-    private static func pool(fill: CGColor?, stroke: CGColor?, in parent: CALayer) -> [CAShapeLayer] {
-        (0..<alphaBuckets).map { bucket in
-            let layer = CAShapeLayer()
-            layer.fillColor = fill
-            layer.strokeColor = stroke
-            layer.lineWidth = 1
-            layer.opacity = Float(bucket + 1) / Float(alphaBuckets)
-            parent.addSublayer(layer)
-            return layer
-        }
-    }
-
-    private static func bucket(_ alpha: Double) -> Int {
-        min(alphaBuckets - 1, max(0, Int((alpha * Double(alphaBuckets)).rounded(.up)) - 1))
-    }
-
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
     }
 
-    /// The surfaces that carry an outline, handles, guides and readouts.
-    var annotatedRects: [CGRect] { scene.elements.map(\.rect) }
-
-    /// The boxes inside them that earn guides, handles and a size label.
-    var keyRects: [CGRect] { scene.keyRects }
-
-    /// Whether the ready UI is currently replacing this sketch.
-    var isHandingOff: Bool { sketchLayer.mask?.name == SkeletonAssembly.maskName }
-
     override func layout() {
         super.layout()
-        guard drawnBounds != bounds else { refreshAnimation(); return }
-        drawnBounds = bounds
         bones = Self.bones(for: skeleton, in: bounds)
-        scene = SkeletonGeneration.scene(bounds: bounds, surfaces: Self.panels(for: skeleton, in: bounds), bones: bones)
-        let scale = window?.backingScaleFactor ?? 2
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        var sized: [CALayer] = [sketchLayer, handleChromeLayer]
-        sized += fieldInkPool
-        sized += fieldStrongPool
-        sized += wireLinePool
-        sized += wireStrongPool
-        sized += handlePool
-        for layer in sized {
-            layer.frame = bounds
-            layer.contentsScale = scale
+        let panels = CGMutablePath()
+        for panel in Self.panels(for: skeleton, in: bounds) {
+            panels.addRoundedRect(in: panel.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 16, cornerHeight: 16)
         }
-        (reticleLayers + readoutLayers + tagLayers + coordinateLayers + keyLayers.flatMap { $0 })
-            .forEach { $0.removeFromSuperlayer() }
-        reticleLayers = scene.elements.map { _ in
-            let reticle = CAShapeLayer()
-            reticle.frame = bounds
-            reticle.contentsScale = scale
-            reticle.fillColor = nil
-            reticle.strokeColor = Palette.strong
-            reticle.lineWidth = 1.2
-            reticle.lineCap = .round
-            reticle.opacity = 0
-            handleChromeLayer.addSublayer(reticle)
-            return reticle
-        }
-        readoutLayers = scene.elements.map { _ in makeLabel(size: 9, strong: false, scale: scale) }
-        tagLayers = scene.elements.map { _ in makeLabel(size: 8, strong: true, scale: scale) }
-        keyLayers = scene.elements.map { element in
-            element.parts.filter(\.key).map { _ in makeLabel(size: 8, strong: true, scale: scale) }
-        }
-        coordinateLayers = scene.elements.map { _ in makeLabel(size: 8, strong: true, scale: scale) }
-        CATransaction.commit()
-
-        renderCurrent(now: CACurrentMediaTime())
-        refreshAnimation()
-    }
-
-    private func makeLabel(size: CGFloat, strong: Bool, scale: CGFloat) -> CATextLayer {
-        let label = CATextLayer()
-        label.contentsScale = scale
-        label.font = AppTypography.terminalGridFont(size: size, weight: .medium)
-        label.fontSize = size
-        label.foregroundColor = strong ? Palette.strong : Palette.line
-        label.alignmentMode = .left
-        label.truncationMode = .none
-        label.isWrapped = false
-        label.frame = CGRect(x: 0, y: 0, width: 240, height: size + 4)
-        label.opacity = 0
-        handleChromeLayer.addSublayer(label)
-        return label
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
-        if let window {
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(refreshAnimation),
-                name: NSWindow.didChangeOcclusionStateNotification, object: window
-            )
-        }
-        refreshAnimation()
-    }
-
-    override func viewDidHide() { super.viewDidHide(); refreshAnimation() }
-    override func viewDidUnhide() { super.viewDidUnhide(); refreshAnimation() }
-
-    @objc private func refreshAnimation() {
-        updateAnimation(
-            visible: window?.isVisible == true && window?.isMiniaturized == false && !isHiddenOrHasHiddenAncestor,
-            reduceMotion: RelayLayerMotion.reduceMotion
-        )
-    }
-
-    // MARK: Motion
-
-    /// Hidden loaders and Reduce Motion show the completed sketch without a
-    /// display link. A geometry/layout pass must not restart the construction.
-    func updateAnimation(visible: Bool, reduceMotion: Bool) {
-        let active = visible && !reduceMotion && !scene.elements.isEmpty
-        guard active != isAnimating else { return }
-        isAnimating = active
-        displayLink?.invalidate()
-        displayLink = nil
-        guard active else {
-            renderCurrent(now: CACurrentMediaTime())
-            return
-        }
-        if constructionStart == nil { constructionStart = CACurrentMediaTime() }
-        let link = displayLink(target: self, selector: #selector(tick(_:)))
-        link.add(to: .main, forMode: .common)
-        displayLink = link
-        renderCurrent(now: CACurrentMediaTime())
-    }
-
-    @objc private func tick(_ link: CADisplayLink) {
-        renderCurrent(now: link.targetTimestamp)
-    }
-
-    /// Elapsed time once every element has finished constructing.
-    private var completeElapsed: TimeInterval {
-        SkeletonGeneration.duration + SkeletonGeneration.elementStagger * Double(scene.elements.count)
-    }
-
-    private func renderCurrent(now: CFTimeInterval) {
-        let elapsed = isAnimating ? (constructionStart.map { now - $0 } ?? 0) : completeElapsed
-        var exit = handoffProgress.map(Double.init)
-        if exit == nil, let exitStart {
-            exit = SkeletonGeneration.clamp((now - exitStart) / SkeletonAssembly.duration)
-        }
-        renderFrame(elapsed: elapsed, exitFraction: exit)
-    }
-
-    /// Draws the sketch as it stands `elapsed` seconds after construction
-    /// began. `exitFraction` plays the hand-off part of the timeline.
-    func renderFrame(elapsed: TimeInterval, exitFraction: Double? = nil) {
-        let progress = scene.elements.indices.map { index -> Double in
-            let local = elapsed - Double(index) * SkeletonGeneration.elementStagger
-            var a = min(SkeletonGeneration.holdProgress, max(0, local / SkeletonGeneration.duration))
-            if let exitFraction {
-                a = max(a, SkeletonGeneration.holdProgress
-                    + (SkeletonGeneration.endProgress - SkeletonGeneration.holdProgress) * exitFraction)
-            }
-            return a
-        }
-        renderedProgress = progress
-        apply(SkeletonGeneration.evaluate(scene, progress: progress, elapsedMs: elapsed * 1_000))
-    }
-
-    private func apply(_ frame: SkeletonGeneration.Frame) {
-        let buckets = Self.alphaBuckets
-        var fieldInk = [CGMutablePath?](repeating: nil, count: buckets)
-        var fieldStrong = fieldInk
-        var wireLine = fieldInk
-        var wireStrong = fieldInk
-        var handles = fieldInk
-        func add(_ dot: SkeletonGeneration.Frame.Dot, to paths: inout [CGMutablePath?]) {
-            let bucket = Self.bucket(dot.alpha)
-            let path = paths[bucket] ?? CGMutablePath()
-            path.addEllipse(in: CGRect(x: dot.center.x - dot.radius, y: dot.center.y - dot.radius,
-                                       width: dot.radius * 2, height: dot.radius * 2))
-            paths[bucket] = path
-        }
-        for dot in frame.field { dot.strong ? add(dot, to: &fieldStrong) : add(dot, to: &fieldInk) }
-        for dot in frame.wires { dot.strong ? add(dot, to: &wireStrong) : add(dot, to: &wireLine) }
-        for handle in frame.handles {
-            let bucket = Self.bucket(handle.alpha)
-            let path = handles[bucket] ?? CGMutablePath()
-            path.addRect(CGRect(x: handle.center.x - handle.size / 2, y: handle.center.y - handle.size / 2,
-                                width: handle.size, height: handle.size))
-            handles[bucket] = path
-        }
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for (pool, paths) in [(fieldInkPool, fieldInk), (fieldStrongPool, fieldStrong), (wireLinePool, wireLine),
-                              (wireStrongPool, wireStrong), (handlePool, handles)] {
-            for (layer, path) in zip(pool, paths) { layer.path = path }
-        }
-        for (index, layer) in reticleLayers.enumerated() {
-            if let reticle = frame.reticles.first(where: { $0.element == index }) {
-                layer.path = Self.reticlePath(around: reticle.rect, arm: reticle.arm)
-                layer.opacity = Float(reticle.alpha)
-            } else {
-                layer.opacity = 0
+        panelsLayer.frame = bounds
+        panelsLayer.path = panels
+        bonesGradient.frame = bounds
+        bonesMask.frame = bounds
+        fillMask.frame = bounds
+        outlineMask.frame = bounds
+        let fills = CGMutablePath()
+        let outlines = CGMutablePath()
+        for bone in bones {
+            switch bone.style {
+            case .fill:
+                fills.addRoundedRect(in: bone.rect, cornerWidth: bone.radius, cornerHeight: bone.radius)
+            case .outline:
+                let inset = Self.outlineWidth / 2
+                outlines.addRoundedRect(
+                    in: bone.rect.insetBy(dx: inset, dy: inset),
+                    cornerWidth: bone.radius,
+                    cornerHeight: bone.radius
+                )
             }
         }
-        tagLayers.forEach { $0.opacity = 0 }
-        for label in frame.labels {
-            let layer: CATextLayer?
-            switch label.kind {
-            case .readout: layer = readoutLayers.indices.contains(label.element) ? readoutLayers[label.element] : nil
-            case .tag: layer = tagLayers.indices.contains(label.element) ? tagLayers[label.element] : nil
-            case .coordinates: layer = coordinateLayers.indices.contains(label.element) ? coordinateLayers[label.element] : nil
-            case .keyDimension:
-                layer = keyLayers.indices.contains(label.element) && keyLayers[label.element].indices.contains(label.key)
-                    ? keyLayers[label.element][label.key] : nil
-            }
-            guard let layer else { continue }
-            layer.string = label.text
-            layer.frame.origin = CGPoint(x: label.baseline.x, y: label.baseline.y - layer.fontSize - 1)
-            layer.opacity = Float(label.alpha)
-        }
+        fillMask.path = fills
+        outlineMask.path = outlines
         CATransaction.commit()
-    }
 
-    /// Corner brackets, open along the edges.
-    static func reticlePath(around rect: CGRect, arm: CGFloat) -> CGPath {
-        let path = CGMutablePath()
-        for (corner, dx, dy) in [
-            (CGPoint(x: rect.minX, y: rect.minY), arm, arm), (CGPoint(x: rect.maxX, y: rect.minY), -arm, arm),
-            (CGPoint(x: rect.maxX, y: rect.maxY), -arm, -arm), (CGPoint(x: rect.minX, y: rect.maxY), arm, -arm),
-        ] {
-            path.move(to: CGPoint(x: corner.x, y: corner.y + dy))
-            path.addLine(to: corner)
-            path.addLine(to: CGPoint(x: corner.x + dx, y: corner.y))
-        }
-        return path
-    }
-
-    // MARK: Handoff
-
-    /// The ready UI replaces the sketch along one scan edge while the
-    /// timeline plays out its release: guides, readouts, key chrome, handles
-    /// and dots let go in the reference order; handles and readouts linger
-    /// past the edge and fade last.
-    func animateHandoff(reduceMotion: Bool = RelayLayerMotion.reduceMotion, completion: (() -> Void)? = nil) {
-        cancelHandoff()
-        guard !reduceMotion else {
-            completion?()
-            return
-        }
-        exitStart = CACurrentMediaTime()
-        let duration = SkeletonAssembly.duration
-        let mask = CAShapeLayer()
-        mask.name = SkeletonAssembly.maskName
-        mask.frame = bounds
-        mask.fillColor = NSColor.black.cgColor
-        let start = SkeletonAssembly.clipRect(in: bounds, progress: 0, sketch: true)
-        let end = SkeletonAssembly.clipRect(in: bounds, progress: 1, sketch: true)
-        let scan = CABasicAnimation(keyPath: "path")
-        scan.fromValue = CGPath(rect: start, transform: nil)
-        scan.toValue = CGPath(rect: end, transform: nil)
-        scan.duration = duration
-        scan.timingFunction = RelayMotion.enterCurve.mediaTimingFunction
-
-        let linger = CAKeyframeAnimation(keyPath: "opacity")
-        linger.values = SkeletonAssembly.chromeOpacityStops.map { $0.opacity }
-        linger.keyTimes = SkeletonAssembly.chromeOpacityStops.map { NSNumber(value: $0.progress) }
-        linger.duration = duration
-        linger.timingFunction = RelayMotion.enterCurve.mediaTimingFunction
-
-        handoffGeneration &+= 1
-        let generation = handoffGeneration
-        handoffCompletion = completion
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        CATransaction.setCompletionBlock { [weak self, weak mask] in
-            // The host's completion removes this loader, so it must run once
-            // the scan ends even if the mask was swapped meanwhile; only a
-            // cancellation discards it.
-            guard let self, self.handoffGeneration == generation else { return }
-            if let mask, self.sketchLayer.mask === mask { self.sketchLayer.mask = nil }
-            let completion = self.handoffCompletion
-            self.handoffCompletion = nil
-            completion?()
-        }
-        mask.path = CGPath(rect: end, transform: nil)
-        sketchLayer.mask = mask
-        mask.add(scan, forKey: Self.handoffKey)
-        handleChromeLayer.opacity = 0
-        handleChromeLayer.add(linger, forKey: Self.handoffKey)
-        CATransaction.commit()
-        if !isAnimating { renderCurrent(now: CACurrentMediaTime()) }
-    }
-
-    /// Keeps a reused loader whole, without running a stale completion.
-    func cancelHandoff() {
-        handoffGeneration &+= 1
-        handoffCompletion = nil
-        exitStart = nil
-        handoffProgress = nil
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        if isHandingOff { sketchLayer.mask = nil }
-        handleChromeLayer.removeAnimation(forKey: Self.handoffKey)
-        handleChromeLayer.opacity = 1
-        CATransaction.commit()
-        if !isAnimating { renderCurrent(now: CACurrentMediaTime()) }
-    }
-
-    /// SwiftUI drives the handoff frame by frame through its transition.
-    func setHandoffProgress(_ progress: CGFloat?) {
-        let changed = handoffProgress != progress
-        handoffProgress = progress
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        defer {
-            CATransaction.commit()
-            if changed, !isAnimating { renderCurrent(now: CACurrentMediaTime()) }
-        }
-        guard let progress else {
-            if isHandingOff { sketchLayer.mask = nil }
-            handleChromeLayer.opacity = 1
-            return
-        }
-        let mask = (sketchLayer.mask as? CAShapeLayer) ?? {
-            let mask = CAShapeLayer()
-            mask.name = SkeletonAssembly.maskName
-            mask.fillColor = NSColor.black.cgColor
-            sketchLayer.mask = mask
-            return mask
-        }()
-        mask.frame = bounds
-        mask.path = CGPath(rect: SkeletonAssembly.clipRect(in: bounds, progress: progress, sketch: true), transform: nil)
-        handleChromeLayer.opacity = SkeletonAssembly.chromeOpacity(progress: progress)
+        ShimmerAnimation.run(on: bonesGradient, duration: 2.2, pause: 0.9)
     }
 
     /// Changes what VoiceOver announces.
@@ -506,7 +139,7 @@ final class SkeletonLoaderView: NSView {
         setAccessibilityLabel(label)
     }
 
-    // MARK: Layouts
+    // MARK: Geometry
 
     /// The surfaces behind the bones: the board's columns, the Notes
     /// library, or the Settings pane and its agent card. History sits on
@@ -935,6 +568,32 @@ final class SkeletonLoaderView: NSView {
     }
 }
 
+/// The repeating shimmer: an eased pass of the gradient's bright stop from
+/// left to right, then a rest.
+enum ShimmerAnimation {
+    /// The band sits off the left edge between passes.
+    static let restingLocations: [NSNumber] = [-0.5, -0.25, 0]
+    static let finalLocations: [NSNumber] = [1, 1.25, 1.5]
+
+    static func run(on layer: CAGradientLayer, duration: TimeInterval, pause: TimeInterval) {
+        guard !RelayLayerMotion.reduceMotion else {
+            layer.removeAnimation(forKey: SkeletonLoaderView.shimmerKey)
+            return
+        }
+        guard layer.animation(forKey: SkeletonLoaderView.shimmerKey) == nil else { return }
+        let sweep = CABasicAnimation(keyPath: "locations")
+        sweep.fromValue = restingLocations
+        sweep.toValue = finalLocations
+        sweep.duration = duration
+        sweep.timingFunction = CAMediaTimingFunction(controlPoints: 0.45, 0, 0.25, 1)
+        let group = CAAnimationGroup()
+        group.animations = [sweep]
+        group.duration = duration + pause
+        group.repeatCount = .infinity
+        layer.add(group, forKey: SkeletonLoaderView.shimmerKey)
+    }
+}
+
 /// The skeleton loader for SwiftUI screens.
 struct SkeletonLoader: NSViewRepresentable {
     let layout: SkeletonLoaderLayout
@@ -946,6 +605,5 @@ struct SkeletonLoader: NSViewRepresentable {
 
     func updateNSView(_ view: SkeletonLoaderView, context: Context) {
         view.setLabel(label)
-        view.setHandoffProgress(context.environment.skeletonHandoffProgress)
     }
 }

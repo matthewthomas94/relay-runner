@@ -253,13 +253,13 @@ struct ProgramBoardOverlayView: View {
         ZStack {
             if model.notesLoaded {
                 notesLibraryContent
-                    .transition(SkeletonAssembly.contentTransition)
+                    .transition(.relayReplacing(.surface))
             } else {
                 SkeletonLoader(layout: .notes, label: "Loading notes")
-                    .transition(SkeletonAssembly.loaderTransition)
+                    .transition(.relayReplacing(.surface))
             }
         }
-        .animation(SkeletonAssembly.animation(reduceMotion: reduceMotion), value: model.notesLoaded)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.notesLoaded)
         .task {
             while !Task.isCancelled {
                 await onNotesRefresh()

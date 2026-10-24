@@ -31,13 +31,13 @@ struct WorkspaceHistoryView: View {
                         }
                     }
                     .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.isLoading)
-                    .transition(SkeletonAssembly.contentTransition)
+                    .transition(.relayReplacing(.surface))
                 } else {
                     SkeletonLoader(layout: .history, label: "Loading Workspace history")
-                        .transition(SkeletonAssembly.loaderTransition)
+                        .transition(.relayReplacing(.surface))
                 }
             }
-            .animation(SkeletonAssembly.animation(reduceMotion: reduceMotion), value: model.historyLoaded)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.historyLoaded)
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.errorMessage)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.notice)
