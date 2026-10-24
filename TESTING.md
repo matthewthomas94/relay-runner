@@ -48,6 +48,10 @@ The packaging command must produce:
 
 It verifies the app's nested code signatures and archive shape. Without `SIGN_IDENTITY` and `NOTARY_PROFILE`, the result is an ad-hoc-signed local artifact and does not prove Developer ID or notarization behavior. Maintainers verify public artifacts through the tag workflow and the checklist in [Release updates](docs/release-updates.md).
 
+## Relay Remote (iOS)
+
+The iPhone app and its transport package live under `ios/`. See [ios/README.md](ios/README.md) for the simulator test command, the macOS `swift test` run of `ios/RelayRemoteKit` (including the end-to-end SSH tests against a temporary per-user `sshd`), and the physical-device checks.
+
 ## Installed and permission-dependent checks
 
 Unit tests and a source build cannot prove macOS TCC or mounted UI behavior. Changes involving Microphone, Accessibility, Input Monitoring, Screen Recording, hotkeys, audio playback, the embedded terminal, onboarding, Sparkle, or the mounted Workspace need an installed-app check.
