@@ -43,6 +43,15 @@ let package = Package(
             name: "relay-orchestrator-mcp",
             path: "Sources/relay-orchestrator-mcp"
         ),
+        .executableTarget(
+            name: "relay-remote-shell",
+            path: "Sources/relay-remote-shell"
+        ),
+        .testTarget(
+            name: "RelayRemoteShellTests",
+            dependencies: [.target(name: "relay-remote-shell")],
+            path: "tests/RelayRemoteShellTests"
+        ),
         .testTarget(
             name: "RelayRemoteProtocolTests",
             dependencies: [.target(name: "RelayRemoteProtocol")],

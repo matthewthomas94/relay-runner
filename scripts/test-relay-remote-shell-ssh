@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# End-to-end check of relay-remote-shell through a real SSH connection.
+# Starts a per-user sshd on a high loopback port with a throwaway host key and
+# a forced-command authorized_keys entry, and a fake bridge socket server.
+# Nothing outside a temp dir is touched; no key material is printed.
+#
+# Usage: scripts/test-relay-remote-shell-ssh [path/to/relay-remote-shell]
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HELPER="${1:-$PROJECT_ROOT/.build/debug/relay-remote-shell}"
+[ -x "$HELPER" ] || { echo "error: helper not found at $HELPER (run swift build --product relay-remote-shell)" >&2; exit 1; }
+
+TMP="$(mktemp -d /tmp/rrs-ssh.XXXXXX)"
+SSHD_PID=""
+SERVER_PID=""
+cleanup() {
+    [ -n "$SSHD_PID" ] && kill "$SSHD_PID" 2>/dev/null || true
+    [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+    rm -rf "$TMP"
+}
+trap cleanup EXIT
+
+PORT="$(python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+SOCK="$TMP/d.sock"
+
+ssh-keygen -q -t ed25519 -N "" -f "$TMP/host_key"
+ssh-keygen -q -t ed25519 -N "" -f "$TMP/client_key"
+# sshd runs command= through a shell, so link the helper at a space-free path.
+ln -s "$HELPER" "$TMP/relay-remote-shell"
+printf 'command="%s --device test-device",restrict %s\n' "$TMP/relay-remote-shell" "$(cut -d' ' -f1,2 "$TMP/client_key.pub")" > "$TMP/authorized_keys"
+chmod 600 "$TMP/authorized_keys"
+
+cat > "$TMP/sshd_config" <<CONF
+Port $PORT
+ListenAddress 127.0.0.1
+HostKey $TMP/host_key
+AuthorizedKeysFile $TMP/authorized_keys
+PidFile $TMP/sshd.pid
+StrictModes no
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+SetEnv RELAY_REMOTE_SOCKET_PATH=$SOCK
+LogLevel ERROR
+CONF
+
+# Fake bridge: records the identify line, answers pong to ping, status to status.
+cat > "$TMP/server.py" <<'PY'
+import json, os, socket, sys
+path = sys.argv[1]
+srv = socket.socket(socket.AF_UNIX)
+srv.bind(path)
+srv.listen(4)
+while True:
+    conn, _ = srv.accept()
+    f = conn.makefile("rwb", buffering=0)
+    ident = json.loads(f.readline())
+    if ident.get("command") == "status":
+        f.write(b'{"seq":0,"text":"running","type":"status"}\n')
+        conn.close()
+        continue
+    f.write(b'{"server_seq":0,"type":"hello_ack","device_id":"' + ident["device_id"].encode() + b'"}\n')
+    for line in f:
+        msg = json.loads(line)
+        if msg.get("type") == "ping":
+            f.write(b'{"t":%d,"type":"pong"}\n' % msg["t"])
+    conn.close()
+PY
+python3 -I "$TMP/server.py" "$SOCK" &
+SERVER_PID=$!
+
+/usr/sbin/sshd -D -f "$TMP/sshd_config" &
+SSHD_PID=$!
+
+SSH=(ssh -p "$PORT" -i "$TMP/client_key" -o IdentitiesOnly=yes -o BatchMode=yes
+     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+     -o ConnectTimeout=5 127.0.0.1)
+
+for _ in $(seq 1 50); do [ -S "$SOCK" ] && nc -z 127.0.0.1 "$PORT" 2>/dev/null && break; sleep 0.1; done
+
+fail() { echo "FAIL: $1" >&2; exit 1; }
+
+# 1. Lines pass both ways and the channel ends when stdin closes.
+OUT="$( (printf '{"type":"ping","t":7}\n'; sleep 1) | "${SSH[@]}")"
+echo "$OUT" | grep -q '"device_id":"test-device"' || fail "no hello_ack from bridge"
+echo "$OUT" | grep -q '{"t":7,"type":"pong"}' || fail "no pong round trip"
+echo "ok: round trip"
+
+# 2. Allow-listed status subcommand returns one status frame.
+OUT="$("${SSH[@]}" status)"
+[ "$OUT" = '{"seq":0,"text":"running","type":"status"}' ] || fail "status frame mismatch"
+echo "ok: status"
+
+# 3. Any other command is refused with exit code 2.
+set +e
+OUT="$("${SSH[@]}" 'cat /etc/passwd')"
+CODE=$?
+set -e
+[ "$CODE" = 2 ] || fail "disallowed command exit code $CODE, expected 2"
+echo "$OUT" | grep -q '"type":"error"' || fail "no error frame for disallowed command"
+echo "ok: disallowed command refused"
+
+# 4. Oversize line ends the session with an error frame.
+set +e
+OUT="$(python3 -I -c 'print("{\"x\":\"" + "a"*70000 + "\"}")' | "${SSH[@]}")"
+CODE=$?
+set -e
+[ "$CODE" = 1 ] || fail "oversize exit code $CODE, expected 1"
+echo "$OUT" | grep -q '"code":"line_too_long"' || fail "no line_too_long error"
+echo "ok: oversize rejected"
+
+echo "PASS"
