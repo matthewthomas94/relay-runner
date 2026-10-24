@@ -227,6 +227,7 @@ struct GeneralConfig: Codable, Equatable {
     var subagent_model: String = defaultSubagentModel
     var subagent_effort: String = defaultSubagentEffort
     var prevent_sleep_while_running: Bool = false
+    var wheel_haptics: Bool = true
 
     static func modelOptions(for provider: AgentProvider) -> [ModelOption] {
         switch provider {

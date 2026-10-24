@@ -153,6 +153,11 @@ cp "$BUILD_DIR/relay-vision-mcp" "$APP_DIR/Contents/MacOS/relay-vision-mcp"
 # provider CLIs.
 cp "$BUILD_DIR/relay-orchestrator-mcp" "$APP_DIR/Contents/MacOS/relay-orchestrator-mcp"
 
+# Helper binary: Relay Remote forced command. OpenSSH runs it (via the per-user
+# shim) for a paired device's key; it copies NDJSON between the SSH channel and
+# the bridge's local Unix socket.
+cp "$BUILD_DIR/relay-remote-shell" "$APP_DIR/Contents/MacOS/relay-remote-shell"
+
 # Retain private symbols for every shipped Swift executable. The UUID check is
 # the release contract: a dSYM is useful only when its DWARF UUID exactly
 # matches the packaged Mach-O. Symbols are uploaded as a private CI artifact,
@@ -160,7 +165,7 @@ cp "$BUILD_DIR/relay-orchestrator-mcp" "$APP_DIR/Contents/MacOS/relay-orchestrat
 DSYM_DIR="$DIST_DIR/dSYMs"
 remove_tree "$DSYM_DIR"
 mkdir -p "$DSYM_DIR"
-for binary in relay-runner relay-actions-mcp relay-vision-mcp relay-orchestrator-mcp; do
+for binary in relay-runner relay-actions-mcp relay-vision-mcp relay-orchestrator-mcp relay-remote-shell; do
     binary_path="$APP_DIR/Contents/MacOS/$binary"
     dsym_path="$DSYM_DIR/$binary.dSYM"
     xcrun dsymutil "$binary_path" -o "$dsym_path"
@@ -261,7 +266,7 @@ if [ "$DEPENDENCY_LICENSE_COUNT" -eq 0 ]; then
 fi
 
 # Python services
-for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py intent_qualification.py continuity_incidents.py continuity_agent.py continuity_recovery.py continuity_reports.py continuity_resume.py relay_authorization.py intent_arbitration.py intent_inbox.py provider_turn_broker.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py claude_subscription.py harness_update.py \
+for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py intent_qualification.py continuity_incidents.py continuity_agent.py continuity_recovery.py continuity_reports.py continuity_resume.py relay_authorization.py relay_remote.py relay_remote_protocol.py intent_arbitration.py intent_inbox.py provider_turn_broker.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py claude_subscription.py harness_update.py \
          custom_voice.py custom_voice_worker.py custom_voice_install.py voice_audio_lease.py \
          artifact_lifecycle.py artifact_migration.py artifact_migration_cli.py artifact_history_cli.py automatic_retention.py \
          artifact_catalog.py artifact_retention.py artifact_rollout.py artifact_rollout_cli.py artifact_store.py artifact_sync.py note_contract.py project_notes.py global_notes.py general_work.py personal_file_storage.py personal_notes.py note_metadata.py \
@@ -357,6 +362,9 @@ if [ -n "$SIGN_IDENTITY" ]; then
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR/Contents/MacOS/relay-orchestrator-mcp"
+    codesign --force --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/relay-remote-shell"
     # Main executable last, with entitlements + hardened runtime.
     codesign --force --timestamp --options runtime \
         --entitlements "$ENTITLEMENTS" \

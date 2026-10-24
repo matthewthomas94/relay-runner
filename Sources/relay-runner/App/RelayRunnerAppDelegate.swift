@@ -13,6 +13,9 @@ final class RelayRunnerAppDelegate: NSObject, NSApplicationDelegate {
             phase: "app_launch",
             outcome: "ready"
         )
+        DispatchQueue.global(qos: .utility).async {
+            RelayRemoteLaunch.prepare()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -21,6 +24,8 @@ final class RelayRunnerAppDelegate: NSObject, NSApplicationDelegate {
             phase: "app_launch",
             outcome: "stopped"
         )
+        // An open pairing code must not outlive the app; expiry-time is the backstop.
+        try? RelayRemoteEnvironment.live.authorizedKeys.removeAllPairingLines()
         RelayMetricKitSubscriber.shared.stop()
     }
 

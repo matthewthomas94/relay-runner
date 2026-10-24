@@ -102,6 +102,15 @@ struct GeneralSettingsTab: View {
 
             PersonalFileStorageSettingsView()
 
+            SettingsSection("Session wheel") {
+                SettingsControlRow(
+                    "Wheel haptics",
+                    description: "Feel feedback when navigating and selecting wheel controls on a Force Touch trackpad."
+                ) {
+                    Toggle("Wheel haptics", isOn: $config.wheel_haptics)
+                }
+            }
+
             SettingsSection("Startup") {
                 SettingsControlRow("Auto-start services on app launch") {
                     Toggle("Auto-start services on app launch", isOn: $config.auto_start)

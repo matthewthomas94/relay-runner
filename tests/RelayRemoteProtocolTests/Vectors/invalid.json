@@ -1,0 +1,62 @@
+[
+ {
+  "name": "not_json",
+  "line": "{nope",
+  "error": "invalid_json"
+ },
+ {
+  "name": "not_an_object",
+  "line": "[1,2]",
+  "error": "invalid_json"
+ },
+ {
+  "name": "unknown_type",
+  "line": "{\"type\":\"teleport\"}",
+  "error": "unknown_type"
+ },
+ {
+  "name": "missing_type",
+  "line": "{\"t\":1}",
+  "error": "missing_field"
+ },
+ {
+  "name": "missing_field",
+  "line": "{\"type\":\"utterance\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"text\":\"hi\"}",
+  "error": "missing_field"
+ },
+ {
+  "name": "wrong_field_type",
+  "line": "{\"type\":\"ack\",\"seq\":\"44\",\"played\":true}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "fractional_int",
+  "line": "{\"type\":\"ping\",\"t\":1.5}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "bool_for_int",
+  "line": "{\"type\":\"ack\",\"seq\":true,\"played\":true}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "unknown_control_action",
+  "line": "{\"type\":\"control\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"action\":\"explode\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "unknown_speech_kind",
+  "line": "{\"type\":\"speech\",\"seq\":1,\"kind\":\"shout\",\"source\":\"messenger\",\"text\":\"x\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "unknown_speech_source",
+  "line": "{\"type\":\"speech\",\"seq\":1,\"kind\":\"final\",\"source\":\"oracle\",\"text\":\"x\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "client_id_not_uuid",
+  "line": "{\"type\":\"utterance\",\"client_id\":\"abc\",\"text\":\"hi\",\"captured_at\":\"2026-10-22T09:14:03Z\"}",
+  "error": "invalid_field"
+ }
+]

@@ -9,6 +9,7 @@ struct SessionWheelView: View {
     let dismiss: () -> Void
     var performNoteAction: (SessionWheelNoteAction) -> Void = { _ in }
     var recordingLevel: (String) -> Float = { _ in 0 }
+    var hoverFeedback: (CGPoint?, SessionWheelHaptics.Target?) -> Void = { _, _ in }
     var presentation = SessionWheelPresentation()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
@@ -115,8 +116,20 @@ struct SessionWheelView: View {
         .preferredColorScheme(.dark)
         .onContinuousHover { phase in
             switch phase {
-            case .active(let point): model.hover(at: point)
-            case .ended: model.clearHover()
+            case .active(let point):
+                model.hover(at: point)
+                var target = SessionWheelHaptics.target(at: point, model: model)
+                if menuMotion.motion.isAnimating || menu.identity != SessionWheelMenu(model).identity
+                    || tiles.progress < 1 || presentation.progress < 1 {
+                    target = nil
+                }
+                if case .action(let slot, _) = target, !reduceMotion, submenus[slot] < 0.95 {
+                    target = nil
+                }
+                hoverFeedback(point, target)
+            case .ended:
+                model.clearHover()
+                hoverFeedback(nil, nil)
             }
         }
         .onExitCommand(perform: back)

@@ -84,16 +84,17 @@ final class SettingsDropdownAnchorView: NSView, NSWindowDelegate {
     }
 
     private func positionPanel() {
-        guard let panel, let window else { return }
+        guard let panel, let window, let hosting = panel.contentView else { return }
         let anchor = window.convertToScreen(convert(bounds, to: nil))
+        let size = NSSize(width: anchor.width, height: hosting.fittingSize.height)
         let gap: CGFloat = 8
-        var origin = NSPoint(x: anchor.maxX - panel.frame.width, y: anchor.minY - gap - panel.frame.height)
+        var origin = NSPoint(x: anchor.minX, y: anchor.minY - gap - size.height)
         if let visible = window.screen?.visibleFrame, visible.intersects(anchor) {
-            origin.x = min(max(origin.x, visible.minX), visible.maxX - panel.frame.width)
+            origin.x = min(max(origin.x, visible.minX), visible.maxX - size.width)
             if origin.y < visible.minY { origin.y = anchor.maxY + gap }
-            origin.y = min(max(origin.y, visible.minY), visible.maxY - panel.frame.height)
+            origin.y = min(max(origin.y, visible.minY), visible.maxY - size.height)
         }
-        panel.setFrameOrigin(origin)
+        panel.setFrame(NSRect(origin: origin, size: size), display: true)
     }
 
     func windowDidResignKey(_ notification: Notification) { dismiss() }

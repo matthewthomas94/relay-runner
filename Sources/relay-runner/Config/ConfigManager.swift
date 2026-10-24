@@ -112,6 +112,7 @@ final class ConfigManager {
             if let v = tomlBool(general, "prevent_sleep_while_running") {
                 config.general.prevent_sleep_while_running = v
             }
+            if let v = tomlBool(general, "wheel_haptics") { config.general.wheel_haptics = v }
         }
 
         // Awareness
@@ -186,6 +187,7 @@ final class ConfigManager {
         lines.append("messenger_effort = \"\(c.general.messenger_effort)\"")
         lines.append("subagent_sizing_policy = \"\(c.general.subagent_sizing_policy.rawValue)\"")
         lines.append("prevent_sleep_while_running = \(c.general.prevent_sleep_while_running)")
+        lines.append("wheel_haptics = \(c.general.wheel_haptics)")
         lines.append("")
 
         lines.append("[awareness]")

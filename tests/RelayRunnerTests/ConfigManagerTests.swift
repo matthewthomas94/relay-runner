@@ -19,6 +19,21 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertTrue(raw.contains("prevent_sleep_while_running = false"))
     }
 
+    func testWheelHapticsDefaultsOnForExistingConfigsAndPersistsOptOut() throws {
+        let configDir = temporaryConfigDir()
+        let manager = ConfigManager(configDir: configDir)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        try "[general]\nauto_start = false\n".write(to: manager.configPath, atomically: true, encoding: .utf8)
+        var config = manager.load()
+        XCTAssertTrue(config.general.wheel_haptics)
+        config.general.wheel_haptics = false
+        try manager.save(config)
+        XCTAssertFalse(manager.load().general.wheel_haptics)
+        config.general.wheel_haptics = true
+        try manager.save(config)
+        XCTAssertTrue(manager.load().general.wheel_haptics)
+    }
+
     func testMissingTTSRateFallsBackToDefaultWithoutRewritingExplicitValues() throws {
         let configDir = temporaryConfigDir()
         let manager = ConfigManager(configDir: configDir)
