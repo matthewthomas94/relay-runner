@@ -54,6 +54,12 @@ from intent_qualification import (
     whole_turn_resolution_required,
 )
 from provider_turn_broker import ProviderTurnBroker
+from relay_remote import (
+    INPUT_SOURCE as REMOTE_INPUT_SOURCE,
+    RelayRemoteServer,
+    RemoteIngress,
+    RemoteItem,
+)
 from relay_authorization import (
     allowed_mutations_for_metadata,
     command_relationship,
@@ -2180,8 +2186,15 @@ def _begin_relay_command(
     source_text: str,
     state_path: str = VOICE_COMMAND_STATE_FILE,
     event_log_path: str | None = VOICE_COMMAND_EVENT_LOG,
+    *,
+    input_source: str | None = None,
+    device_id: str | None = None,
 ) -> dict:
-    """Record a new newest-intent generation as soon as voice input arrives."""
+    """Record a new newest-intent generation as soon as voice input arrives.
+
+    Microphone input carries no origin fields; Relay Remote (RR-423) passes
+    ``input_source`` and ``device_id``.
+    """
     with _VOICE_STATE_LOCK:
         previous = _read_json_file(state_path)
         try:
@@ -2201,6 +2214,9 @@ def _begin_relay_command(
         provider = os.environ.get("RELAY_RUNNER_PROVIDER", "").strip()
         if provider:
             metadata["provider"] = provider
+        if input_source:
+            metadata["input_source"] = input_source
+            metadata["device_id"] = device_id
         _write_command_state(state_path, metadata)
     _record_private_command_capture(metadata, event_log_path=event_log_path)
     _post_continuity_event("bridge", "command_received", metadata)
@@ -5131,8 +5147,13 @@ def _run_relay(
     provider_session_ownership: ProviderSessionOwnership | None = None,
     sidecar_lane: SidecarLane | None = None,
     on_ready=None,
+    remote_ingress: RemoteIngress | None = None,
 ):
-    """Relay mode: write voice commands for the active agent and read TTS from FIFO."""
+    """Relay mode: write voice commands for the active agent and read TTS from FIFO.
+
+    Relay Remote items arrive on ``remote_ingress`` and share this loop, so
+    remote and microphone commands get one ordered ``relay_command_seq``.
+    """
     suppress_next_messenger_user_reply = suppress_startup_greeting
 
     # The continuity handoff still needs the authoritative recovery generation.
@@ -5216,6 +5237,8 @@ def _run_relay(
         return False
     if on_ready is not None:
         on_ready()
+    if remote_ingress is not None:
+        remote_ingress.attached = True
 
     fifo_buf = b""
     # Session focused when the current recording started; it receives the
@@ -5223,8 +5246,11 @@ def _run_relay(
     pinned_target_key: str | None = None
     try:
         while not shutdown_event.is_set():
+            read_fds = [fifo_fd]
+            if remote_ingress is not None:
+                read_fds.append(remote_ingress.fileno())
             try:
-                readable, _, _ = select.select([fifo_fd], [], [], 0.2)
+                readable, _, _ = select.select(read_fds, [], [], 0.2)
             except (OSError, ValueError):
                 try:
                     os.close(fifo_fd)
@@ -5235,35 +5261,40 @@ def _run_relay(
                     break
                 continue
 
-            if fifo_fd not in readable:
-                continue
+            if fifo_fd in readable:
+                try:
+                    data = os.read(fifo_fd, 4096)
+                except BlockingIOError:
+                    data = None
+                except OSError:
+                    os.close(fifo_fd)
+                    fifo_fd = open_fifo(VOICE_FIFO)
+                    if fifo_fd is None:
+                        break
+                    continue
 
-            try:
-                data = os.read(fifo_fd, 4096)
-            except BlockingIOError:
-                continue
-            except OSError:
-                os.close(fifo_fd)
-                fifo_fd = open_fifo(VOICE_FIFO)
-                if fifo_fd is None:
-                    break
-                continue
+                if data == b"":
+                    os.close(fifo_fd)
+                    fifo_fd = open_fifo(VOICE_FIFO)
+                    if fifo_fd is None:
+                        break
+                    continue
 
-            if not data:
-                os.close(fifo_fd)
-                fifo_fd = open_fifo(VOICE_FIFO)
-                if fifo_fd is None:
-                    break
-                continue
+                if data:
+                    fifo_buf += data
 
-            fifo_buf += data
+            entries: list[tuple[str, RemoteItem | None]] = []
             while b"\n" in fifo_buf:
                 line, fifo_buf = fifo_buf.split(b"\n", 1)
-                text = line.decode("utf-8", errors="replace").strip()
+                entries.append((line.decode("utf-8", errors="replace").strip(), None))
+            if remote_ingress is not None and remote_ingress.fileno() in readable:
+                entries.extend((item.text, item) for item in remote_ingress.drain())
+
+            for text, remote_item in entries:
                 if not text:
                     continue
 
-                if text.startswith(VOICE_TARGET_PREFIX):
+                if remote_item is None and text.startswith(VOICE_TARGET_PREFIX):
                     pinned_target_key = text[len(VOICE_TARGET_PREFIX):].strip() or None
                     continue
                 if text == "__CANCEL__":
@@ -5284,16 +5315,28 @@ def _run_relay(
                 if slash_match:
                     text = "/" + slash_match.group(1).replace(" ", "-")
 
-                voice_target = (
-                    _voice_target_for(pinned_target_key) or _current_voice_target()
-                )
-                pinned_target_key = None
+                if remote_item is None:
+                    voice_target = (
+                        _voice_target_for(pinned_target_key) or _current_voice_target()
+                    )
+                    pinned_target_key = None
+                else:
+                    # The microphone's recording pin belongs to its transcript.
+                    voice_target = _current_voice_target()
                 target_repo = Path(voice_target.cwd) if voice_target else Path.cwd()
                 target_orchestrator = _voice_target_orchestrator(
                     voice_target,
                     orchestrator_session,
                 )
-                relay_command = _begin_relay_command(text)
+                if remote_item is None:
+                    relay_command = _begin_relay_command(text)
+                else:
+                    relay_command = _begin_relay_command(
+                        text,
+                        input_source=REMOTE_INPUT_SOURCE,
+                        device_id=remote_item.device_id,
+                    )
+                    remote_item.on_accepted(relay_command)
                 _record_messenger_stage(
                     tts_worker,
                     "user_turn_received",
@@ -5463,6 +5506,8 @@ def _run_relay(
     except KeyboardInterrupt:
         pass
     finally:
+        if remote_ingress is not None:
+            remote_ingress.attached = False
         if fifo_fd is not None:
             try:
                 os.close(fifo_fd)
@@ -5691,6 +5736,13 @@ def main():
             messenger=messenger,
             shutdown_event=shutdown_event,
         )
+        remote_server: RelayRemoteServer | None = RelayRemoteServer(RemoteIngress())
+        try:
+            remote_server.start()
+        except OSError as exc:
+            print(f"[voice_bridge] Relay Remote socket unavailable: {exc}", file=sys.stderr)
+            remote_server.close()
+            remote_server = None
         try:
             bridge_completed = _run_relay(
                 tts_worker,
@@ -5709,11 +5761,14 @@ def main():
                 provider_session_ownership=provider_session_ownership,
                 sidecar_lane=sidecar_lane,
                 on_ready=lambda: _record_bridge_readiness("ready"),
+                remote_ingress=remote_server.ingress if remote_server else None,
             )
             if not bridge_completed:
                 raise RuntimeError("voice bridge initialization failed")
         finally:
             shutdown_event.set()
+            if remote_server is not None:
+                remote_server.close()
             sidecar_lane.shutdown()
             if messenger is not None:
                 messenger.shutdown()
