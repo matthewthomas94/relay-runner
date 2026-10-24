@@ -7,7 +7,7 @@ final class SettingsWindowTests: XCTestCase {
     func testSettingsCategoriesExposeExpectedNavigationOrder() {
         XCTAssertEqual(
             SettingsCategory.allCases.map(\.title),
-            ["Permissions", "Speech-to-Text", "Text-to-Speech", "General", "Awareness"]
+            ["Permissions", "Speech-to-Text", "Text-to-Speech", "General", "Awareness", "Relay Remote"]
         )
     }
 
@@ -22,7 +22,8 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(SettingsCategory.category(after: .permissions), .speechToText)
         XCTAssertEqual(SettingsCategory.category(before: .speechToText), .permissions)
         XCTAssertEqual(SettingsCategory.category(before: .permissions), .permissions)
-        XCTAssertEqual(SettingsCategory.category(after: .awareness), .awareness)
+        XCTAssertEqual(SettingsCategory.category(after: .awareness), .relayRemote)
+        XCTAssertEqual(SettingsCategory.category(after: .relayRemote), .relayRemote)
     }
 
     func testWorkspaceSurfacesUseExplicitFillWidthSizing() {

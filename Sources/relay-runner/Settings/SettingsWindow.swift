@@ -115,6 +115,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     case textToSpeech
     case general
     case awareness
+    case relayRemote
 
     var id: String { rawValue }
 
@@ -125,6 +126,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .textToSpeech: return "Text-to-Speech"
         case .general: return "General"
         case .awareness: return "Awareness"
+        case .relayRemote: return "Relay Remote"
         }
     }
 
@@ -137,6 +139,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .textToSpeech: return "speaker.wave.2"
         case .general: return "gearshape"
         case .awareness: return "eye"
+        case .relayRemote: return "iphone"
         }
     }
 
@@ -300,6 +303,8 @@ private struct SettingsContent: View {
             )
         case .awareness:
             AwarenessSettingsTab(config: $draft.awareness)
+        case .relayRemote:
+            RelayRemoteSettingsTab(controller: RelayRemoteController.shared)
         }
     }
 
