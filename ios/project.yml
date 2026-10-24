@@ -1,0 +1,64 @@
+# Source of truth for RelayRemote.xcodeproj. Regenerate after editing:
+#   cd ios && xcodegen generate
+# The generated project is committed so the app opens without XcodeGen.
+name: RelayRemote
+options:
+  bundleIdPrefix: com.relayrunner
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+packages:
+  RelayRemoteKit:
+    path: RelayRemoteKit
+  relay-runner:
+    path: ..
+targets:
+  RelayRemote:
+    type: application
+    platform: iOS
+    sources:
+      - path: RelayRemote
+        excludes:
+          - Info.plist
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.relayrunner.remote
+        PRODUCT_NAME: RelayRemote
+        INFOPLIST_FILE: RelayRemote/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"
+    dependencies:
+      - package: RelayRemoteKit
+      - package: relay-runner
+        product: RelayRemoteProtocol
+  RelayRemoteTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - RelayRemoteTests
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.relayrunner.remote.tests
+    dependencies:
+      - target: RelayRemote
+schemes:
+  RelayRemote:
+    build:
+      targets:
+        RelayRemote: all
+    test:
+      targets:
+        - RelayRemoteTests
+        - package: RelayRemoteKit/RelayRemoteKitTests
