@@ -153,6 +153,11 @@ cp "$BUILD_DIR/relay-vision-mcp" "$APP_DIR/Contents/MacOS/relay-vision-mcp"
 # provider CLIs.
 cp "$BUILD_DIR/relay-orchestrator-mcp" "$APP_DIR/Contents/MacOS/relay-orchestrator-mcp"
 
+# Helper binary: Relay Remote forced command. OpenSSH runs it (via the per-user
+# shim) for a paired device's key; it copies NDJSON between the SSH channel and
+# the bridge's local Unix socket.
+cp "$BUILD_DIR/relay-remote-shell" "$APP_DIR/Contents/MacOS/relay-remote-shell"
+
 # Retain private symbols for every shipped Swift executable. The UUID check is
 # the release contract: a dSYM is useful only when its DWARF UUID exactly
 # matches the packaged Mach-O. Symbols are uploaded as a private CI artifact,
@@ -160,7 +165,7 @@ cp "$BUILD_DIR/relay-orchestrator-mcp" "$APP_DIR/Contents/MacOS/relay-orchestrat
 DSYM_DIR="$DIST_DIR/dSYMs"
 remove_tree "$DSYM_DIR"
 mkdir -p "$DSYM_DIR"
-for binary in relay-runner relay-actions-mcp relay-vision-mcp relay-orchestrator-mcp; do
+for binary in relay-runner relay-actions-mcp relay-vision-mcp relay-orchestrator-mcp relay-remote-shell; do
     binary_path="$APP_DIR/Contents/MacOS/$binary"
     dsym_path="$DSYM_DIR/$binary.dSYM"
     xcrun dsymutil "$binary_path" -o "$dsym_path"
@@ -357,6 +362,9 @@ if [ -n "$SIGN_IDENTITY" ]; then
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR/Contents/MacOS/relay-orchestrator-mcp"
+    codesign --force --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/relay-remote-shell"
     # Main executable last, with entitlements + hardened runtime.
     codesign --force --timestamp --options runtime \
         --entitlements "$ENTITLEMENTS" \
