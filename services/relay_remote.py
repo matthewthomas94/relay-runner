@@ -9,6 +9,7 @@ remote sink (RR-424): speech becomes ``speech`` frames and acks feed realization
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import socket
@@ -187,6 +188,16 @@ class DeviceSession:
             return self._accepted.get(client_id.lower())
 
 
+def _parse_identify(line: bytes) -> dict | None:
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return None
+    if isinstance(obj, dict) and obj.get("type") == "identify" and isinstance(obj.get("device_id"), str):
+        return obj
+    return None
+
+
 def _close(conn: socket.socket) -> None:
     try:
         conn.shutdown(socket.SHUT_RDWR)
@@ -274,6 +285,7 @@ class RelayRemoteServer:
             _close(conn)
             return
         session: DeviceSession | None = None
+        identified: str | None = None
         reader = conn.makefile("rb")
         try:
             while not self._closed.is_set():
@@ -285,12 +297,27 @@ class RelayRemoteServer:
                     while line and not line.endswith(b"\n"):
                         line = reader.readline(proto.MAX_LINE_BYTES + 1)
                     continue
+                if session is None and identified is None:
+                    # The forced-command helper opens with `identify`; the device
+                    # id comes from the authorized_keys line sshd matched.
+                    identity = _parse_identify(line)
+                    if identity is not None:
+                        if identity.get("command") == "status":
+                            conn.sendall(proto.encode(proto.Status(
+                                0, "running" if self.ingress.attached else "idle"
+                            )))
+                            return
+                        identified = identity["device_id"]
+                        continue
                 try:
                     frame = proto.decode(line)
                 except proto.FrameError as exc:
                     self._reply(conn, session, exc.code, "Frame rejected")
                     continue
                 if session is None:
+                    if identified is not None and getattr(frame, "device_id", identified) != identified:
+                        self._reply(conn, None, "unsupported_protocol", "Unsupported hello")
+                        return
                     session = self._hello(conn, frame)
                     if session is None:
                         return

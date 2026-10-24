@@ -144,7 +144,7 @@ The Swift app owns audio, Workspace, the embedded terminal, permissions, and the
 - [Architecture](docs/architecture.md) · [project scope](docs/architecture/project-scope-v2.md) · [registry](docs/architecture/registry-v2.md)
 - [Orchestrator](docs/orchestrator.md) · [ticket schema](docs/specs/orchestrator-tickets.md)
 - [Artifact store](docs/architecture/artifact-store.md) · [lifecycle](docs/architecture/artifact-lifecycle.md) · [sync](docs/architecture/artifact-sync.md) · [retention](docs/architecture/artifact-retention.md)
-- [Relay Actions](docs/specs/relay-actions.md) · [Relay Vision](docs/specs/relay-vision.md)
+- [Relay Actions](docs/specs/relay-actions.md) · [Relay Vision](docs/specs/relay-vision.md) · [Relay Remote guide](docs/relay-remote.md)
 - [Configuration](docs/configuration.md) · [Troubleshooting](docs/troubleshooting.md) · [Testing](TESTING.md) · [Release process](docs/release-updates.md)
 
 ## Project routes
