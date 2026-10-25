@@ -100,13 +100,20 @@ enum RelayRemoteKeyLine {
         let command = try forcedCommand(shim: shim, arguments: "--device \(deviceID)")
         var options = "command=\"\(command)\",restrict"
         if !fromRanges.isEmpty {
-            let allowed = CharacterSet(charactersIn: "0123456789abcdefABCDEF.:/")
-            guard fromRanges.allSatisfy({ !$0.isEmpty && $0.unicodeScalars.allSatisfy(allowed.contains) }) else {
-                throw BuildError.invalidNetworkRange
-            }
+            guard fromRanges.allSatisfy(isNetworkRange) else { throw BuildError.invalidNetworkRange }
             options += ",from=\"\(fromRanges.joined(separator: ","))\""
         }
         return "\(options) \(key.openSSH) \(RelayRemoteKeyMarker.device(deviceID).comment)"
+    }
+
+    /// An address or CIDR, optionally with an IPv6 scope (`fe80::%en0/10`)
+    /// that names an interface. No wildcards, negations or separators.
+    private static func isNetworkRange(_ range: String) -> Bool {
+        let parts = range.split(separator: "%", maxSplits: 1, omittingEmptySubsequences: false)
+        let address = CharacterSet(charactersIn: "0123456789abcdefABCDEF.:/")
+        let scope = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/")
+        guard !parts[0].isEmpty, parts[0].unicodeScalars.allSatisfy(address.contains) else { return false }
+        return parts.count == 1 || (!parts[1].isEmpty && parts[1].unicodeScalars.allSatisfy(scope.contains))
     }
 
     /// sshd runs `command=` through the login shell, so the shim path is

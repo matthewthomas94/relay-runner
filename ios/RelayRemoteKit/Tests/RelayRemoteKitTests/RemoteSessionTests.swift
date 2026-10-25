@@ -267,6 +267,46 @@ final class RemoteSessionTests: XCTestCase {
         session.stop()
     }
 
+    func testKeyRefusedOnOneAddressFallsBackToTheNext() async throws {
+        // A from= restricted key refused on the Bonjour link-local path still
+        // connects through the stored LAN address.
+        let clock = TestClock()
+        let transport = FakeTransport(mac: FakeMac(), outcomes: [.fail(.authenticationRejected), .connect])
+        let lan = NWEndpoint.hostPort(host: "192.168.1.21", port: 22)
+        let session = Fixtures.session(transport: transport, clock: clock, endpoints: [Fixtures.endpoint, lan])
+        session.start()
+        await eventually { session.state == .connected }
+        XCTAssertEqual(transport.attempts.map(\.endpoint), [Fixtures.endpoint, lan])
+        XCTAssertTrue(clock.delays.isEmpty)
+        session.stop()
+    }
+
+    func testKeyRefusedOnEveryAddressStops() async throws {
+        let clock = TestClock()
+        let transport = FakeTransport(mac: FakeMac(), outcomes: [.fail(.authenticationRejected)])
+        let lan = NWEndpoint.hostPort(host: "192.168.1.21", port: 22)
+        let session = Fixtures.session(transport: transport, clock: clock, endpoints: [Fixtures.endpoint, lan])
+        session.start()
+        await eventually { session.state == .failed(.authenticationRejected) }
+        XCTAssertEqual(transport.attemptCount, 2)
+        XCTAssertTrue(clock.delays.isEmpty, "no reconnect is scheduled")
+    }
+
+    func testKeyRefusedWhereTheOtherAddressesAreUnreachableStops() async throws {
+        // A revoked key must still reach "pair again" when, say, the Tailscale
+        // address is down; unreachable candidates do not count as answers.
+        let clock = TestClock()
+        let transport = FakeTransport(mac: FakeMac(), outcomes: [.fail(.unreachable), .fail(.authenticationRejected),
+                                                                 .fail(.unreachable)])
+        let session = Fixtures.session(transport: transport, clock: clock,
+                                       endpoints: [NWEndpointFixture.tailscale, Fixtures.endpoint,
+                                                   .hostPort(host: "192.168.1.21", port: 22)])
+        session.start()
+        await eventually { session.state == .failed(.authenticationRejected) }
+        XCTAssertEqual(transport.attemptCount, 3)
+        XCTAssertTrue(clock.delays.isEmpty)
+    }
+
     func testCandidatesAreTriedInOrderUntilOneConnects() async throws {
         let transport = FakeTransport(mac: FakeMac(), outcomes: [.fail(.unreachable), .connect])
         let tailscale = NWEndpointFixture.tailscale
