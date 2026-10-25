@@ -9064,6 +9064,14 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
 
     def _progress_dependents_locked(self, *, repo_path: str, finished_ticket_id: str) -> None:
         repo = Path(repo_path)
+        artifact_lifecycle = self._artifact_lifecycle(str(repo))
+        if artifact_lifecycle is not None:
+            # The projected board changes only through the canonical writer;
+            # the loop below then reads the re-materialized projection.
+            self._promote_unblocked_dependents(
+                repo_path=str(repo),
+                artifact_lifecycle=artifact_lifecycle,
+            )
         all_tickets = scan_repo(repo)
         by_id = {t["id"]: t for t in all_tickets}
         finished = by_id.get(finished_ticket_id)
@@ -9076,8 +9084,14 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             if dep.get("canceled") or dep.get("draft"):
                 continue
             if not self._all_dependencies_done(
-                repo=repo, ticket=dep, all_tickets=all_tickets
+                repo=repo,
+                ticket=dep,
+                all_tickets=all_tickets,
+                artifact_lifecycle=artifact_lifecycle,
             ):
+                continue
+            if dep["status"] == "backlog" and artifact_lifecycle is not None:
+                # The canonical writer declined to promote it.
                 continue
             if dep["status"] == "backlog" and finished.get("execution_mode") == SPIKE_EXECUTION_MODE:
                 # A research result informs refinement; it never authorizes a
@@ -9090,16 +9104,40 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     "board-change",
                     ticket_id=dep["id"],
                 )
+            dispatch_args: dict[str, Any] = {
+                "ticket_id": dep["id"],
+                "repo_path": str(repo),
+                "source": "dependency-progression",
+            }
+            if artifact_lifecycle is not None:
+                dispatch_args["internally_confirmed_project_id"] = (
+                    artifact_lifecycle.store.project_id
+                )
             try:
-                self.dispatch(ticket_id=dep["id"], repo_path=str(repo), source="dependency-progression")
+                self.dispatch(**dispatch_args)
             except (ValueError, RuntimeError) as e:
                 # Daemon refused dispatch (e.g. file missing, already active);
                 # the status flip stays — user can drag/redispatch manually.
                 print(f"[orchestrator] auto-dispatch declined for {dep['id']}: {e}", file=sys.stderr)
 
-    def _promote_unblocked_dependents(self, *, repo_path: str) -> list[str]:
-        """Promote backlog dependents whose dependencies are done in the source repo."""
+    def _promote_unblocked_dependents(
+        self,
+        *,
+        repo_path: str,
+        artifact_lifecycle: ArtifactLifecycleCoordinator | None = None,
+    ) -> list[str]:
+        """Promote backlog dependents whose dependencies are done in the source repo.
+
+        This is the single entry point for dependency promotion. An
+        artifact-enabled board is a projection of its artifact ref, so it is
+        promoted only through the lifecycle coordinator's canonical writer;
+        only legacy boards are rewritten in place.
+        """
         repo = Path(repo_path)
+        if artifact_lifecycle is None:
+            artifact_lifecycle = self._artifact_lifecycle(str(repo))
+        if artifact_lifecycle is not None:
+            return list(artifact_lifecycle.promote_unblocked_dependents())
         all_tickets = scan_repo(repo)
         by_id = {ticket["id"]: ticket for ticket in all_tickets}
         promoted: list[str] = []
@@ -9165,10 +9203,11 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         record_drain: bool = True,
         artifact_lifecycle: ArtifactLifecycleCoordinator | None = None,
     ) -> dict:
-        promoted = (
-            list(artifact_lifecycle.promote_unblocked_dependents())
-            if artifact_lifecycle is not None
-            else self._promote_unblocked_dependents(repo_path=str(repo))
+        # Promotion resolves the project's lifecycle itself. Dispatch authority
+        # below stays with a caller-validated `artifact_lifecycle` only.
+        promoted = self._promote_unblocked_dependents(
+            repo_path=str(repo),
+            artifact_lifecycle=artifact_lifecycle,
         )
         all_tickets = scan_repo(repo)
         dispatched: list[dict[str, Any]] = []
