@@ -207,6 +207,53 @@ final class RelayRemoteAuthorizedKeysTests: XCTestCase {
         XCTAssertThrowsError(try RelayRemoteKeyLine.device(shim: URL(fileURLWithPath: "/tmp/it's"), deviceID: "dev1", key: key))
     }
 
+    private func interface(_ name: String, _ address: String, _ prefixLength: Int) -> RelayRemoteHostInfo.InterfaceAddress {
+        let family = address.contains(":") ? AF_INET6 : AF_INET
+        var bytes = [UInt8](repeating: 0, count: family == AF_INET6 ? 16 : 4)
+        XCTAssertEqual(inet_pton(family, address, &bytes), 1)
+        return .init(name: name, bytes: bytes, prefixLength: prefixLength)
+    }
+
+    func testNetworkRangesCoverTheHomeLANOverIPv4AndIPv6() throws {
+        let interfaces = [
+            interface("lo0", "127.0.0.1", 8),
+            interface("lo0", "::1", 128),
+            interface("lo0", "fe80::1", 64),
+            interface("en0", "fe80::1c2b:3a4d:5e6f:7081", 64),
+            interface("en0", "192.168.1.20", 24),
+            interface("en0", "fd12:3456:789a:1::20", 64),
+            interface("en0", "2001:db8:1:2:aaaa:bbbb:cccc:dddd", 64),
+            interface("en0", "2001:db8:1:2:1111:2222:3333:4444", 64),
+            // A public-only interface is not home, nor is its IPv6.
+            interface("utun8", "203.0.113.7", 32),
+            interface("utun8", "2001:db8:ffff::5", 64),
+            interface("utun8", "fe80::5", 64),
+            // Tailscale is covered by its fixed ranges.
+            interface("utun3", "100.101.102.103", 32),
+            interface("utun3", "fd7a:115c:a1e0::1234", 128),
+            interface("utun3", "fe80::7", 64),
+        ]
+        let ranges = RelayRemoteHostInfo.networkRanges(interfaces: interfaces)
+        XCTAssertEqual(ranges, [
+            "192.168.1.0/24",
+            "fe80::%en0/10",
+            "fd12:3456:789a:1::/64",
+            "2001:db8:1:2::/64",
+            "100.64.0.0/10",
+            "fd7a:115c:a1e0::/48",
+        ])
+
+        let key = ed25519Key()
+        let line = try RelayRemoteKeyLine.device(shim: shim, deviceID: "dev1", key: key, fromRanges: ranges)
+        XCTAssertTrue(line.contains(",from=\"\(ranges.joined(separator: ","))\" "))
+        try file.replace([.device("dev1")], with: [line])
+        XCTAssertEqual(try file.deviceKeys(), [RelayRemoteDeviceKey(deviceID: "dev1", publicKey: key, restrictedToNetwork: true)])
+
+        for bad in ["fe80::%", "fe80::%en0,*", "fe80::%en\"0/10", "%en0"] {
+            XCTAssertThrowsError(try RelayRemoteKeyLine.device(shim: shim, deviceID: "dev1", key: key, fromRanges: [bad]), bad)
+        }
+    }
+
     func testPublicKeyParsingRejectsMalformedKeys() {
         let key = ed25519Key()
         XCTAssertEqual(SSHPublicKey(openSSH: key.openSSH + " comment"), key)

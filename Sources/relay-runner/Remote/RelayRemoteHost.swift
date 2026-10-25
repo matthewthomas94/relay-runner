@@ -164,8 +164,26 @@ enum RelayRemoteHostInfo {
     }
 
     /// The `from=` ranges for a device restricted to home and Tailscale.
-    static func networkRanges() -> [String] {
-        var ranges = ipv4Interfaces().filter { !$0.isTailscale }.map(\.cidr)
+    ///
+    /// "Home" is every interface holding a private IPv4 address (Tailscale's
+    /// excluded): its IPv4 subnet, its IPv6 link-local range and its
+    /// unique-local and global IPv6 prefixes, because on an IPv6 LAN the phone
+    /// usually reaches the Bonjour-resolved link-local address. sshd compares
+    /// a link-local client together with its scope (`fe80::…%en0`), so a bare
+    /// `fe80::/10` never matches; the range is written scoped to the interface
+    /// (`fe80::%en0/10`) and matches only peers on that link. Both Tailscale
+    /// ranges are always added. The ranges are fixed at pairing time.
+    static func networkRanges(interfaces: [InterfaceAddress] = interfaceAddresses()) -> [String] {
+        let home = interfaces.filter(\.isPrivateIPv4)
+        let homeNames = Set(home.map(\.name))
+        var ranges = home.map(\.cidr)
+        for entry in interfaces where entry.bytes.count == 16 && homeNames.contains(entry.name) {
+            if entry.isIPv6LinkLocal {
+                ranges.append("fe80::%\(entry.name)/10")
+            } else if entry.isIPv6LAN {
+                ranges.append(entry.cidr)
+            }
+        }
         ranges += tailscaleRanges
         var seen = Set<String>()
         return ranges.filter { seen.insert($0).inserted }
@@ -177,32 +195,76 @@ enum RelayRemoteHostInfo {
         let isTailscale: Bool
     }
 
+    /// One address on an up, running, non-loopback interface.
+    struct InterfaceAddress: Equatable {
+        let name: String
+        /// 4 bytes for IPv4, 16 for IPv6, in network order.
+        let bytes: [UInt8]
+        let prefixLength: Int
+
+        var isIPv4Tailscale: Bool { bytes.count == 4 && bytes[0] == 100 && bytes[1] & 0xC0 == 64 }
+
+        var isPrivateIPv4: Bool {
+            bytes.count == 4 && (bytes[0] == 10 || (bytes[0] == 172 && bytes[1] & 0xF0 == 16) || (bytes[0] == 192 && bytes[1] == 168))
+        }
+
+        var isIPv6LinkLocal: Bool { bytes.count == 16 && bytes[0] == 0xFE && bytes[1] & 0xC0 == 0x80 }
+
+        /// Unique-local `fc00::/7` or global unicast `2000::/3`.
+        var isIPv6LAN: Bool { bytes.count == 16 && (bytes[0] & 0xFE == 0xFC || bytes[0] & 0xE0 == 0x20) }
+
+        var address: String { RelayRemoteHostInfo.text(bytes) }
+
+        var cidr: String {
+            let masked = bytes.enumerated().map { index, byte -> UInt8 in
+                let bits = min(8, max(0, prefixLength - index * 8))
+                return bits == 0 ? 0 : byte & ~(0xFF >> bits)
+            }
+            return "\(RelayRemoteHostInfo.text(masked))/\(prefixLength)"
+        }
+    }
+
     static func ipv4Interfaces() -> [Interface] {
+        interfaceAddresses()
+            .filter { $0.isIPv4Tailscale || $0.isPrivateIPv4 }
+            .map { Interface(address: $0.address, cidr: $0.cidr, isTailscale: $0.isIPv4Tailscale) }
+    }
+
+    static func interfaceAddresses() -> [InterfaceAddress] {
         var head: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&head) == 0, let first = head else { return [] }
         defer { freeifaddrs(head) }
-        var result: [Interface] = []
+        var result: [InterfaceAddress] = []
         for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
             let entry = pointer.pointee
             let flags = Int32(entry.ifa_flags)
             guard flags & IFF_UP != 0, flags & IFF_RUNNING != 0, flags & IFF_LOOPBACK == 0,
-                  let addr = entry.ifa_addr, addr.pointee.sa_family == sa_family_t(AF_INET),
-                  let mask = entry.ifa_netmask else { continue }
-            let ip = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
-            let netmask = mask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
-            let isTailscale = ip & 0xFFC0_0000 == 0x6440_0000
-            let isPrivate = ip & 0xFF00_0000 == 0x0A00_0000 || ip & 0xFFF0_0000 == 0xAC10_0000 || ip & 0xFFFF_0000 == 0xC0A8_0000
-            guard isTailscale || isPrivate else { continue }
-            result.append(Interface(
-                address: dotted(ip),
-                cidr: "\(dotted(ip & netmask))/\(netmask.nonzeroBitCount)",
-                isTailscale: isTailscale
+                  let addr = entry.ifa_addr, let mask = entry.ifa_netmask else { continue }
+            let bytes: [UInt8]
+            let maskBytes: [UInt8]
+            switch Int32(addr.pointee.sa_family) {
+            case AF_INET:
+                bytes = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { withUnsafeBytes(of: $0.pointee.sin_addr) { Array($0) } }
+                maskBytes = mask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { withUnsafeBytes(of: $0.pointee.sin_addr) { Array($0) } }
+            case AF_INET6:
+                bytes = addr.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { withUnsafeBytes(of: $0.pointee.sin6_addr) { Array($0) } }
+                maskBytes = mask.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { withUnsafeBytes(of: $0.pointee.sin6_addr) { Array($0) } }
+            default:
+                continue
+            }
+            result.append(InterfaceAddress(
+                name: String(cString: entry.ifa_name),
+                bytes: bytes,
+                prefixLength: maskBytes.reduce(0) { $0 + $1.nonzeroBitCount }
             ))
         }
         return result
     }
 
-    private static func dotted(_ value: UInt32) -> String {
-        [24, 16, 8, 0].map { String((value >> UInt32($0)) & 0xFF) }.joined(separator: ".")
+    private static func text(_ bytes: [UInt8]) -> String {
+        var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+        let family = bytes.count == 4 ? AF_INET : AF_INET6
+        _ = bytes.withUnsafeBytes { inet_ntop(family, $0.baseAddress, &buffer, socklen_t(buffer.count)) }
+        return String(cString: buffer)
     }
 }
