@@ -25,6 +25,7 @@ Lookup never restores ticket files. The assigned ticket snapshot remains require
 4. Run appropriate verification. Commit source changes with a conventional commit referencing {{ticket_id}}. Stage explicit source paths; do not use `git add -A` or `git add .`; do not push.
 5. Ensure `git status --porcelain --untracked-files=all` has no uncommitted source changes. Ignore daemon-owned `.relay` and immutable `.orchestrator` snapshot paths.
 6. Submit exactly one outcome to the daemon before exiting. `status` is `completed` only when the implementation and available verification are complete. Use `verification_blocked` only for a genuinely external evidence gate, with exact blocker and resume condition. Ambiguity, failed tests, or incomplete work are not verification blockers; exit non-zero without submitting success.
+7. Posting is your last action. Never amend, rebase, or commit after you post an outcome. If the post errors or times out, query the recorded outcome before retrying (see below): when it is recorded with your HEAD as `source_commit`, you are done; repost the identical payload only when nothing is recorded.
 
 Use this provider-neutral submission shape after the final source commit:
 
@@ -53,9 +54,23 @@ request = urllib.request.Request(
     headers={"Content-Type": "application/json"},
     method="POST",
 )
-print(urllib.request.urlopen(request, timeout=30).read().decode())
+print(urllib.request.urlopen(request, timeout=300).read().decode())
 PY
 ```
+
+Recording can take a while because the daemon publishes to the artifact branch, so keep the long client timeout. If the post fails or times out, read back what the daemon recorded before you change anything or retry:
+
+```bash
+python3 - <<'PY'
+import pathlib, urllib.request
+port_path = pathlib.Path("/tmp/relay_orchestrator.port")
+port = int(port_path.read_text().strip()) if port_path.exists() else 7634
+url = "http://127.0.0.1:%d/v1/runs/%d/outcome" % (port, {{run_id}})
+print(urllib.request.urlopen(url, timeout=60).read().decode())
+PY
+```
+
+If you already committed on top of a recorded outcome, the daemon accepts one superseding post while this run is live, and only when its `source_commit` is your current HEAD and a new commit whose history contains the recorded `source_commit`; amended or rebased history is always rejected. A rejected post states the recorded `source_commit` and how to recover; follow it instead of posting again.
 
 The installed daemon may bind a different port. If `/tmp/relay_orchestrator.port` exists, read that integer and use it instead of `7634`. For `verification_blocked`, add `verification_blocker` and `verification_resume` strings.
 

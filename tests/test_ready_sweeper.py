@@ -200,6 +200,19 @@ class ReadySweeperTests(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertEqual(calls, [(12, payload)])
 
+    def test_worker_outcome_read_back_route(self):
+        class FakeDaemon:
+            def get_worker_outcome(self, run_id):
+                return {"run_id": run_id, "recorded": False, "outcome": None}
+
+        handler = object.__new__(Handler)
+        handler.daemon = FakeDaemon()
+
+        status, result = Handler._route(handler, "GET", "/v1/runs/12/outcome")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result, {"run_id": 12, "recorded": False, "outcome": None})
+
     def test_stale_relay_dispatch_is_rejected_before_claim(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "voice_command_state.json"

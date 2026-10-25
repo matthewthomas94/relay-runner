@@ -619,6 +619,181 @@ class ArtifactLifecycleTests(unittest.TestCase):
         self.assertEqual(self.coordinator.cap_local_log(log, max_bytes=100), 100)
         self.assertEqual(log.stat().st_size, 100)
 
+    def test_lost_outcome_response_lets_live_worker_supersede_once(self):
+        # RR-432: the first post was recorded but its response never arrived.
+        self.write_ticket("RR-1", "Work")
+        worktree = self.create_worktree("run-11")
+        self.coordinator.claim_and_materialize(
+            ticket_id="RR-1", run_id=11, provider="claude", workspace_path=worktree
+        )
+        start_head = self.git(worktree, "rev-parse", "HEAD")
+        (worktree / "source.txt").write_text("first\n")
+        self.commit(worktree, "feat: first")
+        first = self.git(worktree, "rev-parse", "HEAD")
+        payload = {
+            "status": "completed",
+            "summary": "First attempt.",
+            "changed_paths": ["source.txt"],
+            "verification": ["tests passed"],
+            "source_commit": first,
+        }
+        self.coordinator.submit_outcome(
+            run_id=11, ticket_id="RR-1", provider="claude", payload=payload,
+            workspace_path=worktree,
+        )
+        (worktree / "source.txt").write_text("second\n")
+        self.commit(worktree, "fix: second")
+        second = self.git(worktree, "rev-parse", "HEAD")
+
+        superseding = dict(payload, summary="Second attempt.", source_commit=second)
+        accepted = self.coordinator.submit_outcome(
+            run_id=11, ticket_id="RR-1", provider="claude", payload=superseding,
+            workspace_path=worktree,
+        )
+        repeat = self.coordinator.submit_outcome(
+            run_id=11, ticket_id="RR-1", provider="claude", payload=superseding,
+            workspace_path=worktree,
+        )
+
+        self.assertEqual(accepted.source_commit, second)
+        self.assertEqual(repeat, accepted)
+        self.assertEqual(self.coordinator.outcome(11).source_commit, second)
+        declared, reason = self.coordinator.validate_worker_completion(
+            workspace_path=worktree, ticket_id="RR-1", run_id=11,
+            provider="claude", start_head=start_head,
+        )
+        self.assertEqual(declared, "completed", reason)
+
+        (worktree / "source.txt").write_text("third\n")
+        self.commit(worktree, "fix: third")
+        third = self.git(worktree, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(Exception, "superseded its outcome once") as raised:
+            self.coordinator.submit_outcome(
+                run_id=11, ticket_id="RR-1", provider="claude",
+                payload=dict(payload, source_commit=third), workspace_path=worktree,
+            )
+        message = str(raised.exception)
+        self.assertIn(f"source_commit {second}", message)
+        self.assertIn(f"git reset --hard {second}", message)
+        self.assertIn("GET /v1/runs/11/outcome", message)
+        self.git(worktree, "reset", "-q", "--hard", second)
+        declared, reason = self.coordinator.validate_worker_completion(
+            workspace_path=worktree, ticket_id="RR-1", run_id=11,
+            provider="claude", start_head=start_head,
+        )
+        self.assertEqual(declared, "completed", reason)
+
+    def test_superseding_outcome_rejects_amended_foreign_and_ended_runs(self):
+        self.write_ticket("RR-1", "Work")
+        self.write_ticket("RR-2", "Other")
+        worktree = self.create_worktree("run-12")
+        other_tree = self.create_worktree("run-13")
+        for ticket_id, run_id, tree in (("RR-1", 12, worktree), ("RR-2", 13, other_tree)):
+            self.coordinator.claim_and_materialize(
+                ticket_id=ticket_id, run_id=run_id, provider="codex", workspace_path=tree
+            )
+        start_head = self.git(worktree, "rev-parse", "HEAD")
+        (worktree / "source.txt").write_text("first\n")
+        self.commit(worktree, "feat: first")
+        first = self.git(worktree, "rev-parse", "HEAD")
+        payload = {
+            "status": "completed",
+            "summary": "First attempt.",
+            "changed_paths": ["source.txt"],
+            "verification": ["tests passed"],
+            "source_commit": first,
+        }
+        self.coordinator.submit_outcome(
+            run_id=12, ticket_id="RR-1", provider="codex", payload=payload,
+            workspace_path=worktree,
+        )
+        self.git(
+            worktree, "-c", "user.name=Lifecycle Tests",
+            "-c", "user.email=lifecycle@example.invalid",
+            "commit", "-q", "--amend", "-m", "feat: amended",
+        )
+        amended = self.git(worktree, "rev-parse", "HEAD")
+
+        with self.assertRaisesRegex(Exception, "amended or rebased") as raised:
+            self.coordinator.submit_outcome(
+                run_id=12, ticket_id="RR-1", provider="codex",
+                payload=dict(payload, source_commit=amended), workspace_path=worktree,
+            )
+        self.assertIn(f"git reset --hard {first}", str(raised.exception))
+        (worktree / "source.txt").write_text("newer\n")
+        self.commit(worktree, "fix: newer")
+        with self.assertRaisesRegex(Exception, "current HEAD"):
+            self.coordinator.submit_outcome(
+                run_id=12, ticket_id="RR-1", provider="codex",
+                payload=dict(payload, source_commit=amended), workspace_path=worktree,
+            )
+        with self.assertRaisesRegex(Exception, "identity does not match"):
+            self.coordinator.submit_outcome(
+                run_id=13, ticket_id="RR-2", provider="codex",
+                payload=dict(payload, run_id=12, ticket_id="RR-1"),
+                workspace_path=other_tree,
+            )
+        self.assertEqual(self.coordinator.outcome(12).source_commit, first)
+
+        self.git(worktree, "reset", "-q", "--hard", first)
+        declared, reason = self.coordinator.validate_worker_completion(
+            workspace_path=worktree, ticket_id="RR-1", run_id=12,
+            provider="codex", start_head=start_head,
+        )
+        self.assertEqual(declared, "completed", reason)
+        self.coordinator.record_failure(
+            run_id=12, ticket_id="RR-1", provider="codex", reason="worker exited",
+        )
+        self.commit_change(worktree, "after exit\n")
+        with self.assertRaisesRegex(Exception, "no active worker snapshot lease"):
+            self.coordinator.submit_outcome(
+                run_id=12, ticket_id="RR-1", provider="codex",
+                payload=dict(payload, source_commit=self.git(worktree, "rev-parse", "HEAD")),
+                workspace_path=worktree,
+            )
+
+    def test_retry_replaces_snapshot_left_by_ended_run_in_reused_worktree(self):
+        self.write_ticket("RR-1", "Work")
+        worktree = self.create_worktree("run-14")
+        self.coordinator.claim_and_materialize(
+            ticket_id="RR-1", run_id=14, provider="claude", workspace_path=worktree
+        )
+        destination = worktree / ".orchestrator"
+        self.assertFalse(
+            self.coordinator._is_stale_snapshot(destination, ticket_id="RR-1", run_id=15)
+        )
+        self.coordinator.record_failure(
+            run_id=14, ticket_id="RR-1", provider="claude", reason="worker failed",
+            retry=True,
+        )
+        self.assertFalse(
+            self.coordinator._is_stale_snapshot(destination, ticket_id="RR-2", run_id=15)
+        )
+
+        snapshot = self.coordinator.claim_and_materialize(
+            ticket_id="RR-1", run_id=15, provider="claude", workspace_path=worktree
+        )
+
+        manifest = json.loads(snapshot.manifest_path.read_text())
+        self.assertEqual(manifest["run_id"], 15)
+        self.assertIn("run_id: 15", (destination / "RR-1.md").read_text())
+        self.assertEqual(
+            [lease.lease_id for lease in self.coordinator.leases.active()],
+            ["run:15:worker"],
+        )
+
+    def test_foreign_snapshot_directory_still_blocks_materialization(self):
+        self.write_ticket("RR-1", "Work")
+        worktree = self.create_worktree("run-16")
+        (worktree / ".orchestrator").mkdir()
+        (worktree / ".orchestrator/notes.md").write_text("not a daemon snapshot\n")
+
+        with self.assertRaisesRegex(Exception, "destination already exists"):
+            self.coordinator.claim_and_materialize(
+                ticket_id="RR-1", run_id=16, provider="codex", workspace_path=worktree
+            )
+        self.assertTrue((worktree / ".orchestrator/notes.md").is_file())
+
     # Helpers
 
     def enable_lifecycle(self):
@@ -713,6 +888,10 @@ class ArtifactLifecycleTests(unittest.TestCase):
             "-c", "user.email=lifecycle@example.invalid",
             "commit", "-q", "-m", message,
         )
+
+    def commit_change(self, repo, content):
+        (repo / "source.txt").write_text(content)
+        self.commit(repo, "fix: change")
 
     def git(self, repo, *arguments):
         process = subprocess.run(
