@@ -618,6 +618,77 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
             self.git("ls-tree", "-r", "--name-only", "HEAD"),
         )
 
+    def test_lost_outcome_response_is_recoverable_and_retry_reuses_worktree(self):
+        # RR-432: a lost response must not fail a finished run or block its retry.
+        with patch.object(Worker, "start", autospec=True):
+            run = self.daemon.dispatch(
+                ticket_id="RR-1",
+                repo_path=str(self.repo),
+                project_scope_token=self.scope_token(),
+            )["run"]
+        run_id = int(run["id"])
+        workspace = Path(run["workspace_path"])
+        lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+        self.assertFalse(self.daemon.get_worker_outcome(run_id)["recorded"])
+
+        (workspace / "source.txt").write_text("first\n", encoding="utf-8")
+        self.git("-C", str(workspace), "commit", "--quiet", "-am", "first")
+        first = self.git("-C", str(workspace), "rev-parse", "HEAD")
+        payload = {
+            "status": "completed",
+            "summary": "First attempt.",
+            "changed_paths": ["source.txt"],
+            "verification": ["focused test passed"],
+            "source_commit": first,
+        }
+        self.daemon.submit_worker_outcome(run_id, payload)
+        recorded = self.daemon.get_worker_outcome(run_id)
+        self.assertTrue(recorded["recorded"])
+        self.assertEqual(recorded["outcome"]["source_commit"], first)
+
+        (workspace / "source.txt").write_text("second\n", encoding="utf-8")
+        self.git("-C", str(workspace), "commit", "--quiet", "-am", "second")
+        second = self.git("-C", str(workspace), "rev-parse", "HEAD")
+        accepted = self.daemon.submit_worker_outcome(
+            run_id, dict(payload, source_commit=second)
+        )
+        self.assertEqual(accepted["outcome"]["source_commit"], second)
+        manifest = json.loads(
+            (workspace / ".orchestrator/.artifact-snapshot.json").read_text(encoding="utf-8")
+        )
+        outcome, reason = lifecycle.validate_worker_completion(
+            workspace_path=workspace,
+            ticket_id="RR-1",
+            run_id=run_id,
+            provider="codex",
+            start_head=manifest["source_start_head"],
+        )
+        self.assertEqual(outcome, "completed", reason)
+
+        self.daemon.runs.update(run_id, state="Failed", ended=True, exit_code=1)
+        with self.assertRaisesRegex(ValueError, "not accepting a worker outcome"):
+            self.daemon.submit_worker_outcome(run_id, dict(payload, source_commit=second))
+        lifecycle.record_failure(
+            run_id=run_id, ticket_id="RR-1", provider="codex", reason="fixture failure",
+            retry=True,
+        )
+        with self.daemon._workers_lock:
+            self.daemon._workers.pop(run_id, None)
+
+        with patch.object(Worker, "start", autospec=True):
+            retry = self.daemon.dispatch(
+                ticket_id="RR-1",
+                repo_path=str(self.repo),
+                project_scope_token=self.scope_token(),
+            )["run"]
+
+        self.assertEqual(retry["state"], "Claimed", retry.get("last_error"))
+        self.assertEqual(Path(retry["workspace_path"]), workspace)
+        manifest = json.loads(
+            (workspace / ".orchestrator/.artifact-snapshot.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["run_id"], int(retry["id"]))
+
     def test_resumed_verification_closeout_finishes_done_without_review(self):
         # RR-409: a resumed verification-blocked ticket had nothing left to change.
         self.write_ticket("RR-2", status="backlog", depends_on=("RR-1",))
