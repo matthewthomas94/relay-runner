@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -14,11 +15,32 @@ SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
 from orchestrator import (  # noqa: E402
+    ArtifactMaterializationConflict,
     BoundedThreadingHTTPServer,
     Handler,
     ProgramRefreshUnavailable,
     _SingleFlight,
 )
+
+
+class ArtifactConflictRouteTests(unittest.TestCase):
+    def test_materialization_conflict_is_a_named_conflict_not_a_server_error(self):
+        message = (
+            "materialized .orchestrator was edited manually (added: notes/scratch.txt); "
+            "use explicit Save/import"
+        )
+
+        def list_notes(**_kwargs):
+            raise ArtifactMaterializationConflict(message)
+
+        handler = object.__new__(Handler)
+        handler.daemon = SimpleNamespace(artifact_note_list=list_notes)
+        status, payload = handler._route("GET", "/v1/artifacts/notes?limit=50")
+        self.assertEqual(status, 409)
+        self.assertEqual(
+            payload,
+            {"error": message, "error_code": "materialization_conflict", "retryable": False},
+        )
 
 
 class SingleFlightTests(unittest.TestCase):

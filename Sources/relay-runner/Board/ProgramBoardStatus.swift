@@ -1563,6 +1563,8 @@ final class ProgramBoardViewModel {
     /// False until the first notes fetch finishes, so Notes shows a skeleton
     /// rather than an empty library while it loads.
     var notesLoaded = false
+    /// Why the last notes refresh failed; shown above the library until one succeeds.
+    var noteLoadErrorMessage: String?
     var noteCaptureSnapshot = MeetingNoteCoordinatorSnapshot(
         phase: .idle,
         noteID: nil,
@@ -1815,6 +1817,7 @@ final class ProgramBoardViewModel {
         let result = await fetchNotes([GlobalNoteStore.repositoryPath])
         guard !Task.isCancelled else { return }
         notesLoaded = true
+        noteLoadErrorMessage = result.errorMessage
         guard result.errorMessage == nil else { return }
         noteItems = result.notes
         if let selectedNoteDetail {

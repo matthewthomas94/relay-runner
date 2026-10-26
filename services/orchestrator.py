@@ -68,6 +68,7 @@ try:
         ArtifactConcurrentUpdate,
         ArtifactEventCollision,
         ArtifactIdentityError,
+        ArtifactMaterializationConflict,
         ArtifactMutation,
         ArtifactStore,
         ArtifactValidationError,
@@ -103,6 +104,7 @@ except ModuleNotFoundError:  # Installed direct-script layout.
         ArtifactConcurrentUpdate,
         ArtifactEventCollision,
         ArtifactIdentityError,
+        ArtifactMaterializationConflict,
         ArtifactMutation,
         ArtifactStore,
         ArtifactValidationError,
@@ -12647,6 +12649,12 @@ class Handler(BaseHTTPRequestHandler):
             return 409, {"error": str(e), "retryable": True}
         except (ArtifactEventCollision, ArtifactIdentityError) as e:
             return 409, {"error": str(e), "retryable": False}
+        except ArtifactMaterializationConflict as e:
+            return 409, {
+                "error": str(e),
+                "error_code": "materialization_conflict",
+                "retryable": False,
+            }
         except ArtifactValidationError as e:
             return 422, {"error": str(e)}
         except StorageError as e:
