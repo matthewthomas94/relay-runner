@@ -299,9 +299,10 @@ final class ProgramBoardOverlayController {
         let pageSize = 100
         var notes: [ProgramBoardNoteItem] = []
         var failedProjectPaths: [String] = []
+        var failureMessages: [String] = []
         for repoPath in repoPaths {
+            let projectName = URL(fileURLWithPath: repoPath).lastPathComponent
             do {
-                let projectName = URL(fileURLWithPath: repoPath).lastPathComponent
                 let scopeToken = scopeTokenProvider(repoPath)
                 var projectNotes: [ProgramBoardNoteItem] = []
                 var after: String?
@@ -329,13 +330,23 @@ final class ProgramBoardOverlayController {
                 notes.append(contentsOf: projectNotes)
             } catch {
                 failedProjectPaths.append(repoPath)
+                failureMessages.append(Self.noteLoadFailureMessage(
+                    repoPath: repoPath, projectName: projectName, error: error
+                ))
             }
         }
-        let failedProjects = failedProjectPaths.map { URL(fileURLWithPath: $0).lastPathComponent }
-        let errorMessage = failedProjects.isEmpty
-            ? nil
-            : "Could not load notes for \(failedProjects.joined(separator: ", "))."
+        let errorMessage = failureMessages.isEmpty ? nil : failureMessages.joined(separator: " ")
         return ProgramBoardNoteLoadResult(notes: notes, errorMessage: errorMessage, failedProjectPaths: failedProjectPaths)
+    }
+
+    /// Names the library that failed and the daemon's own reason when it sent
+    /// one, so a store conflict reads as itself rather than as a missing list.
+    static func noteLoadFailureMessage(repoPath: String, projectName: String, error: Error) -> String {
+        let reason = (error as? OrchestratorClientError)?.daemonErrorMessage ?? error.localizedDescription
+        let sentence = reason.hasSuffix(".") ? reason : reason + "."
+        return repoPath == GlobalNoteStore.repositoryPath
+            ? "Could not load your notes: \(sentence)"
+            : "Could not load notes for \(projectName): \(sentence)"
     }
 
     static func sessionControlAction(

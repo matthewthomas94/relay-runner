@@ -1434,6 +1434,33 @@ final class MeetingNoteCoordinatorTests: XCTestCase {
         XCTAssertEqual(updates.last?.update.segments.map(\.text), ["final words"])
     }
 
+    func testStartFailureFromTheDaemonKeepsItsCauseInTheSnapshot() async throws {
+        let writer = FakeMeetingNoteWriter()
+        let conflict = "materialized .orchestrator was edited manually (added: .DS_Store); use explicit Save/import"
+        await writer.failNextCreate(OrchestratorClientError.badStatus(
+            409, #"{"error":"\#(conflict)","error_code":"materialization_conflict","retryable":false}"#
+        ))
+        let coordinator = makeCoordinator(
+            writer: writer,
+            store: InMemoryMeetingNoteRecoveryStore(),
+            captures: FakeMeetingNoteCaptureFactory()
+        )
+        do {
+            _ = try await coordinator.start(project: project, projectScopeToken: nil, initiallyPaused: false)
+            XCTFail("A rejected note create must fail the start")
+        } catch {
+            XCTAssertNotNil(error as? OrchestratorClientError, "The daemon failure is rethrown unchanged")
+        }
+        let snapshot = await coordinator.snapshot()
+        XCTAssertEqual(snapshot.phase, .error)
+        XCTAssertNil(snapshot.noteID)
+        XCTAssertEqual(snapshot.errorMessage, conflict)
+        XCTAssertEqual(
+            ProgramNoteStartFailurePresentation.message(for: snapshot),
+            "Notetaker could not start: \(conflict)."
+        )
+    }
+
     func testStartPersistsTranscriptionIdentityAndLegacyJournalDecodesWithoutIt() async throws {
         let store = InMemoryMeetingNoteRecoveryStore()
         let captures = FakeMeetingNoteCaptureFactory()
@@ -2685,6 +2712,7 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
     )
     private var savedSegments: [RelayProjectNoteSegment] = []
     private var shouldFailNextUpdate = false
+    private var nextCreateFailure: Error?
     private var shouldFailNextCancel = false
     private var shouldSuspendNextUpdate = false
     private var suspendedUpdate: CheckedContinuation<Void, Never>?
@@ -2708,6 +2736,8 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
     func failNextUpdate() {
         shouldFailNextUpdate = true
     }
+
+    func failNextCreate(_ error: Error) { nextCreateFailure = error }
 
     func failNextCancel() { shouldFailNextCancel = true }
 
@@ -2764,10 +2794,14 @@ private actor FakeMeetingNoteWriter: MeetingNoteArtifactWriting {
         _ request: RelayProjectNoteCreateRequest,
         repositoryPath: String,
         projectScopeToken: String?
-    ) -> RelayProjectNoteResponse {
+    ) throws -> RelayProjectNoteResponse {
         createCount += 1
         createRequests.append(request)
         repositories.append(repositoryPath)
+        if let failure = nextCreateFailure {
+            nextCreateFailure = nil
+            throw failure
+        }
         return response(
             state: request.recordingState,
             reason: request.checkpointReason,

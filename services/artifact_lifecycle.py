@@ -370,6 +370,7 @@ class ArtifactLifecycleCoordinator:
         ticket_id: str,
         provider: str,
         payload: Mapping[str, object],
+        workspace_path: Path | None = None,
     ) -> StructuredWorkerOutcome:
         outcome = self._validate_outcome(run_id, ticket_id, provider, payload)
         lease = self._lease_for_run(run_id, "worker")
@@ -382,15 +383,51 @@ class ArtifactLifecycleCoordinator:
             if path.exists():
                 existing = path.read_bytes()
                 if existing != encoded:
-                    raise ArtifactValidationError(
-                        f"run {run_id} already submitted a different immutable outcome"
-                    )
+                    # A lost response can leave a live worker unaware that its
+                    # first post was recorded; it may supersede it once.
+                    self._check_supersession(run_id, outcome, workspace_path)
+                    superseded = self._superseded_path(run_id)
+                    superseded.write_bytes(existing)
+                    temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
+                    temporary.write_bytes(encoded)
+                    os.replace(temporary, path)
                 return outcome
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
             temporary.write_bytes(encoded)
             os.replace(temporary, path)
         return outcome
+
+    def _check_supersession(
+        self,
+        run_id: int,
+        outcome: StructuredWorkerOutcome,
+        workspace_path: Path | None,
+    ) -> None:
+        recorded = self.outcome(run_id)
+        recorded_commit = recorded.source_commit if recorded is not None else "unknown"
+        if self._superseded_path(run_id).exists():
+            problem = "this run already superseded its outcome once"
+        elif workspace_path is None:
+            problem = "the run's worktree is unavailable to verify a superseding commit"
+        elif outcome.source_commit != _git_text(Path(workspace_path), "rev-parse", "HEAD"):
+            problem = "a superseding source_commit must be the worker's current HEAD"
+        elif outcome.source_commit == recorded_commit:
+            problem = "the recorded outcome already covers this source_commit"
+        elif not _git_is_ancestor(Path(workspace_path), recorded_commit, outcome.source_commit):
+            problem = (
+                "a superseding source_commit must be a new commit whose history contains "
+                "the recorded source_commit (amended or rebased history is never accepted)"
+            )
+        else:
+            return
+        raise ArtifactValidationError(
+            f"run {run_id} already submitted a different immutable outcome with "
+            f"source_commit {recorded_commit}; {problem}. Read it back with "
+            f"GET /v1/runs/{run_id}/outcome. To finish with the recorded outcome, restore "
+            f"HEAD to {recorded_commit} (git reset --hard {recorded_commit}), leave no "
+            "uncommitted source changes, and exit without posting again."
+        )
 
     def outcome(self, run_id: int) -> StructuredWorkerOutcome | None:
         path = self._outcome_path(run_id)
@@ -1116,6 +1153,28 @@ class ArtifactLifecycleCoordinator:
                     f"immutable worker snapshot file changed: {relative}"
                 )
 
+    def _is_stale_snapshot(self, destination: Path, *, ticket_id: str, run_id: int) -> bool:
+        """True when the snapshot belongs to an earlier, no-longer-leased run of this ticket."""
+        if destination.is_symlink() or not destination.is_dir():
+            return False
+        try:
+            manifest = json.loads(
+                (destination / ".artifact-snapshot.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(manifest, dict):
+            return False
+        prior_run = manifest.get("run_id")
+        if (
+            manifest.get("project_id") != self.store.project_id
+            or manifest.get("ticket_id") != ticket_id
+            or not isinstance(prior_run, int)
+            or prior_run == run_id
+        ):
+            return False
+        return not any(lease.run_id == str(prior_run) for lease in self.leases.active())
+
     def _materialize_snapshot(
         self,
         files: Mapping[str, bytes],
@@ -1134,7 +1193,10 @@ class ArtifactLifecycleCoordinator:
             )
         destination = workspace_path / ".orchestrator"
         if destination.exists() or destination.is_symlink():
-            raise ArtifactValidationError("worker snapshot destination already exists")
+            if not self._is_stale_snapshot(destination, ticket_id=ticket_id, run_id=run_id):
+                raise ArtifactValidationError("worker snapshot destination already exists")
+            # A reused worktree still holds an ended run's snapshot; replace it.
+            self.cleanup_snapshot(workspace_path)
         ticket_path = f".orchestrator/{ticket_id}.md"
         selected: dict[str, bytes] = {ticket_path: files[ticket_path]}
         for path, content in files.items():
@@ -1479,6 +1541,9 @@ class ArtifactLifecycleCoordinator:
 
     def _outcome_path(self, run_id: int) -> Path:
         return self.outcome_root / f"run-{run_id}.json"
+
+    def _superseded_path(self, run_id: int) -> Path:
+        return self.outcome_root / f"run-{run_id}.superseded.json"
 
     def _snapshot_proof_path(self, run_id: int) -> Path:
         return self.snapshot_proof_root / f"run-{run_id}.json"

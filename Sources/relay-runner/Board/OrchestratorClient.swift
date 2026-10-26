@@ -1237,6 +1237,18 @@ enum OrchestratorClientError: Error, LocalizedError, Equatable {
         return payload["error"] as? String == "confirmed project scope token is stale"
     }
 
+    /// The daemon's own `error` text when a failed response carries its JSON
+    /// error envelope, so the UI can show the cause instead of a status code.
+    var daemonErrorMessage: String? {
+        guard case .badStatus(_, let body) = self,
+              let data = body.data(using: .utf8),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = payload["error"] as? String
+        else { return nil }
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     var errorDescription: String? {
         switch self {
         case .invalidRequest:

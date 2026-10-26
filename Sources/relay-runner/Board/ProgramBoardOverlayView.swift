@@ -249,6 +249,12 @@ struct ProgramBoardOverlayView: View {
         }
     }
 
+    /// A Notetaker that failed before it had a note keeps its cause here,
+    /// since the detail panel only shows errors for a selected note.
+    private var noteStartFailureMessage: String? {
+        ProgramNoteStartFailurePresentation.message(for: model.noteCaptureSnapshot)
+    }
+
     private var notesLibrary: some View {
         ZStack {
             if model.notesLoaded {
@@ -293,6 +299,18 @@ struct ProgramBoardOverlayView: View {
             .padding(.horizontal, 22)
             .frame(height: 60)
             Rectangle().fill(BoardDarkSurfaceStyle.border).frame(height: 1)
+            if let message = model.noteLoadErrorMessage {
+                ProgramDetailNotice(message: message)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 12)
+                    .transition(.relayElement)
+            }
+            if let message = noteStartFailureMessage {
+                ProgramDetailNotice(message: message)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 12)
+                    .transition(.relayElement)
+            }
             HStack(spacing: 0) {
                 VStack(spacing: 12) {
                     HStack(spacing: 8) {
@@ -382,6 +400,8 @@ struct ProgramBoardOverlayView: View {
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.selectedNoteDetail?.item.id)
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteLoadErrorMessage)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: noteStartFailureMessage)
         .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
         .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
     }
@@ -4525,6 +4545,18 @@ struct ProgramNoteToolbarPresentation: Equatable {
                 systemName: "square.and.pencil",
                 help: "Record a note in your library"
             )
+    }
+}
+
+/// The notes library's notice for a Notetaker that failed before it had a
+/// note, so the daemon's reason is not reduced to the notch's short label.
+enum ProgramNoteStartFailurePresentation {
+    static func message(for snapshot: MeetingNoteCoordinatorSnapshot) -> String? {
+        guard snapshot.phase == .error, snapshot.noteID == nil,
+              let detail = snapshot.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !detail.isEmpty
+        else { return nil }
+        return "Notetaker could not start: " + (detail.hasSuffix(".") ? detail : detail + ".")
     }
 }
 

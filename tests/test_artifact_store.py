@@ -413,6 +413,70 @@ class ArtifactStoreTests(unittest.TestCase):
                 )
             )
 
+    def test_finder_metadata_files_are_not_manual_edits(self):
+        base = self.initialize().commit_id
+        root = self.repo / ".orchestrator"
+        (root / ".DS_Store").write_bytes(b"Bud1")
+        (root / "Icon\r").write_bytes(b"")
+        (root / ".localized").write_bytes(b"")
+        (root / "notes").mkdir()
+        (root / "notes" / ".DS_Store").write_bytes(b"Bud1")
+        (root / "notes" / "._RR-N1.md").write_bytes(b"AppleDouble")
+        (root / ".Trashes").mkdir()
+        (root / ".Trashes" / "stale").write_bytes(b"trash")
+
+        result = self.store.mutate(
+            self.mutation(
+                "finder-metadata",
+                TicketWrite("RR-1", "artifact-0001", self.ticket_bytes("RR-1", "Finder")),
+                expected_base=base,
+            )
+        )
+        self.assertFalse(result.idempotent)
+        self.assertTrue((root / "RR-1.md").exists())
+
+        # Finder recreates its file as soon as the folder is shown again. The
+        # next consistency check, which every listing and capture performs,
+        # must still pass.
+        (root / ".DS_Store").write_bytes(b"Bud1 again")
+        reopened = self.make_store().initialize(device_id="device-002")
+        self.assertTrue(reopened.idempotent)
+        self.assertEqual(reopened.commit_id, result.commit_id)
+
+        # Metadata recorded by an older build may list a Finder file; the
+        # upgraded check must not keep reporting it as a manual edit.
+        metadata = json.loads(self.store.metadata_path.read_text(encoding="utf-8"))
+        metadata["sha256"][".DS_Store"] = hashlib.sha256(b"Bud1").hexdigest()
+        self.store.metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        self.assertTrue(self.make_store().initialize(device_id="device-002").idempotent)
+
+    def test_unexpected_files_and_tracked_edits_still_fail_closed_by_name(self):
+        base = self.initialize().commit_id
+        root = self.repo / ".orchestrator"
+        write = self.mutation(
+            "named-conflict",
+            TicketWrite("RR-1", "artifact-0001", self.ticket_bytes("RR-1", "Named")),
+            expected_base=base,
+        )
+
+        (root / "notes").mkdir()
+        (root / "notes" / "scratch.txt").write_text("scratch\n", encoding="utf-8")
+        with self.assertRaisesRegex(
+            ArtifactMaterializationConflict, r"edited manually \(added: notes/scratch\.txt\)"
+        ):
+            self.store.mutate(write)
+
+        (root / "notes" / "scratch.txt").unlink()
+        (root / "config.toml").write_text("manual\n", encoding="utf-8")
+        with self.assertRaisesRegex(ArtifactMaterializationConflict, r"\(modified: config\.toml\)"):
+            self.store.mutate(write)
+
+        self.store.recover()
+        (root / "config.toml").unlink()
+        with self.assertRaisesRegex(ArtifactMaterializationConflict, r"\(removed: config\.toml\)"):
+            self.store.mutate(write)
+        self.assertEqual(self.git("rev-parse", ARTIFACT_REF), base)
+
     def test_dirty_staged_untracked_detached_and_local_ahead_source_state_is_unchanged(self):
         remote = self.root / "source-remote.git"
         subprocess.run(

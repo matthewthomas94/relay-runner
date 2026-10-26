@@ -272,21 +272,32 @@ public final class RemoteSession {
         return welcomedAt
     }
 
+    /// Tries each candidate in order. A refused host key stops at once. A
+    /// refused device key moves on to the next address, because a key paired
+    /// with "Only from my home network and Tailscale" carries a `from=` list
+    /// that sshd checks against the client address, so the same Mac can refuse
+    /// one address and accept another. The refusal becomes terminal only when
+    /// no candidate connected and every one that answered refused the key.
     private func openChannel() async throws -> RemoteConnection {
         let candidates = await endpoints.candidates()
         var lastFailure: Error = RemoteFailure.unreachable
+        var keyRejected = false
         for endpoint in candidates {
             try Task.checkCancellation()
             do {
                 let connection = try await transport.connect(to: endpoint, credentials: configuration.credentials)
                 log("channel open")
                 return connection
+            } catch RemoteFailure.authenticationRejected {
+                keyRejected = true
+                log("candidate refused: \(RemoteFailure.authenticationRejected.code)")
             } catch let failure as RemoteFailure where failure.isTerminal {
                 throw failure
             } catch {
                 lastFailure = error
             }
         }
+        if keyRejected { throw RemoteFailure.authenticationRejected }
         throw lastFailure
     }
 

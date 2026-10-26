@@ -1660,6 +1660,10 @@ actor MeetingNoteCoordinator {
         if let recordingError = error as? MeetingCompressedAudioError {
             return recordingError.localizedDescription
         }
+        // The daemon's error envelope is Relay's own text and names the cause.
+        if let clientError = error as? OrchestratorClientError {
+            return clientError.daemonErrorMessage ?? clientError.localizedDescription
+        }
         // Underlying transcriber messages are not passed through.
         if let transcriptionError = error as? MeetingRecordingTranscriptionError {
             switch transcriptionError {

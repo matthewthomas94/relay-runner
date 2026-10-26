@@ -25,7 +25,7 @@ Worker completion independently proves that the declared commit is worktree HEAD
 
 ## Idempotency, recovery, and retention
 
-Claim, sizing, failure, retry, cancellation, merge-conflict, verification resume, and merge publication use stable run/event identities. Structured outcomes are immutable per run. Duplicate delivery returns the prior result; different bytes under the same identity fail closed.
+Claim, sizing, failure, retry, cancellation, merge-conflict, verification resume, and merge publication use stable run/event identities. Structured outcomes are immutable per run. Duplicate delivery returns the prior result; different bytes under the same identity fail closed, with one exception for a lost response: while the run is still `Claimed` or `Running`, its worker may supersede its outcome once with a `source_commit` that is the worktree HEAD and a new commit containing the recorded one. Any other different post is rejected with the recorded `source_commit` and the recovery step. Workers read the recorded outcome with `GET /v1/runs/<run-id>/outcome` before retrying a failed post. A retry that reuses a worktree replaces the snapshot left by an earlier run of the same ticket once that run holds no lease.
 
 Worker and reviewer leases are durable app-local records tied to the immutable artifact input. Review transfers ownership without a gap. Successful merge, verification block, failure, retry, and cancellation explicitly release all run leases. Startup recovery retains leases for demonstrably live ledger states and releases only terminal or missing runs; heartbeat age alone never expires one. RR-285 retention therefore cannot archive a ticket or attachment while a live worker or reviewer still needs its snapshot.
 
