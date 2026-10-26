@@ -6,7 +6,7 @@ extension KeepAwakeSystem {
     /// Never reads or changes host power settings.
     static var inert: KeepAwakeSystem {
         KeepAwakeSystem(sleepDisabled: { nil }, disableSleep: { _, _ in .failed }, restoreSleep: { .failed },
-                        cancelApproval: {}, beginActivity: { nil }, endActivity: { _ in }, pause: { _ in })
+                        cancelApproval: {}, holdAssertions: { nil }, releaseAssertions: { _ in }, pause: { _ in })
     }
 }
 
@@ -18,6 +18,7 @@ private final class FakeSleepHost {
     var approvalChangesSetting = true
     var watchdogRestores = true
     var restoreApproval: KeepAwakeSystem.Approval = .approved
+    var assertionsAvailable = true
     var duringApproval: () -> Void = {}
     private(set) var disableCalls: [(lease: URL, pid: Int32, filesExisted: Bool)] = []
     private(set) var restoreCalls = 0
@@ -66,11 +67,12 @@ private final class FakeSleepHost {
                 cancelCalls += 1
                 approvalsCanceled = true
             },
-            beginActivity: { [self] in
+            holdAssertions: { [self] in
+                guard assertionsAvailable else { return nil }
                 begun += 1
                 return NSObject()
             },
-            endActivity: { [self] _ in ended += 1 },
+            releaseAssertions: { [self] _ in ended += 1 },
             pause: { _ in }
         )
     }
@@ -81,6 +83,7 @@ final class KeepAwakeControllerTests: XCTestCase {
     private var host: FakeSleepHost!
     private var work: [() -> Void] = []
     private var main: [() -> Void] = []
+    private var scheduled: [(delay: TimeInterval, job: () -> Void)] = []
 
     override func setUp() {
         super.setUp()
@@ -90,6 +93,7 @@ final class KeepAwakeControllerTests: XCTestCase {
         host.recoveryURL = directory.appendingPathComponent("keep-awake-recovery")
         work = []
         main = []
+        scheduled = []
     }
 
     override func tearDown() {
@@ -102,6 +106,7 @@ final class KeepAwakeControllerTests: XCTestCase {
             system: host.system, directory: directory, pid: 4242,
             work: { [unowned self] job in queued ? work.append(job) : job() },
             main: { [unowned self] job in queued ? main.append(job) : job() },
+            schedule: { [unowned self] delay, job in scheduled.append((delay, job)) },
             log: { _ in }
         )
     }
@@ -110,6 +115,17 @@ final class KeepAwakeControllerTests: XCTestCase {
         while !work.isEmpty || !main.isEmpty {
             if !work.isEmpty { work.removeFirst()() } else { main.removeFirst()() }
         }
+    }
+
+    /// Runs the pending sleep-setting checks, as the monitor timer would.
+    private func runMonitor() {
+        let jobs = scheduled
+        scheduled = []
+        for (delay, job) in jobs {
+            XCTAssertEqual(delay, KeepAwakeController.monitorInterval)
+            job()
+        }
+        drain()
     }
 
     private func ownershipFilesExist(_ controller: KeepAwakeController) -> (lease: Bool, recovery: Bool) {
@@ -170,7 +186,7 @@ final class KeepAwakeControllerTests: XCTestCase {
         guard case .failed(let message) = controller.state else { return XCTFail("\(controller.state)") }
         XCTAssertTrue(message.contains("canceled"))
         XCTAssertFalse(controller.state.isOn)
-        XCTAssertEqual(host.begun, 0, "An idle assertion alone is never reported as Keep Awake")
+        XCTAssertEqual(host.ended, host.begun, "Assertions alone are never left behind as Keep Awake")
         XCTAssertFalse(ownershipFilesExist(controller).lease)
         XCTAssertFalse(ownershipFilesExist(controller).recovery)
         // A failed attempt can be retried.
@@ -184,7 +200,8 @@ final class KeepAwakeControllerTests: XCTestCase {
         let controller = makeController()
         controller.toggle()
         guard case .failed = controller.state else { return XCTFail("\(controller.state)") }
-        XCTAssertEqual(host.begun, 0)
+        XCTAssertEqual(host.ended, host.begun)
+        XCTAssertTrue(scheduled.isEmpty, "Nothing monitors a failed attempt")
     }
 
     func testUnreadableSleepSettingsFailBeforeAnyPrompt() {
@@ -254,7 +271,7 @@ final class KeepAwakeControllerTests: XCTestCase {
         drain()
         XCTAssertEqual(controller.state, .off)
         XCTAssertEqual(host.sleepDisabled, false, "The watchdog restores once quit removes the lease")
-        XCTAssertEqual(host.begun, 0)
+        XCTAssertEqual(host.ended, host.begun)
         XCTAssertFalse(ownershipFilesExist(controller).lease)
         XCTAssertFalse(ownershipFilesExist(controller).recovery)
         XCTAssertFalse(controller.toggle(), "Nothing restarts after quit")
@@ -295,6 +312,7 @@ final class KeepAwakeControllerTests: XCTestCase {
         relaunched.recoverIfNeeded()
         guard case .restoreNeeded = relaunched.state else { return XCTFail("\(relaunched.state)") }
         XCTAssertEqual(host.begun, 1, "Recovery never resumes Keep Awake")
+        XCTAssertEqual(host.ended, 1)
         relaunched.toggle()
         XCTAssertEqual(relaunched.state, .off)
         XCTAssertFalse(ownershipFilesExist(relaunched).recovery)
@@ -314,6 +332,113 @@ final class KeepAwakeControllerTests: XCTestCase {
         XCTAssertFalse(ownershipFilesExist(controller).lease)
         XCTAssertFalse(ownershipFilesExist(controller).recovery)
         XCTAssertEqual(host.begun, 0)
+    }
+
+    func testAssertionsAreRequiredBeforeAnyPromptOrOnState() {
+        host.assertionsAvailable = false
+        let controller = makeController()
+        XCTAssertTrue(controller.toggle())
+        guard case .failed(let message) = controller.state else { return XCTFail("\(controller.state)") }
+        XCTAssertTrue(message.contains("Keep Awake is off"))
+        XCTAssertTrue(host.disableCalls.isEmpty)
+        XCTAssertEqual(host.reads, 0)
+        XCTAssertFalse(ownershipFilesExist(controller).recovery)
+        host.assertionsAvailable = true
+        controller.toggle()
+        XCTAssertEqual(controller.state, .on(ownsSleepSetting: true))
+        XCTAssertEqual(host.begun, 1)
+    }
+
+    /// The reported regression: another app had disabled sleep, then restored it while
+    /// Keep Awake still reported on with only an idle assertion, so the lid slept the Mac.
+    func testAnotherAppRestoringSleepWhileOnIsTakenOverWithApproval() {
+        host.sleepDisabled = true
+        let controller = makeController()
+        controller.toggle()
+        XCTAssertEqual(controller.state, .on(ownsSleepSetting: false))
+        runMonitor()
+        XCTAssertEqual(controller.state, .on(ownsSleepSetting: false), "Still disabled: nothing to do")
+        XCTAssertTrue(host.disableCalls.isEmpty)
+        XCTAssertEqual(scheduled.count, 1, "Monitoring continues while on")
+
+        host.sleepDisabled = false
+        runMonitor()
+        XCTAssertEqual(controller.state, .on(ownsSleepSetting: true))
+        XCTAssertEqual(host.disableCalls.count, 1)
+        XCTAssertTrue(host.disableCalls[0].filesExisted)
+        XCTAssertEqual(host.begun, 1)
+        XCTAssertEqual(host.ended, 0, "Assertions are held throughout the takeover")
+
+        // Relay now owns the setting it re-disabled, so off restores it.
+        controller.toggle()
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertEqual(host.sleepDisabled, false)
+        XCTAssertFalse(ownershipFilesExist(controller).recovery)
+        XCTAssertEqual(host.ended, 1)
+    }
+
+    func testDeclinedTakeoverIsReportedOffInsteadOfAFalseOn() {
+        host.sleepDisabled = true
+        let controller = makeController(queued: true)
+        controller.toggle()
+        drain()
+        host.sleepDisabled = false
+        host.approval = .canceled
+        runMonitor()
+        guard case .failed(let message) = controller.state else { return XCTFail("\(controller.state)") }
+        XCTAssertTrue(message.hasPrefix(KeepAwakeController.lostSettingContext))
+        XCTAssertTrue(message.contains("canceled"))
+        XCTAssertEqual(host.ended, host.begun)
+        XCTAssertFalse(ownershipFilesExist(controller).lease)
+        XCTAssertFalse(ownershipFilesExist(controller).recovery)
+        XCTAssertTrue(scheduled.isEmpty)
+    }
+
+    func testOwnedSettingClearedElsewhereIsReestablishedWithoutDroppingTheLease() {
+        let controller = makeController()
+        controller.toggle()
+        // Another app's restore clears the override for everyone.
+        host.sleepDisabled = false
+        runMonitor()
+        XCTAssertEqual(controller.state, .on(ownsSleepSetting: true))
+        XCTAssertEqual(host.disableCalls.count, 2)
+        XCTAssertTrue(host.disableCalls[1].filesExisted, "The lease never disappears, so no watchdog restores early")
+        XCTAssertEqual(host.sleepDisabled, true)
+        controller.toggle()
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertEqual(host.sleepDisabled, false)
+    }
+
+    func testMonitoringIgnoresUnreadableReadsAndStopsWhenOff() {
+        let controller = makeController()
+        controller.toggle()
+        host.sleepDisabled = nil
+        runMonitor()
+        XCTAssertEqual(controller.state, .on(ownsSleepSetting: true), "An unreadable report is not a lost setting")
+        XCTAssertEqual(host.disableCalls.count, 1)
+        host.sleepDisabled = true
+        controller.toggle()
+        XCTAssertEqual(controller.state, .off)
+        let reads = host.reads
+        runMonitor()
+        XCTAssertEqual(host.reads, reads, "A stale check never reads or prompts after off")
+        XCTAssertTrue(scheduled.isEmpty)
+    }
+
+    func testQuitDuringTakeoverApprovalReleasesEverything() {
+        host.sleepDisabled = true
+        let controller = makeController(queued: true)
+        controller.toggle()
+        drain()
+        host.sleepDisabled = false
+        host.duringApproval = { controller.shutdown() }
+        runMonitor()
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertEqual(host.sleepDisabled, false)
+        XCTAssertEqual(host.ended, host.begun)
+        XCTAssertFalse(ownershipFilesExist(controller).lease)
+        XCTAssertFalse(ownershipFilesExist(controller).recovery)
+        XCTAssertFalse(controller.toggle())
     }
 
     func testPmsetParsingNeverGuessesAnUnreadableValue() {

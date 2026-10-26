@@ -281,6 +281,10 @@ final class SessionWheelModel {
         isHoveringSettings ? hoveredControl.map(SessionWheelSettingsControl.init(subdivision:)) : nil
     }
     var submenuSlot: Int? { hoveredSession != nil || isHoveringNoteTaker || isHoveringSettings ? hoveredSlot : nil }
+    /// Hovering or dragging the enabled slider previews the particle field.
+    var isPreviewingIntensity: Bool {
+        particleFieldEnabled && (isAdjustingIntensity || hoveredSettingsControl == .intensity)
+    }
 
     func shortcut(at index: Int) -> SessionWheelShortcut? {
         isNested ? nil : SessionWheelShortcut(rawValue: index)

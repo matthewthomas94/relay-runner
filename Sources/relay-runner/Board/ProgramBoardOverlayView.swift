@@ -4837,4 +4837,6 @@ enum ProgramBoardStyle {
     static let neutralText = Color(nsColor: neutralTextNSColor)
     static let red = Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 1.0)
     static let green = Color(.sRGB, red: 52 / 255, green: 211 / 255, blue: 153 / 255, opacity: 1.0)
+    /// The solid fill of the TrayIconActive asset, #FF9502.
+    static let activeTrayOrange = Color(.sRGB, red: 255 / 255, green: 149 / 255, blue: 2 / 255, opacity: 1.0)
 }

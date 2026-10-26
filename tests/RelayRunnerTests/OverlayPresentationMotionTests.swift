@@ -245,6 +245,73 @@ final class OverlayPresentationMotionTests: XCTestCase {
         XCTAssertFalse(scene.pill.isFrontCardDismissed)
     }
 
+    /// Set RELAY_WHEEL_RENDER_DIR to export the previewed particle field for visual QA.
+    func testWheelIntensityPreviewShowsPlaybackParticlesWithoutTouchingState() throws {
+        let scene = Scene(showsCard: false)
+        defer { scene.stop() }
+        let half = VoiceOverlayMotion.travelDuration / 2
+        scene.controller.setParticlePreview(true)
+        scene.step(0)
+        scene.step(half)
+        XCTAssertEqual(scene.motion.overlayDeparture, 0.5, accuracy: 0.001)
+        scene.controller.setParticlePreview(true)
+        scene.step(half)
+        XCTAssertEqual(scene.motion.overlayDeparture, 0.5, accuracy: 0.001, "Repeats never restart the entrance")
+        scene.step(1)
+        XCTAssertEqual(scene.motion.overlayDeparture, 0)
+        XCTAssertEqual(CGFloat(scene.particles.opacity), 0.6, accuracy: 0.001)
+        XCTAssertEqual(scene.theme, OverlayController.particlePreviewTheme)
+        XCTAssertEqual(scene.theme, OverlayState.speaking.particleTheme)
+        XCTAssertEqual(scene.pill.alphaValue, 0, "No reply pill")
+        XCTAssertEqual(scene.state.state, .idle)
+        if let directory = ProcessInfo.processInfo.environment["RELAY_WHEEL_RENDER_DIR"] {
+            scene.renderer.renderFrame(at: CACurrentMediaTime() + 1)
+            let image = try XCTUnwrap(scene.particles.contents.map { $0 as! CGImage })
+            let url = URL(fileURLWithPath: directory, isDirectory: true)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            let png = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+            try png.write(to: url.appendingPathComponent("overlay-intensity-preview.png"))
+        }
+
+        // A real recording keeps its own field and pill during the preview.
+        scene.state.updateSTT(isRecording: true, partial: "")
+        scene.step(1.1)
+        scene.step(2)
+        XCTAssertEqual(scene.theme, .stt)
+        XCTAssertEqual(scene.pill.alphaValue, 1)
+        scene.state.reset()
+        scene.step(2.1)
+        scene.step(3)
+        XCTAssertEqual(scene.theme, OverlayController.particlePreviewTheme, "The preview resumes once idle")
+        XCTAssertEqual(scene.pill.alphaValue, 0)
+
+        scene.controller.setParticlePreview(false)
+        scene.step(3.1)
+        scene.step(3.1 + half)
+        XCTAssertEqual(scene.motion.overlayDeparture, 0.5, accuracy: 0.05, "Ending animates away")
+        scene.step(4)
+        XCTAssertEqual(scene.motion.overlayDeparture, 1)
+        XCTAssertEqual(scene.particles.opacity, 0)
+        XCTAssertNil(scene.theme)
+        XCTAssertEqual(scene.state.state, .idle)
+
+        let disabled = Scene(showsCard: false, screenGlow: false)
+        defer { disabled.stop() }
+        disabled.controller.setParticlePreview(true)
+        disabled.step(0)
+        disabled.step(1)
+        XCTAssertEqual(disabled.particles.opacity, 0, "The disabled particle field stays off")
+
+        let reduced = Scene(showsCard: false)
+        defer { reduced.stop() }
+        reduced.controller.setParticlePreview(true)
+        reduced.controller.applyPresentation(reduced.state, now: 0, reduceMotion: true)
+        XCTAssertEqual(reduced.motion.overlayDeparture, 0, "Reduce Motion appears without travel")
+        reduced.controller.setParticlePreview(false)
+        reduced.controller.applyPresentation(reduced.state, now: 0.01, reduceMotion: true)
+        XCTAssertEqual(reduced.motion.overlayDeparture, 1)
+    }
+
     private func assertAligned(_ scene: Scene, reduceMotion: Bool = false, file: StaticString = #filePath, line: UInt = #line) {
         let departure = scene.motion.overlayDeparture
         XCTAssertEqual(scene.motion.pillDeparture, departure, accuracy: 0.001, file: file, line: line)
@@ -290,5 +357,8 @@ final class OverlayPresentationMotionTests: XCTestCase {
             (Mirror(reflecting: pill).children.first { $0.label == "surfaceContainerView" }?.value as? NSView)?.alphaValue ?? -1
         }
         func stop() { card?.stop(); pill.hide(animated: false); renderer.transition(to: nil) }
+        var theme: ParticleFieldRenderer.Theme? {
+            Mirror(reflecting: renderer).children.first { $0.label == "currentTheme" }?.value as? ParticleFieldRenderer.Theme
+        }
     }
 }

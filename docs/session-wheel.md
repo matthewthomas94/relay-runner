@@ -40,7 +40,14 @@ sessions. An overflow session fills a top slot when one becomes free.
   across the two thirds of its outer arc nearest the sessions, and **Keep Awake**
   in the left third. Click or drag anywhere along the slider: the thumb follows the
   pointer's travel around the wheel and stops at 10% and 100% instead of wrapping.
-  The particle overlay updates while dragging; the final value is saved to
+  Hovering the slider animates in the message-playback particle field at the current
+  intensity, even when the overlay is idle, as a preview. It stays up while dragging,
+  including when the pointer drifts off the arc, and follows the value live. Leaving
+  the slider, releasing a drag elsewhere, or dismissing the wheel animates it away and
+  restores the real overlay. The preview only changes the particles: it shows no reply
+  pill, plays nothing, pauses no media, and never covers a real recording or playback
+  field, which keeps its own theme. It respects Reduce Motion and the Particle field
+  setting. The final value is saved to
   `awareness.glow_intensity` (0.1–1.0 in 0.05 steps) when the drag ends, so
   **Settings → Awareness → Intensity** shows the same value, even while Settings is
   open, unless it holds its own unsaved intensity edit. A drag keeps the
@@ -50,9 +57,10 @@ sessions. An overflow session fills a top slot when one becomes free.
   closed, until it is switched off or Relay Runner quits. It is the same control as
   **Settings → General → Startup → Keep Awake**, and it is never saved: every launch
   starts with it off. Turning it on asks for administrator approval through the
-  native macOS prompt. The cup icon fills and turns green when it is on; an
-  hourglass means approval or restoration is pending, and a warning icon explains a
-  failure in its tooltip. See [Keep Awake](#keep-awake).
+  native macOS prompt. Its lightning bolt is white when off, and fills with the
+  active tray icon's orange (#FF9502) when on; an hourglass means approval or
+  restoration is pending, and a warning icon explains a failure in its tooltip.
+  See [Keep Awake](#keep-awake).
 - Hover a session to reveal three controls on the arc just outside its slot:
   an icon-only **Play / Stop playback / Replay message**, **Record / Stop recording
   and send message**, and **Stop session**. Tooltips and VoiceOver retain these labels.
@@ -124,11 +132,30 @@ four-dot glyph at rest and crossfades between the glyph, X and Back arrow instea
 
 ## Keep Awake
 
-Keep Awake combines an idle-sleep activity with `pmset -a disablesleep 1`, which
-stops closed-lid and idle system sleep. Before turning it on, Relay reads
-`pmset -g`. If another app has already disabled sleep, Relay holds only its idle
-activity and never changes or resets that setting. It reports the external state
-instead of claiming it changed sleep.
+Keep Awake needs two protections to keep media playing with the lid closed:
+
+- Named `PreventUserIdleSystemSleep` and `PreventUserIdleDisplaySleep` IOKit
+  assertions, held for as long as it is on. They stop idle system and display sleep.
+  Relay holds both before it asks for approval or reports on; if either cannot be
+  created, Keep Awake stays off. Holding the display assertion matches Vorssaint's
+  default.
+- `pmset -a disablesleep 1`. Closing the lid ignores assertions, so this
+  system-wide override is what prevents clamshell sleep.
+
+Earlier builds held only an idle-system activity. They also checked `pmset -g`
+only when turning on, and trusted an override another app had already set. When
+that app restored sleep, which clears the override for everyone, Relay still
+reported on and the next lid close slept the Mac.
+
+Before turning it on, Relay reads `pmset -g`. If another app has already disabled
+sleep, Relay holds its assertions and never changes or resets that setting. It
+reports the external state instead of claiming it changed sleep. While on, Relay
+re-reads `pmset -g` every five seconds. An unreadable read is ignored. If sleep has
+been re-enabled, whether the override was another app's or Relay's own, Relay shows
+the pending state and asks for administrator approval to disable sleep again. Its
+own lease stays in place, so no earlier watchdog restores early. Once approved, Relay
+owns the override and restores it when switched off. A canceled or failed takeover
+turns Keep Awake off with an explanation instead of leaving a false on state.
 
 Otherwise, Relay first writes a recovery record and a lease file under
 `~/Library/Application Support/relay-runner/`. It then runs one fixed
@@ -139,7 +166,7 @@ exits, including after a crash or update relaunch. Switching Keep Awake off or
 quitting deletes the lease, so neither needs a second prompt. Relay reports a
 change only after `pmset -g` confirms it. A canceled prompt, failed or timed-out
 command, or unchanged setting leaves Keep Awake off with an explanation, and never
-falls back to the idle activity alone. Changes are serialized. Clicks while a change
+falls back to the assertions alone. Changes are serialized. Clicks while a change
 is pending are ignored. Quit cancels a pending prompt but still reads `pmset -g`
 for up to two seconds to confirm the restore before it clears the recovery record.
 
@@ -154,8 +181,10 @@ command.
 The behavior was compared with
 [Vorssaint's KeepAwakeManager at commit 5d1ffa07](https://github.com/vorssaint/vorssaint-utils/blob/5d1ffa07c83665c83123fdf734a70843cd1f8771/Sources/Vorssaint/Services/KeepAwakeManager.swift)
 (ownership recorded before mutation, serialized enable and restore, restoration at
-quit). Relay replaces Vorssaint's sudoers setup with a one-time prompt and a
-lease-bound watchdog, and no source is vendored.
+quit, and independent system and display assertions in `applyAssertions`). Relay
+replaces Vorssaint's sudoers setup with a one-time prompt and a lease-bound watchdog,
+and no source is vendored. Vorssaint also requests sleep after restoring while the
+lid is already closed; that cleanup step is not part of this control.
 
 ## Input and lifecycle
 
@@ -194,7 +223,8 @@ env -u SDKROOT swift test --filter 'FourFingerTapGestureTests|SessionWheelTests|
 ```
 
 Run `KeepAwakeControllerTests|ConfigManagerTests|GeneralConfigTests` for Keep
-Awake and intensity persistence. They use an in-memory pmset and approval fake.
+Awake and intensity persistence, and `OverlayPresentationMotionTests` for the
+slider's particle preview. They use an in-memory pmset and approval fake.
 They never show an administrator prompt or change this Mac's power settings.
 
 Set `RELAY_WHEEL_RENDER_DIR` to an output directory to export SwiftUI previews
@@ -209,10 +239,22 @@ control, start a project from a later page, replay a background session's reply,
 record and send to each provider, stop one session while the others continue, and
 repeat after sleep or reconnecting a trackpad. Drag the intensity slider past
 both ends while watching the particle field, then reopen Settings.
-Keep Awake requires its own manual checks. Turn it on and approve, then cancel the
-prompt on another attempt. Confirm `pmset -g` shows `SleepDisabled 1` only while
-it is on. Close the lid with no external display attached, on battery and on power,
-and confirm the Mac stays awake and reachable. Switch it off, quit, and force-quit while it
-is on; `SleepDisabled` must return to `0` without another prompt each time.
-Automated tests and rendered fixtures do not establish those hardware, privileged,
-closed-lid, and audible outcomes.
+Keep Awake requires its own manual checks. Automated tests and rendered fixtures
+cover the controller's ordering, monitoring, takeover, and cleanup with fakes. They
+do not establish hardware, privileged, closed-lid, or audible outcomes. The
+closed-lid playback fix is pending the user's physical retest:
+
+1. Quit Vorssaint, or turn its Keep Awake off, and confirm `pmset -g` shows
+   `SleepDisabled 0`.
+2. Turn on Keep Awake from the wheel and approve the prompt. The bolt turns orange.
+3. Confirm `pmset -g` shows `SleepDisabled 1`, and
+   `pmset -g assertions | grep "Keep Awake is on in Relay Runner"` lists both
+   `PreventUserIdleSystemSleep` and `PreventUserIdleDisplaySleep`.
+4. Play the same video used in the failed test. Close the lid for at least 30
+   seconds, reopen it, and confirm playback continued throughout.
+5. Turn Keep Awake off: both assertions disappear and `SleepDisabled` returns to `0`
+   without another prompt. Turn it on again and quit Relay Runner; the result
+   must be the same.
+
+Also cancel the prompt on another attempt, and force-quit while it is on;
+`SleepDisabled` must return to `0` each time.
