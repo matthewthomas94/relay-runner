@@ -418,6 +418,20 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(snapshot.summary.query, "summary")
     }
 
+    func testDaemonErrorMessageReadsOnlyTheDaemonEnvelope() {
+        let conflict = "materialized .orchestrator was edited manually (added: .DS_Store); use explicit Save/import"
+        XCTAssertEqual(
+            OrchestratorClientError.badStatus(
+                409, #"{"error":"\#(conflict)","error_code":"materialization_conflict","retryable":false}"#
+            ).daemonErrorMessage,
+            conflict
+        )
+        XCTAssertNil(OrchestratorClientError.badStatus(500, "Internal Server Error").daemonErrorMessage)
+        XCTAssertNil(OrchestratorClientError.badStatus(500, #"{"error":"   "}"#).daemonErrorMessage)
+        XCTAssertNil(OrchestratorClientError.badStatus(503, #"{"retryable":true}"#).daemonErrorMessage)
+        XCTAssertNil(OrchestratorClientError.timedOut.daemonErrorMessage)
+    }
+
     func testProgramDashboardDoesNotRetryUnmarkedServiceFailures() async throws {
         let failures: [OrchestratorClientError] = [
             .badStatus(503, #"{"error":"unavailable","retryable":false}"#),
