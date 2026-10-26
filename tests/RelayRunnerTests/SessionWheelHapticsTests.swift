@@ -16,14 +16,14 @@ final class SessionWheelHapticsTests: XCTestCase {
 
         haptics.hover(.slot(0), at: CGPoint(x: 10, y: 0))
         haptics.hover(.slot(0), at: CGPoint(x: 20, y: 0))
-        XCTAssertEqual(pulses, [.alignment])
+        XCTAssertEqual(pulses, [.generic])
         time += 0.02
         haptics.hover(.slot(1), at: CGPoint(x: 30, y: 0))
         time += 1
         haptics.hover(.slot(1), at: CGPoint(x: 31, y: 0))
-        XCTAssertEqual(pulses, [.alignment], "A suppressed tick is never queued for later")
+        XCTAssertEqual(pulses, [.generic], "A suppressed tick is never queued for later")
         haptics.hover(.action(slot: 1, index: 0), at: CGPoint(x: 40, y: 0))
-        XCTAssertEqual(pulses, [.alignment, .alignment])
+        XCTAssertEqual(pulses, [.generic, .generic])
 
         time += 1
         haptics.hover(.action(slot: 1, index: 1), at: CGPoint(x: 40, y: 0))
@@ -54,7 +54,7 @@ final class SessionWheelHapticsTests: XCTestCase {
         XCTAssertEqual(pulses, [.generic], "Do not echo a hover immediately after activation")
         time += 1
         haptics.hover(.center, at: CGPoint(x: 2, y: 0))
-        XCTAssertEqual(pulses, [.generic, .alignment])
+        XCTAssertEqual(pulses, [.generic, .generic])
         enabled = false
         haptics.activate()
         time += 1
