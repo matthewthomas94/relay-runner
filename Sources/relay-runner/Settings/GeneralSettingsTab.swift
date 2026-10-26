@@ -190,6 +190,10 @@ struct GeneralSettingsTab: View {
             SettingsActionButton(title: state.actionTitle, systemImage: "moon.zzz", helpText: state.status) {
                 keepAwake.toggle()
             }
+        } else if state == .awaitingApproval {
+            SettingsActionButton(title: state.actionTitle, systemImage: "xmark", helpText: state.status) {
+                keepAwake.toggle()
+            }
         } else {
             // Reflects only confirmed state; pending changes disable the switch.
             Toggle(KeepAwakeState.label, isOn: Binding(get: { state.isOn }, set: { _ in keepAwake.toggle() }))

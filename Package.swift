@@ -18,6 +18,10 @@ let package = Package(
             name: "RelayRemoteProtocol",
             path: "Sources/RelayRemoteProtocol"
         ),
+        .target(
+            name: "RelayPowerHelperProtocol",
+            path: "Sources/RelayPowerHelperProtocol"
+        ),
         .executableTarget(
             name: "relay-runner",
             dependencies: [
@@ -25,6 +29,7 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
                 .product(name: "TOMLKit", package: "TOMLKit"),
+                .target(name: "RelayPowerHelperProtocol"),
             ],
             path: "Sources/relay-runner",
             resources: [
@@ -47,6 +52,11 @@ let package = Package(
             name: "relay-remote-shell",
             path: "Sources/relay-remote-shell"
         ),
+        .executableTarget(
+            name: "relay-power-helper",
+            dependencies: [.target(name: "RelayPowerHelperProtocol")],
+            path: "Sources/relay-power-helper"
+        ),
         .testTarget(
             name: "RelayRemoteShellTests",
             dependencies: [.target(name: "relay-remote-shell")],
@@ -64,6 +74,7 @@ let package = Package(
                 .target(name: "relay-runner"),
                 .target(name: "relay-actions-mcp"),
                 .target(name: "relay-orchestrator-mcp"),
+                .target(name: "relay-power-helper"),
                 .target(name: "relay-remote-shell"),
                 .target(name: "relay-vision-mcp"),
             ],

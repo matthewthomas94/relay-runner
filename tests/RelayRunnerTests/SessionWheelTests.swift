@@ -1082,6 +1082,47 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(pulses.count, 2)
     }
 
+    func testKeepAwakeGlyphUsesAFilledBoltAndSwapsOnlyForPendingApprovalAndFailures() {
+        typealias Look = SessionWheelKeepAwakeGlyph.Look
+        let off = Look(.off)
+        let on = Look(.on(ownsSleepSetting: true))
+        XCTAssertEqual(off.symbol, "bolt.fill")
+        XCTAssertEqual(on.symbol, "bolt.fill")
+        XCTAssertEqual(Look(.on(ownsSleepSetting: false)), on)
+        XCTAssertEqual(off.tint, .off)
+        XCTAssertEqual(on.tint, .on)
+        XCTAssertEqual(on.color, ProgramBoardStyle.activeTrayOrange)
+        XCTAssertEqual(off.color, .white)
+        XCTAssertFalse(off.swapsSymbol(to: on), "Off and on only retint the same bolt")
+        XCTAssertFalse(on.swapsSymbol(to: off))
+        for state in [KeepAwakeState.enabling, .disabling, .awaitingApproval, .failed("x"), .restoreNeeded("x")] {
+            XCTAssertTrue(off.swapsSymbol(to: Look(state)), "\(state)")
+            XCTAssertTrue(Look(state).swapsSymbol(to: on), "\(state)")
+            XCTAssertNotEqual(Look(state).tint, .on, "Only a confirmed on state is orange")
+        }
+        XCTAssertEqual(Look(.enabling), Look(.disabling))
+        XCTAssertNotEqual(Look(.awaitingApproval).symbol, Look(.enabling).symbol, "Approval is distinct from a pending change")
+        XCTAssertEqual(Look(.restoreNeeded("x")).tint, .alert)
+        XCTAssertNotEqual(Look(.failed("x")).symbol, Look(.restoreNeeded("x")).symbol)
+        for state in [KeepAwakeState.off, .enabling, .awaitingApproval, .on(ownsSleepSetting: true), .failed("x"), .restoreNeeded("x")] {
+            XCTAssertNotNil(NSImage(systemSymbolName: Look(state).symbol, accessibilityDescription: nil), "\(state)")
+        }
+
+        // A swap runs its exit, then its entrance, within one change duration (≈225 ms).
+        let swap = SessionWheelKeepAwakeGlyph.exitDuration + SessionWheelKeepAwakeGlyph.enterDuration
+        XCTAssertEqual(swap, RelayMotion.changeDuration, accuracy: 0.0001)
+        XCTAssertGreaterThanOrEqual(swap, 0.15)
+        XCTAssertLessThanOrEqual(swap, 0.23)
+        XCTAssertLessThan(SessionWheelKeepAwakeGlyph.exitDuration, SessionWheelKeepAwakeGlyph.enterDuration,
+                          "Exits are quicker than entrances")
+        let style = SessionWheelKeepAwakeGlyph.hiddenStyle
+        XCTAssertGreaterThan(style.hiddenScale, 0.5, "Never animates from nothing")
+        XCTAssertEqual(style.scale(hidden: true, reduceMotion: true), 1, "Reduce Motion fades without scaling")
+        XCTAssertEqual(style.blur(hidden: true, reduceMotion: true), 0, "Reduce Motion fades without blur")
+        XCTAssertEqual(style.scale(hidden: false, reduceMotion: false), 1)
+        XCTAssertEqual(style.blur(hidden: false, reduceMotion: false), 0)
+    }
+
     /// Set RELAY_WHEEL_RENDER_DIR to export the actual SwiftUI view for visual QA.
     @MainActor
     func testWheelRendering() throws {
@@ -1099,7 +1140,8 @@ final class SessionWheelTests: XCTestCase {
                       "design-recording", "design-idle", "design-play", "design-playback",
                       "shortcuts-empty", "notes-idle", "notes-recording", "notes-paused", "notes-saving",
                       "more-sessions", "all-sessions",
-                      "settings-min", "settings-max", "settings-keep-awake-on", "settings-keep-awake-pending",
+                      "settings-min", "settings-max", "settings-keep-awake-off", "settings-keep-awake-on",
+                      "settings-keep-awake-pending", "settings-keep-awake-approval", "settings-keep-awake-failed",
                       "settings-restore", "settings-particles-off", "settings-dragging"]
             + (0..<geometry.slotCount).map({ "contour-\($0)" }) {
             switch state {
@@ -1132,7 +1174,8 @@ final class SessionWheelTests: XCTestCase {
                     : state == "notes-paused" ? .paused
                     : state == "notes-saving" ? .transcribing : .idle
                 model.hover(at: geometry.position(slot: SessionWheelShortcut.noteTaker.rawValue, radius: 119))
-            case "settings-min", "settings-max", "settings-keep-awake-on", "settings-keep-awake-pending",
+            case "settings-min", "settings-max", "settings-keep-awake-off", "settings-keep-awake-on",
+                 "settings-keep-awake-pending", "settings-keep-awake-approval", "settings-keep-awake-failed",
                  "settings-restore", "settings-particles-off", "settings-dragging":
                 model.reset(at: geometry.center)
                 model.notePhase = .idle
@@ -1140,11 +1183,14 @@ final class SessionWheelTests: XCTestCase {
                 model.particleIntensity = state == "settings-min" ? 0.1 : state == "settings-max" ? 1.0 : 0.6
                 model.keepAwake = state == "settings-keep-awake-on" ? .on(ownsSleepSetting: true)
                     : state == "settings-keep-awake-pending" ? .enabling
+                    : state == "settings-keep-awake-approval" ? .awaitingApproval
+                    : state == "settings-keep-awake-failed" ? .failed(KeepAwakePowerHelper.missingMessage)
                     : state == "settings-restore" ? .restoreNeeded("Restore") : .off
                 let slot = SessionWheelShortcut.settings.rawValue
                 model.hover(at: geometry.position(slot: slot, radius: 119))
+                let hoversKeepAwake = ["settings-keep-awake-off", "settings-keep-awake-on"].contains(state)
                 model.hover(at: geometry.position(slot: slot, radius: geometry.actionRadius,
-                                                  offset: geometry.actionOffset(state == "settings-keep-awake-on" ? 2 : 0)))
+                                                  offset: geometry.actionOffset(hoversKeepAwake ? 2 : 0)))
                 if state == "settings-dragging" {
                     model.adjustIntensity(to: geometry.position(slot: slot, radius: geometry.actionRadius,
                                                                 offset: -geometry.sliceAngle / 6))
