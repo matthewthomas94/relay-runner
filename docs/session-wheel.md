@@ -161,7 +161,7 @@ lease-bound watchdog, and no source is vendored.
 
 **Settings → General → Session wheel → Wheel haptics** is on by default. On a
 Force Touch trackpad, moving into an enabled cell, center, or submenu control gives
-an alignment tick; accepted actions give a confirmation pulse. Hover ticks have an
+a firm generic pulse; accepted actions give the same generic confirmation. Hover ticks have an
 80 ms cooldown and do not repeat while staying on a control. Gaps, disabled
 controls, background refreshes, and opening under a stationary pointer stay silent.
 Feedback uses the current macOS haptic performer and respects system preferences;

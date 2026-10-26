@@ -52,7 +52,7 @@ final class SessionWheelHaptics {
         let time = now()
         guard lastFeedbackTime.map({ time - $0 >= 0.08 }) ?? true else { return }
         lastFeedbackTime = time
-        perform(.alignment)
+        perform(.generic)
     }
 
     func activate() {
