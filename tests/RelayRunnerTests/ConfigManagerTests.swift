@@ -149,6 +149,30 @@ final class ConfigManagerTests: XCTestCase {
         }
     }
 
+    func testWheelIntensitySaveSyncsOpenSettingsDraftAndKeepsOtherEdits() throws {
+        let previous = AppConfig()
+        var saved = previous
+        saved.awareness.glow_intensity = 0.35
+        var draft = previous
+        draft.tts.rate = 1.8
+
+        let merged = try XCTUnwrap(draft.mergingGlowIntensityChange(from: previous, to: saved))
+        XCTAssertEqual(merged.awareness.glow_intensity, 0.35, "Settings shows the wheel's value")
+        XCTAssertEqual(merged.tts.rate, 1.8, "Unrelated unsaved edits survive")
+        var unchangedDraft = merged
+        unchangedDraft.tts.rate = saved.tts.rate
+        XCTAssertEqual(unchangedDraft, saved, "No stale intensity left for Save to revert")
+
+        // An unsaved Settings intensity edit wins over the wheel.
+        draft.awareness.glow_intensity = 0.8
+        XCTAssertEqual(draft.mergingGlowIntensityChange(from: previous, to: saved)?.awareness.glow_intensity, 0.8)
+
+        // Any other change is left to the existing reconciliation.
+        var other = saved
+        other.tts.rate = 1.2
+        XCTAssertNil(draft.mergingGlowIntensityChange(from: previous, to: other))
+    }
+
     func testLegacyMessagePreviewFalseIsIgnoredAndNotSerialized() throws {
         let configDir = temporaryConfigDir()
         let manager = ConfigManager(configDir: configDir)

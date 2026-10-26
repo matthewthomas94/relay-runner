@@ -53,8 +53,9 @@ struct KeepAwakeSystem {
     /// then disables system sleep.
     var disableSleep: (_ lease: URL, _ pid: Int32) -> Approval
     var restoreSleep: () -> Approval
-    /// Ends any in-flight command and refuses new ones (quit).
-    var cancel: () -> Void
+    /// Quit: ends any in-flight administrator approval and refuses new ones.
+    /// `sleepDisabled` stays available so quit can still confirm the restore.
+    var cancelApproval: () -> Void
     var beginActivity: () -> NSObjectProtocol?
     var endActivity: (NSObjectProtocol) -> Void
     var pause: (TimeInterval) -> Void
@@ -142,7 +143,7 @@ final class KeepAwakeController {
         isShutDown = true
         lock.unlock()
         guard !alreadyShutDown else { return }
-        system.cancel()
+        system.cancelApproval()
         endActivity()
         if FileManager.default.fileExists(atPath: recoveryURL.path)
             || FileManager.default.fileExists(atPath: leaseURL.path) {
@@ -267,15 +268,18 @@ final class KeepAwakeController {
     }
 
     /// Deletes the lease, then waits for a readable report that sleep is enabled.
-    /// An unreadable report never counts as restored.
+    /// An unreadable report never counts as restored. The deadline keeps a slow read
+    /// from stretching the wait (quit blocks on it).
     private func releaseLeaseAndConfirm(timeout: TimeInterval = KeepAwakeController.restoreTimeout) -> Bool {
         try? FileManager.default.removeItem(at: leaseURL)
+        let deadline = Date().addingTimeInterval(timeout)
         let attempts = max(1, Int((timeout / Self.restorePollInterval).rounded(.up)))
         for attempt in 0..<attempts {
             if system.sleepDisabled() == false {
                 try? FileManager.default.removeItem(at: recoveryURL)
                 return true
             }
+            guard Date() < deadline else { break }
             if attempt < attempts - 1 { system.pause(Self.restorePollInterval) }
         }
         return false
@@ -393,15 +397,20 @@ final class KeepAwakeCommandRunner {
 }
 
 extension KeepAwakeSystem {
-    static func live(runner: KeepAwakeCommandRunner = KeepAwakeCommandRunner()) -> KeepAwakeSystem {
+    /// Approvals and bounded `pmset -g` reads use separate runners, so canceling
+    /// approval at quit never blocks the reads that confirm the restore.
+    static func live(
+        approvals: KeepAwakeCommandRunner = KeepAwakeCommandRunner(),
+        reads: KeepAwakeCommandRunner = KeepAwakeCommandRunner()
+    ) -> KeepAwakeSystem {
         func approve(_ shell: String) -> Approval {
-            let result = runner.run("/usr/bin/osascript", ["-e", KeepAwakeCommand.appleScript(shell)],
-                                    timeout: KeepAwakeCommand.approvalTimeout)
+            let result = approvals.run("/usr/bin/osascript", ["-e", KeepAwakeCommand.appleScript(shell)],
+                                       timeout: KeepAwakeCommand.approvalTimeout)
             return KeepAwakeCommand.approval(status: result.status, output: result.output)
         }
         return KeepAwakeSystem(
             sleepDisabled: {
-                let result = runner.run("/usr/bin/pmset", ["-g"], timeout: KeepAwakeCommand.readTimeout)
+                let result = reads.run("/usr/bin/pmset", ["-g"], timeout: KeepAwakeCommand.readTimeout)
                 guard result.status == 0 else { return nil }
                 return KeepAwakeCommand.sleepDisabled(inPmsetOutput: result.output)
             },
@@ -410,7 +419,7 @@ extension KeepAwakeSystem {
                 return approve(shell)
             },
             restoreSleep: { approve(KeepAwakeCommand.restoreScript) },
-            cancel: { runner.cancel() },
+            cancelApproval: { approvals.cancel() },
             beginActivity: {
                 ProcessInfo.processInfo.beginActivity(
                     options: [.userInitiated, .idleSystemSleepDisabled],

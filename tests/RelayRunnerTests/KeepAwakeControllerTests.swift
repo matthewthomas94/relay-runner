@@ -6,11 +6,12 @@ extension KeepAwakeSystem {
     /// Never reads or changes host power settings.
     static var inert: KeepAwakeSystem {
         KeepAwakeSystem(sleepDisabled: { nil }, disableSleep: { _, _ in .failed }, restoreSleep: { .failed },
-                        cancel: {}, beginActivity: { nil }, endActivity: { _ in }, pause: { _ in })
+                        cancelApproval: {}, beginActivity: { nil }, endActivity: { _ in }, pause: { _ in })
     }
 }
 
 /// Simulates pmset, the administrator prompt, and the root watchdog in memory.
+/// Like the live runners, canceling refuses approvals but never `pmset -g` reads.
 private final class FakeSleepHost {
     var sleepDisabled: Bool? = false
     var approval: KeepAwakeSystem.Approval = .approved
@@ -21,11 +22,15 @@ private final class FakeSleepHost {
     private(set) var disableCalls: [(lease: URL, pid: Int32, filesExisted: Bool)] = []
     private(set) var restoreCalls = 0
     private(set) var cancelCalls = 0
+    private var approvalsCanceled = false
     private(set) var begun = 0
     private(set) var ended = 0
     private(set) var reads = 0
     private var watchedLease: URL?
     var recoveryURL: URL?
+
+    /// A new process gets fresh command runners; the power setting persists.
+    func relaunch() { approvalsCanceled = false }
 
     var system: KeepAwakeSystem {
         KeepAwakeSystem(
@@ -39,6 +44,7 @@ private final class FakeSleepHost {
                 return sleepDisabled
             },
             disableSleep: { [self] lease, pid in
+                guard !approvalsCanceled else { return .failed }
                 let files = FileManager.default
                 disableCalls.append((lease, pid, files.fileExists(atPath: lease.path)
                     && recoveryURL.map { files.fileExists(atPath: $0.path) } == true))
@@ -47,14 +53,19 @@ private final class FakeSleepHost {
                     sleepDisabled = true
                 }
                 duringApproval()
-                return approval
+                // Quit terminates the in-flight prompt.
+                return approvalsCanceled ? .failed : approval
             },
             restoreSleep: { [self] in
+                guard !approvalsCanceled else { return .failed }
                 restoreCalls += 1
                 if restoreApproval == .approved { sleepDisabled = false }
                 return restoreApproval
             },
-            cancel: { [self] in cancelCalls += 1 },
+            cancelApproval: { [self] in
+                cancelCalls += 1
+                approvalsCanceled = true
+            },
             beginActivity: { [self] in
                 begun += 1
                 return NSObject()
@@ -253,11 +264,19 @@ final class KeepAwakeControllerTests: XCTestCase {
     func testQuitWhileOnReleasesSynchronouslyOnce() {
         let controller = makeController()
         controller.toggle()
+        let readsBeforeQuit = host.reads
         controller.shutdown()
         XCTAssertEqual(controller.state, .off)
         XCTAssertEqual(host.sleepDisabled, false)
+        XCTAssertGreaterThan(host.reads, readsBeforeQuit, "Quit confirms the restore after canceling approval")
         XCTAssertEqual(host.ended, 1)
-        XCTAssertFalse(ownershipFilesExist(controller).recovery)
+        XCTAssertFalse(ownershipFilesExist(controller).lease)
+        XCTAssertFalse(ownershipFilesExist(controller).recovery, "A confirmed quit leaves nothing to recover")
+
+        // The next launch has nothing to recover, so it never prompts or touches sleep.
+        let relaunched = makeController()
+        relaunched.recoverIfNeeded()
+        XCTAssertEqual(relaunched.state, .off)
         controller.shutdown()
         XCTAssertEqual(host.cancelCalls, 1)
         XCTAssertEqual(host.ended, 1)
@@ -271,6 +290,7 @@ final class KeepAwakeControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .off)
         XCTAssertTrue(ownershipFilesExist(controller).recovery)
 
+        host.relaunch()
         let relaunched = makeController()
         relaunched.recoverIfNeeded()
         guard case .restoreNeeded = relaunched.state else { return XCTFail("\(relaunched.state)") }
@@ -340,6 +360,15 @@ final class KeepAwakeControllerTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 3)
         runner.cancel()
         XCTAssertNil(runner.run("/bin/echo", ["late"], timeout: 5).status)
+    }
+
+    func testCancelingApprovalKeepsLiveReadsAvailable() {
+        let approvals = KeepAwakeCommandRunner()
+        let reads = KeepAwakeCommandRunner()
+        let system = KeepAwakeSystem.live(approvals: approvals, reads: reads)
+        system.cancelApproval()
+        XCTAssertNil(approvals.run("/bin/echo", ["late"], timeout: 5).status)
+        XCTAssertEqual(reads.run("/bin/echo", ["SleepDisabled 0"], timeout: 5).status, 0)
     }
 
     func testStatusTextIsTruthfulForEveryState() {

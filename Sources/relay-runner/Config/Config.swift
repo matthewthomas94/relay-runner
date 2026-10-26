@@ -22,6 +22,19 @@ struct AppConfig: Codable, Equatable {
         }
         return draft
     }
+
+    /// The session wheel saves particle intensity immediately. Returns nil for any other
+    /// change; otherwise adopts the new value unless the draft holds its own unsaved one.
+    func mergingGlowIntensityChange(from previous: AppConfig, to saved: AppConfig) -> AppConfig? {
+        var intensityOnly = previous
+        intensityOnly.awareness.glow_intensity = saved.awareness.glow_intensity
+        guard intensityOnly == saved else { return nil }
+        var draft = self
+        if draft.awareness.glow_intensity == previous.awareness.glow_intensity {
+            draft.awareness.glow_intensity = saved.awareness.glow_intensity
+        }
+        return draft
+    }
 }
 
 struct SttConfig: Codable, Equatable {

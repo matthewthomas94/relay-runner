@@ -42,7 +42,8 @@ sessions. An overflow session fills a top slot when one becomes free.
   pointer's travel around the wheel and stops at 10% and 100% instead of wrapping.
   The particle overlay updates while dragging; the final value is saved to
   `awareness.glow_intensity` (0.1–1.0 in 0.05 steps) when the drag ends, so
-  **Settings → Awareness → Intensity** shows the same value. A drag keeps the
+  **Settings → Awareness → Intensity** shows the same value, even while Settings is
+  open, unless it holds its own unsaved intensity edit. A drag keeps the
   submenu open wherever the pointer goes. The slider is disabled while the particle
   field is off. VoiceOver exposes it as an adjustable control with a percentage.
 - **Keep Awake** keeps the Mac awake, including idle periods and with the lid
@@ -139,7 +140,8 @@ quitting deletes the lease, so neither needs a second prompt. Relay reports a
 change only after `pmset -g` confirms it. A canceled prompt, failed or timed-out
 command, or unchanged setting leaves Keep Awake off with an explanation, and never
 falls back to the idle activity alone. Changes are serialized. Clicks while a change
-is pending are ignored, and quit cancels a pending prompt.
+is pending are ignored. Quit cancels a pending prompt but still reads `pmset -g`
+for up to two seconds to confirm the restore before it clears the recovery record.
 
 Relay removes the recovery record only after it confirms sleep was restored. If
 restoration cannot be confirmed, or a record survives into the next launch while
