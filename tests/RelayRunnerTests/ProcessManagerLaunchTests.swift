@@ -889,4 +889,31 @@ final class ProcessManagerLaunchTests: XCTestCase {
             ]
         )
     }
+
+    func testProviderTurnStoreIsProviderNeutral() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("provider-turns-\(UUID().uuidString).json")
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: url)
+        }
+        try """
+        {
+          "schema_version": 2,
+          "records": [
+            { "state": "completed_final", "provider": "codex", "provider_session_id": "current" },
+            { "state": "active", "provider": "claude", "provider_session_id": "other" }
+          ]
+        }
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(ProcessManager.providerTurnActive(providerTurnsURL: url))
+        XCTAssertFalse(ProcessManager.providerTurnActive(
+            providerTurnsURL: url,
+            providerSessionID: "current"
+        ))
+        XCTAssertTrue(ProcessManager.providerTurnActive(
+            providerTurnsURL: url,
+            providerSessionID: "other"
+        ))
+    }
 }

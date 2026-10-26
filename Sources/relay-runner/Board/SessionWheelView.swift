@@ -10,6 +10,10 @@ struct SessionWheelView: View {
     var performNoteAction: (SessionWheelNoteAction) -> Void = { _ in }
     var recordingLevel: (String) -> Float = { _ in 0 }
     var hoverFeedback: (CGPoint?, SessionWheelHaptics.Target?) -> Void = { _, _ in }
+    var adjustIntensity: (CGPoint) -> Void = { _ in }
+    var finishIntensity: () -> Void = {}
+    var stepIntensity: (Int) -> Void = { _ in }
+    var performKeepAwake: () -> Void = {}
     var presentation = SessionWheelPresentation()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
@@ -17,6 +21,7 @@ struct SessionWheelView: View {
     @State var menuMotion = SessionWheelMenuMotion()
 
     private let geometry = SessionWheelGeometry.self
+    static let coordinateSpace = "session-wheel"
     private var pageID: Int { model.pageID }
     private var submenuSlot: Int? { model.submenuSlot }
 
@@ -83,6 +88,18 @@ struct SessionWheelView: View {
                         .accessibilityHidden(!model.isHoveringNoteTaker)
                         .transition(.identity)
                         .transaction { $0.animation = nil }
+                    } else if index == SessionWheelIntensity.slot,
+                              menu.shortcut(at: index) == .settings, frame.progress > 0 {
+                        ZStack {
+                            intensitySlider
+                            keepAwakeButton
+                        }
+                        .scaleEffect(frame.scale)
+                        .opacity(frame.controlsOpacity)
+                        .allowsHitTesting(model.isHoveringSettings && (reduceMotion || frame.progress >= 0.95))
+                        .accessibilityHidden(!model.isHoveringSettings)
+                        .transition(.identity)
+                        .transaction { $0.animation = nil }
                     } else if let session = model.slots[index] ?? menu.sessions[index], frame.progress > 0 {
                         ZStack {
                             ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
@@ -111,12 +128,15 @@ struct SessionWheelView: View {
                 }
         }
         .frame(width: geometry.diameter, height: geometry.diameter)
+        .coordinateSpace(name: Self.coordinateSpace)
         .opacity(presentation.opacity)
         .foregroundStyle(ProgramBoardStyle.primaryText)
         .preferredColorScheme(.dark)
         .onContinuousHover { phase in
             switch phase {
             case .active(let point):
+                // A slider drag owns the pointer: no hover changes or ticks until it ends.
+                guard !model.isAdjustingIntensity else { return }
                 model.hover(at: point)
                 var target = SessionWheelHaptics.target(at: point, model: model)
                 if menuMotion.motion.isAnimating || menu.identity != SessionWheelMenu(model).identity
@@ -128,6 +148,7 @@ struct SessionWheelView: View {
                 }
                 hoverFeedback(point, target)
             case .ended:
+                guard !model.isAdjustingIntensity else { return }
                 model.clearHover()
                 hoverFeedback(nil, nil)
             }
@@ -216,6 +237,7 @@ struct SessionWheelView: View {
         .accessibilityHint(moreProjects ? "Next project wheel" : moreSessions ? "Show all active sessions"
             : pickingProject ? "Start session" : shortcut == .noteTaker
             ? "Open Notetaker. Move outward for recording controls."
+            : shortcut == .settings ? "Open Settings. Move outward for particle intensity and Keep Awake."
             : shortcut != nil ? "Open \(title)" : session == nil ? "Choose a project" : sessionHint)
         .accessibilityAction {
             guard pageID == page else { return }
@@ -228,6 +250,9 @@ struct SessionWheelView: View {
                         Button(action.title(for: model.notePhase)) { performNoteAction(action) }
                     }
                 }
+            }
+            if shortcut == .settings, !model.keepAwake.isPending {
+                Button(model.keepAwake.actionTitle) { performKeepAwake() }
             }
             if !pickingProject, let session {
                 ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
@@ -263,12 +288,91 @@ struct SessionWheelView: View {
         }
     }
 
+    private var intensitySlider: some View {
+        let slot = SessionWheelIntensity.slot
+        let enabled = model.particleFieldEnabled
+        let value = model.particleIntensity
+        let presentation = ProgramBoardInteractionPresentation.resolve(
+            surface: .control, isEnabled: enabled,
+            isHovered: model.hoveredSettingsControl == .intensity || model.isAdjustingIntensity,
+            reduceMotion: reduceMotion
+        )
+        let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
+                                       outerRadius: geometry.actionOuterRadius,
+                                       subdivision: SessionWheelSettingsControl.intensity.rawValue,
+                                       span: SessionWheelSettingsControl.intensity.span)
+        let thumb = SessionWheelIntensity.angle(for: value)
+        let highEnd = CGFloat(slot) * geometry.sliceAngle
+        let lowEnd = highEnd + geometry.sliceAngle * 2 / 3
+        // The value sits in the larger side of the thumb, so the two never overlap.
+        let edge = geometry.segmentGap / geometry.actionRadius
+        let labelAngle = value >= 0.55 ? (thumb + lowEnd - edge) / 2 : (thumb + highEnd + edge) / 2
+        let labelOffset = labelAngle - highEnd - geometry.sliceAngle / 2
+        let percent = SessionWheelIntensity.percent(value)
+        let foreground = enabled ? ProgramBoardStyle.primaryText
+            : (contrast == .increased ? ProgramBoardStyle.disabledText : ProgramBoardStyle.mutedText.opacity(0.5))
+        return ZStack {
+            controlBackground(shape, presentation: presentation)
+            shape.fill(.white.opacity(enabled ? (contrast == .increased ? 0.22 : 0.1) : 0.04))
+                .mask(SessionWheelWedge(from: thumb, to: lowEnd))
+            SessionWheelThumb(angle: thumb)
+                .stroke(foreground, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+            Text(percent)
+                .font(AppTypography.font(.action, size: 10))
+                .monospacedDigit()
+                .foregroundStyle(foreground)
+                .frame(width: 40, height: geometry.actionLabelSize.height)
+                .rotationEffect(.radians(geometry.labelRotation(slot: slot, offset: labelOffset)))
+                .position(geometry.position(slot: slot, radius: geometry.actionRadius, offset: labelOffset))
+        }
+        .contentShape(shape)
+        .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.coordinateSpace))
+            .onChanged { adjustIntensity($0.location) }
+            .onEnded { _ in finishIntensity() })
+        .allowsHitTesting(enabled)
+        .animation(presentation.animation, value: presentation)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Particle intensity")
+        .accessibilityValue(AwarenessSettingsTab.particleIntensityAccessibilityValue(value))
+        .accessibilityHint(enabled ? "Drag along the arc to adjust" : "Turn on Particle field in Settings to adjust")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: stepIntensity(1)
+            case .decrement: stepIntensity(-1)
+            @unknown default: break
+            }
+        }
+        .help(enabled ? "Particle intensity \(percent)" : "Turn on Particle field in Settings to adjust intensity")
+    }
+
+    private var keepAwakeButton: some View {
+        let state = model.keepAwake
+        let symbol: String
+        let tint: Color?
+        switch state {
+        case .on: symbol = "cup.and.saucer.fill"; tint = ProgramBoardStyle.green
+        case .enabling, .disabling: symbol = "hourglass"; tint = nil
+        case .failed: symbol = "exclamationmark.triangle"; tint = nil
+        case .restoreNeeded: symbol = "exclamationmark.triangle.fill"; tint = ProgramBoardStyle.red
+        case .off: symbol = "cup.and.saucer"; tint = nil
+        }
+        return submenuButton(index: SessionWheelSettingsControl.keepAwake.rawValue, slot: SessionWheelIntensity.slot,
+                             title: state.isPending ? state.status : state.actionTitle,
+                             help: "\(KeepAwakeState.label): \(state.status)", symbol: symbol,
+                             // Pending stays legible; the controller ignores clicks until it settles.
+                             enabled: true, hovered: model.hoveredSettingsControl == .keepAwake && !state.isPending,
+                             destructive: false, selected: state.isOn, tint: tint) {
+            guard model.isHoveringSettings else { return }
+            performKeepAwake()
+        }
+    }
+
     private func submenuButton(index: Int, slot: Int, title: String, help: String, symbol: String,
-                               enabled: Bool, hovered: Bool, destructive: Bool,
+                               enabled: Bool, hovered: Bool, destructive: Bool, selected: Bool = false, tint: Color? = nil,
                                level: @escaping () -> Float = { 0 }, perform: @escaping () -> Void) -> some View {
         let isNoteMark = symbol == "checkmark" || symbol == "xmark"
         let presentation = ProgramBoardInteractionPresentation.resolve(
-            surface: .control, isEnabled: enabled,
+            surface: .control, isEnabled: enabled, isSelected: selected,
             isHovered: hovered,
             reduceMotion: reduceMotion
         )
@@ -295,7 +399,7 @@ struct SessionWheelView: View {
                 .frame(width: geometry.actionLabelSize.width, height: geometry.actionLabelSize.height)
                 .foregroundStyle(!enabled
                                  ? (contrast == .increased ? ProgramBoardStyle.disabledText : Color(.sRGB, red: 24 / 255, green: 27 / 255, blue: 33 / 255, opacity: 1))
-                                 : destructive ? ProgramBoardStyle.red : ProgramBoardStyle.primaryText)
+                                 : tint ?? (destructive ? ProgramBoardStyle.red : ProgramBoardStyle.primaryText))
                 .rotationEffect(.radians(geometry.actionLabelRotation(slot: slot, index: index)))
                 .position(geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(index)))
             }
@@ -401,12 +505,14 @@ struct SessionWheelSector: Shape {
     var subdivision: Int?
     var cornerRadius: CGFloat?
     var padding: CGFloat = 0
+    /// Adjacent subdivisions joined into one control.
+    var span = 1
 
     func path(in rect: CGRect) -> Path {
         let innerRadius = self.innerRadius - padding
         let outerRadius = self.outerRadius + padding
         let step = 2 * CGFloat.pi / CGFloat(SessionWheelGeometry.slotCount)
-        let width = subdivision == nil ? step : step / 3
+        let width = subdivision == nil ? step : step / 3 * CGFloat(span)
         let halfGap = SessionWheelGeometry.segmentGap / 2 - padding
         let start = CGFloat(slot) * step - .pi / 2 - step / 2 + CGFloat(subdivision ?? 0) * width
         let end = start + width
@@ -442,6 +548,41 @@ struct SessionWheelSector: Shape {
         path.addArc(center: outerStartCorner, radius: corner,
                     startAngle: .radians(start - .pi / 2), endAngle: .radians(start + outerInset), clockwise: false)
         path.closeSubpath()
+        return path
+    }
+}
+
+/// A pie slice between two `SessionWheelGeometry.angle(at:)` angles, used to mask the slider fill.
+struct SessionWheelWedge: Shape {
+    let from: CGFloat
+    let to: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let offset = -CGFloat.pi / 2 - SessionWheelGeometry.sliceAngle / 2
+        var path = Path()
+        path.move(to: center)
+        path.addArc(center: center, radius: max(rect.width, rect.height), startAngle: .radians(min(from, to) + offset),
+                    endAngle: .radians(max(from, to) + offset), clockwise: false)
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// The slider's radial thumb, inset from both edges of the outer arc.
+struct SessionWheelThumb: Shape {
+    let angle: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let geometry = SessionWheelGeometry.self
+        let screen = angle - .pi / 2 - geometry.sliceAngle / 2
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        func point(_ radius: CGFloat) -> CGPoint {
+            CGPoint(x: center.x + radius * cos(screen), y: center.y + radius * sin(screen))
+        }
+        var path = Path()
+        path.move(to: point(geometry.actionInnerRadius + 7))
+        path.addLine(to: point(geometry.actionOuterRadius - 7))
         return path
     }
 }

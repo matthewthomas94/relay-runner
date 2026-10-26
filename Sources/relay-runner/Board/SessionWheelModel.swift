@@ -114,6 +114,57 @@ enum SessionWheelNoteAction: Int, CaseIterable {
     }
 }
 
+/// Settings' outer arc: a two-subdivision intensity slider, then Keep Awake on the left.
+enum SessionWheelSettingsControl: Int, CaseIterable {
+    case intensity = 0, keepAwake = 2
+
+    init(subdivision: Int) { self = subdivision == 2 ? .keepAwake : .intensity }
+    var span: Int { self == .intensity ? 2 : 1 }
+}
+
+/// Maps the curved slider to `awareness.glow_intensity`. Angles use `SessionWheelGeometry.angle(at:)`:
+/// the slider's high end is nearest the sessions and its low end meets Keep Awake.
+enum SessionWheelIntensity {
+    static let range: ClosedRange<Double> = 0.1...1.0
+    static let step = 0.05
+    static let slot = SessionWheelShortcut.settings.rawValue
+    /// Keep the thumb clear of the rounded ends.
+    static let inset = (SessionWheelGeometry.segmentGap + 8) / SessionWheelGeometry.actionRadius
+    static var maxAngle: CGFloat { CGFloat(slot) * SessionWheelGeometry.sliceAngle + inset }
+    static var minAngle: CGFloat { CGFloat(slot) * SessionWheelGeometry.sliceAngle + SessionWheelGeometry.sliceAngle * 2 / 3 - inset }
+
+    static func quantized(_ value: Double) -> Double {
+        let clamped = min(max(value, range.lowerBound), range.upperBound)
+        return ((clamped / step).rounded() * step * 100).rounded() / 100
+    }
+
+    static func clamped(angle: CGFloat) -> CGFloat {
+        min(max(angle, maxAngle), minAngle)
+    }
+
+    static func value(forAngle angle: CGFloat) -> Double {
+        let fraction = Double((minAngle - clamped(angle: angle)) / (minAngle - maxAngle))
+        return quantized(range.lowerBound + fraction * (range.upperBound - range.lowerBound))
+    }
+
+    static func angle(for value: Double) -> CGFloat {
+        let fraction = CGFloat((quantized(value) - range.lowerBound) / (range.upperBound - range.lowerBound))
+        return minAngle - (minAngle - maxAngle) * fraction
+    }
+
+    /// The signed difference from the slider's middle, so a point never wraps to the far end.
+    static func unwrappedAngle(at point: CGPoint) -> CGFloat {
+        let middle = (minAngle + maxAngle) / 2
+        return middle + shortestTurn(from: middle, to: SessionWheelGeometry.angle(at: point))
+    }
+
+    static func shortestTurn(from start: CGFloat, to end: CGFloat) -> CGFloat {
+        atan2(sin(end - start), cos(end - start))
+    }
+
+    static func percent(_ value: Double) -> String { "\(Int((value * 100).rounded()))%" }
+}
+
 enum SessionWheelGeometry {
     static let slotCount = 6
     static let sessionSlots = [0, 1, 5]
@@ -166,7 +217,11 @@ enum SessionWheelGeometry {
     }
 
     static func actionLabelRotation(slot: Int, index: Int) -> CGFloat {
-        let angle = CGFloat(slot) * sliceAngle + actionOffset(index)
+        labelRotation(slot: slot, offset: actionOffset(index))
+    }
+
+    static func labelRotation(slot: Int, offset: CGFloat) -> CGFloat {
+        let angle = CGFloat(slot) * sliceAngle + offset
         return atan2(sin(2 * angle), cos(2 * angle)) / 2
     }
 
@@ -194,6 +249,12 @@ final class SessionWheelModel {
     }
     var projects: [SessionWheelProject] = []
     var notePhase: MeetingNoteCoordinatorPhase = .idle
+    var particleIntensity = 0.6
+    var particleFieldEnabled = true
+    var keepAwake: KeepAwakeState = .off
+    /// A slider drag pins hover so the submenu stays open wherever the pointer travels.
+    private(set) var isAdjustingIntensity = false
+    private var intensityDragAngle: (raw: CGFloat, unwrapped: CGFloat) = (0, 0)
     var isWorkspaceVisible = false
     var notchStatus: NotchSessionStatus = .notWorking
     var workspaceActionTitle: String { isWorkspaceVisible ? "Close workspace" : "Open workspace" }
@@ -215,7 +276,11 @@ final class SessionWheelModel {
     var pageID: Int { pickingProject ? projectPage : showingAllSessions ? -2 : -1 }
     var hasMoreSessions: Bool { sessions.dropFirst(3).contains { $0 != nil } }
     var isHoveringNoteTaker: Bool { !isNested && hoveredSlot == SessionWheelShortcut.noteTaker.rawValue }
-    var submenuSlot: Int? { hoveredSession != nil || isHoveringNoteTaker ? hoveredSlot : nil }
+    var isHoveringSettings: Bool { !isNested && hoveredSlot == SessionWheelShortcut.settings.rawValue }
+    var hoveredSettingsControl: SessionWheelSettingsControl? {
+        isHoveringSettings ? hoveredControl.map(SessionWheelSettingsControl.init(subdivision:)) : nil
+    }
+    var submenuSlot: Int? { hoveredSession != nil || isHoveringNoteTaker || isHoveringSettings ? hoveredSlot : nil }
 
     func shortcut(at index: Int) -> SessionWheelShortcut? {
         isNested ? nil : SessionWheelShortcut(rawValue: index)
@@ -332,6 +397,7 @@ final class SessionWheelModel {
     }
 
     func hover(at pointer: CGPoint) {
+        guard !isAdjustingIntensity else { return }
         if !pointerActivated {
             guard hypot(pointer.x - pointerOrigin.x, pointer.y - pointerOrigin.y) >= 8 else { return }
             pointerActivated = true
@@ -350,6 +416,24 @@ final class SessionWheelModel {
             hoveredControl = min(2, Int(localAngle / (geometry.sliceAngle / 3)))
         }
         // The radial gap retains its parent, so travelling into the submenu is continuous.
+    }
+
+    /// Follows the pointer's angular travel from the previous drag point and clamps it,
+    /// so passing an end or circling the wheel never wraps to the other end.
+    @discardableResult
+    func adjustIntensity(to pointer: CGPoint) -> Double {
+        let raw = SessionWheelGeometry.angle(at: pointer)
+        let unwrapped = isAdjustingIntensity
+            ? intensityDragAngle.unwrapped + SessionWheelIntensity.shortestTurn(from: intensityDragAngle.raw, to: raw)
+            : SessionWheelIntensity.unwrappedAngle(at: pointer)
+        isAdjustingIntensity = true
+        intensityDragAngle = (raw, SessionWheelIntensity.clamped(angle: unwrapped))
+        particleIntensity = SessionWheelIntensity.value(forAngle: intensityDragAngle.unwrapped)
+        return particleIntensity
+    }
+
+    func endAdjustingIntensity() {
+        isAdjustingIntensity = false
     }
 }
 

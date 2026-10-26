@@ -215,7 +215,8 @@ private struct SettingsContent: View {
             refreshAgentVoiceName()
         }
         .onChange(of: appState.config) { oldValue, newValue in
-            draft = draft.mergingCustomVoiceRemoval(from: oldValue, to: newValue)
+            draft = draft.mergingGlowIntensityChange(from: oldValue, to: newValue)
+                ?? draft.mergingCustomVoiceRemoval(from: oldValue, to: newValue)
         }
         .onChange(of: selectedCategory) { _, newValue in
             scrollTarget = newValue
@@ -296,7 +297,8 @@ private struct SettingsContent: View {
             GeneralSettingsTab(
                 config: $draft.general,
                 onOpenExternalWindow: onOpenExternalWindow,
-                projectRegistryAppState: appState
+                projectRegistryAppState: appState,
+                keepAwake: appState.keepAwake
             )
         case .awareness:
             AwarenessSettingsTab(config: $draft.awareness)
