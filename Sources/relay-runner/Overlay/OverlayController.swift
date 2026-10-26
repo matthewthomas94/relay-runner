@@ -100,6 +100,15 @@ final class OverlayController {
         pill.setStackDepth(depth)
     }
 
+    /// The wheel's intensity slider previews the message-playback particles while no
+    /// state shows its own. It never touches the StateMachine, pill, or media.
+    private var previewsParticles = false
+    static let particlePreviewTheme = OverlayState.speaking.particleTheme
+
+    func setParticlePreview(_ active: Bool) {
+        previewsParticles = active
+    }
+
     func updateConfig(_ newConfig: AwarenessConfig) {
         config = newConfig
         particleField.setIntensity(newConfig.glow_intensity)
@@ -382,7 +391,8 @@ final class OverlayController {
             pill.dismissFrontCard()
         }
         let holdsReplyQueue = replyQueueHoldUntil != nil
-        let stateTheme = holdsReplyQueue ? replyQueueHoldTheme : state.particleTheme
+        let stateTheme = (holdsReplyQueue ? replyQueueHoldTheme : state.particleTheme)
+            ?? (previewsParticles ? Self.particlePreviewTheme : nil)
 
         // Particle field
         let particleTheme = voiceMotion.update(

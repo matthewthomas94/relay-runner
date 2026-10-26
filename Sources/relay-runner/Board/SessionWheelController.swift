@@ -15,6 +15,8 @@ final class SessionWheelController {
     /// Live particle preview while dragging; `commitIntensity` persists the final value.
     var previewIntensity: ((Double) -> Void)?
     var commitIntensity: ((Double) -> Void)?
+    /// True while the slider is hovered or dragged: shows the message-playback particles.
+    var previewParticles: ((Bool) -> Void)?
     var keepAwakeAction: (() -> Bool)?
 
     private var panel: SessionWheelPanel?
@@ -26,6 +28,7 @@ final class SessionWheelController {
     private var screenObserver: NSObjectProtocol?
     private var sleepObservers: [NSObjectProtocol] = []
     private(set) var isVisible = false
+    private(set) var isPreviewingParticles = false
 
     init(haptics: SessionWheelHaptics = SessionWheelHaptics()) {
         self.haptics = haptics
@@ -56,7 +59,7 @@ final class SessionWheelController {
                 recordingLevel: { [weak self] id in self?.recordingLevel?(id) ?? 0 },
                 hoverFeedback: { [weak self] point, target in self?.hoverFeedback(at: point, target: target) },
                 adjustIntensity: { [weak self] in self?.adjustIntensity(to: $0) },
-                finishIntensity: { [weak self] in self?.finishIntensity() },
+                finishIntensity: { [weak self] in self?.finishIntensity(at: $0) },
                 stepIntensity: { [weak self] in self?.stepIntensity($0) },
                 performKeepAwake: { [weak self] in self?.performKeepAwake() },
                 presentation: presentation
@@ -76,6 +79,7 @@ final class SessionWheelController {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.refresh?(self.model, false)
+            self.syncParticlePreview()
         }
         animate(visible: true, panel: panel)
         panel.orderFrontRegardless()
@@ -85,6 +89,7 @@ final class SessionWheelController {
         guard isVisible else { return }
         finishIntensity(confirm: false)
         isVisible = false
+        syncParticlePreview()
         refreshTimer?.invalidate()
         refreshTimer = nil
         for monitor in monitors { NSEvent.removeMonitor(monitor) }
@@ -140,6 +145,7 @@ final class SessionWheelController {
     }
 
     func hoverFeedback(at point: CGPoint?, target: SessionWheelHaptics.Target?) {
+        syncParticlePreview()
         guard isVisible else { return }
         haptics.hover(target, at: point)
     }
@@ -239,14 +245,26 @@ final class SessionWheelController {
         let previous = model.particleIntensity
         let value = model.adjustIntensity(to: point)
         if value != previous { previewIntensity?(value) }
+        syncParticlePreview()
     }
 
     /// One confirmation per drag, never per step; dismissal mid-drag still saves silently.
-    func finishIntensity(confirm: Bool = true) {
+    /// The release point resumes hover, so the preview ends when released off the slider.
+    func finishIntensity(at point: CGPoint? = nil, confirm: Bool = true) {
         guard model.isAdjustingIntensity else { return }
         model.endAdjustingIntensity()
+        if let point { model.hover(at: point) }
         commitIntensity?(model.particleIntensity)
         if confirm { haptics.activate() }
+        syncParticlePreview()
+    }
+
+    /// Reports only changes, so repeated hover ticks never restart the entrance.
+    private func syncParticlePreview() {
+        let previewing = isVisible && model.isPreviewingIntensity
+        guard previewing != isPreviewingParticles else { return }
+        isPreviewingParticles = previewing
+        previewParticles?(previewing)
     }
 
     func stepIntensity(_ direction: Int) {

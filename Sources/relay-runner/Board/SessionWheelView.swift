@@ -11,7 +11,7 @@ struct SessionWheelView: View {
     var recordingLevel: (String) -> Float = { _ in 0 }
     var hoverFeedback: (CGPoint?, SessionWheelHaptics.Target?) -> Void = { _, _ in }
     var adjustIntensity: (CGPoint) -> Void = { _ in }
-    var finishIntensity: () -> Void = {}
+    var finishIntensity: (CGPoint) -> Void = { _ in }
     var stepIntensity: (Int) -> Void = { _ in }
     var performKeepAwake: () -> Void = {}
     var presentation = SessionWheelPresentation()
@@ -328,7 +328,7 @@ struct SessionWheelView: View {
         .contentShape(shape)
         .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.coordinateSpace))
             .onChanged { adjustIntensity($0.location) }
-            .onEnded { _ in finishIntensity() })
+            .onEnded { finishIntensity($0.location) })
         .allowsHitTesting(enabled)
         .animation(presentation.animation, value: presentation)
         .accessibilityElement(children: .ignore)
@@ -350,11 +350,11 @@ struct SessionWheelView: View {
         let symbol: String
         let tint: Color?
         switch state {
-        case .on: symbol = "cup.and.saucer.fill"; tint = ProgramBoardStyle.green
+        case .on: symbol = "bolt.fill"; tint = ProgramBoardStyle.activeTrayOrange
         case .enabling, .disabling: symbol = "hourglass"; tint = nil
         case .failed: symbol = "exclamationmark.triangle"; tint = nil
         case .restoreNeeded: symbol = "exclamationmark.triangle.fill"; tint = ProgramBoardStyle.red
-        case .off: symbol = "cup.and.saucer"; tint = nil
+        case .off: symbol = "bolt"; tint = .white
         }
         return submenuButton(index: SessionWheelSettingsControl.keepAwake.rawValue, slot: SessionWheelIntensity.slot,
                              title: state.isPending ? state.status : state.actionTitle,

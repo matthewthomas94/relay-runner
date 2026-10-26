@@ -996,6 +996,7 @@ final class AppState {
             next.awareness.glow_intensity = value
             self.saveConfig(next)
         }
+        sessionWheel.previewParticles = { [weak self] in self?.overlayController?.setParticlePreview($0) }
         sessionWheel.keepAwakeAction = { [weak self] in self?.keepAwake.toggle() ?? false }
         sessionWheel.focusSession = { [weak self] in self?.switchSessionFromWheel(contextID: $0) }
         sessionWheel.startProject = { [weak self] path in

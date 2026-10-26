@@ -985,6 +985,69 @@ final class SessionWheelTests: XCTestCase {
     }
 
     @MainActor
+    func testSliderHoverAndDragPreviewParticlesUntilReleasedOrDismissed() {
+        _ = NSApplication.shared
+        let controller = SessionWheelController(haptics: .init(perform: { _ in }))
+        defer { controller.dismiss() }
+        var previews: [Bool] = []
+        var values: [Double] = []
+        controller.previewParticles = { previews.append($0) }
+        controller.previewIntensity = { values.append($0) }
+        controller.toggle()
+        let slot = SessionWheelShortcut.settings.rawValue
+        let slider = geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(0))
+        let keepAwake = geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(2))
+        let session = geometry.position(slot: 0, radius: 119)
+        func hover(_ point: CGPoint?) {
+            if let point { controller.model.hover(at: point) } else { controller.model.clearHover() }
+            controller.hoverFeedback(at: point, target: nil)
+        }
+        // The pointer reaches the outer arc through the Settings wedge.
+        func enterSlider() {
+            hover(geometry.position(slot: slot, radius: 119))
+            hover(slider)
+        }
+
+        hover(geometry.position(slot: slot, radius: 119))
+        XCTAssertEqual(previews, [], "Opening Settings alone does not preview")
+        hover(slider)
+        hover(slider)
+        hover(geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(1)))
+        XCTAssertEqual(previews, [true], "Repeated hover ticks never restart the entrance")
+        XCTAssertTrue(values.isEmpty, "Hover previews the current intensity")
+        hover(keepAwake)
+        XCTAssertEqual(previews, [true, false])
+
+        enterSlider()
+        controller.adjustIntensity(to: slider)
+        controller.adjustIntensity(to: session)
+        XCTAssertEqual(previews, [true, false, true], "Dragging off the arc keeps the preview")
+        XCTAssertFalse(values.isEmpty, "Dragging updates the previewed intensity live")
+        controller.finishIntensity(at: session)
+        XCTAssertEqual(previews, [true, false, true, false], "Releasing off the slider ends it")
+        XCTAssertNil(controller.model.submenuSlot)
+
+        enterSlider()
+        controller.adjustIntensity(to: slider)
+        controller.finishIntensity(at: slider)
+        XCTAssertEqual(previews.last, true, "Releasing on the slider keeps hovering it")
+        hover(nil)
+        XCTAssertEqual(previews.last, false)
+
+        controller.model.particleFieldEnabled = false
+        enterSlider()
+        XCTAssertEqual(previews.last, false, "No preview while the particle field is off")
+        controller.model.particleFieldEnabled = true
+        hover(slider)
+        XCTAssertEqual(previews.last, true)
+        let count = previews.count
+        controller.dismiss()
+        XCTAssertEqual(previews.count, count + 1)
+        XCTAssertEqual(previews.last, false, "Dismissal ends the preview")
+        XCTAssertFalse(controller.isPreviewingParticles)
+    }
+
+    @MainActor
     func testKeepAwakeControlKeepsTheWheelOpenAndIgnoresPendingChanges() {
         _ = NSApplication.shared
         var pulses: [NSHapticFeedbackManager.FeedbackPattern] = []

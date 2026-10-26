@@ -1,8 +1,14 @@
 import Foundation
+import IOKit.pwr_mgt
 import Observation
 
 /// Keep Awake lasts until it is switched off or Relay Runner quits, including idle
 /// periods and with the lid closed. It is never persisted: every launch starts off.
+///
+/// Media keeps playing with the lid closed only while two protections hold: Relay's
+/// idle-system and idle-display assertions, and the system-wide `pmset disablesleep`
+/// override (closing the lid ignores assertions). The override is re-checked while on,
+/// because another app restoring sleep clears it for everyone.
 enum KeepAwakeState: Equatable {
     case off
     case enabling
@@ -14,7 +20,7 @@ enum KeepAwakeState: Equatable {
     case restoreNeeded(String)
 
     static let label = "Keep Awake"
-    static let description = "Keep your Mac awake, even with the lid closed, until you turn this off or quit Relay Runner. Turning it on asks for administrator approval."
+    static let description = "Keep your Mac and its display awake, even with the lid closed, until you turn this off or quit Relay Runner. Turning it on asks for administrator approval."
 
     var isOn: Bool {
         if case .on = self { return true }
@@ -36,7 +42,7 @@ enum KeepAwakeState: Equatable {
         case .off: return "Keep Awake is off."
         case .enabling: return "Waiting for administrator approval…"
         case .on(true): return "Keep Awake is on, including with the lid closed."
-        case .on(false): return "Keep Awake is on. Another app had already disabled sleep, so Relay Runner leaves that setting unchanged."
+        case .on(false): return "Keep Awake is on. Another app had already disabled sleep, so Relay Runner leaves that setting to it and asks for approval if sleep is turned back on."
         case .disabling: return "Restoring sleep…"
         case .failed(let message), .restoreNeeded(let message): return message
         }
@@ -56,8 +62,9 @@ struct KeepAwakeSystem {
     /// Quit: ends any in-flight administrator approval and refuses new ones.
     /// `sleepDisabled` stays available so quit can still confirm the restore.
     var cancelApproval: () -> Void
-    var beginActivity: () -> NSObjectProtocol?
-    var endActivity: (NSObjectProtocol) -> Void
+    /// Holds both the idle-system and idle-display sleep assertions; nil unless both are held.
+    var holdAssertions: () -> NSObjectProtocol?
+    var releaseAssertions: (NSObjectProtocol) -> Void
     var pause: (TimeInterval) -> Void
 }
 
@@ -66,6 +73,9 @@ final class KeepAwakeController {
     static let restorePollInterval: TimeInterval = 0.25
     static let restoreTimeout: TimeInterval = 5
     static let quitRestoreTimeout: TimeInterval = 2
+    /// How often an on state re-reads the system-wide sleep override.
+    static let monitorInterval: TimeInterval = 5
+    static let lostSettingContext = "Sleep was turned back on outside Relay Runner. "
 
     private(set) var state: KeepAwakeState = .off
 
@@ -74,11 +84,12 @@ final class KeepAwakeController {
     @ObservationIgnored private let pid: Int32
     @ObservationIgnored private let work: (@escaping () -> Void) -> Void
     @ObservationIgnored private let main: (@escaping () -> Void) -> Void
+    @ObservationIgnored private let schedule: (TimeInterval, @escaping () -> Void) -> Void
     @ObservationIgnored private let log: (String) -> Void
     @ObservationIgnored private let lock = NSLock()
     @ObservationIgnored private var isShutDown = false
     @ObservationIgnored private var generation = 0
-    @ObservationIgnored private var activity: NSObjectProtocol?
+    @ObservationIgnored private var assertions: NSObjectProtocol?
 
     /// Deleting the lease tells the root watchdog to restore sleep.
     var leaseURL: URL { directory.appendingPathComponent("keep-awake-lease") }
@@ -93,6 +104,9 @@ final class KeepAwakeController {
             KeepAwakeController.queue.async(execute: job)
         },
         main: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) },
+        schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void = { delay, job in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: job)
+        },
         log: @escaping (String) -> Void = { NSLog("[RelayRunner] %@", $0) }
     ) {
         self.system = system
@@ -100,6 +114,7 @@ final class KeepAwakeController {
         self.pid = pid
         self.work = work
         self.main = main
+        self.schedule = schedule
         self.log = log
     }
 
@@ -144,7 +159,7 @@ final class KeepAwakeController {
         lock.unlock()
         guard !alreadyShutDown else { return }
         system.cancelApproval()
-        endActivity()
+        releaseAssertions()
         if FileManager.default.fileExists(atPath: recoveryURL.path)
             || FileManager.default.fileExists(atPath: leaseURL.path) {
             if releaseLeaseAndConfirm(timeout: Self.quitRestoreTimeout) {
@@ -157,42 +172,70 @@ final class KeepAwakeController {
     }
 
     private func enable() {
+        // Assertions come first, so nothing reports on without them.
+        if assertions == nil { assertions = system.holdAssertions() }
+        guard assertions != nil else {
+            generation += 1
+            state = .failed("Couldn't keep this Mac awake. Keep Awake is off.")
+            log("Keep Awake could not hold its sleep assertions")
+            return
+        }
         let generation = begin(.enabling)
         work { [self] in
             guard let disabled = system.sleepDisabled() else {
                 finish(generation, .failed("Couldn't read this Mac's sleep settings. Keep Awake is off."))
                 return
             }
-            if disabled {
-                finish(generation, .on(ownsSleepSetting: false))
-                return
-            }
-            // Record ownership before the change, so quit or a crash can always restore it.
-            guard writeOwnershipFiles() else {
-                finish(generation, .failed("Couldn't prepare Keep Awake. Sleep settings weren't changed."))
-                return
-            }
-            let approval = system.disableSleep(leaseURL, pid)
-            if approval == .approved, system.sleepDisabled() == true {
-                finish(generation, .on(ownsSleepSetting: true))
-                return
-            }
-            // A partial change is undone by the watchdog once the lease is gone.
-            if releaseLeaseAndConfirm() {
-                finish(generation, .failed(approval == .canceled
-                    ? "Administrator approval was canceled. Keep Awake is off."
-                    : "Couldn't turn on Keep Awake. Sleep settings weren't changed."))
-            } else {
-                finish(generation, .restoreNeeded(
-                    "Couldn't confirm sleep was restored. Activate Keep Awake to restore it with administrator approval."))
+            finish(generation, disabled ? .on(ownsSleepSetting: false) : takeOwnership())
+        }
+    }
+
+    /// Records ownership, then asks for approval to disable sleep. Re-entering keeps an
+    /// existing lease in place, so an earlier watchdog never sees it disappear.
+    private func takeOwnership(context: String = "") -> KeepAwakeState {
+        let approval = writeOwnershipFiles() ? system.disableSleep(leaseURL, pid) : .failed
+        if approval == .approved, system.sleepDisabled() == true {
+            return .on(ownsSleepSetting: true)
+        }
+        // A partial change is undone by the watchdog once the lease is gone.
+        guard releaseLeaseAndConfirm() else {
+            return .restoreNeeded(context
+                + "Couldn't confirm sleep was restored. Activate Keep Awake to restore it with administrator approval.")
+        }
+        return .failed(context + (approval == .canceled
+            ? "Administrator approval was canceled. Keep Awake is off."
+            : "Couldn't turn on Keep Awake. Sleep settings weren't changed."))
+    }
+
+    /// Another app (or a restore) re-enabled sleep while Keep Awake was on, so closing the
+    /// lid would sleep the Mac. Ask to take over rather than keep reporting a false on.
+    private func sleepSettingLost() {
+        log("Keep Awake lost the disabled sleep setting; asking to restore it")
+        let generation = begin(.enabling)
+        work { [self] in
+            finish(generation, takeOwnership(context: Self.lostSettingContext))
+        }
+    }
+
+    private func monitor(_ generation: Int) {
+        schedule(Self.monitorInterval) { [self] in
+            guard generation == self.generation, state.isOn, !shutDown else { return }
+            work { [self] in
+                let disabled = system.sleepDisabled()
+                main { [self] in
+                    guard generation == self.generation, state.isOn, !shutDown else { return }
+                    // An unreadable report is not evidence the setting is gone.
+                    if disabled == false { sleepSettingLost() } else { monitor(generation) }
+                }
             }
         }
     }
 
     private func disable(owns: Bool) {
-        endActivity()
+        releaseAssertions()
         guard owns else {
             // Another app owns the disabled sleep setting; leave it as it was.
+            generation += 1
             state = .off
             log("Keep Awake off; sleep setting left to its owner")
             return
@@ -232,12 +275,9 @@ final class KeepAwakeController {
         main { [self] in
             // A newer request or quit supersedes this result.
             guard generation == self.generation, !shutDown else { return }
-            if result.isOn, activity == nil {
-                activity = system.beginActivity()
-                if activity == nil { log("Keep Awake could not acquire its idle-sleep activity") }
-            }
             state = result
             log("Keep Awake state=\(result.logName)")
+            if result.isOn { monitor(generation) } else { releaseAssertions() }
         }
     }
 
@@ -247,9 +287,9 @@ final class KeepAwakeController {
         return isShutDown
     }
 
-    private func endActivity() {
-        if let activity { system.endActivity(activity) }
-        activity = nil
+    private func releaseAssertions() {
+        if let assertions { system.releaseAssertions(assertions) }
+        assertions = nil
     }
 
     private func writeOwnershipFiles() -> Bool {
@@ -420,14 +460,38 @@ extension KeepAwakeSystem {
             },
             restoreSleep: { approve(KeepAwakeCommand.restoreScript) },
             cancelApproval: { approvals.cancel() },
-            beginActivity: {
-                ProcessInfo.processInfo.beginActivity(
-                    options: [.userInitiated, .idleSystemSleepDisabled],
-                    reason: "Keep Awake is on in Relay Runner."
-                )
-            },
-            endActivity: { ProcessInfo.processInfo.endActivity($0) },
+            holdAssertions: { KeepAwakeAssertions.hold() },
+            releaseAssertions: { ($0 as? KeepAwakeAssertions)?.release() },
             pause: { Thread.sleep(forTimeInterval: $0) }
         )
     }
+}
+
+/// Named IOKit assertions report failure, unlike a ProcessInfo activity. Holding the
+/// display assertion too matches Vorssaint's default Keep Awake.
+final class KeepAwakeAssertions: NSObject {
+    private var ids: [IOPMAssertionID]
+
+    private init(_ ids: [IOPMAssertionID]) { self.ids = ids }
+
+    static func hold() -> KeepAwakeAssertions? {
+        var ids: [IOPMAssertionID] = []
+        for type in [kIOPMAssertionTypePreventUserIdleSystemSleep, kIOPMAssertionTypePreventUserIdleDisplaySleep] {
+            var id = IOPMAssertionID(0)
+            guard IOPMAssertionCreateWithName(type as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                                              "Keep Awake is on in Relay Runner." as CFString, &id) == kIOReturnSuccess else {
+                ids.forEach { IOPMAssertionRelease($0) }
+                return nil
+            }
+            ids.append(id)
+        }
+        return KeepAwakeAssertions(ids)
+    }
+
+    func release() {
+        ids.forEach { IOPMAssertionRelease($0) }
+        ids = []
+    }
+
+    deinit { release() }
 }
