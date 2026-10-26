@@ -321,6 +321,8 @@ class ArtifactLifecycleTests(unittest.TestCase):
         self.assertEqual(self.coordinator.leases.active()[0].role, "reviewer")
 
     def test_verification_blocked_is_reviewed_without_advancing_dependency(self):
+        summary = "Source implementation is complete. " + "界" * 1000
+        verification = ["Source tests passed. " + "é" * 900]
         self.write_ticket("RR-1", "Physical proof")
         self.write_ticket("RR-2", "Dependent", status="backlog", depends_on=("RR-1",))
         worktree = self.create_worktree("run-4")
@@ -336,9 +338,9 @@ class ArtifactLifecycleTests(unittest.TestCase):
             provider="codex",
             payload={
                 "status": "verification_blocked",
-                "summary": "Source implementation is complete.",
+                "summary": summary,
                 "changed_paths": ["source.txt"],
-                "verification": ["source tests passed"],
+                "verification": verification,
                 "source_commit": source_commit,
                 "verification_blocker": "Signed installed app needs physical input.",
                 "verification_resume": "Install signed build and perform physical input.",
@@ -357,8 +359,19 @@ class ArtifactLifecycleTests(unittest.TestCase):
 
         self.assertEqual(result.promoted_ticket_ids, ())
         files = self.store.snapshot().files
-        self.assertIn("status: verification_blocked", files[".orchestrator/RR-1.md"].decode())
-        self.assertIn("verification_blocker:", files[".orchestrator/RR-1.md"].decode())
+        ticket = files[".orchestrator/RR-1.md"].decode()
+        self.assertIn("status: verification_blocked", ticket)
+        self.assertIn("Signed installed app needs physical input.", ticket)
+        self.assertIn("Install signed build and perform physical input.", ticket)
+        outcome = self.coordinator.outcome(4)
+        self.assertEqual(outcome.summary, summary)
+        self.assertEqual(outcome.verification, tuple(verification))
+        run_summary = self.coordinator._run_summary(outcome, merged)
+        self.assertLessEqual(len(run_summary.encode("utf-8")), 4096)
+        self.assertTrue(run_summary.startswith(f"reviewed source merge {merged}:"))
+        self.assertTrue(run_summary.endswith("… [full evidence retained in structured outcome]"))
+        self.assertNotIn("�", run_summary)
+        self.assertIn(run_summary, ticket)
         self.assertIn("status: backlog", files[".orchestrator/RR-2.md"].decode())
 
     def test_resumed_verification_closeout_publishes_done_without_source_change(self):

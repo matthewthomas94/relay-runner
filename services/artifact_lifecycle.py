@@ -1484,11 +1484,14 @@ class ArtifactLifecycleCoordinator:
 
     def _run_summary(self, outcome: StructuredWorkerOutcome, merged_source_commit: str) -> str:
         verification = "; ".join(outcome.verification) if outcome.verification else "No verification recorded."
-        return _bounded_text(
-            f"reviewed source merge {merged_source_commit}: {outcome.summary} Verification: {verification}",
-            "run summary",
-            MAX_SUMMARY_BYTES,
-        )
+        summary = f"reviewed source merge {merged_source_commit}: {outcome.summary} Verification: {verification}"
+        encoded = summary.encode("utf-8")
+        if len(encoded) > MAX_SUMMARY_BYTES:
+            # Valid outcome fields can exceed the ticket log's bound when combined.
+            suffix = "… [full evidence retained in structured outcome]"
+            limit = MAX_SUMMARY_BYTES - len(suffix.encode("utf-8"))
+            summary = encoded[:limit].decode("utf-8", errors="ignore").rstrip() + suffix
+        return _bounded_text(summary, "run summary", MAX_SUMMARY_BYTES)
 
     def _status_map(self, files: Mapping[str, bytes]) -> dict[str, str]:
         statuses = {}
