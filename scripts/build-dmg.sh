@@ -158,6 +158,15 @@ cp "$BUILD_DIR/relay-orchestrator-mcp" "$APP_DIR/Contents/MacOS/relay-orchestrat
 # the bridge's local Unix socket.
 cp "$BUILD_DIR/relay-remote-shell" "$APP_DIR/Contents/MacOS/relay-remote-shell"
 
+# Keep Awake power helper (RR-437). A root launchd daemon registered with
+# SMAppService from Contents/Library/LaunchDaemons; its BundleProgram points at
+# Contents/MacOS. The user allows it once in System Settings, then Keep Awake
+# disables and restores sleep through its fixed XPC interface without prompts.
+cp "$BUILD_DIR/relay-power-helper" "$APP_DIR/Contents/MacOS/relay-power-helper"
+mkdir -p "$APP_DIR/Contents/Library/LaunchDaemons"
+cp "$PROJECT_ROOT/scripts/LaunchDaemons/com.relayrunner.app.power-helper.plist" \
+    "$APP_DIR/Contents/Library/LaunchDaemons/"
+
 # Retain private symbols for every shipped Swift executable. The UUID check is
 # the release contract: a dSYM is useful only when its DWARF UUID exactly
 # matches the packaged Mach-O. Symbols are uploaded as a private CI artifact,
@@ -165,7 +174,7 @@ cp "$BUILD_DIR/relay-remote-shell" "$APP_DIR/Contents/MacOS/relay-remote-shell"
 DSYM_DIR="$DIST_DIR/dSYMs"
 remove_tree "$DSYM_DIR"
 mkdir -p "$DSYM_DIR"
-for binary in relay-runner relay-actions-mcp relay-vision-mcp relay-orchestrator-mcp relay-remote-shell; do
+for binary in relay-runner relay-actions-mcp relay-vision-mcp relay-orchestrator-mcp relay-remote-shell relay-power-helper; do
     binary_path="$APP_DIR/Contents/MacOS/$binary"
     dsym_path="$DSYM_DIR/$binary.dSYM"
     xcrun dsymutil "$binary_path" -o "$dsym_path"
@@ -365,6 +374,13 @@ if [ -n "$SIGN_IDENTITY" ]; then
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR/Contents/MacOS/relay-remote-shell"
+    # The power helper's identifier is part of the requirement the app checks
+    # before trusting its replies, so it is set explicitly rather than taken
+    # from the file name.
+    codesign --force --timestamp --options runtime \
+        --identifier com.relayrunner.app.power-helper \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/relay-power-helper"
     # Main executable last, with entitlements + hardened runtime.
     codesign --force --timestamp --options runtime \
         --entitlements "$ENTITLEMENTS" \
@@ -383,6 +399,9 @@ fi
 # Verify. `--deep --strict` catches unsigned nested components that
 # would otherwise be rejected at notarisation / Gatekeeper time.
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+# The helper's launchd metadata must match the identifiers compiled into the
+# app and helper; a signed build also checks the helper's Developer ID identity.
+python3 "$PROJECT_ROOT/services/app_signing.py" check-helper "$APP_DIR"
 if [ -n "$SIGN_IDENTITY" ]; then
     python3 "$PROJECT_ROOT/services/app_signing.py" verify "$APP_DIR"
 fi

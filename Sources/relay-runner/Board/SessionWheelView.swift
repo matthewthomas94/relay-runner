@@ -347,28 +347,21 @@ struct SessionWheelView: View {
 
     private var keepAwakeButton: some View {
         let state = model.keepAwake
-        let symbol: String
-        let tint: Color?
-        switch state {
-        case .on: symbol = "bolt.fill"; tint = ProgramBoardStyle.activeTrayOrange
-        case .enabling, .disabling: symbol = "hourglass"; tint = nil
-        case .failed: symbol = "exclamationmark.triangle"; tint = nil
-        case .restoreNeeded: symbol = "exclamationmark.triangle.fill"; tint = ProgramBoardStyle.red
-        case .off: symbol = "bolt"; tint = .white
-        }
         return submenuButton(index: SessionWheelSettingsControl.keepAwake.rawValue, slot: SessionWheelIntensity.slot,
                              title: state.isPending ? state.status : state.actionTitle,
-                             help: "\(KeepAwakeState.label): \(state.status)", symbol: symbol,
+                             help: "\(KeepAwakeState.label): \(state.status)",
+                             symbol: SessionWheelKeepAwakeGlyph.Look(state).symbol,
                              // Pending stays legible; the controller ignores clicks until it settles.
                              enabled: true, hovered: model.hoveredSettingsControl == .keepAwake && !state.isPending,
-                             destructive: false, selected: state.isOn, tint: tint) {
+                             destructive: false, selected: state.isOn, keepAwake: state) {
             guard model.isHoveringSettings else { return }
             performKeepAwake()
         }
     }
 
     private func submenuButton(index: Int, slot: Int, title: String, help: String, symbol: String,
-                               enabled: Bool, hovered: Bool, destructive: Bool, selected: Bool = false, tint: Color? = nil,
+                               enabled: Bool, hovered: Bool, destructive: Bool, selected: Bool = false,
+                               keepAwake: KeepAwakeState? = nil,
                                level: @escaping () -> Float = { 0 }, perform: @escaping () -> Void) -> some View {
         let isNoteMark = symbol == "checkmark" || symbol == "xmark"
         let presentation = ProgramBoardInteractionPresentation.resolve(
@@ -382,7 +375,10 @@ struct SessionWheelView: View {
             ZStack {
                 controlBackground(shape, presentation: presentation)
                 Group {
-                    if symbol == "waveform" {
+                    if let keepAwake {
+                        SessionWheelKeepAwakeGlyph(state: keepAwake)
+                            .font(AppTypography.symbolFont(size: 9, weight: .medium))
+                    } else if symbol == "waveform" {
                         SessionWheelRecordingWaveform(level: level)
                     } else if symbol == "power" {
                         Image(systemName: symbol)
@@ -399,7 +395,7 @@ struct SessionWheelView: View {
                 .frame(width: geometry.actionLabelSize.width, height: geometry.actionLabelSize.height)
                 .foregroundStyle(!enabled
                                  ? (contrast == .increased ? ProgramBoardStyle.disabledText : Color(.sRGB, red: 24 / 255, green: 27 / 255, blue: 33 / 255, opacity: 1))
-                                 : tint ?? (destructive ? ProgramBoardStyle.red : ProgramBoardStyle.primaryText))
+                                 : destructive ? ProgramBoardStyle.red : ProgramBoardStyle.primaryText)
                 .rotationEffect(.radians(geometry.actionLabelRotation(slot: slot, index: index)))
                 .position(geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(index)))
             }
