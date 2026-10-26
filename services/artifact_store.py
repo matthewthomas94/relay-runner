@@ -62,6 +62,13 @@ _TICKET_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$")
 _EVENT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 _ARTIFACT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,160}$")
 _TRAILER_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*):\s*(.*)$")
+# Finder and other macOS services drop metadata files into any folder a user
+# opens. They carry no Relay state, so the projection check skips them instead
+# of reporting a manual edit.
+_IGNORED_MATERIALIZATION_NAMES = frozenset(
+    {".DS_Store", ".localized", "Icon\r", ".Spotlight-V100", ".Trashes", ".fseventsd"}
+)
+_MAX_DESCRIBED_MATERIALIZATION_PATHS = 5
 _FORBIDDEN_JSON_KEYS = {
     "hidden_reasoning",
     "raw_audio",
@@ -1052,17 +1059,20 @@ class ArtifactStore:
         if not target_exists:
             self._materialize(head, force=True)
             return
-        expected = metadata.get("sha256")
+        expected = self._expected_materialized_sha256(metadata)
         actual = self._materialized_sha256()
         manually_changed = actual != expected
         ref_changed = metadata.get("commit_id") != head
         if manually_changed and ref_changed:
             raise ArtifactMaterializationConflict(
-                "materialized files and artifact ref both changed from their shared base"
+                "materialized files and artifact ref both changed from their shared base "
+                f"({_describe_materialization_difference(expected, actual)})"
             )
         if manually_changed:
             raise ArtifactMaterializationConflict(
-                "materialized .orchestrator was edited manually; use explicit Save/import"
+                "materialized .orchestrator was edited manually "
+                f"({_describe_materialization_difference(expected, actual)}); "
+                "use explicit Save/import"
             )
         if ref_changed:
             self._materialize(head, force=True)
@@ -1071,7 +1081,10 @@ class ArtifactStore:
         if not force:
             metadata = self._read_metadata()
             if metadata and metadata.get("commit_id") == head:
-                if self.materialized_path.exists() and self._materialized_sha256() == metadata.get("sha256"):
+                if (
+                    self.materialized_path.exists()
+                    and self._materialized_sha256() == self._expected_materialized_sha256(metadata)
+                ):
                     return
         entries = self._tree_entries(head)
         self._validate_artifact_head(head)
@@ -1168,12 +1181,16 @@ class ArtifactStore:
                     raise ArtifactMaterializationConflict(
                         f"materialized tree contains a symlink directory: {child}"
                     )
+                if _is_ignored_materialization_name(name):
+                    directory_names.remove(name)
             for name in filenames:
                 path = directory_path / name
                 if path.is_symlink() or not path.is_file():
                     raise ArtifactMaterializationConflict(
                         f"materialized tree contains a non-regular file: {path}"
                     )
+                if _is_ignored_materialization_name(name):
+                    continue
                 relative = path.relative_to(root).as_posix()
                 result[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
         return dict(sorted(result.items()))
@@ -1205,6 +1222,20 @@ class ArtifactStore:
         if not isinstance(value, dict) or value.get("project_id") != self.project_id:
             return None
         return value
+
+    @staticmethod
+    def _expected_materialized_sha256(metadata: Mapping[str, object]) -> dict[str, str]:
+        # Metadata recorded before the ignore list existed may include a
+        # Finder file; dropping it here keeps that upgrade from reading as a
+        # manual edit.
+        recorded = metadata.get("sha256")
+        if not isinstance(recorded, dict):
+            return {}
+        return {
+            path: digest
+            for path, digest in recorded.items()
+            if not _is_ignored_materialization_path(path)
+        }
 
     def _write_json_atomic(self, path: Path, payload: Mapping[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1424,6 +1455,38 @@ def _validate_filename(value: str) -> str:
     ):
         raise ArtifactValidationError(f"invalid attachment filename: {value!r}")
     return value
+
+
+def _is_ignored_materialization_name(name: str) -> bool:
+    return name in _IGNORED_MATERIALIZATION_NAMES or name.startswith("._")
+
+
+def _is_ignored_materialization_path(relative: str) -> bool:
+    return any(_is_ignored_materialization_name(part) for part in PurePosixPath(relative).parts)
+
+
+def _describe_materialization_difference(
+    expected: Mapping[str, str], actual: Mapping[str, str]
+) -> str:
+    """Name the projection paths whose hashes differ from the recorded base."""
+    groups = (
+        (
+            "modified",
+            sorted(
+                path for path in expected.keys() & actual.keys() if expected[path] != actual[path]
+            ),
+        ),
+        ("added", sorted(actual.keys() - expected.keys())),
+        ("removed", sorted(expected.keys() - actual.keys())),
+    )
+    parts = []
+    for label, paths in groups:
+        if not paths:
+            continue
+        shown = ", ".join(paths[:_MAX_DESCRIBED_MATERIALIZATION_PATHS])
+        extra = len(paths) - _MAX_DESCRIBED_MATERIALIZATION_PATHS
+        parts.append(f"{label}: {shown}" + (f" and {extra} more" if extra > 0 else ""))
+    return "; ".join(parts)
 
 
 def _validate_allowlisted_path(path: str) -> None:

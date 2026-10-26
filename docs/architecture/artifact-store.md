@@ -8,7 +8,7 @@ The only canonical writable project artifact store is `refs/heads/relay/artifact
 
 The writer requires an explicit per-project `enabled=True` opt-in and initializes `remote_sync = "local_only"`. Opting out stops new artifact operations and returns callers to the preserved direct-file compatibility path. It never removes or rewrites an existing artifact ref.
 
-The repo-root `.orchestrator/` directory is a projection. It is atomically rebuilt from a verified artifact head, locally excluded through `.git/info/exclude`, and accompanied by app-support metadata containing the base commit, tree, per-file blob IDs, and content hashes. A manual edit or simultaneous ref/file divergence fails closed and requires explicit import or reconciliation.
+The repo-root `.orchestrator/` directory is a projection. It is atomically rebuilt from a verified artifact head, locally excluded through `.git/info/exclude`, and accompanied by app-support metadata containing the base commit, tree, per-file blob IDs, and content hashes. A manual edit or simultaneous ref/file divergence fails closed and requires explicit import or reconciliation. Finder metadata (`.DS_Store`, AppleDouble `._*` files, `.localized`, `Icon\r`, `.Spotlight-V100`, `.Trashes`, `.fseventsd`) carries no Relay state and is ignored by that check; any other unexpected, modified, or missing file still fails closed, and the error names the paths.
 
 ## Typed writer contract
 
