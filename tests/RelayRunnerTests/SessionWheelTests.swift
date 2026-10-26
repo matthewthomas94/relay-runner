@@ -818,6 +818,207 @@ final class SessionWheelTests: XCTestCase {
         }
     }
 
+    private func arcPoint(_ angle: CGFloat, radius: CGFloat? = nil) -> CGPoint {
+        // `SessionWheelGeometry.angle(at:)` is measured from slot 0's leading edge.
+        geometry.position(slot: 0, radius: radius ?? geometry.actionRadius, offset: angle - geometry.sliceAngle / 2)
+    }
+
+    func testSettingsArcMapsTwoThirdsToIntensityAndClampsWithoutWraparound() {
+        let intensity = SessionWheelIntensity.self
+        let slot = SessionWheelShortcut.settings.rawValue
+        XCTAssertEqual(intensity.slot, slot)
+        XCTAssertEqual(geometry.angle(at: arcPoint(1)), 1, accuracy: 0.0001)
+        // The slider occupies subdivisions 0 and 1; Keep Awake keeps the left third.
+        XCTAssertGreaterThan(intensity.maxAngle, CGFloat(slot) * geometry.sliceAngle)
+        XCTAssertLessThan(intensity.minAngle, CGFloat(slot) * geometry.sliceAngle + geometry.sliceAngle * 2 / 3)
+        XCTAssertGreaterThan(geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(0)).y,
+                             geometry.center.y, "The high end sits towards the sessions on the right")
+        XCTAssertLessThan(geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(2)).x,
+                          geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(0)).x)
+
+        for (angle, expected) in [(intensity.maxAngle, 1.0), (intensity.minAngle, 0.1),
+                                  (intensity.maxAngle - 0.3, 1.0), (intensity.minAngle + 0.3, 0.1),
+                                  ((intensity.maxAngle + intensity.minAngle) / 2, 0.55)] {
+            let model = SessionWheelModel()
+            XCTAssertEqual(model.adjustIntensity(to: arcPoint(angle)), expected, accuracy: 0.0001, "\(angle)")
+        }
+        var previous = 1.0
+        for step in 0...200 {
+            let angle = intensity.maxAngle + (intensity.minAngle - intensity.maxAngle) * CGFloat(step) / 200
+            let value = intensity.value(forAngle: angle)
+            XCTAssertLessThanOrEqual(value, previous)
+            XCTAssertEqual(value, intensity.quantized(value))
+            XCTAssertEqual((value * 20).rounded(), value * 20, accuracy: 0.0001, "Stays on 0.05 steps")
+            XCTAssertEqual(intensity.angle(for: value), intensity.angle(for: intensity.quantized(value)))
+            previous = value
+        }
+        for value in stride(from: 0.1, through: 1.0, by: 0.05) {
+            XCTAssertEqual(intensity.value(forAngle: intensity.angle(for: value)), intensity.quantized(value), accuracy: 0.0001)
+        }
+        XCTAssertEqual(intensity.quantized(0), 0.1)
+        XCTAssertEqual(intensity.quantized(1.4), 1.0)
+        XCTAssertEqual(intensity.quantized(0.62), 0.6)
+        XCTAssertEqual(intensity.percent(0.65), "65%")
+    }
+
+    func testIntensityDragIsContinuousAndNeverJumpsAcrossTheEnds() {
+        let intensity = SessionWheelIntensity.self
+        let middle = (intensity.maxAngle + intensity.minAngle) / 2
+        for direction in [-1.0, 1.0] as [CGFloat] {
+            let model = SessionWheelModel()
+            var previous = model.adjustIntensity(to: arcPoint(middle))
+            XCTAssertTrue(model.isAdjustingIntensity)
+            // Circle the whole wheel past an end, including far from the arc and near the centre.
+            for step in 1...144 {
+                let radius: CGFloat = step % 3 == 0 ? 40 : step % 3 == 1 ? 330 : geometry.actionRadius
+                let value = model.adjustIntensity(to: arcPoint(middle + direction * CGFloat(step) * .pi / 72, radius: radius))
+                XCTAssertTrue(direction < 0 ? value >= previous : value <= previous, "step \(step)")
+                previous = value
+            }
+            XCTAssertEqual(previous, direction < 0 ? 1.0 : 0.1)
+            // Reversing leaves the clamped end immediately.
+            let end = direction < 0 ? intensity.maxAngle : intensity.minAngle
+            model.adjustIntensity(to: arcPoint(end))
+            let back = model.adjustIntensity(to: arcPoint(end - direction * 0.1))
+            XCTAssertNotEqual(back, previous)
+            model.endAdjustingIntensity()
+            XCTAssertFalse(model.isAdjustingIntensity)
+        }
+    }
+
+    func testSettingsSubmenuRevealsSliderAndKeepAwakeAndPinsHoverWhileDragging() {
+        let model = SessionWheelModel()
+        let slot = SessionWheelShortcut.settings.rawValue
+        model.hover(at: geometry.position(slot: slot, radius: 119))
+        XCTAssertTrue(model.isHoveringSettings)
+        XCTAssertEqual(model.submenuSlot, slot)
+        model.hover(at: geometry.position(slot: slot, radius: geometry.wheelRadius + 4))
+        XCTAssertEqual(model.submenuSlot, slot, "Hover continues across the gap")
+        XCTAssertNil(model.hoveredSettingsControl)
+        for (index, control) in [(0, SessionWheelSettingsControl.intensity), (1, .intensity), (2, .keepAwake)] {
+            model.hover(at: geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(index)))
+            XCTAssertEqual(model.hoveredSettingsControl, control)
+            XCTAssertNil(model.hoveredNoteAction)
+            XCTAssertNil(model.hoveredAction)
+        }
+        let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
+                                       outerRadius: geometry.actionOuterRadius, subdivision: 0, span: 2)
+        let bounds = CGRect(origin: .zero, size: CGSize(width: 528, height: 528))
+        for index in [0, 1] {
+            XCTAssertTrue(shape.path(in: bounds).contains(
+                geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(index))))
+        }
+        XCTAssertTrue(shape.path(in: bounds).contains(
+            geometry.position(slot: slot, radius: geometry.actionRadius, offset: -geometry.sliceAngle / 6)),
+            "One continuous slider across the subdivision boundary")
+        XCTAssertFalse(shape.path(in: bounds).contains(
+            geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(2))))
+
+        model.hover(at: geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(0)))
+        model.adjustIntensity(to: geometry.position(slot: slot, radius: geometry.actionRadius))
+        model.hover(at: geometry.position(slot: 0, radius: 119))
+        model.refresh(sessions: [session("a")])
+        XCTAssertEqual(model.submenuSlot, slot, "A drag keeps the submenu open wherever the pointer goes")
+        model.endAdjustingIntensity()
+        model.hover(at: geometry.position(slot: 0, radius: 119))
+        XCTAssertEqual(model.hoveredSession?.id, "a")
+        XCTAssertNil(model.hoveredSettingsControl)
+
+        model.showProjects(at: geometry.center)
+        model.hover(at: geometry.position(slot: slot, radius: 119))
+        XCTAssertFalse(model.isHoveringSettings)
+        XCTAssertNil(model.submenuSlot)
+    }
+
+    @MainActor
+    func testIntensityDragPreviewsLiveCommitsOnceAndKeepsTheWheelOpen() {
+        _ = NSApplication.shared
+        var pulses: [NSHapticFeedbackManager.FeedbackPattern] = []
+        let controller = SessionWheelController(haptics: .init(perform: { pulses.append($0) }))
+        defer { controller.dismiss() }
+        var saved = 0.6
+        var previews: [Double] = []
+        var commits: [Double] = []
+        var shortcuts: [SessionWheelShortcut] = []
+        controller.refresh = { model, _ in
+            if !model.isAdjustingIntensity { model.particleIntensity = saved }
+        }
+        controller.previewIntensity = { previews.append($0) }
+        controller.commitIntensity = { commits.append($0); saved = $0 }
+        controller.openShortcut = { shortcuts.append($0) }
+        controller.toggle()
+        let intensity = SessionWheelIntensity.self
+        controller.model.hover(at: geometry.position(slot: 2, radius: 119))
+        for step in 0...40 {
+            controller.adjustIntensity(to: arcPoint(intensity.minAngle + 0.2 - CGFloat(step) * 0.02))
+            controller.refresh?(controller.model, false)
+        }
+        XCTAssertEqual(previews.last, 1.0)
+        XCTAssertEqual(previews, previews.sorted(), "Preview follows the drag")
+        XCTAssertEqual(Set(previews).count, previews.count, "Only changed values are previewed")
+        XCTAssertTrue(commits.isEmpty, "Nothing persists mid-drag")
+        XCTAssertTrue(pulses.isEmpty, "No haptic spam while dragging")
+        controller.finishIntensity()
+        XCTAssertEqual(commits, [1.0])
+        XCTAssertEqual(pulses, [.generic])
+        XCTAssertTrue(controller.isVisible)
+        XCTAssertEqual(controller.model.submenuSlot, 2)
+
+        controller.stepIntensity(1)
+        XCTAssertEqual(commits, [1.0], "Clamped at the top")
+        controller.stepIntensity(-1)
+        XCTAssertEqual(commits, [1.0, 0.95])
+        controller.model.particleFieldEnabled = false
+        controller.adjustIntensity(to: arcPoint(intensity.minAngle))
+        controller.stepIntensity(-1)
+        XCTAssertEqual(commits, [1.0, 0.95], "Disabled with the particle field off")
+
+        controller.selectSlot(SessionWheelShortcut.settings.rawValue, fromPointer: false)
+        XCTAssertEqual(shortcuts, [.settings], "The main Settings wedge still opens Settings")
+
+        controller.model.particleFieldEnabled = true
+        controller.adjustIntensity(to: arcPoint(intensity.minAngle))
+        controller.dismiss()
+        XCTAssertEqual(commits.last, 0.1, "Dismissal mid-drag still saves")
+        XCTAssertFalse(controller.model.isAdjustingIntensity)
+        XCTAssertEqual(pulses.count, 3, "Dismissal does not pulse")
+    }
+
+    @MainActor
+    func testKeepAwakeControlKeepsTheWheelOpenAndIgnoresPendingChanges() {
+        _ = NSApplication.shared
+        var pulses: [NSHapticFeedbackManager.FeedbackPattern] = []
+        let controller = SessionWheelController(haptics: .init(perform: { pulses.append($0) }))
+        defer { controller.dismiss() }
+        var state = KeepAwakeState.off
+        var calls = 0
+        controller.refresh = { model, _ in model.keepAwake = state }
+        controller.keepAwakeAction = {
+            calls += 1
+            state = state.isOn ? .off : .enabling
+            return true
+        }
+        controller.toggle()
+        controller.model.hover(at: geometry.position(slot: 2, radius: 119))
+        controller.performKeepAwake()
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(controller.model.keepAwake, .enabling)
+        XCTAssertTrue(controller.isVisible)
+        XCTAssertEqual(controller.model.submenuSlot, 2)
+        controller.performKeepAwake()
+        XCTAssertEqual(calls, 1, "Pending approval ignores repeat clicks")
+        state = .on(ownsSleepSetting: true)
+        controller.refresh?(controller.model, false)
+        controller.performKeepAwake()
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(controller.model.keepAwake, .off)
+        XCTAssertEqual(pulses, [.generic, .generic])
+        controller.keepAwakeAction = { false }
+        controller.performKeepAwake()
+        XCTAssertEqual(controller.model.notice, "Keep Awake unavailable")
+        XCTAssertEqual(pulses.count, 2)
+    }
+
     /// Set RELAY_WHEEL_RENDER_DIR to export the actual SwiftUI view for visual QA.
     @MainActor
     func testWheelRendering() throws {
@@ -834,7 +1035,9 @@ final class SessionWheelTests: XCTestCase {
         for state in ["sessions", "working", "response-ready", "listening", "paused", "workspace-open", "session-notice", "controls", "play-hover", "recording-controls", "projects", "last-page", "limit",
                       "design-recording", "design-idle", "design-play", "design-playback",
                       "shortcuts-empty", "notes-idle", "notes-recording", "notes-paused", "notes-saving",
-                      "more-sessions", "all-sessions"]
+                      "more-sessions", "all-sessions",
+                      "settings-min", "settings-max", "settings-keep-awake-on", "settings-keep-awake-pending",
+                      "settings-restore", "settings-particles-off", "settings-dragging"]
             + (0..<geometry.slotCount).map({ "contour-\($0)" }) {
             switch state {
             case "working": model.notchStatus = .working
@@ -866,6 +1069,24 @@ final class SessionWheelTests: XCTestCase {
                     : state == "notes-paused" ? .paused
                     : state == "notes-saving" ? .transcribing : .idle
                 model.hover(at: geometry.position(slot: SessionWheelShortcut.noteTaker.rawValue, radius: 119))
+            case "settings-min", "settings-max", "settings-keep-awake-on", "settings-keep-awake-pending",
+                 "settings-restore", "settings-particles-off", "settings-dragging":
+                model.reset(at: geometry.center)
+                model.notePhase = .idle
+                model.particleFieldEnabled = state != "settings-particles-off"
+                model.particleIntensity = state == "settings-min" ? 0.1 : state == "settings-max" ? 1.0 : 0.6
+                model.keepAwake = state == "settings-keep-awake-on" ? .on(ownsSleepSetting: true)
+                    : state == "settings-keep-awake-pending" ? .enabling
+                    : state == "settings-restore" ? .restoreNeeded("Restore") : .off
+                let slot = SessionWheelShortcut.settings.rawValue
+                model.hover(at: geometry.position(slot: slot, radius: 119))
+                model.hover(at: geometry.position(slot: slot, radius: geometry.actionRadius,
+                                                  offset: geometry.actionOffset(state == "settings-keep-awake-on" ? 2 : 0)))
+                if state == "settings-dragging" {
+                    model.adjustIntensity(to: geometry.position(slot: slot, radius: geometry.actionRadius,
+                                                                offset: -geometry.sliceAngle / 6))
+                    model.endAdjustingIntensity()
+                }
             case "more-sessions", "all-sessions":
                 model.reset(at: geometry.center)
                 model.notePhase = .idle

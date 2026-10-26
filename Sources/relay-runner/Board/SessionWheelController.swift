@@ -12,6 +12,10 @@ final class SessionWheelController {
     var toggleWorkspace: (() -> Void)?
     var openShortcut: ((SessionWheelShortcut) -> Void)?
     var noteAction: ((SessionWheelNoteAction) -> Bool)?
+    /// Live particle preview while dragging; `commitIntensity` persists the final value.
+    var previewIntensity: ((Double) -> Void)?
+    var commitIntensity: ((Double) -> Void)?
+    var keepAwakeAction: (() -> Bool)?
 
     private var panel: SessionWheelPanel?
     private let motion = SessionWheelMotion()
@@ -51,6 +55,10 @@ final class SessionWheelController {
                 performNoteAction: { [weak self] in self?.performNoteAction($0) },
                 recordingLevel: { [weak self] id in self?.recordingLevel?(id) ?? 0 },
                 hoverFeedback: { [weak self] point, target in self?.hoverFeedback(at: point, target: target) },
+                adjustIntensity: { [weak self] in self?.adjustIntensity(to: $0) },
+                finishIntensity: { [weak self] in self?.finishIntensity() },
+                stepIntensity: { [weak self] in self?.stepIntensity($0) },
+                performKeepAwake: { [weak self] in self?.performKeepAwake() },
                 presentation: presentation
             )
         }.scaleEffect(size / SessionWheelGeometry.diameter).frame(width: size, height: size)
@@ -75,6 +83,7 @@ final class SessionWheelController {
 
     func dismiss() {
         guard isVisible else { return }
+        finishIntensity(confirm: false)
         isVisible = false
         refreshTimer?.invalidate()
         refreshTimer = nil
@@ -222,6 +231,43 @@ final class SessionWheelController {
         model.notice = nil
         haptics.activate()
         refresh?(model, true)
+        panel?.orderFrontRegardless()
+    }
+
+    func adjustIntensity(to point: CGPoint) {
+        guard isVisible, !model.isNested, model.particleFieldEnabled else { return }
+        let previous = model.particleIntensity
+        let value = model.adjustIntensity(to: point)
+        if value != previous { previewIntensity?(value) }
+    }
+
+    /// One confirmation per drag, never per step; dismissal mid-drag still saves silently.
+    func finishIntensity(confirm: Bool = true) {
+        guard model.isAdjustingIntensity else { return }
+        model.endAdjustingIntensity()
+        commitIntensity?(model.particleIntensity)
+        if confirm { haptics.activate() }
+    }
+
+    func stepIntensity(_ direction: Int) {
+        guard isVisible, !model.isNested, model.particleFieldEnabled else { return }
+        let value = SessionWheelIntensity.quantized(model.particleIntensity + Double(direction) * SessionWheelIntensity.step)
+        guard value != model.particleIntensity else { return }
+        model.particleIntensity = value
+        previewIntensity?(value)
+        commitIntensity?(value)
+        haptics.activate()
+    }
+
+    func performKeepAwake() {
+        guard isVisible, !model.isNested, !model.keepAwake.isPending else { return }
+        guard keepAwakeAction?() == true else {
+            model.notice = "Keep Awake unavailable"
+            return
+        }
+        model.notice = nil
+        haptics.activate()
+        refresh?(model, false)
         panel?.orderFrontRegardless()
     }
 

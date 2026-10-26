@@ -95,6 +95,16 @@ final class SessionWheelHapticsTests: XCTestCase {
             }
         }
 
+        _ = target(slot: 2)
+        for (index, expected) in [(0, 0), (1, 0), (2, 2)] {
+            XCTAssertEqual(target(slot: 2, radius: geometry.actionRadius, offset: geometry.actionOffset(index)),
+                           .action(slot: 2, index: expected), "The slider is one target across its subdivisions")
+        }
+        model.keepAwake = .enabling
+        XCTAssertNil(target(slot: 2, radius: geometry.actionRadius, offset: geometry.actionOffset(2)))
+        model.particleFieldEnabled = false
+        XCTAssertNil(target(slot: 2, radius: geometry.actionRadius, offset: geometry.actionOffset(0)))
+
         model.showAllSessions(at: geometry.center)
         XCTAssertEqual(target(slot: 0), .slot(0))
         XCTAssertNil(target(slot: 1), "Empty overflow slots are disabled")

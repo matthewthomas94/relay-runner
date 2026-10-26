@@ -124,7 +124,6 @@ final class GeneralConfigTests: XCTestCase {
             GeneralConfig.SubagentSizingPolicy.allCases.map(\.displayName),
             ["Orchestrator decides", "Use my defaults"]
         )
-        XCTAssertFalse(GeneralConfig().prevent_sleep_while_running)
         XCTAssertEqual(GeneralConfig.normalizedSubagentModel("opus"), "balanced")
         XCTAssertEqual(GeneralConfig.normalizedSubagentEffort("max"), "medium")
         XCTAssertEqual(GeneralConfig.normalizedSubagentSizingPolicy("user_default"), .userDefault)
@@ -358,11 +357,9 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(GeneralSettingsTab.orchestratorModelLabel, "Orchestrator Model")
         XCTAssertEqual(GeneralSettingsTab.orchestratorEffortLabel, "Orchestrator Effort")
         XCTAssertEqual(GeneralSettingsTab.subagentSizingLabel, "Sub-agent sizing")
-        XCTAssertEqual(GeneralSettingsTab.preventSleepLabel, "Prevent sleep while running")
-        XCTAssertEqual(
-            GeneralSettingsTab.preventSleepDescription,
-            "Keep your computer awake while Relay Runner is running a task."
-        )
+        XCTAssertEqual(KeepAwakeState.label, "Keep Awake")
+        XCTAssertTrue(KeepAwakeState.description.contains("even with the lid closed"))
+        XCTAssertTrue(KeepAwakeState.description.contains("until you turn this off or quit Relay Runner"))
     }
 
     private static let fixtureCodexCatalogue = """

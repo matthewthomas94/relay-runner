@@ -7,12 +7,12 @@ struct GeneralSettingsTab: View {
     static let orchestratorModelLabel = "Orchestrator Model"
     static let orchestratorEffortLabel = "Orchestrator Effort"
     static let subagentSizingLabel = "Sub-agent sizing"
-    static let preventSleepLabel = "Prevent sleep while running"
-    static let preventSleepDescription = "Keep your computer awake while Relay Runner is running a task."
 
     @Binding var config: GeneralConfig
     var onOpenExternalWindow: () -> Void = {}
     var projectRegistryAppState: AppState? = nil
+    /// Runtime-only, shared with the session wheel; applies immediately rather than on Save.
+    var keepAwake: KeepAwakeController? = nil
     @State private var skillInstalled = ProcessManager().isSkillInstalled
     @State private var skillStatusText: String?
     @State private var skillStatusColor: SettingsSemanticColor = .idle
@@ -116,13 +116,15 @@ struct GeneralSettingsTab: View {
                     Toggle("Auto-start services on app launch", isOn: $config.auto_start)
                 }
 
-                SettingsDivider()
+                if let keepAwake {
+                    SettingsDivider()
 
-                SettingsControlRow(
-                    Self.preventSleepLabel,
-                    description: Self.preventSleepDescription
-                ) {
-                    Toggle(Self.preventSleepLabel, isOn: $config.prevent_sleep_while_running)
+                    SettingsControlRow(
+                        KeepAwakeState.label,
+                        description: Self.keepAwakeDescription(keepAwake.state)
+                    ) {
+                        keepAwakeControl(keepAwake)
+                    }
                 }
 
                 SettingsDivider()
@@ -175,6 +177,25 @@ struct GeneralSettingsTab: View {
             )
         )
         .task(id: config.provider) { await refreshProviderReadiness() }
+    }
+
+    static func keepAwakeDescription(_ state: KeepAwakeState) -> String {
+        state == .off ? KeepAwakeState.description : "\(KeepAwakeState.description) \(state.status)"
+    }
+
+    @ViewBuilder
+    private func keepAwakeControl(_ keepAwake: KeepAwakeController) -> some View {
+        let state = keepAwake.state
+        if case .restoreNeeded = state {
+            SettingsActionButton(title: state.actionTitle, systemImage: "moon.zzz", helpText: state.status) {
+                keepAwake.toggle()
+            }
+        } else {
+            // Reflects only confirmed state; pending changes disable the switch.
+            Toggle(KeepAwakeState.label, isOn: Binding(get: { state.isOn }, set: { _ in keepAwake.toggle() }))
+                .disabled(state.isPending)
+                .help(state.status)
+        }
     }
 
     /// Claude must be installed and verified on the user's subscription before

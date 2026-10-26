@@ -36,6 +36,22 @@ sessions. An overflow session fills a top slot when one becomes free.
   other unavailable controls. These controls reuse the
   app's recorder and its existing session restrictions without another capture
   or provider process. The wheel remains open throughout.
+- Hover Settings to reveal one continuous curved **Particle intensity** slider
+  across the two thirds of its outer arc nearest the sessions, and **Keep Awake**
+  in the left third. Click or drag anywhere along the slider: the thumb follows the
+  pointer's travel around the wheel and stops at 10% and 100% instead of wrapping.
+  The particle overlay updates while dragging; the final value is saved to
+  `awareness.glow_intensity` (0.1–1.0 in 0.05 steps) when the drag ends, so
+  **Settings → Awareness → Intensity** shows the same value. A drag keeps the
+  submenu open wherever the pointer goes. The slider is disabled while the particle
+  field is off. VoiceOver exposes it as an adjustable control with a percentage.
+- **Keep Awake** keeps the Mac awake, including idle periods and with the lid
+  closed, until it is switched off or Relay Runner quits. It is the same control as
+  **Settings → General → Startup → Keep Awake**, and it is never saved: every launch
+  starts with it off. Turning it on asks for administrator approval through the
+  native macOS prompt. The cup icon fills and turns green when it is on; an
+  hourglass means approval or restoration is pending, and a warning icon explains a
+  failure in its tooltip. See [Keep Awake](#keep-awake).
 - Hover a session to reveal three controls on the arc just outside its slot:
   an icon-only **Play / Stop playback / Replay message**, **Record / Stop recording
   and send message**, and **Stop session**. Tooltips and VoiceOver retain these labels.
@@ -105,6 +121,40 @@ buffer only for the session that owns the recording. It never consumes samples
 or opens another microphone capture. Reduce Motion holds both the waveform and
 four-dot glyph at rest and crossfades between the glyph, X and Back arrow instead of morphing.
 
+## Keep Awake
+
+Keep Awake combines an idle-sleep activity with `pmset -a disablesleep 1`, which
+stops closed-lid and idle system sleep. Before turning it on, Relay reads
+`pmset -g`. If another app has already disabled sleep, Relay holds only its idle
+activity and never changes or resets that setting. It reports the external state
+instead of claiming it changed sleep.
+
+Otherwise, Relay first writes a recovery record and a lease file under
+`~/Library/Application Support/relay-runner/`. It then runs one fixed
+administrator-approved command through `osascript`. The command starts a root
+watchdog, then disables sleep. The watchdog restores sleep with
+`pmset -a disablesleep 0` as soon as the lease is deleted or Relay Runner's process
+exits, including after a crash or update relaunch. Switching Keep Awake off or
+quitting deletes the lease, so neither needs a second prompt. Relay reports a
+change only after `pmset -g` confirms it. A canceled prompt, failed or timed-out
+command, or unchanged setting leaves Keep Awake off with an explanation, and never
+falls back to the idle activity alone. Changes are serialized. Clicks while a change
+is pending are ignored, and quit cancels a pending prompt.
+
+Relay removes the recovery record only after it confirms sleep was restored. If
+restoration cannot be confirmed, or a record survives into the next launch while
+sleep is still disabled, Keep Awake shows **Restore sleep**. That action asks for
+approval to run the fixed restore command. Relay never re-enables Keep Awake
+automatically. No sudoers rule, helper tool, or persistent privilege grant is
+installed. The lease path and pid are validated before they are placed in the
+command.
+
+The behavior was compared with
+[Vorssaint's KeepAwakeManager at commit 5d1ffa07](https://github.com/vorssaint/vorssaint-utils/blob/5d1ffa07c83665c83123fdf734a70843cd1f8771/Sources/Vorssaint/Services/KeepAwakeManager.swift)
+(ownership recorded before mutation, serialized enable and restore, restoration at
+quit). Relay replaces Vorssaint's sudoers setup with a one-time prompt and a
+lease-bound watchdog, and no source is vendored.
+
 ## Input and lifecycle
 
 **Settings → General → Session wheel → Wheel haptics** is on by default. On a
@@ -141,8 +191,12 @@ Run the focused checks with:
 env -u SDKROOT swift test --filter 'FourFingerTapGestureTests|SessionWheelTests|SessionWheelHapticsTests|SessionWheelMotionTests|MeetingNoteCoordinatorTests|ProgramBoardOverlayControllerTests|VoiceReplyBadgeTests|STT|VoiceBridgeFocusTests|CapsLockGestureTests'
 ```
 
+Run `KeepAwakeControllerTests|ConfigManagerTests|GeneralConfigTests` for Keep
+Awake and intensity persistence. They use an in-memory pmset and approval fake.
+They never show an administrator prompt or change this Mac's power settings.
+
 Set `RELAY_WHEEL_RENDER_DIR` to an output directory to export SwiftUI previews
-from `SessionWheelTests.testWheelRendering`. The motion tests also export each
+from `SessionWheelTests.testWheelRendering`, including the `settings-*` states. The motion tests also export each
 submenu's liquid keyframes and a GIF sampled from the native hover/reversal spring.
 Tests use fake capture and temporary
 spools; they do not open the microphone or send commands to live sessions.
@@ -151,5 +205,12 @@ Installed-app checks still require a physical trackpad and live sessions: open
 and dismiss across displays, reject swipes and pinches, navigate to every outer
 control, start a project from a later page, replay a background session's reply,
 record and send to each provider, stop one session while the others continue, and
-repeat after sleep or reconnecting a trackpad. Automated tests and rendered
-fixtures do not establish those hardware and audible outcomes.
+repeat after sleep or reconnecting a trackpad. Drag the intensity slider past
+both ends while watching the particle field, then reopen Settings.
+Keep Awake requires its own manual checks. Turn it on and approve, then cancel the
+prompt on another attempt. Confirm `pmset -g` shows `SleepDisabled 1` only while
+it is on. Close the lid with no external display attached, on battery and on power,
+and confirm the Mac stays awake and reachable. Switch it off, quit, and force-quit while it
+is on; `SleepDisabled` must return to `0` without another prompt each time.
+Automated tests and rendered fixtures do not establish those hardware, privileged,
+closed-lid, and audible outcomes.

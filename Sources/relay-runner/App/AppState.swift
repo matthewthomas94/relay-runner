@@ -192,13 +192,12 @@ final class AppState {
     @ObservationIgnored private let checkForUpdatesAction: @MainActor () -> Void
     @ObservationIgnored private let refreshBundledOrchestratorDaemon: () async -> OrchestratorDaemonRefreshResult
     @ObservationIgnored private let refreshBundledServicesOnLaunch: Bool
-    @ObservationIgnored private let sleepPreventionController = SleepPreventionController()
+    @ObservationIgnored let keepAwake = KeepAwakeController()
     @ObservationIgnored private let workspaceActivityStore = WorkspaceActivitySnapshotStore()
     @ObservationIgnored private var workspaceActivityTimer: Timer?
     @ObservationIgnored private var workspaceActivityTask: Task<Void, Never>?
     @ObservationIgnored private var workspaceActivityRefreshID = 0
     @ObservationIgnored private var workspaceDiscoveryTask: Task<Void, Never>?
-    @ObservationIgnored private var sleepPreventionMonitoringActive = false
     @ObservationIgnored private var appTerminationObserver: NSObjectProtocol?
     @ObservationIgnored private var meetingNoteCoordinator: MeetingNoteCoordinator?
     @ObservationIgnored private var meetingNoteCoordinatorNotificationID: UUID?
@@ -684,7 +683,6 @@ final class AppState {
                 self.clearNotchActivityProjectState(cancelRefresh: false)
             }
             self.syncNotchActivitySurface()
-            self.syncSleepPreventionController(with: snapshot)
             if invalidateRoute {
                 self.programBoardOverlay.refreshProjectScopeAfterRegistryChange()
             } else {
@@ -986,6 +984,19 @@ final class AppState {
             }
         }
         sessionWheel.noteAction = { [weak self] in self?.performNoteWheelAction($0) ?? false }
+        sessionWheel.previewIntensity = { [weak self] value in
+            guard let self else { return }
+            var awareness = self.config.awareness
+            awareness.glow_intensity = value
+            self.overlayController?.updateConfig(awareness)
+        }
+        sessionWheel.commitIntensity = { [weak self] value in
+            guard let self, self.config.awareness.glow_intensity != value else { return }
+            var next = self.config
+            next.awareness.glow_intensity = value
+            self.saveConfig(next)
+        }
+        sessionWheel.keepAwakeAction = { [weak self] in self?.keepAwake.toggle() ?? false }
         sessionWheel.focusSession = { [weak self] in self?.switchSessionFromWheel(contextID: $0) }
         sessionWheel.startProject = { [weak self] path in
             self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false
@@ -1009,14 +1020,14 @@ final class AppState {
             object: nil,
             queue: nil
         ) { [weak self] _ in
-            self?.stopSleepPreventionMonitoring(releaseReason: "app-termination")
+            self?.keepAwake.shutdown()
         }
         refreshConfiguredWorkspaceDiscoveryIfNeeded(
             oldConfig: nil,
             newConfig: config,
             force: false
         )
-        updateSleepPreventionMonitoring()
+        keepAwake.recoverIfNeeded()
         // Watch privacy permissions continuously — macOS doesn't notify us
         // when the user grants/revokes in Settings, so we poll.
         permissions.startMonitoring()
@@ -1073,7 +1084,7 @@ final class AppState {
         if let appTerminationObserver {
             NotificationCenter.default.removeObserver(appTerminationObserver)
         }
-        stopSleepPreventionMonitoring(releaseReason: "deinit")
+        keepAwake.shutdown()
     }
 
     func checkForUpdates() {
@@ -2098,7 +2109,7 @@ final class AppState {
             workspaceDiscoveryTask?.cancel()
             workspaceDiscoveryTask = nil
             cancelWorkspaceActivityRefresh(invalidate: true)
-            stopSleepPreventionMonitoring(releaseReason: "services-stopped")
+            keepAwake.shutdown()
             return
         }
         stopBridgeWatchdog()
@@ -2122,7 +2133,7 @@ final class AppState {
         workspaceDiscoveryTask?.cancel()
         workspaceDiscoveryTask = nil
         cancelWorkspaceActivityRefresh(invalidate: true)
-        stopSleepPreventionMonitoring(releaseReason: "services-stopped")
+        keepAwake.shutdown()
     }
 
     func prepareForSparkleRelaunch() {
@@ -2133,7 +2144,7 @@ final class AppState {
         workspaceDiscoveryTask?.cancel()
         workspaceDiscoveryTask = nil
         cancelWorkspaceActivityRefresh(invalidate: true)
-        stopSleepPreventionMonitoring(releaseReason: "update-relaunch")
+        keepAwake.shutdown()
         bridgeRecoverySuppressedForUpdate = true
         stopBridgeWatchdog()
         sessionRegistry.shutdownAll()
@@ -2234,10 +2245,6 @@ final class AppState {
             newConfig: newConfig,
             force: forceWorkspaceDiscovery
         )
-        if oldConfig.general.prevent_sleep_while_running != newConfig.general.prevent_sleep_while_running {
-            updateSleepPreventionMonitoring()
-        }
-
         if Self.shouldInvalidateMeetingNoteCoordinator(
             oldModel: oldConfig.stt.model,
             newModel: newConfig.stt.model,
@@ -2988,22 +2995,8 @@ final class AppState {
         return launch(saved)
     }
 
-    private func updateSleepPreventionMonitoring() {
-        if config.general.prevent_sleep_while_running {
-            startSleepPreventionMonitoring()
-        } else {
-            stopSleepPreventionMonitoring(releaseReason: "setting-disabled")
-        }
-    }
-
-    private func startSleepPreventionMonitoring() {
-        sleepPreventionMonitoringActive = true
-        updateWorkspaceActivityPolling()
-        syncSleepPreventionActivity()
-    }
-
     private func updateWorkspaceActivityPolling() {
-        let shouldPoll = notchActivityPollingActive || sleepPreventionMonitoringActive
+        let shouldPoll = notchActivityPollingActive
         if shouldPoll, workspaceActivityTimer == nil {
             let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
                 self?.refreshWorkspaceActivity()
@@ -3015,29 +3008,6 @@ final class AppState {
             workspaceActivityTimer = nil
             cancelWorkspaceActivityRefresh(invalidate: false)
         }
-    }
-
-    private func stopSleepPreventionMonitoring(releaseReason: String) {
-        sleepPreventionMonitoringActive = false
-        sleepPreventionController.release(reason: releaseReason)
-        updateWorkspaceActivityPolling()
-    }
-
-    private func syncSleepPreventionActivity() {
-        refreshWorkspaceActivity()
-    }
-
-    private func syncSleepPreventionController(with snapshot: WorkspaceActivitySnapshot) {
-        sleepPreventionController.sync(
-            preferenceEnabled: config.general.prevent_sleep_while_running,
-            activity: SleepPreventionActivity(
-                foregroundProviderTurnActive: hasActiveSession
-                    && snapshot.foregroundProviderTurnActive,
-                activeWorkerRunCount: SleepPreventionActivity.activeWorkerRunCount(
-                    in: snapshot.runStates
-                )
-            )
-        )
     }
 
     private func prepareOnboardingTutorialSpeech() -> Bool {
@@ -3184,6 +3154,9 @@ final class AppState {
         model.isWorkspaceVisible = programBoardOverlay.isVisible
         model.notchStatus = notchStatusController.status
         model.notePhase = meetingNoteSnapshot.phase
+        model.keepAwake = keepAwake.state
+        model.particleFieldEnabled = config.awareness.screen_glow
+        if !model.isAdjustingIntensity { model.particleIntensity = config.awareness.glow_intensity }
         let recording = sttEngine?.isRecording == true
         let recordingKey = sttEngine?.recordingVoiceTargetSessionKey
         let ready = sttEngine != nil && sttSetupSucceeded && permissions.microphone == .granted

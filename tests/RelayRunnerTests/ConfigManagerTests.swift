@@ -13,10 +13,9 @@ final class ConfigManagerTests: XCTestCase {
 
         XCTAssertEqual(loaded.tts.voice, "am_puck")
         XCTAssertEqual(loaded.tts.rate, 1.3)
-        XCTAssertFalse(loaded.general.prevent_sleep_while_running)
         XCTAssertTrue(raw.contains("voice = \"am_puck\""))
         XCTAssertTrue(raw.contains("rate = 1.3"))
-        XCTAssertTrue(raw.contains("prevent_sleep_while_running = false"))
+        XCTAssertFalse(raw.contains("prevent_sleep_while_running"))
     }
 
     func testWheelHapticsDefaultsOnForExistingConfigsAndPersistsOptOut() throws {
@@ -95,7 +94,6 @@ final class ConfigManagerTests: XCTestCase {
         config.general.messenger_enabled = false
         config.general.messenger_model = "sonnet"
         config.general.messenger_effort = "low"
-        config.general.prevent_sleep_while_running = true
 
         try manager.save(config)
         let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
@@ -108,7 +106,6 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertFalse(raw.contains("subagent_effort"))
         XCTAssertTrue(raw.contains("messenger_enabled = false"))
         XCTAssertTrue(raw.contains("messenger_model = \"sonnet\""))
-        XCTAssertTrue(raw.contains("prevent_sleep_while_running = true"))
         XCTAssertEqual(loaded.general.provider, .claude)
         XCTAssertEqual(loaded.general.model, "fable")
         XCTAssertEqual(loaded.general.orchestrator_effort, "max")
@@ -119,7 +116,37 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertFalse(loaded.general.messenger_enabled)
         XCTAssertEqual(loaded.general.messenger_model, "sonnet")
         XCTAssertEqual(loaded.general.messenger_effort, "low")
-        XCTAssertTrue(loaded.general.prevent_sleep_while_running)
+    }
+
+    func testLegacyTaskOnlySleepPreferenceIsIgnoredAndNotSerialized() throws {
+        let configDir = temporaryConfigDir()
+        let manager = ConfigManager(configDir: configDir)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        try """
+        [general]
+        prevent_sleep_while_running = true
+        wheel_haptics = false
+        """.write(to: manager.configPath, atomically: true, encoding: .utf8)
+
+        // Keep Awake is runtime-only; an old task-only preference must not turn it on.
+        let loaded = manager.load()
+        try manager.save(loaded)
+        let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
+
+        XCTAssertFalse(loaded.general.wheel_haptics)
+        XCTAssertFalse(raw.contains("prevent_sleep_while_running"))
+        XCTAssertEqual(KeepAwakeController(system: .inert).state, .off)
+    }
+
+    func testParticleIntensityPersistsEverySupportedStep() throws {
+        let configDir = temporaryConfigDir()
+        let manager = ConfigManager(configDir: configDir)
+        var config = manager.load()
+        for step in 2...20 {
+            config.awareness.glow_intensity = Double(step) * 0.05
+            try manager.save(config)
+            XCTAssertEqual(manager.load().awareness.glow_intensity, Double(step) * 0.05, accuracy: 0.0001)
+        }
     }
 
     func testLegacyMessagePreviewFalseIsIgnoredAndNotSerialized() throws {

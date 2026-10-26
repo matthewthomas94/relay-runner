@@ -296,7 +296,8 @@ private struct SettingsContent: View {
             GeneralSettingsTab(
                 config: $draft.general,
                 onOpenExternalWindow: onOpenExternalWindow,
-                projectRegistryAppState: appState
+                projectRegistryAppState: appState,
+                keepAwake: appState.keepAwake
             )
         case .awareness:
             AwarenessSettingsTab(config: $draft.awareness)
