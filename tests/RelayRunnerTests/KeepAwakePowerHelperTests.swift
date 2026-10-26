@@ -292,6 +292,7 @@ final class KeepAwakePowerHelperTests: XCTestCase {
         var status: SMAppService.Status = .enabled
         var statusAfterRegister: SMAppService.Status?
         var registerError: Error?
+        var packaged = true
         private(set) var registers = 0
         private(set) var unregisters = 0
         private(set) var settingsOpened = 0
@@ -305,16 +306,18 @@ final class KeepAwakePowerHelperTests: XCTestCase {
                     if let registerError { throw registerError }
                 },
                 unregister: { [self] in unregisters += 1 },
-                openSystemSettings: { [self] in settingsOpened += 1 }
+                openSystemSettings: { [self] in settingsOpened += 1 },
+                isPackaged: { [self] in packaged }
             )
         }
     }
 
     private func makeClient(_ registration: FakeRegistration, listener: NSXPCListener,
-                            helperRequirement: String?, replyTimeout: TimeInterval = 5) -> KeepAwakePowerHelper {
+                            helperRequirement: String?, replyTimeout: TimeInterval = 5,
+                            log: @escaping (String) -> Void = { _ in }) -> KeepAwakePowerHelper {
         KeepAwakePowerHelper(registration: registration.registration,
                              makeConnection: { self.connect(to: listener, requirement: helperRequirement) },
-                             replyTimeout: replyTimeout, pause: { _ in }, log: { _ in })
+                             replyTimeout: replyTimeout, pause: { _ in }, log: log)
     }
 
     func testApprovedHelperIsReadyAndHoldsReleasesAndRestoresThroughFixedRequests() throws {
@@ -364,16 +367,72 @@ final class KeepAwakePowerHelperTests: XCTestCase {
         XCTAssertEqual(registration.settingsOpened, 2)
     }
 
+    func testNeverRegisteredHelperReportedAsNotFoundIsRegisteredOnFirstUse() throws {
+        // macOS reports a packaged daemon it has no record of yet as notFound.
+        let registration = FakeRegistration()
+        registration.status = .notFound
+        registration.statusAfterRegister = .requiresApproval
+        registration.registerError = NSError(domain: "SMAppServiceErrorDomain", code: 1)
+        var logged: [String] = []
+        let client = makeClient(registration, listener: listen(StalledHelper()), helperRequirement: nil,
+                                log: { logged.append($0) })
+        XCTAssertEqual(client.status(), .needsApproval, "Not yet registered, not missing")
+        XCTAssertEqual(registration.registers, 0, "Checking status never registers or prompts")
+        XCTAssertEqual(client.requestApproval(), .needsApproval)
+        XCTAssertEqual(registration.registers, 1)
+        XCTAssertEqual(registration.settingsOpened, 1)
+        XCTAssertEqual(logged, ["Keep Awake power helper registration: notFound → requiresApproval, SMAppServiceErrorDomain 1"])
+        XCTAssertEqual(client.status(), .needsApproval)
+    }
+
     func testMissingOrRejectedHelperIsUnavailableWithAnExplanation() throws {
         let registration = FakeRegistration()
         registration.status = .notFound
+        registration.packaged = false
         let client = makeClient(registration, listener: listen(StalledHelper()), helperRequirement: nil)
         XCTAssertEqual(client.status(), .unavailable(KeepAwakePowerHelper.missingMessage))
+        XCTAssertEqual(client.requestApproval(), .unavailable(KeepAwakePowerHelper.missingMessage))
+        XCTAssertEqual(registration.registers, 0, "A helper absent from the bundle is never registered")
 
-        registration.status = .notRegistered
+        registration.packaged = true
         registration.registerError = NSError(domain: "SMAppServiceErrorDomain", code: 3)
-        XCTAssertEqual(client.requestApproval(), .unavailable(KeepAwakePowerHelper.rejectedMessage))
+        XCTAssertEqual(client.requestApproval(), .unavailable(KeepAwakePowerHelper.rejectedMessage("SMAppServiceErrorDomain 3")))
+        registration.status = .notRegistered
+        XCTAssertEqual(client.requestApproval(), .unavailable(KeepAwakePowerHelper.rejectedMessage("SMAppServiceErrorDomain 3")))
+        registration.registerError = nil
+        XCTAssertEqual(client.requestApproval(), .unavailable(KeepAwakePowerHelper.rejectedMessage("notRegistered")))
+        XCTAssertEqual(registration.registers, 3)
         XCTAssertEqual(registration.settingsOpened, 0)
+    }
+
+    func testPackagedHelperNeedsItsPlistAndTheExecutableItNames() throws {
+        let bundle = FileManager.default.temporaryDirectory.appendingPathComponent("KeepAwake-\(UUID().uuidString).app")
+        defer { try? FileManager.default.removeItem(at: bundle) }
+        let daemons = bundle.appendingPathComponent("Contents/Library/LaunchDaemons")
+        let plist = daemons.appendingPathComponent(RelayPowerHelperIdentity.plistName)
+        let executable = bundle.appendingPathComponent(KeepAwakeHelperRegistration.bundleProgram)
+        try FileManager.default.createDirectory(at: daemons, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        func writeJob(label: String = RelayPowerHelperIdentity.label,
+                      program: String = KeepAwakeHelperRegistration.bundleProgram) {
+            XCTAssertTrue(NSDictionary(dictionary: ["Label": label, "BundleProgram": program]).write(to: plist, atomically: true))
+        }
+        XCTAssertFalse(KeepAwakeHelperRegistration.isPackaged(in: bundle), "No plist")
+        writeJob()
+        XCTAssertFalse(KeepAwakeHelperRegistration.isPackaged(in: bundle), "No executable")
+        try Data().write(to: executable)
+        XCTAssertFalse(KeepAwakeHelperRegistration.isPackaged(in: bundle), "Not executable")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        XCTAssertTrue(KeepAwakeHelperRegistration.isPackaged(in: bundle))
+        writeJob(label: "com.example.other")
+        XCTAssertFalse(KeepAwakeHelperRegistration.isPackaged(in: bundle), "Another job's plist")
+        writeJob(program: "Contents/MacOS/../MacOS/\(RelayPowerHelperIdentity.executableName)")
+        XCTAssertFalse(KeepAwakeHelperRegistration.isPackaged(in: bundle), "Only the fixed bundle program")
+        let shipped = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("scripts/LaunchDaemons/\(RelayPowerHelperIdentity.plistName)")
+        try FileManager.default.removeItem(at: plist)
+        try FileManager.default.copyItem(at: shipped, to: plist)
+        XCTAssertTrue(KeepAwakeHelperRegistration.isPackaged(in: bundle), "The plist the build embeds")
     }
 
     func testClientRefusesAHelperThatIsNotRelaysAndRepairsOnlyOnce() throws {

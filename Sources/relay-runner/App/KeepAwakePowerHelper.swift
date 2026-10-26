@@ -10,6 +10,8 @@ struct KeepAwakeHelperRegistration {
     /// Waits, bounded, for launchd to remove the job.
     var unregister: () -> Void
     var openSystemSettings: () -> Void
+    /// Whether this copy of the app carries the helper's launchd plist and the executable it names.
+    var isPackaged: () -> Bool
 
     static let unregisterTimeout: TimeInterval = 5
 
@@ -23,9 +25,22 @@ struct KeepAwakeHelperRegistration {
                 service.unregister { _ in done.signal() }
                 _ = done.wait(timeout: .now() + unregisterTimeout)
             },
-            openSystemSettings: { DispatchQueue.main.async { SMAppService.openSystemSettingsLoginItems() } }
+            openSystemSettings: { DispatchQueue.main.async { SMAppService.openSystemSettingsLoginItems() } },
+            isPackaged: { isPackaged(in: Bundle.main.bundleURL) }
         )
     }
+
+    /// SMAppService reports a daemon macOS has no record of yet as notFound, the same as one
+    /// absent from the bundle, so the bundle itself settles which it is.
+    static func isPackaged(in bundle: URL) -> Bool {
+        let plist = bundle.appendingPathComponent("Contents/Library/LaunchDaemons/\(RelayPowerHelperIdentity.plistName)")
+        guard let job = NSDictionary(contentsOf: plist) as? [String: Any],
+              job["Label"] as? String == RelayPowerHelperIdentity.label,
+              job["BundleProgram"] as? String == bundleProgram else { return false }
+        return FileManager.default.isExecutableFile(atPath: bundle.appendingPathComponent(bundleProgram).path)
+    }
+
+    static let bundleProgram = "Contents/MacOS/\(RelayPowerHelperIdentity.executableName)"
 }
 
 /// Relay Runner's side of the power helper. macOS asks the user to allow the helper once,
@@ -42,7 +57,9 @@ final class KeepAwakePowerHelper {
 
     static let approvalPlace = "System Settings → General → Login Items"
     static let missingMessage = "Keep Awake's power helper is missing from this copy of Relay Runner. Reinstall Relay Runner to use Keep Awake."
-    static let rejectedMessage = "macOS didn't accept Keep Awake's power helper. It needs a copy of Relay Runner signed by its developer; reinstall Relay Runner to use Keep Awake."
+    static func rejectedMessage(_ detail: String) -> String {
+        "macOS didn't accept Keep Awake's power helper (\(detail)). It needs a copy of Relay Runner signed by its developer; reinstall Relay Runner to use Keep Awake."
+    }
     static let notRespondingMessage = "Keep Awake's power helper isn't responding. Turn Relay Runner off and on again in \(approvalPlace), then try again."
     static let quittingMessage = "Relay Runner is quitting."
 
@@ -89,7 +106,7 @@ final class KeepAwakePowerHelper {
             lock.lock()
             awaitedApproval = true
             lock.unlock()
-            return Self.helper(for: current)
+            return helper(for: current)
         }
         if hello() { return .ready }
         lock.lock()
@@ -107,36 +124,55 @@ final class KeepAwakePowerHelper {
         pause(Self.reregisterDelay)
         do { try registration.register() } catch { log("Keep Awake power helper registration: \(Self.describe(error))") }
         let repairedStatus = registration.status()
-        guard repairedStatus == .enabled else { return Self.helper(for: repairedStatus) }
+        guard repairedStatus == .enabled else { return helper(for: repairedStatus) }
         return hello() ? .ready : .unavailable(Self.notRespondingMessage)
     }
 
     /// Registers the helper if needed and opens System Settings when macOS still needs the user's approval.
     func requestApproval() -> KeepAwakeSystem.Helper {
         guard !isClosed else { return .unavailable(Self.quittingMessage) }
-        if registration.status() == .notRegistered {
-            do { try registration.register() } catch { log("Keep Awake power helper registration: \(Self.describe(error))") }
+        let before = registration.status()
+        var failure: String?
+        // A helper macOS has never registered reports notFound as well as notRegistered.
+        if before == .notRegistered || before == .notFound {
+            guard registration.isPackaged() else {
+                log("Keep Awake power helper isn't packaged in this copy of Relay Runner")
+                return .unavailable(Self.missingMessage)
+            }
+            do { try registration.register() } catch { failure = Self.describe(error) }
         }
         let current = registration.status()
+        if current != before || failure != nil {
+            log("Keep Awake power helper registration: \(Self.name(before)) → \(Self.name(current))"
+                + (failure.map { ", \($0)" } ?? ""))
+        }
         switch current {
         case .enabled:
             return hello() ? .ready : .unavailable(Self.notRespondingMessage)
         case .requiresApproval:
             registration.openSystemSettings()
             return .needsApproval
-        case .notRegistered:
-            return .unavailable(Self.rejectedMessage)
         default:
-            return Self.helper(for: current)
+            return .unavailable(Self.rejectedMessage(failure ?? Self.name(current)))
         }
     }
 
-    private static func helper(for status: SMAppService.Status) -> KeepAwakeSystem.Helper {
+    private func helper(for status: SMAppService.Status) -> KeepAwakeSystem.Helper {
         switch status {
         case .enabled: return .ready
         case .requiresApproval, .notRegistered: return .needsApproval
-        case .notFound: return .unavailable(missingMessage)
-        @unknown default: return .unavailable(missingMessage)
+        case .notFound: return registration.isPackaged() ? .needsApproval : .unavailable(Self.missingMessage)
+        @unknown default: return .unavailable(Self.missingMessage)
+        }
+    }
+
+    private static func name(_ status: SMAppService.Status) -> String {
+        switch status {
+        case .notRegistered: return "notRegistered"
+        case .enabled: return "enabled"
+        case .requiresApproval: return "requiresApproval"
+        case .notFound: return "notFound"
+        @unknown default: return "status \(status.rawValue)"
         }
     }
 

@@ -168,6 +168,12 @@ a macOS policy change brings back the approval step, or an explicit "helper
 missing" or "not responding" message. Relay never falls back to administrator
 scripts, stores a password, or installs a sudoers rule.
 
+Before its first registration, macOS reports the helper as not found, the same
+status it gives one absent from the app. Relay registers it only after checking that
+the app contains the helper's launchd plist and the executable it names. It calls the
+helper missing only when they are absent. When macOS refuses the registration, the
+message includes its `SMAppService` error, and the log records the status change.
+
 The helper exposes only four fixed requests: hello, hold the override, release it,
 and restore a leftover. None takes a command, path, pid, or power key. It runs only
 `/usr/bin/pmset -g` and `/usr/bin/pmset -a disablesleep 0|1`, each with a deadline.
