@@ -278,7 +278,7 @@ struct PersonalFileStorageSettingsView: View {
             Button("Approve and sync") { Task { await model.mutate("sync", body: ["approve": true]) } }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This approves all eligible personal notes, their version history, general-tasks project files and reviewed documents. Anyone granted access to your private repository can read them. Active recordings remain local until completed.")
+            Text("This approves all eligible personal notes, their version history, general project files and reviewed documents. Anyone granted access to your private repository can read them. Active recordings remain local until completed.")
         }
     }
 

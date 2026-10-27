@@ -2,6 +2,17 @@ import XCTest
 @testable import relay_runner
 
 final class AssistantSessionStoreTests: XCTestCase {
+    func testBuiltInProjectDisplayNamePreservesStoredContextIdentity() throws {
+        let path = AssistantSessionStore.rootDirectory.appendingPathComponent("general-tasks").path
+        let context = AssistantSessionContext(kind: .project, projectID: "built-in", repositoryPath: path)
+        let restored = try JSONDecoder().decode(AssistantSessionContext.self, from: JSONEncoder().encode(context))
+        XCTAssertEqual(restored.displayName, "general")
+        XCTAssertEqual(restored.id, "project:built-in")
+        XCTAssertEqual(restored.repositoryPath, path)
+        let unrelated = AssistantSessionContext(kind: .project, projectID: "other", repositoryPath: "/other/general-tasks")
+        XCTAssertEqual(unrelated.displayName, "general-tasks")
+    }
+
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("relay-context-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

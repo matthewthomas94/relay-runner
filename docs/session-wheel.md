@@ -6,7 +6,7 @@ fingers lift; selection requires a click. Tap again or click outside to dismiss.
 Wheel actions and clicks in its gaps keep it open. Near a display edge, the complete wheel and
 its outer controls move inside the usable screen area.
 
-The top three slots show live project sessions, including general-tasks, or
+The top three slots show live project sessions, including general, or
 **Start session** when empty. The bottom three are **Workspace**, **Note Taker**,
 and **Settings**, from left to right. Sessions keep their positions as other
 sessions start or stop. Relay's existing four-session limit still applies:

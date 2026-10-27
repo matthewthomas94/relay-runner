@@ -2353,7 +2353,7 @@ final class AppState {
             return selectProjectContext(repositoryPath: project.lastResolvedPath, startsSession: startsSession,
                                         showsTerminal: showsTerminal)
         } catch {
-            contextSwitchMessage = "general-tasks could not be opened: \(error.localizedDescription)"
+            contextSwitchMessage = "general could not be opened: \(error.localizedDescription)"
             return false
         }
     }
@@ -2647,8 +2647,8 @@ final class AppState {
             contextWorkingDirectory = preparedContext.workingDirectory
         } catch {
             if requestedProject.isEmpty || AssistantSessionStore.samePath(requestedProject, AssistantSessionStore.filesDirectory.path) {
-                contextSwitchMessage = "general-tasks could not be opened: \(error.localizedDescription)"
-                statusText = "general-tasks unavailable"
+                contextSwitchMessage = "general could not be opened: \(error.localizedDescription)"
+                statusText = "general unavailable"
             } else {
                 surfaceProjectScopeFailure(String(describing: error))
             }
@@ -3556,11 +3556,11 @@ final class AppState {
             } else { selected = selectGeneralContext(startsSession: false) }
         } catch { return .failed(message: error.localizedDescription) }
         guard selected else {
-            return .failed(message: contextSwitchMessage ?? "general-tasks could not be selected.")
+            return .failed(message: contextSwitchMessage ?? "general could not be selected.")
         }
         refreshWorkspaceActivity(invalidateRoute: true)
         let message = pendingContextSelection != nil
-            ? "\(contextSwitchMessage ?? "general-tasks selection queued.") Finish the current reply.\(continuation == nil ? "" : " The request is then delivered once to the general-tasks session.")"
+            ? "\(contextSwitchMessage ?? "general selection queued.") Finish the current reply.\(continuation == nil ? "" : " The request is then delivered once to the general session.")"
             : browseOrFocusMessage(name: activeContext.displayName)
         return .selected(message: message)
     }

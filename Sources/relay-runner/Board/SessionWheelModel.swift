@@ -129,7 +129,7 @@ enum SessionWheelIntensity {
     static let step = 0.05
     static let slot = SessionWheelShortcut.settings.rawValue
     /// Keep the thumb clear of the rounded ends.
-    static let inset = (SessionWheelGeometry.segmentGap + 8) / SessionWheelGeometry.actionRadius
+    static let inset = (SessionWheelGeometry.segmentGap / 2 + 3) / SessionWheelGeometry.actionRadius
     static var maxAngle: CGFloat { CGFloat(slot) * SessionWheelGeometry.sliceAngle + inset }
     static var minAngle: CGFloat { CGFloat(slot) * SessionWheelGeometry.sliceAngle + SessionWheelGeometry.sliceAngle * 2 / 3 - inset }
 

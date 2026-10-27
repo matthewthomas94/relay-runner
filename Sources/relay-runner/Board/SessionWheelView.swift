@@ -314,7 +314,8 @@ struct SessionWheelView: View {
         return ZStack {
             controlBackground(shape, presentation: presentation)
             shape.fill(.white.opacity(enabled ? (contrast == .increased ? 0.22 : 0.1) : 0.04))
-                .mask(SessionWheelWedge(from: thumb, to: lowEnd))
+                .mask(SessionWheelWedge(from: value >= SessionWheelIntensity.range.upperBound ? highEnd : thumb,
+                                       to: lowEnd))
             SessionWheelThumb(angle: thumb)
                 .stroke(foreground, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
             Text(percent)
@@ -353,19 +354,19 @@ struct SessionWheelView: View {
                              symbol: SessionWheelKeepAwakeGlyph.Look(state).symbol,
                              // Pending stays legible; the controller ignores clicks until it settles.
                              enabled: true, hovered: model.hoveredSettingsControl == .keepAwake && !state.isPending,
-                             destructive: false, selected: state.isOn, keepAwake: state) {
+                             destructive: false, keepAwake: state) {
             guard model.isHoveringSettings else { return }
             performKeepAwake()
         }
     }
 
     private func submenuButton(index: Int, slot: Int, title: String, help: String, symbol: String,
-                               enabled: Bool, hovered: Bool, destructive: Bool, selected: Bool = false,
+                               enabled: Bool, hovered: Bool, destructive: Bool,
                                keepAwake: KeepAwakeState? = nil,
                                level: @escaping () -> Float = { 0 }, perform: @escaping () -> Void) -> some View {
         let isNoteMark = symbol == "checkmark" || symbol == "xmark"
         let presentation = ProgramBoardInteractionPresentation.resolve(
-            surface: .control, isEnabled: enabled, isSelected: selected,
+            surface: .control, isEnabled: enabled,
             isHovered: hovered,
             reduceMotion: reduceMotion
         )

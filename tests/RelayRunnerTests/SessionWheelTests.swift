@@ -1130,7 +1130,7 @@ final class SessionWheelTests: XCTestCase {
         model.refresh(sessions: [
             .init(id: "relay", name: "Relay Runner", unreadCount: 2, isFocused: true, playback: .play),
             .init(id: "hidpress", name: "hidpress", isRecording: true),
-            .init(id: "general", name: "general-tasks", canPlay: false)
+            .init(id: "general", name: "general", canPlay: false)
         ])
         model.projects = ["Vial QMK", "Hidpress Web", "ESP32 Bridge", "Website", "Voice Notes", "Research", "Playground"]
             .enumerated().map { .init(id: "\($0.offset)", name: $0.element, path: "/\($0.offset)") }
@@ -1141,6 +1141,7 @@ final class SessionWheelTests: XCTestCase {
                       "shortcuts-empty", "notes-idle", "notes-recording", "notes-paused", "notes-saving",
                       "more-sessions", "all-sessions",
                       "settings-min", "settings-max", "settings-keep-awake-off", "settings-keep-awake-on",
+                      "settings-keep-awake-off-idle", "settings-keep-awake-on-idle",
                       "settings-keep-awake-pending", "settings-keep-awake-approval", "settings-keep-awake-failed",
                       "settings-restore", "settings-particles-off", "settings-dragging"]
             + (0..<geometry.slotCount).map({ "contour-\($0)" }) {
@@ -1175,13 +1176,14 @@ final class SessionWheelTests: XCTestCase {
                     : state == "notes-saving" ? .transcribing : .idle
                 model.hover(at: geometry.position(slot: SessionWheelShortcut.noteTaker.rawValue, radius: 119))
             case "settings-min", "settings-max", "settings-keep-awake-off", "settings-keep-awake-on",
+                 "settings-keep-awake-off-idle", "settings-keep-awake-on-idle",
                  "settings-keep-awake-pending", "settings-keep-awake-approval", "settings-keep-awake-failed",
                  "settings-restore", "settings-particles-off", "settings-dragging":
                 model.reset(at: geometry.center)
                 model.notePhase = .idle
                 model.particleFieldEnabled = state != "settings-particles-off"
                 model.particleIntensity = state == "settings-min" ? 0.1 : state == "settings-max" ? 1.0 : 0.6
-                model.keepAwake = state == "settings-keep-awake-on" ? .on(ownsSleepSetting: true)
+                model.keepAwake = state.hasPrefix("settings-keep-awake-on") ? .on(ownsSleepSetting: true)
                     : state == "settings-keep-awake-pending" ? .enabling
                     : state == "settings-keep-awake-approval" ? .awaitingApproval
                     : state == "settings-keep-awake-failed" ? .failed(KeepAwakePowerHelper.missingMessage)
@@ -1206,7 +1208,7 @@ final class SessionWheelTests: XCTestCase {
                 model.startUnavailableReason = nil
                 model.isWorkspaceVisible = state == "design-recording" || state == "design-play"
                 let sessions: [SessionWheelSession] = [
-                    .init(id: "general", name: "General Tasks", isFocused: true,
+                    .init(id: "general", name: "general", isFocused: true,
                           isRecording: state == "design-recording",
                           canPlay: state == "design-play" || state == "design-playback",
                           playback: state == "design-playback" ? .stop : .play),

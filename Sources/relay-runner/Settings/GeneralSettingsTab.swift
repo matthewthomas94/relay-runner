@@ -333,7 +333,7 @@ private struct RegisteredProjectsSettingsView: View {
             SettingsRow {
                 SettingsRowLabel(
                     "Registered projects",
-                    description: "Start immediately in general-tasks. Choose a project in Workspace to work in its repository and keep tickets with that project."
+                    description: "Start immediately in general. Choose a project in Workspace to work in its repository and keep tickets with that project."
                 )
                 Spacer(minLength: 16)
                 HStack(spacing: 8) {
