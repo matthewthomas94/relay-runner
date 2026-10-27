@@ -13,7 +13,9 @@ struct AssistantSessionContext: Codable, Equatable, Identifiable {
     var id: String { isGeneral ? "general" : "project:\(projectID ?? repositoryPath ?? "")" }
     var isGeneral: Bool { kind == .general }
     var displayName: String {
-        isGeneral ? "General" : URL(fileURLWithPath: repositoryPath ?? "").lastPathComponent
+        let builtInPath = AssistantSessionStore.rootDirectory.appendingPathComponent("general-tasks").path
+        if isGeneral || AssistantSessionStore.samePath(repositoryPath ?? "", builtInPath) { return "general" }
+        return URL(fileURLWithPath: repositoryPath ?? "").lastPathComponent
     }
     var workingDirectory: String { repositoryPath ?? AssistantSessionStore.filesDirectory.path }
 

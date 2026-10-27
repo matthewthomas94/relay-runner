@@ -213,6 +213,7 @@ actor StateEventBus {
     private let onRecoveryAction: @MainActor (
         _ request: ContinuityRecoveryRequest
     ) -> ContinuityRecoveryResponse
+    private let onRemoteDeviceEvent: @MainActor (_ event: RemoteDeviceEvent) -> Void
 
     init(
         stateMachine: StateMachine,
@@ -230,12 +231,14 @@ actor StateEventBus {
             _ request: ContinuityRecoveryRequest
         ) -> ContinuityRecoveryResponse = { _ in
             .failed("component_action_unavailable")
-        }
+        },
+        onRemoteDeviceEvent: @escaping @MainActor (_ event: RemoteDeviceEvent) -> Void = { _ in }
     ) {
         self.stateMachine = stateMachine
         self.shouldHandleServiceEvent = shouldHandleServiceEvent
         self.onServiceEvent = onServiceEvent
         self.onRecoveryAction = onRecoveryAction
+        self.onRemoteDeviceEvent = onRemoteDeviceEvent
     }
 
     func start() {
@@ -299,6 +302,12 @@ actor StateEventBus {
                       let source = json["source"] as? String,
                       let state = json["state"] as? String
                 else { continue }
+
+                if let remoteEvent = RemoteDeviceEvent(json) {
+                    let onRemoteDeviceEvent = await self.onRemoteDeviceEvent
+                    await MainActor.run { onRemoteDeviceEvent(remoteEvent) }
+                    continue
+                }
 
                 let text = json["text"] as? String
                 if source == "storyboard_demo", state == "probe" {

@@ -7,12 +7,12 @@ struct GeneralSettingsTab: View {
     static let orchestratorModelLabel = "Orchestrator Model"
     static let orchestratorEffortLabel = "Orchestrator Effort"
     static let subagentSizingLabel = "Sub-agent sizing"
-    static let preventSleepLabel = "Prevent sleep while running"
-    static let preventSleepDescription = "Keep your computer awake while Relay Runner is running a task."
 
     @Binding var config: GeneralConfig
     var onOpenExternalWindow: () -> Void = {}
     var projectRegistryAppState: AppState? = nil
+    /// Runtime-only, shared with the session wheel; applies immediately rather than on Save.
+    var keepAwake: KeepAwakeController? = nil
     @State private var skillInstalled = ProcessManager().isSkillInstalled
     @State private var skillStatusText: String?
     @State private var skillStatusColor: SettingsSemanticColor = .idle
@@ -102,18 +102,29 @@ struct GeneralSettingsTab: View {
 
             PersonalFileStorageSettingsView()
 
+            SettingsSection("Session wheel") {
+                SettingsControlRow(
+                    "Wheel haptics",
+                    description: "Feel feedback when navigating and selecting wheel controls on a Force Touch trackpad."
+                ) {
+                    Toggle("Wheel haptics", isOn: $config.wheel_haptics)
+                }
+            }
+
             SettingsSection("Startup") {
                 SettingsControlRow("Auto-start services on app launch") {
                     Toggle("Auto-start services on app launch", isOn: $config.auto_start)
                 }
 
-                SettingsDivider()
+                if let keepAwake {
+                    SettingsDivider()
 
-                SettingsControlRow(
-                    Self.preventSleepLabel,
-                    description: Self.preventSleepDescription
-                ) {
-                    Toggle(Self.preventSleepLabel, isOn: $config.prevent_sleep_while_running)
+                    SettingsControlRow(
+                        KeepAwakeState.label,
+                        description: Self.keepAwakeDescription(keepAwake.state)
+                    ) {
+                        keepAwakeControl(keepAwake)
+                    }
                 }
 
                 SettingsDivider()
@@ -166,6 +177,29 @@ struct GeneralSettingsTab: View {
             )
         )
         .task(id: config.provider) { await refreshProviderReadiness() }
+    }
+
+    static func keepAwakeDescription(_ state: KeepAwakeState) -> String {
+        state == .off ? KeepAwakeState.description : "\(KeepAwakeState.description) \(state.status)"
+    }
+
+    @ViewBuilder
+    private func keepAwakeControl(_ keepAwake: KeepAwakeController) -> some View {
+        let state = keepAwake.state
+        if case .restoreNeeded = state {
+            SettingsActionButton(title: state.actionTitle, systemImage: "moon.zzz", helpText: state.status) {
+                keepAwake.toggle()
+            }
+        } else if state == .awaitingApproval {
+            SettingsActionButton(title: state.actionTitle, systemImage: "xmark", helpText: state.status) {
+                keepAwake.toggle()
+            }
+        } else {
+            // Reflects only confirmed state; pending changes disable the switch.
+            Toggle(KeepAwakeState.label, isOn: Binding(get: { state.isOn }, set: { _ in keepAwake.toggle() }))
+                .disabled(state.isPending)
+                .help(state.status)
+        }
     }
 
     /// Claude must be installed and verified on the user's subscription before
@@ -299,7 +333,7 @@ private struct RegisteredProjectsSettingsView: View {
             SettingsRow {
                 SettingsRowLabel(
                     "Registered projects",
-                    description: "Start immediately in general-tasks. Choose a project in Workspace to work in its repository and keep tickets with that project."
+                    description: "Start immediately in general. Choose a project in Workspace to work in its repository and keep tickets with that project."
                 )
                 Spacer(minLength: 16)
                 HStack(spacing: 8) {

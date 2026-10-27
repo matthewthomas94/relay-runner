@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Keep Awake's power helper (RR-437). Registered with SMAppService from
+         Contents/Library/LaunchDaemons and allowed once by the user in System Settings.
+         launchd runs it as root on demand; at boot (RunAtLoad) it restores any sleep
+         override an interrupted session left behind, then exits when idle. -->
+    <key>Label</key>
+    <string>com.relayrunner.app.power-helper</string>
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/relay-power-helper</string>
+    <key>MachServices</key>
+    <dict>
+        <key>com.relayrunner.app.power-helper</key>
+        <true/>
+    </dict>
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>com.relayrunner.app</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

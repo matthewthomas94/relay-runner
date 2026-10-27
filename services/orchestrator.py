@@ -49,7 +49,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
 from claude_subscription import check as check_claude_subscription
 try:
-    from services.artifact_lifecycle import ArtifactLifecycleCoordinator
+    from services.artifact_lifecycle import ArtifactLifecycleCoordinator, StructuredWorkerOutcome
     from services.automatic_retention import (
         automatic_confirmation, prepare_project_retention, retention_registry_revision,
         sweep_automatic_retention,
@@ -68,6 +68,7 @@ try:
         ArtifactConcurrentUpdate,
         ArtifactEventCollision,
         ArtifactIdentityError,
+        ArtifactMaterializationConflict,
         ArtifactMutation,
         ArtifactStore,
         ArtifactValidationError,
@@ -82,7 +83,9 @@ try:
     from services.note_metadata import NoteMetadataGenerator, NoteMetadataQueue
     from services.note_contract import NoteUpdate, note_source
 except ModuleNotFoundError:  # Installed direct-script layout.
-    from artifact_lifecycle import ArtifactLifecycleCoordinator  # type: ignore[no-redef]
+    from artifact_lifecycle import (  # type: ignore[no-redef]
+        ArtifactLifecycleCoordinator, StructuredWorkerOutcome,
+    )
     from automatic_retention import (
         automatic_confirmation, prepare_project_retention, retention_registry_revision,
         sweep_automatic_retention,
@@ -101,6 +104,7 @@ except ModuleNotFoundError:  # Installed direct-script layout.
         ArtifactConcurrentUpdate,
         ArtifactEventCollision,
         ArtifactIdentityError,
+        ArtifactMaterializationConflict,
         ArtifactMutation,
         ArtifactStore,
         ArtifactValidationError,
@@ -4282,6 +4286,23 @@ def validate_worker_outcome(
         resume = str(ticket["verification_resume"]).strip()
         return status, f"verification blocked: {blocker}; resume: {resume}"
     return status, "ticket marked done with run evidence"
+
+
+def _worker_outcome_json(outcome: StructuredWorkerOutcome) -> dict[str, Any]:
+    return {
+        "schema_version": outcome.schema_version,
+        "project_id": outcome.project_id,
+        "ticket_id": outcome.ticket_id,
+        "run_id": outcome.run_id,
+        "provider": outcome.provider,
+        "status": outcome.status.value,
+        "summary": outcome.summary,
+        "changed_paths": list(outcome.changed_paths),
+        "verification": list(outcome.verification),
+        "source_commit": outcome.source_commit,
+        "verification_blocker": outcome.verification_blocker,
+        "verification_resume": outcome.verification_resume,
+    }
 
 
 def validate_worker_completion(
@@ -9064,6 +9085,14 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
 
     def _progress_dependents_locked(self, *, repo_path: str, finished_ticket_id: str) -> None:
         repo = Path(repo_path)
+        artifact_lifecycle = self._artifact_lifecycle(str(repo))
+        if artifact_lifecycle is not None:
+            # The projected board changes only through the canonical writer;
+            # the loop below then reads the re-materialized projection.
+            self._promote_unblocked_dependents(
+                repo_path=str(repo),
+                artifact_lifecycle=artifact_lifecycle,
+            )
         all_tickets = scan_repo(repo)
         by_id = {t["id"]: t for t in all_tickets}
         finished = by_id.get(finished_ticket_id)
@@ -9076,8 +9105,14 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             if dep.get("canceled") or dep.get("draft"):
                 continue
             if not self._all_dependencies_done(
-                repo=repo, ticket=dep, all_tickets=all_tickets
+                repo=repo,
+                ticket=dep,
+                all_tickets=all_tickets,
+                artifact_lifecycle=artifact_lifecycle,
             ):
+                continue
+            if dep["status"] == "backlog" and artifact_lifecycle is not None:
+                # The canonical writer declined to promote it.
                 continue
             if dep["status"] == "backlog" and finished.get("execution_mode") == SPIKE_EXECUTION_MODE:
                 # A research result informs refinement; it never authorizes a
@@ -9090,16 +9125,40 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                     "board-change",
                     ticket_id=dep["id"],
                 )
+            dispatch_args: dict[str, Any] = {
+                "ticket_id": dep["id"],
+                "repo_path": str(repo),
+                "source": "dependency-progression",
+            }
+            if artifact_lifecycle is not None:
+                dispatch_args["internally_confirmed_project_id"] = (
+                    artifact_lifecycle.store.project_id
+                )
             try:
-                self.dispatch(ticket_id=dep["id"], repo_path=str(repo), source="dependency-progression")
+                self.dispatch(**dispatch_args)
             except (ValueError, RuntimeError) as e:
                 # Daemon refused dispatch (e.g. file missing, already active);
                 # the status flip stays — user can drag/redispatch manually.
                 print(f"[orchestrator] auto-dispatch declined for {dep['id']}: {e}", file=sys.stderr)
 
-    def _promote_unblocked_dependents(self, *, repo_path: str) -> list[str]:
-        """Promote backlog dependents whose dependencies are done in the source repo."""
+    def _promote_unblocked_dependents(
+        self,
+        *,
+        repo_path: str,
+        artifact_lifecycle: ArtifactLifecycleCoordinator | None = None,
+    ) -> list[str]:
+        """Promote backlog dependents whose dependencies are done in the source repo.
+
+        This is the single entry point for dependency promotion. An
+        artifact-enabled board is a projection of its artifact ref, so it is
+        promoted only through the lifecycle coordinator's canonical writer;
+        only legacy boards are rewritten in place.
+        """
         repo = Path(repo_path)
+        if artifact_lifecycle is None:
+            artifact_lifecycle = self._artifact_lifecycle(str(repo))
+        if artifact_lifecycle is not None:
+            return list(artifact_lifecycle.promote_unblocked_dependents())
         all_tickets = scan_repo(repo)
         by_id = {ticket["id"]: ticket for ticket in all_tickets}
         promoted: list[str] = []
@@ -9165,10 +9224,11 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         record_drain: bool = True,
         artifact_lifecycle: ArtifactLifecycleCoordinator | None = None,
     ) -> dict:
-        promoted = (
-            list(artifact_lifecycle.promote_unblocked_dependents())
-            if artifact_lifecycle is not None
-            else self._promote_unblocked_dependents(repo_path=str(repo))
+        # Promotion resolves the project's lifecycle itself. Dispatch authority
+        # below stays with a caller-validated `artifact_lifecycle` only.
+        promoted = self._promote_unblocked_dependents(
+            repo_path=str(repo),
+            artifact_lifecycle=artifact_lifecycle,
         )
         all_tickets = scan_repo(repo)
         dispatched: list[dict[str, Any]] = []
@@ -9381,25 +9441,31 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 ticket_id=str(run["ticket_id"]),
                 provider=str(run.get("provider_key") or ""),
                 payload=payload,
+                workspace_path=(
+                    Path(str(run["workspace_path"])) if run.get("workspace_path") else None
+                ),
             )
         except ArtifactValidationError as error:
             raise ValueError(str(error)) from error
+        return {"accepted": True, "outcome": _worker_outcome_json(outcome)}
+
+    def get_worker_outcome(self, run_id: int) -> dict[str, Any]:
+        """Read back the recorded outcome so a worker can check before retrying a post."""
+        run = self.runs.get(run_id)
+        if not run:
+            raise ValueError(f"unknown run_id {run_id}")
+        lifecycle = self._artifact_lifecycle(str(run.get("repo_path") or ""))
+        if lifecycle is None:
+            raise ValueError(f"run {run_id} uses the legacy ticket lifecycle")
+        try:
+            outcome = lifecycle.outcome(run_id)
+        except ArtifactValidationError as error:
+            raise ValueError(str(error)) from error
         return {
-            "accepted": True,
-            "outcome": {
-                "schema_version": outcome.schema_version,
-                "project_id": outcome.project_id,
-                "ticket_id": outcome.ticket_id,
-                "run_id": outcome.run_id,
-                "provider": outcome.provider,
-                "status": outcome.status.value,
-                "summary": outcome.summary,
-                "changed_paths": list(outcome.changed_paths),
-                "verification": list(outcome.verification),
-                "source_commit": outcome.source_commit,
-                "verification_blocker": outcome.verification_blocker,
-                "verification_resume": outcome.verification_resume,
-            },
+            "run_id": run_id,
+            "state": run.get("state"),
+            "recorded": outcome is not None,
+            "outcome": _worker_outcome_json(outcome) if outcome is not None else None,
         }
 
     def inspect_run_for_review(self, run_id: int) -> dict:
@@ -12507,6 +12573,10 @@ class Handler(BaseHTTPRequestHandler):
                 return 202, self.daemon.submit_worker_outcome(int(segments[2]), body)
 
             if (method == "GET" and len(segments) == 4
+                    and segments[:2] == ["v1", "runs"] and segments[3] == "outcome"):
+                return 200, self.daemon.get_worker_outcome(int(segments[2]))
+
+            if (method == "GET" and len(segments) == 4
                     and segments[:2] == ["v1", "runs"] and segments[3] == "review"):
                 result = self.daemon.inspect_run_for_review(int(segments[2]))
                 return 200, result
@@ -12579,6 +12649,12 @@ class Handler(BaseHTTPRequestHandler):
             return 409, {"error": str(e), "retryable": True}
         except (ArtifactEventCollision, ArtifactIdentityError) as e:
             return 409, {"error": str(e), "retryable": False}
+        except ArtifactMaterializationConflict as e:
+            return 409, {
+                "error": str(e),
+                "error_code": "materialization_conflict",
+                "retryable": False,
+            }
         except ArtifactValidationError as e:
             return 422, {"error": str(e)}
         except StorageError as e:

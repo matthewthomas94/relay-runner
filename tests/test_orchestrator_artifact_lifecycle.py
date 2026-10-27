@@ -618,6 +618,77 @@ class OrchestratorArtifactLifecycleTests(unittest.TestCase):
             self.git("ls-tree", "-r", "--name-only", "HEAD"),
         )
 
+    def test_lost_outcome_response_is_recoverable_and_retry_reuses_worktree(self):
+        # RR-432: a lost response must not fail a finished run or block its retry.
+        with patch.object(Worker, "start", autospec=True):
+            run = self.daemon.dispatch(
+                ticket_id="RR-1",
+                repo_path=str(self.repo),
+                project_scope_token=self.scope_token(),
+            )["run"]
+        run_id = int(run["id"])
+        workspace = Path(run["workspace_path"])
+        lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+        self.assertFalse(self.daemon.get_worker_outcome(run_id)["recorded"])
+
+        (workspace / "source.txt").write_text("first\n", encoding="utf-8")
+        self.git("-C", str(workspace), "commit", "--quiet", "-am", "first")
+        first = self.git("-C", str(workspace), "rev-parse", "HEAD")
+        payload = {
+            "status": "completed",
+            "summary": "First attempt.",
+            "changed_paths": ["source.txt"],
+            "verification": ["focused test passed"],
+            "source_commit": first,
+        }
+        self.daemon.submit_worker_outcome(run_id, payload)
+        recorded = self.daemon.get_worker_outcome(run_id)
+        self.assertTrue(recorded["recorded"])
+        self.assertEqual(recorded["outcome"]["source_commit"], first)
+
+        (workspace / "source.txt").write_text("second\n", encoding="utf-8")
+        self.git("-C", str(workspace), "commit", "--quiet", "-am", "second")
+        second = self.git("-C", str(workspace), "rev-parse", "HEAD")
+        accepted = self.daemon.submit_worker_outcome(
+            run_id, dict(payload, source_commit=second)
+        )
+        self.assertEqual(accepted["outcome"]["source_commit"], second)
+        manifest = json.loads(
+            (workspace / ".orchestrator/.artifact-snapshot.json").read_text(encoding="utf-8")
+        )
+        outcome, reason = lifecycle.validate_worker_completion(
+            workspace_path=workspace,
+            ticket_id="RR-1",
+            run_id=run_id,
+            provider="codex",
+            start_head=manifest["source_start_head"],
+        )
+        self.assertEqual(outcome, "completed", reason)
+
+        self.daemon.runs.update(run_id, state="Failed", ended=True, exit_code=1)
+        with self.assertRaisesRegex(ValueError, "not accepting a worker outcome"):
+            self.daemon.submit_worker_outcome(run_id, dict(payload, source_commit=second))
+        lifecycle.record_failure(
+            run_id=run_id, ticket_id="RR-1", provider="codex", reason="fixture failure",
+            retry=True,
+        )
+        with self.daemon._workers_lock:
+            self.daemon._workers.pop(run_id, None)
+
+        with patch.object(Worker, "start", autospec=True):
+            retry = self.daemon.dispatch(
+                ticket_id="RR-1",
+                repo_path=str(self.repo),
+                project_scope_token=self.scope_token(),
+            )["run"]
+
+        self.assertEqual(retry["state"], "Claimed", retry.get("last_error"))
+        self.assertEqual(Path(retry["workspace_path"]), workspace)
+        manifest = json.loads(
+            (workspace / ".orchestrator/.artifact-snapshot.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["run_id"], int(retry["id"]))
+
     def test_resumed_verification_closeout_finishes_done_without_review(self):
         # RR-409: a resumed verification-blocked ticket had nothing left to change.
         self.write_ticket("RR-2", status="backlog", depends_on=("RR-1",))
@@ -1369,6 +1440,79 @@ Saved through the daemon-owned typed writer.
         self.assertIsNotNone(
             self.store._find_event(f"lifecycle:dependency-sweep:{before}")
         )
+
+    def spy_projected_write_ticket(self, projected_writes: list[str]):
+        """Record plain ticket-writer calls that land on the artifact projection."""
+        projection = (self.repo / ".orchestrator").resolve()
+        original = orchestrator.write_ticket
+
+        def spy(path, ticket):
+            if Path(path).resolve().is_relative_to(projection):
+                projected_writes.append(str(path))
+            return original(path, ticket)
+
+        return patch.object(orchestrator, "write_ticket", side_effect=spy)
+
+    def assert_promoted_through_artifact_ref(self, ticket_id: str, before: str) -> None:
+        head = self.store._head()
+        # A direct projection write fails here: "edited manually".
+        self.store._ensure_materialization_consistent(head)
+        self.assertNotEqual(head, before)
+        self.assertEqual(self.git("rev-parse", "refs/heads/relay/artifacts"), head)
+        canonical = self.store.snapshot().files[f".orchestrator/{ticket_id}.md"]
+        self.assertIn(b"status: ready", canonical)
+        self.assertEqual((self.repo / ".orchestrator" / f"{ticket_id}.md").read_bytes(), canonical)
+
+    def test_per_completion_dependency_progression_uses_artifact_writer(self):
+        self.write_ticket("RR-2", status="done")
+        self.write_ticket("RR-3", status="backlog", depends_on=("RR-2",))
+        before = self.store._head()
+
+        projected_writes: list[str] = []
+        with self.spy_projected_write_ticket(projected_writes), patch.object(
+            self.daemon, "dispatch", return_value={}
+        ) as dispatch:
+            self.daemon._progress_dependents(
+                repo_path=str(self.repo),
+                finished_ticket_id="RR-2",
+            )
+
+        self.assert_promoted_through_artifact_ref("RR-3", before)
+        self.assertEqual(projected_writes, [])
+        dispatch.assert_called_once_with(
+            ticket_id="RR-3",
+            repo_path=str(self.repo),
+            source="dependency-progression",
+            internally_confirmed_project_id="daemon-project",
+        )
+
+    def test_sweep_without_lifecycle_argument_promotes_through_artifact_writer(self):
+        self.write_ticket("RR-2", status="done")
+        self.write_ticket("RR-3", status="backlog", depends_on=("RR-2",))
+        before = self.store._head()
+
+        projected_writes: list[str] = []
+        with self.spy_projected_write_ticket(projected_writes), patch.object(
+            self.daemon,
+            "_capacity_wait_reason",
+            return_value=("test capacity", None),
+        ):
+            with self.daemon._authoring_mutex():
+                sweep = self.daemon._sweep_ready_tickets_locked(
+                    repo=self.repo,
+                    trigger="queue-drain",
+                    record_drain=False,
+                )
+            self.assert_promoted_through_artifact_ref("RR-3", before)
+            # The periodic queue-drain reconcile is the caller that passes no
+            # lifecycle; a repeated pass must not rewrite the projection.
+            promoted_head = self.store._head()
+            self.daemon.reconcile_queue_drain(repo_path=str(self.repo))
+
+        self.assertEqual(sweep["promoted"], ["RR-3"])
+        self.assertEqual(projected_writes, [])
+        self.assertEqual(self.store._head(), promoted_head)
+        self.store._ensure_materialization_consistent(promoted_head)
 
     def test_dispatch_queues_dependency_gated_backlog_ticket_through_artifact_writer(self):
         self.write_ticket("RR-2", status="in_progress")

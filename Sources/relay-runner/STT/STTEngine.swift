@@ -96,6 +96,12 @@ final class STTEngine: @unchecked Sendable {
     @ObservationIgnored private var routeCancellationNoticePending = false
     @ObservationIgnored private var captureReady = false
     @ObservationIgnored private var referenceAudioToken: UUID?
+    /// Independent of `referenceAudioToken`: the microphone reopens only when
+    /// neither suspension reason remains.
+    @ObservationIgnored private var remoteDeviceSuspension = false
+    /// Called from the capture loop when the Mac user presses the activation
+    /// key while a remote device holds the microphone.
+    @ObservationIgnored var onRemoteTakeover: (() -> Void)?
     /// Serializes every decision to open or close the microphone. Lock order:
     /// `captureOwnershipLock` before `captureInterruptionLock`, never reversed.
     @ObservationIgnored private let captureOwnershipLock = NSLock()
@@ -331,7 +337,57 @@ final class STTEngine: @unchecked Sendable {
     private var referenceAudioSuspended: Bool {
         captureInterruptionLock.lock()
         defer { captureInterruptionLock.unlock() }
-        return referenceAudioToken != nil
+        return referenceAudioToken != nil || remoteDeviceSuspension
+    }
+
+    private var remoteDeviceSuspended: Bool {
+        captureInterruptionLock.lock()
+        defer { captureInterruptionLock.unlock() }
+        return remoteDeviceSuspension
+    }
+
+    /// Disconnects command capture while a phone is the active voice input.
+    /// Unlike reference audio it never refuses: an in-flight Mac recording is
+    /// dropped. Idempotent.
+    func suspendForRemoteDevice() {
+        captureInterruptionLock.lock()
+        guard !remoteDeviceSuspension else { captureInterruptionLock.unlock(); return }
+        remoteDeviceSuspension = true
+        captureInterruptionEpoch &+= 1
+        captureReady = false
+        captureInterruptionLock.unlock()
+        resetRecordingBuffer()
+        gesture.reset()
+        isRecording = false
+        partialTranscription = ""
+        captureOwnershipLock.lock()
+        audioCapture.stop()
+        captureOwnershipLock.unlock()
+    }
+
+    /// `preservingGesture` keeps the key press that triggered a Mac takeover
+    /// so it starts the recording instead of being swallowed.
+    func resumeAfterRemoteDevice(preservingGesture: Bool = false) {
+        captureInterruptionLock.lock()
+        guard remoteDeviceSuspension else { captureInterruptionLock.unlock(); return }
+        remoteDeviceSuspension = false
+        captureInterruptionEpoch &+= 1
+        captureInterruptionLock.unlock()
+        resetRecordingBuffer()
+        if !preservingGesture { gesture.reset() }
+        captureOwnershipLock.lock()
+        defer { captureOwnershipLock.unlock() }
+        do {
+            try applyCaptureOwnershipLocked()
+        } catch {
+            setCaptureReady(false)
+            statusMessage = "Microphone capture could not resume. Check the input device."
+        }
+    }
+
+    private func checkRemoteTakeover() {
+        guard remoteDeviceSuspended, gesture.activationPending else { return }
+        onRemoteTakeover?()
     }
 
     /// Keeps the ASR model loaded but disconnects command capture. Neither
@@ -401,6 +457,7 @@ final class STTEngine: @unchecked Sendable {
         captureInterruptionEpoch &+= 1
         captureReady = false
         referenceAudioToken = nil
+        remoteDeviceSuspension = false
         pendingCaptureInterruption = nil
         routeCancellationNoticePending = false
         captureInterruptionLock.unlock()
@@ -528,7 +585,7 @@ final class STTEngine: @unchecked Sendable {
 
         while !Task.isCancelled {
             try await Task.sleep(for: .milliseconds(pollMs))
-            if referenceAudioSuspended { continue }
+            if referenceAudioSuspended { checkRemoteTakeover(); continue }
             _ = takeCaptureInterruption()
             transcribeCounter += 1
             if transcribeCounter < stepMs / pollMs { continue }
@@ -580,6 +637,7 @@ final class STTEngine: @unchecked Sendable {
             if referenceAudioSuspended {
                 transcript.reset()
                 mediaSettleDeadline = nil
+                checkRemoteTakeover()
                 continue
             }
 

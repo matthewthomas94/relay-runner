@@ -215,6 +215,9 @@ final class CapsLockGesture {
 
     var isRecording: Bool { recording }
 
+    /// The activation key was pressed and no `poll` has consumed it yet.
+    var activationPending: Bool { !suppressed && isKeyOn && !prevKeyOn }
+
     func reset() {
         recording = false
         transitions.removeAll()

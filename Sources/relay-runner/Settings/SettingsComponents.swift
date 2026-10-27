@@ -315,7 +315,7 @@ enum SettingsLayout {
     static let rowVerticalPadding: CGFloat = 11
     static let labelControlSpacing: CGFloat = 20
     static let controlMaxWidth: CGFloat = 280
-    static let detailMaxWidth: CGFloat = 680
+    static let detailMaxWidth: CGFloat = .infinity
     static let sidebarRowHeight: CGFloat = 32
     static let sidebarCornerRadius: CGFloat = 6
     static let systemFocusEffectDisabled = true

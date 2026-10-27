@@ -1,0 +1,206 @@
+[
+ {
+  "name": "inside_window",
+  "steps": [
+   {
+    "op": "send",
+    "count": 10,
+    "at": 0
+   },
+   {
+    "op": "resume",
+    "after": 7,
+    "at": 1,
+    "expect": {
+     "replayed_range": [
+      8,
+      10
+     ],
+     "dropped": false,
+     "server_seq": 10
+    }
+   }
+  ]
+ },
+ {
+  "name": "caught_up",
+  "steps": [
+   {
+    "op": "send",
+    "count": 5,
+    "at": 0
+   },
+   {
+    "op": "resume",
+    "after": 5,
+    "at": 1,
+    "expect": {
+     "replayed_range": null,
+     "dropped": false,
+     "server_seq": 5
+    }
+   }
+  ]
+ },
+ {
+  "name": "fresh_connection",
+  "steps": [
+   {
+    "op": "send",
+    "count": 5,
+    "at": 0
+   },
+   {
+    "op": "resume",
+    "after": null,
+    "at": 1,
+    "expect": {
+     "replayed_range": null,
+     "dropped": false,
+     "server_seq": 5
+    }
+   }
+  ]
+ },
+ {
+  "name": "older_than_count_window",
+  "steps": [
+   {
+    "op": "send",
+    "count": 250,
+    "at": 0
+   },
+   {
+    "op": "resume",
+    "after": 40,
+    "at": 1,
+    "expect": {
+     "replayed_range": [
+      51,
+      250
+     ],
+     "dropped": true,
+     "server_seq": 250
+    }
+   }
+  ]
+ },
+ {
+  "name": "exactly_at_count_edge",
+  "steps": [
+   {
+    "op": "send",
+    "count": 250,
+    "at": 0
+   },
+   {
+    "op": "resume",
+    "after": 50,
+    "at": 1,
+    "expect": {
+     "replayed_range": [
+      51,
+      250
+     ],
+     "dropped": false,
+     "server_seq": 250
+    }
+   }
+  ]
+ },
+ {
+  "name": "older_than_age_window",
+  "steps": [
+   {
+    "op": "send",
+    "count": 3,
+    "at": 0
+   },
+   {
+    "op": "send",
+    "count": 2,
+    "at": 400
+   },
+   {
+    "op": "resume",
+    "after": 1,
+    "at": 401,
+    "expect": {
+     "replayed_range": [
+      4,
+      5
+     ],
+     "dropped": true,
+     "server_seq": 5
+    }
+   }
+  ]
+ },
+ {
+  "name": "everything_expired",
+  "steps": [
+   {
+    "op": "send",
+    "count": 3,
+    "at": 0
+   },
+   {
+    "op": "resume",
+    "after": 1,
+    "at": 1000,
+    "expect": {
+     "replayed_range": null,
+     "dropped": true,
+     "server_seq": 3
+    }
+   }
+  ]
+ },
+ {
+  "name": "ack_trims_and_covers_gap",
+  "steps": [
+   {
+    "op": "send",
+    "count": 10,
+    "at": 0
+   },
+   {
+    "op": "ack",
+    "seq": 6
+   },
+   {
+    "op": "resume",
+    "after": 2,
+    "at": 1,
+    "expect": {
+     "replayed_range": [
+      7,
+      10
+     ],
+     "dropped": false,
+     "server_seq": 10
+    }
+   }
+  ]
+ },
+ {
+  "name": "phone_ahead_of_mac",
+  "steps": [
+   {
+    "op": "send",
+    "count": 5,
+    "at": 0
+   },
+   {
+    "op": "resume",
+    "after": 9,
+    "at": 1,
+    "expect": {
+     "replayed_range": null,
+     "dropped": true,
+     "server_seq": 5
+    }
+   }
+  ]
+ }
+]

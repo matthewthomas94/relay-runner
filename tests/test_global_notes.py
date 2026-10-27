@@ -42,6 +42,31 @@ class GlobalNoteTests(unittest.TestCase):
         self.assertEqual(len(reopened.list()['notes']), 1)
         self.assertEqual(reopened.manager.get(identity['artifact_id'])['note'], saved['note'])
 
+    def test_finder_metadata_in_the_notes_folder_neither_hides_nor_blocks_notes(self):
+        self.library.sources = lambda: []
+        saved = self.create_global()
+        projection = self.root / 'notes' / '.orchestrator'
+        (projection / '.DS_Store').write_bytes(b'Bud1')
+        (projection / 'notes' / '._RR-N1.md').write_bytes(b'AppleDouble')
+        # A fresh library runs the projection check on first use, as the app
+        # does when it lists history or starts a capture after a restart.
+        reopened = GlobalNoteLibrary(self.root, 'new-device', lambda: [])
+        self.assertEqual([card['note_id'] for card in reopened.list()['notes']],
+                         [saved['note']['identity']['note_id']])
+        started = reopened.manager.create(
+            request_id='after-finder', created_at=CREATED, capture_started_at=CREATED,
+            captured_at=CREATED, recording_state='recording', checkpoint_reason='checkpoint',
+            segments=[],
+        )
+        (projection / '.DS_Store').write_bytes(b'Bud1 again')
+        reopened.manager.update(
+            request_id='after-finder-save',
+            update={**started['note'], 'recording_state': 'completed',
+                    'checkpoint_reason': 'complete', 'capture_ended_at': CREATED},
+        )
+        self.assertEqual(len(reopened.list()['notes']), 2)
+        self.assertTrue((self.root / 'notes' / started['reference']['path']).is_file())
+
     def test_cancel_removes_active_draft_without_resurrection_and_protects_saved_notes(self):
         self.library.sources = lambda: []
         saved = self.create_global()["note"]

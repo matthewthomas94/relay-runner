@@ -198,9 +198,10 @@ struct PersonalFileStorageSettingsView: View {
                         Text("GitHub sign-in code: \(code)").textSelection(.enabled)
                     }
                     HStack(spacing: 8) {
+                        Spacer(minLength: 0)
+                        if model.busy { ProgressView().controlSize(.small) }
                         SettingsActionButton(title: "Open local files", systemImage: "folder", isEnabled: !model.busy, action: model.revealFolder)
                         SettingsActionButton(title: "Refresh", systemImage: "arrow.clockwise", isEnabled: !model.busy) { Task { await model.refresh() } }
-                        if model.busy { ProgressView().controlSize(.small) }
                     }
                 }
             }
@@ -209,6 +210,7 @@ struct PersonalFileStorageSettingsView: View {
                 SettingsRow {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 8) {
+                            Spacer(minLength: 0)
                             SettingsActionButton(title: "Sign in to GitHub", systemImage: "person.crop.circle", isEnabled: !model.busy) { Task { await model.signIn() } }
                             SettingsActionButton(title: "Check signed-in account", systemImage: "arrow.clockwise", isEnabled: !model.busy) { Task { await model.checkAccount() } }
                         }
@@ -223,12 +225,14 @@ struct PersonalFileStorageSettingsView: View {
                                                                        fill: BoardDarkSurfaceStyle.contentFill))
                             SettingsActionButton(title: "Connect private repository…", systemImage: "link",
                                                  isEnabled: !model.busy && !model.repositoryName.isEmpty) { confirmConnect = true }
+                                .frame(maxWidth: .infinity, alignment: .trailing)
                         }
                     }
                 }
             } else {
                 SettingsRow {
                     HStack(spacing: 8) {
+                        Spacer(minLength: 0)
                         SettingsActionButton(title: "Approve and sync personal files…", systemImage: "arrow.triangle.2.circlepath", isEnabled: !model.busy) { confirmUpload = true }
                         SettingsActionButton(title: "Retry approved files", systemImage: "arrow.clockwise", isEnabled: !model.busy) { Task { await model.mutate("sync") } }
                         SettingsActionButton(title: "Disconnect", systemImage: "xmark", isEnabled: !model.busy) { Task { await model.mutate("disconnect") } }
@@ -258,6 +262,7 @@ struct PersonalFileStorageSettingsView: View {
                         ForEach(status.overageReasons, id: \.self) { Text($0).foregroundStyle(SettingsSurfaceColor.secondaryText) }
                     }
                     SettingsActionButton(title: "Apply storage policy", systemImage: "checkmark", isEnabled: !model.busy) { Task { await model.savePolicy() } }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
         }
@@ -273,7 +278,7 @@ struct PersonalFileStorageSettingsView: View {
             Button("Approve and sync") { Task { await model.mutate("sync", body: ["approve": true]) } }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This approves all eligible personal notes, their version history, general-tasks project files and reviewed documents. Anyone granted access to your private repository can read them. Active recordings remain local until completed.")
+            Text("This approves all eligible personal notes, their version history, general project files and reviewed documents. Anyone granted access to your private repository can read them. Active recordings remain local until completed.")
         }
     }
 

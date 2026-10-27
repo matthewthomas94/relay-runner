@@ -185,10 +185,35 @@ final class SessionWheelMotionTests: XCTestCase {
     }
 
     @MainActor
+    func testStartingAndStoppingSessionsUpdatesTilesWithoutCollapsingTheWheel() async throws {
+        for reduceMotion in [false, true] {
+            let model = SessionWheelModel()
+            let menus = SessionWheelMenuMotion()
+            model.refresh(sessions: [.init(id: "existing", name: "Existing")])
+            await menus.update(to: SessionWheelMenu(model), reduceMotion: reduceMotion)
+            for live: [SessionWheelSession] in [
+                [.init(id: "existing", name: "Existing"), .init(id: "new", name: "New")],
+                [.init(id: "existing", name: "Existing")]
+            ] {
+                model.refresh(sessions: live)
+                let requested = SessionWheelMenu(model)
+                let change = Task { await menus.update(to: requested, reduceMotion: reduceMotion) }
+                try await Task.sleep(for: .milliseconds(40))
+                XCTAssertEqual(menus.displayed, requested)
+                XCTAssertFalse(menus.motion.isAnimating, "A session change must not restart every tile's entrance")
+                XCTAssertEqual(menus.motion.progress(at: ProcessInfo.processInfo.systemUptime), 1)
+                await change.value
+            }
+        }
+    }
+
+    @MainActor
     func testMenuRefreshDuringExpansionDoesNotRestartOrContractTheNewPage() async throws {
         let model = SessionWheelModel()
         let menus = SessionWheelMenuMotion()
+        model.showProjects(at: SessionWheelGeometry.center)
         await menus.update(to: SessionWheelMenu(model), reduceMotion: true)
+        model.reset(at: SessionWheelGeometry.center)
         model.refresh(sessions: [.init(id: "a", name: "First")])
         let change = Task { await menus.update(to: SessionWheelMenu(model), reduceMotion: true) }
         try await Task.sleep(for: .milliseconds(150))
@@ -196,10 +221,11 @@ final class SessionWheelMotionTests: XCTestCase {
         XCTAssertTrue(menus.motion.isPresented)
         change.cancel()
         await change.value
-        model.refresh(sessions: [.init(id: "a", name: "Updated", unreadCount: 2)])
+        model.refresh(sessions: [.init(id: "a", name: "Updated", unreadCount: 2), .init(id: "b", name: "Second")])
         await menus.update(to: SessionWheelMenu(model), reduceMotion: true)
         XCTAssertEqual(menus.displayed?.sessions[0]?.name, "Updated")
         XCTAssertEqual(menus.displayed?.sessions[0]?.unreadCount, 2)
+        XCTAssertEqual(menus.displayed?.sessions[1]?.id, "b")
         XCTAssertFalse(menus.motion.isAnimating)
         let frame = SessionWheelPresentation(progress: menus.motion.progress(at: ProcessInfo.processInfo.systemUptime),
                                              reduceMotion: true)

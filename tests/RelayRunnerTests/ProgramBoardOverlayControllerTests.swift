@@ -471,13 +471,52 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         let failed = await ProgramBoardOverlayController.fetchProjectNotes(
             repoPaths: ["/repo/relay-runner"], scopeTokenProvider: { _ in token }, fetchPage: fetch
         )
-        XCTAssertEqual(failed.errorMessage, "Could not load notes for relay-runner.")
+        XCTAssertEqual(
+            failed.errorMessage,
+            "Could not load notes for relay-runner: Could not build orchestrator request."
+        )
         token = "fresh-scope"
         let recovered = await ProgramBoardOverlayController.fetchProjectNotes(
             repoPaths: ["/repo/relay-runner"], scopeTokenProvider: { _ in token }, fetchPage: fetch
         )
         XCTAssertNil(recovered.errorMessage)
         XCTAssertEqual(recovered.notes.map { $0.card.noteID }, ["RR-N1"])
+    }
+
+    func testNoteCatalogFailureNamesTheDaemonCause() async {
+        let conflict = "materialized .orchestrator was edited manually (added: .DS_Store); use explicit Save/import"
+        let body = #"{"error":"\#(conflict)","error_code":"materialization_conflict","retryable":false}"#
+        let result = await ProgramBoardOverlayController.fetchProjectNotes(
+            repoPaths: [GlobalNoteStore.repositoryPath],
+            scopeTokenProvider: { _ in nil },
+            fetchPage: { _, _, _, _ in throw OrchestratorClientError.badStatus(409, body) }
+        )
+        XCTAssertEqual(result.errorMessage, "Could not load your notes: \(conflict).")
+        XCTAssertEqual(result.failedProjectPaths, [GlobalNoteStore.repositoryPath])
+        XCTAssertTrue(result.notes.isEmpty)
+    }
+
+    func testNotetakerStartFailureIsPresentedOnlyWhileNoNoteExists() {
+        func snapshot(
+            phase: MeetingNoteCoordinatorPhase, noteID: String?, error: String?
+        ) -> MeetingNoteCoordinatorSnapshot {
+            MeetingNoteCoordinatorSnapshot(
+                phase: phase, noteID: noteID, project: nil, liveHypothesisCount: 0,
+                durableSegmentCount: 0, syncState: nil, errorMessage: error
+            )
+        }
+        let conflict = "materialized .orchestrator was edited manually (added: .DS_Store); use explicit Save/import"
+        XCTAssertEqual(
+            ProgramNoteStartFailurePresentation.message(for: snapshot(phase: .error, noteID: nil, error: conflict)),
+            "Notetaker could not start: \(conflict)."
+        )
+        XCTAssertNil(ProgramNoteStartFailurePresentation.message(
+            for: snapshot(phase: .error, noteID: "RR-N1", error: conflict)
+        ))
+        XCTAssertNil(ProgramNoteStartFailurePresentation.message(for: snapshot(phase: .error, noteID: nil, error: "  ")))
+        XCTAssertNil(ProgramNoteStartFailurePresentation.message(
+            for: snapshot(phase: .preparing, noteID: nil, error: conflict)
+        ))
     }
 
     func testProjectNoteCatalogUsesSupportedPageSizeAndFollowsManagerCursor() async {

@@ -192,13 +192,12 @@ final class AppState {
     @ObservationIgnored private let checkForUpdatesAction: @MainActor () -> Void
     @ObservationIgnored private let refreshBundledOrchestratorDaemon: () async -> OrchestratorDaemonRefreshResult
     @ObservationIgnored private let refreshBundledServicesOnLaunch: Bool
-    @ObservationIgnored private let sleepPreventionController = SleepPreventionController()
+    @ObservationIgnored let keepAwake = KeepAwakeController()
     @ObservationIgnored private let workspaceActivityStore = WorkspaceActivitySnapshotStore()
     @ObservationIgnored private var workspaceActivityTimer: Timer?
     @ObservationIgnored private var workspaceActivityTask: Task<Void, Never>?
     @ObservationIgnored private var workspaceActivityRefreshID = 0
     @ObservationIgnored private var workspaceDiscoveryTask: Task<Void, Never>?
-    @ObservationIgnored private var sleepPreventionMonitoringActive = false
     @ObservationIgnored private var appTerminationObserver: NSObjectProtocol?
     @ObservationIgnored private var meetingNoteCoordinator: MeetingNoteCoordinator?
     @ObservationIgnored private var meetingNoteCoordinatorNotificationID: UUID?
@@ -383,6 +382,20 @@ final class AppState {
     @ObservationIgnored private let notchStatusController = NotchStatusController()
     private var perimeterOverlay: PerimeterOverlayManager?
     private var eventBus: StateEventBus?
+    /// `Remote: <device>` while a Relay Remote phone is connected.
+    private(set) var remoteStatusLabel: String?
+    @ObservationIgnored private lazy var remoteDeviceSession: RelayRemoteDeviceSession = {
+        let session = RelayRemoteDeviceSession(
+            gate: AppStateRemoteGate(owner: self),
+            keepAwake: IOKitKeepAwake()
+        )
+        session.onChange = { [weak self] in
+            guard let self else { return }
+            self.remoteStatusLabel = self.remoteDeviceSession.statusLabel
+            self.syncNotchActivitySurface()
+        }
+        return session
+    }()
     private var actionsBus: ActionsConfirmBus?
     private var sttPollTimer: Timer?
     private var notchActivityPollingActive = false
@@ -670,7 +683,6 @@ final class AppState {
                 self.clearNotchActivityProjectState(cancelRefresh: false)
             }
             self.syncNotchActivitySurface()
-            self.syncSleepPreventionController(with: snapshot)
             if invalidateRoute {
                 self.programBoardOverlay.refreshProjectScopeAfterRegistryChange()
             } else {
@@ -742,6 +754,7 @@ final class AppState {
         let voiceTargetName = listeningVoiceTargetName
         let playbackTargetName = playingVoiceTargetName
         let switchNotice = sessionSwitchNotice
+        let remoteDeviceLabel = remoteStatusLabel
         let labels = NotchActivityLabelPlanner.labels(
             for: stateMachine.state,
             foregroundActivity: foregroundActivityLabel,
@@ -752,7 +765,8 @@ final class AppState {
             boardContentLoading: boardContentLoading,
             voiceTargetName: voiceTargetName,
             playbackTargetName: playbackTargetName,
-            switchNotice: switchNotice
+            switchNotice: switchNotice,
+            remoteDeviceLabel: remoteDeviceLabel
         )
         let hoverActivityLabel = NotchActivityLabelPlanner.hoverLabel(
             for: stateMachine.state,
@@ -765,6 +779,7 @@ final class AppState {
             voiceTargetName: voiceTargetName,
             playbackTargetName: playbackTargetName,
             switchNotice: switchNotice,
+            remoteDeviceLabel: remoteDeviceLabel,
             ticketForRun: { [notchActivityTicketsByRunKey] run in
                 let repoPath = URL(fileURLWithPath: run.repoPath).resolvingSymlinksInPath().path
                 return notchActivityTicketsByRunKey[
@@ -784,7 +799,7 @@ final class AppState {
         notchStatusController.setPresentation(
             status: NotchSessionStatus.resolve(
                 for: stateMachine.state,
-                hasActivityLabels: hasActiveWork || switchNotice != nil,
+                hasActivityLabels: hasActiveWork || switchNotice != nil || remoteDeviceLabel != nil,
                 boardIsLoading: boardIsLoading
             ),
             activityLabels: labels,
@@ -957,6 +972,7 @@ final class AppState {
         sessionWheel.refresh = { [weak self] model, includesProjects in
             self?.refreshSessionWheel(model, includesProjects: includesProjects)
         }
+        sessionWheel.haptics.isEnabled = { [weak self] in self?.config.general.wheel_haptics ?? false }
         sessionWheel.toggleWorkspace = { [weak self] in self?.toggleWorkspace() }
         sessionWheel.openShortcut = { [weak self] shortcut in
             guard let self, self.allowsAppShellAccess else { return }
@@ -968,6 +984,20 @@ final class AppState {
             }
         }
         sessionWheel.noteAction = { [weak self] in self?.performNoteWheelAction($0) ?? false }
+        sessionWheel.previewIntensity = { [weak self] value in
+            guard let self else { return }
+            var awareness = self.config.awareness
+            awareness.glow_intensity = value
+            self.overlayController?.updateConfig(awareness)
+        }
+        sessionWheel.commitIntensity = { [weak self] value in
+            guard let self, self.config.awareness.glow_intensity != value else { return }
+            var next = self.config
+            next.awareness.glow_intensity = value
+            self.saveConfig(next)
+        }
+        sessionWheel.previewParticles = { [weak self] in self?.overlayController?.setParticlePreview($0) }
+        sessionWheel.keepAwakeAction = { [weak self] in self?.keepAwake.toggle() ?? false }
         sessionWheel.focusSession = { [weak self] in self?.switchSessionFromWheel(contextID: $0) }
         sessionWheel.startProject = { [weak self] path in
             self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false
@@ -991,14 +1021,14 @@ final class AppState {
             object: nil,
             queue: nil
         ) { [weak self] _ in
-            self?.stopSleepPreventionMonitoring(releaseReason: "app-termination")
+            self?.keepAwake.shutdown()
         }
         refreshConfiguredWorkspaceDiscoveryIfNeeded(
             oldConfig: nil,
             newConfig: config,
             force: false
         )
-        updateSleepPreventionMonitoring()
+        keepAwake.recoverIfNeeded()
         // Watch privacy permissions continuously — macOS doesn't notify us
         // when the user grants/revokes in Settings, so we poll.
         permissions.startMonitoring()
@@ -1055,7 +1085,7 @@ final class AppState {
         if let appTerminationObserver {
             NotificationCenter.default.removeObserver(appTerminationObserver)
         }
-        stopSleepPreventionMonitoring(releaseReason: "deinit")
+        keepAwake.shutdown()
     }
 
     func checkForUpdates() {
@@ -1160,6 +1190,10 @@ final class AppState {
         let engine = STTEngine(config: config.stt)
         engine.tutorialActive = onboardingTutorialSpeechActive
         sttEngine = engine
+        engine.onRemoteTakeover = { [weak self] in
+            Task { @MainActor in self?.remoteDeviceSession.userTookOver() }
+        }
+        if remoteDeviceSession.activeDeviceID != nil { engine.suspendForRemoteDevice() }
         syncCommandCaptureOwnership()
         resetObservedTutorialSTTSerials()
         sttSetupStartedAt = Date()
@@ -2076,7 +2110,7 @@ final class AppState {
             workspaceDiscoveryTask?.cancel()
             workspaceDiscoveryTask = nil
             cancelWorkspaceActivityRefresh(invalidate: true)
-            stopSleepPreventionMonitoring(releaseReason: "services-stopped")
+            keepAwake.shutdown()
             return
         }
         stopBridgeWatchdog()
@@ -2100,7 +2134,7 @@ final class AppState {
         workspaceDiscoveryTask?.cancel()
         workspaceDiscoveryTask = nil
         cancelWorkspaceActivityRefresh(invalidate: true)
-        stopSleepPreventionMonitoring(releaseReason: "services-stopped")
+        keepAwake.shutdown()
     }
 
     func prepareForSparkleRelaunch() {
@@ -2111,7 +2145,7 @@ final class AppState {
         workspaceDiscoveryTask?.cancel()
         workspaceDiscoveryTask = nil
         cancelWorkspaceActivityRefresh(invalidate: true)
-        stopSleepPreventionMonitoring(releaseReason: "update-relaunch")
+        keepAwake.shutdown()
         bridgeRecoverySuppressedForUpdate = true
         stopBridgeWatchdog()
         sessionRegistry.shutdownAll()
@@ -2212,10 +2246,6 @@ final class AppState {
             newConfig: newConfig,
             force: forceWorkspaceDiscovery
         )
-        if oldConfig.general.prevent_sleep_while_running != newConfig.general.prevent_sleep_while_running {
-            updateSleepPreventionMonitoring()
-        }
-
         if Self.shouldInvalidateMeetingNoteCoordinator(
             oldModel: oldConfig.stt.model,
             newModel: newConfig.stt.model,
@@ -2323,7 +2353,7 @@ final class AppState {
             return selectProjectContext(repositoryPath: project.lastResolvedPath, startsSession: startsSession,
                                         showsTerminal: showsTerminal)
         } catch {
-            contextSwitchMessage = "general-tasks could not be opened: \(error.localizedDescription)"
+            contextSwitchMessage = "general could not be opened: \(error.localizedDescription)"
             return false
         }
     }
@@ -2617,8 +2647,8 @@ final class AppState {
             contextWorkingDirectory = preparedContext.workingDirectory
         } catch {
             if requestedProject.isEmpty || AssistantSessionStore.samePath(requestedProject, AssistantSessionStore.filesDirectory.path) {
-                contextSwitchMessage = "general-tasks could not be opened: \(error.localizedDescription)"
-                statusText = "general-tasks unavailable"
+                contextSwitchMessage = "general could not be opened: \(error.localizedDescription)"
+                statusText = "general unavailable"
             } else {
                 surfaceProjectScopeFailure(String(describing: error))
             }
@@ -2966,22 +2996,8 @@ final class AppState {
         return launch(saved)
     }
 
-    private func updateSleepPreventionMonitoring() {
-        if config.general.prevent_sleep_while_running {
-            startSleepPreventionMonitoring()
-        } else {
-            stopSleepPreventionMonitoring(releaseReason: "setting-disabled")
-        }
-    }
-
-    private func startSleepPreventionMonitoring() {
-        sleepPreventionMonitoringActive = true
-        updateWorkspaceActivityPolling()
-        syncSleepPreventionActivity()
-    }
-
     private func updateWorkspaceActivityPolling() {
-        let shouldPoll = notchActivityPollingActive || sleepPreventionMonitoringActive
+        let shouldPoll = notchActivityPollingActive
         if shouldPoll, workspaceActivityTimer == nil {
             let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
                 self?.refreshWorkspaceActivity()
@@ -2993,29 +3009,6 @@ final class AppState {
             workspaceActivityTimer = nil
             cancelWorkspaceActivityRefresh(invalidate: false)
         }
-    }
-
-    private func stopSleepPreventionMonitoring(releaseReason: String) {
-        sleepPreventionMonitoringActive = false
-        sleepPreventionController.release(reason: releaseReason)
-        updateWorkspaceActivityPolling()
-    }
-
-    private func syncSleepPreventionActivity() {
-        refreshWorkspaceActivity()
-    }
-
-    private func syncSleepPreventionController(with snapshot: WorkspaceActivitySnapshot) {
-        sleepPreventionController.sync(
-            preferenceEnabled: config.general.prevent_sleep_while_running,
-            activity: SleepPreventionActivity(
-                foregroundProviderTurnActive: hasActiveSession
-                    && snapshot.foregroundProviderTurnActive,
-                activeWorkerRunCount: SleepPreventionActivity.activeWorkerRunCount(
-                    in: snapshot.runStates
-                )
-            )
-        )
     }
 
     private func prepareOnboardingTutorialSpeech() -> Bool {
@@ -3137,6 +3130,7 @@ final class AppState {
             permissions.requestMicrophonePrompt { _ in }
             return
         }
+        remoteDeviceSession.userTookOver()
         sttEngine?.toggleRecording()
     }
 
@@ -3161,6 +3155,9 @@ final class AppState {
         model.isWorkspaceVisible = programBoardOverlay.isVisible
         model.notchStatus = notchStatusController.status
         model.notePhase = meetingNoteSnapshot.phase
+        model.keepAwake = keepAwake.state
+        model.particleFieldEnabled = config.awareness.screen_glow
+        if !model.isAdjustingIntensity { model.particleIntensity = config.awareness.glow_intensity }
         let recording = sttEngine?.isRecording == true
         let recordingKey = sttEngine?.recordingVoiceTargetSessionKey
         let ready = sttEngine != nil && sttSetupSucceeded && permissions.microphone == .granted
@@ -3229,6 +3226,7 @@ final class AppState {
                                                   recordingKey: engine.recordingVoiceTargetSessionKey,
                                                   ready: sttSetupSucceeded && permissions.microphone == .granted
                                                     && !meetingNoteSnapshot.phase.ownsForeground) else { return false }
+            remoteDeviceSession.userTookOver()
             if !engine.isRecording {
                 guard newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: false),
                       activeContext.id == contextID, syncVoiceFocus(force: true) else { return false }
@@ -3558,11 +3556,11 @@ final class AppState {
             } else { selected = selectGeneralContext(startsSession: false) }
         } catch { return .failed(message: error.localizedDescription) }
         guard selected else {
-            return .failed(message: contextSwitchMessage ?? "general-tasks could not be selected.")
+            return .failed(message: contextSwitchMessage ?? "general could not be selected.")
         }
         refreshWorkspaceActivity(invalidateRoute: true)
         let message = pendingContextSelection != nil
-            ? "\(contextSwitchMessage ?? "general-tasks selection queued.") Finish the current reply.\(continuation == nil ? "" : " The request is then delivered once to the general-tasks session.")"
+            ? "\(contextSwitchMessage ?? "general selection queued.") Finish the current reply.\(continuation == nil ? "" : " The request is then delivered once to the general session.")"
             : browseOrFocusMessage(name: activeContext.displayName)
         return .selected(message: message)
     }
@@ -4081,6 +4079,9 @@ final class AppState {
             onRecoveryAction: { [weak self] request in
                 self?.performContinuityRecoveryAction(request)
                     ?? .failed("component_action_unavailable")
+            },
+            onRemoteDeviceEvent: { [weak self] event in
+                self?.remoteDeviceSession.apply(event)
             }
         )
         eventBus = bus
@@ -4815,4 +4816,15 @@ final class AppState {
         syncNotchStatusSurface()
     }
 
+}
+
+/// Forwards the remote gate to whichever engine is current, so a restarted
+/// engine does not strand the session.
+private final class AppStateRemoteGate: RemoteMicrophoneGate {
+    private weak var owner: AppState?
+    init(owner: AppState) { self.owner = owner }
+    func suspendForRemoteDevice() { owner?.sttEngine?.suspendForRemoteDevice() }
+    func resumeAfterRemoteDevice(preservingGesture: Bool) {
+        owner?.sttEngine?.resumeAfterRemoteDevice(preservingGesture: preservingGesture)
+    }
 }

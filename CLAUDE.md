@@ -126,7 +126,7 @@ A deterministic shell or operating-system command is not a screen-control fallba
 
 ### RelayActions — the screen-manipulation tools
 
-When screen *manipulation* is necessary — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app`, `toggle_board` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions. (Screen *observation* — `screenshot` — lives in RelayVision; see the look-at-screen rule.)
+When screen *manipulation* is necessary — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app`, `toggle_board` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions. (Screen *observation* — `screenshot` and `record` — lives in RelayVision; see the look-at-screen rule.)
 
 If you genuinely need an operation RelayActions doesn't yet expose, surface that gap to the human before falling through to `mcp__computer-use__*`. The default answer is "extend RelayActions," not "fall back to native."
 
@@ -138,9 +138,11 @@ When the user says "bring up the Workspace", "show the Workspace", or similar, c
 
 ## RelayVision — looking at the user's screen
 
-For all screen *observation* — currently just `screenshot` — use the `mcp__relay-vision__*` tools. This namespace was split out of RelayActions (RR-10) so "looking at the screen" and "acting on the screen" are separate tool families. Do **not** use `mcp__computer-use__*` for anything covered by RelayVision. The namespace is designed to grow (future tools could include region reads), but today it's just `screenshot`.
+For all screen *observation* — `screenshot` for a still and `record` for a short mp4 — use the `mcp__relay-vision__*` tools. This namespace was split out of RelayActions (RR-10) so "looking at the screen" and "acting on the screen" are separate tool families. Do **not** use `mcp__computer-use__*` for anything covered by RelayVision, and never run `screencapture` from a shell: it makes macOS prompt the agent's host app for Screen Recording, while the Relay tools capture through Relay Runner's own grant. The namespace is designed to grow (future tools could include region reads), but today it's `screenshot` and `record`.
 
 When the user says "look at my screen", "what's on my screen", "can you see X", "check the screen", or any similar voice intent to have you observe the current display, fire `mcp__relay-vision__screenshot` immediately. Do not explore the codebase, do not ask clarifying questions about which display, do not summarize before looking. The screenshot tool pulses ActionGlow automatically as it runs, so the user gets the visual signal at the same moment you get the pixels.
+
+When the user wants to see motion — an animation, a transition, a loading state, "record the screen", "send me a recording" — call `mcp__relay-vision__record` with a `duration_seconds` that covers the moment (default 4s, at most 30s, at most 30 fps), trigger the motion while it records, then send the returned mp4 path to the user. The tool returns the file path, not the video, so read or send the file from that path.
 
 ## Asking for permission — don't use `propose_action`
 
@@ -155,7 +157,7 @@ If you need user permission for a risky screen action:
 ## Naming notes
 
 - **Relay Actions** = the screen-*manipulation* feature and its MCP tool family (`mcp__relay-actions__*`): click, type, scroll, key, list_windows, frontmost_app.
-- **Relay Vision** = the screen-*observation* feature and its MCP tool family (`mcp__relay-vision__*`): screenshot (initially). Split out of Relay Actions in RR-10.
+- **Relay Vision** = the screen-*observation* feature and its MCP tool family (`mcp__relay-vision__*`): screenshot, record. Split out of Relay Actions in RR-10.
 - **ActionGlow** = the perimeter-glow overlay that pulses whenever a RelayActions *or* RelayVision tool runs. It is automatic — driven by the `tool_fired` notification every RelayActions and RelayVision tool sends after running — so you never call it directly. It is a **visual signal**, not a confirmation gate. (`OverlayState.actionGlow` in code.)
 - Together: **the Relay stack**. Don't conflate any of these with native "computer-use" or "computer-vision" — those are different MCPs from a different vendor.
 

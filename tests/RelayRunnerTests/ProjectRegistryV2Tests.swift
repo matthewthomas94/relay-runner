@@ -11,7 +11,7 @@ final class ProjectRegistryV2Tests: XCTestCase {
         let directory = fixture.service.generalTasksDirectory
 
         XCTAssertEqual(directory, fixture.appSupportRoot.appendingPathComponent("general-tasks", isDirectory: true))
-        XCTAssertEqual(project.displayName, "general-tasks")
+        XCTAssertEqual(project.displayName, "general")
         XCTAssertEqual(project.lastResolvedPath, directory.resolvingSymlinksInPath().path)
         XCTAssertEqual(project.remote, .localOnly)
         XCTAssertNil(try fixture.service.load().document.activeProjectID)
@@ -46,6 +46,17 @@ final class ProjectRegistryV2Tests: XCTestCase {
         )
 
         let first = try service.ensureGeneralTasksProject()
+        var legacy = try service.load().document
+        let builtInIndex = try XCTUnwrap(legacy.projects.firstIndex { $0.projectID == first.projectID })
+        legacy.projects[builtInIndex].displayName = "general-tasks"
+        try fixture.store.save(legacy)
+        let migrated = try service.ensureGeneralTasksProject()
+        XCTAssertEqual(migrated.displayName, "general")
+        XCTAssertEqual(migrated.projectID, first.projectID)
+        XCTAssertEqual(migrated.lastResolvedPath, first.lastResolvedPath)
+        XCTAssertEqual(migrated.gitCommonDirectoryFingerprint, first.gitCommonDirectoryFingerprint)
+        XCTAssertEqual(try service.project(matching: "general").projectID, first.projectID)
+        XCTAssertEqual(try service.project(matching: "general-tasks").projectID, first.projectID)
         let persistedFirst = try service.project(projectID: first.projectID)
         let registryBefore = try Data(contentsOf: fixture.store.primaryURL)
         let headBefore = try runGitOutput(["rev-parse", "HEAD"], in: service.generalTasksDirectory)

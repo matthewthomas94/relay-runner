@@ -1,0 +1,6 @@
+// Device builds need your Apple Developer team. Create Signing.local.xcconfig
+// next to this file (it is gitignored) containing:
+//   DEVELOPMENT_TEAM = <your team id>
+// Simulator builds and tests need no team.
+CODE_SIGN_STYLE = Automatic
+#include? "Signing.local.xcconfig"

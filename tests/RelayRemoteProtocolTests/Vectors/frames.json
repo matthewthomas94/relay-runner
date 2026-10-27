@@ -1,0 +1,117 @@
+[
+ {
+  "name": "hello",
+  "direction": "phone_to_mac",
+  "line": "{\"app_version\":\"0.1\",\"device_id\":\"B6F1C0D2-77A4-4E1B-8C39-2A5D9E0F4B13\",\"device_name\":\"iPhone\",\"protocol\":1,\"resume_after_seq\":41,\"type\":\"hello\"}"
+ },
+ {
+  "name": "hello_first_connect",
+  "direction": "phone_to_mac",
+  "line": "{\"app_version\":\"0.1\",\"device_id\":\"B6F1C0D2-77A4-4E1B-8C39-2A5D9E0F4B13\",\"device_name\":\"iPhone\",\"protocol\":1,\"type\":\"hello\"}"
+ },
+ {
+  "name": "utterance",
+  "direction": "phone_to_mac",
+  "line": "{\"captured_at\":\"2026-10-22T09:14:03Z\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"text\":\"move RR-120 to ready\",\"type\":\"utterance\"}"
+ },
+ {
+  "name": "utterance_escapes_and_unicode",
+  "direction": "phone_to_mac",
+  "line": "{\"captured_at\":\"2026-10-22T09:15:00Z\",\"client_id\":\"9a1d6e47-2b83-4c55-8e0f-5d3c7b9a1e22\",\"text\":\"say \\\"hi\\\" / café ☃ \\\\ done\\nnext\",\"type\":\"utterance\"}"
+ },
+ {
+  "name": "control_stop",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"stop\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"control\"}"
+ },
+ {
+  "name": "control_interrupt",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"interrupt\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"control\"}"
+ },
+ {
+  "name": "control_cancel",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"cancel\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"control\"}"
+ },
+ {
+  "name": "control_play",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"play\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"control\"}"
+ },
+ {
+  "name": "control_replay",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"replay\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"control\"}"
+ },
+ {
+  "name": "ack",
+  "direction": "phone_to_mac",
+  "line": "{\"played\":true,\"seq\":44,\"type\":\"ack\"}"
+ },
+ {
+  "name": "ping",
+  "direction": "phone_to_mac",
+  "line": "{\"t\":1761124443,\"type\":\"ping\"}"
+ },
+ {
+  "name": "welcome",
+  "direction": "mac_to_phone",
+  "line": "{\"dropped\":false,\"protocol\":1,\"resumed_from\":41,\"server_seq\":44,\"session_state\":\"running\",\"type\":\"welcome\"}"
+ },
+ {
+  "name": "welcome_dropped",
+  "direction": "mac_to_phone",
+  "line": "{\"dropped\":true,\"protocol\":1,\"resumed_from\":40,\"server_seq\":250,\"session_state\":\"running\",\"type\":\"welcome\"}"
+ },
+ {
+  "name": "welcome_fresh",
+  "direction": "mac_to_phone",
+  "line": "{\"dropped\":false,\"protocol\":1,\"server_seq\":0,\"session_state\":\"idle\",\"type\":\"welcome\"}"
+ },
+ {
+  "name": "accepted",
+  "direction": "mac_to_phone",
+  "line": "{\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"relay_command_id\":\"4711-1761124443123456789-812\",\"relay_command_seq\":812,\"type\":\"accepted\"}"
+ },
+ {
+  "name": "speech_handoff",
+  "direction": "mac_to_phone",
+  "line": "{\"kind\":\"handoff\",\"relay_command_seq\":812,\"seq\":45,\"source\":\"messenger\",\"text\":\"Looking at RR-120 now.\",\"type\":\"speech\"}"
+ },
+ {
+  "name": "speech_final",
+  "direction": "mac_to_phone",
+  "line": "{\"kind\":\"final\",\"relay_command_seq\":812,\"seq\":46,\"source\":\"orchestrator\",\"text\":\"RR-120 is in ready and dispatching.\",\"type\":\"speech\"}"
+ },
+ {
+  "name": "speech_lifecycle_no_command",
+  "direction": "mac_to_phone",
+  "line": "{\"kind\":\"progress\",\"seq\":49,\"source\":\"lifecycle\",\"text\":\"Worker finished.\",\"type\":\"speech\"}"
+ },
+ {
+  "name": "speech_control",
+  "direction": "mac_to_phone",
+  "line": "{\"action\":\"stop\",\"reason\":\"superseded\",\"seq\":47,\"type\":\"speech_control\"}"
+ },
+ {
+  "name": "speech_control_skip_no_reason",
+  "direction": "mac_to_phone",
+  "line": "{\"action\":\"skip\",\"seq\":50,\"type\":\"speech_control\"}"
+ },
+ {
+  "name": "status",
+  "direction": "mac_to_phone",
+  "line": "{\"seq\":48,\"text\":\"worker RR-120 started\",\"type\":\"status\"}"
+ },
+ {
+  "name": "error",
+  "direction": "mac_to_phone",
+  "line": "{\"code\":\"no_session\",\"message\":\"Relay Runner is not running a session\",\"type\":\"error\"}"
+ },
+ {
+  "name": "pong",
+  "direction": "mac_to_phone",
+  "line": "{\"t\":1761124443,\"type\":\"pong\"}"
+ }
+]

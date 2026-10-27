@@ -41,6 +41,11 @@ REALIZATION_DECISIONS = frozenset({"full", "delta", "suppress"})
 REPLAY_HISTORY_LIMIT = 32
 # Focus switches and wheel stops retain replay without advancing the reply queue.
 REPLAY_RETAINING_STOP_REASONS = frozenset({"user_stop", "focus_switch", "wheel_stop"})
+# Event-log names for where an intent was realized (RR-424).
+LOCAL_SINK = "kokoro"
+REMOTE_SINK = "relay-remote"
+# Coordinator stop reasons with a protocol-facing name on the remote wire.
+REMOTE_STOP_REASONS = {"newer_command": "superseded"}
 MESSENGER_TIMING_STAGES = frozenset({
     "user_turn_received",
     "messenger_submitted",
@@ -291,6 +296,10 @@ class SpeechCoordinator:
         self._utterance_timings: dict[str, dict[str, Any]] = {}
         self._intent_committed_at: dict[str, float] = {}
         self._speech_stopped = False
+        # Relay Remote devices, newest last; outstanding frames await an ack.
+        self._remote_sinks: dict[str, Any] = {}
+        self._remote_outstanding: dict[tuple[str, int], SpeechIntent] = {}
+        self._remote_stopped_through: dict[str, int] = {}
         self._shutdown = threading.Event()
         self._control_socket_path = control_socket_path
         self._control_thread: threading.Thread | None = None
@@ -394,6 +403,54 @@ class SpeechCoordinator:
             return True
         return False
 
+    def attach_remote_sink(self, sink) -> None:
+        """Make a Relay Remote device the active speech output (RR-424).
+
+        ``sink`` is a ``relay_remote.DeviceSession``: ``device_id``,
+        ``routable()``, ``speech(...)`` and ``speech_control(...)``. The newest
+        routable sink receives speech instead of Kokoro. A disconnected sink
+        keeps buffering until its replay window lapses, then is detached.
+        """
+        with self._lock:
+            self._remote_sinks.pop(sink.device_id, None)
+            self._remote_sinks[sink.device_id] = sink
+        self._write_diagnostic({
+            "event": "remote_sink_attached",
+            "at": time.time(),
+            "sink": REMOTE_SINK,
+            "device_id": sink.device_id,
+        })
+
+    def detach_remote_sink(self, device_id: str, *, reason: str = "closed") -> None:
+        with self._lock:
+            self._detach_remote_locked(str(device_id), reason)
+
+    def remote_ack(self, device_id: str, seq: int, played: bool) -> bool:
+        """A device ack: ``played`` realizes the frame, otherwise receipt only."""
+        with self._lock:
+            intent = self._remote_outstanding.pop((str(device_id), int(seq)), None)
+            if intent is not None and played:
+                self._record_played_coverage_locked(intent)
+        if intent is None:
+            return False
+        self._diagnostic(
+            "played" if played else "remote_received",
+            intent,
+            sink=REMOTE_SINK,
+            device_id=str(device_id),
+            remote_seq=int(seq),
+        )
+        key = intent.command_key
+        if played and key is not None:
+            self.record_realization(
+                key[0],
+                key[1],
+                lifecycle_role=intent.lifecycle_role,
+                decision=intent.realization_decision,
+                reason=intent.suppression_reason,
+            )
+        return True
+
     def played_coverage(self, command_seq: int, command_id: str) -> tuple[dict[str, Any], ...]:
         """Return bounded semantic coverage from speech that finished playing."""
         key = (int(command_seq), str(command_id))
@@ -464,6 +521,10 @@ class SpeechCoordinator:
             if intent.dedup_key in self._accepted_keys:
                 self._diagnostic("deduplicated", intent, latency_ms=_elapsed_ms(started))
                 return False
+
+            sink = self._active_remote_sink_locked()
+            if sink is not None:
+                return self._submit_remote_locked(sink, intent, started)
 
             current = self._intent_for(self._playing_id or self._committed_id)
             if current is not None and self._newer_command(intent, current):
@@ -597,6 +658,11 @@ class SpeechCoordinator:
         """Suppress stale speech without revoking accepted background work."""
         stale_ids: list[str] = []
         command_key = (int(command_seq), str(command_id))
+        self._stop_remote(
+            "stop",
+            REMOTE_STOP_REASONS["newer_command"],
+            lambda sent: sent.freshness_scope != "work" and sent.command_key != command_key,
+        )
         with self._lock:
             self._speech_stopped = False
             self._clear_play_request_locked()
@@ -630,6 +696,7 @@ class SpeechCoordinator:
     def stop(self) -> None:
         """Barge-in retires speech plans only; it does not alter work authorization."""
         stale: list[SpeechIntent] = []
+        self._stop_remote("stop", "speech_only_barge_in")
         with self._lock:
             self._speech_stopped = True
             self._clear_play_request_locked()
@@ -655,6 +722,11 @@ class SpeechCoordinator:
     def stop_playback(self, *, reason: str = "user_stop", session_key: str | None = None) -> None:
         """Stop one active attempt without revoking its replay eligibility."""
         normalized_reason = str(reason or "user_stop").strip() or "user_stop"
+        self._stop_remote(
+            "stop",
+            REMOTE_STOP_REASONS.get(normalized_reason, normalized_reason),
+            None if session_key is None else (lambda sent: sent.session_key == session_key),
+        )
         with self._lock:
             intent = self._intent_for(self._playing_id or self._play_dispatched_id)
             if session_key is not None and (intent is None or intent.session_key != session_key):
@@ -671,6 +743,7 @@ class SpeechCoordinator:
         self.worker.stop_playback(reason=normalized_reason)
 
     def skip(self, *, reason: str = "user_stop") -> None:
+        self._stop_remote("skip", REMOTE_STOP_REASONS.get(reason, reason))
         with self._lock:
             if self._playing_id is not None:
                 stop_active_attempt = True
@@ -1049,8 +1122,91 @@ class SpeechCoordinator:
             self._utterance_timings.pop(intent_id, None)
             self._intent_committed_at.pop(intent_id, None)
 
+    def _active_remote_sink_locked(self):
+        active = None
+        for device_id, sink in list(self._remote_sinks.items()):
+            if sink.routable():
+                active = sink
+            else:
+                self._detach_remote_locked(device_id, "replay_window_expired")
+        return active
+
+    def _detach_remote_locked(self, device_id: str, reason: str) -> None:
+        if self._remote_sinks.pop(device_id, None) is None:
+            return
+        self._remote_stopped_through.pop(device_id, None)
+        for key in [key for key in self._remote_outstanding if key[0] == device_id]:
+            del self._remote_outstanding[key]
+        self._write_diagnostic({
+            "event": "remote_sink_detached",
+            "at": time.time(),
+            "sink": REMOTE_SINK,
+            "device_id": device_id,
+            "reason": reason,
+        })
+
+    def _submit_remote_locked(self, sink, intent: SpeechIntent, started: float) -> bool:
+        """Send one accepted intent as a ``speech`` frame; Kokoro is never used."""
+        fields = {"sink": REMOTE_SINK, "device_id": sink.device_id}
+        self._stop_remote_locked(
+            sink,
+            "stop",
+            REMOTE_STOP_REASONS["newer_command"],
+            lambda sent: self._newer_command(intent, sent),
+        )
+        try:
+            seq = sink.speech(
+                kind=intent.kind,
+                source=intent.source,
+                text=intent.spoken_text,
+                relay_command_seq=intent.command_seq,
+            )
+        except Exception:  # An unencodable frame must not crash the producer.
+            self._diagnostic("remote_failed", intent, latency_ms=_elapsed_ms(started), **fields)
+            return False
+        self._accept_locked(intent)
+        self._retain_replayable_locked(intent)
+        if intent.replay_of:
+            # The device plays the replay; no local play request stays latched.
+            self._play_requested = False
+        self._remote_outstanding[(sink.device_id, seq)] = intent
+        if len(self._remote_outstanding) > 512:
+            del self._remote_outstanding[next(iter(self._remote_outstanding))]
+        self._diagnostic("remote_speech_sent", intent, remote_seq=seq, **fields)
+        self._diagnostic("accepted", intent, latency_ms=_elapsed_ms(started), **fields)
+        return True
+
+    def _stop_remote(self, action: str, reason: str, stale=None) -> None:
+        with self._lock:
+            sink = self._active_remote_sink_locked()
+            if sink is not None:
+                self._stop_remote_locked(sink, action, reason, stale)
+
+    def _stop_remote_locked(self, sink, action: str, reason: str, stale=None) -> None:
+        """Send ``speech_control`` once for unacked frames not already stopped."""
+        device_id = sink.device_id
+        stopped_through = self._remote_stopped_through.get(device_id, 0)
+        if not any(
+            key[0] == device_id
+            and key[1] > stopped_through
+            and (stale is None or stale(sent))
+            for key, sent in self._remote_outstanding.items()
+        ):
+            return
+        seq = sink.speech_control(action, reason)
+        self._remote_stopped_through[device_id] = seq
+        self._write_diagnostic({
+            "event": "remote_speech_control",
+            "at": time.time(),
+            "sink": REMOTE_SINK,
+            "device_id": device_id,
+            "remote_seq": seq,
+            "action": action,
+            "reason": reason,
+        })
+
     def _enqueue_worker(self, intent: SpeechIntent) -> None:
-        self._diagnostic("tts_enqueued", intent)
+        self._diagnostic("tts_enqueued", intent, sink=LOCAL_SINK)
         self.worker.input_queue.put(intent.to_worker_payload())
 
     def _retain_replayable_locked(self, intent: SpeechIntent) -> bool:

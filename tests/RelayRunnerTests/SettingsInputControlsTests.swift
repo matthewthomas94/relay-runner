@@ -5,6 +5,31 @@ import XCTest
 
 @MainActor
 final class SettingsInputControlsTests: XCTestCase {
+    func testPickerMenuMatchesNarrowFieldAndResizes() throws {
+        let window = host(HStack(spacing: 8) {
+            SettingsMenuPicker("Voice", selection: .constant(0), options: [
+                ("Puck (American Male)", 0), ("George (British Male)", 1),
+                ("Isabella (British Female)", 2), ("Sky (American Female)", 3),
+            ])
+            SettingsActionButton(title: "Preview", systemImage: "play.fill", prominence: .icon) {}
+        }, size: NSSize(width: 280, height: 34))
+        defer { window.close() }
+
+        try click(NSPoint(x: 100, y: 17), in: window)
+        let popup = try XCTUnwrap(window.childWindows?.first { $0.isVisible })
+        XCTAssertEqual(popup.frame.minX, window.frame.minX, accuracy: 0.5)
+        XCTAssertEqual(popup.frame.maxX, window.frame.maxX - 36, accuracy: 0.5)
+        XCTAssertEqual(popup.frame.height, 146, accuracy: 0.5)
+        XCTAssertEqual(window.frame.minY - popup.frame.maxY, 8, accuracy: 0.5)
+
+        window.setContentSize(NSSize(width: 360, height: 34))
+        window.contentView?.layoutSubtreeIfNeeded()
+        settle()
+        XCTAssertEqual(popup.frame.minX, window.frame.minX, accuracy: 0.5)
+        XCTAssertEqual(popup.frame.maxX, window.frame.maxX - 36, accuracy: 0.5)
+        XCTAssertEqual(popup.frame.height, 146, accuracy: 0.5)
+    }
+
     func testPickerOpensAndCommitsSelection() throws {
         var selection = 3
         let window = host(SettingsMenuPicker("Effort", selection: Binding(get: { selection }, set: { selection = $0 }),
@@ -131,9 +156,9 @@ final class SettingsInputControlsTests: XCTestCase {
             }
             SettingsSection("Personal files") {
                 HStack(spacing: 8) {
+                    Spacer(minLength: 0)
                     SettingsActionButton(title: "Open local files", systemImage: "folder") {}
                     SettingsActionButton(title: "Refresh", systemImage: "arrow.clockwise") {}
-                    Spacer()
                 }
                 SettingsControlRow("Local cache budget", description: "Unsynced, pinned and active files are preserved.") {
                     SettingsStepper(title: "Local cache budget", value: .constant(256), range: 1...100_000, unit: "MB")

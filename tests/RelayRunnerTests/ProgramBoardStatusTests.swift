@@ -1426,9 +1426,11 @@ final class ProgramBoardStatusTests: XCTestCase {
         model.setNoteFetcher { _ in ProgramBoardNoteLoadResult(notes: [], errorMessage: "Unavailable") }
         await model.refreshNotes()
         XCTAssertEqual(model.noteItems.map(\.id), [first.id])
+        XCTAssertEqual(model.noteLoadErrorMessage, "Unavailable", "The outage is named instead of hidden")
         model.setNoteFetcher { _ in ProgramBoardNoteLoadResult(notes: [first, second], errorMessage: nil) }
         await model.refreshNotes()
         XCTAssertEqual(model.noteItems.map(\.id), [first.id, second.id])
+        XCTAssertNil(model.noteLoadErrorMessage)
         model.setNoteFetcher { _ in .empty }
         await model.refreshNotes()
         XCTAssertTrue(model.noteItems.isEmpty)

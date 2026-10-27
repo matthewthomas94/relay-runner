@@ -77,8 +77,8 @@ enum SettingsContentStyle {
 
     var footerPadding: EdgeInsets {
         switch self {
-        case .window: return EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16)
-        case .workspace: return EdgeInsets(top: 12, leading: 18, bottom: 14, trailing: 18)
+        case .window: return EdgeInsets(top: 12, leading: 20, bottom: 14, trailing: 20)
+        case .workspace: return EdgeInsets(top: 12, leading: 22, bottom: 14, trailing: 22)
         }
     }
 
@@ -90,10 +90,7 @@ enum SettingsContentStyle {
     }
 
     var detailMaxWidth: CGFloat {
-        switch self {
-        case .window: return 620
-        case .workspace: return SettingsLayout.detailMaxWidth
-        }
+        SettingsLayout.detailMaxWidth
     }
 
     var usesStandaloneChrome: Bool {
@@ -115,6 +112,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     case textToSpeech
     case general
     case awareness
+    case relayRemote
 
     var id: String { rawValue }
 
@@ -125,6 +123,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .textToSpeech: return "Text-to-Speech"
         case .general: return "General"
         case .awareness: return "Awareness"
+        case .relayRemote: return "Relay Remote"
         }
     }
 
@@ -137,6 +136,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .textToSpeech: return "speaker.wave.2"
         case .general: return "gearshape"
         case .awareness: return "eye"
+        case .relayRemote: return "iphone"
         }
     }
 
@@ -215,7 +215,8 @@ private struct SettingsContent: View {
             refreshAgentVoiceName()
         }
         .onChange(of: appState.config) { oldValue, newValue in
-            draft = draft.mergingCustomVoiceRemoval(from: oldValue, to: newValue)
+            draft = draft.mergingGlowIntensityChange(from: oldValue, to: newValue)
+                ?? draft.mergingCustomVoiceRemoval(from: oldValue, to: newValue)
         }
         .onChange(of: selectedCategory) { _, newValue in
             scrollTarget = newValue
@@ -296,10 +297,13 @@ private struct SettingsContent: View {
             GeneralSettingsTab(
                 config: $draft.general,
                 onOpenExternalWindow: onOpenExternalWindow,
-                projectRegistryAppState: appState
+                projectRegistryAppState: appState,
+                keepAwake: appState.keepAwake
             )
         case .awareness:
             AwarenessSettingsTab(config: $draft.awareness)
+        case .relayRemote:
+            RelayRemoteSettingsTab(controller: RelayRemoteController.shared)
         }
     }
 

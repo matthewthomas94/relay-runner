@@ -417,14 +417,23 @@ final class ProjectRegistryV2Service {
             throw ServiceError.appHomeTarget(candidate.repoPath.path)
         }
         if let duplicate = candidate.duplicates.first {
-            let existing = try project(projectID: duplicate.existingProjectID)
+            var document = try store.load().document
+            guard let index = document.projects.firstIndex(where: { $0.projectID == duplicate.existingProjectID }) else {
+                throw ServiceError.projectNotFound(duplicate.existingProjectID)
+            }
+            let existing = document.projects[index]
             guard normalizedPath(existing.lastResolvedPath) == expectedPath,
                   existing.gitCommonDirectoryFingerprint == candidate.gitCommonDirectoryFingerprint else {
                 throw ServiceError.identityMismatch(expected: existing.projectID, found: candidate.committedProjectID)
             }
-            return existing
+            if existing.displayName == "general-tasks" {
+                document.projects[index].displayName = "general"
+                document.projects[index].updatedAt = now()
+                try store.save(document)
+            }
+            return document.projects[index]
         }
-        return try register(candidate: candidate, displayName: "general-tasks", selectAsActive: false)
+        return try register(candidate: candidate, displayName: "general", selectAsActive: false)
     }
 
     func project(projectID: String) throws -> RegisteredProjectV2 {
@@ -441,6 +450,8 @@ final class ProjectRegistryV2Service {
         let matches = try store.load().document.projects.filter { project in
             project.projectID.caseInsensitiveCompare(query) == .orderedSame
                 || project.displayName.caseInsensitiveCompare(query) == .orderedSame
+                || (query.caseInsensitiveCompare("general-tasks") == .orderedSame
+                    && normalizedPath(project.lastResolvedPath) == normalizedPath(generalTasksDirectory.path))
                 || normalizedPath(project.selectedPath) == path
                 || normalizedPath(project.lastResolvedPath) == path
         }

@@ -15,7 +15,7 @@ Prefer the UI: it validates provider/model combinations, permissions, audio devi
 - **Sub-agent sizing** — let the orchestrator choose per ticket, or use the configured default policy.
 - **Registered projects** — Add, Create, Locate/Regrant, or safely remove project registry entries. A project may live anywhere on the Mac.
 - **Auto-start services on app launch** — start Relay background services with the app.
-- **Prevent sleep while running** — keep macOS awake during active work.
+- **Keep Awake** — keep the Mac awake, including with the lid closed, until it is switched off or Relay Runner quits. It is also on the session wheel's Settings submenu. Turning it on asks for administrator approval. It applies immediately, is never saved, and starts off at every launch. The legacy `prevent_sleep_while_running` key is ignored. See [Session wheel](session-wheel.md#keep-awake).
 - **Bypass agent permission prompts** — pass the selected provider's permission-bypass flag. Enabled by default.
 - **Relay Skills** — install or refresh Codex and Claude bridge/stop skills and Relay MCP registration.
 
@@ -53,7 +53,7 @@ Kokoro model and voice files download during setup to `~/.local/share/kokoro/`. 
 
 ## Awareness
 
-- Screen glow and particle intensity
+- Screen glow and particle intensity (also adjustable from the session wheel's Settings submenu)
 - Live transcription
 - Response preview and captions
 - On-screen session state

@@ -549,7 +549,8 @@ enum NotchVisualLabelAllowlist {
         boardContentLoading: Bool = false,
         voiceTargetName: String? = nil,
         playbackTargetName: String? = nil,
-        switchNotice: SessionSwitchNotice? = nil
+        switchNotice: SessionSwitchNotice? = nil,
+        remoteDeviceLabel: String? = nil
     ) -> NotchVisualLabelPresentation {
         if bridgeStartingUp {
             return NotchVisualLabelPresentation(
@@ -603,6 +604,15 @@ enum NotchVisualLabelAllowlist {
                 pinsLabel: true
             )
         }
+        // While a phone is connected it is the resting status; any state's own
+        // label takes the slot first, through the same swap, so labels never overlap.
+        if label == nil, let remoteDeviceLabel {
+            return NotchVisualLabelPresentation(
+                labels: [remoteDeviceLabel],
+                hoverLabel: remoteDeviceLabel,
+                pinsLabel: true
+            )
+        }
         return NotchVisualLabelPresentation(
             labels: label.map { [$0] } ?? [],
             hoverLabel: label
@@ -622,6 +632,7 @@ enum NotchActivityLabelPlanner {
         voiceTargetName: String? = nil,
         playbackTargetName: String? = nil,
         switchNotice: SessionSwitchNotice? = nil,
+        remoteDeviceLabel: String? = nil,
         now: Date = Date()
     ) -> [String] {
         NotchVisualLabelAllowlist.presentation(
@@ -630,7 +641,8 @@ enum NotchActivityLabelPlanner {
             boardContentLoading: boardContentLoading,
             voiceTargetName: voiceTargetName,
             playbackTargetName: playbackTargetName,
-            switchNotice: switchNotice
+            switchNotice: switchNotice,
+            remoteDeviceLabel: remoteDeviceLabel
         ).labels
     }
 
@@ -645,6 +657,7 @@ enum NotchActivityLabelPlanner {
         voiceTargetName: String? = nil,
         playbackTargetName: String? = nil,
         switchNotice: SessionSwitchNotice? = nil,
+        remoteDeviceLabel: String? = nil,
         now: Date = Date(),
         ticketForRun: ((RunState) -> Ticket?)? = nil
     ) -> String? {
@@ -654,7 +667,8 @@ enum NotchActivityLabelPlanner {
             boardContentLoading: boardContentLoading,
             voiceTargetName: voiceTargetName,
             playbackTargetName: playbackTargetName,
-            switchNotice: switchNotice
+            switchNotice: switchNotice,
+            remoteDeviceLabel: remoteDeviceLabel
         ).hoverLabel
     }
 

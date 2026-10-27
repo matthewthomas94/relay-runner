@@ -109,9 +109,7 @@ final class ConfigManager {
             }
             if let v = tomlString(general, "subagent_model") { config.general.subagent_model = v }
             if let v = tomlString(general, "subagent_effort") { config.general.subagent_effort = v }
-            if let v = tomlBool(general, "prevent_sleep_while_running") {
-                config.general.prevent_sleep_while_running = v
-            }
+            if let v = tomlBool(general, "wheel_haptics") { config.general.wheel_haptics = v }
         }
 
         // Awareness
@@ -185,14 +183,14 @@ final class ConfigManager {
         lines.append("messenger_model = \"\(c.general.messenger_model)\"")
         lines.append("messenger_effort = \"\(c.general.messenger_effort)\"")
         lines.append("subagent_sizing_policy = \"\(c.general.subagent_sizing_policy.rawValue)\"")
-        lines.append("prevent_sleep_while_running = \(c.general.prevent_sleep_while_running)")
+        lines.append("wheel_haptics = \(c.general.wheel_haptics)")
         lines.append("")
 
         lines.append("[awareness]")
         lines.append("screen_glow = \(c.awareness.screen_glow)")
         lines.append("live_transcription = \(c.awareness.live_transcription)")
         lines.append("live_captions = \(c.awareness.live_captions)")
-        lines.append("glow_intensity = \(String(format: "%.1f", c.awareness.glow_intensity))")
+        lines.append("glow_intensity = \(String(format: "%.2f", c.awareness.glow_intensity))")
         lines.append("")
 
         return lines.joined(separator: "\n")

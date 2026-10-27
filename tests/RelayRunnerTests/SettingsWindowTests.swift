@@ -7,7 +7,7 @@ final class SettingsWindowTests: XCTestCase {
     func testSettingsCategoriesExposeExpectedNavigationOrder() {
         XCTAssertEqual(
             SettingsCategory.allCases.map(\.title),
-            ["Permissions", "Speech-to-Text", "Text-to-Speech", "General", "Awareness"]
+            ["Permissions", "Speech-to-Text", "Text-to-Speech", "General", "Awareness", "Relay Remote"]
         )
     }
 
@@ -22,7 +22,8 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(SettingsCategory.category(after: .permissions), .speechToText)
         XCTAssertEqual(SettingsCategory.category(before: .speechToText), .permissions)
         XCTAssertEqual(SettingsCategory.category(before: .permissions), .permissions)
-        XCTAssertEqual(SettingsCategory.category(after: .awareness), .awareness)
+        XCTAssertEqual(SettingsCategory.category(after: .awareness), .relayRemote)
+        XCTAssertEqual(SettingsCategory.category(after: .relayRemote), .relayRemote)
     }
 
     func testWorkspaceSurfacesUseExplicitFillWidthSizing() {
@@ -38,10 +39,10 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertNil(SettingsContentStyle.workspace.fixedFrame)
     }
 
-    func testSettingsContentUsesReadableMaximumWidth() {
-        XCTAssertEqual(SettingsContentStyle.window.detailMaxWidth, 620)
-        XCTAssertEqual(SettingsContentStyle.workspace.detailMaxWidth, SettingsLayout.detailMaxWidth)
-        XCTAssertEqual(SettingsLayout.detailMaxWidth, 680)
+    func testSettingsContentFillsAvailableWidth() {
+        XCTAssertEqual(SettingsContentStyle.window.detailMaxWidth, .infinity)
+        XCTAssertEqual(SettingsContentStyle.workspace.detailMaxWidth, .infinity)
+        XCTAssertEqual(SettingsLayout.detailMaxWidth, .infinity)
     }
 
     func testWorkspaceSettingsDoesNotAddStandaloneChrome() {

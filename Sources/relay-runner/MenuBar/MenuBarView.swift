@@ -12,6 +12,10 @@ struct MenuBarView: View {
             Text("Setup: \(status)")
             Divider()
         }
+        if let remote = appState.remoteStatusLabel {
+            Text(remote)
+            Divider()
+        }
         if let serviceStatus = MenuBarServiceLifecycleStatus(appState.serviceLifecycleMessage) {
             Button(serviceStatus.label) {
                 appState.showServiceLifecycleDetail(serviceStatus.detail)

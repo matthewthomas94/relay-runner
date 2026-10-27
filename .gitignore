@@ -14,3 +14,6 @@ dist/
 .vscode/
 .idea/
 .pm/
+# Relay Remote (iOS)
+ios/Config/Signing.local.xcconfig
+xcuserdata/

@@ -141,6 +141,9 @@ class RelayCommandMetadata:
     relay_command_id: str
     provider: str | None = None
     source_text: str | None = None
+    # Relay Remote origin (RR-423); absent for microphone commands.
+    input_source: str | None = None
+    device_id: str | None = None
 
     @classmethod
     def from_dict(
@@ -160,6 +163,8 @@ class RelayCommandMetadata:
             relay_command_id=command_id,
             provider=provider,
             source_text=str(raw_source) if raw_source is not None else None,
+            input_source=str(data.get("input_source") or "").strip() or None,
+            device_id=str(data.get("device_id") or "").strip() or None,
         )
 
     def matches(self, current: dict[str, Any] | None) -> bool:
@@ -181,6 +186,9 @@ class RelayCommandMetadata:
         }
         if self.provider:
             data["provider"] = self.provider
+        if self.input_source:
+            data["input_source"] = self.input_source
+            data["device_id"] = self.device_id
         return data
 
     def to_dispatch_fields(self) -> dict[str, Any]:
