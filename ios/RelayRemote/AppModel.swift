@@ -3,10 +3,12 @@ import RelayRemoteKit
 import SwiftUI
 import UIKit
 
-/// Owns the device key, the pairing record and the session. The app is
-/// foreground-first (docs/specs/relay-remote.md, "Foreground and
-/// background"): the channel is closed when the app leaves the foreground and
-/// reopened with `resume_after_seq` when it returns.
+/// Owns the device key, the pairing record, the session and the voice layer.
+/// The app is foreground-first (docs/specs/relay-remote.md, "Foreground and
+/// background"): the channel is closed when the app leaves the foreground,
+/// unless the phone is still recording or speaking under the audio background
+/// mode, in which case it closes once the audio ends. It is reopened with
+/// `resume_after_seq` when the app returns.
 @MainActor
 @Observable
 final class AppModel {
@@ -19,6 +21,7 @@ final class AppModel {
     private(set) var deviceKey: DeviceKey?
     private(set) var paired: PairedMac?
     private(set) var session: RemoteSession?
+    private(set) var voice: VoiceController?
     private(set) var pairingState = PairingState.idle
     private(set) var startupError: String?
 
@@ -65,6 +68,8 @@ final class AppModel {
     /// Forgets the Mac on this phone. The Mac keeps its `authorized_keys`
     /// line until the device is unpaired in Relay Runner's Settings.
     func forget() {
+        voice?.shutdown()
+        voice = nil
         session?.stop()
         session = nil
         if let mac = paired { UserDefaults.standard.removeObject(forKey: Self.resumeKey(mac)) }
@@ -84,7 +89,9 @@ final class AppModel {
         case .background:
             isForeground = false
             saveResumePoint()
-            session?.stop()
+            // A reply still playing, or hands-free still listening, keeps the
+            // channel open; `audioBecameIdle` closes it afterwards.
+            if voice?.isAudioActive != true { session?.stop() }
         default:
             break
         }
@@ -104,7 +111,16 @@ final class AppModel {
         let session = RemoteSession(configuration: configuration, transport: SSHTransport(),
                                     endpoints: MacEndpointResolver(mac: mac))
         self.session = session
+        let voice = VoiceController(session: session)
+        voice.onAudioIdle = { [weak self] in self?.audioBecameIdle() }
+        self.voice = voice
         if isForeground { session.start() }
+    }
+
+    private func audioBecameIdle() {
+        guard !isForeground else { return }
+        saveResumePoint()
+        session?.stop()
     }
 
     private func saveResumePoint() {

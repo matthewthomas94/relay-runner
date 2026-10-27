@@ -102,6 +102,14 @@ public final class RemoteSession {
     public var resumeAfterSeq: Int? { core.lastSeq }
 
     public static let recordLimit = 200
+    /// Acks held while the channel is down; flushed after the next `welcome`.
+    public static let ackOutboxLimit = 200
+
+    /// Called on the main actor with every decoded inbound frame that is not a
+    /// duplicate (`welcome`, `accepted`, `error` and `pong` included). The app
+    /// feeds these to its speech playback queue.
+    public var onInbound: ((Frame) -> Void)?
+    private var ackOutbox: [Ack] = []
 
     @ObservationIgnored private let configuration: SessionConfiguration
     @ObservationIgnored private let transport: RemoteTransport
@@ -167,6 +175,30 @@ public final class RemoteSession {
         }
         pending = core.pending
         return true
+    }
+
+    /// Sends a control frame (stop, interrupt, cancel, play, replay) with a
+    /// fresh `client_id`. Returns false when the channel is down, since a
+    /// control for a reply that may already be over has no value later.
+    @discardableResult
+    public func send(control action: ControlAction) -> Bool {
+        guard connection != nil, core.isWelcomed else { return false }
+        transmit(.control(Control(clientId: UUID().uuidString.lowercased(), action: action)))
+        return true
+    }
+
+    /// Acknowledges a Mac frame. While the channel is down the ack waits in a
+    /// bounded outbox so a reply that finished playing during a reconnect is
+    /// still recorded as played.
+    public func send(ack: Ack) {
+        if connection != nil, core.isWelcomed {
+            transmit(.ack(ack))
+            return
+        }
+        ackOutbox.append(ack)
+        if ackOutbox.count > Self.ackOutboxLimit {
+            ackOutbox.removeFirst(ackOutbox.count - Self.ackOutboxLimit)
+        }
     }
 
     public func dismissMissedUpdates() {
@@ -261,6 +293,7 @@ public final class RemoteSession {
                 state = .connected
                 lastDisconnect = nil
                 log("welcomed")
+                flushAckOutbox(on: connection)
                 // The first ping doubles as the replay barrier.
                 transmit(.ping(Ping(t: environment.wallClock())), on: connection)
                 pinger = startPinger(connection)
@@ -268,8 +301,22 @@ public final class RemoteSession {
             pending = core.pending
             missedUpdates = core.missedUpdates
             lastError = core.lastError
+            if reaction.isNew || frame.seq == nil { onInbound?(frame) }
         }
         return welcomedAt
+    }
+
+    /// Acks that waited out a disconnect. One above the Mac's current seq
+    /// belongs to a sequence that no longer exists (the bridge restarted).
+    private func flushAckOutbox(on connection: RemoteConnection) {
+        guard !ackOutbox.isEmpty else { return }
+        let serverSeq = core.welcome?.serverSeq ?? 0
+        let held = ackOutbox
+        ackOutbox.removeAll()
+        for ack in held where ack.seq <= serverSeq {
+            transmit(.ack(ack), on: connection)
+        }
+        log("ack outbox flushed")
     }
 
     /// Tries each candidate in order. A refused host key stops at once. A

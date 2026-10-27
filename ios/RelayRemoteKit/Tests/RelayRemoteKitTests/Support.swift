@@ -19,6 +19,7 @@ final class FakeMac: @unchecked Sendable {
     private(set) var commands: [Utterance] = []
     private(set) var utteranceFrames: [Utterance] = []
     private(set) var acks: [Ack] = []
+    private(set) var controls: [Control] = []
     /// When false, utterances are recorded but not accepted (a drop before the receipt).
     var acceptsUtterances = true
     /// Sent once before `welcome`, like the bridge's reply to the helper's `identify` line.
@@ -57,6 +58,8 @@ final class FakeMac: @unchecked Sendable {
         case .ack(let ack):
             acks.append(ack)
             replay.ack(ack.seq)
+        case .control(let control):
+            controls.append(control)
         case .ping(let ping):
             connection.deliver(.pong(Pong(t: ping.t)))
         default:
@@ -70,6 +73,28 @@ final class FakeMac: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let frame = Frame.speech(Speech(seq: seq.next(), kind: .final, source: .orchestrator, text: text))
+        try! replay.record(frame, at: now)
+        connection?.deliver(frame)
+        return seq.last
+    }
+
+    /// Emits a sequenced `speech_control` frame, held for replay like speech.
+    @discardableResult
+    func speechControl(_ action: SpeechControlAction, reason: String? = nil) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let frame = Frame.speechControl(SpeechControl(seq: seq.next(), action: action, reason: reason))
+        try! replay.record(frame, at: now)
+        connection?.deliver(frame)
+        return seq.last
+    }
+
+    /// Emits a sequenced `status` frame.
+    @discardableResult
+    func status(_ text: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let frame = Frame.status(Status(seq: seq.next(), text: text))
         try! replay.record(frame, at: now)
         connection?.deliver(frame)
         return seq.last
@@ -237,15 +262,25 @@ enum Fixtures {
     static let endpoint = NWEndpoint.hostPort(host: "192.168.1.20", port: 22)
 
     @MainActor
+    /// `autoAck` stands in for the app's playback queue: every sequenced Mac
+    /// frame is acknowledged (unplayed) as soon as it arrives, which the
+    /// transport tests use as their sync point.
     static func session(transport: RemoteTransport, clock: TestClock, resumeAfterSeq: Int? = nil,
                         log: RemoteLogger = .silent,
-                        endpoints: [NWEndpoint] = [endpoint]) -> RemoteSession {
+                        endpoints: [NWEndpoint] = [endpoint], autoAck: Bool = true) -> RemoteSession {
         var configuration = SessionConfiguration(deviceID: "b6f1c0d2-77a4-4e1b-8c39-2a5d9e0f4b13", deviceName: "Test iPhone",
                                                  appVersion: "0.1", credentials: credentials(),
                                                  resumeAfterSeq: resumeAfterSeq)
         configuration.timing.backoff = Backoff(base: 0.5, cap: 30)
-        return RemoteSession(configuration: configuration, transport: transport, endpoints: StaticEndpoints(endpoints),
-                             environment: clock.environment, log: log)
+        let session = RemoteSession(configuration: configuration, transport: transport, endpoints: StaticEndpoints(endpoints),
+                                    environment: clock.environment, log: log)
+        if autoAck {
+            session.onInbound = { [weak session] frame in
+                guard let seq = frame.seq else { return }
+                session?.send(ack: Ack(seq: seq, played: false))
+            }
+        }
+        return session
     }
 }
 
