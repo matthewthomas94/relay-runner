@@ -13,6 +13,8 @@ final class AppTests: XCTestCase {
             XCTAssertFalse((info[key] as? String ?? "").isEmpty, key)
         }
         XCTAssertEqual(info["NSBonjourServices"] as? [String], ["_ssh._tcp"])
+        XCTAssertEqual(info["UIBackgroundModes"] as? [String], ["audio"],
+                       "audio keeps a reply playing with the screen locked; the session is active only while recording or playing")
         XCTAssertEqual(info["CFBundleDisplayName"] as? String, "Relay Remote")
     }
 
@@ -38,5 +40,7 @@ final class AppTests: XCTestCase {
     func testDebugSummariesShowFrameContent() {
         XCTAssertEqual(DebugView.summary(.error(.init(code: "no_session", message: "Relay Runner is not running a session"))),
                        "no_session: Relay Runner is not running a session")
+        XCTAssertEqual(DebugView.summary(.control(.init(clientId: "c0ffee", action: .replay))), "replay")
+        XCTAssertEqual(DebugView.activityLabel(.hearing), "Hearing you")
     }
 }

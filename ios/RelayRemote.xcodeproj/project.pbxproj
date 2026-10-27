@@ -7,10 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1E29E4A5ACD4AB18C3971E30 /* VoiceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07057AF5148CD32E11D68E2C /* VoiceController.swift */; };
 		25F01D8AA030D11F85772F7C /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8817463081966D7D0EC12BD9 /* AppModel.swift */; };
+		328100FCC556A6B202F52DE4 /* SpeechRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B75297C18778FEA04F119BA /* SpeechRecognizer.swift */; };
 		4A6431B1828B6DD5490EF8EC /* RelayRemoteKit in Frameworks */ = {isa = PBXBuildFile; productRef = E8279C08E9F7781342F5DA3E /* RelayRemoteKit */; };
+		4B82A7AAFA6028CE4D7258FB /* SystemSpeechSynthesizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B71A37511824455E4E35A3C5 /* SystemSpeechSynthesizer.swift */; };
 		6E144A59657F9EC3DE7DF612 /* DebugView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68EE1F18452D64395C0C6A90 /* DebugView.swift */; };
 		8CB480EB3BA6D967F031101A /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73841BC72CBFEAC3C6581E6F /* PairingView.swift */; };
+		A93920E53230A78AB24FEDB9 /* AudioSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9B03B6CAF1BBF7ADA833EF6 /* AudioSessionController.swift */; };
 		BB31A33DD22638AB9730F167 /* RelayRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D3791802C232FD5C1CEAA01 /* RelayRemoteApp.swift */; };
 		E7F5770AB4D162348E498FAB /* RelayRemoteProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = D1A6F79C5957F1F8E470EBF2 /* RelayRemoteProtocol */; };
 		F9771EEE9907CCD5FEE5A15B /* AppTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1FCBD4C91BB3003E8F6B975 /* AppTests.swift */; };
@@ -27,14 +31,18 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		07057AF5148CD32E11D68E2C /* VoiceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceController.swift; sourceTree = "<group>"; };
 		2D3791802C232FD5C1CEAA01 /* RelayRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayRemoteApp.swift; sourceTree = "<group>"; };
+		3B75297C18778FEA04F119BA /* SpeechRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecognizer.swift; sourceTree = "<group>"; };
 		68EE1F18452D64395C0C6A90 /* DebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugView.swift; sourceTree = "<group>"; };
 		73841BC72CBFEAC3C6581E6F /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		7C45CCDD72FFFC0ACA5B7B86 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		83D5FB538568550BD8BDF4EF /* ios-relay-ssh-tcp-spec-ddb8f2 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ios-relay-ssh-tcp-spec-ddb8f2"; path = ..; sourceTree = SOURCE_ROOT; };
 		8817463081966D7D0EC12BD9 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
-		88A073F1DF970F6F65E248CA /* relay-runner-bd315711-rr-428 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "relay-runner-bd315711-rr-428"; path = ..; sourceTree = SOURCE_ROOT; };
 		997A60051ED476E5AA35ABB5 /* RelayRemoteKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = RelayRemoteKit; path = RelayRemoteKit; sourceTree = SOURCE_ROOT; };
 		AF9FEC78F4B98609C0BEAA92 /* RelayRemoteTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RelayRemoteTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B71A37511824455E4E35A3C5 /* SystemSpeechSynthesizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemSpeechSynthesizer.swift; sourceTree = "<group>"; };
+		D9B03B6CAF1BBF7ADA833EF6 /* AudioSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSessionController.swift; sourceTree = "<group>"; };
 		E1FCBD4C91BB3003E8F6B975 /* AppTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTests.swift; sourceTree = "<group>"; };
 		FF8F3C9AA5CFE26D0241F716 /* RelayRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = RelayRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -68,6 +76,7 @@
 				68EE1F18452D64395C0C6A90 /* DebugView.swift */,
 				73841BC72CBFEAC3C6581E6F /* PairingView.swift */,
 				2D3791802C232FD5C1CEAA01 /* RelayRemoteApp.swift */,
+				EAF72DB978BFBB77D5ED867C /* Voice */,
 			);
 			path = RelayRemote;
 			sourceTree = "<group>";
@@ -102,10 +111,21 @@
 		B472EB3C951AB6C64C490DA6 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				88A073F1DF970F6F65E248CA /* relay-runner-bd315711-rr-428 */,
+				83D5FB538568550BD8BDF4EF /* ios-relay-ssh-tcp-spec-ddb8f2 */,
 				997A60051ED476E5AA35ABB5 /* RelayRemoteKit */,
 			);
 			name = Packages;
+			sourceTree = "<group>";
+		};
+		EAF72DB978BFBB77D5ED867C /* Voice */ = {
+			isa = PBXGroup;
+			children = (
+				D9B03B6CAF1BBF7ADA833EF6 /* AudioSessionController.swift */,
+				3B75297C18778FEA04F119BA /* SpeechRecognizer.swift */,
+				B71A37511824455E4E35A3C5 /* SystemSpeechSynthesizer.swift */,
+				07057AF5148CD32E11D68E2C /* VoiceController.swift */,
+			);
+			path = Voice;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -196,9 +216,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				25F01D8AA030D11F85772F7C /* AppModel.swift in Sources */,
+				A93920E53230A78AB24FEDB9 /* AudioSessionController.swift in Sources */,
 				6E144A59657F9EC3DE7DF612 /* DebugView.swift in Sources */,
 				8CB480EB3BA6D967F031101A /* PairingView.swift in Sources */,
 				BB31A33DD22638AB9730F167 /* RelayRemoteApp.swift in Sources */,
+				328100FCC556A6B202F52DE4 /* SpeechRecognizer.swift in Sources */,
+				4B82A7AAFA6028CE4D7258FB /* SystemSpeechSynthesizer.swift in Sources */,
+				1E29E4A5ACD4AB18C3971E30 /* VoiceController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

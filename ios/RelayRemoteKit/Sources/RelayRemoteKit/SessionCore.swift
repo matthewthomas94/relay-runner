@@ -102,12 +102,15 @@ public struct SessionCore: Sendable {
             pending.removeAll { $0.utterance.clientId.caseInsensitiveCompare(accepted.clientId) == .orderedSame }
             reaction.isNew = pending.count < before
         case .speech, .speechControl, .status:
+            // Acknowledged by the app once the frame has played or been
+            // skipped (SpeechPlaybackQueue), never here: the Mac honours only
+            // the first ack per seq, so an early `played: false` would hide
+            // the real outcome.
             let seq = frame.seq!
             if seq > (lastSeq ?? 0) {
                 lastSeq = seq
                 reaction.isNew = true
             }
-            reaction.send = [.ack(Ack(seq: seq, played: false))]
         case .pong:
             if let barrier = replayBarrier {
                 lastSeq = max(lastSeq ?? 0, barrier)

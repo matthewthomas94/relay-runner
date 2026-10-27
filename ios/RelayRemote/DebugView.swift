@@ -2,8 +2,8 @@ import RelayRemoteKit
 import RelayRemoteProtocol
 import SwiftUI
 
-/// Text-only debug surface until speech arrives (RR-429): connection state,
-/// a field for typed utterances, and the frames that crossed the wire.
+/// Debug surface: connection state, the voice controls (RR-429), a field for
+/// typed utterances, and the frames that crossed the wire.
 struct DebugView: View {
     let model: AppModel
     let session: RemoteSession
@@ -32,6 +32,39 @@ struct DebugView: View {
                 }
                 if let error = session.lastError {
                     LabeledContent("Last Mac error", value: error.code)
+                }
+            }
+
+            Section("Voice") {
+                if let voice = model.voice {
+                    Picker("Mode", selection: Bindable(voice).mode) {
+                        ForEach(VoiceController.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    readinessRow(voice.readiness)
+                    LabeledContent("Activity", value: Self.activityLabel(voice.activity))
+                    if !voice.transcript.isEmpty {
+                        Text(voice.transcript).italic()
+                    }
+                    if voice.mode == .pushToTalk {
+                        HoldToTalkButton(isHeld: voice.isListening, began: voice.pressToTalkBegan,
+                                         ended: voice.pressToTalkEnded)
+                    } else {
+                        Toggle("Listen", isOn: Binding(get: { voice.isListening },
+                                                       set: { $0 ? voice.startListening() : voice.stopListening() }))
+                    }
+                    HStack {
+                        Button("Stop", systemImage: "stop.fill") { voice.stop() }
+                        Spacer()
+                        Button("Replay", systemImage: "arrow.counterclockwise") { voice.replay() }
+                        Spacer()
+                        Button("Cancel", systemImage: "xmark", role: .destructive) { voice.cancel() }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(session.state != .connected)
+                    if let problem = voice.lastProblem {
+                        Text(problem).font(.footnote).foregroundStyle(.red)
+                    }
                 }
             }
 
@@ -112,6 +145,35 @@ struct DebugView: View {
         if session.send(text: text) { text = "" }
     }
 
+    @ViewBuilder
+    private func readinessRow(_ readiness: SpeechRecognizer.Readiness) -> some View {
+        switch readiness {
+        case .downloading(let fraction):
+            ProgressView("Downloading the speech model", value: fraction)
+        case .unsupported:
+            Label("On-device speech is not available for this language.", systemImage: "waveform.slash")
+                .foregroundStyle(.secondary)
+        case .microphoneDenied:
+            Label("Microphone access is off. Allow it in Settings.", systemImage: "mic.slash")
+                .foregroundStyle(.red)
+        case .failed:
+            Label("The speech model could not be installed.", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.red)
+        case .unknown, .ready:
+            EmptyView()
+        }
+    }
+
+    static func activityLabel(_ activity: VoiceController.Activity) -> String {
+        switch activity {
+        case .idle: return "Idle"
+        case .listening: return "Listening"
+        case .hearing: return "Hearing you"
+        case .transcribing: return "Transcribing"
+        case .speaking: return "Speaking"
+        }
+    }
+
     static func summary(_ frame: Frame) -> String {
         switch frame {
         case .hello(let hello): return "resume after \(hello.resumeAfterSeq.map(String.init) ?? "none")"
@@ -128,5 +190,36 @@ struct DebugView: View {
         case .ping(let ping): return "\(ping.t)"
         case .pong(let pong): return "\(pong.t)"
         }
+    }
+}
+
+/// Push to talk: recording runs while the finger is down and the utterance is
+/// sent on release.
+struct HoldToTalkButton: View {
+    let isHeld: Bool
+    let began: () -> Void
+    let ended: () -> Void
+    @State private var pressing = false
+
+    var body: some View {
+        Label(isHeld ? "Release to send" : "Hold to talk", systemImage: isHeld ? "mic.fill" : "mic")
+            .font(.headline)
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .background(isHeld ? Color.red.opacity(0.85) : Color.accentColor, in: RoundedRectangle(cornerRadius: 14))
+            .foregroundStyle(.white)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !pressing else { return }
+                        pressing = true
+                        began()
+                    }
+                    .onEnded { _ in
+                        pressing = false
+                        ended()
+                    }
+            )
+            .accessibilityLabel("Hold to talk")
     }
 }

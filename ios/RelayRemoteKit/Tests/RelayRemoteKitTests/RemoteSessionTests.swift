@@ -390,3 +390,93 @@ extension FrameRecord {
         return nil
     }
 }
+
+@MainActor
+final class RemoteSessionSpeechPlumbingTests: XCTestCase {
+    func testControlIsSentWithAFreshUUIDAndRecorded() async throws {
+        let mac = FakeMac()
+        let session = Fixtures.session(transport: FakeTransport(mac: mac), clock: TestClock())
+        XCTAssertFalse(session.send(control: .stop), "no channel yet")
+        session.start()
+        await eventually { session.state == .connected }
+
+        XCTAssertTrue(session.send(control: .stop))
+        XCTAssertTrue(session.send(control: .replay))
+        await eventually { mac.controls.count == 2 }
+        XCTAssertEqual(mac.controls.map(\.action), [.stop, .replay])
+        XCTAssertNotNil(UUID(uuidString: mac.controls[0].clientId))
+        XCTAssertNotEqual(mac.controls[0].clientId, mac.controls[1].clientId)
+        let sentControls = session.records.filter { record in
+            if case .control = record.frame, record.direction == .sent { return true } else { return false }
+        }
+        XCTAssertEqual(sentControls.count, 2)
+        session.stop()
+    }
+
+    func testInboundHookSeesNewFramesOnlyAndAcksAreAppDriven() async throws {
+        let mac = FakeMac()
+        let session = Fixtures.session(transport: FakeTransport(mac: mac), clock: TestClock(), autoAck: false)
+        var seen: [String] = []
+        session.onInbound = { seen.append($0.typeName) }
+        session.start()
+        await eventually { session.state == .connected }
+
+        mac.speak("one")
+        mac.status("worker started")
+        await eventually { seen.contains("status") }
+        XCTAssertTrue(mac.acks.isEmpty, "the session never acks on its own")
+        XCTAssertEqual(seen.filter { $0 == "speech" || $0 == "status" }, ["speech", "status"])
+        XCTAssertEqual(seen.first, "welcome")
+
+        session.send(ack: Ack(seq: 1, played: true))
+        session.send(ack: Ack(seq: 2, played: false))
+        await eventually { mac.acks.count == 2 }
+        XCTAssertEqual(mac.acks, [Ack(seq: 1, played: true), Ack(seq: 2, played: false)])
+        session.stop()
+    }
+
+    func testAckHeldWhileDisconnectedIsFlushedAfterReconnect() async throws {
+        let mac = FakeMac()
+        let clock = TestClock()
+        clock.holdBackoff = true
+        let session = Fixtures.session(transport: FakeTransport(mac: mac), clock: clock, autoAck: false)
+        session.start()
+        await eventually { session.state == .connected }
+        mac.speak("long reply")
+        await eventually { session.records.compactMap(\.speechText) == ["long reply"] }
+
+        mac.dropConnection()
+        await eventually { if case .waiting = session.state { return true } else { return false } }
+        session.send(ack: Ack(seq: 1, played: true))
+        XCTAssertTrue(mac.acks.isEmpty, "nothing can be sent while disconnected")
+
+        session.retryNow()
+        await eventually { mac.acks.count == 1 }
+        XCTAssertEqual(mac.acks, [Ack(seq: 1, played: true)])
+        XCTAssertEqual(mac.hellos.last?.resumeAfterSeq, 1)
+        session.stop()
+    }
+
+    func testPlaybackQueueDrivenBySessionAcksOnlyAfterPlayback() async throws {
+        let mac = FakeMac()
+        let session = Fixtures.session(transport: FakeTransport(mac: mac), clock: TestClock(), autoAck: false)
+        let synthesizer = FakeSynthesizer()
+        let queue = SpeechPlaybackQueue(synthesizer: synthesizer) { [weak session] in session?.send(ack: $0) }
+        session.onInbound = { queue.receive($0) }
+        session.start()
+        await eventually { session.state == .connected }
+
+        mac.speak("first")
+        mac.speak("second")
+        await eventually { synthesizer.spoken == ["first"] }
+        XCTAssertTrue(mac.acks.isEmpty)
+        synthesizer.finishCurrent()
+        await eventually { mac.acks == [Ack(seq: 1, played: true)] }
+        XCTAssertEqual(synthesizer.spoken, ["first", "second"])
+        mac.speechControl(.stop, reason: "superseded")
+        await eventually { mac.acks.count == 3 }
+        XCTAssertEqual(mac.acks, [Ack(seq: 1, played: true), Ack(seq: 2, played: false), Ack(seq: 3, played: false)])
+        XCTAssertEqual(synthesizer.stops, 1)
+        session.stop()
+    }
+}
