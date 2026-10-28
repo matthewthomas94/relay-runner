@@ -1514,6 +1514,23 @@ Saved through the daemon-owned typed writer.
         self.assertEqual(self.store._head(), promoted_head)
         self.store._ensure_materialization_consistent(promoted_head)
 
+    def test_dependent_promotion_parses_each_artifact_head_once(self):
+        # RR-440: the app's watchdog sweeps every few seconds, so an unchanged
+        # head must not re-parse every ticket on each sweep.
+        self.write_ticket("RR-3", status="backlog", depends_on=("RR-2",))
+        lifecycle = self.daemon._artifact_lifecycle(str(self.repo))
+        module = sys.modules[type(lifecycle).__module__]
+        with patch.object(module, "_split_ticket", wraps=module._split_ticket) as parses:
+            self.assertEqual(lifecycle.promote_unblocked_dependents(), ())
+            first_pass = parses.call_count
+            self.assertEqual(lifecycle.promote_unblocked_dependents(), ())
+            self.assertGreater(first_pass, 0)
+            self.assertEqual(parses.call_count, first_pass)
+
+            self.write_ticket("RR-2", status="done")
+            self.assertEqual(lifecycle.promote_unblocked_dependents(), ("RR-3",))
+            self.assertGreater(parses.call_count, first_pass)
+
     def test_dispatch_queues_dependency_gated_backlog_ticket_through_artifact_writer(self):
         self.write_ticket("RR-2", status="in_progress")
         self.write_ticket("RR-3", status="done")

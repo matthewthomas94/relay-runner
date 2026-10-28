@@ -148,6 +148,9 @@ class ArtifactLifecycleCoordinator:
         self.lifecycle_root = store.project_state / "lifecycle"
         self.outcome_root = self.lifecycle_root / "outcomes"
         self.snapshot_proof_root = self.lifecycle_root / "snapshot-proofs"
+        self._dependent_candidates: tuple[
+            str, dict[str, str], tuple[tuple[str, bytes, dict[str, str], tuple[str, ...]], ...]
+        ] | None = None
 
     @classmethod
     def is_enabled(cls, store: ArtifactStore) -> bool:
@@ -880,7 +883,7 @@ class ArtifactLifecycleCoordinator:
     def promote_unblocked_dependents(self) -> tuple[str, ...]:
         """Promote artifact-backed backlog tickets through the canonical writer."""
         snapshot = self.store.snapshot()
-        statuses = self._status_map(snapshot.files)
+        statuses, candidates = self._dependent_candidates_at(snapshot)
         manager = ArtifactRetentionManager(
             self.store,
             lease_store=self.leases,
@@ -889,19 +892,8 @@ class ArtifactLifecycleCoordinator:
         instant = _format_instant(self.now())
         operations: list[TicketWrite] = []
         promoted: list[str] = []
-        for candidate_path in sorted(snapshot.files):
-            if not _is_ticket_path(candidate_path):
-                continue
-            content = snapshot.files[candidate_path]
-            fields, _ = _split_ticket(content)
-            if fields.get("status") != "backlog":
-                continue
-            if _truthy(fields.get("canceled", "false")) or _truthy(
-                fields.get("draft", "false")
-            ):
-                continue
-            dependencies = _parse_list(fields.get("depends_on", "[]"))
-            if not dependencies or not self._dependencies_allow_automatic_promotion(
+        for candidate_path, content, fields, dependencies in candidates:
+            if not self._dependencies_allow_automatic_promotion(
                 dependencies,
                 statuses=statuses,
                 manager=manager,
@@ -1496,6 +1488,34 @@ class ArtifactLifecycleCoordinator:
             limit = MAX_SUMMARY_BYTES - len(suffix.encode("utf-8"))
             summary = encoded[:limit].decode("utf-8", errors="ignore").rstrip() + suffix
         return _bounded_text(summary, "run summary", MAX_SUMMARY_BYTES)
+
+    def _dependent_candidates_at(
+        self, snapshot: ArtifactSnapshot
+    ) -> tuple[dict[str, str], tuple[tuple[str, bytes, dict[str, str], tuple[str, ...]], ...]]:
+        """Return the head's ticket statuses and backlog tickets with dependencies."""
+        # A commit's files never change, and the app's watchdog sweeps every
+        # few seconds, so each head's tickets are parsed once (RR-440).
+        cached = self._dependent_candidates
+        if cached is None or cached[0] != snapshot.commit_id:
+            statuses = self._status_map(snapshot.files)
+            candidates = []
+            for candidate_path in sorted(snapshot.files):
+                if not _is_ticket_path(candidate_path):
+                    continue
+                content = snapshot.files[candidate_path]
+                fields, _ = _split_ticket(content)
+                if fields.get("status") != "backlog":
+                    continue
+                if _truthy(fields.get("canceled", "false")) or _truthy(
+                    fields.get("draft", "false")
+                ):
+                    continue
+                dependencies = _parse_list(fields.get("depends_on", "[]"))
+                if dependencies:
+                    candidates.append((candidate_path, content, fields, dependencies))
+            cached = (snapshot.commit_id, statuses, tuple(candidates))
+            self._dependent_candidates = cached
+        return dict(cached[1]), cached[2]
 
     def _status_map(self, files: Mapping[str, bytes]) -> dict[str, str]:
         statuses = {}

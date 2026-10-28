@@ -2153,6 +2153,9 @@ class QueueDrainStore:
     def update_items(self, drain_id: str, items: list[dict[str, Any]]) -> None:
         now = time.time()
         with self._conn() as c:
+            # One commit per update. Each autocommitted upsert paid its own
+            # journal commit on every monitor tick and ready sweep (RR-440).
+            c.execute("BEGIN")
             for item in items:
                 c.execute(
                     "INSERT INTO queue_drain_items("
@@ -2177,6 +2180,7 @@ class QueueDrainStore:
                         now,
                     ),
                 )
+            c.execute("COMMIT")
 
     def update_state(
         self,
