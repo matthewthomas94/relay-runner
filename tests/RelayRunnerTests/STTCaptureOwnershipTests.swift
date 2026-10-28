@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import FluidAudio
 import XCTest
 @testable import relay_runner
@@ -32,7 +33,7 @@ final class STTCaptureOwnershipTests: XCTestCase {
     }
 
     private final class Monitor: DefaultAudioInputMonitoring {
-        var onDefaultInputChanged: (() -> Void)?
+        var onDefaultInputChanged: ((AudioObjectID?) -> Void)?
         func start() throws {}
         func stop() {}
     }

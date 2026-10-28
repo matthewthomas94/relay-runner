@@ -1,4 +1,5 @@
 import AVFAudio
+import CoreAudio
 import XCTest
 @testable import relay_runner
 
@@ -162,6 +163,72 @@ final class AudioCaptureLifecycleTests: XCTestCase {
         XCTAssertEqual(monitor.stopCount, 1)
     }
 
+    func testDefaultInputNotificationNamingTheCapturedDeviceIsIgnored() throws {
+        let backend = FakeAudioCaptureBackend(results: [.success(routeA), .success(routeB)])
+        let monitor = FakeDefaultAudioInputMonitor()
+        let lifecycle = makeLifecycle(backend: backend, monitor: monitor)
+        var interruptionCount = 0
+        lifecycle.onWillReconfigure = { _ in interruptionCount += 1 }
+
+        _ = try lifecycle.start()
+        monitor.emitChange(to: routeA.deviceID)
+        lifecycle.performPendingRecoveryForTesting()
+
+        XCTAssertEqual(interruptionCount, 0)
+        XCTAssertEqual(backend.startCount, 1)
+        XCTAssertEqual(backend.stopCount, 0)
+
+        monitor.emitChange(to: routeB.deviceID)
+        lifecycle.performPendingRecoveryForTesting()
+
+        XCTAssertEqual(interruptionCount, 1)
+        XCTAssertEqual(backend.startCount, 2)
+    }
+
+    func testRecoveryDeadlineWaitsForQuietButCapsTheBurst() {
+        let burstStart = DispatchTime(uptimeNanoseconds: 1_000_000_000)
+        func deadline(atChange seconds: Double) -> Double {
+            let deadline = AudioCaptureLifecycle.recoveryDeadline(
+                now: burstStart + seconds,
+                burstStart: burstStart,
+                delay: 0.5
+            )
+            return Double(deadline.uptimeNanoseconds - burstStart.uptimeNanoseconds) / 1e9
+        }
+
+        XCTAssertEqual(deadline(atChange: 0), 0.5, accuracy: 1e-6)
+        XCTAssertEqual(deadline(atChange: 0.4), 0.9, accuracy: 1e-6)
+        XCTAssertEqual(deadline(atChange: 1.2), 1.5, accuracy: 1e-6)
+    }
+
+    func testChangeDuringTheDebounceDefersASingleRebuild() throws {
+        let backend = FakeAudioCaptureBackend(results: [.success(routeA), .success(routeB)])
+        let lifecycle = AudioCaptureLifecycle(
+            backend: backend,
+            routeMonitor: FakeDefaultAudioInputMonitor(),
+            recoveryDelay: 1,
+            sampleHandler: { _ in },
+            isRecording: { false }
+        )
+        let recovered = expectation(description: "recovered")
+        var recoveredAt: DispatchTime?
+        lifecycle.onRecovery = { _ in
+            recoveredAt = .now()
+            recovered.fulfill()
+        }
+
+        _ = try lifecycle.start()
+        let firstChange = DispatchTime.now()
+        backend.emitConfigurationChange(reason: "engine-configuration")
+        Thread.sleep(forTimeInterval: 0.4)
+        backend.emitConfigurationChange(reason: "engine-configuration")
+        wait(for: [recovered], timeout: 5)
+
+        XCTAssertEqual(backend.startCount, 2)
+        let elapsed = Double(recoveredAt!.uptimeNanoseconds - firstChange.uptimeNanoseconds) / 1e9
+        XCTAssertGreaterThanOrEqual(elapsed, 1.35)
+    }
+
     private func makeLifecycle(
         backend: FakeAudioCaptureBackend,
         monitor: FakeDefaultAudioInputMonitor,
@@ -203,7 +270,7 @@ private final class FakeAudioCaptureBackend: AudioCaptureBackend {
 }
 
 private final class FakeDefaultAudioInputMonitor: DefaultAudioInputMonitoring {
-    var onDefaultInputChanged: (() -> Void)?
+    var onDefaultInputChanged: ((AudioObjectID?) -> Void)?
     private(set) var startCount = 0
     private(set) var stopCount = 0
 
@@ -215,7 +282,7 @@ private final class FakeDefaultAudioInputMonitor: DefaultAudioInputMonitoring {
         stopCount += 1
     }
 
-    func emitChange() {
-        onDefaultInputChanged?()
+    func emitChange(to deviceID: AudioObjectID? = nil) {
+        onDefaultInputChanged?(deviceID)
     }
 }
