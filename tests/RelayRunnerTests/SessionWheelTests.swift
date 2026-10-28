@@ -3,16 +3,6 @@ import XCTest
 @testable import relay_runner
 
 final class SessionWheelTests: XCTestCase {
-    func testWorkspaceActionTracksVisibilityAndDoesNotChangeWithSessionHover() {
-        let model = SessionWheelModel()
-        XCTAssertEqual(model.workspaceActionTitle, "Open workspace")
-        model.refresh(sessions: [.init(id: "relay", name: "Relay Runner")])
-        model.hover(at: SessionWheelGeometry.position(slot: 0, radius: 119))
-        XCTAssertEqual(model.workspaceActionTitle, "Open workspace")
-        model.isWorkspaceVisible = true
-        XCTAssertEqual(model.workspaceActionTitle, "Close workspace")
-    }
-
     private let geometry = SessionWheelGeometry.self
     private func makeController() -> SessionWheelController {
         SessionWheelController(haptics: .init(perform: { _ in }))
@@ -260,7 +250,7 @@ final class SessionWheelTests: XCTestCase {
         controller.selectSlot(3, fromPointer: false)
         XCTAssertEqual(focused, "d")
         XCTAssertTrue(controller.isVisible)
-        controller.selectCenter()
+        controller.back()
         XCTAssertFalse(controller.model.isNested)
         XCTAssertTrue(controller.isVisible)
     }
@@ -388,33 +378,21 @@ final class SessionWheelTests: XCTestCase {
     }
 
     @MainActor
-    func testSessionCenterTogglesWorkspaceWithoutDismissingTheWheel() {
+    func testCenterAlwaysClosesTheWheelIncludingSubmenus() {
         _ = NSApplication.shared
         let controller = makeController()
         defer { controller.dismiss() }
-        var workspaceVisible = false
-        var toggleCount = 0
-        controller.refresh = { model, _ in model.isWorkspaceVisible = workspaceVisible }
-        controller.toggleWorkspace = {
-            XCTAssertTrue(controller.isVisible)
-            workspaceVisible.toggle()
-            toggleCount += 1
-        }
+        controller.refresh = { model, _ in model.projects = self.projects(7) }
 
         controller.toggle()
         controller.selectCenter()
-        XCTAssertTrue(workspaceVisible)
-        XCTAssertTrue(controller.model.isWorkspaceVisible, "Update the glyph immediately after opening Workspace")
-        XCTAssertTrue(controller.isVisible)
-        XCTAssertEqual(toggleCount, 1)
+        XCTAssertFalse(controller.isVisible)
+
+        controller.toggle()
+        controller.selectSlot(0, fromPointer: false) // Open the project picker.
+        XCTAssertTrue(controller.model.pickingProject)
         controller.selectCenter()
-        XCTAssertFalse(workspaceVisible, "An already open Workspace should close")
-        XCTAssertFalse(controller.model.isWorkspaceVisible)
-        XCTAssertTrue(controller.isVisible)
-        XCTAssertEqual(toggleCount, 2)
-        controller.dismiss()
-        controller.selectCenter()
-        XCTAssertEqual(toggleCount, 2, "A dismissed center must not toggle Workspace")
+        XCTAssertFalse(controller.isVisible, "The centre closes the wheel instead of stepping back")
     }
 
     @MainActor
@@ -448,27 +426,6 @@ final class SessionWheelTests: XCTestCase {
                 XCTAssertEqual(selections.count, 2)
             }
         }
-    }
-
-    @MainActor
-    func testProjectCenterGoesBackOnePageWithoutTogglingWorkspace() {
-        _ = NSApplication.shared
-        let controller = makeController()
-        defer { controller.dismiss() }
-        controller.refresh = { model, _ in model.projects = self.projects(7) }
-        controller.toggleWorkspace = { XCTFail("Back must not toggle Workspace") }
-        controller.toggle()
-        controller.selectSlot(0, fromPointer: false)
-        controller.selectSlot(5, fromPointer: false)
-        XCTAssertEqual(controller.model.projectPage, 1)
-
-        controller.selectCenter()
-        XCTAssertEqual(controller.model.projectPage, 0)
-        XCTAssertTrue(controller.model.pickingProject)
-        XCTAssertTrue(controller.isVisible)
-        controller.selectCenter()
-        XCTAssertFalse(controller.model.pickingProject)
-        XCTAssertTrue(controller.isVisible)
     }
 
     @MainActor
@@ -571,7 +528,7 @@ final class SessionWheelTests: XCTestCase {
         controller.selectSlot(0, fromPointer: false)
         XCTAssertTrue(controller.model.pickingProject)
         XCTAssertEqual(controller.model.notice, "Couldn't start session")
-        controller.selectCenter()
+        controller.back()
         controller.selectSlot(1, fromPointer: false)
         controller.startProject = { _ in
             live.append(self.session(context.id))
@@ -742,80 +699,17 @@ final class SessionWheelTests: XCTestCase {
     }
 
     @MainActor
-    func testWorkspaceGlyphMergesBeforeFormingTheCloseSymbol() throws {
-        let dots = NotchContentMotion().renderedGlyphDots(status: .notWorking, now: 0, reduceMotion: true)
-        var samples: [CGFloat: NSBitmapImageRep] = [:]
-        for progress: CGFloat in [0, 0.3, 0.65, 0.82, 1] {
-            let renderer = ImageRenderer(content: SessionWheelWorkspaceGlyphDrawing(
-                dots: dots, closeProgress: progress, reduceMotion: false
-            ).background(.black))
-            renderer.scale = 8
-            let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
-            samples[progress] = bitmap
-        }
-        func brightness(_ progress: CGFloat, _ x: Int, _ y: Int) -> CGFloat {
-            samples[progress]!.colorAt(x: x * 8, y: y * 8)!.usingColorSpace(.deviceRGB)!.redComponent
-        }
-        XCTAssertLessThan(brightness(0, 12, 12), 0.1, "The resting dots are separate")
-        XCTAssertGreaterThan(brightness(0.65, 12, 12), 0.9, "All dots merge into a single bead")
-        XCTAssertLessThan(brightness(0.65, 8, 8), 0.1, "The X only grows after the merge")
-        XCTAssertGreaterThan(brightness(1, 8, 8), 0.9)
-        XCTAssertGreaterThan(brightness(1, 12, 12), 0.9)
-        XCTAssertLessThan(brightness(1, 16, 12), 0.1)
-
-        if let directory = ProcessInfo.processInfo.environment["RELAY_WHEEL_RENDER_DIR"] {
-            let url = URL(fileURLWithPath: directory, isDirectory: true)
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-            for (progress, bitmap) in samples {
-                try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-                    .write(to: url.appendingPathComponent("morph-\(progress).png"))
-            }
-        }
-    }
-
-    @MainActor
-    func testBackArrowMorphsFromBothStatusAndCloseGlyphs() throws {
-        let dots = NotchContentMotion().renderedGlyphDots(status: .notWorking, now: 0, reduceMotion: true)
-        var samples: [String: NSBitmapImageRep] = [:]
-        for (name, close, back, reduced): (String, CGFloat, CGFloat, Bool) in [
-            ("back", 0, 1, false), ("dots-back-bead", 0, 0.65, false),
-            ("close-back-bead", 0.5, 0.5, false), ("close-back-reduced", 0.5, 0.5, true)
-        ] {
-            let renderer = ImageRenderer(content: SessionWheelWorkspaceGlyphDrawing(
-                dots: dots, closeProgress: close, backProgress: back, reduceMotion: reduced
-            ).background(.black))
-            renderer.scale = 8
-            samples[name] = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
-        }
-        // Project navigation takes precedence even with Workspace open behind the wheel.
-        let renderer = ImageRenderer(content: SessionWheelWorkspaceGlyph(
-            isWorkspaceVisible: true, isPickingProject: true, status: .playing
-        ).background(.black))
+    func testCloseGlyphIsACross() throws {
+        let renderer = ImageRenderer(content: SessionWheelCloseGlyph().background(.black))
         renderer.scale = 8
-        samples["back-with-workspace"] = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
-        func brightness(_ name: String, _ x: Int, _ y: Int) -> CGFloat {
-            samples[name]!.colorAt(x: x * 8, y: y * 8)!.usingColorSpace(.deviceRGB)!.redComponent
+        let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+        func brightness(_ x: Int, _ y: Int) -> CGFloat {
+            bitmap.colorAt(x: x * 8, y: y * 8)!.usingColorSpace(.deviceRGB)!.redComponent
         }
-        for name in ["back", "back-with-workspace"] {
-            XCTAssertGreaterThan(brightness(name, 7, 12), 0.9, "Left arrow tip")
-            XCTAssertGreaterThan(brightness(name, 17, 12), 0.9, "Arrow shaft, not just a chevron")
-            XCTAssertGreaterThan(brightness(name, 12, 7), 0.9)
-            XCTAssertLessThan(brightness(name, 16, 8), 0.1, "No remaining X arm")
-        }
-        for name in ["dots-back-bead", "close-back-bead"] {
-            XCTAssertGreaterThan(brightness(name, 12, 12), 0.9)
-            XCTAssertLessThan(brightness(name, 8, 8), 0.1)
-            XCTAssertLessThan(brightness(name, 17, 12), 0.1)
-        }
-        XCTAssertGreaterThan(brightness("close-back-reduced", 17, 12), 0.3, "Reduce Motion crossfades without contracting")
-        if let directory = ProcessInfo.processInfo.environment["RELAY_WHEEL_RENDER_DIR"] {
-            let url = URL(fileURLWithPath: directory, isDirectory: true)
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-            for (name, bitmap) in samples {
-                try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-                    .write(to: url.appendingPathComponent("morph-\(name).png"))
-            }
-        }
+        XCTAssertGreaterThan(brightness(12, 12), 0.9)
+        XCTAssertGreaterThan(brightness(8, 8), 0.9)
+        XCTAssertGreaterThan(brightness(16, 16), 0.9)
+        XCTAssertLessThan(brightness(16, 12), 0.1, "Diagonal arms only")
     }
 
     private func arcPoint(_ angle: CGFloat, radius: CGFloat? = nil) -> CGPoint {
@@ -1136,7 +1030,7 @@ final class SessionWheelTests: XCTestCase {
             .enumerated().map { .init(id: "\($0.offset)", name: $0.element, path: "/\($0.offset)") }
         let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
                                     selectCenter: {}, back: {}, dismiss: {}, recordingLevel: { _ in 1 })
-        for state in ["sessions", "working", "response-ready", "listening", "paused", "workspace-open", "session-notice", "controls", "play-hover", "recording-controls", "projects", "last-page", "limit",
+        for state in ["sessions", "session-notice", "controls", "play-hover", "recording-controls", "projects", "last-page", "limit",
                       "design-recording", "design-idle", "design-play", "design-playback",
                       "shortcuts-empty", "notes-idle", "notes-recording", "notes-paused", "notes-saving",
                       "more-sessions", "all-sessions",
@@ -1146,15 +1040,9 @@ final class SessionWheelTests: XCTestCase {
                       "settings-restore", "settings-particles-off", "settings-dragging"]
             + (0..<geometry.slotCount).map({ "contour-\($0)" }) {
             switch state {
-            case "working": model.notchStatus = .working
-            case "response-ready": model.notchStatus = .playing
-            case "listening": model.notchStatus = .listening
-            case "paused": model.notchStatus = .paused
-            case "workspace-open": model.isWorkspaceVisible = true
             case "session-notice": model.notice = "Session could not start"
             case "controls":
                 model.notice = nil
-                model.isWorkspaceVisible = false
                 model.hover(at: geometry.position(slot: 0, radius: 119))
             case "play-hover":
                 model.hover(at: geometry.position(slot: 0, radius: geometry.actionRadius, offset: geometry.actionOffset(.message)))
@@ -1168,8 +1056,6 @@ final class SessionWheelTests: XCTestCase {
                 model.reset(at: geometry.center)
                 model.refresh(sessions: [])
                 model.startUnavailableReason = nil
-                model.isWorkspaceVisible = false
-                model.notchStatus = .notWorking
             case "notes-idle", "notes-recording", "notes-paused", "notes-saving":
                 model.notePhase = state == "notes-recording" ? .recording
                     : state == "notes-paused" ? .paused
@@ -1206,7 +1092,6 @@ final class SessionWheelTests: XCTestCase {
             case "design-recording", "design-idle", "design-play", "design-playback":
                 model.reset(at: geometry.center)
                 model.startUnavailableReason = nil
-                model.isWorkspaceVisible = state == "design-recording" || state == "design-play"
                 let sessions: [SessionWheelSession] = [
                     .init(id: "general", name: "general", isFocused: true,
                           isRecording: state == "design-recording",

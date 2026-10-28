@@ -255,9 +255,6 @@ final class SessionWheelModel {
     /// A slider drag pins hover so the submenu stays open wherever the pointer travels.
     private(set) var isAdjustingIntensity = false
     private var intensityDragAngle: (raw: CGFloat, unwrapped: CGFloat) = (0, 0)
-    var isWorkspaceVisible = false
-    var notchStatus: NotchSessionStatus = .notWorking
-    var workspaceActionTitle: String { isWorkspaceVisible ? "Close workspace" : "Open workspace" }
     var startUnavailableReason: String?
     var canStartSession: Bool { startUnavailableReason == nil }
     var notice: String?

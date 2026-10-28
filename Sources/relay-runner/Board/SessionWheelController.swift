@@ -9,7 +9,6 @@ final class SessionWheelController {
     var startProject: ((String) -> Bool)?
     var sessionAction: ((String, SessionWheelAction) -> Bool)?
     var recordingLevel: ((String) -> Float)?
-    var toggleWorkspace: (() -> Void)?
     var openShortcut: ((SessionWheelShortcut) -> Void)?
     var noteAction: ((SessionWheelNoteAction) -> Bool)?
     /// Live particle preview while dragging; `commitIntensity` persists the final value.
@@ -150,18 +149,11 @@ final class SessionWheelController {
         haptics.hover(target, at: point)
     }
 
+    /// The centre is always the wheel's close button. Escape still steps back from a submenu.
     func selectCenter() {
         guard isVisible else { return }
-        if model.isNested {
-            back()
-        } else {
-            if let toggleWorkspace {
-                toggleWorkspace()
-                haptics.activate()
-            }
-            refresh?(model, false)
-            panel?.orderFrontRegardless()
-        }
+        haptics.activate()
+        dismiss()
     }
 
     func selectSlot(_ index: Int, fromPointer: Bool) {

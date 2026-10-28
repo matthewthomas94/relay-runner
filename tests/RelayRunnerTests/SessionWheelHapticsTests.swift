@@ -129,7 +129,6 @@ final class SessionWheelHapticsTests: XCTestCase {
         controller.noteAction = { _ in accepted }
         controller.startProject = { _ in accepted }
         controller.openShortcut = { _ in }
-        controller.toggleWorkspace = {}
         controller.focusSession = { _ in }
         controller.refresh = { model, _ in
             model.refresh(sessions: [.init(id: "a", name: "A", canPlay: false)])
@@ -154,13 +153,14 @@ final class SessionWheelHapticsTests: XCTestCase {
         controller.performNoteAction(.recording)
         controller.selectSlot(0, fromPointer: false) // Session selection.
         controller.selectSlot(3, fromPointer: false) // Notetaker shortcut.
-        controller.selectCenter()
         controller.selectSlot(1, fromPointer: false)
         controller.back()
-        XCTAssertEqual(pulses, Array(repeating: .generic, count: 9))
+        XCTAssertEqual(pulses, Array(repeating: .generic, count: 8))
         XCTAssertTrue(controller.isVisible)
         controller.refresh?(controller.model, false)
-        controller.dismiss()
+        controller.selectCenter() // Closes the wheel.
+        XCTAssertFalse(controller.isVisible)
+        XCTAssertEqual(pulses, Array(repeating: .generic, count: 9))
         controller.hoverFeedback(at: geometry.center, target: .center)
         controller.performNoteAction(.recording)
         controller.selectCenter()

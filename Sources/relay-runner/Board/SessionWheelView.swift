@@ -413,15 +413,11 @@ struct SessionWheelView: View {
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .control, isHovered: hubHovered, reduceMotion: reduceMotion
         )
-        let title = model.isNested
-            ? (model.projectPage > 0 ? "Previous projects" : "Back to sessions")
-            : model.workspaceActionTitle
+        let title = "Close"
         let detail = model.notice ?? model.startUnavailableReason
             ?? (model.pickingProject && model.projects.isEmpty ? "No projects to start" : "")
         return Button(action: selectCenter) {
-            SessionWheelWorkspaceGlyph(isWorkspaceVisible: model.isWorkspaceVisible,
-                                       isPickingProject: model.isNested,
-                                       status: model.notchStatus)
+            SessionWheelCloseGlyph()
                 .frame(width: geometry.hubRadius * 2, height: geometry.hubRadius * 2)
                 .background(controlBackground(Circle(), presentation: presentation))
                 .contentShape(Circle())

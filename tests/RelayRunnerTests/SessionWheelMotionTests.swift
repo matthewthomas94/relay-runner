@@ -273,7 +273,6 @@ final class SessionWheelMotionTests: XCTestCase {
     @MainActor
     func testRealMenuFramesKeepTheBlackDiscAndCentreWhileTilesContractAndExpand() throws {
         let model = SessionWheelModel()
-        model.isWorkspaceVisible = true
         model.refresh(sessions: (0..<6).map { .init(id: "\($0)", name: "Session \($0)") })
         model.projects = (0..<6).map {
             .init(id: "p\($0)", name: "Project \($0)", path: "/projects/\($0)")
@@ -468,7 +467,6 @@ final class SessionWheelMotionTests: XCTestCase {
     @MainActor
     func testTransitionFramesRenderAndEndCompletelyTransparent() throws {
         let model = SessionWheelModel()
-        model.isWorkspaceVisible = true
         model.refresh(sessions: ["General Tasks", "Hidpress Web", "Relay Runner",
                                 "ESP32 Bridge", "Voice Notes", "More projects"].enumerated().map {
             .init(id: "\($0.offset)", name: $0.element)

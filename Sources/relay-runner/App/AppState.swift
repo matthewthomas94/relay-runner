@@ -734,7 +734,6 @@ final class AppState {
     }
 
     private func syncNotchActivitySurface() {
-        defer { sessionWheel.model.notchStatus = notchStatusController.status }
         if let presentation = Self.setupNotchPresentation(
             onboardingActive: onboardingNotchOverrideActive,
             permissionState: permissionSetupNotchState
@@ -992,7 +991,6 @@ final class AppState {
             self?.refreshSessionWheel(model, includesProjects: includesProjects)
         }
         sessionWheel.haptics.isEnabled = { [weak self] in self?.config.general.wheel_haptics ?? false }
-        sessionWheel.toggleWorkspace = { [weak self] in self?.toggleWorkspace() }
         sessionWheel.openShortcut = { [weak self] shortcut in
             guard let self, self.allowsAppShellAccess else { return }
             if self.overlayController == nil { self.startOverlay() }
@@ -3191,8 +3189,6 @@ final class AppState {
     }
 
     private func refreshSessionWheel(_ model: SessionWheelModel, includesProjects: Bool) {
-        model.isWorkspaceVisible = programBoardOverlay.isVisible
-        model.notchStatus = notchStatusController.status
         model.notePhase = meetingNoteSnapshot.phase
         model.keepAwake = keepAwake.state
         model.particleFieldEnabled = config.awareness.screen_glow
