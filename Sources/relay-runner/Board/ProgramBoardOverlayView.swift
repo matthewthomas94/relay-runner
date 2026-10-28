@@ -214,6 +214,8 @@ struct ProgramBoardOverlayView: View {
     var onSelectProject: (String) -> Void = { _ in }
     let onStartSession: () -> Void
     let onEndSession: () -> Void
+    var onStartProjectSession: (String) -> Void = { _ in }
+    var onEndProjectSession: (String) -> Void = { _ in }
     var onStartNoteTaker: () -> Void = {}
     var onStopNoteTaker: () -> Void = {}
     var onNotesRefresh: () async -> Void = {}
@@ -511,8 +513,8 @@ struct ProgramBoardOverlayView: View {
                             onCreateProject: onCreateProject,
                             onSelectProject: onSelectProject,
                             onCreateStart: onCreateStart,
-                            onStartSession: onStartSession,
-                            onEndSession: onEndSession,
+                            onStartProjectSession: onStartProjectSession,
+                            onEndProjectSession: onEndProjectSession,
                             onNoteOpen: onNoteOpen,
                             onDrop: onDrop
                         )
@@ -1162,8 +1164,8 @@ private struct ProgramBoardContent: View {
     let onCreateProject: () -> Void
     let onSelectProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
-    let onStartSession: () -> Void
-    let onEndSession: () -> Void
+    let onStartProjectSession: (String) -> Void
+    let onEndProjectSession: (String) -> Void
     var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
@@ -1182,6 +1184,7 @@ private struct ProgramBoardContent: View {
                         selectedProjectPath: model.selectedProjectPath,
                         runningSessionPaths: model.runningSessionPaths,
                         sessionReplyBadges: model.sessionReplyBadges,
+                        sessionProvider: model.sessionProvider,
                         errorMessage: model.errorMessage,
                         isDiagnosticsExporting: model.isDiagnosticsExporting,
                         theme: model.theme,
@@ -1190,6 +1193,8 @@ private struct ProgramBoardContent: View {
                         onAddExistingProject: onAddExistingProject,
                         onCreateProject: onCreateProject,
                         onSelectProject: onSelectProject,
+                        onStartProjectSession: onStartProjectSession,
+                        onEndProjectSession: onEndProjectSession,
                         onRetry: onRefresh,
                         onCreateDiagnostics: onCreateDiagnostics,
                         onHistoryStart: onHistoryStart,
@@ -1203,8 +1208,6 @@ private struct ProgramBoardContent: View {
                             theme: model.theme,
                             canCreate: !model.projectTargets.isEmpty,
                             onCreate: { onCreateStart(lane) },
-                            onStartSession: onStartSession,
-                            onEndSession: onEndSession,
                             onNoteOpen: onNoteOpen,
                             onDrop: onDrop
                         )
@@ -1262,6 +1265,7 @@ private struct ProgramOverviewColumn: View {
     let selectedProjectPath: String?
     let runningSessionPaths: [String]
     let sessionReplyBadges: [String: Int]
+    let sessionProvider: GeneralConfig.AgentProvider
     let errorMessage: String?
     let isDiagnosticsExporting: Bool
     let theme: ParticleFieldRenderer.Theme?
@@ -1270,6 +1274,8 @@ private struct ProgramOverviewColumn: View {
     let onAddExistingProject: () -> Void
     let onCreateProject: () -> Void
     let onSelectProject: (String) -> Void
+    let onStartProjectSession: (String) -> Void
+    let onEndProjectSession: (String) -> Void
     let onRetry: () -> Void
     let onCreateDiagnostics: () -> Void
     let onHistoryStart: () -> Void
@@ -1320,12 +1326,15 @@ private struct ProgramOverviewColumn: View {
                                     ProgramBoardProjectPath.matches(entry.key, path) ? total + entry.value : total
                                 }
                             } ?? 0,
+                            sessionProvider: sessionProvider,
                             onSelect: {
                                 if let path = scopedPath {
                                     onSelectProject(path)
                                 }
                             },
-                            onOpenInFinder: onDismiss
+                            onOpenInFinder: onDismiss,
+                            onStartSession: { scopedPath.map(onStartProjectSession) },
+                            onEndSession: { scopedPath.map(onEndProjectSession) }
                         )
                         .transition(.relayElement)
                     }
@@ -1526,8 +1535,11 @@ private struct ProgramProjectCard: View {
     let isSelected: Bool
     let hasSession: Bool
     let replyBadgeCount: Int
+    let sessionProvider: GeneralConfig.AgentProvider
     let onSelect: () -> Void
     let onOpenInFinder: () -> Void
+    let onStartSession: () -> Void
+    let onEndSession: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isFocused: Bool
     @State private var isHovered = false
@@ -1568,8 +1580,8 @@ private struct ProgramProjectCard: View {
                             .transition(.relayElement)
                     }
                     Spacer(minLength: 0)
-                    // Reserves room for the Finder button overlaid outside the card button.
-                    Color.clear.frame(width: ProgramProjectCard.finderButtonSize, height: ProgramProjectCard.finderButtonSize)
+                    // Reserves room for the actions overlaid outside the card button.
+                    actions.hidden().accessibilityHidden(true)
                 }
 
                 ProjectBoardOverview(item: item)
@@ -1616,6 +1628,13 @@ private struct ProgramProjectCard: View {
         .programButtonCursor(enabled: isEnabled)
         .help("Show tickets for \(item.project?.name ?? "this project")")
         .overlay(alignment: .topTrailing) {
+            actions.padding(16)
+        }
+    }
+
+    /// Finder, then this project's session at the far right.
+    private var actions: some View {
+        HStack(spacing: 8) {
             if let path = item.project?.path {
                 ProgramIconButton(
                     systemName: "folder",
@@ -1625,12 +1644,18 @@ private struct ProgramProjectCard: View {
                     // The Workspace sits above Finder, so close it to reveal the window.
                     onOpenInFinder()
                 }
-                .padding(16)
+                let session = ProgramSessionToolbarPresentation.resolve(hasActiveSession: hasSession, provider: sessionProvider)
+                SettingsActionButton(
+                    title: session.title,
+                    systemImage: nil,
+                    prominence: .secondary,
+                    accessibilityLabel: session.title,
+                    helpText: session.help,
+                    action: hasSession ? onEndSession : onStartSession
+                )
             }
         }
     }
-
-    static let finderButtonSize: CGFloat = 32
 }
 
 private struct ProjectBoardOverview: View {
@@ -1683,8 +1708,6 @@ struct ProgramWorkColumnPanel: View {
     let theme: ParticleFieldRenderer.Theme?
     let canCreate: Bool
     let onCreate: () -> Void
-    let onStartSession: () -> Void
-    let onEndSession: () -> Void
     var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1696,8 +1719,6 @@ struct ProgramWorkColumnPanel: View {
         theme: ParticleFieldRenderer.Theme?,
         canCreate: Bool,
         onCreate: @escaping () -> Void,
-        onStartSession: @escaping () -> Void = {},
-        onEndSession: @escaping () -> Void = {},
         onNoteOpen: @escaping (ProgramBoardNoteItem) -> Void = { _ in },
         onDrop: @escaping (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
     ) {
@@ -1707,8 +1728,6 @@ struct ProgramWorkColumnPanel: View {
         self.theme = theme
         self.canCreate = canCreate
         self.onCreate = onCreate
-        self.onStartSession = onStartSession
-        self.onEndSession = onEndSession
         self.onNoteOpen = onNoteOpen
         self.onDrop = onDrop
     }
@@ -1739,20 +1758,7 @@ struct ProgramWorkColumnPanel: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
-                if lane == .done {
-                    ProgramSessionPrimaryButton(
-                        presentation: ProgramSessionToolbarPresentation.resolve(
-                            hasActiveSession: model.hasActiveSession,
-                            provider: model.sessionProvider
-                        ),
-                        isEnabled: ProgramSessionControlPolicy.canStart(
-                            hasActiveSession: model.hasActiveSession,
-                            selectedProjectPath: model.selectedSessionProjectPath,
-                            requiresConfirmedProject: ProjectRegistryV2Rollout.isEnabled()
-                        ),
-                        action: model.hasActiveSession ? onEndSession : onStartSession
-                    )
-                } else if canCreate {
+                if lane != .done, canCreate {
                     ProgramIconButton(
                         systemName: "plus",
                         help: "New \(lane.title.lowercased()) ticket",

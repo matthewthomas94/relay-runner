@@ -244,6 +244,28 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(contents.contains("prominence: .primary"))
     }
 
+    func testSessionButtonSitsOnEachProjectCardInsteadOfTheDoneColumn() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        let cardStart = try XCTUnwrap(contents.range(of: "private struct ProgramProjectCard: View"))
+        let cardEnd = try XCTUnwrap(
+            contents.range(of: "private struct ProjectBoardOverview: View", range: cardStart.upperBound..<contents.endIndex)
+        )
+        let card = String(contents[cardStart.lowerBound..<cardEnd.lowerBound])
+
+        XCTAssertTrue(card.contains("ProgramSessionToolbarPresentation.resolve(hasActiveSession: hasSession, provider: sessionProvider)"))
+        XCTAssertTrue(card.contains("prominence: .secondary"))
+        // Finder comes first, so the session button sits at the far right.
+        let finder = try XCTUnwrap(card.range(of: "systemName: \"folder\""))
+        let session = try XCTUnwrap(card.range(of: "SettingsActionButton("))
+        XCTAssertLessThan(finder.lowerBound, session.lowerBound)
+        XCTAssertTrue(contents.contains("if lane != .done, canCreate {"))
+    }
+
     func testAddProjectMenuOwnsFullLabelHitTargetWithoutStickyFocus() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

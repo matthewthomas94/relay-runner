@@ -895,9 +895,15 @@ final class AppState {
         programBoardOverlay.setStartSessionHandler { [weak self] projectPath in
             self?.newSession(workingDirectory: projectPath)
         }
-        programBoardOverlay.setEndSessionHandler { [weak self] in
+        programBoardOverlay.setEndSessionHandler { [weak self] projectPath in
             guard let self else { return }
-            self.endSession(context: self.activeContext)
+            guard let projectPath else { return self.endSession(context: self.activeContext) }
+            // A project card ends only that project's live session.
+            if let context = self.sessionRegistry.liveContextIDs.lazy
+                .compactMap({ self.assistantSessionStore.document.bindings[$0]?.context })
+                .first(where: { $0.repositoryPath.map { AssistantSessionStore.samePath($0, projectPath) } ?? false }) {
+                self.endSession(context: context)
+            }
         }
         programBoardOverlay.setNoteTakerHandlers(
             start: { [weak self] projectPath in
