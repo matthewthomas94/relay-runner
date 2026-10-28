@@ -78,10 +78,34 @@ final class ParticleFieldRenderer {
     private var startTime: CFTimeInterval = 0
 
     private var bitmapContext: CGContext?
+    private var bitmapColorSpace = CGColorSpaceCreateDeviceRGB()
+    private weak var hostView: NSView?
     private var latestParticleImage: CGImage?
     private var fieldSize: CGSize = .zero
     private var screenSize: CGSize = .zero
     private var screenScale: CGFloat = 2.0
+
+    /// Inputs of the last applied layer presentation.
+    private struct PresentationInputs: Equatable {
+        let fieldSize: CGSize
+        let departure: CGFloat
+        let blurRadius: CGFloat
+        let intensity: Double
+        let visible: Bool
+        let reduceMotion: Bool
+    }
+    private var appliedPresentation: PresentationInputs?
+
+    /// Antialiased dot coverage rendered once by CoreGraphics, keyed by the
+    /// dot radius in 1/256 device pixels.
+    private struct CoverageStamp {
+        let size: Int
+        let alpha: [UInt8]
+    }
+    private var coverageStamps: [Int: CoverageStamp] = [:]
+    private static let stampSteps: CGFloat = 256
+    /// Tests render the CoreGraphics reference the stamps must match.
+    var drawsDotsWithCoreGraphics = false
 
     // Pre-computed dot grid (position + base radius + color components)
     private struct Dot {
@@ -129,6 +153,7 @@ final class ParticleFieldRenderer {
     // MARK: - Public
 
     func attach(to hostView: NSView) {
+        self.hostView = hostView
         if let layer = hostView.layer {
             layer.addSublayer(gradientLayer)
             layer.addSublayer(particleLayer)
@@ -141,10 +166,13 @@ final class ParticleFieldRenderer {
         gradientLayer.frame = bounds
 
         let resolvedScale = backingScale ?? NSScreen.main?.backingScaleFactor ?? 2.0
-        if bounds.size != screenSize || resolvedScale != screenScale {
+        let resolvedColorSpace = displayColorSpace()
+        if bounds.size != screenSize || resolvedScale != screenScale
+            || resolvedColorSpace != bitmapColorSpace {
             screenSize = bounds.size
             fieldSize = CGSize(width: bounds.width, height: fieldH)
             screenScale = resolvedScale
+            bitmapColorSpace = resolvedColorSpace
             rebuildContext()
             dots.removeAll()
             if currentTheme != nil, reduceMotion {
@@ -167,6 +195,18 @@ final class ParticleFieldRenderer {
     }
 
     private func applyPresentation() {
+        // The overlay re-applies its presentation on every 30 Hz display tick.
+        // Unchanged inputs must not dirty the layer tree each tick (RR-440).
+        let inputs = PresentationInputs(
+            fieldSize: fieldSize,
+            departure: departure,
+            blurRadius: blurRadius,
+            intensity: intensityMultiplier,
+            visible: currentTheme != nil,
+            reduceMotion: reduceMotion
+        )
+        guard inputs != appliedPresentation else { return }
+        appliedPresentation = inputs
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         particleLayer.transform = CATransform3DIdentity
@@ -280,9 +320,45 @@ final class ParticleFieldRenderer {
 
     private func cachedGrid(for theme: Theme, size: CGSize) -> [Dot]? {
         if dots[theme] == nil {
-            dots[theme] = buildDotGrid(theme: theme, size: size)
+            dots[theme] = convertedToBitmapColorSpace(buildDotGrid(theme: theme, size: size))
         }
         return dots[theme]
+    }
+
+    /// Converts the device-RGB dot colours once per grid, matching the
+    /// conversion Core Animation otherwise applied to every frame's pixels.
+    private func convertedToBitmapColorSpace(_ grid: [Dot]) -> [Dot] {
+        let deviceRGB = CGColorSpaceCreateDeviceRGB()
+        guard bitmapColorSpace != deviceRGB else { return grid }
+        var converted: [SIMD3<Double>: SIMD3<Double>] = [:]
+        return grid.map { dot in
+            let source = SIMD3(Double(dot.r), Double(dot.g), Double(dot.b))
+            let rgb: SIMD3<Double>
+            if let known = converted[source] {
+                rgb = known
+            } else {
+                let components = CGColor(colorSpace: deviceRGB, components: [dot.r, dot.g, dot.b, 1])?
+                    .converted(to: bitmapColorSpace, intent: .defaultIntent, options: nil)?
+                    .components
+                if let components, components.count >= 3 {
+                    rgb = SIMD3(Double(components[0]), Double(components[1]), Double(components[2]))
+                } else {
+                    rgb = source
+                }
+                converted[source] = rgb
+            }
+            return Dot(x: dot.x, y: dot.y, baseRadius: dot.baseRadius, baseAlpha: dot.baseAlpha,
+                       r: CGFloat(rgb.x), g: CGFloat(rgb.y), b: CGFloat(rgb.z))
+        }
+    }
+
+    /// Screen-field dot centres sit on device-pixel corners at the usual 1x
+    /// and 2x scales, so each dot's coverage depends only on its radius.
+    private var dotsAlignToPixels: Bool {
+        guard coverage != .agentOrb else { return false }
+        let half = spacing / 2 * screenScale
+        let step = spacing * screenScale
+        return half == half.rounded() && step == step.rounded()
     }
 
     private func drawDots(
@@ -293,6 +369,12 @@ final class ParticleFieldRenderer {
         in ctx: CGContext
     ) {
         guard alphaScale > 0.001 else { return }
+        // Filling ~10k CoreGraphics ellipse paths per frame kept the main
+        // thread busy whenever the overlay animated (RR-440). Aligned fields
+        // composite cached CoreGraphics coverage instead; the result matches
+        // within a few 8-bit levels at antialiased edges.
+        let pixels = dotsAlignToPixels && !drawsDotsWithCoreGraphics
+            ? ctx.data?.assumingMemoryBound(to: UInt8.self) : nil
         for dot in grid {
             // The card's silhouette changes through the density field. Keep
             // its dot centres fixed so the halftone grid stays crisp.
@@ -317,11 +399,83 @@ final class ParticleFieldRenderer {
             let alpha = baseAlpha * alphaScale
             guard baseAlpha > 0.02, alpha > 0.002 else { continue }
 
+            if let pixels {
+                stampDot(dot, radius: radius, alpha: alpha, into: pixels, context: ctx)
+                continue
+            }
             ctx.setFillColor(red: dot.r, green: dot.g, blue: dot.b, alpha: alpha)
             ctx.fillEllipse(in: CGRect(
                 x: dot.x - radius, y: dot.y - radius,
                 width: radius * 2, height: radius * 2))
         }
+    }
+
+    /// Source-over composites one dot into the premultiplied RGBA bitmap.
+    private func stampDot(
+        _ dot: Dot,
+        radius: CGFloat,
+        alpha: CGFloat,
+        into pixels: UnsafeMutablePointer<UInt8>,
+        context ctx: CGContext
+    ) {
+        let stamp = coverageStamp(radiusPixels: radius * screenScale)
+        let half = stamp.size / 2
+        let centerX = Int((dot.x * screenScale).rounded())
+        let centerY = Int((dot.y * screenScale).rounded())
+        let width = ctx.width
+        let height = ctx.height
+        let bytesPerRow = ctx.bytesPerRow
+        let opacity = Float(max(0, min(1, alpha)))
+        let red = Float(max(0, min(1, dot.r))) * opacity * 255
+        let green = Float(max(0, min(1, dot.g))) * opacity * 255
+        let blue = Float(max(0, min(1, dot.b))) * opacity * 255
+        let cover = opacity * 255
+        stamp.alpha.withUnsafeBufferPointer { mask in
+            for row in 0..<stamp.size {
+                // Bitmap memory runs top-down; device y runs bottom-up.
+                let y = height - centerY - half + row
+                guard y >= 0, y < height else { continue }
+                let line = pixels + y * bytesPerRow
+                for column in 0..<stamp.size {
+                    let coverage = mask[row * stamp.size + column]
+                    guard coverage > 0 else { continue }
+                    let x = centerX - half + column
+                    guard x >= 0, x < width else { continue }
+                    let weight = Float(coverage) / 255
+                    let pixel = line + x * 4
+                    let sourceAlpha = cover * weight
+                    let keep = 1 - sourceAlpha / 255
+                    pixel[0] = UInt8(min(255, (red * weight + Float(pixel[0]) * keep).rounded()))
+                    pixel[1] = UInt8(min(255, (green * weight + Float(pixel[1]) * keep).rounded()))
+                    pixel[2] = UInt8(min(255, (blue * weight + Float(pixel[2]) * keep).rounded()))
+                    pixel[3] = UInt8(min(255, (sourceAlpha + Float(pixel[3]) * keep).rounded()))
+                }
+            }
+        }
+    }
+
+    private func coverageStamp(radiusPixels: CGFloat) -> CoverageStamp {
+        let key = Int((radiusPixels * Self.stampSteps).rounded())
+        if let stamp = coverageStamps[key] { return stamp }
+        let radius = CGFloat(key) / Self.stampSteps
+        let half = Int(radius.rounded(.up)) + 1
+        let size = half * 2
+        var alpha = [UInt8](repeating: 0, count: size * size)
+        alpha.withUnsafeMutableBytes { buffer in
+            guard let mask = CGContext(
+                data: buffer.baseAddress, width: size, height: size,
+                bitsPerComponent: 8, bytesPerRow: size,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue
+            ) else { return }
+            mask.setFillColor(gray: 0, alpha: 1)
+            mask.fillEllipse(in: CGRect(
+                x: CGFloat(half) - radius, y: CGFloat(half) - radius,
+                width: radius * 2, height: radius * 2))
+        }
+        let stamp = CoverageStamp(size: size, alpha: alpha)
+        coverageStamps[key] = stamp
+        return stamp
     }
 
     // MARK: - Dot grid generation
@@ -499,9 +653,26 @@ final class ParticleFieldRenderer {
         bitmapContext = CGContext(
             data: nil, width: w, height: h,
             bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
+            space: bitmapColorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         )
+        if bitmapContext == nil, bitmapColorSpace != CGColorSpaceCreateDeviceRGB() {
+            bitmapColorSpace = CGColorSpaceCreateDeviceRGB()
+            rebuildContext()
+        }
+    }
+
+    /// Screen fields render in their window's colour space. A device-RGB
+    /// bitmap made Core Animation colour-convert every frame on the main
+    /// thread (RR-440). The card orb rebuilds its colours every frame, and a
+    /// view outside a window keeps device RGB.
+    private func displayColorSpace() -> CGColorSpace {
+        let deviceRGB = CGColorSpaceCreateDeviceRGB()
+        guard coverage != .agentOrb, let window = hostView?.window else { return deviceRGB }
+        let space = (window.colorSpace ?? window.screen?.colorSpace ?? NSScreen.main?.colorSpace)?
+            .cgColorSpace
+        guard let space, space.model == .rgb else { return deviceRGB }
+        return space
     }
 
     var isAnimationRunning: Bool {

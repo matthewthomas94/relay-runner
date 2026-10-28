@@ -7558,7 +7558,13 @@ Title: {ticket['title']}
             provider_key = self._effective_worker_agent()[0]
         except Exception:
             provider_key = self.agent_kind
-        target_branch = _git_text(str(repo), "branch", "--show-current") or self._resolve_default_branch(str(repo))
+        # ensure_active reads the branch only when it creates a drain; an active
+        # drain keeps the branch it started on, so skip the Git call per tick.
+        target_branch = (
+            str((active_drain or {}).get("target_branch") or "")
+            or _git_text(str(repo), "branch", "--show-current")
+            or self._resolve_default_branch(str(repo))
+        )
         drain, created = store.ensure_active(
             repo_path=str(repo),
             target_branch=target_branch,
@@ -7583,8 +7589,26 @@ Title: {ticket['title']}
             for item in (sweep_result or {}).get("skipped", [])
             if item.get("ticket_id")
         }
-        source_blocker = _source_checkout_blocker(str(repo))
-        dispatch_blocker = _source_checkout_blocker(str(repo), ignore_board_metadata=True)
+        # Classification reads the source blocker only for integration-blocked
+        # runs and the dispatch blocker only for ready tickets. A drain held
+        # open by a verification-blocked ticket otherwise ran two full
+        # `git status` scans every monitor tick (RR-440).
+        source_blocker = (
+            _source_checkout_blocker(str(repo))
+            if any(
+                (runs_by_ticket.get(ticket_id) or {}).get("state") == INTEGRATION_BLOCKED_RUN_STATE
+                for ticket_id in observed_ids
+            )
+            else None
+        )
+        dispatch_blocker = (
+            _source_checkout_blocker(str(repo), ignore_board_metadata=True)
+            if any(
+                (tickets_by_id.get(ticket_id) or {}).get("status") == "ready"
+                for ticket_id in observed_ids
+            )
+            else None
+        )
         items = [
             self._classify_queue_drain_item(
                 repo=repo,
@@ -9233,7 +9257,11 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         all_tickets = scan_repo(repo)
         dispatched: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
-        source_blocker = _source_checkout_blocker(str(repo), ignore_board_metadata=True)
+        # A full `git status --untracked-files=all` costs seconds in large
+        # checkouts, and the app plus the queue-drain monitor sweep every few
+        # seconds. Check it once, and only for a ticket that could dispatch.
+        source_blocker_checked = False
+        source_blocker = None
 
         def skip(ticket: dict[str, Any], reason: str, **extra: Any) -> None:
             entry = {"ticket_id": ticket["id"], "reason": reason}
@@ -9280,6 +9308,9 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 skip(ticket, "dependencies_not_done")
                 continue
 
+            if not source_blocker_checked:
+                source_blocker = _source_checkout_blocker(str(repo), ignore_board_metadata=True)
+                source_blocker_checked = True
             if source_blocker is not None:
                 skip(
                     ticket,

@@ -26,6 +26,7 @@ try:
     from services.artifact_retention import ArtifactRetentionManager, SnapshotLeaseStore
     from services.artifact_store import (
         ArtifactMutation,
+        ArtifactSnapshot,
         ArtifactStore,
         ArtifactValidationError,
         TicketWrite,
@@ -39,6 +40,7 @@ except ModuleNotFoundError:  # Direct services/*.py execution.
     )
     from artifact_store import (  # type: ignore[no-redef]
         ArtifactMutation,
+        ArtifactSnapshot,
         ArtifactStore,
         ArtifactValidationError,
         TicketWrite,
@@ -903,6 +905,7 @@ class ArtifactLifecycleCoordinator:
                 dependencies,
                 statuses=statuses,
                 manager=manager,
+                snapshot=snapshot,
             ):
                 continue
             ticket_id = PurePosixPath(candidate_path).stem
@@ -976,13 +979,14 @@ class ArtifactLifecycleCoordinator:
         *,
         statuses: Mapping[str, str],
         manager: ArtifactRetentionManager,
+        snapshot: ArtifactSnapshot | None = None,
     ) -> bool:
         for dependency_id in dependencies:
             if statuses.get(dependency_id) != "done" and not manager.dependency_satisfied(
-                dependency_id
+                dependency_id, snapshot=snapshot
             ):
                 return False
-            if manager.dependency_execution_mode(dependency_id) == "spike":
+            if manager.dependency_execution_mode(dependency_id, snapshot=snapshot) == "spike":
                 return False
         return True
 

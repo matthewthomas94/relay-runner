@@ -32,6 +32,7 @@ try:
         ArtifactConcurrentUpdate,
         ArtifactMaterializationConflict,
         ArtifactMutation,
+        ArtifactSnapshot,
         ArtifactStore,
         ArtifactValidationError,
         ArtifactWriteResult,
@@ -51,6 +52,7 @@ except ModuleNotFoundError:  # Direct services/*.py execution.
         ArtifactConcurrentUpdate,
         ArtifactMaterializationConflict,
         ArtifactMutation,
+        ArtifactSnapshot,
         ArtifactStore,
         ArtifactValidationError,
         ArtifactWriteResult,
@@ -1157,8 +1159,10 @@ class ArtifactRetentionManager:
             ),
         )
 
-    def dependency_satisfied(self, dependency_id: str) -> bool:
-        snapshot = self.store.snapshot()
+    def dependency_satisfied(
+        self, dependency_id: str, *, snapshot: ArtifactSnapshot | None = None,
+    ) -> bool:
+        snapshot = snapshot or self.store.snapshot()
         path = f".orchestrator/{dependency_id}.md"
         if path in snapshot.files:
             return _canonical_status(_front_matter(snapshot.files[path])) == "done"
@@ -1172,9 +1176,11 @@ class ArtifactRetentionManager:
                 return True
         return False
 
-    def dependency_execution_mode(self, dependency_id: str) -> str | None:
+    def dependency_execution_mode(
+        self, dependency_id: str, *, snapshot: ArtifactSnapshot | None = None,
+    ) -> str | None:
         """Return a dependency's verified execution mode without restoring it."""
-        snapshot = self.store.snapshot()
+        snapshot = snapshot or self.store.snapshot()
         path = f".orchestrator/{dependency_id}.md"
         if path in snapshot.files:
             return _front_matter(snapshot.files[path]).get("execution_mode", "implementation")

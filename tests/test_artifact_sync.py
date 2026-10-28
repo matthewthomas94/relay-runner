@@ -772,6 +772,33 @@ class ArtifactSyncTests(unittest.TestCase):
             with self.assertRaises(ArtifactValidationError):
                 engine._validate_quarantine(self.device_a.repo, head)
 
+    def test_history_validation_walks_only_commits_after_the_last_verified_head(self):
+        # RR-440: every periodic sync re-walked the whole remote history.
+        verified = self.write_ticket(self.device_a, "verified-0", "RR-1", "Title 0")
+        engine = self.engine(self.device_a)
+        engine._validate_quarantine(self.device_a.repo, verified)
+        for index in range(1, 4):
+            head = self.write_ticket(self.device_a, f"verified-{index}", "RR-1", f"Title {index}")
+        new_commits = self.run_git(
+            self.device_a.repo, "rev-list", "--reverse", f"{verified}..{head}"
+        ).splitlines()
+
+        def walked_trees():
+            with patch.object(engine, "_quarantine_git_bytes", wraps=engine._quarantine_git_bytes) as reads:
+                engine._validate_quarantine(self.device_a.repo, head)
+            return [call.args[5] for call in reads.call_args_list if call.args[1] == "ls-tree"]
+
+        self.assertEqual(walked_trees(), [verified, *new_commits])
+        self.assertEqual(walked_trees(), [])
+
+        # A recorded head the fetched history does not descend from proves
+        # nothing, so validation falls back to the full walk.
+        engine._remote_history_verification_path().write_text(json.dumps({
+            "version": 1, "project_id": self.device_a.store.project_id, "commit_id": "0" * 40,
+        }))
+        history = self.run_git(self.device_a.repo, "rev-list", "--reverse", head).splitlines()
+        self.assertEqual(walked_trees(), history)
+
     def test_exact_quarantine_fetch_excludes_source_refs_and_rejects_foreign_artifact(self):
         private_repo = self.root / "private-source"
         self.run_git(None, "clone", "-q", str(self.remote), str(private_repo))
