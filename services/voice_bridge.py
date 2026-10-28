@@ -583,6 +583,13 @@ def _startup_voice_session_key() -> str:
     )
 
 
+def _session_spool_is_live(session_key: str, *, root: str = RELAY_SESSIONS_ROOT) -> bool:
+    """A session lives while the app keeps its spool; ending it removes the spool."""
+    return session_key == _startup_voice_session_key() or os.path.isdir(
+        os.path.join(root, session_key)
+    )
+
+
 def _install_startup_voice_target(provider_session_ownership=None) -> VoiceTarget:
     """Register the session this bridge launched with, from current module paths."""
     global _VOICE_TARGET_KEY, _VOICE_STARTUP_KEY, _VOICE_LEDGER_STATE_FILE
@@ -2744,6 +2751,40 @@ def _publish_command(
         print(f"[voice_bridge] Could not deliver queued voice command: {exc}", file=sys.stderr)
     with _VOICE_STATE_LOCK:
         sync_deliverable_state(state_path, inbox)
+
+
+VOICE_PAUSED_TEXT = (
+    "Voice is paused. Message {seq} has an uncertain outcome, so I'm holding this request. "
+    "Open the Workspace and skip that message to continue."
+)
+
+
+def _announce_voice_paused(
+    inbox: IntentInbox,
+    command: dict,
+    *,
+    messenger: MessengerRuntime | None,
+    tts_worker: TTSWorker,
+    state_path: str = VOICE_COMMAND_STATE_FILE,
+) -> bool:
+    """Say that an uncertain message holds this turn instead of going silent (RR-447)."""
+    blocker = inbox.recovery_blocker()
+    if blocker is None or blocker["intent_id"] == command.get("intent_id"):
+        return False
+    text = VOICE_PAUSED_TEXT.format(seq=blocker["command_seq"])
+    if messenger is not None and messenger.submit_trace({
+        "kind": "voice-paused",
+        "message": text,
+        "command": command,
+    }):
+        return True
+    return _queue_tts_text(
+        text,
+        tts_worker.input_queue,
+        state_path=state_path,
+        allow_pending_command=True,
+        dedup_key=f"voice-paused:{blocker['intent_id']}:{command.get('intent_id')}",
+    )
 
 
 def _relay_command_current(
@@ -5494,6 +5535,10 @@ def _run_relay(
                             else "legacy-ready-file"
                         ),
                     )
+                    if inbox is not None and item.lifecycle_state != "cancelled":
+                        _announce_voice_paused(
+                            inbox, metadata, messenger=messenger, tts_worker=tts_worker,
+                        )
                     state = "cancelled" if item.lifecycle_state == "cancelled" else "queued"
                     _record_command_action_state(metadata, state)
                     print(
@@ -5618,6 +5663,8 @@ def main():
                 metadata_path=VOICE_CMD_META_FILE,
                 session_key=_startup_voice_session_key(),
             )
+        # RR-447: an ended session's queued work never reaches a new session.
+        intent_inbox.retire_ended_sessions(_session_spool_is_live)
         if projection_path is not None:
             provider_turn_broker = ProviderTurnBroker(
                 VOICE_INTENT_INBOX,

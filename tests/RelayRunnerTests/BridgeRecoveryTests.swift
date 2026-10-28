@@ -31,6 +31,118 @@ final class BridgeRecoveryTests: XCTestCase {
         )
     }
 
+    /// RR-447: during provider resume the bridge answers slowly and its
+    /// consumer heartbeat goes stale; a live bridge process is not relaunched.
+    func testWatchdogKeepsLiveBridgeProcessThroughSlowHeartbeatDuringResume() {
+        func action(processAlive: Bool, unreachableFor: TimeInterval) -> AppState.BridgeWatchdogAction {
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: true,
+                daemonAlive: false,
+                consumerAlive: false,
+                wasAlive: true,
+                sessionBridgeSeen: true,
+                elapsedSinceSessionStart: 120,
+                bridgeProcessAlive: processAlive,
+                bridgeUnreachableFor: unreachableFor
+            )
+        }
+
+        XCTAssertEqual(action(processAlive: true, unreachableFor: 0), .keepDaemon)
+        XCTAssertEqual(action(processAlive: true, unreachableFor: 59), .keepDaemon)
+        XCTAssertEqual(
+            action(processAlive: true, unreachableFor: AppState.liveBridgeUnreachableGrace),
+            .recoverDaemon,
+            "an unreachable bridge is still recovered after the bounded grace"
+        )
+        XCTAssertEqual(action(processAlive: false, unreachableFor: 0), .recoverDaemon)
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: false,
+                daemonAlive: false,
+                consumerAlive: false,
+                hasSessionContext: true,
+                wasAlive: true,
+                sessionBridgeSeen: false,
+                elapsedSinceSessionStart: 600,
+                bridgeProcessAlive: true
+            ),
+            .keepDaemon,
+            "a context-backed session keeps its live bridge too"
+        )
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: true,
+                daemonAlive: false,
+                consumerAlive: false,
+                wasAlive: false,
+                sessionBridgeSeen: false,
+                elapsedSinceSessionStart: 10,
+                bridgeProcessAlive: true
+            ),
+            .waitForLaunch,
+            "the launch grace is unchanged"
+        )
+        XCTAssertEqual(
+            AppState.bridgeWatchdogAction(
+                menuSessionActive: false,
+                daemonAlive: false,
+                consumerAlive: false,
+                wasAlive: false,
+                sessionBridgeSeen: false,
+                elapsedSinceSessionStart: 120,
+                bridgeProcessAlive: true
+            ),
+            .markDead,
+            "a stray bridge process never adopts a session"
+        )
+    }
+
+    func testRecordingStartWaitsForLiveBridgeProcessInsteadOfRelaunching() {
+        XCTAssertEqual(
+            AppState.recordingStartBridgeAction(
+                bridgeRecoveryInFlight: false,
+                daemonAlive: false,
+                consumerAlive: false,
+                hasSessionContext: true,
+                pendingDeliveryState: .none,
+                bridgeProcessAlive: true
+            ),
+            .waitForBridgeRecovery
+        )
+        XCTAssertEqual(
+            AppState.recordingStartBridgeAction(
+                bridgeRecoveryInFlight: false,
+                daemonAlive: false,
+                consumerAlive: false,
+                hasSessionContext: false,
+                pendingDeliveryState: .none,
+                bridgeProcessAlive: true
+            ),
+            .promptForSession
+        )
+    }
+
+    func testBridgeRecoveryStaysSilentOnceTheSessionBridgeWasSeen() {
+        XCTAssertTrue(AppState.bridgeRecoverySuppressesGreeting(
+            sessionSuppressesGreeting: false, sessionBridgeSeen: true
+        ))
+        XCTAssertTrue(AppState.bridgeRecoverySuppressesGreeting(
+            sessionSuppressesGreeting: true, sessionBridgeSeen: false
+        ))
+        XCTAssertFalse(AppState.bridgeRecoverySuppressesGreeting(
+            sessionSuppressesGreeting: false, sessionBridgeSeen: false
+        ), "a bridge that never came up still greets once it does")
+    }
+
+    func testVoicePausedPresentationNamesTheMessageAndItsSkipAction() {
+        let presentation = AppState.voicePausedPresentation(commandSeq: 60)
+
+        XCTAssertEqual(presentation.title, "Voice paused")
+        XCTAssertTrue(presentation.body.contains("Message 60"))
+        XCTAssertTrue(presentation.body.contains("Skip uncertain message"))
+        XCTAssertTrue(presentation.body.contains("check its outcome before repeating it"))
+    }
+
     func testWatchdogWaitsDuringInitialMenuLaunchGrace() {
         XCTAssertEqual(
             AppState.bridgeWatchdogAction(

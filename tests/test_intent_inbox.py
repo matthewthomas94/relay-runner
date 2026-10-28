@@ -167,6 +167,47 @@ class IntentInboxTests(unittest.TestCase):
                 self.assertEqual(last_item["relay_command_seq"], 96)
                 inbox.close()
 
+    def test_restart_retires_unclaimed_work_of_ended_sessions_only(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "inbox.sqlite3"
+                projection = Path(directory) / "turns.json"
+                state = str(Path(directory) / "state.json")
+
+                def routed(seq: int, session: str) -> dict:
+                    return {
+                        **metadata(seq, f"cmd-{seq}"),
+                        "provider": provider,
+                        "voice_target_session_key": session,
+                    }
+
+                inbox = IntentInbox(path, provider_turn_projection_path=projection)
+                uncertain = inbox.enqueue("uncertain", routed(41, "ended"), "continue_current")
+                inbox.observe_claim(uncertain, provider_turn_seen=False)
+                inbox.enqueue("stale", routed(42, "ended"), "queue_project_work")
+                inbox.enqueue("live", routed(43, "live"), "continue_current")
+                inbox.enqueue("unrouted", metadata(44, "cmd-44"), "continue_current")
+                inbox.close()
+
+                inbox = IntentInbox(path, provider_turn_projection_path=projection)
+                self.assertEqual(inbox.retire_ended_sessions(lambda key: key == "live"), 1)
+                self.assertEqual(inbox.retire_ended_sessions(lambda key: key == "live"), 0)
+                records = {r["command_seq"]: r for r in inbox.records()}
+                self.assertEqual(records[42]["state"], "cancelled")
+                self.assertEqual(records[42]["recovery_decision"], "ended_session_retired")
+                self.assertEqual(records[43]["state"], "pending")
+                self.assertEqual(records[44]["state"], "pending")
+                # An uncertain lease is never retired here; it keeps its blocker.
+                self.assertEqual(records[41]["state"], "review_required")
+                sync_deliverable_state(state, inbox)
+                payload = json.loads(Path(state).read_text())
+                self.assertEqual(
+                    [item["relay_command_seq"] for item in payload["deliverable_commands"]],
+                    [43, 44],
+                )
+                self.assertEqual(payload["inbox_recovery_blocker"]["command_seq"], 41)
+                inbox.close()
+
     def test_recovery_skip_rejects_late_acknowledgement(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "inbox.sqlite3"

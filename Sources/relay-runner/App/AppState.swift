@@ -165,6 +165,8 @@ final class AppState {
 
     private struct BridgeWatchdogSample {
         let daemonAlive: Bool
+        /// The recorded bridge process runs although the daemon probe missed.
+        let bridgeProcessAlive: Bool
         let consumerAlive: Bool
         let hasSessionContext: Bool
         let pendingDeliveryState: ProcessManager.PendingVoiceCommandDeliveryState
@@ -478,6 +480,13 @@ final class AppState {
     private var programBoardLoadingState: ProgramBoardLoadingState = .idle
     private var lastBridgeRecoveryAt: Date = .distantPast
     private static let bridgeRecoveryCooldown: TimeInterval = 15
+    /// RR-447: when the watchdog first found a live bridge process unreachable.
+    @ObservationIgnored private var bridgeUnreachableSince: Date?
+    /// A live bridge process may stay unreachable this long (provider resume,
+    /// busy daemon or app) before the watchdog relaunches it.
+    static let liveBridgeUnreachableGrace: TimeInterval = 60
+    /// The uncertain message last surfaced in the notch, so it is shown once.
+    @ObservationIgnored private var surfacedInboxRecoveryBlocker: InboxRecoveryBlocker?
     private var bridgeRecoverySuppressedForUpdate = false
     @ObservationIgnored private var updateRelaunchObserver: NSObjectProtocol?
     /// Per-bridge-session flag for the per-parent permissions wizard. False at
@@ -3648,6 +3657,7 @@ final class AppState {
                 let consumerAlive = daemonAlive && processManager.bridgeConsumerAlive()
                 return BridgeWatchdogSample(
                     daemonAlive: daemonAlive,
+                    bridgeProcessAlive: !daemonAlive && ProcessManager.recordedBridgeProcessAlive(),
                     consumerAlive: consumerAlive,
                     hasSessionContext: processManager.bridgeRecoveryContext(
                         fallbackConfig: fallbackConfig
@@ -3688,6 +3698,11 @@ final class AppState {
         )
         let wasAlive = bridgeAliveCache
         let elapsed = Date().timeIntervalSince(sessionStartTime)
+        if sample.bridgeProcessAlive {
+            bridgeUnreachableSince = bridgeUnreachableSince ?? Date()
+        } else {
+            bridgeUnreachableSince = nil
+        }
         let action = Self.bridgeWatchdogAction(
             menuSessionActive: menuSessionActive,
             daemonAlive: daemonAlive,
@@ -3699,8 +3714,11 @@ final class AppState {
             pendingDeliveryTimedOut: pendingDeliveryTimedOut,
             pendingDeliveryState: pendingDeliveryState,
             stopRequested: sample.stopRequested,
-            recoverySuppressed: bridgeRecoverySuppressedForUpdate
+            recoverySuppressed: bridgeRecoverySuppressedForUpdate,
+            bridgeProcessAlive: sample.bridgeProcessAlive,
+            bridgeUnreachableFor: bridgeUnreachableSince.map { Date().timeIntervalSince($0) } ?? 0
         )
+        surfaceInboxRecoveryBlockerIfNeeded()
 
         if alive != wasAlive {
             refreshWorkspaceActivity(invalidateRoute: true)
@@ -3734,7 +3752,8 @@ final class AppState {
             return
         case .voiceCommandQueued:
             bridgeAliveCache = true
-            if statusText != Self.voiceCommandQueuedPresentation.statusText {
+            if statusText != Self.voiceCommandQueuedPresentation.statusText,
+               surfacedInboxRecoveryBlocker == nil {
                 surfaceVoiceCommandQueued()
             }
         case .waitForConsumer:
@@ -3845,7 +3864,9 @@ final class AppState {
         pendingDeliveryTimedOut: Bool = false,
         pendingDeliveryState: ProcessManager.PendingVoiceCommandDeliveryState = .none,
         stopRequested: Bool = false,
-        recoverySuppressed: Bool = false
+        recoverySuppressed: Bool = false,
+        bridgeProcessAlive: Bool = false,
+        bridgeUnreachableFor: TimeInterval = 0
     ) -> BridgeWatchdogAction {
         if stopRequested {
             return daemonAlive ? .reapOrphan : .markDead
@@ -3866,14 +3887,20 @@ final class AppState {
             }
             return (menuSessionActive || wasAlive || hasSessionContext) ? .keepDaemon : .reapOrphan
         }
+        // RR-447: a relaunch kills a bridge that is only slow to answer while
+        // the provider resumes, and interrupts capture and speech. Keep a live
+        // bridge process through a bounded grace instead.
+        let recovery: BridgeWatchdogAction =
+            bridgeProcessAlive && bridgeUnreachableFor < liveBridgeUnreachableGrace
+                ? .keepDaemon : .recoverDaemon
         if menuSessionActive {
             if sessionBridgeSeen || elapsedSinceSessionStart > 90 {
-                return .recoverDaemon
+                return recovery
             }
             return .waitForLaunch
         }
         if hasSessionContext && wasAlive {
-            return .recoverDaemon
+            return recovery
         }
         return .markDead
     }
@@ -3892,12 +3919,18 @@ final class AppState {
         daemonAlive: Bool,
         consumerAlive: Bool,
         hasSessionContext: Bool,
-        pendingDeliveryState: ProcessManager.PendingVoiceCommandDeliveryState
+        pendingDeliveryState: ProcessManager.PendingVoiceCommandDeliveryState,
+        bridgeProcessAlive: Bool = false
     ) -> RecordingStartBridgeAction {
         if bridgeRecoveryInFlight {
             return .waitForBridgeRecovery
         }
         if !daemonAlive {
+            // RR-447: a recording never relaunches a bridge process that still
+            // runs; the watchdog owns its bounded recovery.
+            if bridgeProcessAlive, hasSessionContext {
+                return .waitForBridgeRecovery
+            }
             return hasSessionContext ? .recoverBridge : .promptForSession
         }
         if pendingDeliveryState == .timedOut {
@@ -3941,9 +3974,20 @@ final class AppState {
         sentVoiceFocus = []
         statusText = "Session reconnecting"
         NSLog("[AppState] Relaunching voice bridge daemon for \(context.workingDirectory) reason=\(reason)")
+        // RR-447: app logs are not retained, so keep the restart trigger.
+        RelayDiagnostics.shared.record(
+            process: "app",
+            phase: "bridge_recovery",
+            outcome: "started",
+            provider: context.provider.flatMap { RelayDiagnostics.allowedProviders.contains($0) ? $0 : nil },
+            summary: "reason=\(reason) bridge_seen=\(sessionBridgeSeen)"
+        )
 
         let processManager = self.processManager
-        let suppressStartupGreeting = activeSessionSuppressesStartupGreeting
+        let suppressStartupGreeting = Self.bridgeRecoverySuppressesGreeting(
+            sessionSuppressesGreeting: activeSessionSuppressesStartupGreeting,
+            sessionBridgeSeen: sessionBridgeSeen
+        )
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let recovered = processManager.relaunchBridgeDaemon(
                 context: context,
@@ -4031,6 +4075,35 @@ final class AppState {
     private func surfaceVoiceCommandQueued() {
         let presentation = Self.voiceCommandQueuedPresentation
         statusText = presentation.statusText
+        stateMachine.showProgramStatus(title: presentation.title, body: presentation.body)
+        syncNotchActivitySurface()
+    }
+
+    /// A reconnect after the session's bridge was seen is not a new session;
+    /// its greeting would pause capture and talk over the user.
+    static func bridgeRecoverySuppressesGreeting(
+        sessionSuppressesGreeting: Bool,
+        sessionBridgeSeen: Bool
+    ) -> Bool {
+        sessionSuppressesGreeting || sessionBridgeSeen
+    }
+
+    static func voicePausedPresentation(commandSeq: Int) -> ProgramStatusPresentation {
+        ProgramStatusPresentation(
+            statusText: "Voice paused",
+            title: "Voice paused",
+            body: "Message \(commandSeq) has an uncertain outcome, so later voice messages are held. Open the Workspace and choose Skip uncertain message to continue; check its outcome before repeating it."
+        )
+    }
+
+    /// RR-447: the Workspace banner is hidden while the user only speaks, so
+    /// a new uncertain message also appears once in the notch.
+    private func surfaceInboxRecoveryBlockerIfNeeded() {
+        let blocker = voiceSession.isEmbeddedProcessRunning ? voiceSession.inboxRecoveryBlocker : nil
+        guard blocker != surfacedInboxRecoveryBlocker else { return }
+        surfacedInboxRecoveryBlocker = blocker
+        guard let blocker else { return }
+        let presentation = Self.voicePausedPresentation(commandSeq: blocker.command_seq)
         stateMachine.showProgramStatus(title: presentation.title, body: presentation.body)
         syncNotchActivitySurface()
     }
@@ -4301,7 +4374,8 @@ final class AppState {
                         || (captureOwnerRequested && !self.onboarding.isSessionControlsTutorialActive) {
                 // An out-of-session gesture never opened the mic; it takes the
                 // same real-time bridge check so the session affordance matches.
-                let daemonAlive = self.processManager.bridgeAlive() && self.bridgeMatchesActiveContext
+                let bridgeProbeAlive = self.processManager.bridgeAlive()
+                let daemonAlive = bridgeProbeAlive && self.bridgeMatchesActiveContext
                 let pendingDeliveryState = self.processManager.pendingVoiceCommandDeliveryState()
                 let consumerAlive = daemonAlive && self.processManager.bridgeConsumerAlive()
                 let hasSessionContext = self.processManager.bridgeRecoveryContext(
@@ -4312,7 +4386,8 @@ final class AppState {
                     daemonAlive: daemonAlive,
                     consumerAlive: consumerAlive,
                     hasSessionContext: hasSessionContext,
-                    pendingDeliveryState: pendingDeliveryState
+                    pendingDeliveryState: pendingDeliveryState,
+                    bridgeProcessAlive: !bridgeProbeAlive && ProcessManager.recordedBridgeProcessAlive()
                 )
 
                 switch bridgeAction {
