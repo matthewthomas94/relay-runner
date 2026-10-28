@@ -1031,5 +1031,37 @@ class TTSWorkerReplayTests(unittest.TestCase):
         self.assertEqual(worker._rate, 1.3)
 
 
+class TTSStateDatagramTests(unittest.TestCase):
+    """macOS drops a Unix datagram over 2048 bytes, so a long reply's preview must still fit."""
+
+    def receive(self, text: str) -> dict:
+        import socket
+
+        directory = tempfile.mkdtemp(prefix="tts", dir="/tmp")
+        path = os.path.join(directory, "s")
+        self.addCleanup(os.rmdir, directory)
+        self.addCleanup(os.unlink, path)
+        receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(receiver.close)
+        receiver.bind(path)
+        receiver.settimeout(2)
+        with patch.object(tts_worker, "VOICE_STATE_SOCK", path):
+            tts_worker.publish_waiting_preview(text, {"utterance_id": "u" * 36, "session_key": "k" * 36})
+        data = receiver.recv(8192)
+        self.assertLessEqual(len(data), tts_worker.MAX_STATE_DATAGRAM_BYTES)
+        return json.loads(data)
+
+    def test_long_preview_is_shortened_until_the_overlay_receives_it(self):
+        text = "It’s done — " * 300
+        payload = self.receive(text)
+        self.assertEqual(payload["state"], "message_waiting")
+        self.assertEqual(payload["utterance_id"], "u" * 36)
+        self.assertTrue(payload["text"].endswith("…"))
+        self.assertTrue(text.startswith(payload["text"][:-1]))
+
+    def test_short_preview_is_sent_unchanged(self):
+        self.assertEqual(self.receive("Short reply.")["text"], "Short reply.")
+
+
 if __name__ == "__main__":
     unittest.main()

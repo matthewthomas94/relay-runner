@@ -61,6 +61,22 @@ def _sentence_chunks(text: str) -> list[str]:
     return chunks
 
 
+# macOS refuses a Unix datagram over net.local.dgram.maxdgram (2048 bytes by default)
+# with EMSGSIZE, so a long reply preview would never reach the overlay.
+MAX_STATE_DATAGRAM_BYTES = 2048
+
+
+def _state_datagram(msg: dict) -> bytes:
+    """Encodes a state update, shortening its preview text until the datagram fits."""
+    data = json.dumps(msg).encode()
+    text = msg.get("text")
+    while len(data) > MAX_STATE_DATAGRAM_BYTES and isinstance(text, str) and text:
+        # Every dropped character frees at least one encoded byte.
+        text = text[: max(0, len(text) - (len(data) - MAX_STATE_DATAGRAM_BYTES) - 1)].rstrip()
+        data = json.dumps({**msg, "text": text + "…"}).encode()
+    return data
+
+
 def _notify_state(state: str, **kwargs):
     """Send a state update to the overlay app via Unix datagram socket.
     Silently fails if the socket doesn't exist (overlay not running)."""
@@ -72,7 +88,7 @@ def _notify_state(state: str, **kwargs):
     }
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        s.sendto(json.dumps(msg).encode(), VOICE_STATE_SOCK)
+        s.sendto(_state_datagram(msg), VOICE_STATE_SOCK)
         s.close()
     except (OSError, ConnectionRefusedError):
         pass
