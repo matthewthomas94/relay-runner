@@ -319,7 +319,9 @@ struct SessionWheelView: View {
             : (contrast == .increased ? ProgramBoardStyle.disabledText : ProgramBoardStyle.mutedText.opacity(0.5))
         return ZStack {
             controlBackground(shape, presentation: presentation)
-            shape.fill(.white.opacity(enabled ? (contrast == .increased ? 0.22 : 0.1) : 0.04))
+            shape.fill(contrast == .increased
+                       ? Color.white.opacity(enabled ? 0.22 : 0.04)
+                       : ProgramBoardStyle.mutedText.opacity(enabled ? 0.06 : 0.02))
                 .mask(SessionWheelWedge(from: value >= SessionWheelIntensity.range.upperBound ? highEnd : thumb,
                                        to: lowEnd))
             SessionWheelThumb(angle: thumb)
@@ -410,7 +412,8 @@ struct SessionWheelView: View {
                             .frame(width: 10, height: 10)
                     } else {
                         Image(systemName: symbol)
-                            .font(AppTypography.symbolFont(size: isNoteMark ? 11 : 9,
+                            // Two filled triangles need a smaller size to balance the slender bolt.
+                            .font(AppTypography.symbolFont(size: isNoteMark ? 11 : symbol == "forward.fill" ? 7 : 9,
                                                            weight: isNoteMark ? .bold : .medium))
                     }
                 }
