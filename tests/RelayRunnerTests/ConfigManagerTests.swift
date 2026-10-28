@@ -156,7 +156,7 @@ final class ConfigManagerTests: XCTestCase {
         var draft = previous
         draft.tts.rate = 1.8
 
-        let merged = try XCTUnwrap(draft.mergingGlowIntensityChange(from: previous, to: saved))
+        let merged = try XCTUnwrap(draft.mergingWheelSettingsChange(from: previous, to: saved))
         XCTAssertEqual(merged.awareness.glow_intensity, 0.35, "Settings shows the wheel's value")
         XCTAssertEqual(merged.tts.rate, 1.8, "Unrelated unsaved edits survive")
         var unchangedDraft = merged
@@ -165,12 +165,33 @@ final class ConfigManagerTests: XCTestCase {
 
         // An unsaved Settings intensity edit wins over the wheel.
         draft.awareness.glow_intensity = 0.8
-        XCTAssertEqual(draft.mergingGlowIntensityChange(from: previous, to: saved)?.awareness.glow_intensity, 0.8)
+        XCTAssertEqual(draft.mergingWheelSettingsChange(from: previous, to: saved)?.awareness.glow_intensity, 0.8)
 
         // Any other change is left to the existing reconciliation.
         var other = saved
         other.tts.rate = 1.2
-        XCTAssertNil(draft.mergingGlowIntensityChange(from: previous, to: other))
+        XCTAssertNil(draft.mergingWheelSettingsChange(from: previous, to: other))
+    }
+
+    func testWheelAutoPlayPersistsAndSyncsOpenSettingsWithoutLosingOtherEdits() throws {
+        let manager = ConfigManager(configDir: temporaryConfigDir())
+        var previous = manager.load()
+        for enabled in [true, false] {
+            var saved = previous
+            saved.tts.auto_play = enabled
+            try manager.save(saved)
+            XCTAssertEqual(manager.load().tts.auto_play, enabled)
+            var draft = previous
+            draft.tts.rate = 1.8
+            draft.awareness.glow_intensity = 0.35
+            let merged = try XCTUnwrap(draft.mergingWheelSettingsChange(from: previous, to: saved))
+            XCTAssertEqual(merged.tts.auto_play, enabled)
+            XCTAssertEqual(merged.tts.rate, 1.8)
+            XCTAssertEqual(merged.awareness.glow_intensity, 0.35)
+            XCTAssertEqual(previous.mergingWheelSettingsChange(from: previous, to: saved), saved,
+                           "An untouched Settings draft must not revert the wheel's toggle on Save")
+            previous = saved
+        }
     }
 
     func testLegacyMessagePreviewFalseIsIgnoredAndNotSerialized() throws {

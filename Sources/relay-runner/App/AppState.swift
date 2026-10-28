@@ -1021,6 +1021,13 @@ final class AppState {
         }
         sessionWheel.previewParticles = { [weak self] in self?.overlayController?.setParticlePreview($0) }
         sessionWheel.keepAwakeAction = { [weak self] in self?.keepAwake.toggle() ?? false }
+        sessionWheel.autoPlayAction = { [weak self] in
+            guard let self else { return false }
+            var next = self.config
+            next.tts.auto_play.toggle()
+            self.saveConfig(next)
+            return true
+        }
         keepAwake.onStateChange = { [weak self] previous, next in self?.keepAwakeStateChanged(from: previous, to: next) }
         sessionWheel.focusSession = { [weak self] in self?.switchSessionFromWheel(contextID: $0) }
         sessionWheel.startProject = { [weak self] path in
@@ -3197,6 +3204,7 @@ final class AppState {
     private func refreshSessionWheel(_ model: SessionWheelModel, includesProjects: Bool) {
         model.notePhase = meetingNoteSnapshot.phase
         model.keepAwake = keepAwake.state
+        model.autoPlay = config.tts.auto_play
         model.particleFieldEnabled = config.awareness.screen_glow
         if !model.isAdjustingIntensity { model.particleIntensity = config.awareness.glow_intensity }
         let recording = sttEngine?.isRecording == true

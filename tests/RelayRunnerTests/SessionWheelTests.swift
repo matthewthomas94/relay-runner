@@ -722,7 +722,7 @@ final class SessionWheelTests: XCTestCase {
         let slot = SessionWheelShortcut.settings.rawValue
         XCTAssertEqual(intensity.slot, slot)
         XCTAssertEqual(geometry.angle(at: arcPoint(1)), 1, accuracy: 0.0001)
-        // The slider occupies subdivisions 0 and 1; Keep Awake keeps the left third.
+        // The slider keeps two thirds; the toggles share the remaining third.
         XCTAssertGreaterThan(intensity.maxAngle, CGFloat(slot) * geometry.sliceAngle)
         XCTAssertLessThan(intensity.minAngle, CGFloat(slot) * geometry.sliceAngle + geometry.sliceAngle * 2 / 3)
         XCTAssertGreaterThan(geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(0)).y,
@@ -780,7 +780,7 @@ final class SessionWheelTests: XCTestCase {
         }
     }
 
-    func testSettingsSubmenuRevealsSliderAndKeepAwakeAndPinsHoverWhileDragging() {
+    func testSettingsSubmenuRevealsSliderAndBothTogglesAndPinsHoverWhileDragging() {
         let model = SessionWheelModel()
         let slot = SessionWheelShortcut.settings.rawValue
         model.hover(at: geometry.position(slot: slot, radius: 119))
@@ -789,8 +789,10 @@ final class SessionWheelTests: XCTestCase {
         model.hover(at: geometry.position(slot: slot, radius: geometry.wheelRadius + 4))
         XCTAssertEqual(model.submenuSlot, slot, "Hover continues across the gap")
         XCTAssertNil(model.hoveredSettingsControl)
-        for (index, control) in [(0, SessionWheelSettingsControl.intensity), (1, .intensity), (2, .keepAwake)] {
-            model.hover(at: geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(index)))
+        for (index, control) in [(0, SessionWheelSettingsControl.intensity), (1, .intensity), (2, .intensity),
+                                 (3, .intensity), (4, .keepAwake), (5, .autoPlay)] {
+            model.hover(at: geometry.position(slot: slot, radius: geometry.actionRadius,
+                                              offset: geometry.actionOffset(index, subdivisions: 6)))
             XCTAssertEqual(model.hoveredSettingsControl, control)
             XCTAssertNil(model.hoveredNoteAction)
             XCTAssertNil(model.hoveredAction)
@@ -822,6 +824,34 @@ final class SessionWheelTests: XCTestCase {
         model.hover(at: geometry.position(slot: slot, radius: 119))
         XCTAssertFalse(model.isHoveringSettings)
         XCTAssertNil(model.submenuSlot)
+    }
+
+    func testSettingsControlsHaveSeparateHitTargetsWithinTheSameArc() {
+        let bounds = CGRect(origin: .zero, size: CGSize(width: 528, height: 528))
+        let controls = SessionWheelSettingsControl.allCases
+        let paths = controls.map {
+            SessionWheelSector(slot: 2, innerRadius: geometry.actionInnerRadius,
+                               outerRadius: geometry.actionOuterRadius, subdivision: $0.rawValue,
+                               span: $0.span, subdivisions: 6).path(in: bounds)
+        }
+        // Every point belongs to at most one control, and no hit target escapes Settings.
+        for degrees in 0..<360 {
+            let angle = CGFloat(degrees) * .pi / 180
+            for radius in [geometry.actionInnerRadius + 7, geometry.actionRadius, geometry.actionOuterRadius - 7] {
+                let point = arcPoint(angle, radius: radius)
+                let hits = paths.filter { $0.contains(point) }.count
+                XCTAssertLessThanOrEqual(hits, 1)
+                if hits > 0 { XCTAssertEqual(geometry.slot(at: point), 2) }
+            }
+        }
+        for (index, control) in controls.enumerated() {
+            let offset = control == .intensity ? -geometry.sliceAngle / 6
+                : geometry.actionOffset(control.rawValue, subdivisions: 6)
+            let point = geometry.position(slot: 2, radius: geometry.actionRadius, offset: offset)
+            XCTAssertTrue(paths[index].contains(point), "\(control) has a reachable centre")
+        }
+        // The split between the two toggles remains a gap, not an accidental click.
+        XCTAssertTrue(paths.allSatisfy { !$0.contains(arcPoint(geometry.sliceAngle * (2 + 5.0 / 6))) })
     }
 
     @MainActor
@@ -890,7 +920,8 @@ final class SessionWheelTests: XCTestCase {
         controller.toggle()
         let slot = SessionWheelShortcut.settings.rawValue
         let slider = geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(0))
-        let keepAwake = geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(2))
+        let keepAwake = geometry.position(slot: slot, radius: geometry.actionRadius,
+                                         offset: geometry.actionOffset(4, subdivisions: 6))
         let session = geometry.position(slot: 0, radius: 119)
         func hover(_ point: CGPoint?) {
             if let point { controller.model.hover(at: point) } else { controller.model.clearHover() }
@@ -976,6 +1007,47 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(pulses.count, 2)
     }
 
+    @MainActor
+    func testAutoPlayToggleRefreshesWithoutClosingAndIsIndependentOfKeepAwake() {
+        _ = NSApplication.shared
+        var pulses: [NSHapticFeedbackManager.FeedbackPattern] = []
+        let controller = SessionWheelController(haptics: .init(perform: { pulses.append($0) }))
+        defer { controller.dismiss() }
+        var autoPlay = false
+        var calls = 0
+        controller.refresh = { model, _ in model.autoPlay = autoPlay }
+        controller.autoPlayAction = {
+            calls += 1
+            autoPlay.toggle()
+            return true
+        }
+        controller.performAutoPlay()
+        XCTAssertEqual(calls, 0, "A closed wheel cannot change the setting")
+        controller.toggle()
+        controller.model.hover(at: geometry.position(slot: 2, radius: 119))
+        controller.model.keepAwake = .enabling
+        controller.performAutoPlay()
+        XCTAssertTrue(controller.model.autoPlay)
+        XCTAssertEqual(controller.model.keepAwake, .enabling)
+        XCTAssertTrue(controller.isVisible)
+        XCTAssertEqual(controller.model.submenuSlot, 2)
+        controller.performAutoPlay()
+        XCTAssertFalse(controller.model.autoPlay)
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(pulses, [.generic, .generic])
+        autoPlay = true // The main Settings page can change the same value.
+        controller.refresh?(controller.model, false)
+        XCTAssertTrue(controller.model.autoPlay)
+        controller.model.showProjects(at: geometry.center)
+        controller.performAutoPlay()
+        XCTAssertEqual(calls, 2, "A project picker cannot activate hidden settings")
+        controller.model.reset(at: geometry.center)
+        controller.autoPlayAction = { false }
+        controller.performAutoPlay()
+        XCTAssertEqual(controller.model.notice, "Voice auto-play unavailable")
+        XCTAssertEqual(pulses.count, 2, "Rejected actions do not confirm with a haptic")
+    }
+
     func testKeepAwakeGlyphUsesAFilledBoltAndSwapsOnlyForPendingApprovalAndFailures() {
         typealias Look = SessionWheelKeepAwakeGlyph.Look
         let off = Look(.off)
@@ -1036,6 +1108,7 @@ final class SessionWheelTests: XCTestCase {
                       "more-sessions", "all-sessions",
                       "settings-min", "settings-max", "settings-keep-awake-off", "settings-keep-awake-on",
                       "settings-keep-awake-off-idle", "settings-keep-awake-on-idle",
+                      "settings-auto-play-off", "settings-auto-play-on", "settings-auto-play-on-idle",
                       "settings-keep-awake-pending", "settings-keep-awake-approval", "settings-keep-awake-failed",
                       "settings-restore", "settings-particles-off", "settings-dragging"]
             + (0..<geometry.slotCount).map({ "contour-\($0)" }) {
@@ -1063,12 +1136,14 @@ final class SessionWheelTests: XCTestCase {
                 model.hover(at: geometry.position(slot: SessionWheelShortcut.noteTaker.rawValue, radius: 119))
             case "settings-min", "settings-max", "settings-keep-awake-off", "settings-keep-awake-on",
                  "settings-keep-awake-off-idle", "settings-keep-awake-on-idle",
+                 "settings-auto-play-off", "settings-auto-play-on", "settings-auto-play-on-idle",
                  "settings-keep-awake-pending", "settings-keep-awake-approval", "settings-keep-awake-failed",
                  "settings-restore", "settings-particles-off", "settings-dragging":
                 model.reset(at: geometry.center)
                 model.notePhase = .idle
                 model.particleFieldEnabled = state != "settings-particles-off"
                 model.particleIntensity = state == "settings-min" ? 0.1 : state == "settings-max" ? 1.0 : 0.6
+                model.autoPlay = state.hasPrefix("settings-auto-play-on")
                 model.keepAwake = state.hasPrefix("settings-keep-awake-on") ? .on(ownsSleepSetting: true)
                     : state == "settings-keep-awake-pending" ? .enabling
                     : state == "settings-keep-awake-approval" ? .awaitingApproval
@@ -1077,8 +1152,10 @@ final class SessionWheelTests: XCTestCase {
                 let slot = SessionWheelShortcut.settings.rawValue
                 model.hover(at: geometry.position(slot: slot, radius: 119))
                 let hoversKeepAwake = ["settings-keep-awake-off", "settings-keep-awake-on"].contains(state)
+                let hoversAutoPlay = ["settings-auto-play-off", "settings-auto-play-on"].contains(state)
                 model.hover(at: geometry.position(slot: slot, radius: geometry.actionRadius,
-                                                  offset: geometry.actionOffset(hoversKeepAwake ? 2 : 0)))
+                                                  offset: geometry.actionOffset(hoversKeepAwake ? 4 : hoversAutoPlay ? 5 : 0,
+                                                                                subdivisions: 6)))
                 if state == "settings-dragging" {
                     model.adjustIntensity(to: geometry.position(slot: slot, radius: geometry.actionRadius,
                                                                 offset: -geometry.sliceAngle / 6))

@@ -17,6 +17,7 @@ final class SessionWheelController {
     /// True while the slider is hovered or dragged: shows the message-playback particles.
     var previewParticles: ((Bool) -> Void)?
     var keepAwakeAction: (() -> Bool)?
+    var autoPlayAction: (() -> Bool)?
 
     private var panel: SessionWheelPanel?
     private let motion = SessionWheelMotion()
@@ -61,6 +62,7 @@ final class SessionWheelController {
                 finishIntensity: { [weak self] in self?.finishIntensity(at: $0) },
                 stepIntensity: { [weak self] in self?.stepIntensity($0) },
                 performKeepAwake: { [weak self] in self?.performKeepAwake() },
+                performAutoPlay: { [weak self] in self?.performAutoPlay() },
                 presentation: presentation
             )
         }.scaleEffect(size / SessionWheelGeometry.diameter).frame(width: size, height: size)
@@ -273,6 +275,18 @@ final class SessionWheelController {
         guard isVisible, !model.isNested, !model.keepAwake.isPending else { return }
         guard keepAwakeAction?() == true else {
             model.notice = "Keep Awake unavailable"
+            return
+        }
+        model.notice = nil
+        haptics.activate()
+        refresh?(model, false)
+        panel?.orderFrontRegardless()
+    }
+
+    func performAutoPlay() {
+        guard isVisible, !model.isNested else { return }
+        guard autoPlayAction?() == true else {
+            model.notice = "Voice auto-play unavailable"
             return
         }
         model.notice = nil

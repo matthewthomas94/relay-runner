@@ -96,12 +96,14 @@ final class SessionWheelHapticsTests: XCTestCase {
         }
 
         _ = target(slot: 2)
-        for (index, expected) in [(0, 0), (1, 0), (2, 2)] {
-            XCTAssertEqual(target(slot: 2, radius: geometry.actionRadius, offset: geometry.actionOffset(index)),
+        for (index, expected) in [(0, 0), (1, 0), (2, 0), (3, 0), (4, 4), (5, 5)] {
+            XCTAssertEqual(target(slot: 2, radius: geometry.actionRadius, offset: geometry.actionOffset(index, subdivisions: 6)),
                            .action(slot: 2, index: expected), "The slider is one target across its subdivisions")
         }
         model.keepAwake = .enabling
-        XCTAssertNil(target(slot: 2, radius: geometry.actionRadius, offset: geometry.actionOffset(2)))
+        XCTAssertNil(target(slot: 2, radius: geometry.actionRadius, offset: geometry.actionOffset(4, subdivisions: 6)))
+        XCTAssertEqual(target(slot: 2, radius: geometry.actionRadius, offset: geometry.actionOffset(5, subdivisions: 6)),
+                       .action(slot: 2, index: 5), "Auto-play is independent of Keep Awake approval")
         model.particleFieldEnabled = false
         XCTAssertNil(target(slot: 2, radius: geometry.actionRadius, offset: geometry.actionOffset(0)))
 

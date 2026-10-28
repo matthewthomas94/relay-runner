@@ -70,10 +70,12 @@ final class SessionWheelHaptics {
         let bounds = CGRect(origin: .zero, size: CGSize(width: geometry.diameter, height: geometry.diameter))
         if let control = model.hoveredSettingsControl {
             // The whole slider is one target, so crossing its subdivisions stays silent.
-            let enabled = control == .intensity ? model.particleFieldEnabled : !model.keepAwake.isPending
+            let enabled = control == .intensity ? model.particleFieldEnabled
+                : control == .keepAwake ? !model.keepAwake.isPending : true
             let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
                                            outerRadius: geometry.actionOuterRadius,
-                                           subdivision: control.rawValue, span: control.span)
+                                           subdivision: control.rawValue, span: control.span,
+                                           subdivisions: SessionWheelSettingsControl.subdivisionCount)
             return enabled && shape.path(in: bounds).contains(point) ? .action(slot: slot, index: control.rawValue) : nil
         }
         if let index = model.hoveredAction?.rawValue ?? model.hoveredNoteAction?.rawValue {

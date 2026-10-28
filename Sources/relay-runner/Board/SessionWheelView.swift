@@ -14,6 +14,7 @@ struct SessionWheelView: View {
     var finishIntensity: (CGPoint) -> Void = { _ in }
     var stepIntensity: (Int) -> Void = { _ in }
     var performKeepAwake: () -> Void = {}
+    var performAutoPlay: () -> Void = {}
     var presentation = SessionWheelPresentation()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
@@ -93,6 +94,7 @@ struct SessionWheelView: View {
                         ZStack {
                             intensitySlider
                             keepAwakeButton
+                            autoPlayButton
                         }
                         .scaleEffect(frame.scale)
                         .opacity(frame.controlsOpacity)
@@ -237,7 +239,7 @@ struct SessionWheelView: View {
         .accessibilityHint(moreProjects ? "Next project wheel" : moreSessions ? "Show all active sessions"
             : pickingProject ? "Start session" : shortcut == .noteTaker
             ? "Open Notetaker. Move outward for recording controls."
-            : shortcut == .settings ? "Open Settings. Move outward for particle intensity and Keep Awake."
+            : shortcut == .settings ? "Open Settings. Move outward for particle intensity, Keep Awake and voice auto-play."
             : shortcut != nil ? "Open \(title)" : session == nil ? "Choose a project" : sessionHint)
         .accessibilityAction {
             guard pageID == page else { return }
@@ -251,8 +253,11 @@ struct SessionWheelView: View {
                     }
                 }
             }
-            if shortcut == .settings, !model.keepAwake.isPending {
-                Button(model.keepAwake.actionTitle) { performKeepAwake() }
+            if shortcut == .settings {
+                if !model.keepAwake.isPending {
+                    Button(model.keepAwake.actionTitle) { performKeepAwake() }
+                }
+                Button(model.autoPlayActionTitle) { performAutoPlay() }
             }
             if !pickingProject, let session {
                 ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
@@ -300,7 +305,8 @@ struct SessionWheelView: View {
         let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
                                        outerRadius: geometry.actionOuterRadius,
                                        subdivision: SessionWheelSettingsControl.intensity.rawValue,
-                                       span: SessionWheelSettingsControl.intensity.span)
+                                       span: SessionWheelSettingsControl.intensity.span,
+                                       subdivisions: SessionWheelSettingsControl.subdivisionCount)
         let thumb = SessionWheelIntensity.angle(for: value)
         let highEnd = CGFloat(slot) * geometry.sliceAngle
         let lowEnd = highEnd + geometry.sliceAngle * 2 / 3
@@ -354,15 +360,31 @@ struct SessionWheelView: View {
                              symbol: SessionWheelKeepAwakeGlyph.Look(state).symbol,
                              // Pending stays legible; the controller ignores clicks until it settles.
                              enabled: true, hovered: model.hoveredSettingsControl == .keepAwake && !state.isPending,
-                             destructive: false, keepAwake: state) {
+                             destructive: false, keepAwake: state,
+                             subdivisions: SessionWheelSettingsControl.subdivisionCount) {
             guard model.isHoveringSettings else { return }
             performKeepAwake()
         }
     }
 
+    private var autoPlayButton: some View {
+        submenuButton(index: SessionWheelSettingsControl.autoPlay.rawValue, slot: SessionWheelIntensity.slot,
+                      title: model.autoPlayActionTitle,
+                      help: model.autoPlay ? "Voice auto-play: On" : "Voice auto-play: Off — double-tap Option to play",
+                      symbol: "forward.fill", enabled: true,
+                      hovered: model.hoveredSettingsControl == .autoPlay,
+                      destructive: false, isOn: model.autoPlay,
+                      subdivisions: SessionWheelSettingsControl.subdivisionCount) {
+            guard model.isHoveringSettings else { return }
+            performAutoPlay()
+        }
+        .accessibilityValue(model.autoPlay ? "On" : "Off")
+    }
+
     private func submenuButton(index: Int, slot: Int, title: String, help: String, symbol: String,
                                enabled: Bool, hovered: Bool, destructive: Bool,
                                keepAwake: KeepAwakeState? = nil,
+                               isOn: Bool? = nil, subdivisions: Int = 3,
                                level: @escaping () -> Float = { 0 }, perform: @escaping () -> Void) -> some View {
         let isNoteMark = symbol == "checkmark" || symbol == "xmark"
         let presentation = ProgramBoardInteractionPresentation.resolve(
@@ -371,7 +393,8 @@ struct SessionWheelView: View {
             reduceMotion: reduceMotion
         )
         let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
-                                       outerRadius: geometry.actionOuterRadius, subdivision: index)
+                                       outerRadius: geometry.actionOuterRadius, subdivision: index, subdivisions: subdivisions)
+        let offset = geometry.actionOffset(index, subdivisions: subdivisions)
         return Button(action: perform) {
             ZStack {
                 controlBackground(shape, presentation: presentation)
@@ -396,9 +419,11 @@ struct SessionWheelView: View {
                 .frame(width: geometry.actionLabelSize.width, height: geometry.actionLabelSize.height)
                 .foregroundStyle(!enabled
                                  ? (contrast == .increased ? ProgramBoardStyle.disabledText : Color(.sRGB, red: 24 / 255, green: 27 / 255, blue: 33 / 255, opacity: 1))
-                                 : destructive ? ProgramBoardStyle.red : ProgramBoardStyle.primaryText)
-                .rotationEffect(.radians(geometry.actionLabelRotation(slot: slot, index: index)))
-                .position(geometry.position(slot: slot, radius: geometry.actionRadius, offset: geometry.actionOffset(index)))
+                                 : destructive ? ProgramBoardStyle.red
+                                 : isOn.map { $0 ? ProgramBoardStyle.activeTrayOrange : .white } ?? ProgramBoardStyle.primaryText)
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isOn)
+                .rotationEffect(.radians(geometry.labelRotation(slot: slot, offset: offset)))
+                .position(geometry.position(slot: slot, radius: geometry.actionRadius, offset: offset))
             }
             .contentShape(shape)
         }
@@ -500,14 +525,16 @@ struct SessionWheelSector: Shape {
     var padding: CGFloat = 0
     /// Adjacent subdivisions joined into one control.
     var span = 1
+    var subdivisions = 3
 
     func path(in rect: CGRect) -> Path {
         let innerRadius = self.innerRadius - padding
         let outerRadius = self.outerRadius + padding
         let step = 2 * CGFloat.pi / CGFloat(SessionWheelGeometry.slotCount)
-        let width = subdivision == nil ? step : step / 3 * CGFloat(span)
+        let subdivisionWidth = step / CGFloat(subdivisions)
+        let width = subdivision == nil ? step : subdivisionWidth * CGFloat(span)
         let halfGap = SessionWheelGeometry.segmentGap / 2 - padding
-        let start = CGFloat(slot) * step - .pi / 2 - step / 2 + CGFloat(subdivision ?? 0) * width
+        let start = CGFloat(slot) * step - .pi / 2 - step / 2 + CGFloat(subdivision ?? 0) * subdivisionWidth
         let end = start + width
         let center = CGPoint(x: rect.midX, y: rect.midY)
         let corner = min((cornerRadius ?? (subdivision == nil ? BoardDarkSurfaceStyle.nestedCardCornerRadius

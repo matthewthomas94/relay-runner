@@ -215,7 +215,7 @@ private struct SettingsContent: View {
             refreshAgentVoiceName()
         }
         .onChange(of: appState.config) { oldValue, newValue in
-            draft = draft.mergingGlowIntensityChange(from: oldValue, to: newValue)
+            draft = draft.mergingWheelSettingsChange(from: oldValue, to: newValue)
                 ?? draft.mergingCustomVoiceRemoval(from: oldValue, to: newValue)
         }
         .onChange(of: selectedCategory) { _, newValue in

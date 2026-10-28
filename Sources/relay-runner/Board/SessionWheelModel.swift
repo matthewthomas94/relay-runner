@@ -114,12 +114,13 @@ enum SessionWheelNoteAction: Int, CaseIterable {
     }
 }
 
-/// Settings' outer arc: a two-subdivision intensity slider, then Keep Awake on the left.
+/// Settings' outer arc: two thirds intensity, then Keep Awake and voice auto-play.
 enum SessionWheelSettingsControl: Int, CaseIterable {
-    case intensity = 0, keepAwake = 2
+    case intensity = 0, keepAwake = 4, autoPlay = 5
 
-    init(subdivision: Int) { self = subdivision == 2 ? .keepAwake : .intensity }
-    var span: Int { self == .intensity ? 2 : 1 }
+    static let subdivisionCount = 6
+    init(subdivision: Int) { self = Self(rawValue: subdivision) ?? .intensity }
+    var span: Int { self == .intensity ? 4 : 1 }
 }
 
 /// Maps the curved slider to `awareness.glow_intensity`. Angles use `SessionWheelGeometry.angle(at:)`:
@@ -207,8 +208,8 @@ enum SessionWheelGeometry {
         actionOffset(action.rawValue)
     }
 
-    static func actionOffset(_ index: Int) -> CGFloat {
-        CGFloat(index - 1) * sliceAngle / 3
+    static func actionOffset(_ index: Int, subdivisions: Int = 3) -> CGFloat {
+        ((CGFloat(index) + 0.5) / CGFloat(subdivisions) - 0.5) * sliceAngle
     }
 
     /// Follow the tangent, reversing the lower half so labels stay upright.
@@ -252,6 +253,8 @@ final class SessionWheelModel {
     var particleIntensity = 0.6
     var particleFieldEnabled = true
     var keepAwake: KeepAwakeState = .off
+    var autoPlay = false
+    var autoPlayActionTitle: String { autoPlay ? "Turn off voice auto-play" : "Turn on voice auto-play" }
     /// A slider drag pins hover so the submenu stays open wherever the pointer travels.
     private(set) var isAdjustingIntensity = false
     private var intensityDragAngle: (raw: CGFloat, unwrapped: CGFloat) = (0, 0)
@@ -414,7 +417,8 @@ final class SessionWheelModel {
                   geometry.slot(at: pointer) == hoveredSlot,
                   distance >= geometry.actionInnerRadius, distance <= geometry.actionOuterRadius {
             let localAngle = geometry.angle(at: pointer).truncatingRemainder(dividingBy: geometry.sliceAngle)
-            hoveredControl = min(2, Int(localAngle / (geometry.sliceAngle / 3)))
+            let subdivisions = isHoveringSettings ? SessionWheelSettingsControl.subdivisionCount : 3
+            hoveredControl = min(subdivisions - 1, Int(localAngle / (geometry.sliceAngle / CGFloat(subdivisions))))
         }
         // The radial gap retains its parent, so travelling into the submenu is continuous.
     }
