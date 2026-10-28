@@ -825,8 +825,42 @@ class MessengerRuntimeTests(unittest.TestCase):
                     "public_reason": "Conversation.",
                 },
             }))
-            self.assertTrue(runtime.submit_final({"text": "You're welcome again.", **command}))
+            # The final adds nothing to the answer, so it is not repeated.
+            self.assertTrue(runtime.submit_final({"text": "You're welcome!", **command}))
             self.assertEqual(spoken, ["You're welcome."])
+        finally:
+            runtime.shutdown()
+
+    def test_direct_conversation_answer_does_not_swallow_substantive_final(self):
+        # A scoping turn the messenger "answered" with a pleasantry still gets
+        # the orchestrator's real reply; the answer's phrasing must not decide that.
+        backend = FakeBackend(["__ANSWER__ Got it, the board stays as it is."])
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        command = {"relay_command_seq": 4, "relay_command_id": "scoping"}
+        final = (
+            "Got it. The board stays. The Start button moves to the Projects "
+            "header, and the wheel's project picker goes away."
+        )
+        runtime.start()
+        try:
+            runtime.submit_user("The board stays; only the projects panel changes.", command)
+            self.assertTrue(wait_until(lambda: spoken == ["Got it, the board stays as it is."]))
+            self.assertTrue(runtime.update_user_context({
+                **command,
+                "source_text": "The board stays; only the projects panel changes.",
+                "work_disposition": {
+                    "route": "continue_current",
+                    "public_reason": "Conversation.",
+                },
+            }))
+            self.assertTrue(runtime.submit_final({"text": final, **command}))
+            self.assertTrue(wait_until(lambda: len(spoken) == 2))
+            self.assertEqual(spoken[1], final)
         finally:
             runtime.shutdown()
 

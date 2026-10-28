@@ -2008,6 +2008,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 )
                 with messenger._lock:
                     messenger._conversation_commands_answered.add(command_key)
+                    messenger._user_response_texts[command_key] = "You're welcome."
 
                 self.assertTrue(voice_bridge._queue_tts_text(
                     json.dumps({
@@ -2032,7 +2033,8 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
 
                 with mock.patch.object(voice_bridge, "publish_waiting_preview") as preview:
                     self.assertTrue(voice_bridge._handle_orchestrator_reply_control(
-                        json.dumps({**command, "text": "Redundant foreground final."}),
+                        # Covered by the messenger's answer, so it is not repeated.
+                        json.dumps({**command, "text": "You're welcome!"}),
                         tts_worker=coordinator,
                         messenger=messenger,
                         state_path=state_path,

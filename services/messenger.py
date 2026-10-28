@@ -1426,9 +1426,20 @@ class MessengerRuntime:
                 return False
             if command_key in self._final_commands:
                 return True
-            if (
-                self._action_kinds.get(command_key) == "self_explanation"
-                or command_key in self._conversation_commands_answered
+            # A conversational turn the messenger answered itself stays quiet
+            # only when the final adds nothing to that answer. A final with new
+            # substance is still spoken; the answer's phrasing must never
+            # decide whether the user hears the orchestrator.
+            if self._action_kinds.get(command_key) == "self_explanation" or (
+                command_key in self._conversation_commands_answered
+                and self._preserves_authoritative_content(
+                    text,
+                    [],
+                    _user_response_role(
+                        self._user_response_texts.get(command_key, ""),
+                        action_kind="conversation",
+                    )[0],
+                )
             ):
                 self._final_commands.add(command_key)
                 self._context.append(f"AUTHORITATIVE ORCHESTRATOR FINAL: {text}")
