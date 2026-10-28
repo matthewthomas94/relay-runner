@@ -1608,6 +1608,83 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             ))
             inbox.close()
 
+    def test_turn_held_by_uncertain_message_says_voice_is_paused_until_skipped(self):
+        for provider in ("codex", "claude"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
+                inbox_path = os.path.join(directory, "inbox.sqlite3")
+                command_path = os.path.join(directory, "ready")
+                meta_path = command_path + ".meta"
+                state_path = os.path.join(directory, "state.json")
+                inbox = voice_bridge.IntentInbox(inbox_path)
+                uncertain = {
+                    "relay_command_seq": 60, "relay_command_id": "cmd-60",
+                    "intent_id": "intent-60", "provider": provider,
+                    "work_disposition": {"route": "queue_project_work"},
+                }
+                inbox.enqueue("uncertain", uncertain, "queue_project_work")
+                inbox.observe_claim(uncertain, provider_turn_seen=False)
+                inbox.close()
+                # A bridge restart holds the unacknowledged lease for review.
+                inbox = voice_bridge.IntentInbox(inbox_path)
+                held = {
+                    "relay_command_seq": 61, "relay_command_id": "cmd-61",
+                    "intent_id": "intent-61", "provider": provider,
+                    "work_disposition": {"route": "continue_current"},
+                }
+                voice_bridge._publish_command(
+                    "later", held, command_path=command_path,
+                    meta_path=meta_path, state_path=state_path, inbox=inbox,
+                )
+                self.assertFalse(os.path.exists(command_path), "held, never replayed")
+                messenger = FakeMessenger()
+                worker = FakeTTSWorker()
+
+                self.assertTrue(voice_bridge._announce_voice_paused(
+                    inbox, held, messenger=messenger, tts_worker=worker, state_path=state_path,
+                ))
+                self.assertEqual(len(messenger.traces), 1)
+                self.assertEqual(messenger.traces[0]["kind"], "voice-paused")
+                self.assertEqual(messenger.traces[0]["command"], held)
+                self.assertIn("Message 60", messenger.traces[0]["message"])
+                self.assertIn("skip", messenger.traces[0]["message"])
+                self.assertTrue(worker.input_queue.empty())
+                # A messenger that cannot take it still leaves a spoken notice.
+                self.assertTrue(voice_bridge._announce_voice_paused(
+                    inbox, held, messenger=RejectingTraceMessenger(),
+                    tts_worker=worker, state_path=state_path,
+                ))
+                self.assertIn("Message 60", worker.input_queue.get_nowait())
+
+                blocker = json.loads(Path(state_path).read_text())["inbox_recovery_blocker"]
+                self.assertEqual(blocker["command_seq"], 60)
+                self.assertTrue(voice_bridge._handle_relay_control_message(
+                    "__SKIP_UNCERTAIN__:" + json.dumps({**blocker, "intent_id": "stale"}),
+                    FakeTTSWorker(), inbox=inbox, state_path=state_path, event_log_path=None,
+                ))
+                self.assertIsNotNone(inbox.recovery_blocker(), "a stale skip changes nothing")
+                self.assertTrue(voice_bridge._handle_relay_control_message(
+                    "__SKIP_UNCERTAIN__:" + json.dumps(blocker),
+                    FakeTTSWorker(), inbox=inbox, state_path=state_path, event_log_path=None,
+                ))
+                self.assertIsNone(json.loads(Path(state_path).read_text())["inbox_recovery_blocker"])
+                self.assertFalse(voice_bridge._announce_voice_paused(
+                    inbox, held, messenger=messenger, tts_worker=worker, state_path=state_path,
+                ))
+                self.assertEqual(len(messenger.traces), 1)
+                inbox.materialize_next(
+                    command_path=command_path, metadata_path=meta_path, transport="test",
+                )
+                self.assertEqual(Path(command_path).read_text(), "later")
+                inbox.close()
+
+    def test_session_spool_liveness_follows_the_app_owned_spool(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.mkdir(os.path.join(root, "live"))
+            with mock.patch.dict(os.environ, {"RELAY_SESSION_KEY": "startup"}):
+                self.assertTrue(voice_bridge._session_spool_is_live("live", root=root))
+                self.assertTrue(voice_bridge._session_spool_is_live("startup", root=root))
+                self.assertFalse(voice_bridge._session_spool_is_live("ended", root=root))
+
     def test_option_play_control_uses_play_or_replay_boundary(self):
         worker = FakeTTSWorker()
         worker.play_or_replay = mock.Mock(return_value=True)

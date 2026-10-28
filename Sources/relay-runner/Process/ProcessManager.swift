@@ -781,8 +781,14 @@ final class ProcessManager {
             kill "$BRIDGE_PID" 2>/dev/null || true
         fi
         [ "$RELAY_PRESERVE_CONTEXT_AUTHORIZATION" = "1" ] || rm -f /tmp/voice_command_authorizations.json
-        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock "$SPOOL"/voice_cmd_ready "$SPOOL"/voice_cmd_ready.meta "$SPOOL"/voice_cmd_claimed.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json "$SPOOL"/voice_provider_session_id "$SPOOL"/relay_terminal_manual_submission.json "$SPOOL"/relay_terminal_delivery_events.jsonl /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid \(bridgePIDPath) /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/voice_bridge.spool /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
-        [ "$RELAY_CONTINUITY_RECOVERY_PENDING" = "1" ] || rm -f "$SPOOL"/voice_command_state.json /tmp/voice_command_state.json
+        rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock "$SPOOL"/voice_cmd_ready "$SPOOL"/voice_cmd_ready.meta "$SPOOL"/voice_provider_session_id /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid \(bridgePIDPath) /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/voice_bridge.spool /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
+        # RR-447: an app-owned provider outlives this bridge. Its claim, command
+        # state, provider turns and terminal evidence bind a prompt it may be
+        # submitting right now, so only a manual /tmp session clears them.
+        if [ -z "$RELAY_SESSION_SPOOL_DIR" ]; then
+            rm -f "$SPOOL"/voice_cmd_claimed.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json "$SPOOL"/relay_terminal_manual_submission.json "$SPOOL"/relay_terminal_delivery_events.jsonl
+            [ "$RELAY_CONTINUITY_RECOVERY_PENDING" = "1" ] || rm -f "$SPOOL"/voice_command_state.json /tmp/voice_command_state.json
+        fi
         VOICE_BRIDGE_LOG_REASON=watchdog-recovery VOICE_BRIDGE_LOG_PROVIDER="${RELAY_PROVIDER:-none}" VOICE_BRIDGE_LOG_CWD="$RELAY_CWD" "$RELAY_BRIDGE" --rotate-log || : >> "$VOICE_BRIDGE_LOG"
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         echo "[relay-runner] app watchdog recovery launching via launchctl provider=${RELAY_PROVIDER:-none} cwd=$RELAY_CWD bridge=$RELAY_BRIDGE" >> "$VOICE_BRIDGE_LOG"
@@ -856,12 +862,26 @@ final class ProcessManager {
         commandLine: (pid_t) -> String? = processCommandLine,
         signal send: (pid_t) -> Void = { _ = kill($0, SIGTERM) }
     ) -> Bool {
+        guard let pid = recordedBridgePID(pidFile: pidFile, commandLine: commandLine) else { return false }
+        send(pid)
+        return true
+    }
+
+    /// RR-447: whether the bridge's own recorded process still runs, even
+    /// when its socket probe missed, so recovery does not kill a slow bridge.
+    static func recordedBridgeProcessAlive(
+        pidFile: String = bridgePIDPath,
+        commandLine: (pid_t) -> String? = processCommandLine
+    ) -> Bool {
+        recordedBridgePID(pidFile: pidFile, commandLine: commandLine) != nil
+    }
+
+    private static func recordedBridgePID(pidFile: String, commandLine: (pid_t) -> String?) -> pid_t? {
         guard let raw = try? String(contentsOfFile: pidFile, encoding: .utf8),
               let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
               pid > 1,
-              commandLine(pid)?.contains("voice_bridge.py") == true else { return false }
-        send(pid)
-        return true
+              commandLine(pid)?.contains("voice_bridge.py") == true else { return nil }
+        return pid
     }
 
     private static func processCommandLine(of pid: pid_t) -> String? {

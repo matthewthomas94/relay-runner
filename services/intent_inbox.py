@@ -341,6 +341,42 @@ class IntentInbox:
         self._project_provider_turns()
         return len(ids)
 
+    def retire_ended_sessions(self, is_live: Callable[[str], bool]) -> int:
+        """Retire never-claimed work owned by sessions that have ended (RR-447).
+
+        Claimed and uncertain leases stay for explicit review; only work no
+        provider received is cancelled, and nothing is replayed.
+        """
+        now = time.time()
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                """
+                SELECT intent_id, session_key FROM intents
+                 WHERE session_key != ''
+                   AND route != 'run_sidecar'
+                   AND state IN ('pending', 'delivered', 'recovery_pending')
+                """
+            ).fetchall()
+            ids = [str(row["intent_id"]) for row in rows if not is_live(str(row["session_key"]))]
+            if not ids:
+                return 0
+            placeholders = ",".join("?" for _ in ids)
+            self._connection.execute(
+                f"UPDATE intents SET state='cancelled', cancelled_at=?, "
+                f"recovery_decision='ended_session_retired' "
+                f"WHERE intent_id IN ({placeholders})",
+                (now, *ids),
+            )
+            if self.provider_turn_events_enabled:
+                record_intent_events(
+                    self._connection, ids,
+                    event_type="intent_cancelled", event_scope="ended_session",
+                    occurred_at=now, terminal_state="cancelled",
+                    release_reason="ended_session_retired",
+                )
+        self._project_provider_turns()
+        return len(ids)
+
     def resume_after_recovery(
         self,
         *,
