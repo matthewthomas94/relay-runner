@@ -288,6 +288,32 @@ class ReadySweeperTests(unittest.TestCase):
             self.assertEqual(reasons["RR-5"], "dependencies_not_done")
             self.assertEqual(reasons["RR-6"], "run_id_present")
 
+    def test_sweeper_reads_source_checkout_once_and_only_for_a_dispatchable_ticket(self):
+        # RR-440: `git status` costs seconds in large checkouts and sweeps run
+        # every few seconds, so a board with nothing to dispatch skips it.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="in_progress")
+            self.write_ticket(repo, "RR-2", status="done")
+
+            daemon = object.__new__(Daemon)
+            daemon.runs = FakeRuns()
+            daemon.dispatch = lambda **kwargs: {"already_active": False, "run": {"id": 42}}
+
+            with patch.object(
+                orchestrator, "_source_checkout_blocker", wraps=orchestrator._source_checkout_blocker,
+            ) as source_checkout:
+                Daemon.sweep_ready_tickets(daemon, repo_path=str(repo), trigger="test")
+                self.assertEqual(source_checkout.call_count, 0)
+
+                self.write_ticket(repo, "RR-3", status="ready")
+                self.write_ticket(repo, "RR-4", status="ready")
+                result = Daemon.sweep_ready_tickets(daemon, repo_path=str(repo), trigger="test")
+
+            self.assertEqual(source_checkout.call_count, 1)
+            self.assertEqual([item["ticket_id"] for item in result["dispatched"]], ["RR-3", "RR-4"])
+
     def test_sweeper_skips_ready_ticket_with_succeeded_run_awaiting_merge(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"

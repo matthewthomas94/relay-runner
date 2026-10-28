@@ -503,6 +503,9 @@ final class AppState {
     /// within ~3 seconds of an external bridge coming up, so /relay-bridge
     /// users see the menu reflect their session promptly.
     var hasActiveSession: Bool {
+        // The 20 Hz STT poll reads this. Answer from the in-memory flags
+        // before the remaining inputs read session files from disk (RR-440).
+        if menuSessionActive || bridgeRecoveryInFlight { return true }
         let binding = assistantSessionStore.binding(for: voiceContext)
         return Self.voiceSessionIsActive(
             menuSessionActive: menuSessionActive,

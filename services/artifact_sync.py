@@ -1289,19 +1289,42 @@ class ArtifactSyncEngine:
 
     def _validate_quarantine(self, repository: Path, head: str) -> None:
         self._inject("before_remote_history_validation")
-        history = [
-            line.split()
-            for line in self._quarantine_git(
-                repository, "rev-list", "--reverse", "--parents", head
-            ).splitlines()
-        ]
-        if not history or len(history[0]) != 1:
-            raise ArtifactValidationError("remote artifact ref is not orphan-rooted")
-        previous = history[0][0]
-        for line in history[1:]:
-            if len(line) != 2 or line[1] != previous:
-                raise ArtifactValidationError("remote artifact history is not linear")
-            previous = line[0]
+        verified = self._verified_remote_head(repository, head)
+        if verified is None:
+            history = [
+                line.split()
+                for line in self._quarantine_git(
+                    repository, "rev-list", "--reverse", "--parents", head
+                ).splitlines()
+            ]
+            if not history or len(history[0]) != 1:
+                raise ArtifactValidationError("remote artifact ref is not orphan-rooted")
+            previous = history[0][0]
+            for line in history[1:]:
+                if len(line) != 2 or line[1] != previous:
+                    raise ArtifactValidationError("remote artifact history is not linear")
+                previous = line[0]
+        else:
+            # Git object IDs bind every commit, tree and blob up to the verified
+            # head, so only commits after it can differ from the walk that
+            # already passed. Re-walking the whole history on every periodic
+            # sync kept the daemon busy with thousands of Git calls (RR-440).
+            history = []
+            if verified != head:
+                history = [
+                    line.split()
+                    for line in self._quarantine_git(
+                        repository, "rev-list", "--reverse", "--parents", f"{verified}..{head}"
+                    ).splitlines()
+                ]
+                previous = verified
+                for line in history:
+                    if len(line) != 2 or line[1] != previous:
+                        raise ArtifactValidationError("remote artifact history is not linear")
+                    previous = line[0]
+                # Start from the verified boundary tree so unchanged blobs and
+                # each new commit's note catalog are checked as in a full walk.
+                history.insert(0, [verified])
         # Reuse only unchanged path/blob pairs from the preceding tree. This
         # bounds retained content to one tree while still checking every path,
         # tree shape and note catalog in the fetched history.
@@ -1352,6 +1375,40 @@ class ArtifactSyncEngine:
             raise ArtifactValidationError("remote artifact config is not enabled for synchronization")
         if document.get("remote_name") != self.remote_name:
             raise ArtifactValidationError("remote artifact config names another selected remote")
+        self._record_verified_remote_head(head)
+
+    def _remote_history_verification_path(self) -> Path:
+        return self.store.project_state / "remote-history-verification.json"
+
+    def _verified_remote_head(self, repository: Path, head: str) -> str | None:
+        """Return the last fully verified remote head when `head` descends from it."""
+        try:
+            cache = json.loads(self._remote_history_verification_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if (
+            not isinstance(cache, dict)
+            or cache.get("version") != 1
+            or cache.get("project_id") != self.store.project_id
+        ):
+            return None
+        commit_id = cache.get("commit_id")
+        if not isinstance(commit_id, str) or not re.fullmatch(
+            r"[0-9a-f]{40}|[0-9a-f]{64}", commit_id
+        ):
+            return None
+        if commit_id == head or self._quarantine_is_ancestor(repository, commit_id, head):
+            return commit_id
+        return None
+
+    def _record_verified_remote_head(self, head: str) -> None:
+        try:
+            self.store._write_json_atomic(
+                self._remote_history_verification_path(),
+                {"version": 1, "project_id": self.store.project_id, "commit_id": head},
+            )
+        except OSError:
+            pass  # The next sync repeats the full walk.
 
     def _verified_prepared_result(
         self,

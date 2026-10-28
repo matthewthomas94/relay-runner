@@ -278,6 +278,7 @@ class ArtifactStore:
         self.journal_path = self.project_state / "materialization-journal.json"
         self.history_verification_path = self.project_state / "history-verification.json"
         self.materialized_path = self.repo_path / ".orchestrator"
+        self._snapshot_cache: tuple[str, str, dict[str, bytes]] | None = None
 
     def initialize(self, *, device_id: str, actor_type: str = "system") -> ArtifactWriteResult:
         """Create an orphan artifact ref or adopt a verified existing one."""
@@ -456,12 +457,20 @@ class ArtifactStore:
         if not head:
             raise ArtifactValidationError("artifact store is not initialized")
         self._validate_artifact_head(head)
-        entries = self._tree_entries(head)
+        # A commit's tree never changes, and one ready sweep or monitor tick
+        # snapshots the same head several times (RR-440).
+        cached = self._snapshot_cache
+        if cached is None or cached[0] != head:
+            entries = self._tree_entries(head)
+            blobs = self._cat_blobs(entry.oid for entry in entries.values())
+            files = {entry.path: blobs[entry.oid] for entry in entries.values()}
+            cached = (head, self._tree_id(head), files)
+            self._snapshot_cache = cached
         return ArtifactSnapshot(
             project_id=self.project_id,
             commit_id=head,
-            tree_id=self._tree_id(head),
-            files={entry.path: self._cat_blob(entry.oid) for entry in entries.values()},
+            tree_id=cached[1],
+            files=dict(cached[2]),
         )
 
     def _commit_mutation(
@@ -807,7 +816,9 @@ class ArtifactStore:
             cache = json.loads(self.history_verification_path.read_text(encoding="utf-8"))
             if cache.get("project_id") == self.project_id:
                 candidate = cache.get("commit_id")
-                if isinstance(candidate, str):
+                if candidate == head:
+                    cached_head = candidate
+                elif isinstance(candidate, str):
                     ancestor = self._git(
                         "merge-base",
                         "--is-ancestor",
@@ -1262,6 +1273,35 @@ class ArtifactStore:
 
     def _cat_blob(self, oid: str) -> bytes:
         return self._git("cat-file", "blob", oid).stdout_bytes
+
+    def _cat_blobs(self, oids: Iterable[str]) -> dict[str, bytes]:
+        """Read blobs through one `git cat-file --batch` instead of a fork each.
+
+        Board refreshes, ready sweeps and the queue-drain monitor snapshot the
+        artifact tree every few seconds (RR-440).
+        """
+        wanted = list(dict.fromkeys(oids))
+        if not wanted:
+            return {}
+        output = self._git(
+            "cat-file",
+            "--batch",
+            input_bytes="".join(f"{oid}\n" for oid in wanted).encode("ascii"),
+        ).stdout_bytes
+        blobs: dict[str, bytes] = {}
+        offset = 0
+        for oid in wanted:
+            newline = output.find(b"\n", offset)
+            header = output[offset:newline].decode("ascii", errors="replace").split()
+            if newline < 0 or len(header) != 3 or header[0] != oid or header[1] != "blob":
+                raise ArtifactStoreError(f"git cat-file --batch could not read blob {oid}")
+            start = newline + 1
+            end = start + int(header[2])
+            if output[end:end + 1] != b"\n":
+                raise ArtifactStoreError(f"git cat-file --batch truncated blob {oid}")
+            blobs[oid] = output[start:end]
+            offset = end + 1
+        return blobs
 
     def _blob_size(self, oid: str) -> int:
         return int(self._git("cat-file", "-s", oid).stdout.strip())
