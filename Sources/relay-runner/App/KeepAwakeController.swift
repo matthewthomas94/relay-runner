@@ -108,6 +108,8 @@ final class KeepAwakeController {
     static let unchangedMessage = "Couldn't turn on Keep Awake. Sleep settings weren't changed."
 
     private(set) var state: KeepAwakeState = .off
+    /// Main thread, after each change: the previous state, then the new one.
+    @ObservationIgnored var onStateChange: ((KeepAwakeState, KeepAwakeState) -> Void)?
 
     @ObservationIgnored private let system: KeepAwakeSystem
     @ObservationIgnored private let dimmer: KeepAwakeLidDimmer
@@ -369,8 +371,10 @@ final class KeepAwakeController {
 
     /// Dimming follows only a confirmed on state.
     private func setState(_ next: KeepAwakeState) {
+        let previous = state
         state = next
         dimmer.setActive(next.isOn)
+        if previous != next { onStateChange?(previous, next) }
     }
 
     /// Main-thread writes; the approval wait reads it to stop once superseded.

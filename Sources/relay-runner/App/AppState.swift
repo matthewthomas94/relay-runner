@@ -193,6 +193,7 @@ final class AppState {
     @ObservationIgnored private let refreshBundledOrchestratorDaemon: () async -> OrchestratorDaemonRefreshResult
     @ObservationIgnored private let refreshBundledServicesOnLaunch: Bool
     @ObservationIgnored let keepAwake = KeepAwakeController()
+    @ObservationIgnored private let keepAwakeApprovalGuide = KeepAwakeApprovalGuide()
     @ObservationIgnored private let workspaceActivityStore = WorkspaceActivitySnapshotStore()
     @ObservationIgnored private var workspaceActivityTimer: Timer?
     @ObservationIgnored private var workspaceActivityTask: Task<Void, Never>?
@@ -625,6 +626,22 @@ final class AppState {
         permissionRelaunchGuard.armIfNeeded(for: kind)
     }
 
+    /// Keep Awake's one-time approval opens Login Items, so the wheel and Workspace step
+    /// aside like they do for a privacy permission, and a tile beside Settings shows the switch.
+    private func keepAwakeStateChanged(from previous: KeepAwakeState, to next: KeepAwakeState) {
+        if next == .awaitingApproval {
+            sessionWheel.dismiss()
+            suspendWorkspaceForExternalWindow()
+            keepAwakeApprovalGuide.show()
+        } else if previous == .awaitingApproval {
+            if next == .enabling || next.isOn {
+                keepAwakeApprovalGuide.showAllowed()
+            } else {
+                keepAwakeApprovalGuide.dismiss()
+            }
+        }
+    }
+
     func cancelPermissionSetup(source: PermissionSetupSource? = nil) {
         permissionSetupCoordinator.cancel(source: source)
     }
@@ -998,6 +1015,7 @@ final class AppState {
         }
         sessionWheel.previewParticles = { [weak self] in self?.overlayController?.setParticlePreview($0) }
         sessionWheel.keepAwakeAction = { [weak self] in self?.keepAwake.toggle() ?? false }
+        keepAwake.onStateChange = { [weak self] previous, next in self?.keepAwakeStateChanged(from: previous, to: next) }
         sessionWheel.focusSession = { [weak self] in self?.switchSessionFromWheel(contextID: $0) }
         sessionWheel.startProject = { [weak self] path in
             self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false

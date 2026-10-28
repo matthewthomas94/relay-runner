@@ -282,6 +282,17 @@ final class KeepAwakeControllerTests: XCTestCase {
         XCTAssertEqual(host.approvalRequests, 1)
     }
 
+    func testEachStateChangeIsReportedOnceSoApprovalCanBeGuided() {
+        host.helper = .needsApproval
+        host.approvesAfterPolls = 2
+        let controller = makeController()
+        var changes: [(KeepAwakeState, KeepAwakeState)] = []
+        controller.onStateChange = { changes.append(($0, $1)) }
+        controller.toggle()
+        XCTAssertEqual(changes.map(\.0), [.off, .enabling, .awaitingApproval, .enabling])
+        XCTAssertEqual(changes.map(\.1), [.enabling, .awaitingApproval, .enabling, .on(ownsSleepSetting: true)])
+    }
+
     func testApprovalThatNeverArrivesTurnsOffWithAnActionableMessage() {
         host.helper = .needsApproval
         let controller = makeController()
@@ -831,11 +842,19 @@ final class KeepAwakeControllerTests: XCTestCase {
         let output = "System-wide power settings:\n SleepDisabled\t\t1\nCurrently in use:\n sleep 1\n"
         XCTAssertEqual(RelayPowerSettings.sleepDisabled(inPmsetOutput: output), true)
         XCTAssertEqual(RelayPowerSettings.sleepDisabled(inPmsetOutput: " SleepDisabled 0"), false)
-        XCTAssertNil(RelayPowerSettings.sleepDisabled(inPmsetOutput: "Currently in use:\n sleep 1"))
         XCTAssertNil(RelayPowerSettings.sleepDisabled(inPmsetOutput: " SleepDisabled maybe"))
+        XCTAssertNil(RelayPowerSettings.sleepDisabled(inPmsetOutput: ""))
+        XCTAssertNil(RelayPowerSettings.sleepDisabled(inPmsetOutput: "pmset: unexpected error\n"))
         XCTAssertEqual(RelayPowerSettings.setArguments(sleepDisabled: true), ["-a", "disablesleep", "1"])
         XCTAssertEqual(RelayPowerSettings.setArguments(sleepDisabled: false), ["-a", "disablesleep", "0"])
         XCTAssertEqual(RelayPowerSettings.pmset, "/usr/bin/pmset")
+    }
+
+    /// A Mac that never saved a system-wide power setting prints no SleepDisabled line at all.
+    func testPmsetReportWithoutSleepDisabledMeansSleepIsEnabled() {
+        XCTAssertEqual(RelayPowerSettings.sleepDisabled(inPmsetOutput: "Currently in use:\n standby 1\n sleep 1\n"), false)
+        XCTAssertEqual(RelayPowerSettings.sleepDisabled(inPmsetOutput: "System-wide power settings:\nCurrently in use:\n sleep 1\n"), false)
+        XCTAssertEqual(RelayPowerSettings.sleepDisabled(inPmsetOutput: "System-wide power settings:\n SleepDisabled\t\t1\n"), true)
     }
 
     func testCommandRunnerIsBounded() {

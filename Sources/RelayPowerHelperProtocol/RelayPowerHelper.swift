@@ -56,9 +56,15 @@ public enum RelayPowerSettings {
         ["-a", "disablesleep", sleepDisabled ? "1" : "0"]
     }
 
-    /// `pmset -g`'s system-wide SleepDisabled value; nil when it can't be read.
+    /// `pmset -g`'s system-wide SleepDisabled value; nil when it can't be read. pmset prints
+    /// SleepDisabled only once a system-wide power setting has been saved, so on a Mac that
+    /// never disabled sleep a report with a settings header but no such line means false.
     public static func sleepDisabled(inPmsetOutput output: String) -> Bool? {
+        var isReport = false
         for line in output.split(whereSeparator: \.isNewline) {
+            if line.hasPrefix("System-wide power settings:") || line.hasPrefix("Currently in use:") {
+                isReport = true
+            }
             let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
             guard fields.first == "SleepDisabled", fields.count >= 2 else { continue }
             switch fields[1] {
@@ -67,7 +73,7 @@ public enum RelayPowerSettings {
             default: return nil
             }
         }
-        return nil
+        return isReport ? false : nil
     }
 }
 
