@@ -44,6 +44,27 @@ class IdleThread:
         return None
 
 
+class FakeSpeechPlayer:
+    """Records the persistent player's calls instead of opening an audio device."""
+
+    def __init__(self, *, error=None):
+        self.calls = []
+        self.error = error
+
+    def submit_wav(self, path, rate):
+        self.calls.append(("submit", path, rate))
+        return path
+
+    def wait(self, chunk, *, cancelled=lambda: False):
+        self.calls.append(("wait", chunk))
+        if self.error:
+            raise tts_worker.SpeechPlaybackError(self.error)
+        return not cancelled()
+
+    def stop(self):
+        self.calls.append(("stop",))
+
+
 class TTSWorkerReplayTests(unittest.TestCase):
     def setUp(self):
         # Exercise notification payloads without reaching the running app's
@@ -87,7 +108,7 @@ class TTSWorkerReplayTests(unittest.TestCase):
         worker._play_request_lock = threading.RLock()
         worker._playing = False
         worker._paused = False
-        worker._current_proc = None
+        worker._speech_player = FakeSpeechPlayer()
         worker._chime_proc = None
         worker._playback_generation = 0
         worker._last_wav = None
@@ -446,23 +467,17 @@ class TTSWorkerReplayTests(unittest.TestCase):
         self.assertEqual(worker._playback_generation, 1)
         self.assertEqual(worker._pending_text, "")
 
-    def test_stop_observes_process_exit_before_cancellation(self):
+    def test_stop_fades_player_out_before_cancellation(self):
         worker = self.make_worker()
         order = []
         intent = {"utterance_id": "speech-1"}
 
         class FakePlayer:
-            def poll(self):
-                return None
-
-            def terminate(self):
-                order.append("player-terminate")
-
-            def wait(self, timeout=None):
-                order.append("player-wait")
+            def stop(self):
+                order.append("player-stop")
 
         worker._playing = True
-        worker._current_proc = FakePlayer()
+        worker._speech_player = FakePlayer()
         worker._current_speech_intent = intent
         worker._speech_observer = lambda state, payload: order.append(state)
         worker._speech_eligibility = None
@@ -470,8 +485,7 @@ class TTSWorkerReplayTests(unittest.TestCase):
 
         worker.stop_playback()
 
-        self.assertEqual(order, ["player-terminate", "player-wait", "cancelled"])
-        self.assertIsNone(worker._current_proc)
+        self.assertEqual(order, ["player-stop", "cancelled"])
 
     def test_stop_lifecycle_is_same_in_queue_and_auto_modes(self):
         for auto_play in (False, True):
@@ -547,12 +561,12 @@ class TTSWorkerReplayTests(unittest.TestCase):
         worker._playing = True
         worker._playback_generation = 3
         worker._current_speech_intent = new_intent
-        worker._current_proc = new_proc
+        worker._speech_player = new_proc
 
         worker._finish_playback(1, speech_intent=old_intent)
 
         self.assertTrue(worker._playing)
-        self.assertIs(worker._current_proc, new_proc)
+        self.assertIs(worker._speech_player, new_proc)
         self.assertEqual(worker._current_speech_intent, new_intent)
 
     def test_collected_chunks_refresh_waiting_preview_before_playback(self):
@@ -698,14 +712,7 @@ class TTSWorkerReplayTests(unittest.TestCase):
                 "_speech_intent": second_intent,
             })
 
-        class FakeProc:
-            def wait(self):
-                return 0
-
-        with (
-            patch.object(tts_worker.subprocess, "Popen", return_value=FakeProc()),
-            patch.object(tts_worker, "_notify_state") as notify_state,
-        ):
+        with patch.object(tts_worker, "_notify_state") as notify_state:
             worker._play_wav_blocking("/tmp/first.wav")
 
         notify_state.assert_called_once_with(
@@ -907,26 +914,72 @@ class TTSWorkerReplayTests(unittest.TestCase):
         self.assertEqual(played, ["First sentence."])
         self.assertFalse(worker._playing)
 
-    def test_play_wav_blocking_uses_default_rate_multiplier_for_afplay(self):
+    def test_play_wav_blocking_uses_default_rate_on_persistent_player(self):
         worker = self.make_worker()
         worker._rate = 1.3
         worker._playing = True
 
-        class FakeProc:
-            def wait(self):
-                return 0
-
         with (
             patch.object(tts_worker, "_notify_state"),
-            patch.object(tts_worker.subprocess, "Popen", return_value=FakeProc()) as popen,
+            patch.object(tts_worker.subprocess, "Popen", side_effect=AssertionError("no afplay for speech")),
         ):
             worker._play_wav_blocking("/tmp/test.wav")
 
-        popen.assert_called_once()
         self.assertEqual(
-            popen.call_args.args[0],
-            ["afplay", "/tmp/test.wav", "-r", "1.3"],
+            worker._speech_player.calls,
+            [("submit", "/tmp/test.wav", 1.3), ("wait", "/tmp/test.wav")],
         )
+
+    def test_chunks_queue_in_order_on_one_player_with_one_start_event_each(self):
+        worker = self.make_chunk_worker()
+        intent = {"utterance_id": "speech-1"}
+        worker._current_speech_intent = intent
+        events = []
+        worker._speech_observer = lambda state, payload: events.append(state)
+        wav_text = {}
+
+        def synthesize(text):
+            wav = self.temp_wav()
+            wav_text[wav] = text
+            return wav
+
+        worker._synthesize_to_wav = synthesize
+        worker._combine_wavs = lambda wavs: None
+
+        with (
+            patch.object(tts_worker, "_notify_state"),
+            patch.object(tts_worker.subprocess, "Popen", side_effect=AssertionError("no afplay for speech")),
+        ):
+            worker._speak_chunks(["One.", "Two.", "Three."], 1, intent)
+
+        submitted = [wav_text[call[1]] for call in worker._speech_player.calls if call[0] == "submit"]
+        self.assertEqual(submitted, ["One.", "Two.", "Three."])
+        self.assertEqual(events.count("afplay_started"), 3)
+        self.assertEqual(events[-1], "completed")
+        self.assertNotIn(("stop",), worker._speech_player.calls)
+
+    def test_stop_mid_chunk_stops_player_and_releases_waiting_chunk(self):
+        worker = self.make_chunk_worker()
+        intent = {"utterance_id": "speech-1"}
+        worker._current_speech_intent = intent
+        events = []
+        worker._speech_observer = lambda state, payload: events.append(state)
+        player = worker._speech_player
+
+        def wait(chunk, *, cancelled=lambda: False):
+            player.calls.append(("wait", chunk))
+            worker.stop_playback(reason="user_stop")
+            return not cancelled()
+
+        player.wait = wait
+        worker._synthesize_to_wav = lambda text: self.temp_wav()
+
+        with patch.object(tts_worker, "_notify_state"):
+            worker._speak_chunks(["One.", "Two."], 1, intent)
+
+        self.assertEqual([call[0] for call in player.calls], ["submit", "wait", "stop"])
+        self.assertEqual(events, ["wav_ready", "started", "afplay_started", "cancelled"])
+        self.assertFalse(worker._playing)
 
     def test_preparing_and_afplay_start_are_observed_for_correlated_speech(self):
         worker = self.make_worker()
@@ -943,14 +996,7 @@ class TTSWorkerReplayTests(unittest.TestCase):
         ):
             worker._play_text("Ready.", speech_intent=intent)
 
-        class FakeProc:
-            def wait(self):
-                return 0
-
-        with (
-            patch.object(tts_worker, "_notify_state"),
-            patch.object(tts_worker.subprocess, "Popen", return_value=FakeProc()),
-        ):
+        with patch.object(tts_worker, "_notify_state"):
             worker._play_wav_blocking("/tmp/test.wav")
 
         self.assertEqual(events, [("preparing", "speech-1"), ("afplay_started", "speech-1")])
@@ -960,11 +1006,11 @@ class TTSWorkerReplayTests(unittest.TestCase):
         worker._playback_generation = 2
         worker._last_wav = self.temp_wav()
         retained = worker._last_wav
-        with patch.object(tts_worker.subprocess, "Popen") as popen, patch.object(tts_worker, "_notify_state") as notify:
+        with patch.object(tts_worker, "_notify_state") as notify:
             worker._set_last_wav("/tmp/old.wav", generation=1)
             worker._play_wav_blocking("/tmp/old.wav", generation=1, rate=1.3)
         self.assertEqual(worker._last_wav, retained)
-        popen.assert_not_called()
+        self.assertEqual(worker._speech_player.calls, [])
         notify.assert_not_called()
 
     def test_cached_voice_snapshot_does_not_follow_new_config(self):
@@ -976,12 +1022,10 @@ class TTSWorkerReplayTests(unittest.TestCase):
         self.assertEqual(worker._last_wav_profile_id, "a" * 32)
         self.assertEqual(worker._last_wav_rate, 1.1)
 
-    def test_audio_process_failure_is_not_reported_as_success(self):
+    def test_audio_output_failure_is_not_reported_as_success(self):
         worker = self.make_chunk_worker()
-        from unittest.mock import MagicMock
-        process = MagicMock()
-        process.wait.return_value = 1
-        with patch.object(tts_worker.subprocess, "Popen", return_value=process):
+        worker._speech_player = FakeSpeechPlayer(error="playback_failed")
+        with patch.object(tts_worker, "_notify_state"):
             with self.assertRaisesRegex(tts_worker.CustomVoiceError, "playback_failed"):
                 worker._play_wav_blocking("/tmp/test.wav", generation=1)
 

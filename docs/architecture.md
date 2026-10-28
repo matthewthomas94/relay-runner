@@ -35,6 +35,19 @@ The configured on-device model (Phonon 2 on macOS 15 or later, or Parakeet) conv
 
 Freshness identifiers prevent a superseded voice command from speaking or mutating as though it were current. Raw transcripts remain private coordination metadata and are not valid ticket content.
 
+### Speech playback
+
+`services/tts_worker.py` splits each reply into sentence chunks and synthesizes them with Kokoro, rendering the next chunk while the current one plays. It hands each chunk to `services/speech_player.py`, which keeps one AudioToolbox output queue running in the voice bridge process for the whole reply. Chunks join one PCM stream, so sentence boundaries are gapless and CoreAudio starts the output device once per reply rather than once per sentence (RR-438). Before that change, a fresh `afplay` process per sentence restarted the device each time, and each restart risked an audible coreaudiod IO overload.
+
+- The queue starts on its own thread, so a stop never waits for the device to spin up. It stops after 2 s of silence, or 15 s while the worker is still inside a reply.
+- `[tts] rate` changes tempo without changing pitch, using the queue's Time Domain time-pitch processor, the algorithm `afplay -r` uses. Rate 1.0 bypasses it.
+- Stop, pause, replace and cancel ramp the output volume to zero over 20 ms, then stop the queue: about 50–70 ms on a running device.
+- The `afplay_started` speech event keeps its name for existing reports and harnesses; it now marks each chunk's hand-off to the player.
+- The waiting chime still plays through `afplay`.
+- Codex and Claude sessions share this path; nothing in it is provider-specific.
+
+`RELAY_AUDIO_DEVICE_TESTS=1 python3 -m unittest tests.test_speech_player` adds a check against the default output device that plays only silence.
+
 ## Screen capabilities
 
 `relay-actions-mcp` exposes manipulation and window-introspection operations. `relay-vision-mcp` exposes screenshot observation separately. The helpers forward privileged work to Relay Runner.app so macOS attributes Accessibility and Screen Recording to the app. Successful calls pulse ActionGlow.
