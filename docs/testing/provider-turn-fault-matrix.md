@@ -49,7 +49,8 @@ retained authoritative result, then preserve the privacy-safe terminal delivery
 and speech event logs. The accepted playback must correlate one command
 sequence/id, one play-request id, one utterance id, one `provider_acknowledged`,
 and one authoritative playback lifecycle, with no second authoritative effect.
-Multi-sentence speech may launch one `afplay` process per synthesized chunk; all
+Multi-sentence speech emits one `afplay_started` event per synthesized chunk as
+it reaches the persistent speech player (the name predates that player); all
 segments must retain the same play-request and utterance identities, with one
 `started` and one terminal `played`. The first matching `afplay_started` is the
 audio-onset timestamp. A distinct playback identity or multiple lifecycle
@@ -83,8 +84,8 @@ ids. Exactly one authoritative playback may exist for that command. Messenger
 handoffs and other non-authoritative conversation are excluded from both sample
 selection and duplicate-authoritative-effect counting.
 
-The report is process evidence: it proves that the correlated `afplay` process
-started and measures that boundary, but it cannot prove that a person heard the
+The report is process evidence: it proves that the correlated audio reached the
+speech player and measures that boundary, but it cannot prove that a person heard the
 audio. Human audible attestation is a separate mounted acceptance record and
 must not be inferred from `afplay_started` alone.
 

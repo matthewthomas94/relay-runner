@@ -21,6 +21,7 @@ import numpy as np
 
 from config import load_config
 from custom_voice import ConversionClient, ConversionCancelled, CustomVoiceError, ID_RE, voices_root, support_root, load_profile, load_runtime
+from speech_player import SpeechPlaybackError, SpeechPlayer
 from voice_audio_lease import VoiceAudioLease
 
 
@@ -206,7 +207,8 @@ class TTSWorker:
         self._play_request_lock = threading.RLock()
         self._playing = False
         self._paused = False
-        self._current_proc: subprocess.Popen | None = None
+        # One output for the whole session; sentences no longer cold-start afplay (RR-438).
+        self._speech_player = SpeechPlayer(keep_alive=lambda: self._playing)
         self._shutdown = False
         self._last_wav: str | None = None  # Path to last played WAV for replay
         self._last_unheard_text = ""
@@ -639,17 +641,10 @@ class TTSWorker:
             self._playback_generation = getattr(self, "_playback_generation", 0) + 1
             if hasattr(self, "_converter"):
                 self._converter.close()
-            proc = self._current_proc
-            if proc and proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=1)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
-                with self._lock:
-                    if self._current_proc is proc:
-                        self._current_proc = None
+            player = getattr(self, "_speech_player", None)
+            if player is not None:
+                # Fades the output to silence, then stops it.
+                player.stop()
             self._stop_chime()
             self._playing = False
             self._paused = False
@@ -769,7 +764,7 @@ class TTSWorker:
             t.start()
 
     def _play_wav(self, wav_path: str, generation: int):
-        """Play a WAV file with afplay."""
+        """Replay a WAV file on the speech player."""
         try:
             self._play_wav_blocking(wav_path, generation=generation)
         except Exception as e:
@@ -783,36 +778,39 @@ class TTSWorker:
                 self._current_display_text = ""
 
     def _play_wav_blocking(self, wav_path: str, *, generation: int | None = None, rate: float | None = None):
-        """Play a single WAV file with afplay."""
+        """Play a single WAV file on the persistent speech player.
+
+        Returns once the audio has been handed to the output, so the next
+        chunk queues straight behind it on the same running device.
+        """
         if generation is None:
             generation = self._playback_generation
-        cmd = ["afplay", wav_path]
         if rate is None:
             rate = getattr(self, "_current_playback_rate", self._rate)
-        if rate != 1.0:
-            cmd.extend(["-r", str(rate)])
         if not self._playback_is_current(generation):
             return
         with VoiceAudioLease(lambda: not self._playback_is_current(generation)):
-            # Re-check under the same lock as stop: cancelled work cannot start afplay.
+            # Re-check under the same lock as stop: cancelled work cannot start audio.
             with self._play_request_lock:
                 if not self._playback_is_current(generation):
                     return
                 intent = self._current_speech_intent
                 preview = str(getattr(self, "_current_display_text", "") or "").strip()
-                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self._current_proc = proc
+                player = self._speech_player
+                try:
+                    chunk = player.submit_wav(wav_path, rate)
+                except SpeechPlaybackError as exc:
+                    raise CustomVoiceError("playback_failed") from exc
                 _notify_state("speaking", **({"text": preview[:2000]} if preview else {}),
                               **_presentation_fields(intent))
+                # The event keeps its afplay-era name; latency reports and
+                # harnesses key on it. It marks each chunk's hand-off to the player.
                 self._observe_speech("afplay_started", intent)
             try:
-                result = proc.wait()
-                if result != 0 and self._playback_is_current(generation):
-                    raise CustomVoiceError("playback_failed")
-            finally:
-                with self._lock:
-                    if self._current_proc is proc:
-                        self._current_proc = None
+                player.wait(chunk, cancelled=lambda: not self._playback_is_current(generation))
+            except SpeechPlaybackError as exc:
+                if self._playback_is_current(generation):
+                    raise CustomVoiceError("playback_failed") from exc
 
     def _synthesize_to_wav(self, text: str) -> str | None:
         """Render `text` to a fresh WAV via Kokoro, return its path or None on failure.
@@ -828,7 +826,7 @@ class TTSWorker:
             try:
                 # Synthesize at speed=1.0 to avoid kokoro_onnx int32 truncation bug
                 # (newer ONNX exports cast speed to int32, so 1.2 → 1, 1.8 → 1, etc.)
-                # Playback rate is applied via afplay -r instead for smooth control.
+                # Playback rate is applied by the speech player's time-pitch instead.
                 selection = getattr(getattr(self, "_render_local", None), "selection", None)
                 samples, sample_rate = self._kokoro.create(
                     text, voice=selection.voice if selection else self._voice, speed=1.0, lang="en-us"
@@ -1363,6 +1361,9 @@ class TTSWorker:
     def shutdown(self):
         self._shutdown = True
         self.skip()
+        player = getattr(self, "_speech_player", None)
+        if player is not None:
+            player.close()
         if hasattr(self, "_converter"):
             self._converter.close()
         self._remove_wav(self._last_wav)
