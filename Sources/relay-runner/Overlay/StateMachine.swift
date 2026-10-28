@@ -495,6 +495,25 @@ final class StateMachine: @unchecked Sendable {
         partialTranscription = ""
     }
 
+    /// The wheel stopped the playing reply. It dismisses now, like double-tap Control, instead
+    /// of waiting for the bridge's wheel_stop idle event, and later updates from the stopped
+    /// attempt stay stale as that event would have made them.
+    func cancelSpeechFromWheel() {
+        if let active = speechPresentation {
+            speechPresentation = SpeechPresentation(
+                utteranceID: active.utteranceID,
+                originalUtteranceID: active.originalUtteranceID,
+                replayOf: active.replayOf,
+                mode: active.mode,
+                stopReason: "wheel_stop",
+                commandSequence: active.commandSequence,
+                commandID: active.commandID,
+                sessionKey: active.sessionKey
+            )
+        }
+        setCancelled()
+    }
+
     func showSessionPrompt() {
         state = .sessionPrompt
         partialTranscription = ""

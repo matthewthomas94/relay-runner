@@ -3235,8 +3235,11 @@ final class AppState {
         case .message:
             guard let spool = sessionRegistry.spool(for: contextID),
                   let playback = sessionWheelPlayback(spool: spool), let key = spool.key,
-                  let message = Self.sessionPlaybackMessage(sessionKey: key, action: playback) else { return false }
-            return SocketClient.bridgeSend(message)
+                  let message = Self.sessionPlaybackMessage(sessionKey: key, action: playback),
+                  SocketClient.bridgeSend(message) else { return false }
+            // Stopping a playing reply dismisses it at once, exactly like double-tap Control.
+            if playback == .stop { stateMachine.cancelSpeechFromWheel() }
+            return true
         case .recording:
             guard let engine = sttEngine,
                   let key = sessionRegistry.spool(for: contextID)?.key,

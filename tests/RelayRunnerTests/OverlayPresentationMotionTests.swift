@@ -183,6 +183,39 @@ final class OverlayPresentationMotionTests: XCTestCase {
         }
     }
 
+    /// Pressing stop on the wheel dismisses at once, like double-tap Control, even when the
+    /// bridge's wheel_stop idle event never arrives.
+    func testWheelStopDismissesWithoutWaitingForTheBridge() {
+        for phase in ["preparing", "speaking"] {
+            for depth in [0, 1] {
+                let scene = Scene(showsCard: true)
+                defer { scene.stop() }
+                scene.controller.setReplyStackDepth(depth, now: 0)
+                let active = SpeechPresentation(utteranceID: "reply", originalUtteranceID: "reply",
+                                                mode: .newDelivery, sessionKey: "a")
+                scene.state.handleServiceEvent(source: "tts", newState: phase,
+                                               text: "Response.", presentation: active)
+                for time in [0.0, 0.31, 0.62] { scene.step(time) }
+
+                scene.state.cancelSpeechFromWheel()
+                XCTAssertEqual(scene.state.state, .cancelled(.tts))
+                scene.step(1)
+                scene.step(1.31)
+                XCTAssertEqual(scene.pill.alphaValue, 0)
+                XCTAssertEqual(scene.particles.opacity, 0)
+
+                // The bridge's own report and late updates from the stopped attempt change nothing.
+                let stopped = SpeechPresentation(utteranceID: "reply", originalUtteranceID: "reply",
+                                                 mode: .newDelivery, stopReason: "wheel_stop", sessionKey: "a")
+                scene.state.handleServiceEvent(source: "tts", newState: "idle", text: nil, presentation: stopped)
+                scene.state.handleServiceEvent(source: "tts", newState: phase,
+                                               text: "Response.", presentation: active)
+                scene.step(1.4)
+                XCTAssertEqual(scene.pill.alphaValue, 0)
+            }
+        }
+    }
+
     func testReplyQueueHoldExpiresWhenNoReplyComesForward() {
         let scene = Scene(showsCard: true)
         defer { scene.stop() }
