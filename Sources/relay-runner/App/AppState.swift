@@ -266,6 +266,8 @@ final class AppState {
     /// Launch owner identity per context; a continuation is delivered to its
     /// destination context's own session, focused or not.
     @ObservationIgnored private var continuationDestinationOwners: [String: [String: String]] = [:]
+    /// Contexts whose provider launched by resuming a saved conversation and isn't ready yet.
+    @ObservationIgnored private var resumingContextIDs: Set<String> = []
     var canClearContextContinuation: Bool { assistantSessionStore.pendingContinuation != nil }
     @ObservationIgnored private var idleSessionSaved = false
     /// RR-394: the context whose spool the shared voice bridge publishes into.
@@ -2050,8 +2052,23 @@ final class AppState {
     private func embeddedTerminalDidExit(contextID: String, exitCode: Int32?) {
         // RR-394: an exit marks only its own context. The shared voice state
         // resets only when the bridge's session exits and none remain live.
-        if let exitedContext = assistantSessionStore.document.bindings[contextID]?.context {
+        let exitedContext = assistantSessionStore.document.bindings[contextID]?.context
+        if let exitedContext {
             saveAssistantSession(lifecycle: .interrupted, context: exitedContext)
+        }
+        // A provider that exits during startup while resuming has refused that conversation
+        // (Claude: "No conversation found"). Forget it, so this context starts fresh instead
+        // of failing the same way on every start.
+        var refusedResume: AssistantSessionContext?
+        if resumingContextIDs.remove(contextID) != nil, let exitedContext,
+           sessionRegistry.sessions[contextID]?.providerExitedBeforeReadiness == true {
+            do {
+                try assistantSessionStore.forgetNativeSession(context: exitedContext)
+                refusedResume = exitedContext
+                NSLog("[AppState] Provider refused to resume the saved conversation for \(contextID); forgot it")
+            } catch {
+                contextSwitchMessage = "Conversation could not be saved: \(error.localizedDescription)"
+            }
         }
         if contextID != voiceContextID, sessionRegistry.hasLiveSessions { return }
         if userDeliveryRecoveryPending {
@@ -2081,6 +2098,8 @@ final class AppState {
             earlyFailureMessage = nil
         }
         resetActiveSessionState()
+        // Retry once with a new conversation; a fresh launch never resumes, so this can't loop.
+        if let refusedResume, newSession(workingDirectory: refusedResume.repositoryPath) { return }
         if let earlyFailureMessage {
             statusText = "Session failed before provider readiness"
             stateMachine.showProgramStatus(
@@ -2825,6 +2844,9 @@ final class AppState {
                 let joinsVoiceBridge = !preservesVoiceBridge
                     && sessionRegistry.liveContextIDs.contains { $0 != context.id }
                     && processManager.bridgeAlive()
+                let nativeResumeID = assistantSessionStore.binding(for: context).flatMap {
+                    $0.provider == launchConfig.general.provider.rawValue && $0.model == launchConfig.general.model ? $0.launchableNativeSessionID : nil
+                }
                 let prepared = try processManager.prepareNewSession(
                     config: launchConfig,
                     voiceDelivery: voiceDelivery,
@@ -2838,15 +2860,14 @@ final class AppState {
                     sessionContext: context,
                     conversationID: conversationID,
                     transportSessionID: launchID.uuidString.lowercased(),
-                    nativeResumeID: assistantSessionStore.binding(for: context).flatMap {
-                        $0.provider == launchConfig.general.provider.rawValue && $0.model == launchConfig.general.model ? $0.launchableNativeSessionID : nil
-                    },
+                    nativeResumeID: nativeResumeID,
                     providerBindingPath: assistantSessionStore.bindingURL(transportSessionID: launchID.uuidString.lowercased()).path,
                     publicHandoff: assistantSessionStore.publicHandoff(for: context),
                     preservesContextAuthorization: assistantSessionStore.pendingContinuation.map { $0.state == .queued && $0.destination == context } == true
                 )
                 try assistantSessionStore.begin(context: context, provider: launchConfig.general.provider.rawValue,
                                                model: launchConfig.general.model, transportSessionID: launchID.uuidString.lowercased())
+                if nativeResumeID != nil { resumingContextIDs.insert(context.id) } else { resumingContextIDs.remove(context.id) }
                 continuationDestinationOwners[context.id] = ["provider": prepared.target.providerMetadataValue,
                     "provider_session_id": prepared.providerSessionID ?? "", "app_session_id": prepared.appSessionID ?? "",
                     "recovery_generation": prepared.recoveryGeneration ?? "", "foreground_gate_handle": prepared.foregroundGateHandle ?? ""]
@@ -4685,6 +4706,7 @@ final class AppState {
     }
 
     private func embeddedTerminalDidBecomeReady(contextID: String) {
+        resumingContextIDs.remove(contextID)
         if let readyContext = assistantSessionStore.document.bindings[contextID]?.context {
             do { try assistantSessionStore.mark(.running, context: readyContext) }
             catch { contextSwitchMessage = "Conversation could not be saved: \(error.localizedDescription)" }

@@ -275,6 +275,20 @@ final class AssistantSessionStore {
         return true
     }
 
+    /// The provider refused to resume this context's conversation (Claude's "No conversation
+    /// found"), so the next launch starts fresh instead of failing the same way. The provider's
+    /// own transcript is left where it is.
+    func forgetNativeSession(context: AssistantSessionContext) throws {
+        if let transport = binding(for: context)?.transportSessionID {
+            try? FileManager.default.removeItem(at: bindingURL(transportSessionID: transport))
+        }
+        try update { document in
+            document.bindings[context.id]?.nativeSessionID = nil
+            document.bindings[context.id]?.transcriptPath = nil
+            document.bindings[context.id]?.transcriptOffset = nil
+        }
+    }
+
     func mark(_ lifecycle: Lifecycle, context: AssistantSessionContext, now: Date = Date()) throws {
         try update { document in
             document.bindings[context.id]?.lifecycle = lifecycle

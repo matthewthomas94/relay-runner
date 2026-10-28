@@ -278,6 +278,34 @@ final class AssistantSessionStoreTests: XCTestCase {
         }
     }
 
+    func testForgettingARefusedResumeLaunchesFreshForBothProviders() throws {
+        for provider in ["codex", "claude"] {
+            let directory = try temporaryDirectory(), store = AssistantSessionStore(directory: directory)
+            let transport = UUID().uuidString.lowercased(), native = UUID().uuidString.lowercased()
+            try store.begin(context: .general, provider: provider, model: "model", transportSessionID: transport)
+            let sidecar = store.bindingURL(transportSessionID: transport)
+            try FileManager.default.createDirectory(at: sidecar.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let transcript = directory.appendingPathComponent("rollout-\(native).jsonl")
+            try Data().write(to: transcript)
+            try JSONSerialization.data(withJSONObject: ["context_id": "general", "provider": provider,
+                "provider_session_id": transport, "native_session_id": native,
+                "working_directory": AssistantSessionContext.general.workingDirectory,
+                "transcript_path": transcript.path]).write(to: sidecar)
+            try store.reconcile(context: .general, activeRunIDs: [], pendingIntentIDs: [])
+            XCTAssertEqual(store.binding(for: .general)?.launchableNativeSessionID, native)
+
+            try store.forgetNativeSession(context: .general)
+            // The sidecar is gone too, so a later reconcile can't restore the refused id.
+            try store.reconcile(context: .general, activeRunIDs: [], pendingIntentIDs: [])
+            let restored = AssistantSessionStore(directory: directory)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
+            XCTAssertNil(restored.binding(for: .general)?.nativeSessionID)
+            XCTAssertNil(restored.binding(for: .general)?.transcriptPath)
+            XCTAssertNil(restored.binding(for: .general)?.launchableNativeSessionID)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: transcript.path), "The provider's transcript is left alone")
+        }
+    }
+
     func testPublicHistoryFiltersReasoningToolsAndScaffoldingAndParsesFractionalTime() throws {
         let lines = [
             #"{"type":"response_item","timestamp":"2026-10-11T06:00:00.123Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}}"#,

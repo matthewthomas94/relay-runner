@@ -90,6 +90,8 @@ final class EmbeddedTerminalSession {
     private(set) var deliveryBlocked = false
     private(set) var inboxRecoveryBlocker: InboxRecoveryBlocker?
     private(set) var providerInterfaceShown = false
+    /// The provider itself started, then exited before interactive readiness.
+    private(set) var providerExitedBeforeReadiness = false
     var deliveryRecoveryMessage: String?
 
     @ObservationIgnored private let processFactory: ProcessFactory
@@ -274,6 +276,7 @@ final class EmbeddedTerminalSession {
                         attributes: ["exit_code": exitCode.map(String.init) ?? "unknown"]
                     )
                 } else if exitedBeforeReadiness {
+                    self.providerExitedBeforeReadiness = true
                     self.diagnostics?.markExited(
                         rawStatus: rawStatus,
                         beforeInteractiveReadiness: true
@@ -313,6 +316,7 @@ final class EmbeddedTerminalSession {
         presentationRevision += 1
         diagnostics?.markLauncherPrepared(path: launch.launcherPath)
         providerInterfaceShown = false
+        providerExitedBeforeReadiness = false
         phase = .starting
 
         do {

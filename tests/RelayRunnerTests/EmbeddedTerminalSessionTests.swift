@@ -359,6 +359,7 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
             )
             try session.start(launch())
             XCTAssertEqual(session.phase, .starting)
+            XCTAssertFalse(session.providerExitedBeforeReadiness)
 
             process.emitExit(rawStatus: 0)
             wait(for: [exited], timeout: 1)
@@ -366,6 +367,8 @@ final class EmbeddedTerminalSessionTests: XCTestCase {
             guard case .failed(let message) = session.phase else {
                 return XCTFail("Expected \(providerName) early exit to fail the session")
             }
+            XCTAssertTrue(session.providerExitedBeforeReadiness,
+                          "AppState forgets a refused resume only for this provider exit")
             XCTAssertTrue(message.contains("\(providerName) exited with code 0"))
             XCTAssertTrue(message.contains("during interactive provider readiness"))
             XCTAssertTrue(message.contains("orphaned voice bridge"))

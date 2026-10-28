@@ -211,6 +211,11 @@ final class AssistantContextLifecycleTests: XCTestCase {
         let exitBody = String(source[exitStart.lowerBound...]).components(separatedBy: "\n    }\n")[0]
         XCTAssertTrue(exitBody.contains("saveAssistantSession(lifecycle: .interrupted, context: exitedContext)"))
         XCTAssertTrue(exitBody.contains("if sessionRegistry.hasLiveSessions { return }"))
+        // A resume the provider refused at startup is forgotten, then retried fresh once.
+        XCTAssertTrue(exitBody.contains("sessionRegistry.sessions[contextID]?.providerExitedBeforeReadiness == true"))
+        XCTAssertTrue(exitBody.contains("try assistantSessionStore.forgetNativeSession(context: exitedContext)"))
+        XCTAssertTrue(exitBody.contains("if let refusedResume, newSession(workingDirectory: refusedResume.repositoryPath) { return }"))
+        XCTAssertTrue(source.contains("if nativeResumeID != nil { resumingContextIDs.insert(context.id) } else { resumingContextIDs.remove(context.id) }"))
         XCTAssertTrue(switching.contains("try assistantSessionStore.select(context,"))
         XCTAssertTrue(switching.contains("for process in previousProcesses"))
         XCTAssertTrue(switching.contains("process.requestTermination()"))
