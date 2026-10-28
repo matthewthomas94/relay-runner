@@ -217,7 +217,7 @@ final class STTEngine: @unchecked Sendable {
     }
 
     /// Session-level microphone ownership. The model and gestures stay live
-    /// regardless; AVAudioEngine capture runs only while an owner allows it.
+    /// regardless; microphone capture runs only while an owner allows it.
     /// Idempotent, so callers may re-assert the current owner freely.
     func setCaptureAllowed(_ allowed: Bool) {
         captureOwnershipLock.lock()
