@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,70 @@ class QueueDrainTests(unittest.TestCase):
                 ).fetchone()["last_error"])
             indexed = json.loads(index_path.read_text())["runs"]
             self.assertIsNone(indexed[0]["last_error"])
+
+    def test_repo_run_list_is_reused_until_any_connection_commits(self):
+        # RR-440: every ready sweep and monitor tick lists each repo's runs.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            store = RunsStore(root / "runs.db")
+            repo = str(root / "repo")
+            run_id = store.insert(
+                ticket_id="RR-1",
+                repo_path=repo,
+                workspace_path=str(root / "workspace"),
+                branch="relay/rr-1",
+                state="Running",
+            )
+            store.list_for_repo(repo)[0]["state"] = "mutated by a caller"
+            self.assertEqual(store.list_for_repo(repo)[0]["state"], "Running")
+
+            store.update(run_id, state="AwaitingReview")
+            self.assertEqual(store.list_for_repo(repo)[0]["state"], "AwaitingReview")
+
+            other = sqlite3.connect(root / "runs.db")
+            other.execute("UPDATE runs SET state = 'Merged' WHERE id = ?", (run_id,))
+            other.commit()
+            other.close()
+            self.assertEqual(store.list_for_repo(repo)[0]["state"], "Merged")
+
+    def test_unchanged_reconcile_writes_nothing_on_one_long_lived_connection(self):
+        # RR-440: the monitor and every ready sweep reclassify the same items.
+        # They reopened SQLite per query and rewrote every item each pass.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = QueueDrainStore(Path(tmp) / "queue_drains.db")
+            items = [
+                {"ticket_id": "RR-1", "state": "blocked", "reason": "needs input"},
+                {"ticket_id": "RR-2", "state": "done", "unresolved_dependencies": []},
+            ]
+            with patch("orchestrator.time.time", return_value=100.0):
+                drain, _ = store.ensure_active(
+                    repo_path=tmp,
+                    target_branch="main",
+                    provider_key="claude",
+                    observed_ticket_ids=["RR-1", "RR-2"],
+                )
+                store.update_items(drain["id"], items)
+
+            with patch("orchestrator.sqlite3.connect", side_effect=AssertionError("reconnected")), patch(
+                "orchestrator.time.time", return_value=200.0,
+            ):
+                same, created = store.ensure_active(
+                    repo_path=tmp,
+                    target_branch="main",
+                    provider_key="claude",
+                    observed_ticket_ids=["RR-2"],
+                    include_items=False,
+                )
+                self.assertFalse(created)
+                self.assertNotIn("items", same)
+                self.assertEqual(store.append_observed(drain["id"], ["RR-1"])["updated_at"], 100.0)
+                store.update_items(drain["id"], items)
+                store.update_items(drain["id"], [{**items[0], "state": "done"}, items[1]])
+                stored = {item["ticket_id"]: item for item in store.get(drain["id"])["items"]}
+
+            self.assertEqual(stored["RR-1"]["state"], "done")
+            self.assertEqual(stored["RR-1"]["updated_at"], 200.0)
+            self.assertEqual(stored["RR-2"]["updated_at"], 100.0)
 
     def test_verification_blocked_run_remains_in_board_index_after_retention_window(self):
         with tempfile.TemporaryDirectory() as tmp:

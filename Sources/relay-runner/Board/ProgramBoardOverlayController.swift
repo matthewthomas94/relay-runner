@@ -933,8 +933,13 @@ final class ProgramBoardOverlayController {
     }
 
     private func workspaceTabDidChange(_ tab: WorkspaceTab) {
+        let previousTab = lastSelectedTab
         lastSelectedTab = tab
         updatePanelKeyEligibility()
+        // The status poll pauses away from the Work tab; catch up on return.
+        if isVisible, tab == .work, previousTab != .work {
+            checkForUpdates(inBackground: model.snapshot != nil)
+        }
     }
 
     func hide(recognizedAt: CFTimeInterval? = nil) {
@@ -1037,9 +1042,20 @@ final class ProgramBoardOverlayController {
         stopStatusPoll()
         statusPollTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             guard let self, self.isVisible else { return }
-            guard self.model.editing == nil else { return }
+            guard Self.statusPollRefreshesDashboard(
+                selectedTab: self.workspace.selectedTab,
+                isEditing: self.model.editing != nil
+            ) else { return }
             self.checkForUpdates(inBackground: true)
         }
+    }
+
+    /// Only the Work tab shows the dashboard. A session usually keeps the
+    /// Workspace open on its Terminal tab, where each 10 s refresh made the
+    /// daemon re-sweep every project and rebuild the program graph, and
+    /// animated the notch while it ran (RR-440).
+    static func statusPollRefreshesDashboard(selectedTab: WorkspaceTab, isEditing: Bool) -> Bool {
+        selectedTab == .work && !isEditing
     }
 
     private func stopStatusPoll() {

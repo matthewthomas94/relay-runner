@@ -37,11 +37,12 @@ try:
 except ModuleNotFoundError:
     from toml_compat import tomllib
 import uuid
+import weakref
 from datetime import datetime, timezone
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 
 # Reuse the existing config loader (sibling file).
@@ -155,7 +156,11 @@ from codex_model_catalog import (
     resolve_codex_family_from_cli,
 )
 from graphify_core import GraphifyCoreStore
-from graphify_ingest import ingest_registered_projects
+from graphify_ingest import (
+    graph_file_state,
+    ingest_registered_projects,
+    registered_projects_input_state,
+)
 from followup_tickets import (
     FOLLOWUP_KEY_PREFIX,
     FollowupProposalStore,
@@ -1992,6 +1997,28 @@ def _provider_goal_mode(provider_key: str) -> str:
     return "relay-runner-durable-goal"
 
 
+@contextmanager
+def _store_connection(store: Any) -> Iterator[sqlite3.Connection]:
+    """Yield a store's long-lived autocommit connection under the store's lock.
+
+    A connection per call re-read the schema on every query, and the app's
+    ready sweeps, the queue-drain monitor and bridge polls query these stores
+    many times a second (RR-440). Rolling back a transaction an aborted call
+    left open keeps what closing the per-call connection guaranteed.
+    """
+    conn = store.__dict__.get("_sqlite_connection")
+    if conn is None:
+        conn = sqlite3.connect(str(store.path), isolation_level=None, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        store._sqlite_connection = conn
+        weakref.finalize(store, conn.close)
+    try:
+        yield conn
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+
+
 class QueueDrainStore:
     """Durable rolling queue-drain goal records.
 
@@ -2048,13 +2075,8 @@ class QueueDrainStore:
 
     @contextmanager
     def _conn(self):
-        with self._lock:
-            conn = sqlite3.connect(str(self.path), isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            try:
-                yield conn
-            finally:
-                conn.close()
+        with self._lock, _store_connection(self) as conn:
+            yield conn
 
     def _init(self) -> None:
         with self._conn() as c:
@@ -2067,7 +2089,7 @@ class QueueDrainStore:
             else:
                 c.executescript(self.SCHEMA)
 
-    def active_for_repo(self, repo_path: str) -> dict[str, Any] | None:
+    def active_for_repo(self, repo_path: str, *, include_items: bool = True) -> dict[str, Any] | None:
         repo = str(Path(repo_path).expanduser().resolve())
         placeholders = ",".join("?" * len(QUEUE_DRAIN_ACTIVE_STATES))
         with self._conn() as c:
@@ -2076,7 +2098,7 @@ class QueueDrainStore:
                 "ORDER BY created_at DESC LIMIT 1",
                 (repo, *sorted(QUEUE_DRAIN_ACTIVE_STATES)),
             ).fetchone()
-            return self._public_drain(c, row) if row else None
+            return self._public_drain(c, row, include_items=include_items) if row else None
 
     def active_repo_paths(self) -> list[str]:
         placeholders = ",".join("?" * len(QUEUE_DRAIN_ACTIVE_STATES))
@@ -2095,6 +2117,7 @@ class QueueDrainStore:
         provider_key: str,
         observed_ticket_ids: list[str],
         status_message: str | None = None,
+        include_items: bool = True,
     ) -> tuple[dict[str, Any], bool]:
         repo = str(Path(repo_path).expanduser().resolve())
         provider = OrchestratorSessionStore._normalize_provider(provider_key)
@@ -2110,12 +2133,14 @@ class QueueDrainStore:
             ).fetchone()
             if row:
                 merged = sorted(set(_json_list(row["observed_ticket_ids"])) | set(observed))
+                if merged == _json_list(row["observed_ticket_ids"]):
+                    return self._public_drain(c, row, include_items=include_items), False
                 c.execute(
                     "UPDATE queue_drains SET observed_ticket_ids = ?, updated_at = ? WHERE id = ?",
                     (json.dumps(merged), now, row["id"]),
                 )
                 fresh = c.execute("SELECT * FROM queue_drains WHERE id = ?", (row["id"],)).fetchone()
-                return self._public_drain(c, fresh), False
+                return self._public_drain(c, fresh, include_items=include_items), False
 
             row = c.execute(
                 "SELECT COUNT(*) AS count FROM queue_drains WHERE repo_path = ? AND target_branch = ? "
@@ -2148,15 +2173,40 @@ class QueueDrainStore:
                 ),
             )
             fresh = c.execute("SELECT * FROM queue_drains WHERE id = ?", (drain_id,)).fetchone()
-            return self._public_drain(c, fresh), True
+            return self._public_drain(c, fresh, include_items=include_items), True
 
     def update_items(self, drain_id: str, items: list[dict[str, Any]]) -> None:
         now = time.time()
         with self._conn() as c:
-            # One commit per update. Each autocommitted upsert paid its own
-            # journal commit on every monitor tick and ready sweep (RR-440).
-            c.execute("BEGIN")
+            # The monitor and every ready sweep re-classify the same items, so
+            # write only rows that changed, in one commit (RR-440). An item's
+            # updated_at is when its classification last changed.
+            stored = {
+                row["ticket_id"]: tuple(row)[2:9]
+                for row in c.execute(
+                    "SELECT drain_id, ticket_id, state, run_id, reason, next_action_at, blocker_owner, "
+                    "blocker_next_step, unresolved_dependencies FROM queue_drain_items WHERE drain_id = ?",
+                    (drain_id,),
+                )
+            }
+            changed = []
             for item in items:
+                values = (
+                    item.get("state") or "unknown",
+                    item.get("run_id"),
+                    item.get("reason"),
+                    item.get("next_action_at"),
+                    item.get("blocker_owner"),
+                    item.get("blocker_next_step"),
+                    json.dumps(item.get("unresolved_dependencies") or []),
+                )
+                ticket_id = str(item["ticket_id"]).upper()
+                if stored.get(ticket_id) != values:
+                    changed.append((ticket_id, values))
+            if not changed:
+                return
+            c.execute("BEGIN")
+            for ticket_id, values in changed:
                 c.execute(
                     "INSERT INTO queue_drain_items("
                     "drain_id, ticket_id, state, run_id, reason, next_action_at, blocker_owner, "
@@ -2167,18 +2217,7 @@ class QueueDrainStore:
                     "next_action_at = excluded.next_action_at, blocker_owner = excluded.blocker_owner, "
                     "blocker_next_step = excluded.blocker_next_step, "
                     "unresolved_dependencies = excluded.unresolved_dependencies, updated_at = excluded.updated_at",
-                    (
-                        drain_id,
-                        str(item["ticket_id"]).upper(),
-                        item.get("state") or "unknown",
-                        item.get("run_id"),
-                        item.get("reason"),
-                        item.get("next_action_at"),
-                        item.get("blocker_owner"),
-                        item.get("blocker_next_step"),
-                        json.dumps(item.get("unresolved_dependencies") or []),
-                        now,
-                    ),
+                    (drain_id, ticket_id, *values, now),
                 )
             c.execute("COMMIT")
 
@@ -2216,19 +2255,27 @@ class QueueDrainStore:
             row = c.execute("SELECT * FROM queue_drains WHERE id = ?", (drain_id,)).fetchone()
             return self._public_drain(c, row) if row else None
 
-    def append_observed(self, drain_id: str, ticket_ids: list[str]) -> dict[str, Any] | None:
+    def append_observed(
+        self,
+        drain_id: str,
+        ticket_ids: list[str],
+        *,
+        include_items: bool = True,
+    ) -> dict[str, Any] | None:
         normalized = {str(ticket_id).upper() for ticket_id in ticket_ids if str(ticket_id).strip()}
         with self._conn() as c:
             row = c.execute("SELECT * FROM queue_drains WHERE id = ?", (drain_id,)).fetchone()
             if not row:
                 return None
             merged = sorted(set(_json_list(row["observed_ticket_ids"])) | normalized)
+            if merged == _json_list(row["observed_ticket_ids"]):
+                return self._public_drain(c, row, include_items=include_items)
             c.execute(
                 "UPDATE queue_drains SET observed_ticket_ids = ?, updated_at = ? WHERE id = ?",
                 (json.dumps(merged), time.time(), drain_id),
             )
             fresh = c.execute("SELECT * FROM queue_drains WHERE id = ?", (drain_id,)).fetchone()
-            return self._public_drain(c, fresh)
+            return self._public_drain(c, fresh, include_items=include_items)
 
     def cancel(self, drain_id: str, *, reason: str | None = None) -> dict[str, Any] | None:
         message = reason or "Queue drain canceled by user."
@@ -2287,10 +2334,16 @@ class QueueDrainStore:
             for row in rows
         ]
 
-    def _public_drain(self, conn: sqlite3.Connection, row: sqlite3.Row | None) -> dict[str, Any]:
+    def _public_drain(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row | None,
+        *,
+        include_items: bool = True,
+    ) -> dict[str, Any]:
         if row is None:
             return {}
-        return {
+        drain = {
             "id": row["id"],
             "repo_path": row["repo_path"],
             "target_branch": row["target_branch"],
@@ -2306,8 +2359,10 @@ class QueueDrainStore:
             "quiescent_since": row["quiescent_since"],
             "completed_at": row["completed_at"],
             "canceled_at": row["canceled_at"],
-            "items": self._items(conn, row["id"]),
         }
+        if include_items:
+            drain["items"] = self._items(conn, row["id"])
+        return drain
 
 
 class RunsStore:
@@ -2361,13 +2416,8 @@ class RunsStore:
 
     @contextmanager
     def _conn(self):
-        with self._lock:
-            conn = sqlite3.connect(str(self.path), isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            try:
-                yield conn
-            finally:
-                conn.close()
+        with self._lock, _store_connection(self) as conn:
+            yield conn
 
     def _init(self) -> None:
         # PRAGMA user_version gates schema migrations. A version mismatch
@@ -2576,12 +2626,24 @@ class RunsStore:
 
     def list_for_repo(self, repo_path: str, *, limit: int = 1000) -> list[dict]:
         repo = str(Path(repo_path).expanduser().resolve())
+        key = (repo, max(1, int(limit)))
         with self._conn() as c:
-            rows = c.execute(
-                "SELECT * FROM runs WHERE repo_path = ? ORDER BY id DESC LIMIT ?",
-                (repo, max(1, int(limit))),
-            ).fetchall()
-            return [dict(r) for r in rows]
+            # Ready sweeps and the queue-drain monitor list each repo's runs
+            # every few seconds (RR-440). data_version moves when another
+            # connection commits and total_changes when this one writes.
+            revision = (c.execute("PRAGMA data_version").fetchone()[0], c.total_changes)
+            cache = self.__dict__.get("_repo_runs_cache")
+            if cache is None or cache[0] != revision:
+                cache = (revision, {})
+                self._repo_runs_cache = cache
+            runs = cache[1].get(key)
+            if runs is None:
+                rows = c.execute(
+                    "SELECT * FROM runs WHERE repo_path = ? ORDER BY id DESC LIMIT ?",
+                    key,
+                ).fetchall()
+                runs = cache[1][key] = [dict(r) for r in rows]
+            return [dict(run) for run in runs]
 
     def active_count(self, repo_path: str | None = None) -> int:
         placeholders = ",".join("?" * len(self.ACTIVE_STATES))
@@ -2800,13 +2862,8 @@ class OrchestratorSessionStore:
 
     @contextmanager
     def _conn(self):
-        with self._lock:
-            conn = sqlite3.connect(str(self.path), isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            try:
-                yield conn
-            finally:
-                conn.close()
+        with self._lock, _store_connection(self) as conn:
+            yield conn
 
     def _init(self) -> None:
         with self._conn() as c:
@@ -3090,13 +3147,8 @@ class OrchestratorCommandStore:
 
     @contextmanager
     def _conn(self):
-        with self._lock:
-            conn = sqlite3.connect(str(self.path), isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            try:
-                yield conn
-            finally:
-                conn.close()
+        with self._lock, _store_connection(self) as conn:
+            yield conn
 
     def _init(self) -> None:
         with self._conn() as c:
@@ -3442,13 +3494,8 @@ class MessengerOutcomeStore:
 
     @contextmanager
     def _conn(self):
-        with self._lock:
-            conn = sqlite3.connect(str(self.path), isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            try:
-                yield conn
-            finally:
-                conn.close()
+        with self._lock, _store_connection(self) as conn:
+            yield conn
 
     def _init(self) -> None:
         with self._conn() as c:
@@ -7548,7 +7595,7 @@ Title: {ticket['title']}
             ticket_id = str(ticket.get("id") or "").upper()
             if linked_run and str(linked_run.get("ticket_id") or "").upper() == ticket_id:
                 runs_by_ticket[ticket_id] = linked_run
-        active_drain = store.active_for_repo(str(repo))
+        active_drain = store.active_for_repo(str(repo), include_items=False)
         observed_ids = self._queue_drain_candidate_ids(
             tickets=tickets,
             runs_by_ticket=runs_by_ticket,
@@ -7569,15 +7616,18 @@ Title: {ticket['title']}
             or _git_text(str(repo), "branch", "--show-current")
             or self._resolve_default_branch(str(repo))
         )
+        # Only the drain's identity, branch and observed set are read here;
+        # the items come back from update_state below.
         drain, created = store.ensure_active(
             repo_path=str(repo),
             target_branch=target_branch,
             provider_key=provider_key,
             observed_ticket_ids=observed_ids,
             status_message=f"Queue drain started by {trigger or 'reconcile'}.",
+            include_items=False,
         )
         if active_drain:
-            drain = store.append_observed(drain["id"], observed_ids) or drain
+            drain = store.append_observed(drain["id"], observed_ids, include_items=False) or drain
         elif created:
             self._emit_lifecycle(
                 "reasoning-summary",
@@ -11812,12 +11862,36 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         return refresh
 
     def _ingest_program_graph(self) -> dict[str, int]:
-        return ingest_registered_projects(
-            GraphifyCoreStore(self.graphify_path),
-            registry_path=self._registered_projects_path(),
-            runs_db_path=self.runs.path,
-            index_files=False,
-        )
+        # The Workspace refreshes this graph every 10 s. Re-ingest only when a
+        # board, ref, run or registry input moved, or another writer touched
+        # the graph (RR-440). One ingest at a time, so a slower ingest cannot
+        # record newer inputs than it read.
+        registry_path = self._registered_projects_path()
+        with self.__dict__.setdefault("_program_ingest_lock", threading.Lock()):
+            inputs = registered_projects_input_state(
+                registry_path=registry_path,
+                runs_db_path=self.runs.path,
+            )
+            previous = getattr(self, "_program_ingest_state", None)
+            if (
+                inputs is not None
+                and previous is not None
+                and previous[0] == inputs
+                and previous[1] == graph_file_state(self.graphify_path)
+            ):
+                return dict(previous[2])
+            counts = ingest_registered_projects(
+                GraphifyCoreStore(self.graphify_path),
+                registry_path=registry_path,
+                runs_db_path=self.runs.path,
+                index_files=False,
+            )
+            self._program_ingest_state = (
+                (inputs, graph_file_state(self.graphify_path), dict(counts))
+                if inputs is not None
+                else None
+            )
+            return counts
 
     def program_status(
         self,

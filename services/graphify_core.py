@@ -508,8 +508,15 @@ class GraphifyCoreStore:
             if ticket["id"] in ticket_ids or _normalize_key(ticket["body"].get("provider_key")) == _normalize_key(provider)
         ]
 
-    def blocked_work(self, *, project_id: str | None = None) -> list[dict[str, Any]]:
-        tickets = self.nodes(kind=NODE_TICKET, project_id=project_id)
+    def blocked_work(
+        self,
+        *,
+        project_id: str | None = None,
+        tickets: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Blocked ticket nodes; `tickets` classifies already-loaded nodes instead."""
+        if tickets is None:
+            tickets = self.nodes(kind=NODE_TICKET, project_id=project_id)
         blocked_ids = {
             edge["dst_id"]
             for edge in self.edges(kind=EDGE_BLOCKS)
@@ -521,8 +528,15 @@ class GraphifyCoreStore:
             or _normalize_key(_node_state(ticket)) in {"blocked", "verification_blocked"}
         ]
 
-    def awaiting_merge(self, *, project_id: str | None = None) -> list[dict[str, Any]]:
-        tickets = self.nodes(kind=NODE_TICKET, project_id=project_id)
+    def awaiting_merge(
+        self,
+        *,
+        project_id: str | None = None,
+        tickets: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Ticket nodes awaiting merge; `tickets` classifies already-loaded nodes instead."""
+        if tickets is None:
+            tickets = self.nodes(kind=NODE_TICKET, project_id=project_id)
         ticket_ids = {ticket["id"] for ticket in tickets}
         awaiting_ids = set()
         for edge in self.edges(kind=EDGE_AWAITS_MERGE):

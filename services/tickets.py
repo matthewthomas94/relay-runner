@@ -12,7 +12,9 @@ sufficient and matches the Swift parser bug-for-bug.
 
 from __future__ import annotations
 
+import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -206,19 +208,52 @@ def write(path: Path, ticket: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+# Parsed tickets per board directory, keyed by each file's stat identity. The
+# app's ready sweeps and the queue-drain monitor re-scan the same boards every
+# few seconds (RR-440), so only a changed file is parsed again. Board writers
+# replace files atomically, and ctime moves on any in-place write.
+_SCAN_CACHE: dict[str, dict[str, tuple[tuple[int, int, int, int], dict[str, Any]]]] = {}
+_SCAN_CACHE_LOCK = threading.Lock()
+_SCAN_CACHE_DIRECTORIES = 32
+
+
+def _file_identity(path: Path) -> tuple[int, int, int, int]:
+    stat = os.stat(path)
+    return (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _copy_ticket(ticket: dict[str, Any]) -> dict[str, Any]:
+    return {**ticket, "depends_on": list(ticket["depends_on"]), "_raw_fields": dict(ticket["_raw_fields"])}
+
+
 def scan_repo(repo_path: Path) -> list[dict[str, Any]]:
     """Return every parseable ticket in <repo>/.orchestrator/. Skips bad files."""
     orch_dir = repo_path / ".orchestrator"
     if not orch_dir.is_dir():
         return []
+    with _SCAN_CACHE_LOCK:
+        cached = _SCAN_CACHE.get(str(orch_dir), {})
+    parsed_files: dict[str, tuple[tuple[int, int, int, int], dict[str, Any]]] = {}
     tickets: list[dict[str, Any]] = []
     for path in sorted(orch_dir.glob("*.md")):
         try:
-            t = parse(path.read_text())
+            identity = _file_identity(path)
+            entry = cached.get(path.name)
+            if entry is None or entry[0] != identity:
+                entry = (identity, parse(path.read_text()))
+            # A file rewritten while it was read is parsed again next scan.
+            if _file_identity(path) == identity:
+                parsed_files[path.name] = entry
+            t = _copy_ticket(entry[1])
             t["_path"] = path
             tickets.append(t)
         except (OSError, TicketParseError):
             continue
+    with _SCAN_CACHE_LOCK:
+        _SCAN_CACHE.pop(str(orch_dir), None)
+        if len(_SCAN_CACHE) >= _SCAN_CACHE_DIRECTORIES:
+            _SCAN_CACHE.pop(next(iter(_SCAN_CACHE)))
+        _SCAN_CACHE[str(orch_dir)] = parsed_files
     return tickets
 
 

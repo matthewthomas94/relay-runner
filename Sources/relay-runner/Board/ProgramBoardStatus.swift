@@ -1702,7 +1702,10 @@ final class ProgramBoardViewModel {
     @discardableResult
     func refreshInBackground() -> Task<Void, Never> {
         cancelReload()
-        let attempt = beginWorkspaceAttempt()
+        // A refresh of a healthy board opens no readiness incident; a failure
+        // opens one and the next success closes it. The 10 s status poll
+        // otherwise journaled a new started/ready incident each time (RR-440).
+        let attempt = reloadState == .succeeded ? nil : beginWorkspaceAttempt()
         reloadInFlight = true
         let fetchDashboard = fetchDashboard
         let projectPaths = projectPaths
@@ -2141,9 +2144,13 @@ final class ProgramBoardViewModel {
     @MainActor
     private func finishReload(
         snapshot: ProgramDashboardSnapshot,
-        attempt: (incidentID: String, attempt: Int, correlationID: String)
+        attempt: (incidentID: String, attempt: Int, correlationID: String)?
     ) {
-        self.snapshot = snapshot
+        // Observation notifies on every assignment, so an unchanged poll
+        // result must not re-render the board (RR-440).
+        if self.snapshot != snapshot {
+            self.snapshot = snapshot
+        }
         if let selectedProjectPath, !snapshot.containsProject(path: selectedProjectPath) {
             self.selectedProjectPath = nil
         }
@@ -2156,33 +2163,45 @@ final class ProgramBoardViewModel {
         }
         if let selectedTicketDetail {
             if let refreshedItem = snapshot.ticketItem(matching: selectedTicketDetail.id) {
-                self.selectedTicketDetail = ProgramTicketDetail.load(item: refreshedItem)
+                let refreshed = ProgramTicketDetail.load(item: refreshedItem)
+                if refreshed != selectedTicketDetail {
+                    self.selectedTicketDetail = refreshed
+                }
             } else {
                 self.selectedTicketDetail = nil
             }
         }
-        reloadState = .succeeded
-        errorMessage = nil
+        if reloadState != .succeeded {
+            reloadState = .succeeded
+        }
+        if errorMessage != nil {
+            errorMessage = nil
+        }
         reloadTask = nil
         reloadInFlight = false
-        diagnostics.record(
-            process: "app",
-            phase: "workspace_readiness",
-            outcome: "ready",
-            incidentID: attempt.incidentID,
-            retryAttempt: attempt.attempt,
-            correlationID: attempt.correlationID
-        )
-        workspaceIncidentID = nil
-        workspaceRetryAttempt = 0
-        supportBundlePreview = nil
+        if let attempt {
+            diagnostics.record(
+                process: "app",
+                phase: "workspace_readiness",
+                outcome: "ready",
+                incidentID: attempt.incidentID,
+                retryAttempt: attempt.attempt,
+                correlationID: attempt.correlationID
+            )
+            workspaceIncidentID = nil
+            workspaceRetryAttempt = 0
+        }
+        if supportBundlePreview != nil {
+            supportBundlePreview = nil
+        }
     }
 
     @MainActor
     private func finishReload(
         errorMessage: String,
-        attempt: (incidentID: String, attempt: Int, correlationID: String)
+        attempt: (incidentID: String, attempt: Int, correlationID: String)?
     ) {
+        let attempt = attempt ?? beginWorkspaceAttempt()
         let displayedMessage = "\(errorMessage) Incident \(attempt.incidentID)."
         self.errorMessage = displayedMessage
         reloadState = .failed(displayedMessage)

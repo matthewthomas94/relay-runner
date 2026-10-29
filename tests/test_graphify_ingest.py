@@ -62,6 +62,60 @@ class GraphifyIngestTests(unittest.TestCase):
             self.assertEqual(dates["RR-2"], 1790121600.0)
             self.assertNotIn("RR-3", dates)
 
+    def test_input_state_moves_with_every_ingest_input_and_only_then(self):
+        # RR-440: the daemon skips an ingest while this state is unchanged.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = _make_repo(root, "inputs")
+            _git(repo, "init", "--initial-branch=main", "--quiet")
+            _git(repo, "config", "user.name", "Graphify Tests")
+            _git(repo, "config", "user.email", "graphify@example.invalid")
+            _write_ticket(repo, "RR-1", "Original", "backlog")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "--quiet", "-m", "board")
+            _git(repo, "branch", "relay/artifacts")
+            registry_path = root / "registry-v2.json"
+            registry = {
+                "schema_version": 2,
+                "projects": [{
+                    "project_id": "inputs",
+                    "last_resolved_path": str(repo.resolve()),
+                    "availability": "available",
+                }],
+            }
+            registry_path.write_text(json.dumps(registry))
+            runs_db = root / "runs.db"
+            _write_runs_db(runs_db, [_run_row(root, 1, "RR-1", repo, "Running", "claude")])
+
+            def state():
+                return graphify_ingest.registered_projects_input_state(
+                    registry_path=registry_path, runs_db_path=runs_db,
+                )
+
+            changes = {
+                "ticket file": lambda: _write_ticket(repo, "RR-1", "Edited", "backlog"),
+                "new ticket": lambda: _write_ticket(repo, "RR-2", "Added", "backlog"),
+                "artifact ref": lambda: _git(repo, "update-ref", "refs/heads/relay/artifacts",
+                                             _git(repo, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "a")),
+                "HEAD": lambda: _git(repo, "commit", "--quiet", "--allow-empty", "-m", "source"),
+                "packed refs": lambda: _git(repo, "pack-refs", "--all"),
+                "runs": lambda: _update_runs_db(runs_db, "UPDATE runs SET state = 'Done' WHERE id = 1"),
+                "registry": lambda: registry_path.write_text(json.dumps({**registry, "active_project_id": "inputs"})),
+            }
+            for name, change in changes.items():
+                with self.subTest(change=name):
+                    before = state()
+                    self.assertIsNotNone(before)
+                    self.assertEqual(state(), before)
+                    change()
+                    self.assertNotEqual(state(), before)
+
+            linked = root / "linked"
+            _git(repo, "worktree", "add", "--quiet", str(linked))
+            registry["projects"][0]["last_resolved_path"] = str(linked.resolve())
+            registry_path.write_text(json.dumps(registry))
+            self.assertIsNone(state(), "a linked worktree's refs are resolved through Git")
+
     def make_store(self) -> GraphifyCoreStore:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -1068,6 +1122,15 @@ def _write_runs_db(path: Path, rows: list[dict]) -> None:
                     None,
                 ),
             )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _update_runs_db(path: Path, statement: str) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(statement)
         conn.commit()
     finally:
         conn.close()

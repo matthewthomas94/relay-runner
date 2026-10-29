@@ -61,6 +61,91 @@ def ingest_registered_projects(
         )
 
 
+def registered_projects_input_state(
+    *,
+    registry_path: str | Path,
+    runs_db_path: str | Path | None = None,
+) -> tuple[Any, ...] | None:
+    """Return a cheap identity for everything a ticket-and-run ingest reads.
+
+    The Workspace refreshes the program graph every 10 s. Each ingest re-parses
+    every board, spawns Git several times per project and rewrites the whole
+    graph (RR-440), so callers skip it while this value is unchanged. It covers
+    the registry, each project's `.orchestrator` entries, the Git refs the
+    ingest resolves, and the runs database, without running Git. It returns
+    None when ref storage cannot be read directly, so the caller ingests.
+    Only `index_files=False` ingests are covered; file indexing reads the tree.
+    """
+    registry_file = Path(registry_path)
+    try:
+        registry_bytes = registry_file.read_bytes()
+    except OSError:
+        registry_bytes = None
+    registry = _load_registry(registry_file)
+    records = registry.get("projects")
+    projects: list[tuple[Any, ...]] = []
+    for record in records if isinstance(records, list) else []:
+        if not isinstance(record, dict):
+            continue
+        repo_path = _repo_path(record)
+        if repo_path is None:
+            continue
+        repo = Path(repo_path)
+        refs = _git_ref_state(repo, {_artifact_ref(record), ARTIFACT_REF})
+        if refs is None:
+            return None
+        projects.append((repo_path, refs, _orchestrator_entries_state(repo / ".orchestrator")))
+    runs: tuple[Any, ...] = ()
+    if runs_db_path is not None:
+        runs_path = str(runs_db_path)
+        runs = tuple(_stat_key(Path(runs_path + suffix)) for suffix in ("", "-wal", "-journal"))
+    return (registry_bytes, tuple(projects), runs)
+
+
+def graph_file_state(graphify_path: str | Path) -> tuple[Any, ...]:
+    """Identity of the graph files, so another writer's change forces an ingest."""
+    path = str(graphify_path)
+    return tuple(_stat_key(Path(path + suffix)) for suffix in ("", "-wal"))
+
+
+def _stat_key(path: Path) -> tuple[int, int, int, int] | None:
+    # ctime moves on every content change, including writers that restore mtime.
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _orchestrator_entries_state(directory: Path) -> tuple[Any, ...]:
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return ("unavailable", directory.exists())
+    return tuple((name, _stat_key(directory / name)) for name in names)
+
+
+def _git_ref_state(repo: Path, refs: set[str]) -> tuple[Any, ...] | None:
+    git_dir = repo / ".git"
+    if not git_dir.exists():
+        return ("no-git",)
+    # A linked worktree or reftable store keeps refs elsewhere; ask Git instead.
+    if not git_dir.is_dir() or (git_dir / "reftable").exists():
+        return None
+    try:
+        head = (git_dir / "HEAD").read_bytes()
+    except OSError:
+        return None
+    names = set(refs)
+    if head.startswith(b"ref: "):
+        names.add(head[5:].strip().decode("utf-8", "surrogateescape"))
+    return (
+        head,
+        _stat_key(git_dir / "packed-refs"),
+        tuple((name, _stat_key(git_dir / name)) for name in sorted(names)),
+    )
+
+
 def _ingest_registered_projects(
     store: GraphifyCoreStore,
     *,
