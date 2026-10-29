@@ -1092,6 +1092,47 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertNil(model.supportBundlePreview)
     }
 
+    func testProgramBoardViewModelHealthyPollJournalsAndRendersNothingNew() async throws {
+        // RR-440: the 10 s Workspace poll journaled a new started/ready
+        // incident and re-rendered the board each time nothing had changed.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("relay-quiet-refresh-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let diagnostics = RelayDiagnostics(directory: root)
+        let snapshot = try programBoardSnapshot(
+            clientPath: "/repo/client-dashboard",
+            toolsPath: "/repo/tools"
+        )
+        let spy = ProgramDashboardFetchSpy(results: [
+            .success(snapshot),
+            .success(snapshot),
+            .failure(ProgramBoardTestError(message: "daemon unavailable")),
+            .success(snapshot),
+        ])
+        let model = ProgramBoardViewModel(fetchDashboard: { _ in try await spy.fetch() }, diagnostics: diagnostics)
+
+        await model.reload().value
+        XCTAssertEqual(diagnostics.preview().eventCount, 2)
+
+        final class Flag: @unchecked Sendable { var raised = false }
+        let snapshotChanged = Flag()
+        withObservationTracking { _ = model.snapshot } onChange: { snapshotChanged.raised = true }
+        await model.refreshInBackground().value
+        XCTAssertFalse(snapshotChanged.raised)
+        XCTAssertEqual(diagnostics.preview().eventCount, 2)
+
+        await model.refreshInBackground().value
+        let incidentID = try XCTUnwrap(model.workspaceIncidentID)
+        XCTAssertEqual(diagnostics.preview().eventCount, 4, "a failed poll opens an incident")
+
+        await model.refreshInBackground().value
+        XCTAssertEqual(diagnostics.preview().eventCount, 6, "the next success closes it")
+        XCTAssertNotEqual(model.workspaceIncidentID, incidentID)
+        XCTAssertNil(model.workspaceIncidentID)
+        XCTAssertEqual(model.reloadState, .succeeded)
+        XCTAssertEqual(spy.callCount, 4)
+    }
+
     func testProgramBoardViewModelSlowReloadIgnoresPollingRefreshUntilSettled() async throws {
         let snapshot = try programBoardSnapshot(
             clientPath: "/repo/client-dashboard",

@@ -316,11 +316,14 @@ def _context(
         "tickets": tickets,
         "runs": runs,
         "projects_by_id": projects_by_id,
+        "ticket_lookup": ticket_lookup,
         "ticket_by_run": ticket_by_run,
         "runs_by_ticket": runs_by_ticket,
         "blockers": blockers,
-        "blocked_work": {ticket["id"] for ticket in store.blocked_work()} & ticket_ids,
-        "awaiting_merge": {ticket["id"] for ticket in store.awaiting_merge()} & ticket_ids,
+        # Classify the tickets already loaded rather than decoding every ticket
+        # node twice more on each Workspace refresh (RR-440).
+        "blocked_work": {ticket["id"] for ticket in store.blocked_work(tickets=tickets)} & ticket_ids,
+        "awaiting_merge": {ticket["id"] for ticket in store.awaiting_merge(tickets=tickets)} & ticket_ids,
     }
 
 
@@ -626,14 +629,12 @@ def _unsatisfied_dependencies(ctx: dict[str, Any], ticket: dict[str, Any]) -> li
     deps = _ticket_depends_on(ticket)
     if not deps:
         return []
-    tickets_by_id = {
-        _ticket_id(candidate): candidate
-        for candidate in ctx["tickets"]
-        if candidate.get("project_id") == ticket.get("project_id")
-    }
+    # One shared index: rebuilding a per-project map for every ticket made the
+    # dashboard quadratic in board size on each Workspace refresh (RR-440).
+    ticket_lookup = ctx["ticket_lookup"]
     waiting: list[str] = []
     for dep_id in deps:
-        dep = tickets_by_id.get(dep_id)
+        dep = ticket_lookup.get((ticket.get("project_id"), dep_id))
         if dep is None or _key(_ticket_state(dep)) not in {"done", "closed", "completed"}:
             waiting.append(dep_id)
     return waiting

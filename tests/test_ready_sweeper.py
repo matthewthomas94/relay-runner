@@ -15,6 +15,7 @@ SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
 import orchestrator  # noqa: E402
+import tickets  # noqa: E402
 from orchestrator import Daemon, Handler  # noqa: E402
 
 
@@ -79,6 +80,55 @@ class ReadySweeperTests(unittest.TestCase):
                 [item["project"] for item in dashboard["summary"]["items"]],
                 [{"name": "New Project", "path": str(repo.resolve())}],
             )
+
+    def test_program_dashboard_ingests_again_only_after_an_input_or_graph_change(self):
+        # RR-440: the Workspace polls the dashboard every 10 s, and each ingest
+        # re-read every board through Git and rewrote the whole program graph.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "project"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="backlog")
+            registry_v2 = root / "registry-v2.json"
+            registry_v2.write_text(json.dumps({
+                "schema_version": 2,
+                "active_project_id": None,
+                "projects": [{
+                    "project_id": "project",
+                    "display_name": "Project",
+                    "last_resolved_path": str(repo.resolve()),
+                    "availability": "available",
+                }],
+            }))
+            daemon = object.__new__(Daemon)
+            daemon.program_registry_path = root / "projects.json"
+            daemon.project_registry_v2_path = registry_v2
+            daemon.graphify_path = root / "graphify.db"
+            daemon.runs = type("EmptyRuns", (), {"path": root / "runs.db"})()
+            daemon.sweep_program_ready_tickets = lambda **_: {"dispatched": []}
+
+            def refresh() -> dict:
+                return Daemon.program_dashboard(daemon, repo_paths=[str(repo.resolve())])
+
+            with patch.dict(os.environ, {"RELAY_RUNNER_REGISTRY_V2": "1"}), patch.object(
+                orchestrator, "ingest_registered_projects", wraps=orchestrator.ingest_registered_projects,
+            ) as ingest:
+                refresh()
+                refresh()
+                self.assertEqual(ingest.call_count, 1)
+
+                self.write_ticket(repo, "RR-1", status="ready")
+                ready = refresh()
+                self.assertEqual(ingest.call_count, 2)
+                self.assertEqual([item["ticket_id"] for item in ready["ready"]["items"]], ["RR-1"])
+
+                orchestrator.GraphifyCoreStore(daemon.graphify_path).upsert_node(
+                    kind="note", stable_key="another-writer",
+                )
+                refresh()
+                self.assertEqual(ingest.call_count, 3)
+                refresh()
+                self.assertEqual(ingest.call_count, 3)
 
     def test_direct_runs_route_still_dispatches_ready_transition(self):
         calls: list[dict] = []
@@ -287,6 +337,29 @@ class ReadySweeperTests(unittest.TestCase):
             self.assertEqual(reasons["RR-4"], "canceled")
             self.assertEqual(reasons["RR-5"], "dependencies_not_done")
             self.assertEqual(reasons["RR-6"], "run_id_present")
+
+    def test_board_scan_parses_only_changed_ticket_files(self):
+        # RR-440: ready sweeps and the queue-drain monitor re-scan the same
+        # board several times every few seconds.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="backlog")
+            self.write_ticket(repo, "RR-2", status="ready", depends_on=["RR-1"])
+            first = tickets.scan_repo(repo)
+            first[1]["depends_on"].append("RR-9")
+            first[1]["_raw_fields"]["status"] = "done"
+
+            with patch.object(tickets, "parse", side_effect=AssertionError("parsed again")):
+                again = tickets.scan_repo(repo)
+            self.assertEqual([ticket["depends_on"] for ticket in again], [[], ["RR-1"]])
+            self.assertEqual(again[1]["_raw_fields"]["status"], "ready")
+
+            self.write_ticket(repo, "RR-1", status="done")
+            with patch.object(tickets, "parse", wraps=tickets.parse) as parse:
+                changed = tickets.scan_repo(repo)
+            self.assertEqual(parse.call_count, 1)
+            self.assertEqual([ticket["status"] for ticket in changed], ["done", "ready"])
 
     def test_sweeper_reads_source_checkout_once_and_only_for_a_dispatchable_ticket(self):
         # RR-440: `git status` costs seconds in large checkouts and sweeps run

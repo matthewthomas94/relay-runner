@@ -121,6 +121,31 @@ class ArtifactStoreTests(unittest.TestCase):
             ))
             self.assertGreater(read_blob.call_count, 0)
 
+    def test_snapshot_reuses_head_until_the_ref_storage_changes(self):
+        # RR-440: every ready sweep and monitor tick snapshots the board, and
+        # resolving the ref spawned Git each time.
+        first = self.initialize().commit_id
+        self.assertEqual(self.store.snapshot().commit_id, first)
+        with patch.object(self.store, "_head", side_effect=AssertionError("resolved again")):
+            self.assertEqual(self.store.snapshot().commit_id, first)
+
+        second = self.store.mutate(self.mutation(
+            "ticket-moves-ref",
+            TicketWrite(
+                ticket_id="RR-1",
+                artifact_id="artifact-0001",
+                markdown=self.ticket_bytes("RR-1", "Fixture"),
+            ),
+        )).commit_id
+        self.assertNotEqual(second, first)
+        self.assertEqual(self.store.snapshot().commit_id, second)
+        self.assertIn(".orchestrator/RR-1.md", self.store.snapshot().files)
+
+        # An outside writer packing or moving the ref is seen too.
+        self.git("pack-refs", "--all")
+        self.git("update-ref", ARTIFACT_REF, first)
+        self.assertEqual(self.store.snapshot().commit_id, first)
+
     def test_adoption_rejects_source_parent_symlink_and_foreign_identity(self):
         config = (
             'schema_version = 2\nproject_id = "project-001"\n'

@@ -2,6 +2,25 @@ import XCTest
 @testable import relay_runner
 
 final class ProgramBoardOverlayControllerTests: XCTestCase {
+    func testStatusPollRefreshesTheDashboardOnlyOnTheWorkTab() {
+        // RR-440: a session keeps the Workspace open on its Terminal tab, and
+        // each 10 s dashboard refresh made the daemon re-sweep every project.
+        XCTAssertTrue(ProgramBoardOverlayController.statusPollRefreshesDashboard(
+            selectedTab: .work,
+            isEditing: false
+        ))
+        XCTAssertFalse(ProgramBoardOverlayController.statusPollRefreshesDashboard(
+            selectedTab: .work,
+            isEditing: true
+        ))
+        for tab in WorkspaceTab.allCases where tab != .work {
+            XCTAssertFalse(ProgramBoardOverlayController.statusPollRefreshesDashboard(
+                selectedTab: tab,
+                isEditing: false
+            ), "\(tab)")
+        }
+    }
+
     func testSingleRepoColdRouteOpensResponsiveShellAndLoadsWorkInBackground() {
         let project = ProjectResolver.LinkedProject(repoPath: URL(fileURLWithPath: "/repo/client-dashboard"))
         let opening = ProgramBoardOverlayController.workspaceOpening(

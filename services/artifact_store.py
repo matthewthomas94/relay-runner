@@ -47,7 +47,7 @@ except ModuleNotFoundError:
     )
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 
 ARTIFACT_REF = "refs/heads/relay/artifacts"
@@ -278,7 +278,7 @@ class ArtifactStore:
         self.journal_path = self.project_state / "materialization-journal.json"
         self.history_verification_path = self.project_state / "history-verification.json"
         self.materialized_path = self.repo_path / ".orchestrator"
-        self._snapshot_cache: tuple[str, str, dict[str, bytes]] | None = None
+        self._snapshot_cache: tuple[str, str, dict[str, bytes], tuple[Any, ...] | None] | None = None
 
     def initialize(self, *, device_id: str, actor_type: str = "system") -> ArtifactWriteResult:
         """Create an orphan artifact ref or adopt a verified existing one."""
@@ -453,18 +453,29 @@ class ArtifactStore:
         """
         del provider  # Provider identity cannot affect artifact contents.
         self._require_enabled()
-        head = self._head()
+        # Every ready sweep and monitor tick snapshots the board (RR-440). Any
+        # ref update replaces the loose ref or packed-refs file, so reuse the
+        # cached head while both keep their identity. Reading the identity
+        # before resolving the ref makes a concurrent update visible next time.
+        ref_state = self._ref_storage_state()
+        cached = self._snapshot_cache
+        if ref_state is not None and cached is not None and cached[3] == ref_state:
+            head = cached[0]
+        else:
+            head = self._head()
         if not head:
             raise ArtifactValidationError("artifact store is not initialized")
         self._validate_artifact_head(head)
         # A commit's tree never changes, and one ready sweep or monitor tick
         # snapshots the same head several times (RR-440).
-        cached = self._snapshot_cache
         if cached is None or cached[0] != head:
             entries = self._tree_entries(head)
             blobs = self._cat_blobs(entry.oid for entry in entries.values())
             files = {entry.path: blobs[entry.oid] for entry in entries.values()}
-            cached = (head, self._tree_id(head), files)
+            cached = (head, self._tree_id(head), files, ref_state)
+            self._snapshot_cache = cached
+        elif cached[3] != ref_state:
+            cached = (*cached[:3], ref_state)
             self._snapshot_cache = cached
         return ArtifactSnapshot(
             project_id=self.project_id,
@@ -1321,6 +1332,27 @@ class ArtifactStore:
             allowed_statuses={0, 128},
         )
         return value.stdout.strip() if value.returncode == 0 else None
+
+    def _ref_storage_state(self) -> tuple[Any, ...] | None:
+        """Identity of the files Git stores the artifact ref in, or None.
+
+        Only a plain `.git` directory with the files ref backend is read
+        directly; anything else resolves through Git every time.
+        """
+        git_dir = self.repo_path / ".git"
+        if not git_dir.is_dir() or (git_dir / "reftable").exists():
+            return None
+        state = []
+        for path in (git_dir / self.artifact_ref, git_dir / "packed-refs"):
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                state.append(None)
+                continue
+            except OSError:
+                return None
+            state.append((stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+        return tuple(state)
 
     def _head(self) -> str | None:
         result = self._git(
