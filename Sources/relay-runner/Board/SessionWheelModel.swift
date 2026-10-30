@@ -121,6 +121,14 @@ enum SessionWheelSettingsControl: Int, CaseIterable {
     static let subdivisionCount = 6
     init(subdivision: Int) { self = Self(rawValue: subdivision) ?? .intensity }
     var span: Int { self == .intensity ? 4 : 1 }
+
+    var caption: String {
+        switch self {
+        case .intensity: return "Particle intensity"
+        case .keepAwake: return "Keep Mac awake"
+        case .autoPlay: return "Reply autoplay"
+        }
+    }
 }
 
 /// Maps the curved slider to `awareness.glow_intensity`. Angles use `SessionWheelGeometry.angle(at:)`:
@@ -279,6 +287,14 @@ final class SessionWheelModel {
     var isHoveringSettings: Bool { !isNested && hoveredSlot == SessionWheelShortcut.settings.rawValue }
     var hoveredSettingsControl: SessionWheelSettingsControl? {
         isHoveringSettings ? hoveredControl.map(SessionWheelSettingsControl.init(subdivision:)) : nil
+    }
+    /// Names the hovered submenu control under its parent's title.
+    var hoveredControlCaption: String? {
+        if let session = hoveredSession, let action = hoveredAction {
+            // The full stop-recording title is too long for one line.
+            return action == .recording && session.isRecording ? "Send recording" : action.title(for: session)
+        }
+        return hoveredNoteAction?.title(for: notePhase) ?? hoveredSettingsControl?.caption
     }
     var submenuSlot: Int? { hoveredSession != nil || isHoveringNoteTaker || isHoveringSettings ? hoveredSlot : nil }
     /// Hovering or dragging the enabled slider previews the particle field.

@@ -173,6 +173,7 @@ struct SessionWheelView: View {
         let empty = pickingProject ? project == nil && !more : session == nil && shortcut == nil && !more
         let title = moreProjects ? "More projects" : moreSessions ? "More sessions"
             : pickingProject ? (project?.name ?? "") : shortcut?.title ?? session?.name ?? "Start session"
+        let caption = model.hoveredSlot == index ? model.hoveredControlCaption : nil
         let sessionHint = session?.isFocused == true
             ? "Open this session's terminal in Workspace."
             : "Switch session. Move outward for session controls."
@@ -221,10 +222,22 @@ struct SessionWheelView: View {
                             }
                         }
                     }
-                    Text(title)
-                        .font(AppTypography.font(.action, size: 11))
-                        .lineLimit(2).multilineTextAlignment(.center)
-                        .frame(width: 90, height: 30, alignment: .top)
+                    VStack(spacing: 1) {
+                        Text(title)
+                            .font(AppTypography.font(.action, size: 11))
+                            .lineLimit(2).multilineTextAlignment(.center)
+                        RelaySwap(caption, style: .text) { caption in
+                            if let caption {
+                                Text(caption)
+                                    .font(AppTypography.font(.supporting))
+                                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    // A caption under a two-line title overflows downward instead of squeezing it.
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 90, height: 30, alignment: .top)
                 }
                 .position(geometry.position(slot: index, radius: 119))
                 .opacity((pickingProject || menu.showingAllSessions) && empty ? 0 : 1)

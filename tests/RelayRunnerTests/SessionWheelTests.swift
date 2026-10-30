@@ -826,6 +826,36 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertNil(model.submenuSlot)
     }
 
+    func testHoveredSubmenuControlIsNamedUnderItsParent() {
+        let model = SessionWheelModel()
+        let settings = SessionWheelShortcut.settings.rawValue
+        model.hover(at: geometry.position(slot: settings, radius: 119))
+        XCTAssertNil(model.hoveredControlCaption, "The parent alone shows only its title")
+        for (index, caption) in [(0, "Particle intensity"), (4, "Keep Mac awake"), (5, "Reply autoplay")] {
+            model.hover(at: geometry.position(slot: settings, radius: geometry.actionRadius,
+                                              offset: geometry.actionOffset(index, subdivisions: 6)))
+            XCTAssertEqual(model.hoveredControlCaption, caption)
+        }
+
+        let noteTaker = SessionWheelShortcut.noteTaker.rawValue
+        model.hover(at: geometry.position(slot: noteTaker, radius: 119))
+        model.hover(at: geometry.position(slot: noteTaker, radius: geometry.actionRadius,
+                                          offset: geometry.actionOffset(SessionWheelNoteAction.pause.rawValue)))
+        XCTAssertEqual(model.hoveredControlCaption, "Pause Notetaker")
+
+        var recording = session("a")
+        recording.isRecording = true
+        model.refresh(sessions: [recording])
+        model.hover(at: geometry.position(slot: 0, radius: 119))
+        model.hover(at: geometry.position(slot: 0, radius: geometry.actionRadius,
+                                          offset: geometry.actionOffset(.recording)))
+        XCTAssertEqual(model.hoveredControlCaption, "Send recording", "The long title is shortened")
+        model.hover(at: geometry.position(slot: 0, radius: geometry.actionRadius, offset: geometry.actionOffset(.stop)))
+        XCTAssertEqual(model.hoveredControlCaption, "Stop session")
+        model.hover(at: geometry.center)
+        XCTAssertNil(model.hoveredControlCaption)
+    }
+
     func testSettingsControlsHaveSeparateHitTargetsWithinTheSameArc() {
         let bounds = CGRect(origin: .zero, size: CGSize(width: 528, height: 528))
         let controls = SessionWheelSettingsControl.allCases
