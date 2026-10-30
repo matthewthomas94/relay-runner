@@ -378,7 +378,7 @@ final class SessionWheelTests: XCTestCase {
     }
 
     @MainActor
-    func testCenterAlwaysClosesTheWheelIncludingSubmenus() {
+    func testCenterClosesTheWheelOrStepsBackFromANestedWheel() {
         _ = NSApplication.shared
         let controller = makeController()
         defer { controller.dismiss() }
@@ -392,7 +392,10 @@ final class SessionWheelTests: XCTestCase {
         controller.selectSlot(0, fromPointer: false) // Open the project picker.
         XCTAssertTrue(controller.model.pickingProject)
         controller.selectCenter()
-        XCTAssertFalse(controller.isVisible, "The centre closes the wheel instead of stepping back")
+        XCTAssertTrue(controller.isVisible, "Inside a nested wheel the centre steps back")
+        XCTAssertFalse(controller.model.pickingProject)
+        controller.selectCenter()
+        XCTAssertFalse(controller.isVisible)
     }
 
     @MainActor

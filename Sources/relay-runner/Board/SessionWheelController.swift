@@ -151,9 +151,13 @@ final class SessionWheelController {
         haptics.hover(target, at: point)
     }
 
-    /// The centre is always the wheel's close button. Escape still steps back from a submenu.
+    /// The centre closes the wheel, or steps back from a nested wheel like Escape.
     func selectCenter() {
         guard isVisible else { return }
+        if model.isNested {
+            back()
+            return
+        }
         haptics.activate()
         dismiss()
     }
