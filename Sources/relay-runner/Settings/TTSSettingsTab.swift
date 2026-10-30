@@ -79,15 +79,10 @@ struct TTSSettingsTab: View {
                 SettingsDivider()
 
                 SettingsControlRow("Speech Speed") {
-                    HStack(spacing: 8) {
-                        Slider(value: $config.rate, in: 0.5...2.0, step: 0.1)
-                            .accessibilityLabel("Speech speed")
-                            .accessibilityValue(Self.speechSpeedAccessibilityValue(config.rate))
-                        Text("\(String(format: "%.1f", config.rate))x")
-                            .font(AppTypography.monospacedFont(size: 11))
-                            .foregroundStyle(SettingsSurfaceColor.secondaryText)
-                            .frame(width: 42, alignment: .trailing)
-                    }
+                    SettingsSlider(value: $config.rate, in: 0.5...2.0, step: 0.1,
+                                   label: "\(String(format: "%.1f", config.rate))x")
+                        .accessibilityLabel("Speech speed")
+                        .accessibilityValue(Self.speechSpeedAccessibilityValue(config.rate))
                 }
             }
 

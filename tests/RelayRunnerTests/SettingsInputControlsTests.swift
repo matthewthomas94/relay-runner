@@ -144,6 +144,16 @@ final class SettingsInputControlsTests: XCTestCase {
         XCTAssertEqual(value, 2)
     }
 
+    func testSliderSnapsPointerPositionsAndStepsInsideItsRange() {
+        let range = 0.5...2.0
+        XCTAssertEqual(SettingsSlider.value(atX: 196, width: 200, in: range, step: 0.1), 2.0)
+        XCTAssertEqual(SettingsSlider.value(atX: 2, width: 200, in: range, step: 0.1), 0.5)
+        XCTAssertEqual(SettingsSlider.value(atX: 150, width: 200, in: range, step: 0.1), 1.7, "Snaps to the nearest step")
+        XCTAssertEqual(SettingsSlider.snapped(1.3 + 0.1, in: range, step: 0.1), 1.4, "No floating-point drift")
+        XCTAssertEqual(SettingsSlider.snapped(2.05, in: range, step: 0.1), 2.0, "Stays inside the range")
+        XCTAssertEqual(SettingsSlider.snapped(0.1 + 0.05 * 3, in: 0.1...1.0, step: 0.05), 0.25)
+    }
+
     func testRenderSettingsControls() throws {
         guard let directory = ProcessInfo.processInfo.environment["RELAY_SETTINGS_RENDER_DIR"] else {
             throw XCTSkip("Set RELAY_SETTINGS_RENDER_DIR to export the native control fixture")
@@ -175,6 +185,22 @@ final class SettingsInputControlsTests: XCTestCase {
                 SettingsDivider()
                 SettingsControlRow("Unavailable") { Toggle("Unavailable", isOn: .constant(false)).disabled(true) }
             }
+            SettingsSection("Playback") {
+                SettingsControlRow("Playback Mode") {
+                    SettingsSegmentedPicker("Playback Mode", selection: .constant(false), options: [
+                        (label: "Auto-play", value: true),
+                        (label: "Queue", value: false),
+                    ])
+                }
+                SettingsDivider()
+                SettingsControlRow("Speech Speed") {
+                    SettingsSlider(value: .constant(1.3), in: 0.5...2.0, step: 0.1, label: "1.3x")
+                }
+                SettingsDivider()
+                SettingsControlRow("Intensity") {
+                    SettingsSlider(value: .constant(0.25), in: 0.1...1.0, step: 0.05, label: "25%").disabled(true)
+                }
+            }
             SettingsSection("Orchestrator Effort") {
                 HStack(alignment: .top) {
                     SettingsMenuPicker("Effort", selection: .constant(3), options: effortOptions)
@@ -186,7 +212,7 @@ final class SettingsInputControlsTests: XCTestCase {
         .frame(width: 760)
         .background(BoardDarkSurfaceStyle.panelFill)
         .environment(\.colorScheme, .dark)
-        let window = host(fixture, size: NSSize(width: 760, height: 720))
+        let window = host(fixture, size: NSSize(width: 760, height: 900))
         defer { window.close() }
         let view = try XCTUnwrap(window.contentView)
         let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))

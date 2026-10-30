@@ -255,13 +255,17 @@ struct CustomVoiceSettingsSection: View {
                     .foregroundStyle(SettingsSurfaceColor.secondaryText)
                     .monospacedDigit()
                 if duration > sampleLength {
-                    Slider(value: $sampleStart, in: 0...max(0.01, duration - sampleLength), step: 0.1)
+                    SettingsSlider(value: $sampleStart, in: 0...max(0.01, duration - sampleLength), step: 0.1,
+                                   label: String(format: "%.1fs", sampleStart))
                         .accessibilityLabel("Reference start time")
+                        .accessibilityValue(String(format: "%.1f seconds", sampleStart))
                         .onChange(of: sampleStart) { _, _ in discardStaged() }
                         .transition(.relayElement)
                 }
-                Slider(value: $sampleLength, in: 5...max(5.01, min(10, duration)), step: 0.1)
+                SettingsSlider(value: $sampleLength, in: 5...max(5.01, min(10, duration)), step: 0.1,
+                               label: String(format: "%.1fs", sampleLength))
                     .accessibilityLabel("Reference duration")
+                    .accessibilityValue(String(format: "%.1f seconds", sampleLength))
                     .onChange(of: sampleLength) { _, _ in sampleStart = min(sampleStart, max(0, duration - sampleLength)); discardStaged() }
                 if clipped {
                     Text("This recording may be clipped. A cleaner reference can improve the result.")

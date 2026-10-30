@@ -229,6 +229,8 @@ struct SettingsSegmentedPicker<Value: Hashable>: View {
     let title: String
     @Binding var selection: Value
     let options: [(label: String, value: Value)]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
 
     init(_ title: String, selection: Binding<Value>, options: [(label: String, value: Value)]) {
         self.title = title
@@ -237,6 +239,9 @@ struct SettingsSegmentedPicker<Value: Hashable>: View {
     }
 
     var body: some View {
+        let presentation = ProgramBoardInteractionPresentation.resolve(
+            surface: .control, isHovered: isHovered, reduceMotion: reduceMotion
+        )
         HStack(spacing: 0) {
             ForEach(options.indices, id: \.self) { index in
                 let option = options[index]
@@ -249,10 +254,16 @@ struct SettingsSegmentedPicker<Value: Hashable>: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: SharedActionButtonMetrics.controlHeight)
-        .background(BoardDarkSurfaceBackground(
-            cornerRadius: SharedActionButtonMetrics.cornerRadius,
-            fill: BoardDarkSurfaceStyle.cardFill
+        // One joined control in the slider's track colours.
+        .background(ProgramBoardInteractiveBackground(
+            shape: .custom(AnyShape(RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius,
+                                                     style: .continuous))),
+            presentation: presentation,
+            disabled: false,
+            usesCardStyle: true
         ))
+        .onHover { isHovered = $0 }
+        .animation(presentation.animation, value: presentation)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
     }
@@ -263,6 +274,7 @@ private struct SettingsSegmentButton: View {
     let isSelected: Bool
     let action: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var isHovered = false
     @FocusState private var isFocused: Bool
 
@@ -280,19 +292,25 @@ private struct SettingsSegmentButton: View {
             cornerRadius: SharedActionButtonMetrics.cornerRadius,
             style: .continuous
         )
+        let selectionInset: CGFloat = 2
 
         Button(action: action) {
             Text(title)
-                .font(AppTypography.font(.action))
+                .font(AppTypography.font(.button))
                 .foregroundStyle(
                     (isSelected || isHovered || isFocused ? ProgramBoardStyle.primaryText : ProgramBoardStyle.mutedText)
                         .opacity(presentation.foregroundOpacity)
                 )
                 .frame(maxWidth: .infinity, minHeight: SharedActionButtonMetrics.controlHeight)
                 .background {
-                    // Hover and focus brighten the text only.
+                    // Hover and focus brighten the text only; the selection sits inside the group's stroke.
                     if isSelected {
-                        shape.fill(BoardDarkSurfaceStyle.cardActiveFill)
+                        RoundedRectangle(
+                            cornerRadius: SharedActionButtonMetrics.cornerRadius - selectionInset,
+                            style: .continuous
+                        )
+                        .fill(SettingsSlider.fillColor(contrast: contrast))
+                        .padding(selectionInset)
                     }
                 }
                 .contentShape(shape)

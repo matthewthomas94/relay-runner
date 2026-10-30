@@ -359,14 +359,12 @@ final class ProgramBoardStatusTests: XCTestCase {
             contents.range(of: "private struct ProgramTicketImageSelector: View", range: executionStart.upperBound..<contents.endIndex)
         )
         let executionPicker = String(contents[executionStart.lowerBound..<executionEnd.lowerBound])
-        XCTAssertTrue(executionPicker.contains("SharedActionButtonMetrics.controlHeight"))
-        XCTAssertTrue(executionPicker.contains("HStack(spacing: 0)"))
-        XCTAssertTrue(executionPicker.contains("BoardDarkSurfaceBackground("))
-        XCTAssertTrue(executionPicker.contains("SettingsActionPresentation.resolve("))
-        XCTAssertTrue(executionPicker.contains("cornerRadius: SharedActionButtonMetrics.cornerRadius"))
+        // The mode toggle is the shared segmented picker, so it matches every other toggle.
+        XCTAssertTrue(executionPicker.contains("SettingsSegmentedPicker("))
+        XCTAssertTrue(executionPicker.contains(".frame(width: SettingsLayout.controlMaxWidth)"))
         let executionTitle = try XCTUnwrap(executionPicker.range(of: "Text(\"Execution mode\")"))
         let executionDescription = try XCTUnwrap(executionPicker.range(of: "Text(selection.explanation)"))
-        let executionButtons = try XCTUnwrap(executionPicker.range(of: "HStack(spacing: 0)"))
+        let executionButtons = try XCTUnwrap(executionPicker.range(of: "SettingsSegmentedPicker("))
         XCTAssertLessThan(executionTitle.lowerBound, executionDescription.lowerBound)
         XCTAssertLessThan(executionDescription.lowerBound, executionButtons.lowerBound)
         XCTAssertTrue(executionPicker.contains(

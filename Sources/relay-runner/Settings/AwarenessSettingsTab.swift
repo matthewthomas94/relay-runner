@@ -22,18 +22,12 @@ struct AwarenessSettingsTab: View {
 
             SettingsSection("Particle Field") {
                 SettingsControlRow("Intensity") {
-                    HStack(spacing: 8) {
-                        Slider(value: $config.glow_intensity, in: 0.1...1.0, step: 0.05)
-                            .disabled(!config.screen_glow)
-                            .accessibilityLabel("Particle field intensity")
-                            .accessibilityValue(Self.particleIntensityAccessibilityValue(config.glow_intensity))
-                        Text("\(Int(config.glow_intensity * 100))%")
-                            .font(AppTypography.monospacedFont(size: 11))
-                            .foregroundStyle(config.screen_glow ? SettingsSurfaceColor.secondaryText : SettingsSurfaceColor.disabledText)
-                            .monospacedDigit()
-                            .frame(width: 40, alignment: .trailing)
-                    }
-                    .animation(RelayMotion.change(reduceMotion: reduceMotion), value: config.screen_glow)
+                    SettingsSlider(value: $config.glow_intensity, in: 0.1...1.0, step: 0.05,
+                                   label: SessionWheelIntensity.percent(config.glow_intensity))
+                        .disabled(!config.screen_glow)
+                        .accessibilityLabel("Particle field intensity")
+                        .accessibilityValue(Self.particleIntensityAccessibilityValue(config.glow_intensity))
+                        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: config.screen_glow)
                 }
             }
         }

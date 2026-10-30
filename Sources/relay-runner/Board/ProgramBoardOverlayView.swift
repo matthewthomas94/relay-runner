@@ -4129,74 +4129,14 @@ private struct ProgramExecutionModePicker: View {
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .frame(height: ProgramTicketPanelStyle.executionModeDescriptionHeight, alignment: .topLeading)
-            HStack(spacing: 0) {
-                ForEach([Ticket.ExecutionMode.spike, .implementation], id: \.rawValue) { mode in
-                    ProgramExecutionModeButton(
-                        mode: mode,
-                        isSelected: selection == mode,
-                        action: { selection = mode }
-                    )
-                }
-            }
+            SettingsSegmentedPicker(
+                "Execution mode",
+                selection: $selection,
+                options: [Ticket.ExecutionMode.spike, .implementation].map { (label: $0.displayName, value: $0) }
+            )
             .frame(width: SettingsLayout.controlMaxWidth)
-            .frame(height: SharedActionButtonMetrics.controlHeight)
-            .background(BoardDarkSurfaceBackground(
-                cornerRadius: SharedActionButtonMetrics.cornerRadius,
-                fill: BoardDarkSurfaceStyle.cardFill
-            ))
+            .programButtonCursor()
         }
-    }
-}
-
-private struct ProgramExecutionModeButton: View {
-    let mode: Ticket.ExecutionMode
-    let isSelected: Bool
-    let action: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovered = false
-    @FocusState private var isFocused: Bool
-
-    private var presentation: SettingsActionPresentation {
-        SettingsActionPresentation.resolve(
-            isEnabled: true,
-            isHovered: isHovered,
-            isFocused: isFocused,
-            reduceMotion: reduceMotion
-        )
-    }
-
-    var body: some View {
-        let shape = RoundedRectangle(
-            cornerRadius: SharedActionButtonMetrics.cornerRadius,
-            style: .continuous
-        )
-
-        Button(action: action) {
-            Text(mode.displayName)
-                .font(AppTypography.font(.action))
-                .foregroundStyle(
-                    (isSelected || isHovered || isFocused ? ProgramBoardStyle.primaryText : ProgramBoardStyle.mutedText)
-                        .opacity(presentation.foregroundOpacity)
-                )
-                .frame(maxWidth: .infinity, minHeight: SharedActionButtonMetrics.controlHeight)
-                .background {
-                    // Hover and focus brighten the text only.
-                    if isSelected {
-                        shape.fill(BoardDarkSurfaceStyle.cardActiveFill)
-                    }
-                }
-                .contentShape(shape)
-        }
-        .buttonStyle(.plain)
-        .focusable(true)
-        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
-        .focused($isFocused)
-        .onHover { isHovered = $0 }
-        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isSelected)
-        .programButtonCursor()
-        .accessibilityLabel(mode.displayName)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
