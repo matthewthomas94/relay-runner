@@ -35,6 +35,20 @@ enum SessionWheelAction: Int, CaseIterable {
         }
     }
 
+    /// One or two short words that fit under the session's title.
+    func caption(for session: SessionWheelSession) -> String {
+        switch self {
+        case .message:
+            switch session.playback {
+            case .play: return "Play"
+            case .stop: return "Stop audio"
+            case .replay: return "Replay"
+            }
+        case .recording: return session.isRecording ? "Send" : "Record"
+        case .stop: return "End session"
+        }
+    }
+
     func symbol(for session: SessionWheelSession) -> String {
         switch self {
         case .message:
@@ -89,6 +103,15 @@ enum SessionWheelNoteAction: Int, CaseIterable {
         }
     }
 
+    /// One or two short words that fit under Notetaker.
+    func caption(for phase: MeetingNoteCoordinatorPhase) -> String {
+        switch self {
+        case .recording: return phase.ownsForeground ? "Save note" : "Start note"
+        case .pause: return phase == .paused ? "Resume" : "Pause"
+        case .cancel: return "Discard"
+        }
+    }
+
     func symbol(for phase: MeetingNoteCoordinatorPhase) -> String {
         switch self {
         case .recording: return phase.ownsForeground ? "checkmark" : "mic.fill"
@@ -122,11 +145,12 @@ enum SessionWheelSettingsControl: Int, CaseIterable {
     init(subdivision: Int) { self = Self(rawValue: subdivision) ?? .intensity }
     var span: Int { self == .intensity ? 4 : 1 }
 
+    /// One or two short words that fit under Settings.
     var caption: String {
         switch self {
-        case .intensity: return "Particle intensity"
-        case .keepAwake: return "Keep Mac awake"
-        case .autoPlay: return "Reply autoplay"
+        case .intensity: return "Particles"
+        case .keepAwake: return "Keep awake"
+        case .autoPlay: return "Autoplay"
         }
     }
 }
@@ -290,11 +314,8 @@ final class SessionWheelModel {
     }
     /// Names the hovered submenu control under its parent's title.
     var hoveredControlCaption: String? {
-        if let session = hoveredSession, let action = hoveredAction {
-            // The full stop-recording title is too long for one line.
-            return action == .recording && session.isRecording ? "Send recording" : action.title(for: session)
-        }
-        return hoveredNoteAction?.title(for: notePhase) ?? hoveredSettingsControl?.caption
+        if let session = hoveredSession, let action = hoveredAction { return action.caption(for: session) }
+        return hoveredNoteAction?.caption(for: notePhase) ?? hoveredSettingsControl?.caption
     }
     var submenuSlot: Int? { hoveredSession != nil || isHoveringNoteTaker || isHoveringSettings ? hoveredSlot : nil }
     /// Hovering or dragging the enabled slider previews the particle field.

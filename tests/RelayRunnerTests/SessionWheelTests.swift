@@ -831,7 +831,7 @@ final class SessionWheelTests: XCTestCase {
         let settings = SessionWheelShortcut.settings.rawValue
         model.hover(at: geometry.position(slot: settings, radius: 119))
         XCTAssertNil(model.hoveredControlCaption, "The parent alone shows only its title")
-        for (index, caption) in [(0, "Particle intensity"), (4, "Keep Mac awake"), (5, "Reply autoplay")] {
+        for (index, caption) in [(0, "Particles"), (4, "Keep awake"), (5, "Autoplay")] {
             model.hover(at: geometry.position(slot: settings, radius: geometry.actionRadius,
                                               offset: geometry.actionOffset(index, subdivisions: 6)))
             XCTAssertEqual(model.hoveredControlCaption, caption)
@@ -841,7 +841,7 @@ final class SessionWheelTests: XCTestCase {
         model.hover(at: geometry.position(slot: noteTaker, radius: 119))
         model.hover(at: geometry.position(slot: noteTaker, radius: geometry.actionRadius,
                                           offset: geometry.actionOffset(SessionWheelNoteAction.pause.rawValue)))
-        XCTAssertEqual(model.hoveredControlCaption, "Pause Notetaker")
+        XCTAssertEqual(model.hoveredControlCaption, "Pause")
 
         var recording = session("a")
         recording.isRecording = true
@@ -849,9 +849,9 @@ final class SessionWheelTests: XCTestCase {
         model.hover(at: geometry.position(slot: 0, radius: 119))
         model.hover(at: geometry.position(slot: 0, radius: geometry.actionRadius,
                                           offset: geometry.actionOffset(.recording)))
-        XCTAssertEqual(model.hoveredControlCaption, "Send recording", "The long title is shortened")
+        XCTAssertEqual(model.hoveredControlCaption, "Send")
         model.hover(at: geometry.position(slot: 0, radius: geometry.actionRadius, offset: geometry.actionOffset(.stop)))
-        XCTAssertEqual(model.hoveredControlCaption, "Stop session")
+        XCTAssertEqual(model.hoveredControlCaption, "End session")
         model.hover(at: geometry.center)
         XCTAssertNil(model.hoveredControlCaption)
     }

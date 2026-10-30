@@ -229,7 +229,7 @@ struct SessionWheelView: View {
                         RelaySwap(caption, style: .text) { caption in
                             if let caption {
                                 Text(caption)
-                                    .font(AppTypography.font(.supporting))
+                                    .font(AppTypography.font(.caption))
                                     .foregroundStyle(ProgramBoardStyle.mutedText)
                                     .lineLimit(1)
                             }
