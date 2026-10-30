@@ -199,7 +199,7 @@ def load_config(
             "working_directory": "",
             "bypass_permissions": True,
             "model": "sol",
-            "orchestrator_effort": "xhigh",
+            "orchestrator_effort": "medium",
             "codex_reasoning_effort": "default",
             "messenger_enabled": True,
             "messenger_model": "luna",
@@ -331,8 +331,8 @@ def _migrate_config(
 
     def default_orchestrator_effort(provider_name: str, model_name: str) -> str:
         valid_efforts = valid_orchestrator_efforts(provider_name, model_name)
-        if "xhigh" in valid_efforts:
-            return "xhigh"
+        if "medium" in valid_efforts:
+            return "medium"
         if "high" in valid_efforts:
             return "high"
         return min(valid_efforts)
@@ -345,9 +345,9 @@ def _migrate_config(
         if general_had_orchestrator_effort
         else codex_reasoning_effort
     )
-    orchestrator_effort = str(raw_orchestrator_effort or "xhigh").strip().lower()
+    orchestrator_effort = str(raw_orchestrator_effort or "medium").strip().lower()
     if orchestrator_effort == "default":
-        orchestrator_effort = "xhigh"
+        orchestrator_effort = "medium"
     if orchestrator_effort not in valid_orchestrator_efforts(provider, general["model"]):
         orchestrator_effort = default_orchestrator_effort(provider, general["model"])
     general["orchestrator_effort"] = orchestrator_effort

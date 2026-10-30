@@ -651,7 +651,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         )
 
         XCTAssertFalse(script.contains("--model 'sol'"))
-        XCTAssertTrue(script.contains("--effort 'xhigh'"))
+        XCTAssertTrue(script.contains("--effort 'medium'"))
     }
 
     func testLaunchScriptAppliesCodexReasoningEffortConfig() {

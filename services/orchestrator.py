@@ -1171,10 +1171,10 @@ def _normalized_general_effort(general: dict[str, Any], agent_kind: str, model: 
         general.get("orchestrator_effort") or general.get("codex_reasoning_effort") or ""
     ).strip().lower()
     if effort == "default":
-        effort = "xhigh"
+        effort = "medium"
     if effort in _general_effort_options(agent_kind, model):
         return effort
-    return "xhigh" if "xhigh" in _general_effort_options(agent_kind, model) else "low"
+    return "medium" if "medium" in _general_effort_options(agent_kind, model) else "low"
 
 
 def _inherited_worker_sizing(general: dict[str, Any], agent_kind: str) -> dict[str, str | None]:

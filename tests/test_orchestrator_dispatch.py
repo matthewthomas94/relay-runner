@@ -451,7 +451,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertEqual(ticket["_raw_fields"]["worker_model"], "codex:sol")
             self.assertEqual(ticket["_raw_fields"]["worker_effort"], "high")
 
-    def test_user_default_legacy_codex_defaults_migrate_to_sol_xhigh(self):
+    def test_user_default_legacy_codex_defaults_migrate_to_sol_medium(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -482,7 +482,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
 
             self.assertEqual(result["run"]["model_alias"], "sol")
             self.assertEqual(result["run"]["worker_model"], "codex:sol")
-            self.assertEqual(result["run"]["worker_effort"], "xhigh")
+            self.assertEqual(result["run"]["worker_effort"], "medium")
             with patch.dict(os.environ, {"RELAY_CODEX_MODEL_LIST_JSON": CODEX_MODEL_LIST_FIXTURE}):
                 command = Worker(
                     run_id=result["run"]["id"],
@@ -495,7 +495,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 )._command()
             self.assertIn("--model", command)
             self.assertIn("gpt-6.1-sol", command)
-            self.assertIn("model_reasoning_effort=xhigh", command)
+            self.assertIn("model_reasoning_effort=medium", command)
 
     def test_user_default_inherits_claude_model_and_effort(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -568,7 +568,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
 
             run = result["run"]
             self.assertEqual(run["model_alias"], "sol")
-            self.assertEqual(run["worker_effort"], "xhigh")
+            self.assertEqual(run["worker_effort"], "medium")
             with patch.dict(os.environ, {"RELAY_CODEX_MODEL_LIST_JSON": CODEX_MODEL_LIST_FIXTURE}):
                 command = Worker(
                     run_id=run["id"],
@@ -581,9 +581,9 @@ class OrchestratorDispatchTests(unittest.TestCase):
                 )._command()
             self.assertIn("--model", command)
             self.assertIn("gpt-6.1-sol", command)
-            self.assertIn("model_reasoning_effort=xhigh", command)
+            self.assertIn("model_reasoning_effort=medium", command)
 
-    def test_user_default_legacy_claude_defaults_migrate_to_opus_xhigh(self):
+    def test_user_default_legacy_claude_defaults_migrate_to_opus_medium(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -606,7 +606,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
 
             run = result["run"]
             self.assertEqual(run["model_alias"], "opus")
-            self.assertEqual(run["worker_effort"], "xhigh")
+            self.assertEqual(run["worker_effort"], "medium")
             self.assertEqual(run["worker_model"], "claude:opus")
             command = Worker(
                 run_id=run["id"],
@@ -620,7 +620,7 @@ class OrchestratorDispatchTests(unittest.TestCase):
             self.assertIn("--model", command)
             self.assertIn("opus", command)
             self.assertIn("--effort", command)
-            self.assertIn("xhigh", command)
+            self.assertIn("medium", command)
 
     def test_dispatch_records_valid_codex_sizing_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:

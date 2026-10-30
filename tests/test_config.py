@@ -59,8 +59,8 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config["tts"]["voice"], "am_puck")
         self.assertEqual(config["tts"]["rate"], 1.3)
-        self.assertEqual(config["general"]["codex_reasoning_effort"], "xhigh")
-        self.assertEqual(config["general"]["orchestrator_effort"], "xhigh")
+        self.assertEqual(config["general"]["codex_reasoning_effort"], "medium")
+        self.assertEqual(config["general"]["orchestrator_effort"], "medium")
         self.assertEqual(config["general"]["subagent_sizing_policy"], "orchestrator_decides")
         self.assertNotIn("subagent_model", config["general"])
         self.assertNotIn("subagent_effort", config["general"])
@@ -71,7 +71,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["orchestrator"]["worker_health_check_seconds"], 600)
         self.assertNotIn("worker_timeout_seconds", config["orchestrator"])
 
-    def test_load_config_defaults_claude_orchestrator_to_explicit_opus_and_xhigh(self):
+    def test_load_config_defaults_claude_orchestrator_to_explicit_opus_and_medium(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
             path.write_text('[general]\nprovider = "claude"\n', encoding="utf-8")
@@ -79,7 +79,7 @@ class ConfigTests(unittest.TestCase):
             config = load_config(str(path))
 
         self.assertEqual(config["general"]["model"], "opus")
-        self.assertEqual(config["general"]["orchestrator_effort"], "xhigh")
+        self.assertEqual(config["general"]["orchestrator_effort"], "medium")
         self.assertEqual(config["general"]["messenger_model"], "haiku")
         self.assertEqual(config["general"]["messenger_effort"], "default")
 
@@ -114,7 +114,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_load_config_migrates_legacy_orchestrator_values_without_resetting_explicit_values(self):
         cases = [
-            ("claude", "best", "default", "opus", "xhigh"),
+            ("claude", "best", "default", "opus", "medium"),
             ("codex", "sol", "high", "sol", "high"),
         ]
         for provider, model, effort, expected_model, expected_effort in cases:
@@ -249,8 +249,8 @@ class ConfigTests(unittest.TestCase):
 
             config = load_config(path)
 
-        self.assertEqual(config["general"]["orchestrator_effort"], "xhigh")
-        self.assertEqual(config["general"]["codex_reasoning_effort"], "xhigh")
+        self.assertEqual(config["general"]["orchestrator_effort"], "medium")
+        self.assertEqual(config["general"]["codex_reasoning_effort"], "medium")
 
     def test_load_config_applies_rr150_model_effort_matrix(self):
         cases = [

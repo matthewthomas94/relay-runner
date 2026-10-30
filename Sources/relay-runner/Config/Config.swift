@@ -175,7 +175,7 @@ struct GeneralConfig: Codable, Equatable {
     static let defaultClaudeModel = "opus"
     static let defaultModel = defaultCodexModelFamily
     static let defaultReasoningEffort = "default"
-    static let defaultOrchestratorEffort = "xhigh"
+    static let defaultOrchestratorEffort = "medium"
     static let defaultCodexReasoningEffort = defaultReasoningEffort
     static let defaultMessengerModel = "luna"
     static let defaultMessengerEffort = "low"

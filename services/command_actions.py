@@ -910,7 +910,7 @@ def _valid_general_efforts(provider: str, model: str) -> set[str]:
 def _normalized_general_effort(value: object, provider: str, model: str) -> str:
     effort = str(value or "").strip().lower()
     if effort == "default":
-        effort = "xhigh"
+        effort = "medium"
     if effort in _valid_general_efforts(provider, model):
         return effort
-    return "xhigh" if "xhigh" in _valid_general_efforts(provider, model) else "low"
+    return "medium" if "medium" in _valid_general_efforts(provider, model) else "low"

@@ -242,7 +242,7 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(config.command, "claude")
         XCTAssertEqual(config.model, "opus")
         XCTAssertEqual(config.codex_reasoning_effort, "default")
-        XCTAssertEqual(config.orchestrator_effort, "xhigh")
+        XCTAssertEqual(config.orchestrator_effort, "medium")
     }
 
     func testSelectingProviderDropsTheOtherProvidersAbsoluteCommand() {
@@ -265,7 +265,7 @@ final class GeneralConfigTests: XCTestCase {
 
     func testOrchestratorDefaultsAndLegacyValuesBecomeExplicit() {
         XCTAssertEqual(GeneralConfig().model, "sol")
-        XCTAssertEqual(GeneralConfig().orchestrator_effort, "xhigh")
+        XCTAssertEqual(GeneralConfig().orchestrator_effort, "medium")
 
         var config = GeneralConfig()
         config.provider = .claude
@@ -274,7 +274,7 @@ final class GeneralConfigTests: XCTestCase {
         config.normalize(providerWasExplicit: true, orchestratorEffortWasExplicit: true)
 
         XCTAssertEqual(config.model, "opus")
-        XCTAssertEqual(config.orchestrator_effort, "xhigh")
+        XCTAssertEqual(config.orchestrator_effort, "medium")
 
         config.model = "sonnet"
         config.orchestrator_effort = "high"
