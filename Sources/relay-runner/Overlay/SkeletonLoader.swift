@@ -29,27 +29,42 @@ struct SkeletonBone: Equatable {
     var style: Style
 }
 
+/// A dot in a filled bone.
+struct SkeletonDot: Equatable {
+    var centre: CGPoint
+    /// Where the dot sits along its column's snake, from 0 to 4. The
+    /// snake lights phase 0 first and phase 4 last.
+    var fluxPhase: Int
+}
+
 /// A loading state that sketches the screen it stands in for: bare shapes
-/// with a slow shimmer passing over them. It shows no text; its label is
-/// for VoiceOver only.
+/// that shimmer. It shows no text; its label is for VoiceOver only.
 ///
-/// The shimmer is a Core Animation gradient, so it runs on the render
-/// server without per-frame work on the main thread. Reduce Motion holds
-/// it still.
+/// Filled bones are drawn as a dot matrix, a grid of round dots; outlines
+/// stay solid lines. The dots shimmer like Flux Columns: each column of
+/// dots is a snake whose bright head moves along it, with alternate
+/// columns rising and falling. The end of each tail fades out to the
+/// background.
+///
+/// The shimmer is a Core Animation keyframe animation on each phase's
+/// layer, so it runs on the render server without per-frame work on the
+/// main thread. Reduce Motion holds it still.
 final class SkeletonLoaderView: NSView {
     static let boneBaseColor = NSColor(srgbRed: 22 / 255, green: 27 / 255, blue: 36 / 255, alpha: 1)
     static let boneHighlightColor = NSColor(srgbRed: 36 / 255, green: 43 / 255, blue: 55 / 255, alpha: 1)
     static let outlineWidth: CGFloat = 1.5
     static let boneOpacity: Float = 0.33
+    static let dotPitch: CGFloat = 4
+    static let dotDiameter: CGFloat = 2.4
     static let shimmerKey = "skeletonShimmer"
 
     let skeleton: SkeletonLoaderLayout
 
     private let panelsLayer = CAShapeLayer()
-    private let bonesGradient = CAGradientLayer()
-    private let bonesMask = CALayer()
-    private let fillMask = CAShapeLayer()
-    private let outlineMask = CAShapeLayer()
+    private let bonesLayer = CALayer()
+    /// One layer per snake phase, so each phase's dots change together.
+    private let dotLayers = (0..<FluxColumnsAnimation.steps).map { _ in CAShapeLayer() }
+    private let outlineLayer = CAShapeLayer()
 
     private(set) var bones: [SkeletonBone] = []
 
@@ -65,23 +80,16 @@ final class SkeletonLoaderView: NSView {
         panelsLayer.lineWidth = 1
         layer?.addSublayer(panelsLayer)
 
-        bonesGradient.colors = [
-            Self.boneBaseColor.cgColor,
-            Self.boneHighlightColor.cgColor,
-            Self.boneBaseColor.cgColor,
-        ]
-        bonesGradient.startPoint = CGPoint(x: 0, y: 0.4)
-        bonesGradient.endPoint = CGPoint(x: 1, y: 0.6)
-        bonesGradient.locations = ShimmerAnimation.restingLocations
-        fillMask.fillColor = NSColor.black.cgColor
-        outlineMask.fillColor = nil
-        outlineMask.strokeColor = NSColor.black.cgColor
-        outlineMask.lineWidth = Self.outlineWidth
-        bonesMask.addSublayer(fillMask)
-        bonesMask.addSublayer(outlineMask)
-        bonesGradient.mask = bonesMask
-        bonesGradient.opacity = Self.boneOpacity
-        layer?.addSublayer(bonesGradient)
+        for dots in dotLayers {
+            dots.fillColor = Self.boneBaseColor.cgColor
+            bonesLayer.addSublayer(dots)
+        }
+        outlineLayer.fillColor = nil
+        outlineLayer.strokeColor = Self.boneBaseColor.cgColor
+        outlineLayer.lineWidth = Self.outlineWidth
+        bonesLayer.addSublayer(outlineLayer)
+        bonesLayer.opacity = Self.boneOpacity
+        layer?.addSublayer(bonesLayer)
 
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
@@ -108,16 +116,20 @@ final class SkeletonLoaderView: NSView {
         }
         panelsLayer.frame = bounds
         panelsLayer.path = panels
-        bonesGradient.frame = bounds
-        bonesMask.frame = bounds
-        fillMask.frame = bounds
-        outlineMask.frame = bounds
-        let fills = CGMutablePath()
+        bonesLayer.frame = bounds
+        let dots = dotLayers.map { _ in CGMutablePath() }
         let outlines = CGMutablePath()
         for bone in bones {
             switch bone.style {
             case .fill:
-                fills.addRoundedRect(in: bone.rect, cornerWidth: bone.radius, cornerHeight: bone.radius)
+                for dot in Self.dots(in: bone.rect, cornerRadius: bone.radius) {
+                    dots[dot.fluxPhase].addEllipse(in: CGRect(
+                        x: dot.centre.x - Self.dotDiameter / 2,
+                        y: dot.centre.y - Self.dotDiameter / 2,
+                        width: Self.dotDiameter,
+                        height: Self.dotDiameter
+                    ))
+                }
             case .outline:
                 let inset = Self.outlineWidth / 2
                 outlines.addRoundedRect(
@@ -127,16 +139,51 @@ final class SkeletonLoaderView: NSView {
                 )
             }
         }
-        fillMask.path = fills
-        outlineMask.path = outlines
+        for (layer, path) in zip(dotLayers, dots) {
+            layer.frame = bounds
+            layer.path = path
+        }
+        outlineLayer.frame = bounds
+        outlineLayer.path = outlines
         CATransaction.commit()
 
-        ShimmerAnimation.run(on: bonesGradient, duration: 2.2, pause: 0.9)
+        FluxColumnsAnimation.run(on: dotLayers)
     }
 
     /// Changes what VoiceOver announces.
     func setLabel(_ label: String) {
         setAccessibilityLabel(label)
+    }
+
+    // MARK: Dots
+
+    /// A filled bone's dots: a grid centred in it, keeping only the dots
+    /// inside its rounded corners. As in Flux Columns, the first column's
+    /// snake rises, the next falls, and so on across the bone. The snakes'
+    /// rows count from the loader's top rather than the bone's, so bones
+    /// at different heights light at different moments.
+    static func dots(in rect: CGRect, cornerRadius: CGFloat) -> [SkeletonDot] {
+        let columns = max(1, Int(((rect.width - dotDiameter) / dotPitch).rounded(.down)) + 1)
+        let rows = max(1, Int(((rect.height - dotDiameter) / dotPitch).rounded(.down)) + 1)
+        let left = rect.midX - CGFloat(columns - 1) * dotPitch / 2
+        let top = rect.midY - CGFloat(rows - 1) * dotPitch / 2
+        let corner = min(cornerRadius, rect.width / 2, rect.height / 2)
+        let core = rect.insetBy(dx: corner, dy: corner)
+        var dots: [SkeletonDot] = []
+        for row in 0..<rows {
+            for column in 0..<columns {
+                let point = CGPoint(x: left + CGFloat(column) * dotPitch, y: top + CGFloat(row) * dotPitch)
+                let dx = max(core.minX - point.x, point.x - core.maxX, 0)
+                let dy = max(core.minY - point.y, point.y - core.maxY, 0)
+                if hypot(dx, dy) <= corner - dotDiameter / 4 || (dx == 0 && dy == 0) {
+                    let steps = FluxColumnsAnimation.steps
+                    let loaderRow = Int((point.y / dotPitch).rounded())
+                    let position = column % 2 == 0 ? -loaderRow : loaderRow
+                    dots.append(SkeletonDot(centre: point, fluxPhase: (position % steps + steps) % steps))
+                }
+            }
+        }
+        return dots
     }
 
     // MARK: Geometry
@@ -568,29 +615,64 @@ final class SkeletonLoaderView: NSView {
     }
 }
 
-/// The repeating shimmer: an eased pass of the gradient's bright stop from
-/// left to right, then a rest.
-enum ShimmerAnimation {
-    /// The band sits off the left edge between passes.
-    static let restingLocations: [NSNumber] = [-0.5, -0.25, 0]
-    static let finalLocations: [NSNumber] = [1, 1.25, 1.5]
+/// The repeating shimmer, after the Flux Columns dot-matrix loader: every
+/// step, each column's bright head moves one dot along its snake and
+/// leaves a fading tail. Each dot fades smoothly from one brightness to
+/// the next.
+enum FluxColumnsAnimation {
+    static let steps = 5
+    static let stepDuration: TimeInterval = 0.3
+    /// The brightnesses a dot shows from the head of the snake back along
+    /// its tail, as fractions of the way from the bone colour to the
+    /// highlight. They follow Flux Columns' opacities. After the last, the
+    /// dot fades out to the background for the fifth step.
+    static let levels: [CGFloat] = [1, 0.65, 0.26, 0.15]
 
-    static func run(on layer: CAGradientLayer, duration: TimeInterval, pause: TimeInterval) {
-        guard !RelayLayerMotion.reduceMotion else {
-            layer.removeAnimation(forKey: SkeletonLoaderView.shimmerKey)
-            return
+    static var palette: [CGColor] {
+        let base = SkeletonLoaderView.boneBaseColor
+        let highlight = SkeletonLoaderView.boneHighlightColor
+        // Blend in sRGB: NSColor.blended works in Generic RGB and shifts
+        // the colours.
+        func mix(_ from: CGFloat, _ to: CGFloat, _ level: CGFloat) -> CGFloat {
+            from * (1 - level) + to * level
         }
-        guard layer.animation(forKey: SkeletonLoaderView.shimmerKey) == nil else { return }
-        let sweep = CABasicAnimation(keyPath: "locations")
-        sweep.fromValue = restingLocations
-        sweep.toValue = finalLocations
-        sweep.duration = duration
-        sweep.timingFunction = CAMediaTimingFunction(controlPoints: 0.45, 0, 0.25, 1)
-        let group = CAAnimationGroup()
-        group.animations = [sweep]
-        group.duration = duration + pause
-        group.repeatCount = .infinity
-        layer.add(group, forKey: SkeletonLoaderView.shimmerKey)
+        let visible = levels.map { level in
+            NSColor(
+                srgbRed: mix(base.redComponent, highlight.redComponent, level),
+                green: mix(base.greenComponent, highlight.greenComponent, level),
+                blue: mix(base.blueComponent, highlight.blueComponent, level),
+                alpha: 1
+            ).cgColor
+        }
+        // Clear, but keeping the bone's colour, so the fade changes only
+        // the alpha.
+        return visible + [base.withAlphaComponent(0).cgColor]
+    }
+
+    /// The colours the dots in `phase` show over one cycle, one per step.
+    /// The head reaches phase 0 on the first step and phase 4 on the last.
+    static func colors(forPhase phase: Int) -> [CGColor] {
+        let palette = Self.palette
+        return (0..<steps).map { step in palette[((step - phase) % steps + steps) % steps] }
+    }
+
+    static func run(on layers: [CAShapeLayer]) {
+        for (phase, layer) in layers.enumerated() {
+            guard !RelayLayerMotion.reduceMotion else {
+                layer.removeAnimation(forKey: SkeletonLoaderView.shimmerKey)
+                continue
+            }
+            guard layer.animation(forKey: SkeletonLoaderView.shimmerKey) == nil else { continue }
+            let colors = colors(forPhase: phase)
+            let flux = CAKeyframeAnimation(keyPath: "fillColor")
+            // Back to the first colour at the end, so the loop is seamless.
+            flux.values = colors + [colors[0]]
+            flux.keyTimes = (0...steps).map { NSNumber(value: Double($0) / Double(steps)) }
+            flux.calculationMode = .linear
+            flux.duration = stepDuration * Double(steps)
+            flux.repeatCount = .infinity
+            layer.add(flux, forKey: SkeletonLoaderView.shimmerKey)
+        }
     }
 }
 
