@@ -294,59 +294,6 @@ final class SettingsAgentCardTests: XCTestCase {
         XCTAssertFalse(host.isAnimationRunning)
     }
 
-    func testCardLightIsDarkOnlyWhileIdleWithoutASession() {
-        XCTAssertTrue(SettingsAgentCard.lightIsDark(theme: .idle, hasActiveSession: false))
-        XCTAssertFalse(SettingsAgentCard.lightIsDark(theme: .idle, hasActiveSession: true))
-        for theme in [ParticleFieldRenderer.Theme.stt, .tts] {
-            XCTAssertFalse(SettingsAgentCard.lightIsDark(theme: theme, hasActiveSession: false))
-        }
-    }
-
-    func testDarkLightTurnsTheCardGlowBlackAndEasesBackToWhite() throws {
-        let host = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 683))
-        host.wantsLayer = true
-        let renderer = ParticleFieldRenderer(coverage: .agentOrb, style: .panel, scalesWithWidth: true)
-        renderer.attach(to: host)
-        renderer.layoutInBounds(host.bounds, backingScale: 1)
-        defer { renderer.transition(to: nil) }
-        // A hidden card turns dark at once, so it never flashes white on showing.
-        renderer.setDarkLight(true, now: 10)
-        renderer.transition(to: .idle, now: 10)
-        renderer.renderFrame(at: 10)
-        var glow = try pixelSamples(XCTUnwrap(renderer.renderedGlowImage))
-        XCTAssertGreaterThan(glow.count, 100)
-        XCTAssertTrue(glow.allSatisfy { $0.r == 0 && $0.g == 0 && $0.b == 0 })
-
-        renderer.setDarkLight(false, now: 11)
-        renderer.renderFrame(at: 11.15)
-        glow = try pixelSamples(XCTUnwrap(renderer.renderedGlowImage))
-        let easing = try XCTUnwrap(glow.map { max($0.r, $0.g, $0.b) }.max())
-        XCTAssertGreaterThan(easing, 20)
-        XCTAssertLessThan(easing, 230)
-        renderer.renderFrame(at: 11.4)
-        glow = try pixelSamples(XCTUnwrap(renderer.renderedGlowImage))
-        XCTAssertTrue(glow.contains { min($0.r, $0.g, $0.b) > 245 })
-    }
-
-    @MainActor
-    func testCardScalesItsTilesWithItsOwnWidth() {
-        for width in [CGFloat(280), 427, 480] {
-            let host = SettingsAgentParticleHostView()
-            let window = NSWindow(
-                contentRect: NSRect(x: -5000, y: -5000, width: width, height: 640),
-                styleMask: .borderless, backing: .buffered, defer: false
-            )
-            window.isReleasedWhenClosed = false
-            window.contentView = host
-            window.orderFront(nil)
-            host.update(theme: .idle, reduceMotion: false)
-            host.layoutSubtreeIfNeeded()
-            XCTAssertEqual(host.tilePitch, width / 15, accuracy: 0.001, "card \(width)pt wide")
-            host.stop()
-            window.close()
-        }
-    }
-
     @MainActor
     func testHostedOrbRisesInOnlyWhenItBecomesVisible() throws {
         let host = SettingsAgentParticleHostView()

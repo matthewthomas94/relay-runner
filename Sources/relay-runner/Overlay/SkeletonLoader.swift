@@ -30,13 +30,12 @@ struct SkeletonBone: Equatable {
 }
 
 /// A loading state that sketches the screen it stands in for: bare shapes
-/// with a slow shimmer passing over them, on panels lit by panel particles.
-/// One light sweeps across the panels, over the shapes, and never shows
-/// between them. It shows no text; its label is for VoiceOver only.
+/// with a slow shimmer passing over them. It shows no text; its label is
+/// for VoiceOver only.
 ///
 /// The shimmer is a Core Animation gradient, so it runs on the render
 /// server without per-frame work on the main thread. Reduce Motion holds
-/// it and the panel particles still.
+/// it still.
 final class SkeletonLoaderView: NSView {
     static let boneBaseColor = NSColor(srgbRed: 22 / 255, green: 27 / 255, blue: 36 / 255, alpha: 1)
     static let boneHighlightColor = NSColor(srgbRed: 36 / 255, green: 43 / 255, blue: 55 / 255, alpha: 1)
@@ -47,9 +46,6 @@ final class SkeletonLoaderView: NSView {
     let skeleton: SkeletonLoaderLayout
 
     private let panelsLayer = CAShapeLayer()
-    private let particlesLayer = CALayer()
-    let panelParticles = ParticleFieldRenderer(coverage: .fullBounds, style: .panel)
-    private var windowObservation: NSObjectProtocol?
     private let bonesGradient = CAGradientLayer()
     private let bonesMask = CALayer()
     private let fillMask = CAShapeLayer()
@@ -87,11 +83,6 @@ final class SkeletonLoaderView: NSView {
         bonesGradient.opacity = Self.boneOpacity
         layer?.addSublayer(bonesGradient)
 
-        // The light passes over the bones.
-        layer?.addSublayer(particlesLayer)
-        panelParticles.attach(to: particlesLayer)
-        panelParticles.setIntensity(1)
-
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
         setAccessibilityLabel(label)
@@ -111,21 +102,12 @@ final class SkeletonLoaderView: NSView {
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let panelRects = Self.panels(for: skeleton, in: bounds)
         let panels = CGMutablePath()
-        for panel in panelRects {
+        for panel in Self.panels(for: skeleton, in: bounds) {
             panels.addRoundedRect(in: panel.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 16, cornerHeight: 16)
         }
         panelsLayer.frame = bounds
         panelsLayer.path = panels
-        particlesLayer.frame = bounds
-        // Field points run up from the bottom.
-        let lit = Self.particleAreas(for: skeleton, in: bounds)
-        panelParticles.setPanels(lit.areas.map {
-            CGRect(x: $0.minX, y: bounds.height - $0.maxY, width: $0.width, height: $0.height)
-        }, cornerRadius: lit.cornerRadius)
-        panelParticles.layoutInBounds(bounds, backingScale: window?.backingScaleFactor)
-        refreshPanelParticles()
         bonesGradient.frame = bounds
         bonesMask.frame = bounds
         fillMask.frame = bounds
@@ -157,35 +139,6 @@ final class SkeletonLoaderView: NSView {
         setAccessibilityLabel(label)
     }
 
-    deinit {
-        if let windowObservation { NotificationCenter.default.removeObserver(windowObservation) }
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if let windowObservation { NotificationCenter.default.removeObserver(windowObservation) }
-        windowObservation = nil
-        if let window {
-            windowObservation = NotificationCenter.default.addObserver(
-                forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
-            ) { [weak self] _ in self?.refreshPanelParticles() }
-        }
-        needsLayout = true
-        refreshPanelParticles()
-    }
-
-    override func viewDidHide() { super.viewDidHide(); refreshPanelParticles() }
-    override func viewDidUnhide() { super.viewDidUnhide(); refreshPanelParticles() }
-
-    /// The light animates only while the loader is on screen.
-    private func refreshPanelParticles() {
-        let visible = window?.isVisible == true
-            && window?.isMiniaturized == false
-            && !isHiddenOrHasHiddenAncestor
-            && !Self.particleAreas(for: skeleton, in: bounds).areas.isEmpty
-        panelParticles.transition(to: visible ? .idle : nil, reduceMotion: RelayLayerMotion.reduceMotion)
-    }
-
     // MARK: Geometry
 
     /// The surfaces behind the bones: the board's columns, the Notes
@@ -209,19 +162,6 @@ final class SkeletonLoaderView: NSView {
             ]
         case .history:
             return []
-        }
-    }
-
-    /// Where panel particles show, inside each panel's 1 pt border. The
-    /// terminal and History loaders sit on a panel their host draws, so
-    /// the light fills the loader itself and the host's outline clips it.
-    static func particleAreas(for layout: SkeletonLoaderLayout, in bounds: CGRect)
-        -> (areas: [CGRect], cornerRadius: CGFloat) {
-        switch layout {
-        case .terminal, .history:
-            return (bounds.width > 2 && bounds.height > 2 ? [bounds.insetBy(dx: 1, dy: 1)] : [], 0)
-        case .board, .notes, .settings:
-            return (panels(for: layout, in: bounds).map { $0.insetBy(dx: 1, dy: 1) }, 15)
         }
     }
 

@@ -54,7 +54,6 @@ enum SettingsAgentCardLayout {
 struct SettingsAgentCard: View {
     let presentation: SettingsAgentPresentation
     var theme: ParticleFieldRenderer.Theme = .idle
-    var hasActiveSession = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -62,7 +61,6 @@ struct SettingsAgentCard: View {
             BoardDarkSurfaceStyle.panelFill
             SettingsAgentParticleView(
                 theme: theme,
-                darkLight: Self.lightIsDark(theme: theme, hasActiveSession: hasActiveSession),
                 reduceMotion: reduceMotion
             )
             .allowsHitTesting(false)
@@ -97,17 +95,10 @@ struct SettingsAgentCard: View {
         .accessibilityLabel("Orchestrator, \(presentation.name)")
         .accessibilityValue(presentation.subtitle)
     }
-
-    /// The card's light is black while idle with no session running; it
-    /// keeps its colours while listening or playing a message.
-    static func lightIsDark(theme: ParticleFieldRenderer.Theme, hasActiveSession: Bool) -> Bool {
-        theme == .idle && !hasActiveSession
-    }
 }
 
 private struct SettingsAgentParticleView: NSViewRepresentable {
     let theme: ParticleFieldRenderer.Theme
-    let darkLight: Bool
     let reduceMotion: Bool
 
     func makeNSView(context: Context) -> SettingsAgentParticleHostView {
@@ -115,7 +106,7 @@ private struct SettingsAgentParticleView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: SettingsAgentParticleHostView, context: Context) {
-        nsView.update(theme: theme, darkLight: darkLight, reduceMotion: reduceMotion)
+        nsView.update(theme: theme, reduceMotion: reduceMotion)
     }
 
     static func dismantleNSView(_ nsView: SettingsAgentParticleHostView, coordinator: ()) {
@@ -124,17 +115,13 @@ private struct SettingsAgentParticleView: NSViewRepresentable {
 }
 
 final class SettingsAgentParticleHostView: NSView {
-    private let renderer: ParticleFieldRenderer
+    private let renderer = ParticleFieldRenderer(coverage: .agentOrb)
     private var windowObservation: NSObjectProtocol?
     private var theme: ParticleFieldRenderer.Theme = .idle
     private var reduceMotion = false
     private(set) var showsField = false
-    var tilePitch: CGFloat { renderer.tilePitch }
 
     init() {
-        // The card keeps the look it was tuned at: its tiles and light scale
-        // with its own width, unlike the fixed scale of the loader panels.
-        renderer = ParticleFieldRenderer(coverage: .agentOrb, style: .panel, scalesWithWidth: true)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = true
@@ -173,10 +160,9 @@ final class SettingsAgentParticleHostView: NSView {
     override func viewDidUnhide() { super.viewDidUnhide(); refreshVisibility() }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func update(theme: ParticleFieldRenderer.Theme, darkLight: Bool = false, reduceMotion: Bool) {
+    func update(theme: ParticleFieldRenderer.Theme, reduceMotion: Bool) {
         self.theme = theme
         self.reduceMotion = reduceMotion
-        renderer.setDarkLight(darkLight)
         needsLayout = true
         refreshVisibility()
     }

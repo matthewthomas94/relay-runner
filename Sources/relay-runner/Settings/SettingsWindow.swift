@@ -199,8 +199,7 @@ private struct SettingsContent: View {
                                 hasWorkingProgress: appState.stateMachine.currentWorkingProgress(now: context.date) != nil
                             )
                         ),
-                        theme: appState.stateMachine.state.particleTheme ?? .idle,
-                        hasActiveSession: appState.hasActiveSession
+                        theme: appState.stateMachine.state.particleTheme ?? .idle
                     )
                 }
                 .frame(width: style == .window ? 280 : SettingsAgentCardLayout.width(availableWidth: geometry.size.width))
