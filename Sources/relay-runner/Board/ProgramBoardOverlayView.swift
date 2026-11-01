@@ -286,15 +286,16 @@ struct ProgramBoardOverlayView: View {
                 Spacer()
                 let ownsNote = model.noteCaptureSnapshot.phase.ownsForeground
                 let note = ProgramNoteToolbarPresentation.resolve(phase: model.noteCaptureSnapshot.phase)
-                ProgramSessionPrimaryButton(
-                    presentation: ProgramSessionToolbarPresentation(
-                        title: note.title,
-                        systemName: note.systemName,
-                        help: note.help
-                    ),
+                // A secondary action, like the project cards' Start session buttons.
+                SettingsActionButton(
+                    title: note.title,
+                    systemImage: nil,
+                    prominence: .secondary,
                     isEnabled: ownsNote || ProgramNoteControlPolicy.canStart(
                         selectedProjectPath: model.selectedSessionProjectPath
                     ),
+                    accessibilityLabel: note.title,
+                    helpText: note.help,
                     action: ownsNote ? onStopNoteTaker : onStartNoteTaker
                 )
             }
@@ -4478,25 +4479,22 @@ enum ProgramNoteControlPolicy {
 
 struct ProgramNoteToolbarPresentation: Equatable {
     let title: String
-    let systemName: String
     let help: String
 
     static func resolve(phase: MeetingNoteCoordinatorPhase) -> ProgramNoteToolbarPresentation {
         if phase == .cancelling {
             return ProgramNoteToolbarPresentation(
-                title: "Retry cancellation", systemName: "xmark.circle",
+                title: "Retry cancellation",
                 help: "Discard the note and recording without transcription"
             )
         }
         return phase.ownsForeground
             ? ProgramNoteToolbarPresentation(
                 title: "Stop",
-                systemName: "stop.fill",
                 help: "Double-tap Option to pause or resume; Stop saves the note"
             )
             : ProgramNoteToolbarPresentation(
                 title: "Start Notetaker",
-                systemName: "square.and.pencil",
                 help: "Record a note in your library"
             )
     }

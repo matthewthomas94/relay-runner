@@ -478,7 +478,6 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             ProgramNoteToolbarPresentation.resolve(phase: .idle),
             ProgramNoteToolbarPresentation(
                 title: "Start Notetaker",
-                systemName: "square.and.pencil",
                 help: "Record a note in your library"
             )
         )
@@ -486,7 +485,6 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             ProgramNoteToolbarPresentation.resolve(phase: .recording),
             ProgramNoteToolbarPresentation(
                 title: "Stop",
-                systemName: "stop.fill",
                 help: "Double-tap Option to pause or resume; Stop saves the note"
             )
         )
