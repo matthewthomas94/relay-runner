@@ -156,7 +156,7 @@ final class SkeletonLoaderTests: XCTestCase {
         XCTAssertNotEqual(sweep.timingFunction, CAMediaTimingFunction(name: .linear))
     }
 
-    func testOneLightRoamsAcrossThePanelsAndNeverShowsBetweenThem() throws {
+    func testOneLightSweepsOverThePanelsAndNeverShowsBetweenThem() throws {
         try XCTSkipIf(RelayLayerMotion.reduceMotion, "Reduce Motion holds the light still")
         let view = SkeletonLoaderView(layout: .board(columnTop: boardTop), label: "Loading the board")
         let window = NSWindow(
@@ -173,6 +173,12 @@ final class SkeletonLoaderTests: XCTestCase {
         view.needsLayout = true
         view.layoutSubtreeIfNeeded()
         XCTAssertTrue(view.panelParticles.isAnimationRunning)
+        let sublayers = try XCTUnwrap(view.layer?.sublayers)
+        XCTAssertGreaterThan(
+            try XCTUnwrap(sublayers.lastIndex { type(of: $0) == CALayer.self }),
+            try XCTUnwrap(sublayers.firstIndex { $0 is CAGradientLayer }),
+            "The light passes over the bones"
+        )
 
         let panels = SkeletonLoaderView.panels(for: .board(columnTop: boardTop), in: view.bounds)
         let start = CACurrentMediaTime()
@@ -181,20 +187,25 @@ final class SkeletonLoaderTests: XCTestCase {
         for step in 0..<40 {
             let time = Double(step) * 6
             view.panelParticles.renderFrame(at: start + time)
+            // Tiles appear only where the light is; elsewhere the bones show.
             let tiles = try alphaMap(XCTUnwrap(view.panelParticles.renderedParticleImage), in: view.bounds)
-            // Clear of the rounded corners, which the panel clips away.
-            let lit = panels.map { tiles.count(in: $0.insetBy(dx: 16, dy: 16)) { $0 < 128 } }
+            let glow = try alphaMap(XCTUnwrap(view.panelParticles.renderedGlowImage), in: view.bounds, step: 1)
+            let lit = panels.map { tiles.count(in: $0) { $0 > 128 } }
             visited.formUnion(lit.indices.filter { lit[$0] > 200 })
-            if let centre = tiles.centre(in: panels.map { $0.insetBy(dx: 16, dy: 16) }, where: { $0 < 128 }) {
+            if let centre = tiles.centre(in: panels, where: { $0 > 128 }) {
                 reach.append((centre.y - panels[0].minY) / panels[0].height)
             }
+            XCTAssertLessThan(lit.reduce(0, +), tiles.count(in: view.bounds) { _ in true } / 2,
+                              "Most of the page stays clear of tiles at \(time) s")
             for (left, right) in zip(panels, panels.dropFirst()) {
                 let gap = CGRect(x: left.maxX + 1, y: left.minY, width: right.minX - left.maxX - 2, height: left.height)
-                XCTAssertEqual(tiles.count(in: gap) { $0 > 0 }, 0, "Nothing draws between panels")
+                XCTAssertEqual(tiles.count(in: gap) { $0 > 0 }, 0, "No tiles between panels")
+                XCTAssertEqual(glow.count(in: gap) { $0 > 0 }, 0, "No glow between panels")
             }
-            let below = CGRect(x: 0, y: panels[0].maxY + 1, width: view.bounds.width,
-                               height: view.bounds.maxY - panels[0].maxY - 1)
-            XCTAssertEqual(tiles.count(in: below) { $0 > 0 }, 0, "Nothing draws on the backdrop")
+            let below = CGRect(x: 0, y: panels[0].maxY + 4, width: view.bounds.width,
+                               height: view.bounds.maxY - panels[0].maxY - 4)
+            XCTAssertEqual(tiles.count(in: below) { $0 > 0 }, 0, "No tiles on the backdrop")
+            XCTAssertEqual(glow.count(in: below) { $0 > 0 }, 0, "No glow on the backdrop")
         }
         XCTAssertEqual(visited.count, panels.count, "The light reaches every panel")
         XCTAssertLessThan(reach.min() ?? 1, 0.35, "The light roams up the panels")
@@ -205,22 +216,27 @@ final class SkeletonLoaderTests: XCTestCase {
         view.layoutSubtreeIfNeeded()
         XCTAssertFalse(view.panelParticles.isAnimationRunning, "A hidden loader stops its light")
 
-        let history = SkeletonLoaderView(layout: .history, label: "Loading history")
-        let historyWindow = NSWindow(
-            contentRect: NSRect(x: -5000, y: -5000, width: 900, height: 667),
-            styleMask: .borderless, backing: .buffered, defer: false
-        )
-        historyWindow.isReleasedWhenClosed = false
-        historyWindow.contentView = history
-        defer { historyWindow.close() }
-        historyWindow.orderFront(nil)
-        history.needsLayout = true
-        history.layoutSubtreeIfNeeded()
-        XCTAssertFalse(history.panelParticles.isAnimationRunning, "Loaders without panels show no particles")
+        // The terminal and History loaders sit on their host's panel and light all of it.
+        for layout in [SkeletonLoaderLayout.terminal, .history] {
+            let hosted = SkeletonLoaderView(layout: layout, label: "Loading")
+            let hostWindow = NSWindow(
+                contentRect: NSRect(x: -5000, y: -5000, width: 900, height: 667),
+                styleMask: .borderless, backing: .buffered, defer: false
+            )
+            hostWindow.isReleasedWhenClosed = false
+            hostWindow.contentView = hosted
+            defer { hostWindow.close() }
+            hostWindow.orderFront(nil)
+            hosted.needsLayout = true
+            hosted.layoutSubtreeIfNeeded()
+            XCTAssertTrue(hosted.panelParticles.isAnimationRunning, "The \(layout) loader shows panel particles")
+            XCTAssertEqual(SkeletonLoaderView.particleAreas(for: layout, in: hosted.bounds).areas,
+                           [hosted.bounds.insetBy(dx: 1, dy: 1)])
+        }
     }
 
     func testPanelParticlesKeepOneScaleOnEveryTab() {
-        let layouts: [SkeletonLoaderLayout] = [.board(columnTop: boardTop), .notes, .settings]
+        let layouts: [SkeletonLoaderLayout] = [.board(columnTop: boardTop), .terminal, .notes, .settings, .history]
         for layout in layouts {
             let view = SkeletonLoaderView(layout: layout, label: "Loading")
             view.frame = CGRect(x: 0, y: 0, width: 1_400, height: 760)
@@ -237,9 +253,10 @@ final class SkeletonLoaderTests: XCTestCase {
         let width: Int
         let height: Int
         let scale: CGFloat
+        let step: Int
 
         /// The number of pixels in `rect` that pass `test`, sampling every
-        /// other pixel each way.
+        /// `step`th pixel each way.
         func count(in rect: CGRect, where test: (UInt8) -> Bool) -> Int {
             pixels(in: rect, where: test).count
         }
@@ -259,8 +276,8 @@ final class SkeletonLoaderTests: XCTestCase {
             let maxY = min(height, Int((rect.maxY * scale).rounded(.down)))
             guard minX < maxX, minY < maxY else { return [] }
             var found: [CGPoint] = []
-            for y in stride(from: minY, to: maxY, by: 2) {
-                for x in stride(from: minX, to: maxX, by: 2) where test(alpha[y * width + x]) {
+            for y in stride(from: minY, to: maxY, by: step) {
+                for x in stride(from: minX, to: maxX, by: step) where test(alpha[y * width + x]) {
                     found.append(CGPoint(x: x, y: y))
                 }
             }
@@ -268,7 +285,7 @@ final class SkeletonLoaderTests: XCTestCase {
         }
     }
 
-    private func alphaMap(_ image: CGImage, in bounds: CGRect) throws -> AlphaMap {
+    private func alphaMap(_ image: CGImage, in bounds: CGRect, step: Int = 2) throws -> AlphaMap {
         let width = image.width
         let height = image.height
         var alpha = [UInt8](repeating: 0, count: width * height)
@@ -277,7 +294,7 @@ final class SkeletonLoaderTests: XCTestCase {
             space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue
         ))
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return AlphaMap(alpha: alpha, width: width, height: height, scale: CGFloat(width) / bounds.width)
+        return AlphaMap(alpha: alpha, width: width, height: height, scale: CGFloat(width) / bounds.width, step: step)
     }
 
     func testLabelChangesReachVoiceOver() {

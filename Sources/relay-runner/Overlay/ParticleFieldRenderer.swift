@@ -108,8 +108,17 @@ final class ParticleFieldRenderer {
     /// with the time it reaches each, in field points and seconds.
     private var route: [(point: CGPoint, time: Double)] = []
     private var routeRandom = RouteRandom(state: 0)
-    /// The light drifts along its route at about this many points a second.
-    static let panelLightSpeed: CGFloat = 55
+    /// The light sweeps along its route at about this many points a second.
+    static let panelLightSpeed: CGFloat = 107
+    /// On Workspace panels the light is this much larger than in the agent card.
+    private static let panelLightGrowth = 1.33
+    /// On Workspace panels the light's shape changes faster and further
+    /// than on the agent card.
+    private static let panelMorphPace = 1.0
+    private static let panelMorphDepth = 1.8
+    /// How far behind the leading lobe, in seconds along the route, each of
+    /// the light's lobes follows, so it trails its motion like a liquid.
+    private static let panelLobeLag: [Double] = [0, 0.36, 0.72]
 
     private var currentTheme: Theme?
     private var intensityMultiplier: Double = 0.6
@@ -124,6 +133,7 @@ final class ParticleFieldRenderer {
     private var bitmapColorSpace = CGColorSpaceCreateDeviceRGB()
     private weak var hostView: NSView?
     private var latestParticleImage: CGImage?
+    private var latestGlowImage: CGImage?
     private var fieldSize: CGSize = .zero
     private var screenSize: CGSize = .zero
     private var screenScale: CGFloat = 2.0
@@ -256,12 +266,11 @@ final class ParticleFieldRenderer {
         panels.isEmpty ? [CGRect(origin: .zero, size: size)] : panels
     }
 
-    /// Where the light is `elapsed` seconds along its route. It drifts on a
-    /// smooth curve through waypoints scattered across the panels, wherever
-    /// they are. Its speed eases between waypoints and never jumps.
-    private func routePoint(at elapsed: Double, margin: CGFloat) -> CGPoint {
+    /// Where the light is `elapsed` seconds along its route. It sweeps on a
+    /// smooth curve through waypoints scattered right across the panels,
+    /// edges included. Its speed eases between waypoints and never jumps.
+    private func routePoint(at elapsed: Double) -> CGPoint {
         let span = panels.dropFirst().reduce(panels[0]) { $0.union($1) }
-        let inside = span.insetBy(dx: min(margin, span.width / 2), dy: min(margin, span.height / 2))
         if route.isEmpty {
             route = [(CGPoint(x: span.midX, y: span.midY), 0)]
         }
@@ -270,14 +279,14 @@ final class ParticleFieldRenderer {
             var point = previous.point
             // Prefer a waypoint well away from the last, so the light keeps travelling.
             for _ in 0..<4 {
-                point = CGPoint(x: CGFloat.random(in: inside.minX...inside.maxX, using: &routeRandom),
-                                y: CGFloat.random(in: inside.minY...inside.maxY, using: &routeRandom))
+                point = CGPoint(x: CGFloat.random(in: span.minX...span.maxX, using: &routeRandom),
+                                y: CGFloat.random(in: span.minY...span.maxY, using: &routeRandom))
                 if hypot(point.x - previous.point.x, point.y - previous.point.y)
-                    > 0.3 * hypot(inside.width, inside.height) { break }
+                    > 0.4 * hypot(span.width, span.height) { break }
             }
             let distance = hypot(point.x - previous.point.x, point.y - previous.point.y)
             let speed = Self.panelLightSpeed * CGFloat.random(in: 0.75...1.25, using: &routeRandom)
-            route.append((point, previous.time + max(1.5, Double(distance / speed))))
+            route.append((point, previous.time + max(1, Double(distance / speed))))
         }
 
         var index = route.count - 2
@@ -610,16 +619,27 @@ final class ParticleFieldRenderer {
 
     /// The card orb's deforming liquid volume, in field points.
     private struct OrbField {
-        let lobes: [(x: Double, y: Double, rx: Double, ry: Double)]
+        var lobes: [(x: Double, y: Double, rx: Double, ry: Double)]
         let size: CGSize
         let scale: Double
         let centreX: Double
         let centreY: Double
+        /// A stretch of the whole volume along a unit direction, narrowing
+        /// it across that direction to keep its area. 1 leaves it as it is.
+        var lean: (x: Double, y: Double, stretch: Double) = (1, 0, 1)
 
         /// The summed lobe density, about 1.6 where the lobes overlap most.
         func density(atX x: CGFloat, y: CGFloat) -> Double {
-            let nx = Double(x - size.width / 2) / scale + centreX
-            let ny = Double(y - size.height / 2) / scale + centreY
+            var nx = Double(x - size.width / 2) / scale
+            var ny = Double(y - size.height / 2) / scale
+            if lean.stretch != 1 {
+                let along = (nx * lean.x + ny * lean.y) / lean.stretch
+                let across = (ny * lean.x - nx * lean.y) * lean.stretch.squareRoot()
+                nx = along * lean.x - across * lean.y
+                ny = along * lean.y + across * lean.x
+            }
+            nx += centreX
+            ny += centreY
             var density = 0.0
             for lobe in lobes {
                 let dx = (nx - lobe.x) / lobe.rx
@@ -639,31 +659,38 @@ final class ParticleFieldRenderer {
         }
     }
 
-    /// The card orb fits the agent card below its title. Panel particles
-    /// keep the size it has in the card at full width.
-    private func orbField(size: CGSize, elapsed: Double) -> OrbField {
-        // Overlapping, deforming lobes form one continuous liquid volume.
-        // Opposing stretches redistribute its shape without a breathing scale
-        // animation or moving the grid itself. Reduced Motion freezes this field.
-        let stretch = sin(elapsed * 0.72) * 0.10
-        let curl = sin(elapsed * 0.53) * 0.055
-        let lobes: [(x: Double, y: Double, rx: Double, ry: Double)] = [
-            (-0.27 + curl, -0.15 + sin(elapsed * 0.61) * 0.055,
+    /// Overlapping, deforming lobes that form one continuous liquid volume.
+    /// Opposing stretches redistribute its shape without a breathing scale
+    /// animation or moving the grid itself. `depth` scales how far it deforms.
+    private static func orbLobes(elapsed: Double, depth: Double) -> [(x: Double, y: Double, rx: Double, ry: Double)] {
+        let stretch = sin(elapsed * 0.72) * 0.10 * depth
+        let curl = sin(elapsed * 0.53) * 0.055 * depth
+        return [
+            (-0.27 + curl, -0.15 + sin(elapsed * 0.61) * 0.055 * depth,
              0.64 + stretch, 0.59 / (1 + stretch)),
-            (0.26 - curl, 0.28 + sin(elapsed * 0.47) * 0.055,
-             0.54 - stretch * 0.4, 0.57 + sin(elapsed * 0.58) * 0.045),
-            (0.20 + sin(elapsed * 0.43) * 0.065, -0.26 - curl * 0.5,
-             0.50 + sin(elapsed * 0.67) * 0.035, 0.47 + stretch * 0.4)
+            (0.26 - curl, 0.28 + sin(elapsed * 0.47) * 0.055 * depth,
+             0.54 - stretch * 0.4, 0.57 + sin(elapsed * 0.58) * 0.045 * depth),
+            (0.20 + sin(elapsed * 0.43) * 0.065 * depth, -0.26 - curl * 0.5,
+             0.50 + sin(elapsed * 0.67) * 0.035 * depth, 0.47 + stretch * 0.4)
         ]
-        // Keep the changing volume centred and clear of the title and card edges.
-        let left = lobes.map { $0.x - $0.rx * 1.3 }.min()!
-        let right = lobes.map { $0.x + $0.rx * 1.3 }.max()!
-        let bottom = lobes.map { $0.y - $0.ry * 1.3 }.min()!
-        let top = lobes.map { $0.y + $0.ry * 1.3 }.max()!
+    }
+
+    /// The card orb fits the agent card below its title, refitting its
+    /// changing volume each frame. Reduced Motion freezes it. Panel
+    /// particles keep one size and centre, so its deformation shows: a
+    /// third larger than at rest in the card at full width.
+    private func orbField(size: CGSize, elapsed: Double) -> OrbField {
+        let onPanels = !panels.isEmpty
+        let lobes = Self.orbLobes(elapsed: elapsed, depth: onPanels ? Self.panelMorphDepth : 1)
+        let frame = onPanels ? Self.orbLobes(elapsed: 0, depth: 1) : lobes
+        let left = frame.map { $0.x - $0.rx * 1.3 }.min()!
+        let right = frame.map { $0.x + $0.rx * 1.3 }.max()!
+        let bottom = frame.map { $0.y - $0.ry * 1.3 }.min()!
+        let top = frame.map { $0.y + $0.ry * 1.3 }.max()!
         let fitWidth = (scalesWithWidth ? size.width : Self.panelLightWidth) - 24
         let fitHeight = coverage == .agentOrb ? size.height - 240 : .greatestFiniteMagnitude
         let scale: Double = min(max(1, fitWidth) / (right - left),
-                                max(1, fitHeight) / (top - bottom))
+                                max(1, fitHeight) / (top - bottom)) * (onPanels ? Self.panelLightGrowth : 1)
         return OrbField(lobes: lobes, size: size, scale: scale,
                         centreX: (left + right) / 2, centreY: (bottom + top) / 2)
     }
@@ -739,8 +766,8 @@ final class ParticleFieldRenderer {
             return t * t * (3 - 2 * t)
         }
         let rim = easedOrbColor(theme: theme, monochrome: SIMD3(0.45, 0.50, 0.60), now: now)
-        let lightTime = elapsed * Self.tileLightPace
-        let field = orbField(size: size, elapsed: lightTime)
+        let lightTime = elapsed * (panels.isEmpty ? Self.tileLightPace : Self.panelMorphPace)
+        var field = orbField(size: size, elapsed: lightTime)
         let (grid, pitch) = tileGridRect(size: size)
         let columns = Int((grid.width / pitch).rounded())
         let rows = Int((grid.height / pitch).rounded())
@@ -758,10 +785,26 @@ final class ParticleFieldRenderer {
                 y: area.midY - topReserve / 2
                     + area.height * 0.15 * CGFloat(0.75 * sin(0.77 * phase + 2.3) + 0.25 * sin(1.41 * phase + 0.4)))
         }
-        // The light keeps clear of the closed band along each panel's border.
         let lightCentre = panels.isEmpty
             ? wander(in: areas[0])
-            : routePoint(at: elapsed, margin: 3 * pitch)
+            : routePoint(at: elapsed)
+        if !panels.isEmpty {
+            // The light leans into its motion: its lobes trail behind along
+            // the route, following its curves, and it stretches along its
+            // heading the faster it goes.
+            for (index, lag) in Self.panelLobeLag.enumerated() where lag > 0 {
+                let behind = routePoint(at: max(0, elapsed - lag))
+                field.lobes[index].x += Double(behind.x - lightCentre.x) / field.scale
+                field.lobes[index].y += Double(behind.y - lightCentre.y) / field.scale
+            }
+            let earlier = routePoint(at: max(0, elapsed - 0.05))
+            let speed = hypot(lightCentre.x - earlier.x, lightCentre.y - earlier.y) / 0.05
+            if speed > 1 {
+                field.lean = (Double((lightCentre.x - earlier.x) / 0.05 / speed),
+                              Double((lightCentre.y - earlier.y) / 0.05 / speed),
+                              1 + 0.35 * min(1, Double(speed / (Self.panelLightSpeed * 1.25))))
+            }
+        }
 
         // The field is smooth, so sample its density coarsely and interpolate.
         let coarse: CGFloat = 8
@@ -776,20 +819,30 @@ final class ParticleFieldRenderer {
             }
         }
         // The agent card keeps the tiles along its border closed and unlit
-        // for a tile and a half, then fades in over three. Narrower Workspace
-        // panels keep a slimmer band, so the light can still fill them.
-        let (closedBand, fadeBand): (CGFloat, CGFloat) = panels.isEmpty ? (1.5, 3) : (0.5, 1.5)
-        /// 1 well inside a panel, falling evenly to 0 at the closed band
-        /// along its border. 0 outside every panel.
+        // for a tile and a half, then fades them in over three. Workspace
+        // panels light right up to their rounded edges; only the soft glow
+        // beneath the tiles stops a sample short, so it never spills out.
+        let edgeRadius = panels.isEmpty ? 0 : panelCornerRadius
+        /// 1 well inside a panel, falling to 0 at its edge (the agent card's
+        /// closed band), and 0 outside every panel.
         func borderFade(atX x: CGFloat, y: CGFloat) -> Double {
             var toBorder = -CGFloat.infinity
             for area in areas {
-                toBorder = max(toBorder, min(x - area.minX, y - area.minY, area.maxX - x, area.maxY - y))
+                // Distance in from the panel's rounded outline.
+                let dx = max(area.minX + edgeRadius - x, x - (area.maxX - edgeRadius), 0)
+                let dy = max(area.minY + edgeRadius - y, y - (area.maxY - edgeRadius), 0)
+                let inside = dx > 0 && dy > 0
+                    ? edgeRadius - hypot(dx, dy)
+                    : min(x - area.minX, y - area.minY, area.maxX - x, area.maxY - y)
+                toBorder = max(toBorder, inside)
             }
-            return Double(max(0, min(1, (toBorder - closedBand * pitch) / (fadeBand * pitch))))
+            guard panels.isEmpty else {
+                return Double(max(0, min(1, (toBorder - Self.glowSampleSpacing) / Self.glowSampleSpacing)))
+            }
+            return Double(max(0, min(1, (toBorder - 1.5 * pitch) / (3 * pitch))))
         }
-        /// 0 outside the light, rising to 1 only where its lobes overlap most.
-        func heat(atX x: CGFloat, y: CGFloat) -> Double {
+        /// The lobes' summed density, interpolated between the coarse samples.
+        func density(atX x: CGFloat, y: CGFloat) -> Double {
             let fx = min(max(Double(x / coarse), 0), Double(coarseColumns - 1))
             let fy = min(max(Double(y / coarse), 0), Double(coarseRows - 1))
             let x0 = min(Int(fx), coarseColumns - 2)
@@ -800,7 +853,11 @@ final class ParticleFieldRenderer {
             let lower = densities[i] + (densities[i + 1] - densities[i]) * tx
             let upper = densities[i + coarseColumns]
                 + (densities[i + coarseColumns + 1] - densities[i + coarseColumns]) * tx
-            return max(0, min(1, (lower + (upper - lower) * ty - 0.035) / 1.55))
+            return lower + (upper - lower) * ty
+        }
+        /// 0 outside the light, rising to 1 only where its lobes overlap most.
+        func heat(atX x: CGFloat, y: CGFloat) -> Double {
+            max(0, min(1, (density(atX: x, y: y) - 0.035) / 1.55))
         }
         /// How far the tiles stand open: 1 at the light's core, falling evenly
         /// with distance from it to 0 where they have closed over it.
@@ -810,6 +867,14 @@ final class ParticleFieldRenderer {
             let density = heat * 1.55 + 0.035
             let fromCore = (-0.5 * log(min(density / 1.6, 1))).squareRoot()
             return max(0, min(1, 1 - (fromCore - 0.2) / 1.1))
+        }
+        /// On Workspace panels, how fully a tile is drawn. Tiles stay solid a
+        /// little past the glow's edge, so the light shows only in the seams,
+        /// then fade out over about two tiles to reveal what lies beneath.
+        func presence(atX x: CGFloat, y: CGFloat) -> Double {
+            guard !panels.isEmpty else { return 1 }
+            let fromCore = (-0.5 * log(min(max(density(atX: x, y: y), 1e-6) / 1.6, 1))).squareRoot()
+            return smooth((1 - (fromCore - 0.2) / 1.1 + 0.5) / 0.3)
         }
 
         // The light beneath the tiles, sampled at low resolution and scaled
@@ -839,8 +904,11 @@ final class ParticleFieldRenderer {
         }
 
         // Tiles at full resolution above the light, in the panels' own colour.
-        // They stay square until 40% open and are fully round from 85%.
+        // They stay square until 40% open and are fully round from 85%. On
+        // Workspace panels, tiles appear only around the light, so whatever
+        // lies beneath stays in view elsewhere and the light passes over it.
         let tiles = CGMutablePath()
+        var rimTiles: [(path: CGPath, alpha: CGFloat)] = []
         for column in 0..<columns {
             for row in 0..<rows {
                 let x0 = grid.minX + CGFloat(column) * pitch
@@ -849,11 +917,18 @@ final class ParticleFieldRenderer {
                 guard panels.isEmpty || panels.contains(where: { $0.intersects(cell) }) else { continue }
                 let open = CGFloat(tileOpen(heat(atX: x0 + pitch / 2, y: y0 + pitch / 2))
                     * borderFade(atX: x0 + pitch / 2, y: y0 + pitch / 2))
+                let presence = CGFloat(presence(atX: x0 + pitch / 2, y: y0 + pitch / 2))
+                guard presence > 0 else { continue }
                 let side = pitch * (1 - Self.tileCoreGap * open)
                 let corner = side / 2 * CGFloat(smooth((Double(open) - 0.4) / 0.45))
                 let inset = (pitch - side) / 2
-                tiles.addRoundedRect(in: CGRect(x: x0 + inset, y: y0 + inset, width: side, height: side),
-                                     cornerWidth: corner, cornerHeight: corner)
+                let tile = CGRect(x: x0 + inset, y: y0 + inset, width: side, height: side)
+                if presence < 1 {
+                    rimTiles.append((CGPath(roundedRect: tile, cornerWidth: corner, cornerHeight: corner,
+                                            transform: nil), presence))
+                } else {
+                    tiles.addRoundedRect(in: tile, cornerWidth: corner, cornerHeight: corner)
+                }
             }
         }
         ctx.clear(CGRect(x: 0, y: 0, width: ctx.width, height: ctx.height))
@@ -870,11 +945,17 @@ final class ParticleFieldRenderer {
         ctx.setFillColor(BoardDarkSurfaceStyle.panelFillNSColor.cgColor)
         ctx.addPath(tiles)
         ctx.fillPath()
+        for rim in rimTiles {
+            ctx.setAlpha(rim.alpha)
+            ctx.addPath(rim.path)
+            ctx.fillPath()
+        }
         ctx.restoreGState()
 
         let image = ctx.makeImage()
         latestParticleImage = image
-        particleLayer.contents = glowLight.makeImage()
+        latestGlowImage = glowLight.makeImage()
+        particleLayer.contents = latestGlowImage
         tileLayer.contents = image
     }
 
@@ -1044,6 +1125,10 @@ final class ParticleFieldRenderer {
 
     var renderedGradientFrame: CGRect {
         gradientLayer.frame
+    }
+
+    var renderedGlowImage: CGImage? {
+        latestGlowImage
     }
 
     var renderedParticleImage: CGImage? {
