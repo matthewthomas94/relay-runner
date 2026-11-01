@@ -456,6 +456,14 @@ struct ProgramBoardOverlayView: View {
             .allowsHitTesting(!dotMatrixPresentation.isVisible)
             .zIndex(2)
 
+            WorkspaceMenuBarClock()
+                .padding(.top, BoardSurfaceLayout.navigationTopPadding)
+                .padding(.trailing, 20)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .blur(radius: backgroundBlurRadius)
+                .allowsHitTesting(false)
+                .zIndex(2)
+
             // Tabs, and the Workspace states within the work tab, swap as pages.
             ZStack(alignment: .topLeading) {
                 if workspace.selectedTab == .terminal,

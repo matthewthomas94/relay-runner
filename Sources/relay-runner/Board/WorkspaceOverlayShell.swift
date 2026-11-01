@@ -116,6 +116,34 @@ enum WorkspaceNavigationStyle {
     static let activeTextOpacity: Double = 0.98
     static let selectedFillOpacity: Double = 0.08
     static let focusedFillOpacity: Double = 0.12
+    static let textColor = Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: activeTextOpacity)
+}
+
+/// The day, date and time at the strip's far end, where the menu bar's
+/// clock sits, so they stay in view while the Workspace covers it.
+struct WorkspaceMenuBarClock: View {
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            Text(Self.text(for: context.date))
+                .font(AppTypography.font(.menuTab))
+                .monospacedDigit()
+                .lineLimit(1)
+                .foregroundStyle(WorkspaceNavigationStyle.textColor)
+        }
+        .frame(height: BoardSurfaceLayout.navigationHeight)
+    }
+
+    /// Written as the menu bar writes it, in the user's locale and 12- or
+    /// 24-hour preference, without the locale's comma: "Sun 1 Nov  8:49 pm".
+    static func text(for date: Date, locale: Locale = .current, timeZone: TimeZone = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.timeZone = timeZone
+        formatter.setLocalizedDateFormatFromTemplate("EEEdMMM")
+        let day = formatter.string(from: date).replacingOccurrences(of: ",", with: "")
+        formatter.setLocalizedDateFormatFromTemplate("jmm")
+        return day + "  " + formatter.string(from: date)
+    }
 }
 
 struct WorkspaceMenuBarStrip: View {
@@ -274,12 +302,6 @@ struct WorkspaceNavigationButton: View {
     }
 
     private var foregroundColor: Color {
-        Color(
-            .sRGB,
-            red: 226 / 255,
-            green: 232 / 255,
-            blue: 240 / 255,
-            opacity: WorkspaceNavigationStyle.activeTextOpacity
-        )
+        WorkspaceNavigationStyle.textColor
     }
 }

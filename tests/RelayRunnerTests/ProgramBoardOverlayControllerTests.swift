@@ -300,6 +300,19 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(opening?.reloadsWork, false)
     }
 
+    func testMenuBarClockWritesTheDayDateAndTimeAsTheMenuBarDoes() throws {
+        let date = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-11-01T09:49:00Z"))
+        let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        XCTAssertEqual(
+            WorkspaceMenuBarClock.text(for: date, locale: Locale(identifier: "en_AU"), timeZone: utc),
+            "Sun 1 Nov  9:49\u{202F}am"
+        )
+        XCTAssertEqual(
+            WorkspaceMenuBarClock.text(for: date, locale: Locale(identifier: "en_GB"), timeZone: utc),
+            "Sun 1 Nov  09:49"
+        )
+    }
+
     func testNotesTabFollowsWorkspaceAndAcceptsSearchFocus() {
         XCTAssertEqual(WorkspaceTab.allCases, [.work, .notes, .terminal, .systemSettings])
         XCTAssertEqual(WorkspaceViewModel.availableTabs(showsWorkTab: true, showsTerminalTab: true, showsSettingsTab: true), [.work, .notes, .terminal, .systemSettings])
