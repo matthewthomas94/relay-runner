@@ -200,7 +200,7 @@ private struct SettingsContent: View {
                             )
                         ),
                         theme: appState.stateMachine.state.particleTheme ?? .idle,
-                        scalesParticlesWithWidth: style == .window
+                        hasActiveSession: appState.hasActiveSession
                     )
                 }
                 .frame(width: style == .window ? 280 : SettingsAgentCardLayout.width(availableWidth: geometry.size.width))

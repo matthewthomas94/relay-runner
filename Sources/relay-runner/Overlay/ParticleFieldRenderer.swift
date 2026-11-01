@@ -87,9 +87,9 @@ final class ParticleFieldRenderer {
     private var glowLight: CGContext?
     private static let glowSampleSpacing: CGFloat = 3
     private static let tilesAcross: CGFloat = 15
-    /// Panel particles keep one scale everywhere: the tiles and light of the
-    /// agent card at its full width. Only the narrow card in the standalone
-    /// Settings window scales them down with its width.
+    /// Workspace loader panels keep one scale everywhere: the tiles and light
+    /// of the agent card at its full width. The agent card itself scales them
+    /// with its own width.
     static let panelTilePitch: CGFloat = 32
     private static let panelLightWidth: CGFloat = 480
     private let scalesWithWidth: Bool
@@ -171,6 +171,11 @@ final class ParticleFieldRenderer {
     private var displayedOrbColor: SIMD3<Double>?
     private var previousOrbColor: SIMD3<Double>?
     private var orbColorStartedAt: CFTimeInterval = 0
+    /// The agent card's light turns black, easing like a theme change.
+    private var darkLight = false
+    private var darknessFrom: Double = 0
+    private var darknessStartedAt: CFTimeInterval = 0
+    private var displayedDarkness: Double = 0
     /// Screen fields crossfade from the theme they were showing.
     private var previousTheme: Theme?
     private var themeChangedAt: CFTimeInterval = 0
@@ -312,6 +317,16 @@ final class ParticleFieldRenderer {
         return CGPoint(
             x: start * from.point.x + end * to.point.x + outward * leave.dx + inward * arrive.dx,
             y: start * from.point.y + end * to.point.y + outward * leave.dy + inward * arrive.dy)
+    }
+
+    /// Turns the agent card's light black beneath its tiles, or back to its
+    /// theme's colour. A hidden field changes at once; a shown one eases.
+    func setDarkLight(_ dark: Bool, now: CFTimeInterval = CACurrentMediaTime()) {
+        guard dark != darkLight else { return }
+        darkLight = dark
+        darknessFrom = currentTheme == nil ? (dark ? 1 : 0) : displayedDarkness
+        darknessStartedAt = now
+        if reduceMotion, currentTheme != nil { renderFrame(at: now) }
     }
 
     func setIntensity(_ value: Double) {
@@ -766,6 +781,9 @@ final class ParticleFieldRenderer {
             return t * t * (3 - 2 * t)
         }
         let rim = easedOrbColor(theme: theme, monochrome: SIMD3(0.45, 0.50, 0.60), now: now)
+        let darkening = reduceMotion ? 1 : smooth((now - darknessStartedAt) / 0.3)
+        let darkness = darknessFrom + ((darkLight ? 1 : 0) - darknessFrom) * darkening
+        displayedDarkness = darkness
         let lightTime = elapsed * (panels.isEmpty ? Self.tileLightPace : Self.panelMorphPace)
         var field = orbField(size: size, elapsed: lightTime)
         let (grid, pitch) = tileGridRect(size: size)
@@ -894,7 +912,11 @@ final class ParticleFieldRenderer {
                     continue
                 }
                 let localHeat = heat(atX: x, y: y)
-                let rgb = rim + (SIMD3<Double>(repeating: 1) - rim) * smooth((localHeat - 0.3) / 0.7)
+                // On Workspace loader panels the light beneath the tiles is
+                // pure black, and on the agent card while it is dark.
+                let rgb = panels.isEmpty
+                    ? (rim + (SIMD3<Double>(repeating: 1) - rim) * smooth((localHeat - 0.3) / 0.7)) * (1 - darkness)
+                    : SIMD3<Double>(repeating: 0)
                 let alpha = smooth(tileOpen(localHeat) / 0.5) * smooth(fade)
                 pixel[0] = UInt8((rgb.x * alpha * 255).rounded())
                 pixel[1] = UInt8((rgb.y * alpha * 255).rounded())
