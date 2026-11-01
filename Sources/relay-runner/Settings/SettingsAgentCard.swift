@@ -54,6 +54,9 @@ enum SettingsAgentCardLayout {
 struct SettingsAgentCard: View {
     let presentation: SettingsAgentPresentation
     var theme: ParticleFieldRenderer.Theme = .idle
+    /// The narrow card in the standalone Settings window scales its panel
+    /// particles with its width; in the Workspace they keep the panel scale.
+    var scalesParticlesWithWidth = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -61,7 +64,8 @@ struct SettingsAgentCard: View {
             BoardDarkSurfaceStyle.panelFill
             SettingsAgentParticleView(
                 theme: theme,
-                reduceMotion: reduceMotion
+                reduceMotion: reduceMotion,
+                scalesWithWidth: scalesParticlesWithWidth
             )
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -100,9 +104,10 @@ struct SettingsAgentCard: View {
 private struct SettingsAgentParticleView: NSViewRepresentable {
     let theme: ParticleFieldRenderer.Theme
     let reduceMotion: Bool
+    let scalesWithWidth: Bool
 
     func makeNSView(context: Context) -> SettingsAgentParticleHostView {
-        SettingsAgentParticleHostView()
+        SettingsAgentParticleHostView(scalesWithWidth: scalesWithWidth)
     }
 
     func updateNSView(_ nsView: SettingsAgentParticleHostView, context: Context) {
@@ -115,13 +120,14 @@ private struct SettingsAgentParticleView: NSViewRepresentable {
 }
 
 final class SettingsAgentParticleHostView: NSView {
-    private let renderer = ParticleFieldRenderer(coverage: .agentOrb)
+    private let renderer: ParticleFieldRenderer
     private var windowObservation: NSObjectProtocol?
     private var theme: ParticleFieldRenderer.Theme = .idle
     private var reduceMotion = false
     private(set) var showsField = false
 
-    init() {
+    init(scalesWithWidth: Bool = false) {
+        renderer = ParticleFieldRenderer(coverage: .agentOrb, style: .panel, scalesWithWidth: scalesWithWidth)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = true

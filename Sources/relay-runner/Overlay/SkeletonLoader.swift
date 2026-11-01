@@ -30,12 +30,13 @@ struct SkeletonBone: Equatable {
 }
 
 /// A loading state that sketches the screen it stands in for: bare shapes
-/// with a slow shimmer passing over them. It shows no text; its label is
-/// for VoiceOver only.
+/// with a slow shimmer passing over them, on panels lit by panel particles.
+/// One light roams freely across the panels and never shows between them.
+/// It shows no text; its label is for VoiceOver only.
 ///
 /// The shimmer is a Core Animation gradient, so it runs on the render
 /// server without per-frame work on the main thread. Reduce Motion holds
-/// it still.
+/// it and the panel particles still.
 final class SkeletonLoaderView: NSView {
     static let boneBaseColor = NSColor(srgbRed: 22 / 255, green: 27 / 255, blue: 36 / 255, alpha: 1)
     static let boneHighlightColor = NSColor(srgbRed: 36 / 255, green: 43 / 255, blue: 55 / 255, alpha: 1)
@@ -46,6 +47,9 @@ final class SkeletonLoaderView: NSView {
     let skeleton: SkeletonLoaderLayout
 
     private let panelsLayer = CAShapeLayer()
+    private let particlesLayer = CALayer()
+    let panelParticles = ParticleFieldRenderer(coverage: .fullBounds, style: .panel)
+    private var windowObservation: NSObjectProtocol?
     private let bonesGradient = CAGradientLayer()
     private let bonesMask = CALayer()
     private let fillMask = CAShapeLayer()
@@ -64,6 +68,9 @@ final class SkeletonLoaderView: NSView {
         panelsLayer.strokeColor = BoardDarkSurfaceStyle.borderNSColor.cgColor
         panelsLayer.lineWidth = 1
         layer?.addSublayer(panelsLayer)
+        layer?.addSublayer(particlesLayer)
+        panelParticles.attach(to: particlesLayer)
+        panelParticles.setIntensity(1)
 
         bonesGradient.colors = [
             Self.boneBaseColor.cgColor,
@@ -102,12 +109,21 @@ final class SkeletonLoaderView: NSView {
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        let panelRects = Self.panels(for: skeleton, in: bounds)
         let panels = CGMutablePath()
-        for panel in Self.panels(for: skeleton, in: bounds) {
+        for panel in panelRects {
             panels.addRoundedRect(in: panel.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 16, cornerHeight: 16)
         }
         panelsLayer.frame = bounds
         panelsLayer.path = panels
+        particlesLayer.frame = bounds
+        // Inside each panel's border. Field points run up from the bottom.
+        panelParticles.setPanels(panelRects.map {
+            CGRect(x: $0.minX, y: bounds.height - $0.maxY, width: $0.width, height: $0.height)
+                .insetBy(dx: 1, dy: 1)
+        }, cornerRadius: 15)
+        panelParticles.layoutInBounds(bounds, backingScale: window?.backingScaleFactor)
+        refreshPanelParticles()
         bonesGradient.frame = bounds
         bonesMask.frame = bounds
         fillMask.frame = bounds
@@ -137,6 +153,35 @@ final class SkeletonLoaderView: NSView {
     /// Changes what VoiceOver announces.
     func setLabel(_ label: String) {
         setAccessibilityLabel(label)
+    }
+
+    deinit {
+        if let windowObservation { NotificationCenter.default.removeObserver(windowObservation) }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let windowObservation { NotificationCenter.default.removeObserver(windowObservation) }
+        windowObservation = nil
+        if let window {
+            windowObservation = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+            ) { [weak self] _ in self?.refreshPanelParticles() }
+        }
+        needsLayout = true
+        refreshPanelParticles()
+    }
+
+    override func viewDidHide() { super.viewDidHide(); refreshPanelParticles() }
+    override func viewDidUnhide() { super.viewDidUnhide(); refreshPanelParticles() }
+
+    /// The light animates only while the loader is on screen with panels.
+    private func refreshPanelParticles() {
+        let visible = window?.isVisible == true
+            && window?.isMiniaturized == false
+            && !isHiddenOrHasHiddenAncestor
+            && !Self.panels(for: skeleton, in: bounds).isEmpty
+        panelParticles.transition(to: visible ? .idle : nil, reduceMotion: RelayLayerMotion.reduceMotion)
     }
 
     // MARK: Geometry

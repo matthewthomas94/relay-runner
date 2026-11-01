@@ -156,6 +156,130 @@ final class SkeletonLoaderTests: XCTestCase {
         XCTAssertNotEqual(sweep.timingFunction, CAMediaTimingFunction(name: .linear))
     }
 
+    func testOneLightRoamsAcrossThePanelsAndNeverShowsBetweenThem() throws {
+        try XCTSkipIf(RelayLayerMotion.reduceMotion, "Reduce Motion holds the light still")
+        let view = SkeletonLoaderView(layout: .board(columnTop: boardTop), label: "Loading the board")
+        let window = NSWindow(
+            contentRect: NSRect(x: -5000, y: -5000, width: 1_400, height: 760),
+            styleMask: .borderless, backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        defer { window.close() }
+        view.layoutSubtreeIfNeeded()
+        XCTAssertFalse(view.panelParticles.isAnimationRunning, "Nothing animates before the window shows")
+
+        window.orderFront(nil)
+        view.needsLayout = true
+        view.layoutSubtreeIfNeeded()
+        XCTAssertTrue(view.panelParticles.isAnimationRunning)
+
+        let panels = SkeletonLoaderView.panels(for: .board(columnTop: boardTop), in: view.bounds)
+        let start = CACurrentMediaTime()
+        var visited = Set<Int>()
+        var reach: [CGFloat] = []
+        for step in 0..<40 {
+            let time = Double(step) * 6
+            view.panelParticles.renderFrame(at: start + time)
+            let tiles = try alphaMap(XCTUnwrap(view.panelParticles.renderedParticleImage), in: view.bounds)
+            // Clear of the rounded corners, which the panel clips away.
+            let lit = panels.map { tiles.count(in: $0.insetBy(dx: 16, dy: 16)) { $0 < 128 } }
+            visited.formUnion(lit.indices.filter { lit[$0] > 200 })
+            if let centre = tiles.centre(in: panels.map { $0.insetBy(dx: 16, dy: 16) }, where: { $0 < 128 }) {
+                reach.append((centre.y - panels[0].minY) / panels[0].height)
+            }
+            for (left, right) in zip(panels, panels.dropFirst()) {
+                let gap = CGRect(x: left.maxX + 1, y: left.minY, width: right.minX - left.maxX - 2, height: left.height)
+                XCTAssertEqual(tiles.count(in: gap) { $0 > 0 }, 0, "Nothing draws between panels")
+            }
+            let below = CGRect(x: 0, y: panels[0].maxY + 1, width: view.bounds.width,
+                               height: view.bounds.maxY - panels[0].maxY - 1)
+            XCTAssertEqual(tiles.count(in: below) { $0 > 0 }, 0, "Nothing draws on the backdrop")
+        }
+        XCTAssertEqual(visited.count, panels.count, "The light reaches every panel")
+        XCTAssertLessThan(reach.min() ?? 1, 0.35, "The light roams up the panels")
+        XCTAssertGreaterThan(reach.max() ?? 0, 0.65, "The light roams down the panels")
+
+        window.orderOut(nil)
+        view.needsLayout = true
+        view.layoutSubtreeIfNeeded()
+        XCTAssertFalse(view.panelParticles.isAnimationRunning, "A hidden loader stops its light")
+
+        let history = SkeletonLoaderView(layout: .history, label: "Loading history")
+        let historyWindow = NSWindow(
+            contentRect: NSRect(x: -5000, y: -5000, width: 900, height: 667),
+            styleMask: .borderless, backing: .buffered, defer: false
+        )
+        historyWindow.isReleasedWhenClosed = false
+        historyWindow.contentView = history
+        defer { historyWindow.close() }
+        historyWindow.orderFront(nil)
+        history.needsLayout = true
+        history.layoutSubtreeIfNeeded()
+        XCTAssertFalse(history.panelParticles.isAnimationRunning, "Loaders without panels show no particles")
+    }
+
+    func testPanelParticlesKeepOneScaleOnEveryTab() {
+        let layouts: [SkeletonLoaderLayout] = [.board(columnTop: boardTop), .notes, .settings]
+        for layout in layouts {
+            let view = SkeletonLoaderView(layout: layout, label: "Loading")
+            view.frame = CGRect(x: 0, y: 0, width: 1_400, height: 760)
+            view.layoutSubtreeIfNeeded()
+            XCTAssertEqual(view.panelParticles.tilePitch, ParticleFieldRenderer.panelTilePitch,
+                           "\(layout) uses the agent card's full-width tiles")
+        }
+    }
+
+    /// The alpha of an image laid over `bounds`, read in the view's
+    /// top-down points.
+    private struct AlphaMap {
+        let alpha: [UInt8]
+        let width: Int
+        let height: Int
+        let scale: CGFloat
+
+        /// The number of pixels in `rect` that pass `test`, sampling every
+        /// other pixel each way.
+        func count(in rect: CGRect, where test: (UInt8) -> Bool) -> Int {
+            pixels(in: rect, where: test).count
+        }
+
+        /// The middle of the pixels in `rects` that pass `test`, in points.
+        func centre(in rects: [CGRect], where test: (UInt8) -> Bool) -> CGPoint? {
+            let found = rects.flatMap { pixels(in: $0, where: test) }
+            guard !found.isEmpty else { return nil }
+            let sum = found.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
+            return CGPoint(x: sum.x / CGFloat(found.count) / scale, y: sum.y / CGFloat(found.count) / scale)
+        }
+
+        private func pixels(in rect: CGRect, where test: (UInt8) -> Bool) -> [CGPoint] {
+            let minX = max(0, Int((rect.minX * scale).rounded(.up)))
+            let maxX = min(width, Int((rect.maxX * scale).rounded(.down)))
+            let minY = max(0, Int((rect.minY * scale).rounded(.up)))
+            let maxY = min(height, Int((rect.maxY * scale).rounded(.down)))
+            guard minX < maxX, minY < maxY else { return [] }
+            var found: [CGPoint] = []
+            for y in stride(from: minY, to: maxY, by: 2) {
+                for x in stride(from: minX, to: maxX, by: 2) where test(alpha[y * width + x]) {
+                    found.append(CGPoint(x: x, y: y))
+                }
+            }
+            return found
+        }
+    }
+
+    private func alphaMap(_ image: CGImage, in bounds: CGRect) throws -> AlphaMap {
+        let width = image.width
+        let height = image.height
+        var alpha = [UInt8](repeating: 0, count: width * height)
+        let context = try XCTUnwrap(CGContext(
+            data: &alpha, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue
+        ))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return AlphaMap(alpha: alpha, width: width, height: height, scale: CGFloat(width) / bounds.width)
+    }
+
     func testLabelChangesReachVoiceOver() {
         let view = SkeletonLoaderView(layout: .terminal, label: "Updating Codex")
         view.setLabel("Starting Codex")
