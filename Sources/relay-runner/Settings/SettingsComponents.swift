@@ -493,7 +493,7 @@ struct SettingsActionButton: View {
                 if prominence != .icon {
                     RelaySwap(title, style: .text, alignment: .leading) { title in
                         Text(title)
-                            .font(AppTypography.font(.button))
+                            .font(AppTypography.font(prominence == .primary ? .primaryButton : .button))
                     }
                 }
             }

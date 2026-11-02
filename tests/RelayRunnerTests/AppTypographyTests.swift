@@ -76,6 +76,11 @@ final class AppTypographyTests: XCTestCase {
             .init(postScriptName: "BaiJamjuree-SemiBold", size: 13, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
+            AppTypography.resolved(.primaryButton, availablePostScriptNames: available),
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: 11, fallbackWeight: .semibold),
+            "Primary buttons label in semibold"
+        )
+        XCTAssertEqual(
             AppTypography.resolved(.metadata, availablePostScriptNames: available),
             .init(postScriptName: "BaiJamjuree-Regular", size: 10, fallbackWeight: .regular)
         )

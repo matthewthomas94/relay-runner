@@ -197,7 +197,7 @@ enum AppTypography {
         case .button:
             return Definition(face: .baiJamjureeRegular, size: 11, fallbackWeight: .regular)
         case .primaryButton:
-            return Definition(face: .baiJamjureeRegular, size: 11, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeSemibold, size: 11, fallbackWeight: .semibold)
         case .status:
             return Definition(face: .baiJamjureeSemibold, size: 12, fallbackWeight: .semibold)
         case .count:

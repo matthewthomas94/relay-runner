@@ -4620,7 +4620,7 @@ struct ProgramWorkspaceActionButton: View {
                         .accessibilityHidden(true)
                 }
                 Text(title)
-                    .font(AppTypography.font(labelFont))
+                    .font(AppTypography.font(prominence == .primary ? .primaryButton : labelFont))
                     .lineLimit(1)
             }
             }
