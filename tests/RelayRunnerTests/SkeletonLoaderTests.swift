@@ -154,6 +154,15 @@ final class SkeletonLoaderTests: XCTestCase {
             let flux = try XCTUnwrap(dots.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation)
             XCTAssertEqual(flux.keyPath, "fillColor")
             XCTAssertEqual(flux.calculationMode, .linear, "The dots fade smoothly between steps")
+            let easing = try XCTUnwrap(flux.timingFunctions)
+            XCTAssertEqual(easing.count, FluxColumnsAnimation.steps, "Every step is eased")
+            for function in easing {
+                var first: [Float] = [0, 0], second: [Float] = [0, 0]
+                function.getControlPoint(at: 1, values: &first)
+                function.getControlPoint(at: 2, values: &second)
+                let curve = RelayMotion.loopCurve
+                XCTAssertEqual(first + second, [curve.x1, curve.y1, curve.x2, curve.y2].map(Float.init), "With the loop curve")
+            }
             XCTAssertEqual(flux.repeatCount, .infinity)
             XCTAssertEqual(flux.duration, 1.5, accuracy: 0.001, "A cycle as long as Flux Columns'")
             XCTAssertEqual(flux.keyTimes?.count, FluxColumnsAnimation.steps + 1)
@@ -169,7 +178,7 @@ final class SkeletonLoaderTests: XCTestCase {
     }
 
     func testEachSnakeHeadStepsAlongItsColumnWithAFadingTail() {
-        let palette = FluxColumnsAnimation.palette
+        let palette = FluxColumnsAnimation.palette()
         XCTAssertEqual(palette.first, SkeletonLoaderView.boneHighlightColor.cgColor, "The head is the highlight")
         XCTAssertEqual(palette.count, FluxColumnsAnimation.steps)
         XCTAssertEqual(palette.last?.alpha, 0, "The end of the tail fades out to the background")
@@ -230,17 +239,24 @@ final class SkeletonLoaderTests: XCTestCase {
     }
 
     func testHoverBackgroundFillsItsRoundedShapeWithShimmeringDots() throws {
-        let view = FluxDotsView(cornerRadius: 6)
+        let view = FluxDotsView(cornerRadius: 6, style: .tabHover)
         view.frame = CGRect(x: 0, y: 0, width: 120, height: 26)
         view.layoutSubtreeIfNeeded()
         XCTAssertNil(view.hitTest(CGPoint(x: 60, y: 13)), "Clicks reach the item underneath")
-        XCTAssertEqual(view.dots.container.opacity, SkeletonLoaderView.boneOpacity, "As faint as the loader's dots")
+        XCTAssertEqual(view.dots.container.opacity, 1, "Tab hover dots are opaque so they show on the black strip")
+        let hoverHead = try XCTUnwrap(FluxColumnsAnimation.palette(.tabHover).first?.components)
+        let loaderHead = try XCTUnwrap(FluxColumnsAnimation.palette(.loader).first?.components)
+        XCTAssertGreaterThan(hoverHead[0] + hoverHead[1] + hoverHead[2], loaderHead[0] + loaderHead[1] + loaderHead[2],
+                             "The tab hover's head is brighter than the loader's")
         for (phase, layer) in view.dots.phaseLayers.enumerated() {
             let path = try XCTUnwrap(layer.path)
             XCTAssertFalse(path.isEmpty, "Phase \(phase) has dots")
             XCTAssertTrue(view.bounds.contains(path.boundingBoxOfPath), "Phase \(phase) stays inside the item")
             if !RelayLayerMotion.reduceMotion {
-                XCTAssertNotNil(layer.animation(forKey: SkeletonLoaderView.shimmerKey), "Phase \(phase) shimmers")
+                let flux = try XCTUnwrap(layer.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation,
+                                         "Phase \(phase) shimmers")
+                let colors = FluxColumnsAnimation.colors(forPhase: phase, style: .tabHover)
+                XCTAssertEqual(flux.values as? [CGColor], colors + [colors[0]], "In the tab hover colours")
             }
         }
     }

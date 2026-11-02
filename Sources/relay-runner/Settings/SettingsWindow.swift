@@ -511,7 +511,7 @@ private struct SettingsCategoryButton: View {
                     // Hover fills the row with the skeleton loader's
                     // shimmering dots; a selected row keeps its solid fill.
                     if isHovered && !selected {
-                        FluxDotsBackground(cornerRadius: SettingsLayout.sidebarCornerRadius)
+                        FluxDotsBackground(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .loader)
                             .transition(.opacity)
                     }
                     RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)

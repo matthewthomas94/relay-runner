@@ -594,8 +594,7 @@ final class SkeletonLoaderView: NSView {
 
 /// The repeating shimmer, after the Flux Columns dot-matrix loader: every
 /// step, each column's bright head moves one dot along its snake and
-/// leaves a fading tail. Each dot fades smoothly from one brightness to
-/// the next.
+/// leaves a fading tail. Each dot eases from one brightness to the next.
 enum FluxColumnsAnimation {
     static let steps = 5
     static let stepDuration: TimeInterval = 0.3
@@ -605,9 +604,9 @@ enum FluxColumnsAnimation {
     /// dot fades out to the background for the fifth step.
     static let levels: [CGFloat] = [1, 0.65, 0.26, 0.15]
 
-    static var palette: [CGColor] {
-        let base = SkeletonLoaderView.boneBaseColor
-        let highlight = SkeletonLoaderView.boneHighlightColor
+    static func palette(_ style: FluxDotStyle = .loader) -> [CGColor] {
+        let base = style.base
+        let highlight = style.highlight
         // Blend in sRGB: NSColor.blended works in Generic RGB and shifts
         // the colours.
         func mix(_ from: CGFloat, _ to: CGFloat, _ level: CGFloat) -> CGFloat {
@@ -628,24 +627,25 @@ enum FluxColumnsAnimation {
 
     /// The colours the dots in `phase` show over one cycle, one per step.
     /// The head reaches phase 0 on the first step and phase 4 on the last.
-    static func colors(forPhase phase: Int) -> [CGColor] {
-        let palette = Self.palette
+    static func colors(forPhase phase: Int, style: FluxDotStyle = .loader) -> [CGColor] {
+        let palette = palette(style)
         return (0..<steps).map { step in palette[((step - phase) % steps + steps) % steps] }
     }
 
-    static func run(on layers: [CAShapeLayer]) {
+    static func run(on layers: [CAShapeLayer], style: FluxDotStyle = .loader) {
         for (phase, layer) in layers.enumerated() {
             guard !RelayLayerMotion.reduceMotion else {
                 layer.removeAnimation(forKey: SkeletonLoaderView.shimmerKey)
                 continue
             }
             guard layer.animation(forKey: SkeletonLoaderView.shimmerKey) == nil else { continue }
-            let colors = colors(forPhase: phase)
+            let colors = colors(forPhase: phase, style: style)
             let flux = CAKeyframeAnimation(keyPath: "fillColor")
             // Back to the first colour at the end, so the loop is seamless.
             flux.values = colors + [colors[0]]
             flux.keyTimes = (0...steps).map { NSNumber(value: Double($0) / Double(steps)) }
             flux.calculationMode = .linear
+            flux.timingFunctions = Array(repeating: RelayMotion.loopCurve.mediaTimingFunction, count: steps)
             flux.duration = stepDuration * Double(steps)
             flux.repeatCount = .infinity
             layer.add(flux, forKey: SkeletonLoaderView.shimmerKey)

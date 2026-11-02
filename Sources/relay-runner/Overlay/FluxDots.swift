@@ -2,22 +2,48 @@ import AppKit
 import QuartzCore
 import SwiftUI
 
-/// Round dots that shimmer by the skeleton loader's rules: its dot size,
-/// spacing and colours, and the Flux Columns shimmer. The loader draws its
-/// filled bones with them, and hovered navigation items their backgrounds.
+/// The colours and opacity of shimmering dots. Every style shares the
+/// skeleton loader's dot size, spacing and shimmer.
+struct FluxDotStyle: Equatable {
+    /// The tail's dimmest colour, which the head's highlight fades down to.
+    let base: NSColor
+    let highlight: NSColor
+    let opacity: Float
+
+    static let loader = FluxDotStyle(
+        base: SkeletonLoaderView.boneBaseColor,
+        highlight: SkeletonLoaderView.boneHighlightColor,
+        opacity: SkeletonLoaderView.boneOpacity
+    )
+
+    /// The Workspace tabs' hover. The tabs sit on the black strip, where
+    /// the loader's faint dots don't show, so these are opaque and brighter.
+    static let tabHover = FluxDotStyle(
+        base: SkeletonLoaderView.boneBaseColor,
+        highlight: NSColor(srgbRed: 52 / 255, green: 60 / 255, blue: 74 / 255, alpha: 1),
+        opacity: 1
+    )
+}
+
+/// Round dots that shimmer by the skeleton loader's rules: its dot size and
+/// spacing, and the Flux Columns shimmer, in a style's colours. The loader
+/// draws its filled bones with them, and hovered navigation items their
+/// backgrounds.
 ///
 /// Each snake phase has its own shape layer so its dots change together.
 final class FluxDotLayers {
-    /// Holds the phase layers. It sits back at the bones' opacity.
+    /// Holds the phase layers, at the style's opacity.
     let container = CALayer()
     let phaseLayers = (0..<FluxColumnsAnimation.steps).map { _ in CAShapeLayer() }
+    let style: FluxDotStyle
 
-    init() {
+    init(style: FluxDotStyle = .loader) {
+        self.style = style
         for layer in phaseLayers {
-            layer.fillColor = SkeletonLoaderView.boneBaseColor.cgColor
+            layer.fillColor = style.base.cgColor
             container.addSublayer(layer)
         }
-        container.opacity = SkeletonLoaderView.boneOpacity
+        container.opacity = style.opacity
     }
 
     /// Fills each rounded shape with dots and starts the shimmer.
@@ -42,7 +68,7 @@ final class FluxDotLayers {
             layer.path = path
         }
         CATransaction.commit()
-        FluxColumnsAnimation.run(on: phaseLayers)
+        FluxColumnsAnimation.run(on: phaseLayers, style: style)
     }
 }
 
@@ -52,12 +78,13 @@ final class FluxDotsView: NSView {
         didSet { needsLayout = true }
     }
 
-    let dots = FluxDotLayers()
+    let dots: FluxDotLayers
 
     override var isFlipped: Bool { true }
 
-    init(cornerRadius: CGFloat) {
+    init(cornerRadius: CGFloat, style: FluxDotStyle) {
         self.cornerRadius = cornerRadius
+        dots = FluxDotLayers(style: style)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.addSublayer(dots.container)
@@ -81,9 +108,10 @@ final class FluxDotsView: NSView {
 /// a solid fill.
 struct FluxDotsBackground: NSViewRepresentable {
     let cornerRadius: CGFloat
+    let style: FluxDotStyle
 
     func makeNSView(context: Context) -> FluxDotsView {
-        FluxDotsView(cornerRadius: cornerRadius)
+        FluxDotsView(cornerRadius: cornerRadius, style: style)
     }
 
     func updateNSView(_ view: FluxDotsView, context: Context) {

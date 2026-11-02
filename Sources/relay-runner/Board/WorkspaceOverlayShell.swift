@@ -281,7 +281,7 @@ struct WorkspaceNavigationButton: View {
             // between tabs.
             .background {
                 if isHovered && !selected {
-                    FluxDotsBackground(cornerRadius: WorkspaceNavigationStyle.cornerRadius)
+                    FluxDotsBackground(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .tabHover)
                         .transition(.opacity)
                 }
             }

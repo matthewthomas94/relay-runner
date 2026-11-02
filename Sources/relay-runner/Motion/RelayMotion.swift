@@ -75,6 +75,9 @@ enum RelayMotion {
     /// Settles an in-place change such as a resize, recolour, or state swap
     /// (ease-out quart).
     static let changeCurve = Curve(x1: 0.25, y1: 1, x2: 0.5, y2: 1)
+    /// Eases into and out of each step of a looping animation, so it never
+    /// starts or stops abruptly.
+    static let loopCurve = Curve(x1: 0.42, y1: 0, x2: 0.58, y2: 1)
 
     static var enter: Animation { enterCurve.animation(duration: enterDuration) }
     /// The entrance for content that replaces something leaving.
