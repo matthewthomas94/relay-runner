@@ -483,7 +483,6 @@ private struct SettingsCategoryButton: View {
 
     var body: some View {
         // The selected fill is drawn by the sidebar so it can glide between rows.
-        let highlighted = isHovered
         let presentation = SettingsNavigationPresentation.resolve(
             selected: selected,
             isHovered: isHovered,
@@ -507,18 +506,22 @@ private struct SettingsCategoryButton: View {
             }
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: SettingsLayout.sidebarRowHeight, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
-                    .fill(highlighted ? BoardDarkSurfaceStyle.cardActiveFill : Color.clear)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
-                            .fill(Color.white.opacity(presentation.fillOverlayOpacity))
-                    )
-            )
+            .background {
+                ZStack {
+                    // Hover fills the row with the skeleton loader's
+                    // shimmering dots; a selected row keeps its solid fill.
+                    if isHovered && !selected {
+                        FluxDotsBackground(cornerRadius: SettingsLayout.sidebarCornerRadius)
+                            .transition(.opacity)
+                    }
+                    RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+                        .fill(Color.white.opacity(presentation.fillOverlayOpacity))
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
-                    .strokeBorder(highlighted ? BoardDarkSurfaceStyle.border : Color.white.opacity(selected ? 0 : presentation.strokeOpacity), lineWidth: 1)
+                    .strokeBorder(Color.white.opacity(selected || isHovered ? 0 : presentation.strokeOpacity), lineWidth: 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
         }

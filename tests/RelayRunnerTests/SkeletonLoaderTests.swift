@@ -170,7 +170,7 @@ final class SkeletonLoaderTests: XCTestCase {
 
     func testEachSnakeHeadStepsAlongItsColumnWithAFadingTail() {
         let palette = FluxColumnsAnimation.palette
-        XCTAssertEqual(palette.first, SkeletonLoaderView.boneHighlightColor.cgColor, "The head is the old highlight")
+        XCTAssertEqual(palette.first, SkeletonLoaderView.boneHighlightColor.cgColor, "The head is the highlight")
         XCTAssertEqual(palette.count, FluxColumnsAnimation.steps)
         XCTAssertEqual(palette.last?.alpha, 0, "The end of the tail fades out to the background")
         XCTAssertEqual(palette.last?.copy(alpha: 1), SkeletonLoaderView.boneBaseColor.cgColor, "It fades without changing colour")
@@ -185,6 +185,9 @@ final class SkeletonLoaderTests: XCTestCase {
     func testFilledBonesAreDrawnAsDotMatrices() {
         let pitch = SkeletonLoaderView.dotPitch
         let dotRadius = SkeletonLoaderView.dotDiameter / 2
+        for dot in NotchStatusGlyph.listening.dots {
+            XCTAssertEqual(dot.diameter, SkeletonLoaderView.dotDiameter, "The dots match the notch glyph's")
+        }
 
         let bar = CGRect(x: 10, y: 20, width: 100, height: 10)
         let barDots = SkeletonLoaderView.dots(in: bar, cornerRadius: 5).map(\.centre)
@@ -224,6 +227,22 @@ final class SkeletonLoaderTests: XCTestCase {
         let lower = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 10, width: 24, height: 8), cornerRadius: 0)
         XCTAssertNotEqual(upper.map(\.fluxPhase), lower.map(\.fluxPhase),
                           "Bones at different heights light at different moments")
+    }
+
+    func testHoverBackgroundFillsItsRoundedShapeWithShimmeringDots() throws {
+        let view = FluxDotsView(cornerRadius: 6)
+        view.frame = CGRect(x: 0, y: 0, width: 120, height: 26)
+        view.layoutSubtreeIfNeeded()
+        XCTAssertNil(view.hitTest(CGPoint(x: 60, y: 13)), "Clicks reach the item underneath")
+        XCTAssertEqual(view.dots.container.opacity, SkeletonLoaderView.boneOpacity, "As faint as the loader's dots")
+        for (phase, layer) in view.dots.phaseLayers.enumerated() {
+            let path = try XCTUnwrap(layer.path)
+            XCTAssertFalse(path.isEmpty, "Phase \(phase) has dots")
+            XCTAssertTrue(view.bounds.contains(path.boundingBoxOfPath), "Phase \(phase) stays inside the item")
+            if !RelayLayerMotion.reduceMotion {
+                XCTAssertNotNil(layer.animation(forKey: SkeletonLoaderView.shimmerKey), "Phase \(phase) shimmers")
+            }
+        }
     }
 
     func testLabelChangesReachVoiceOver() {

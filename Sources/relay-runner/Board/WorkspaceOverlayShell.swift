@@ -276,15 +276,15 @@ struct WorkspaceNavigationButton: View {
             .frame(height: WorkspaceNavigationStyle.controlHeight - 2 * WorkspaceNavigationStyle.verticalPadding)
             .padding(.horizontal, WorkspaceNavigationStyle.horizontalPadding)
             .padding(.vertical, WorkspaceNavigationStyle.verticalPadding)
-            // The selected fill is drawn by the strip so it can glide between tabs.
-            .background(
-                RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
-                    .fill(isHovered && !selected ? BoardDarkSurfaceStyle.cardActiveFill : Color.clear)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
-                    .strokeBorder(isHovered && !selected ? BoardDarkSurfaceStyle.border : Color.clear, lineWidth: 1)
-            )
+            // Hover fills the item with the skeleton loader's shimmering
+            // dots. The selected fill is drawn by the strip so it can glide
+            // between tabs.
+            .background {
+                if isHovered && !selected {
+                    FluxDotsBackground(cornerRadius: WorkspaceNavigationStyle.cornerRadius)
+                        .transition(.opacity)
+                }
+            }
             .contentShape(
                 RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
             )

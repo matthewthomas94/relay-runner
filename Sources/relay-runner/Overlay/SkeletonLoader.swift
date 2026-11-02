@@ -51,19 +51,18 @@ struct SkeletonDot: Equatable {
 /// main thread. Reduce Motion holds it still.
 final class SkeletonLoaderView: NSView {
     static let boneBaseColor = NSColor(srgbRed: 22 / 255, green: 27 / 255, blue: 36 / 255, alpha: 1)
-    static let boneHighlightColor = NSColor(srgbRed: 36 / 255, green: 43 / 255, blue: 55 / 255, alpha: 1)
+    static let boneHighlightColor = NSColor(srgbRed: 44 / 255, green: 52 / 255, blue: 66 / 255, alpha: 1)
     static let outlineWidth: CGFloat = 1.5
     static let boneOpacity: Float = 0.33
     static let dotPitch: CGFloat = 4
-    static let dotDiameter: CGFloat = 2.4
+    /// The same size as the dots in the notch's glyph.
+    static let dotDiameter: CGFloat = 3
     static let shimmerKey = "skeletonShimmer"
 
     let skeleton: SkeletonLoaderLayout
 
     private let panelsLayer = CAShapeLayer()
-    private let bonesLayer = CALayer()
-    /// One layer per snake phase, so each phase's dots change together.
-    private let dotLayers = (0..<FluxColumnsAnimation.steps).map { _ in CAShapeLayer() }
+    private let dots = FluxDotLayers()
     private let outlineLayer = CAShapeLayer()
 
     private(set) var bones: [SkeletonBone] = []
@@ -80,16 +79,12 @@ final class SkeletonLoaderView: NSView {
         panelsLayer.lineWidth = 1
         layer?.addSublayer(panelsLayer)
 
-        for dots in dotLayers {
-            dots.fillColor = Self.boneBaseColor.cgColor
-            bonesLayer.addSublayer(dots)
-        }
         outlineLayer.fillColor = nil
         outlineLayer.strokeColor = Self.boneBaseColor.cgColor
         outlineLayer.lineWidth = Self.outlineWidth
-        bonesLayer.addSublayer(outlineLayer)
-        bonesLayer.opacity = Self.boneOpacity
-        layer?.addSublayer(bonesLayer)
+        // The outlines sit back at the dots' opacity too.
+        dots.container.addSublayer(outlineLayer)
+        layer?.addSublayer(dots.container)
 
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
@@ -116,38 +111,20 @@ final class SkeletonLoaderView: NSView {
         }
         panelsLayer.frame = bounds
         panelsLayer.path = panels
-        bonesLayer.frame = bounds
-        let dots = dotLayers.map { _ in CGMutablePath() }
         let outlines = CGMutablePath()
-        for bone in bones {
-            switch bone.style {
-            case .fill:
-                for dot in Self.dots(in: bone.rect, cornerRadius: bone.radius) {
-                    dots[dot.fluxPhase].addEllipse(in: CGRect(
-                        x: dot.centre.x - Self.dotDiameter / 2,
-                        y: dot.centre.y - Self.dotDiameter / 2,
-                        width: Self.dotDiameter,
-                        height: Self.dotDiameter
-                    ))
-                }
-            case .outline:
-                let inset = Self.outlineWidth / 2
-                outlines.addRoundedRect(
-                    in: bone.rect.insetBy(dx: inset, dy: inset),
-                    cornerWidth: bone.radius,
-                    cornerHeight: bone.radius
-                )
-            }
-        }
-        for (layer, path) in zip(dotLayers, dots) {
-            layer.frame = bounds
-            layer.path = path
+        for bone in bones where bone.style == .outline {
+            let inset = Self.outlineWidth / 2
+            outlines.addRoundedRect(
+                in: bone.rect.insetBy(dx: inset, dy: inset),
+                cornerWidth: bone.radius,
+                cornerHeight: bone.radius
+            )
         }
         outlineLayer.frame = bounds
         outlineLayer.path = outlines
         CATransaction.commit()
 
-        FluxColumnsAnimation.run(on: dotLayers)
+        dots.fill(bones.filter { $0.style == .fill }.map { ($0.rect, $0.radius) }, in: bounds)
     }
 
     /// Changes what VoiceOver announces.
