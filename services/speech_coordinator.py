@@ -25,6 +25,8 @@ SPEECH_KINDS = frozenset({
     "control",
 })
 FINAL_KINDS = frozenset({"final", "fallback"})
+# RR-460: real finals that may replace a provisional fallback outcome.
+REAL_FINAL_SOURCES = frozenset({"completion", "orchestrator"})
 SUPERSEDING_KINDS = frozenset({"clarification", "final", "fallback"})
 FRESHNESS_SCOPES = frozenset({"conversation", "work"})
 LIFECYCLE_ROLES = frozenset({
@@ -95,6 +97,11 @@ class SpeechIntent:
         return int(self.command_seq), str(self.command_id)
 
     @property
+    def is_fallback_outcome(self) -> bool:
+        """A provisional outcome a late real final may still replace (RR-460)."""
+        return self.kind in FINAL_KINDS and "fallback" in {self.kind, self.source}
+
+    @property
     def presentation_mode(self) -> str:
         return "explicit_replay" if self.replay_of else "new_delivery"
 
@@ -139,8 +146,13 @@ class SpeechIntent:
         spoken = str(spoken_text or "").strip()
         display = str(display_text or "").strip() or spoken
         brief = str(semantic_brief or display or spoken).strip()
+        # RR-460: a fallback keeps its own slot so the real final is never
+        # deduplicated against it; two real finals still share one.
+        outcome_prefix = (
+            "outcome-fallback" if "fallback" in {kind, source} else "outcome"
+        )
         stable_key = dedup_key or (
-            f"outcome:{command_seq}:{command_id}"
+            f"{outcome_prefix}:{command_seq}:{command_id}"
             if kind in FINAL_KINDS and command_seq is not None and command_id
             else f"{source}:{kind}:{command_seq}:{command_id}:{_stable_digest(brief, spoken)}"
         )
@@ -292,6 +304,10 @@ class SpeechCoordinator:
         self._event_log_path = str(event_log_path) if event_log_path else None
         self._lock = threading.RLock()
         self._accepted_keys: set[str] = set()
+        # RR-460: commands with an accepted outcome, and those already
+        # reported as ending without one.
+        self._outcome_commands: set[tuple[int, str]] = set()
+        self._missing_outcomes: set[tuple[int, str]] = set()
         self._intents: dict[str, SpeechIntent] = {}
         self._voice_profiles: dict[str, str] = {}
         self._known_voice_profiles: set[str] = set()
@@ -535,6 +551,32 @@ class SpeechCoordinator:
             "outcome": str(outcome or "ok"),
         })
 
+    def record_missing_outcome(
+        self,
+        command_seq: int,
+        command_id: str,
+        reason: str,
+        *,
+        signals: list[str] | tuple[str, ...] = (),
+    ) -> bool:
+        """Log once that a command ended with no accepted outcome (RR-460)."""
+        key = (int(command_seq), str(command_id))
+        with self._lock:
+            if key in self._outcome_commands or key in self._missing_outcomes:
+                return False
+            self._missing_outcomes.add(key)
+            if len(self._missing_outcomes) > 256:
+                self._missing_outcomes = set(list(self._missing_outcomes)[-128:])
+        self._write_diagnostic({
+            "event": "missing_outcome",
+            "at": time.time(),
+            "relay_command_seq": key[0],
+            "relay_command_id": key[1],
+            "reason": str(reason or "unknown"),
+            "signals": sorted({str(signal) for signal in signals if signal}),
+        })
+        return True
+
     def submit(
         self,
         intent: SpeechIntent,
@@ -553,7 +595,7 @@ class SpeechCoordinator:
         replace_committed = False
         commit_now = False
         with self._lock:
-            if intent.dedup_key in self._accepted_keys:
+            if intent.dedup_key in self._accepted_keys or self._final_already_accepted_locked(intent):
                 self._diagnostic("deduplicated", intent, latency_ms=_elapsed_ms(started))
                 return False
 
@@ -562,9 +604,16 @@ class SpeechCoordinator:
                 return self._submit_remote_locked(sink, intent, started)
 
             current = self._intent_for(self._playing_id or self._committed_id)
+            replaced_playing: SpeechIntent | None = None
             if current is not None and self._newer_command(intent, current):
                 replace_committed = True
                 self._backlog.clear()
+            elif current is not None and self._replaces_fallback(intent, current):
+                # RR-460: the real final cuts a queued or playing fallback.
+                replace_committed = True
+                self._drop_obsolete_backlog(intent)
+                if self._playing_id == current.utterance_id:
+                    replaced_playing = current
             elif current is not None and self._supersedes(intent, current):
                 if self._playing_id:
                     self._drop_obsolete_backlog(intent)
@@ -606,6 +655,8 @@ class SpeechCoordinator:
                     if self._play_dispatched_id == old.utterance_id:
                         self._play_dispatched_id = None
                     self._diagnostic("replaced", old, replaced_by=intent.utterance_id)
+                if replaced_playing is not None:
+                    self._diagnostic("replaced", replaced_playing, replaced_by=intent.utterance_id)
             elif commit_now:
                 self._committed_id = intent.utterance_id
 
@@ -942,6 +993,10 @@ class SpeechCoordinator:
 
     def _accept_locked(self, intent: SpeechIntent) -> None:
         self._accepted_keys.add(intent.dedup_key)
+        if intent.kind in FINAL_KINDS and intent.command_key is not None:
+            self._outcome_commands.add(intent.command_key)
+            if len(self._outcome_commands) > 256:
+                self._outcome_commands = set(list(self._outcome_commands)[-128:])
         self._intents[intent.utterance_id] = intent
         self._voice_profiles[intent.utterance_id] = getattr(self.worker, "custom_voice_id", "")
         profile = self._voice_profiles[intent.utterance_id]
@@ -1195,6 +1250,13 @@ class SpeechCoordinator:
             REMOTE_STOP_REASONS["newer_command"],
             lambda sent: self._newer_command(intent, sent),
         )
+        # RR-460: an unacked fallback frame gives way to the real final.
+        self._stop_remote_locked(
+            sink,
+            "stop",
+            REMOTE_STOP_REASONS["newer_command"],
+            lambda sent: self._replaces_fallback(intent, sent),
+        )
         available = getattr(self.worker, "remote_audio_available", None)
         audio = bool(available and available())
         try:
@@ -1370,6 +1432,26 @@ class SpeechCoordinator:
         return incoming.command_seq > current.command_seq
 
     @staticmethod
+    def _replaces_fallback(incoming: SpeechIntent, current: SpeechIntent) -> bool:
+        return (
+            incoming.kind == "final"
+            and incoming.source in REAL_FINAL_SOURCES
+            and incoming.authoritative
+            and current.is_fallback_outcome
+            and incoming.command_key is not None
+            and incoming.command_key == current.command_key
+        )
+
+    def _final_already_accepted_locked(self, intent: SpeechIntent) -> bool:
+        """A fallback never follows, or replaces, the command's real final."""
+        key = intent.command_key
+        return (
+            intent.is_fallback_outcome
+            and key is not None
+            and f"outcome:{key[0]}:{key[1]}" in self._accepted_keys
+        )
+
+    @staticmethod
     def _supersedes(incoming: SpeechIntent, current: SpeechIntent) -> bool:
         if incoming.command_key != current.command_key:
             return incoming.priority > current.priority
@@ -1385,7 +1467,7 @@ class SpeechCoordinator:
             obsolete = (
                 queued.command_key == incoming.command_key
                 and queued.kind in {"handoff", "progress"}
-            )
+            ) or self._replaces_fallback(incoming, queued)
             if obsolete:
                 self._diagnostic("replaced", queued, replaced_by=incoming.utterance_id)
             else:

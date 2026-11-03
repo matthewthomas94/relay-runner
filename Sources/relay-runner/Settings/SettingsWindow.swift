@@ -290,7 +290,8 @@ private struct SettingsContent: View {
                 config: $draft.stt,
                 migrationState: appState.phononMigration?.state,
                 onRetryMigration: { appState.phononMigration?.retry() },
-                cameraPermission: appState.permissions
+                cameraPermission: appState.permissions,
+                onTrueWhisperTemplatesChanged: { appState.trueWhisperTemplatesChanged() }
             )
         case .textToSpeech:
             TTSSettingsTab(config: $draft.tts, appState: appState)
@@ -513,7 +514,7 @@ private struct SettingsCategoryButton: View {
                     // shimmering dots; a selected row keeps its solid fill.
                     if isHovered && !selected {
                         FluxDotsBackground(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .standard)
-                            .transition(.opacity)
+                            .transition(.dotDisintegrate)
                     }
                     RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
                         .fill(Color.white.opacity(presentation.fillOverlayOpacity))

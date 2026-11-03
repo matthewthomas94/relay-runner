@@ -5,6 +5,7 @@ struct STTSettingsTab: View {
     var migrationState: STTPhononMigration.State?
     var onRetryMigration: () -> Void = {}
     var cameraPermission: TrueWhisperCameraPermission
+    var onTrueWhisperTemplatesChanged: () -> Void = {}
     var operatingSystem = ProcessInfo.processInfo.operatingSystemVersion
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -85,7 +86,11 @@ struct STTSettingsTab: View {
                 }
             }
 
-            TrueWhisperSettingsSection(enabled: $config.true_whisper, permission: cameraPermission)
+            TrueWhisperSettingsSection(
+                enabled: $config.true_whisper,
+                permission: cameraPermission,
+                onTemplatesChanged: onTrueWhisperTemplatesChanged
+            )
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: config.input_mode)
     }
