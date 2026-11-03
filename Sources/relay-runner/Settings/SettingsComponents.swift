@@ -9,7 +9,7 @@ struct SettingsStack<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .toggleStyle(SettingsCheckboxStyle())
+        .toggleStyle(SettingsSwitchStyle())
     }
 }
 
@@ -85,7 +85,7 @@ struct SettingsControlRow<Control: View>: View {
             Spacer(minLength: SettingsLayout.labelControlSpacing)
             control
                 .labelsHidden()
-                .toggleStyle(SettingsCheckboxStyle(showsLabel: false))
+                .toggleStyle(SettingsSwitchStyle(showsLabel: false))
                 .controlSize(.small)
                 .frame(maxWidth: SettingsLayout.controlMaxWidth, alignment: .trailing)
         }

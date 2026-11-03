@@ -113,7 +113,7 @@ final class SettingsInputControlsTests: XCTestCase {
         XCTAssertFalse(finalPopup.isVisible)
     }
 
-    func testCheckboxTogglesAndRespectsDisabledState() throws {
+    func testSwitchTogglesAndRespectsDisabledState() throws {
         var enabledValue = false
         var disabledValue = false
         let window = host(VStack(spacing: 0) {
@@ -122,12 +122,17 @@ final class SettingsInputControlsTests: XCTestCase {
             Toggle("Disabled option", isOn: Binding(get: { disabledValue }, set: { disabledValue = $0 }))
                 .disabled(true)
                 .frame(width: 300, height: 40)
-        }.toggleStyle(SettingsCheckboxStyle()), size: NSSize(width: 300, height: 80))
+        }.toggleStyle(SettingsSwitchStyle()), size: NSSize(width: 300, height: 80))
         defer { window.close() }
         try click(NSPoint(x: 150, y: 60), in: window)
         XCTAssertTrue(enabledValue)
         try click(NSPoint(x: 150, y: 20), in: window)
         XCTAssertFalse(disabledValue)
+    }
+
+    func testSwitchKnobStaysInsideTrack() {
+        let end = SettingsSwitchMetrics.inset + SettingsSwitchMetrics.knobTravel + SettingsSwitchMetrics.knobDiameter
+        XCTAssertEqual(end + SettingsSwitchMetrics.inset, SettingsSwitchMetrics.trackSize.width)
     }
 
     func testStepperDisablesButtonsAtBounds() throws {
