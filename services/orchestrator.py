@@ -121,6 +121,7 @@ except ModuleNotFoundError:  # Installed direct-script layout.
     from note_contract import NoteUpdate, note_source
 from general_work import GeneralWorkStore, general_worker_environment
 from personal_file_storage import PersonalFileStorage, StorageError, handle_personal_storage_request
+from sampling_profiler import start_from_environment as start_sampling_profiler
 from command_actions import refined_command_summary, refined_ticket_title, resolve_command_action
 from continuity_incidents import (
     ContinuityIncidentDetector,
@@ -13105,6 +13106,8 @@ def main() -> None:
         phase="orchestrator_launch",
         outcome="started",
     )
+    # Off unless RELAY_ORCHESTRATOR_PROFILE names an output file.
+    profiler = start_sampling_profiler()
     try:
         args = _parse_args()
         cfg = load_config(args.config) if args.config else load_config()
@@ -13122,6 +13125,9 @@ def main() -> None:
             attributes={"error_code": type(error).__name__},
         )
         raise
+    finally:
+        if profiler is not None:
+            profiler.stop()
 
 
 if __name__ == "__main__":
