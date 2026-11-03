@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import json
 import os
@@ -204,6 +204,18 @@ class SpeechIntent:
         )
 
 
+@dataclass
+class _RemoteVoice:
+    """The Mac's voice streaming to one device for one ``speech`` frame (RR-457)."""
+
+    sink: Any
+    seq: int
+    intent: SpeechIntent
+    started: float
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    sent: int = 0
+
+
 def _default_priority(kind: str, authoritative: bool) -> int:
     base = {
         "handoff": 20,
@@ -318,6 +330,8 @@ class SpeechCoordinator:
         self._remote_stopped_through: dict[str, int] = {}
         # RR-454: devices with Remote mode off see Mac speech as text only.
         self._remote_mirrors: dict[str, Any] = {}
+        # RR-457: replies still being voiced for a device, by (device, seq).
+        self._remote_voices: dict[tuple[str, int], _RemoteVoice] = {}
         self._shutdown = threading.Event()
         self._control_socket_path = control_socket_path
         self._control_thread: threading.Thread | None = None
@@ -464,6 +478,10 @@ class SpeechCoordinator:
             intent = self._remote_outstanding.pop((str(device_id), int(seq)), None)
             if intent is not None and played:
                 self._record_played_coverage_locked(intent)
+            # The device is done with this frame, so any audio still to come is moot.
+            voice = self._remote_voices.pop((str(device_id), int(seq)), None)
+            if voice is not None:
+                voice.cancelled.set()
         if intent is None:
             return False
         self._diagnostic(
@@ -1209,6 +1227,7 @@ class SpeechCoordinator:
         self._remote_stopped_through.pop(device_id, None)
         for key in [key for key in self._remote_outstanding if key[0] == device_id]:
             del self._remote_outstanding[key]
+        self._cancel_remote_voices_locked(device_id)
         self._write_diagnostic({
             "event": "remote_sink_detached",
             "at": time.time(),
@@ -1218,7 +1237,12 @@ class SpeechCoordinator:
         })
 
     def _submit_remote_locked(self, sink, intent: SpeechIntent, started: float) -> bool:
-        """Send one accepted intent as a ``speech`` frame; Kokoro is never used."""
+        """Send one accepted intent as a ``speech`` frame, then its audio.
+
+        The text goes first so the phone can show it at once. With ``audio``
+        the worker voices it without the Mac's speaker (RR-457); without, the
+        phone speaks it with its own voice.
+        """
         fields = {"sink": REMOTE_SINK, "device_id": sink.device_id}
         self._stop_remote_locked(
             sink,
@@ -1233,16 +1257,31 @@ class SpeechCoordinator:
             REMOTE_STOP_REASONS["newer_command"],
             lambda sent: self._replaces_fallback(intent, sent),
         )
+        available = getattr(self.worker, "remote_audio_available", None)
+        audio = bool(available and available())
         try:
             seq = sink.speech(
                 kind=intent.kind,
                 source=intent.source,
                 text=intent.spoken_text,
                 relay_command_seq=intent.command_seq,
+                audio=audio,
             )
         except Exception:  # An unencodable frame must not crash the producer.
             self._diagnostic("remote_failed", intent, latency_ms=_elapsed_ms(started), **fields)
             return False
+        if audio:
+            voice = _RemoteVoice(sink, seq, intent, started)
+            self._remote_voices[(sink.device_id, seq)] = voice
+            self.worker.synthesize_remote(
+                text=intent.spoken_text,
+                utterance_id=intent.utterance_id,
+                cancelled=voice.cancelled.is_set,
+                emit=lambda part: self._emit_remote_audio(voice, part),
+                failed=lambda reason: self._diagnostic(
+                    "remote_audio_failed", intent, remote_seq=seq, reason=reason, **fields
+                ),
+            )
         self._accept_locked(intent)
         self._retain_replayable_locked(intent)
         if intent.replay_of:
@@ -1251,9 +1290,36 @@ class SpeechCoordinator:
         self._remote_outstanding[(sink.device_id, seq)] = intent
         if len(self._remote_outstanding) > 512:
             del self._remote_outstanding[next(iter(self._remote_outstanding))]
-        self._diagnostic("remote_speech_sent", intent, remote_seq=seq, **fields)
+        self._diagnostic("remote_speech_sent", intent, remote_seq=seq, audio=audio, **fields)
         self._diagnostic("accepted", intent, latency_ms=_elapsed_ms(started), **fields)
         return True
+
+    def _emit_remote_audio(self, voice: _RemoteVoice, part) -> None:
+        """Send one audio part unless its reply was stopped; time the first."""
+        with self._lock:
+            if voice.cancelled.is_set():
+                return
+            voice.sink.speech_audio(voice.seq, part)
+            first = not voice.sent and bool(part.data)
+            voice.sent += 1
+            if part.last:
+                self._remote_voices.pop((voice.sink.device_id, voice.seq), None)
+        if first:
+            self._diagnostic(
+                "remote_first_audio",
+                voice.intent,
+                sink=REMOTE_SINK,
+                device_id=voice.sink.device_id,
+                remote_seq=voice.seq,
+                submit_to_first_audio_ms=_elapsed_ms(voice.started),
+            )
+
+    def _cancel_remote_voices_locked(self, device_id: str, *, before: int | None = None) -> None:
+        for key in [
+            key for key in self._remote_voices
+            if key[0] == device_id and (before is None or key[1] < before)
+        ]:
+            self._remote_voices.pop(key).cancelled.set()
 
     def _stop_remote(self, action: str, reason: str, stale=None) -> None:
         with self._lock:
@@ -1274,6 +1340,8 @@ class SpeechCoordinator:
             return
         seq = sink.speech_control(action, reason)
         self._remote_stopped_through[device_id] = seq
+        # The device drops every frame before a speech_control, so stop voicing them.
+        self._cancel_remote_voices_locked(device_id, before=seq)
         self._write_diagnostic({
             "event": "remote_speech_control",
             "at": time.time(),

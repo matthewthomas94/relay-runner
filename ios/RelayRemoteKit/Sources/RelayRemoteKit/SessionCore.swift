@@ -124,6 +124,10 @@ public struct SessionCore: Sendable {
             // Not fatal: the Mac closes the channel itself when it gives up.
             lastError = error
             reaction.isNew = true
+        case .speechAudio:
+            // The Mac's voice for an earlier `speech` frame (RR-457). It takes no
+            // seq of its own, so it never moves the resume point.
+            break
         case .hello, .utterance, .control, .remoteMode, .ack, .ping:
             break
         }

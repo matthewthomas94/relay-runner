@@ -115,6 +115,36 @@
   "line": "{\"kind\":\"progress\",\"seq\":47,\"source\":\"lifecycle\",\"spoken_by\":\"phone\",\"text\":\"Worker RR-120 started.\",\"type\":\"speech\"}"
  },
  {
+  "name": "speech_with_audio",
+  "direction": "mac_to_phone",
+  "line": "{\"audio\":true,\"kind\":\"final\",\"relay_command_seq\":812,\"seq\":46,\"source\":\"orchestrator\",\"spoken_by\":\"phone\",\"text\":\"RR-120 is in ready and dispatching.\",\"type\":\"speech\"}"
+ },
+ {
+  "name": "speech_without_audio",
+  "direction": "mac_to_phone",
+  "line": "{\"audio\":false,\"kind\":\"handoff\",\"relay_command_seq\":812,\"seq\":45,\"source\":\"messenger\",\"spoken_by\":\"phone\",\"text\":\"Looking at RR-120 now.\",\"type\":\"speech\"}"
+ },
+ {
+  "name": "speech_audio_first_part",
+  "direction": "mac_to_phone",
+  "line": "{\"data\":\"//FgQB/7/N4CAExhdmP+vw==\",\"format\":\"aac\",\"part\":0,\"parts\":0,\"sample_rate\":24000,\"seq\":46,\"type\":\"speech_audio\"}"
+ },
+ {
+  "name": "speech_audio_last_part",
+  "direction": "mac_to_phone",
+  "line": "{\"data\":\"//FgQAuf/CEQBA==\",\"format\":\"aac\",\"last\":true,\"part\":2,\"parts\":3,\"sample_rate\":24000,\"seq\":46,\"type\":\"speech_audio\"}"
+ },
+ {
+  "name": "speech_audio_ended_early",
+  "direction": "mac_to_phone",
+  "line": "{\"data\":\"\",\"format\":\"aac\",\"last\":true,\"part\":1,\"parts\":2,\"sample_rate\":24000,\"seq\":46,\"type\":\"speech_audio\"}"
+ },
+ {
+  "name": "speech_audio_opus",
+  "direction": "mac_to_phone",
+  "line": "{\"data\":\"T2dnUwAC++8+\",\"format\":\"opus\",\"last\":true,\"part\":0,\"parts\":1,\"sample_rate\":48000,\"seq\":47,\"type\":\"speech_audio\"}"
+ },
+ {
   "name": "speech_control",
   "direction": "mac_to_phone",
   "line": "{\"action\":\"stop\",\"reason\":\"superseded\",\"seq\":47,\"type\":\"speech_control\"}"

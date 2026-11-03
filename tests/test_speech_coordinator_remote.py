@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import types
 import unittest
 import uuid
 
@@ -14,6 +15,7 @@ sys.path.insert(0, os.path.join(ROOT, "services"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import relay_remote_protocol as proto  # noqa: E402
+from remote_audio import AudioPart  # noqa: E402
 from speech_coordinator import SpeechCoordinator  # noqa: E402
 import test_relay_remote as remote_tests  # noqa: E402
 import test_speech_coordinator as coordinator_tests  # noqa: E402
@@ -28,7 +30,7 @@ class RemoteSinkTests(remote_tests.ServerTestCase):
         self.now = 1000.0
         self.current = {(1, "one"), (2, "two")}
         self.log = Path(self.root) / "speech-events.jsonl"
-        self.worker = coordinator_tests.FakeWorker()
+        self.worker = self.make_worker()
         self.coordinator = SpeechCoordinator(
             self.worker,
             is_current=lambda seq, command_id: (seq, command_id) in self.current,
@@ -40,6 +42,9 @@ class RemoteSinkTests(remote_tests.ServerTestCase):
             clock=lambda: self.now,
             notify=self.posted.append,
         )
+
+    def make_worker(self):
+        return coordinator_tests.FakeWorker()
 
     def connect(self, resume_after_seq=None):
         device = self.device()
@@ -336,6 +341,160 @@ class RemoteSinkTests(remote_tests.ServerTestCase):
         self.assertEqual(self.coordinator._remote_sinks, {})
         self.assertEqual(self.coordinator._remote_mirrors, {})
         self.assertFalse(self.server.session("phone-1").routable())
+
+
+class AudioWorker(coordinator_tests.FakeWorker):
+    """Records remote voicing jobs (RR-457); each test emits their parts itself."""
+
+    def __init__(self):
+        super().__init__()
+        self.available = True
+        self.jobs: list[types.SimpleNamespace] = []
+
+    def remote_audio_available(self):
+        return self.available
+
+    def synthesize_remote(self, **job):
+        self.jobs.append(types.SimpleNamespace(**job))
+
+
+def part(index: int, *, parts: int = 0, last: bool = False, data: str = "AAAA") -> AudioPart:
+    return AudioPart(part=index, parts=parts, last=last, data=data)
+
+
+class RemoteVoiceTests(RemoteSinkTests):
+    """RR-457: the Mac's voice follows each text frame. Every RR-424 and
+    RR-454 behaviour above also runs here with remote audio available."""
+
+    def make_worker(self):
+        return AudioWorker()
+
+    def test_reply_text_says_audio_follows_then_parts_arrive_in_order(self):
+        device, _ = self.connect()
+        reply = intent(seq=1, kind="final", authoritative=True, text="Done. It merged.")
+        self.coordinator.submit(reply)
+
+        speech = device.recv()
+        self.assertEqual((speech.text, speech.audio, speech.spoken_by), ("Done. It merged.", True, "phone"))
+        (job,) = self.worker.jobs
+        self.assertEqual((job.text, job.utterance_id), ("Done. It merged.", reply.utterance_id))
+        job.emit(part(0))
+        job.emit(part(1, parts=2, last=True))
+
+        first, last = device.recv(), device.recv()
+        self.assertEqual([(a.seq, a.part, a.parts, a.last) for a in (first, last)],
+                         [(speech.seq, 0, 0, None), (speech.seq, 1, 2, True)])
+        self.assert_nothing_else_sent(device)
+        self.assertEqual(self.events("tts_enqueued"), [])
+        self.assertNotIn("play", self.worker.calls)
+        self.assertTrue(self.events("remote_speech_sent")[0]["audio"])
+        (latency,) = self.events("remote_first_audio")
+        self.assertEqual((latency["remote_seq"], latency["device_id"], latency["sink"]),
+                         (speech.seq, "phone-1", "relay-remote"))
+        self.assertEqual(latency["utterance_id"], reply.utterance_id)
+        self.assertGreaterEqual(latency["submit_to_first_audio_ms"], 0)
+        self.assertNotIn("It merged", self.log.read_text())
+
+    def test_every_stop_cancels_voicing_and_still_sends_speech_control(self):
+        device, _ = self.connect()
+        stops = [
+            ("stop", lambda: self.coordinator.stop(), "speech_only_barge_in"),
+            ("stop", lambda: self.coordinator.stop_playback(), "user_stop"),
+            ("skip", lambda: self.coordinator.skip(), "user_stop"),
+            ("stop", lambda: (self.current.discard((1, "one")), self.coordinator.new_turn(2, "two")), "superseded"),
+        ]
+        for index, (action, stop, reason) in enumerate(stops):
+            self.coordinator.submit(intent(seq=1, kind="progress", text=f"Reply {index}"))
+            speech = device.recv()
+            job = self.worker.jobs[-1]
+            job.emit(part(0))
+            self.assertEqual(device.recv().seq, speech.seq)
+
+            stop()
+
+            control = device.recv()
+            self.assertEqual((control.seq, control.action, control.reason), (speech.seq + 1, action, reason))
+            self.assertTrue(job.cancelled(), action)
+            job.emit(part(1, parts=2, last=True))
+            self.assert_nothing_else_sent(device)
+
+    def test_ack_mode_off_and_an_expired_window_cancel_voicing(self):
+        device, _ = self.connect()
+        self.coordinator.submit(intent(seq=1, kind="progress", text="Skipped on the phone"))
+        speech = device.recv()
+        device.send(proto.Ack(speech.seq, False))
+        self.assertTrue(wait_until(lambda: self.worker.jobs[0].cancelled()))
+
+        self.coordinator.submit(intent(seq=1, kind="progress", text="Mode goes off"))
+        device.recv()
+        self.set_mode(device, False)
+        self.assertTrue(self.worker.jobs[1].cancelled())
+
+        self.set_mode(device, True)
+        self.coordinator.submit(intent(seq=1, kind="progress", text="Phone goes away"))
+        device.recv()
+        device.close()
+        self.assertTrue(wait_until(lambda: self.server.session("phone-1").conn is None))
+        self.now += proto.REPLAY_MAX_AGE + 1
+        self.coordinator.submit(intent(seq=1, kind="handoff", text="Back on the Mac"))
+        self.assertTrue(self.worker.jobs[2].cancelled())
+        self.assertEqual(len(self.worker.jobs), 3)
+
+    def test_reconnect_replays_the_text_frame_with_its_audio_parts(self):
+        device, _ = self.connect()
+        self.coordinator.submit(intent(seq=1, kind="final", authoritative=True, text="One. Two."))
+        speech = device.recv()
+        job = self.worker.jobs[0]
+        job.emit(part(0, data="QUFB"))
+        self.assertEqual(device.recv().part, 0)
+        device.close()
+        self.assertTrue(wait_until(lambda: self.server.session("phone-1").conn is None))
+        job.emit(part(1, parts=2, last=True, data="QkJC"))
+
+        # A phone that lost the end of a stream resumes before that frame and
+        # receives the whole stream again.
+        again, welcome = self.connect(resume_after_seq=speech.seq - 1)
+        self.assertEqual((welcome.server_seq, welcome.dropped), (speech.seq, False))
+        replayed = [again.recv(), again.recv(), again.recv()]
+        self.assertEqual(replayed[0], speech)
+        self.assertEqual([(a.seq, a.part, a.data) for a in replayed[1:]],
+                         [(speech.seq, 0, "QUFB"), (speech.seq, 1, "QkJC")])
+        self.assertTrue(replayed[2].last)
+        self.assert_nothing_else_sent(again)
+
+    def test_without_remote_audio_the_text_frame_says_so(self):
+        self.worker.available = False
+        device, _ = self.connect()
+
+        self.coordinator.read_out("Phone voice please")
+
+        frame = device.recv()
+        self.assertEqual((frame.text, frame.audio), ("Phone voice please", False))
+        self.assertEqual(self.worker.jobs, [])
+        self.assertFalse(self.events("remote_speech_sent")[0]["audio"])
+        self.assert_nothing_else_sent(device)
+
+    def test_mode_off_keeps_mac_speech_local_and_text_only(self):
+        device, _ = self.connect()
+        self.set_mode(device, False)
+
+        self.coordinator.submit(intent(seq=1, kind="handoff", text="Kokoro here"))
+
+        self.assertEqual(self.worker.input_queue.get_nowait()["text"], "Kokoro here")
+        shown = device.recv()
+        self.assertEqual((shown.spoken_by, shown.audio), ("mac", None))
+        self.assertEqual(self.worker.jobs, [])
+        self.assert_nothing_else_sent(device)
+
+    def test_failed_voicing_is_logged_with_its_reason(self):
+        device, _ = self.connect()
+        self.coordinator.submit(intent(seq=1, kind="handoff", text="Will fail"))
+        speech = device.recv()
+
+        self.worker.jobs[0].failed("encoding_failed")
+
+        (failure,) = self.events("remote_audio_failed")
+        self.assertEqual((failure["remote_seq"], failure["reason"]), (speech.seq, "encoding_failed"))
 
 
 if __name__ == "__main__":
