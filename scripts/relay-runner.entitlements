@@ -6,6 +6,10 @@
     <key>com.apple.security.device.audio-input</key>
     <true/>
 
+    <!-- Camera access for True Whisper lip reading. Paired with NSCameraUsageDescription in Info.plist. -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+
     <!-- Terminal.app scripting (osascript `tell application "Terminal"` in
          ProcessManager.launchInTerminal). Without this, the hardened runtime
          blocks AppleEvents to Terminal and the "Start Session" menu item does

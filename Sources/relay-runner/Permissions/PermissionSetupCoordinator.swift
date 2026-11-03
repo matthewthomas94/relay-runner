@@ -27,6 +27,7 @@ enum PermissionSetupNotchState: Equatable {
     case accessibility
     case inputMonitoring
     case screenRecording
+    case camera
     case granted(PermissionKind)
 
     init(permission: PermissionKind) {
@@ -35,6 +36,7 @@ enum PermissionSetupNotchState: Equatable {
         case .accessibility:   self = .accessibility
         case .inputMonitoring: self = .inputMonitoring
         case .screenRecording: self = .screenRecording
+        case .camera:          self = .camera
         }
     }
 
@@ -45,6 +47,7 @@ enum PermissionSetupNotchState: Equatable {
         case .accessibility:   return "Accessibility"
         case .inputMonitoring: return "Input monitoring"
         case .screenRecording: return "Screen recording"
+        case .camera:          return "Camera"
         case .granted(let permission):
             return "\(PermissionSetupNotchState(permission: permission).label) granted"
         }
@@ -82,6 +85,7 @@ protocol PermissionSetupPermissionManaging: AnyObject {
     func refresh()
     func status(for kind: PermissionKind) -> PermissionStatus
     func requestMicrophonePrompt(completion: @escaping (Bool) -> Void)
+    func requestCameraPrompt(completion: @escaping (Bool) -> Void)
     func promptAccessibility()
     func registerForInputMonitoringList()
     func promptInputMonitoring()
@@ -205,6 +209,15 @@ final class PermissionSetupCoordinator {
             permissions.promptScreenRecording()
             permissions.openSettings(for: permission)
             showCompanion(for: request)
+        case .camera:
+            permissions.requestCameraPrompt { [weak self] granted in
+                guard let self else { return }
+                if granted {
+                    self.markGranted(permission)
+                } else {
+                    self.endWithoutGrant(request)
+                }
+            }
         }
     }
 
@@ -869,6 +882,8 @@ struct PermissionCompanionFallbackPlan: Equatable {
             return "Input Monitoring lets Relay Runner detect global trigger keys and the double-tap Shift Workspace hotkey."
         case .screenRecording:
             return "Screen Recording lets Relay Vision capture screenshots for visual grounding."
+        case .camera:
+            return "Camera lets True Whisper read silently mouthed commands."
         }
     }
 

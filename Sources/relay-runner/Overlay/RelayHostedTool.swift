@@ -31,7 +31,7 @@ enum RelayHostedTool {
             return message.contains("Accessibility permission is not granted to Relay Runner")
         case .screenRecording:
             return message.contains("Screen Recording permission is not granted to Relay Runner")
-        case .microphone, .inputMonitoring:
+        case .microphone, .inputMonitoring, .camera:
             return false
         }
     }

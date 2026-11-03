@@ -33,6 +33,8 @@ enum OnboardingPermissionTreatment {
             return "Next let’s set up your hotkeys with input monitoring /"
         case .screenRecording:
             return "Lastly we’re going to need screen recording /"
+        case .camera:
+            return "True Whisper needs the camera /"
         }
     }
 
@@ -46,6 +48,8 @@ enum OnboardingPermissionTreatment {
             return "Input Monitoring is the listen-only alternative for global keyboard events when Accessibility is not granted. It enables non-Caps-Lock activation keys and the double-tap Shift Workspace hotkey; voice still works with microphone permission alone if you skip it."
         case .screenRecording:
             return "Screen Recording lets Relay Vision capture screenshots for visual grounding. Voice transcription and speech don't need it."
+        case .camera:
+            return "Camera lets True Whisper, the experimental lip-reading input mode, read silently mouthed commands. Only lip geometry is kept, never images. Voice transcription and speech don't need it."
         }
     }
 
@@ -740,6 +744,8 @@ struct OnboardingView: View {
             return "Your organisation's security policy appears to be blocking keyboard capture. You'll need your IT team to allow Relay Runner. Voice still works via the menu-bar Record button or always-on mode in Settings — only the global trigger key is affected."
         case .screenRecording:
             return "Your organisation's security policy appears to be blocking Screen Recording. You'll need your IT team to allow Relay Runner. Only Relay Vision screenshots are affected — voice transcription and speech still work."
+        case .camera:
+            return "Your organisation's security policy appears to be blocking camera access. You'll need your IT team to allow Relay Runner. Only True Whisper lip reading is affected — voice transcription and speech still work."
         }
     }
 
@@ -1841,6 +1847,7 @@ struct OnboardingView: View {
         // Screen Recording is not part of Settings-hosted onboarding; first-run
         // permission setup is owned by the intro surface.
         case .screenRecording: return "Allow Screen Recording"
+        case .camera:          return "Allow camera access"
         }
     }
 
@@ -1863,6 +1870,11 @@ struct OnboardingView: View {
             return "Relay Runner opens Input Monitoring automatically and shows a small draggable companion beside System Settings. Drag Relay Runner.app into the list if it is missing, then turn on its switch. If macOS asks to quit and reopen, approve it — Relay Runner resumes here."
         case .screenRecording:
             return "Relay Runner opens Screen Recording automatically and shows a small draggable companion beside System Settings. Drag Relay Runner.app into the list if it is missing, then turn on its switch. If macOS asks to quit and reopen, Relay Runner resumes here."
+        case .camera:
+            if status == .denied {
+                return "Click Ask Again below. Relay Runner will reset its previous camera decision and show Apple's normal camera prompt again."
+            }
+            return "This Mac is blocking camera access. Open System Settings to inspect Relay Runner under Camera."
         }
     }
 

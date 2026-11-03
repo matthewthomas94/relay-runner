@@ -64,6 +64,8 @@ final class PermissionNotifier {
             return "Relay Runner can't detect your trigger key — Input Monitoring access was removed. Open the menu and choose Fix Permissions."
         case .screenRecording:
             return "Relay Runner can't take Relay Vision screenshots — Screen Recording access was removed. Voice transcription and speech still work."
+        case .camera:
+            return "True Whisper can't read your lips — Camera access was removed. Voice transcription and speech still work."
         }
     }
 }

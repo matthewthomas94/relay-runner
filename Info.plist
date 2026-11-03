@@ -35,6 +35,8 @@
     <string>14.0</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Relay Runner uses the microphone for speech-to-text.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Relay Runner uses the camera for True Whisper, the experimental lip-reading input mode.</string>
     <!-- Screen Recording is requested by the app-hosted Relay Vision screenshot
          path and by an explicitly started Note Taker system-audio stream. Normal
          voice commands and Relay Actions work without it. -->
