@@ -22,6 +22,35 @@ AUTHORITATIVE_FINAL = {
 
 
 class SpeechLatencyReportTests(unittest.TestCase):
+    def test_remote_audio_report_lists_first_audio_latency_per_reply(self):
+        command = {"relay_command_seq": 4, "relay_command_id": "remote-4", "device_id": "phone-1"}
+        records = [
+            {"event": "remote_speech_sent", "at": 9.0, "utterance_id": "u1", **command},
+            {"event": "remote_first_audio", "at": 10.0, "utterance_id": "u1", "kind": "handoff",
+             "submit_to_first_audio_ms": 400.0, **command},
+            {"event": "remote_first_audio", "at": 11.0, "utterance_id": "u2", "kind": "final",
+             "submit_to_first_audio_ms": 900.0, **command},
+            {"event": "remote_first_audio", "at": 12.0, "utterance_id": "u3",
+             "submit_to_first_audio_ms": "unmeasured", **command},
+        ]
+
+        remote = speech_latency_report.build_report(records, [])["remote_audio_latency"]
+
+        self.assertEqual(remote["sample_count"], 2)
+        self.assertEqual(
+            (remote["submit_to_first_audio_p50_ms"], remote["submit_to_first_audio_p95_ms"]),
+            (400.0, 900.0),
+        )
+        self.assertEqual(remote["samples"][1], {
+            "relay_command_seq": 4,
+            "relay_command_id": "remote-4",
+            "utterance_id": "u2",
+            "device_id": "phone-1",
+            "kind": "final",
+            "at": 11.0,
+            "submit_to_first_audio_ms": 900.0,
+        })
+
     @staticmethod
     def messenger_sample(
         index: int,

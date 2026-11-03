@@ -307,6 +307,32 @@ def build_report(
         ),
         "samples": samples,
         "messenger_latency": build_messenger_latency_report(speech_records),
+        "remote_audio_latency": build_remote_audio_report(speech_records),
+    }
+
+
+def build_remote_audio_report(speech_records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Per reply, coordinator submit to the first Mac-voiced part sent to a phone (RR-457)."""
+    samples = []
+    for record in speech_records:
+        latency = _finite_float(record.get("submit_to_first_audio_ms"))
+        if record.get("event") != "remote_first_audio" or latency is None:
+            continue
+        samples.append({
+            "relay_command_seq": record.get("relay_command_seq"),
+            "relay_command_id": record.get("relay_command_id"),
+            "utterance_id": record.get("utterance_id"),
+            "device_id": record.get("device_id"),
+            "kind": record.get("kind"),
+            "at": record.get("at"),
+            "submit_to_first_audio_ms": latency,
+        })
+    latencies = [sample["submit_to_first_audio_ms"] for sample in samples]
+    return {
+        "sample_count": len(samples),
+        "submit_to_first_audio_p50_ms": _percentile(latencies, 50),
+        "submit_to_first_audio_p95_ms": _percentile(latencies, 95),
+        "samples": samples,
     }
 
 
@@ -504,6 +530,12 @@ def main() -> int:
             "authenticated providers="
             f"{messenger['authenticated_provider_sample_counts']}, "
             f"passed={messenger['installed_uat_passed']}"
+        )
+        remote = report["remote_audio_latency"]
+        print(
+            "Relay Remote submit to first audio: "
+            f"{remote['sample_count']} replies, p50 {remote['submit_to_first_audio_p50_ms']} ms, "
+            f"p95 {remote['submit_to_first_audio_p95_ms']} ms"
         )
         for sample in report["samples"]:
             print(json.dumps(sample, sort_keys=True))

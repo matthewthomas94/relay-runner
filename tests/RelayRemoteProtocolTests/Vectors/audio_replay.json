@@ -1,0 +1,172 @@
+[
+ {
+  "name": "parts_replay_after_the_frame_they_voice",
+  "steps": [
+   {
+    "op": "speech",
+    "at": 0
+   },
+   {
+    "op": "audio",
+    "seq": 1,
+    "count": 2,
+    "kept": true
+   },
+   {
+    "op": "speech",
+    "at": 0
+   },
+   {
+    "op": "audio",
+    "seq": 1,
+    "count": 1,
+    "kept": true
+   },
+   {
+    "op": "audio",
+    "seq": 2,
+    "count": 1,
+    "kept": true
+   },
+   {
+    "op": "resume",
+    "after": 0,
+    "at": 1,
+    "expect": {
+     "replayed": [
+      "speech 1",
+      "audio 1.0",
+      "audio 1.1",
+      "audio 1.2",
+      "speech 2",
+      "audio 2.0"
+     ],
+     "dropped": false,
+     "server_seq": 2
+    }
+   }
+  ]
+ },
+ {
+  "name": "resume_after_a_frame_skips_its_parts",
+  "steps": [
+   {
+    "op": "speech",
+    "at": 0
+   },
+   {
+    "op": "audio",
+    "seq": 1,
+    "count": 2,
+    "kept": true
+   },
+   {
+    "op": "speech",
+    "at": 0
+   },
+   {
+    "op": "resume",
+    "after": 1,
+    "at": 1,
+    "expect": {
+     "replayed": [
+      "speech 2"
+     ],
+     "dropped": false,
+     "server_seq": 2
+    }
+   }
+  ]
+ },
+ {
+  "name": "ack_trims_parts_with_their_frame",
+  "steps": [
+   {
+    "op": "speech",
+    "at": 0
+   },
+   {
+    "op": "audio",
+    "seq": 1,
+    "count": 1,
+    "kept": true
+   },
+   {
+    "op": "speech",
+    "at": 0
+   },
+   {
+    "op": "ack",
+    "seq": 1
+   },
+   {
+    "op": "audio",
+    "seq": 1,
+    "count": 1,
+    "kept": false
+   },
+   {
+    "op": "audio",
+    "seq": 2,
+    "count": 1,
+    "kept": true
+   },
+   {
+    "op": "resume",
+    "after": 0,
+    "at": 1,
+    "expect": {
+     "replayed": [
+      "speech 2",
+      "audio 2.0"
+     ],
+     "dropped": false,
+     "server_seq": 2
+    }
+   }
+  ]
+ },
+ {
+  "name": "parts_expire_with_their_frame_and_never_attach_to_status",
+  "steps": [
+   {
+    "op": "speech",
+    "at": 0
+   },
+   {
+    "op": "audio",
+    "seq": 1,
+    "count": 1,
+    "kept": true
+   },
+   {
+    "op": "status",
+    "at": 400
+   },
+   {
+    "op": "audio",
+    "seq": 1,
+    "count": 1,
+    "kept": false
+   },
+   {
+    "op": "audio",
+    "seq": 2,
+    "count": 1,
+    "kept": false
+   },
+   {
+    "op": "resume",
+    "after": 0,
+    "at": 401,
+    "expect": {
+     "replayed": [
+      "status 2"
+     ],
+     "dropped": true,
+     "server_seq": 2
+    }
+   }
+  ]
+ }
+]

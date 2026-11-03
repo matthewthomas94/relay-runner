@@ -16,11 +16,13 @@ import time
 import wave
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
 from config import load_config
 from custom_voice import ConversionClient, ConversionCancelled, CustomVoiceError, ID_RE, voices_root, support_root, load_profile, load_runtime
+import remote_audio
 from speech_player import SpeechPlaybackError, SpeechPlayer
 from voice_audio_lease import VoiceAudioLease
 
@@ -32,6 +34,20 @@ class VoiceSelection:
     custom_id: str
     epoch: int
     fingerprint: str = ""
+
+@dataclass(frozen=True)
+class RemoteSpeechJob:
+    """One reply voiced for a Relay Remote phone (RR-457).
+
+    ``emit`` receives each ``remote_audio.AudioPart`` in order; ``failed`` gets
+    a reason after the stream was ended early with an empty final part.
+    """
+
+    text: str
+    utterance_id: str
+    cancelled: Callable[[], bool]
+    emit: Callable[[remote_audio.AudioPart], None]
+    failed: Callable[[str], None]
 
 TTS_CONTROL_SOCK = os.environ.get("TTS_CONTROL_SOCK", "/tmp/tts_control.sock")
 VOICE_STATE_SOCK = os.environ.get("VOICE_STATE_SOCK", "/tmp/voice_state.sock")
@@ -244,6 +260,10 @@ class TTSWorker:
         self._converter = ConversionClient()
         self._last_wav_profile_id = ""
         self._last_wav_rate = None
+        # RR-457: replies voiced for a Relay Remote phone, one job at a time.
+        self._remote_jobs: queue.Queue = queue.Queue()
+        self._remote_encode = remote_audio.encode
+        self._remote_encoding_failed = not remote_audio.encoder_available()
 
         # Read initial config
         cfg = load_config()["tts"]
@@ -261,6 +281,8 @@ class TTSWorker:
         # Collector thread — drains input_queue into _pending_text
         self._collector = threading.Thread(target=self._collect_loop, daemon=True)
         self._collector.start()
+        self._remote_thread = threading.Thread(target=self._remote_loop, daemon=True)
+        self._remote_thread.start()
 
         # Relay mode gives control-socket ownership to SpeechCoordinator.
         self._control: threading.Thread | None = None
@@ -855,6 +877,103 @@ class TTSWorker:
             except OSError:
                 pass
             raise
+
+    def remote_audio_available(self) -> bool:
+        """A Relay Remote reply can be voiced here: a voice is loaded and encoding works."""
+        return bool(self._kokoro) and not self._remote_encoding_failed
+
+    def synthesize_remote(self, **job) -> None:
+        """Queue a reply to voice for a Relay Remote phone (RR-457).
+
+        Jobs run in order on one thread. Each sentence is synthesised, encoded
+        and emitted before the next one starts. The speech player and the
+        VoiceAudioLease are never touched, so no Mac audio device opens.
+        """
+        self._remote_jobs.put(RemoteSpeechJob(**job))
+
+    def _remote_loop(self):
+        while not self._shutdown:
+            try:
+                job = self._remote_jobs.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                self._voice_remote(job)
+            except Exception as e:
+                print(f"[tts_worker] Remote speech error: {e}", file=sys.stderr)
+
+    def _voice_remote(self, job: RemoteSpeechJob):
+        selection = self._selection()
+        voice = None
+        if selection.custom_id:
+            try:
+                voice = load_profile(selection.custom_id), load_runtime()
+            except CustomVoiceError:
+                pass
+        chunks = _sentence_chunks(job.text)
+        sent = 0
+        try:
+            for index, text in enumerate(chunks):
+                if job.cancelled():
+                    return
+                wav, voice = self._render_remote_sentence(text, selection, voice, job)
+                if not wav:
+                    if job.cancelled():
+                        return
+                    raise CustomVoiceError("synthesis_failed")
+                try:
+                    data = self._remote_encode(wav)
+                except Exception as exc:
+                    # Later replies go out as text for the phone's own voice.
+                    self._remote_encoding_failed = True
+                    raise remote_audio.EncodingError("encoding_failed") from exc
+                finally:
+                    self._remove_wav(wav)
+                pieces = remote_audio.split(data)
+                final = index == len(chunks) - 1
+                total = sent + len(pieces) if final else 0
+                for offset, piece in enumerate(pieces):
+                    if job.cancelled():
+                        return
+                    job.emit(remote_audio.AudioPart(
+                        part=sent, parts=total, last=final and offset == len(pieces) - 1, data=piece,
+                    ))
+                    sent += 1
+        except Exception as exc:
+            # Always end the stream so the phone does not wait for audio that
+            # will never come; unexpected errors get a fixed, path-free reason.
+            if job.cancelled():
+                return
+            job.emit(remote_audio.AudioPart(part=sent, parts=sent + 1, last=True, data=""))
+            known = isinstance(exc, (CustomVoiceError, remote_audio.EncodingError))
+            job.failed(str(exc) if known else "synthesis_failed")
+
+    def _render_remote_sentence(self, text, selection, voice, job):
+        """One sentence as a WAV path, and the custom voice still in use (None once it fails)."""
+        current = lambda: not job.cancelled()
+        if voice is not None:
+            base = self._bounded_synthesis(text, selection, current)
+            if not base:
+                return None, voice
+            fd, name = tempfile.mkstemp(suffix=".wav", prefix="relay-custom-")
+            os.close(fd)
+            try:
+                self._converter.convert(Path(base), Path(name), *voice, utterance_id=job.utterance_id,
+                                        generation=0, cancelled=job.cancelled)
+                return name, voice
+            except ConversionCancelled:
+                self._remove_wav(name)
+                return None, voice
+            except CustomVoiceError:
+                self._remove_wav(name)
+                if job.cancelled():
+                    return None, voice
+                voice = None
+            finally:
+                self._remove_wav(base)
+        if selection.custom_id:
+            selection = replace(selection, voice="bm_george")
+        return self._bounded_synthesis(text, selection, current), voice
 
     def _start_speculation(self, text: str):
         """Begin (or restart) speculative TTS gen for `text` in a daemon thread.

@@ -7,6 +7,8 @@ public enum RelayRemoteProtocol {
     public static let version = 1
     /// Maximum bytes of one JSON line, excluding the trailing newline.
     public static let maxLineBytes = 64 * 1024
+    /// Maximum base64 bytes of Mac-voiced audio in one `speech_audio` frame (RR-457).
+    public static let maxAudioDataBytes = 32 * 1024
 }
 
 /// Same values as `SPEECH_KINDS` in services/speech_coordinator.py.
@@ -31,6 +33,11 @@ public enum SpeechControlAction: String, Codable, Sendable {
 /// the phone only shows the text. Absent means `phone`, as before RR-454.
 public enum SpokenBy: String, Codable, Sendable {
     case mac, phone
+}
+
+/// Codec of a `speech_audio` stream (RR-457). `aac` is AAC-LC in ADTS framing.
+public enum AudioFormat: String, Codable, Sendable {
+    case aac, opus
 }
 
 public struct Hello: Codable, Equatable, Sendable {
@@ -140,15 +147,44 @@ public struct Speech: Codable, Equatable, Sendable {
     public var text: String
     public var relayCommandSeq: Int?
     public var spokenBy: SpokenBy?
+    /// True when `speech_audio` parts in the Mac's voice follow (RR-457).
+    public var audio: Bool?
 
     public init(seq: Int, kind: SpeechKind, source: SpeechSource, text: String, relayCommandSeq: Int? = nil,
-                spokenBy: SpokenBy? = nil) {
+                spokenBy: SpokenBy? = nil, audio: Bool? = nil) {
         self.seq = seq
         self.kind = kind
         self.source = source
         self.text = text
         self.relayCommandSeq = relayCommandSeq
         self.spokenBy = spokenBy
+        self.audio = audio
+    }
+}
+
+/// One slice of the Mac's voice for the `speech` frame `seq` (RR-457). The parts
+/// of one seq are consecutive slices of one encoded stream. `parts` is the total
+/// once known, otherwise 0; the final part carries `last: true`. It takes no seq
+/// of its own and is replayed with the frame it voices.
+public struct SpeechAudio: Codable, Equatable, Sendable {
+    public var seq: Int
+    public var part: Int
+    public var parts: Int
+    public var format: AudioFormat
+    public var sampleRate: Int
+    /// Base64, at most `RelayRemoteProtocol.maxAudioDataBytes`.
+    public var data: String
+    public var last: Bool?
+
+    public init(seq: Int, part: Int, parts: Int, format: AudioFormat, sampleRate: Int, data: String,
+                last: Bool? = nil) {
+        self.seq = seq
+        self.part = part
+        self.parts = parts
+        self.format = format
+        self.sampleRate = sampleRate
+        self.data = data
+        self.last = last
     }
 }
 
@@ -204,6 +240,7 @@ public enum Frame: Equatable, Sendable {
     case welcome(Welcome)
     case accepted(Accepted)
     case speech(Speech)
+    case speechAudio(SpeechAudio)
     case speechControl(SpeechControl)
     case status(Status)
     case error(ErrorFrame)
@@ -220,6 +257,7 @@ public enum Frame: Equatable, Sendable {
         case .welcome: return "welcome"
         case .accepted: return "accepted"
         case .speech: return "speech"
+        case .speechAudio: return "speech_audio"
         case .speechControl: return "speech_control"
         case .status: return "status"
         case .error: return "error"
@@ -235,6 +273,7 @@ public enum Frame: Equatable, Sendable {
     }
 
     /// The per-device sequence number carried by replayable Mac-to-phone frames.
+    /// `speech_audio` takes none: its `seq` names the `speech` frame it voices.
     public var seq: Int? {
         switch self {
         case .speech(let f): return f.seq
@@ -261,6 +300,7 @@ extension Frame: Codable {
         case .welcome(let f): try f.encode(to: encoder)
         case .accepted(let f): try f.encode(to: encoder)
         case .speech(let f): try f.encode(to: encoder)
+        case .speechAudio(let f): try f.encode(to: encoder)
         case .speechControl(let f): try f.encode(to: encoder)
         case .status(let f): try f.encode(to: encoder)
         case .error(let f): try f.encode(to: encoder)
@@ -281,6 +321,7 @@ extension Frame: Codable {
         case "welcome": self = .welcome(try Welcome(from: decoder))
         case "accepted": self = .accepted(try Accepted(from: decoder))
         case "speech": self = .speech(try Speech(from: decoder))
+        case "speech_audio": self = .speechAudio(try SpeechAudio(from: decoder))
         case "speech_control": self = .speechControl(try SpeechControl(from: decoder))
         case "status": self = .status(try Status(from: decoder))
         case "error": self = .error(try ErrorFrame(from: decoder))

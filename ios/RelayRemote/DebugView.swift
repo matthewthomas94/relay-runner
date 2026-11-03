@@ -200,6 +200,7 @@ struct DebugView: View {
         case .accepted(let accepted): return "command \(accepted.relayCommandSeq)"
         case .speech(let speech):
             return "#\(speech.seq) \(speech.kind.rawValue)\(speech.spokenBy == .mac ? " (Mac)" : "") · \(speech.text)"
+        case .speechAudio(let audio): return "#\(audio.seq) audio part \(audio.part)\(audio.last == true ? " (last)" : "")"
         case .speechControl(let control): return "#\(control.seq) \(control.action.rawValue) \(control.reason ?? "")"
         case .status(let status): return "#\(status.seq) \(status.text)"
         case .error(let error): return "\(error.code): \(error.message)"

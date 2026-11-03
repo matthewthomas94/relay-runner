@@ -83,5 +83,30 @@
   "name": "hello_remote_mode_not_bool",
   "line": "{\"type\":\"hello\",\"protocol\":1,\"device_id\":\"d\",\"device_name\":\"iPhone\",\"app_version\":\"0.1\",\"remote_mode\":\"on\"}",
   "error": "invalid_field"
+ },
+ {
+  "name": "speech_audio_unknown_format",
+  "line": "{\"type\":\"speech_audio\",\"seq\":46,\"part\":0,\"parts\":0,\"format\":\"mp3\",\"sample_rate\":24000,\"data\":\"AAAA\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "speech_audio_missing_data",
+  "line": "{\"type\":\"speech_audio\",\"seq\":46,\"part\":0,\"parts\":0,\"format\":\"aac\",\"sample_rate\":24000}",
+  "error": "missing_field"
+ },
+ {
+  "name": "speech_audio_part_not_int",
+  "line": "{\"type\":\"speech_audio\",\"seq\":46,\"part\":\"0\",\"parts\":0,\"format\":\"aac\",\"sample_rate\":24000,\"data\":\"AAAA\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "speech_audio_last_not_bool",
+  "line": "{\"type\":\"speech_audio\",\"seq\":46,\"part\":0,\"parts\":1,\"format\":\"aac\",\"sample_rate\":24000,\"data\":\"AAAA\",\"last\":1}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "speech_audio_flag_not_bool",
+  "line": "{\"type\":\"speech\",\"seq\":1,\"kind\":\"final\",\"source\":\"orchestrator\",\"text\":\"x\",\"audio\":\"yes\"}",
+  "error": "invalid_field"
  }
 ]

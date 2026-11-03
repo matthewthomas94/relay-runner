@@ -50,6 +50,8 @@ public struct ReplayBuffer: Sendable {
         var seq: Int
         var frame: Frame
         var at: Double
+        /// `speech_audio` parts kept with this `speech` frame (RR-457).
+        var audio: [Frame] = []
     }
 
     private var entries: [Entry] = []
@@ -65,6 +67,18 @@ public struct ReplayBuffer: Sendable {
         prune(now: now)
     }
 
+    /// Keeps an audio part with the `speech` frame it voices (RR-457). A resume
+    /// replays the parts straight after that frame; they leave with it on ack or
+    /// expiry and do not count towards the frame limit. False when the frame is
+    /// no longer held.
+    @discardableResult
+    public mutating func attach(_ part: SpeechAudio) -> Bool {
+        guard let index = entries.lastIndex(where: { $0.seq == part.seq }),
+              case .speech = entries[index].frame else { return false }
+        entries[index].audio.append(.speechAudio(part))
+        return true
+    }
+
     public mutating func ack(_ seq: Int) {
         guard seq <= serverSeq else { return }
         highestAcked = max(highestAcked, seq)
@@ -78,7 +92,7 @@ public struct ReplayBuffer: Sendable {
         guard let after else { return Resume(frames: [], dropped: false, serverSeq: serverSeq) }
         guard after <= serverSeq else { return Resume(frames: [], dropped: true, serverSeq: serverSeq) }
         let effective = max(after, highestAcked)
-        let frames = entries.filter { $0.seq > effective }.map(\.frame)
+        let frames = entries.filter { $0.seq > effective }.flatMap { [$0.frame] + $0.audio }
         let dropped = effective < serverSeq && (frames.first?.seq ?? Int.max) > effective + 1
         return Resume(frames: frames, dropped: dropped, serverSeq: serverSeq)
     }

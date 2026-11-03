@@ -48,6 +48,24 @@ class RelayRemoteProtocolTests(unittest.TestCase):
             proto.decode(exact[:-1] + b"a\n")
         self.assertEqual(ctx.exception.code, "line_too_long")
 
+    def test_audio_data_limit_on_encode_and_decode(self):
+        limit = load("limits")["max_audio_data_bytes"]
+        self.assertEqual(limit, proto.MAX_AUDIO_DATA_BYTES)
+
+        def part(n):
+            return proto.SpeechAudio(46, 0, 1, "aac", 24000, "A" * n, last=True)
+
+        line = proto.encode(part(limit))
+        self.assertLess(len(line), proto.MAX_LINE_BYTES)
+        self.assertEqual(proto.decode(line), part(limit))
+        with self.assertRaises(proto.FrameError) as ctx:
+            proto.encode(part(limit + 1))
+        self.assertEqual(ctx.exception.code, "invalid_field")
+        over = line.replace(b'"data":"', b'"data":"A', 1)
+        with self.assertRaises(proto.FrameError) as ctx:
+            proto.decode(over)
+        self.assertEqual(ctx.exception.code, "invalid_field")
+
     def test_seq_counter_is_monotonic(self):
         counter = proto.SeqCounter()
         self.assertEqual([counter.next(), counter.next(), counter.next()], [1, 2, 3])
@@ -76,6 +94,43 @@ class RelayRemoteProtocolTests(unittest.TestCase):
                     if seqs:
                         self.assertEqual(seqs, list(range(seqs[0], seqs[-1] + 1)), name)
                     self.assertEqual([seqs[0], seqs[-1]] if seqs else None, expect["replayed_range"], name)
+                    self.assertEqual(result.dropped, expect["dropped"], name)
+                    self.assertEqual(result.server_seq, expect["server_seq"], name)
+
+    def test_audio_replay_vectors(self):
+        def label(frame):
+            if isinstance(frame, proto.SpeechAudio):
+                return f"audio {frame.seq}.{frame.part}"
+            return f"{frame.TYPE} {frame.seq}"
+
+        for scenario in load("audio_replay"):
+            name = scenario["name"]
+            counter = proto.SeqCounter()
+            buffer = proto.ReplayBuffer()
+            parts: dict[int, int] = {}
+            for step in scenario["steps"]:
+                op = step["op"]
+                if op in ("speech", "status"):
+                    seq = counter.next()
+                    frame = (
+                        proto.Speech(seq, "final", "orchestrator", f"frame {seq}", audio=True)
+                        if op == "speech" else proto.Status(seq, f"frame {seq}")
+                    )
+                    buffer.record(frame, step["at"])
+                elif op == "audio":
+                    for _ in range(step["count"]):
+                        part = parts.get(step["seq"], 0)
+                        parts[step["seq"]] = part + 1
+                        audio = proto.SpeechAudio(step["seq"], part, 0, "aac", 24000, "AAAA")
+                        self.assertEqual(buffer.attach(audio), step["kept"], name)
+                        with self.assertRaises(proto.FrameError, msg=name):
+                            buffer.record(audio, 0)
+                elif op == "ack":
+                    buffer.ack(step["seq"])
+                else:
+                    result = buffer.resume(step["after"], step["at"])
+                    expect = step["expect"]
+                    self.assertEqual([label(f) for f in result.frames], expect["replayed"], name)
                     self.assertEqual(result.dropped, expect["dropped"], name)
                     self.assertEqual(result.server_seq, expect["server_seq"], name)
 
