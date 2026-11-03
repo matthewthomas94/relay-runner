@@ -406,6 +406,71 @@ final class NotchStatusPlacementTests: XCTestCase {
         }
     }
 
+    func testRestingLabelsStayWithinBudgetAndLongNamesTruncate() throws {
+        let name = String(repeating: "N", count: 40)
+        let states: [OverlayState] = [
+            .listening, .sent, .cancelled(.stt), .cancelled(.tts), .acknowledgement(text: "Ok", autoDismiss: 1),
+            .messageWaiting(preview: "Ready"), .replayWaiting(preview: nil), .preparing, .speaking,
+            .speechFailed, .actionGlow(awaitingConfirmation: nil),
+        ]
+        var labels = states.flatMap {
+            NotchVisualLabelAllowlist.presentation(
+                for: $0, voiceTargetName: name, playbackTargetName: name
+            ).labels
+        }
+        labels.append("Remote: \(name)")
+        labels.append("Listening")
+        let cap = NotchStatusPlacementPlanner.maximumRestingLabelWidth
+        let geometry = NotchStatusDisplayGeometry(
+            frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 944),
+            auxiliaryTopLeftArea: CGRect(x: 0, y: 950, width: 663, height: 32),
+            auxiliaryTopRightArea: CGRect(x: 848, y: 950, width: 664, height: 32)
+        )
+        for label in labels {
+            let width = NotchStatusController.displayedActivityLabelWidth(
+                status: .working,
+                compactLabel: label,
+                workingProgressLabel: label,
+                workingGlyphHovered: false,
+                workingStatusRevealActive: true
+            )
+            XCTAssertLessThanOrEqual(width, cap, label)
+            let placement = try XCTUnwrap(
+                NotchStatusPlacementPlanner.placement(for: geometry, activityLabelWidth: width)
+            )
+            XCTAssertLessThanOrEqual(
+                geometry.auxiliaryTopLeftArea.maxX - placement.visibleFrame.minX, 180, label
+            )
+        }
+        XCTAssertLessThanOrEqual(
+            cap - NotchActivityLabelRenderPolicy.textLeadingInset
+                - NotchActivityLabelRenderPolicy.textRightGlyphClearance - 8,
+            160
+        )
+        // State words alone fit without truncation.
+        for state in states {
+            for label in NotchVisualLabelAllowlist.presentation(for: state).labels {
+                XCTAssertLessThanOrEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: label), cap, label)
+            }
+        }
+        let stateWord = NotchStatusPlacementPlanner.activityLabelWidth(for: "Listening ·")
+        XCTAssertLessThan(stateWord, cap)
+    }
+
+    func testHoverRevealKeepsFullProgressTextWithinWorkingCap() {
+        let long = String(repeating: "Reading the notch status controller ", count: 5)
+        let hovered = NotchStatusController.displayedActivityLabelWidth(
+            status: .working,
+            compactLabel: "Working",
+            workingProgressLabel: long,
+            workingGlyphHovered: true,
+            workingStatusRevealActive: false
+        )
+        XCTAssertGreaterThan(hovered, NotchStatusPlacementPlanner.maximumRestingLabelWidth)
+        XCTAssertLessThanOrEqual(hovered, NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth)
+    }
+
     func testActivityLabelWidthMatchesUpdatedDesignScale() {
         XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: nil), 0)
         XCTAssertEqual(NotchStatusPlacementPlanner.activityLabelWidth(for: ""), 0)
