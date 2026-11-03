@@ -82,13 +82,21 @@ public struct FrameRecord: Equatable, Sendable, Identifiable {
 /// hello with `resume_after_seq`, acks, utterance retries, pings, and
 /// reconnects with exponential backoff and jitter. Frames are only written
 /// after the channel is open, so a refused host key sends nothing.
+///
+/// With no session running on the Mac the channel reaches Relay Runner's
+/// session-control socket instead (RR-456, `.connectedToApp`): projects can
+/// be listed and a session started or stopped, and once it is ready the
+/// channel is reopened so the helper attaches to its voice bridge.
 @MainActor
 @Observable
 public final class RemoteSession {
     public enum State: Equatable, Sendable {
         case idle
         case connecting
+        /// Attached to a running session's voice bridge.
         case connected
+        /// Reached Relay Runner on the Mac, which has no session to attach to.
+        case connectedToApp
         case waiting(retryIn: Double)
         case failed(RemoteFailure)
     }
@@ -101,6 +109,12 @@ public final class RemoteSession {
     public private(set) var lastError: ErrorFrame?
     /// The code of the last non-terminal connection failure, for the debug screen.
     public private(set) var lastDisconnect: String?
+    /// The Mac's latest `session_state` (RR-456).
+    public private(set) var macSession: SessionState?
+    /// The Mac's reason for a refused or failed session command.
+    public private(set) var sessionError: String?
+    /// The helper last found Relay Runner not running on the Mac.
+    public private(set) var appUnavailable = false
 
     public var resumeAfterSeq: Int? { core.lastSeq }
     /// On: the phone owns the microphone and speaker. Off: the Mac speaks and
@@ -129,6 +143,8 @@ public final class RemoteSession {
     @ObservationIgnored private var connection: RemoteConnection?
     @ObservationIgnored private var lastInbound: Double = 0
     @ObservationIgnored private var nextRecordID = 0
+    /// The session-control channel just saw its session become ready.
+    @ObservationIgnored private var reattachNow = false
 
     public init(configuration: SessionConfiguration, transport: RemoteTransport, endpoints: EndpointProvider,
                 environment: SessionEnvironment = .live, log: RemoteLogger = .system) {
@@ -194,6 +210,19 @@ public final class RemoteSession {
         return true
     }
 
+    /// Lists projects, or starts, stops or inspects the Mac's session (RR-456).
+    /// Works attached to a voice bridge, where the helper hands it to the app,
+    /// and on a session-control channel. False when no channel is up: a
+    /// start or stop the user asked for minutes ago should not run later.
+    @discardableResult
+    public func send(sessionCommand action: SessionAction, projectID: String? = nil) -> Bool {
+        guard let connection, core.isEstablished else { return false }
+        core.sessionCommandSent()
+        sessionError = nil
+        transmit(.sessionCommand(Self.sessionCommand(action, projectID: projectID)), on: connection)
+        return true
+    }
+
     /// Changes the Remote mode switch. A connected Mac hears it at once; the
     /// next `hello` carries it either way, so a change made offline still lands.
     public func setRemoteMode(_ enabled: Bool) {
@@ -230,12 +259,16 @@ public final class RemoteSession {
             do {
                 welcomedAt = try await connectAndServe()
             } catch let failure as RemoteFailure where failure.isTerminal && !Task.isCancelled {
+                core.connectionFailed()
+                appUnavailable = core.appUnavailable
                 finishConnection()
                 state = .failed(failure)
                 log("session stopped: \(failure.code)")
                 loop = nil
                 return
             } catch {
+                core.connectionFailed()
+                appUnavailable = core.appUnavailable
                 if !Task.isCancelled {
                     lastDisconnect = RemoteFailure.code(for: error)
                     log("connection ended: \(RemoteFailure.code(for: error))")
@@ -244,6 +277,13 @@ public final class RemoteSession {
             // After stop() the session may already belong to a newer loop.
             guard !Task.isCancelled else { return }
             finishConnection()
+            if reattachNow {
+                // The session the phone asked for is up: attach to it now.
+                reattachNow = false
+                backoff.reset()
+                log("attaching to the new session")
+                continue
+            }
 
             if let welcomedAt, environment.now() - welcomedAt >= configuration.timing.stableAfter {
                 backoff.reset()
@@ -262,8 +302,8 @@ public final class RemoteSession {
         }
     }
 
-    /// Returns when the welcomed connection was established, or nil when it
-    /// ended before `welcome`.
+    /// Returns when the connection was welcomed by a bridge or answered by the
+    /// session-control socket, or nil when it ended before either.
     private func connectAndServe() async throws -> Double? {
         let timing = configuration.timing
         let connection = try await openChannel()
@@ -276,7 +316,7 @@ public final class RemoteSession {
 
         let handshake = Task { [environment, weak self] in
             try await environment.sleep(.handshake, timing.handshakeTimeout)
-            guard let self, !self.core.isWelcomed else { return }
+            guard let self, !self.core.isEstablished else { return }
             self.lastDisconnect = RemoteFailure.handshakeTimeout.code
             connection.close()
         }
@@ -298,25 +338,42 @@ public final class RemoteSession {
                 log("frame ignored: \((error as? FrameError)?.code ?? "decode")")
                 continue
             }
-            let wasWelcomed = core.isWelcomed
+            let wasEstablished = core.isEstablished
             let reaction = core.receive(frame, now: environment.now())
             if reaction.isNew { append(.received, frame) }
             expiredCount += reaction.expired.count
             for out in reaction.send { transmit(out, on: connection) }
-            if !wasWelcomed, core.isWelcomed {
+            if !wasEstablished, core.isEstablished {
                 welcomedAt = environment.now()
-                state = .connected
                 lastDisconnect = nil
-                log("welcomed")
-                flushAckOutbox(on: connection)
-                // The first ping doubles as the replay barrier.
-                transmit(.ping(Ping(t: environment.wallClock())), on: connection)
+                if core.isWelcomed {
+                    state = .connected
+                    log("welcomed")
+                    flushAckOutbox(on: connection)
+                    // The first ping doubles as the replay barrier.
+                    transmit(.ping(Ping(t: environment.wallClock())), on: connection)
+                    // Which project this session belongs to (RR-456).
+                    transmit(.sessionCommand(Self.sessionCommand(.state)), on: connection)
+                } else {
+                    state = .connectedToApp
+                    log("reached the app without a session")
+                    transmit(.ping(Ping(t: environment.wallClock())), on: connection)
+                }
                 pinger = startPinger(connection)
             }
             pending = core.pending
             missedUpdates = core.missedUpdates
             lastError = core.lastError
+            macSession = core.macSession
+            sessionError = core.sessionError
+            appUnavailable = core.appUnavailable
             if reaction.isNew || frame.seq == nil { onInbound?(frame) }
+            if let reattach = reaction.reattach {
+                reattachNow = reattach == .now
+                log("session ready: reconnecting to attach")
+                connection.close()
+                break
+            }
         }
         return welcomedAt
     }
@@ -394,9 +451,13 @@ public final class RemoteSession {
         guard let line = try? FrameCodec.encode(frame) else { return }
         connection.send(line)
         switch frame {
-        case .hello, .utterance, .control, .remoteMode: append(.sent, frame)
+        case .hello, .utterance, .control, .remoteMode, .sessionCommand: append(.sent, frame)
         default: break
         }
+    }
+
+    private static func sessionCommand(_ action: SessionAction, projectID: String? = nil) -> SessionCommand {
+        SessionCommand(clientId: UUID().uuidString.lowercased(), action: action, projectId: projectID)
     }
 
     private func append(_ direction: FrameRecord.Direction, _ frame: Frame) {

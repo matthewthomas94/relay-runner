@@ -68,6 +68,7 @@ public enum FrameCodec {
         case .utterance(let f): try requireUUID(f.clientId)
         case .control(let f): try requireUUID(f.clientId)
         case .remoteMode(let f): try requireUUID(f.clientId)
+        case .sessionCommand(let f): try requireUUID(f.clientId)
         case .accepted(let f): try requireUUID(f.clientId)
         default: break
         }

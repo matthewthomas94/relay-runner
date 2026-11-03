@@ -341,7 +341,7 @@ final class RelayRemotePairingTests: XCTestCase {
         PasswordAuthentication no
         KbdInteractiveAuthentication no
         PubkeyAuthentication yes
-        SetEnv RELAY_REMOTE_PAIR_SOCKET_PATH=\(environment.pairSocketPath) RELAY_REMOTE_SOCKET_PATH=\(root.appendingPathComponent("none.sock").path)
+        SetEnv RELAY_REMOTE_PAIR_SOCKET_PATH=\(environment.pairSocketPath) RELAY_REMOTE_SOCKET_PATH=\(root.appendingPathComponent("none.sock").path) RELAY_SESSION_CONTROL_SOCKET_PATH=\(root.appendingPathComponent("no-app.sock").path)
         LogLevel ERROR
 
         """.write(to: config, atomically: true, encoding: .utf8)
@@ -372,10 +372,12 @@ final class RelayRemotePairingTests: XCTestCase {
         XCTAssertEqual(lines.first, "command=\"'\(environment.shimURL.path)' --device phone-1\",restrict \(phonePublic.openSSH) relay-remote:phone-1")
         XCTAssertFalse(authorizedKeys().contains("relay-remote-pair:"))
 
-        // The device key now runs the helper in --device mode (no bridge here).
+        // The device key now runs the helper in --device mode. With neither a
+        // bridge nor the app's session-control socket here it reports that
+        // Relay Runner is not running (RR-456).
         let device = ssh(URL(fileURLWithPath: phoneKeyPath))
         let deviceReply = try exchange(device, send: #"{"type":"ping","t":1}"#)
-        XCTAssertTrue(deviceReply.contains(#""code":"bridge_unavailable""#), deviceReply)
+        XCTAssertTrue(deviceReply.contains(#"{"app_running":false,"session":"none","type":"session_state"}"#), deviceReply)
 
         // The pairing key no longer authenticates.
         let reused = ssh(pairingKeyPath)

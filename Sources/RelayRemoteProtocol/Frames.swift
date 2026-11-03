@@ -88,6 +88,51 @@ public struct RemoteMode: Codable, Equatable, Sendable {
     }
 }
 
+/// What a `session_command` asks Relay Runner on the Mac to do (RR-456).
+public enum SessionAction: String, Codable, Sendable {
+    case listProjects = "list_projects"
+    case start, stop, state
+}
+
+/// The Mac's Relay session as `session_state` reports it (RR-456).
+public enum SessionPhase: String, Codable, Sendable {
+    /// Named so that `SessionPhase?` comparisons never read as `Optional.none`.
+    case noSession = "none"
+    case starting, ready, failed
+}
+
+/// Lists projects, or starts, stops or inspects the Mac's Relay session
+/// (RR-456). `start` needs `project_id`; the Mac's provider, model and effort
+/// defaults apply.
+public struct SessionCommand: Codable, Equatable, Sendable {
+    public var clientId: String
+    public var action: SessionAction
+    public var projectId: String?
+
+    public init(clientId: String, action: SessionAction, projectId: String? = nil) {
+        self.clientId = clientId
+        self.action = action
+        self.projectId = projectId
+    }
+}
+
+/// A registered project as `session_state` lists it. `availability` is the
+/// Mac registry's value (`available`, `missing`, ...); only `available`
+/// projects can start.
+public struct ProjectSummary: Codable, Equatable, Sendable {
+    public var projectId: String
+    public var displayName: String
+    public var availability: String
+
+    public init(projectId: String, displayName: String, availability: String) {
+        self.projectId = projectId
+        self.displayName = displayName
+        self.availability = availability
+    }
+
+    public var isAvailable: Bool { availability == "available" }
+}
+
 public struct Ack: Codable, Equatable, Sendable {
     public var seq: Int
     public var played: Bool
@@ -190,6 +235,31 @@ public struct Pong: Codable, Equatable, Sendable {
     public init(t: Int) { self.t = t }
 }
 
+/// Relay Runner's session as the Mac app reports it (RR-456). The app sends
+/// it over the session-control socket when no voice bridge is running, and
+/// in answer to a `session_command`. `app_running: false` comes from the
+/// forced-command helper when neither socket is listening. `projects` is
+/// present on `list_projects` and on first contact; `error` explains a
+/// refused or failed command.
+public struct SessionState: Codable, Equatable, Sendable {
+    public var appRunning: Bool
+    public var session: SessionPhase
+    public var projectId: String?
+    public var projectName: String?
+    public var projects: [ProjectSummary]?
+    public var error: String?
+
+    public init(appRunning: Bool, session: SessionPhase, projectId: String? = nil, projectName: String? = nil,
+                projects: [ProjectSummary]? = nil, error: String? = nil) {
+        self.appRunning = appRunning
+        self.session = session
+        self.projectId = projectId
+        self.projectName = projectName
+        self.projects = projects
+        self.error = error
+    }
+}
+
 public enum FrameDirection: Sendable {
     case phoneToMac, macToPhone
 }
@@ -199,6 +269,7 @@ public enum Frame: Equatable, Sendable {
     case utterance(Utterance)
     case control(Control)
     case remoteMode(RemoteMode)
+    case sessionCommand(SessionCommand)
     case ack(Ack)
     case ping(Ping)
     case welcome(Welcome)
@@ -208,6 +279,7 @@ public enum Frame: Equatable, Sendable {
     case status(Status)
     case error(ErrorFrame)
     case pong(Pong)
+    case sessionState(SessionState)
 
     public var typeName: String {
         switch self {
@@ -215,6 +287,7 @@ public enum Frame: Equatable, Sendable {
         case .utterance: return "utterance"
         case .control: return "control"
         case .remoteMode: return "remote_mode"
+        case .sessionCommand: return "session_command"
         case .ack: return "ack"
         case .ping: return "ping"
         case .welcome: return "welcome"
@@ -224,12 +297,13 @@ public enum Frame: Equatable, Sendable {
         case .status: return "status"
         case .error: return "error"
         case .pong: return "pong"
+        case .sessionState: return "session_state"
         }
     }
 
     public var direction: FrameDirection {
         switch self {
-        case .hello, .utterance, .control, .remoteMode, .ack, .ping: return .phoneToMac
+        case .hello, .utterance, .control, .remoteMode, .sessionCommand, .ack, .ping: return .phoneToMac
         default: return .macToPhone
         }
     }
@@ -256,6 +330,7 @@ extension Frame: Codable {
         case .utterance(let f): try f.encode(to: encoder)
         case .control(let f): try f.encode(to: encoder)
         case .remoteMode(let f): try f.encode(to: encoder)
+        case .sessionCommand(let f): try f.encode(to: encoder)
         case .ack(let f): try f.encode(to: encoder)
         case .ping(let f): try f.encode(to: encoder)
         case .welcome(let f): try f.encode(to: encoder)
@@ -265,6 +340,7 @@ extension Frame: Codable {
         case .status(let f): try f.encode(to: encoder)
         case .error(let f): try f.encode(to: encoder)
         case .pong(let f): try f.encode(to: encoder)
+        case .sessionState(let f): try f.encode(to: encoder)
         }
     }
 
@@ -276,6 +352,7 @@ extension Frame: Codable {
         case "utterance": self = .utterance(try Utterance(from: decoder))
         case "control": self = .control(try Control(from: decoder))
         case "remote_mode": self = .remoteMode(try RemoteMode(from: decoder))
+        case "session_command": self = .sessionCommand(try SessionCommand(from: decoder))
         case "ack": self = .ack(try Ack(from: decoder))
         case "ping": self = .ping(try Ping(from: decoder))
         case "welcome": self = .welcome(try Welcome(from: decoder))
@@ -285,6 +362,7 @@ extension Frame: Codable {
         case "status": self = .status(try Status(from: decoder))
         case "error": self = .error(try ErrorFrame(from: decoder))
         case "pong": self = .pong(try Pong(from: decoder))
+        case "session_state": self = .sessionState(try SessionState(from: decoder))
         default: throw FrameError.unknownType(type)
         }
     }

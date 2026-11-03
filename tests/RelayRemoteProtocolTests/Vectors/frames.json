@@ -138,5 +138,60 @@
   "name": "pong",
   "direction": "mac_to_phone",
   "line": "{\"t\":1761124443,\"type\":\"pong\"}"
+ },
+ {
+  "name": "session_command_list_projects",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"list_projects\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"session_command\"}"
+ },
+ {
+  "name": "session_command_start",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"start\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"type\":\"session_command\"}"
+ },
+ {
+  "name": "session_command_stop",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"stop\",\"client_id\":\"9a1d6e47-2b83-4c55-8e0f-5d3c7b9a1e22\",\"type\":\"session_command\"}"
+ },
+ {
+  "name": "session_command_state",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"state\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"session_command\"}"
+ },
+ {
+  "name": "session_state_app_not_running",
+  "direction": "mac_to_phone",
+  "line": "{\"app_running\":false,\"session\":\"none\",\"type\":\"session_state\"}"
+ },
+ {
+  "name": "session_state_no_session_with_projects",
+  "direction": "mac_to_phone",
+  "line": "{\"app_running\":true,\"projects\":[{\"availability\":\"available\",\"display_name\":\"relay-runner\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\"},{\"availability\":\"missing\",\"display_name\":\"café notes\",\"project_id\":\"0c9e7f3a-41d2-4b8e-9a65-1f2e3d4c5b6a\"}],\"session\":\"none\",\"type\":\"session_state\"}"
+ },
+ {
+  "name": "session_state_no_projects",
+  "direction": "mac_to_phone",
+  "line": "{\"app_running\":true,\"projects\":[],\"session\":\"none\",\"type\":\"session_state\"}"
+ },
+ {
+  "name": "session_state_starting",
+  "direction": "mac_to_phone",
+  "line": "{\"app_running\":true,\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"project_name\":\"relay-runner\",\"session\":\"starting\",\"type\":\"session_state\"}"
+ },
+ {
+  "name": "session_state_ready",
+  "direction": "mac_to_phone",
+  "line": "{\"app_running\":true,\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"project_name\":\"relay-runner\",\"session\":\"ready\",\"type\":\"session_state\"}"
+ },
+ {
+  "name": "session_state_failed",
+  "direction": "mac_to_phone",
+  "line": "{\"app_running\":true,\"error\":\"Relay Runner could not start relay-runner on this Mac.\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"project_name\":\"relay-runner\",\"session\":\"failed\",\"type\":\"session_state\"}"
+ },
+ {
+  "name": "session_state_start_refused",
+  "direction": "mac_to_phone",
+  "line": "{\"app_running\":true,\"error\":\"relay-runner is already running on this Mac. Stop it before starting café notes.\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"project_name\":\"relay-runner\",\"session\":\"ready\",\"type\":\"session_state\"}"
  }
 ]

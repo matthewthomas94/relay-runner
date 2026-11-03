@@ -83,5 +83,60 @@
   "name": "hello_remote_mode_not_bool",
   "line": "{\"type\":\"hello\",\"protocol\":1,\"device_id\":\"d\",\"device_name\":\"iPhone\",\"app_version\":\"0.1\",\"remote_mode\":\"on\"}",
   "error": "invalid_field"
+ },
+ {
+  "name": "session_command_client_id_not_uuid",
+  "line": "{\"type\":\"session_command\",\"client_id\":\"abc\",\"action\":\"stop\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_command_unknown_action",
+  "line": "{\"type\":\"session_command\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"action\":\"reboot\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_command_missing_action",
+  "line": "{\"type\":\"session_command\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\"}",
+  "error": "missing_field"
+ },
+ {
+  "name": "session_command_project_id_not_string",
+  "line": "{\"type\":\"session_command\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"action\":\"start\",\"project_id\":7}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_state_missing_session",
+  "line": "{\"type\":\"session_state\",\"app_running\":true}",
+  "error": "missing_field"
+ },
+ {
+  "name": "session_state_unknown_phase",
+  "line": "{\"type\":\"session_state\",\"app_running\":true,\"session\":\"paused\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_state_app_running_not_bool",
+  "line": "{\"type\":\"session_state\",\"app_running\":\"yes\",\"session\":\"none\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_state_projects_not_array",
+  "line": "{\"type\":\"session_state\",\"app_running\":true,\"session\":\"none\",\"projects\":{\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\"}}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_state_project_not_object",
+  "line": "{\"type\":\"session_state\",\"app_running\":true,\"session\":\"none\",\"projects\":[\"relay-runner\"]}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_state_project_missing_display_name",
+  "line": "{\"type\":\"session_state\",\"app_running\":true,\"session\":\"none\",\"projects\":[{\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"availability\":\"available\"}]}",
+  "error": "missing_field"
+ },
+ {
+  "name": "session_state_project_name_not_string",
+  "line": "{\"type\":\"session_state\",\"app_running\":true,\"session\":\"none\",\"projects\":[{\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"display_name\":3,\"availability\":\"available\"}]}",
+  "error": "invalid_field"
  }
 ]

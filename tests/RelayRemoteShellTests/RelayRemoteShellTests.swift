@@ -64,6 +64,7 @@ final class RelayRemoteShellTests: XCTestCase {
         var environment = [
             "RELAY_REMOTE_SOCKET_PATH": dir + "/d.sock",
             "RELAY_REMOTE_PAIR_SOCKET_PATH": dir + "/p.sock",
+            "RELAY_SESSION_CONTROL_SOCKET_PATH": dir + "/c.sock",
         ]
         environment.merge(env) { $1 }
         p.environment = environment
@@ -196,9 +197,122 @@ final class RelayRemoteShellTests: XCTestCase {
         XCTAssertLessThan(Darwin.accept(server.listenFD, nil, nil), 0, "no connection must have been attempted")
     }
 
-    func testMissingSocketReportsBridgeUnavailable() throws {
+    // MARK: RR-456 session-control routing
+
+    /// The golden `session_state` line both codecs agree on.
+    private func vectorLine(_ name: String) throws -> String {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("RelayRemoteProtocolTests/Vectors/frames.json")
+        let entries = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
+        return try XCTUnwrap(entries.first { $0["name"] as? String == name }?["line"] as? String)
+    }
+
+    private func nonBlocking(_ server: FakeServer) {
+        _ = fcntl(server.listenFD, F_SETFL, fcntl(server.listenFD, F_GETFL) | O_NONBLOCK)
+    }
+
+    func testNeitherSocketReportsAppNotRunning() throws {
         let (p, _, stdout) = try spawn(["--device", "dev-1"])
-        XCTAssertTrue((readLine(stdout) ?? "").contains(#""code":"bridge_unavailable""#))
+        XCTAssertEqual(readLine(stdout), try vectorLine("session_state_app_not_running"))
         XCTAssertEqual(waitExit(p), 1)
+    }
+
+    func testWithoutABridgeTheDeviceReachesTheSessionControlSocket() throws {
+        let app = try FakeServer(path: dir + "/c.sock")
+        defer { app.shutdown() }
+        let (p, stdin, stdout) = try spawn(["--device", "dev-1"])
+        app.accept()
+        XCTAssertEqual(app.readLine(), #"{"device_id":"dev-1","type":"identify"}"#)
+        let state = try vectorLine("session_state_no_session_with_projects")
+        app.send(state + "\n")
+        XCTAssertEqual(readLine(stdout), state)
+        // Everything the phone sends goes to the app, hello and commands alike.
+        let hello = #"{"app_version":"0.1","device_id":"dev-1","device_name":"iPhone","protocol":1,"type":"hello"}"#
+        try stdin.write(contentsOf: Data((hello + "\n").utf8))
+        XCTAssertEqual(app.readLine(), hello)
+        let start = try vectorLine("session_command_start")
+        try stdin.write(contentsOf: Data((start + "\n").utf8))
+        XCTAssertEqual(app.readLine(), start)
+        try stdin.close()
+        XCTAssertEqual(waitExit(p), 0)
+    }
+
+    func testAppClosingTheControlLinkEndsTheProcess() throws {
+        let app = try FakeServer(path: dir + "/c.sock")
+        defer { app.shutdown() }
+        let (p, _, _) = try spawn(["--device", "dev-1"])
+        app.accept()
+        _ = app.readLine()
+        app.closeClient()
+        XCTAssertEqual(waitExit(p), 0)
+    }
+
+    func testABridgeIsPreferredOverTheSessionControlSocket() throws {
+        let bridge = try FakeServer(path: dir + "/d.sock")
+        let app = try FakeServer(path: dir + "/c.sock")
+        defer { bridge.shutdown(); app.shutdown() }
+        nonBlocking(app)
+        let (p, stdin, _) = try spawn(["--device", "dev-1"])
+        bridge.accept()
+        XCTAssertEqual(bridge.readLine(), #"{"device_id":"dev-1","type":"identify"}"#)
+        try stdin.write(contentsOf: Data(#"{"type":"ping","t":1}"#.utf8 + [0x0A]))
+        XCTAssertEqual(bridge.readLine(), #"{"type":"ping","t":1}"#)
+        XCTAssertLessThan(Darwin.accept(app.listenFD, nil, nil), 0, "the app socket is not opened without a session_command")
+        try stdin.close()
+        XCTAssertEqual(waitExit(p), 0)
+    }
+
+    func testSessionCommandsGoToTheAppWhileAttachedToTheBridge() throws {
+        let bridge = try FakeServer(path: dir + "/d.sock")
+        let app = try FakeServer(path: dir + "/c.sock")
+        defer { bridge.shutdown(); app.shutdown() }
+        let (p, stdin, stdout) = try spawn(["--device", "dev-1"])
+        bridge.accept()
+        _ = bridge.readLine()
+        let stop = try vectorLine("session_command_stop")
+        try stdin.write(contentsOf: Data((stop + "\n").utf8))
+        app.accept()
+        XCTAssertEqual(app.readLine(), #"{"device_id":"dev-1","type":"identify"}"#)
+        XCTAssertEqual(app.readLine(), stop)
+        let state = try vectorLine("session_state_ready")
+        app.send(state + "\n")
+        XCTAssertEqual(readLine(stdout), state)
+        // The bridge never saw the command; its next line is the ping.
+        try stdin.write(contentsOf: Data(#"{"type":"ping","t":2}"#.utf8 + [0x0A]))
+        XCTAssertEqual(bridge.readLine(), #"{"type":"ping","t":2}"#)
+        // The app closing its link leaves the bridge session running.
+        app.closeClient()
+        bridge.send(#"{"type":"pong","t":2}"# + "\n")
+        XCTAssertEqual(readLine(stdout), #"{"type":"pong","t":2}"#)
+        XCTAssertTrue(p.isRunning)
+        try stdin.close()
+        XCTAssertEqual(waitExit(p), 0)
+    }
+
+    func testSessionCommandWithoutTheAppReportsAppUnavailable() throws {
+        let bridge = try FakeServer(path: dir + "/d.sock")
+        defer { bridge.shutdown() }
+        let (p, stdin, stdout) = try spawn(["--device", "dev-1"])
+        bridge.accept()
+        _ = bridge.readLine()
+        try stdin.write(contentsOf: Data((try vectorLine("session_command_state") + "\n").utf8))
+        XCTAssertTrue((readLine(stdout) ?? "").contains(#""code":"app_unavailable""#))
+        try stdin.write(contentsOf: Data(#"{"type":"ping","t":3}"#.utf8 + [0x0A]))
+        XCTAssertEqual(bridge.readLine(), #"{"type":"ping","t":3}"#)
+        try stdin.close()
+        XCTAssertEqual(waitExit(p), 0)
+    }
+
+    func testStatusAndPairingNeverFallBackToTheSessionControlSocket() throws {
+        let app = try FakeServer(path: dir + "/c.sock")
+        defer { app.shutdown() }
+        nonBlocking(app)
+        let (status, _, statusOut) = try spawn(["--device", "dev-1"], env: ["SSH_ORIGINAL_COMMAND": "status"])
+        XCTAssertTrue((readLine(statusOut) ?? "").contains(#""code":"bridge_unavailable""#))
+        XCTAssertEqual(waitExit(status), 1)
+        let (pair, _, pairOut) = try spawn(["--pair", "pair-9"])
+        XCTAssertTrue((readLine(pairOut) ?? "").contains(#""code":"bridge_unavailable""#))
+        XCTAssertEqual(waitExit(pair), 1)
+        XCTAssertLessThan(Darwin.accept(app.listenFD, nil, nil), 0)
     }
 }

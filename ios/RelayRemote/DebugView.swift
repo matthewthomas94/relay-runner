@@ -2,15 +2,16 @@ import RelayRemoteKit
 import RelayRemoteProtocol
 import SwiftUI
 
-/// Debug surface: the Remote mode switch (RR-454), connection state, the voice
-/// controls (RR-429), a field for typed utterances, and the frames that
-/// crossed the wire.
+/// Debug surface: the Remote mode switch (RR-454), the Mac's session with
+/// Start and Stop (RR-456), connection state, the voice controls (RR-429), a
+/// field for typed utterances, and the frames that crossed the wire.
 struct DebugView: View {
     let model: AppModel
     let session: RemoteSession
     let mac: PairedMac
     @State private var text = ""
     @State private var confirmingForget = false
+    @State private var chosenProject: String?
 
     var body: some View {
         List {
@@ -24,6 +25,8 @@ struct DebugView: View {
                      ? "This iPhone listens and speaks. Your Mac stays quiet and awake."
                      : "Your Mac listens and speaks. Replies show here as text.")
             }
+
+            MacSessionSection(session: session, chosenProject: $chosenProject)
 
             Section("Connection") {
                 LabeledContent("State", value: stateLabel)
@@ -151,6 +154,7 @@ struct DebugView: View {
         case .idle: return "Idle"
         case .connecting: return "Connecting"
         case .connected: return "Connected"
+        case .connectedToApp: return "Connected to Relay Runner, no session"
         case .waiting(let delay): return String(format: "Retrying in %.1fs", delay)
         case .failed(let failure): return "Stopped (\(failure.code))"
         }
@@ -195,6 +199,11 @@ struct DebugView: View {
         case .utterance(let utterance): return utterance.text
         case .control(let control): return control.action.rawValue
         case .remoteMode(let mode): return mode.enabled ? "on" : "off"
+        case .sessionCommand(let command):
+            return command.action.rawValue + (command.projectId.map { " \($0)" } ?? "")
+        case .sessionState(let state):
+            guard state.appRunning else { return "Relay Runner not running" }
+            return ([state.session.rawValue] + [state.projectName, state.error].compactMap { $0 }).joined(separator: " · ")
         case .welcome(let welcome):
             return "\(welcome.sessionState), server seq \(welcome.serverSeq)\(welcome.dropped ? ", updates dropped" : "")"
         case .accepted(let accepted): return "command \(accepted.relayCommandSeq)"
@@ -206,6 +215,77 @@ struct DebugView: View {
         case .ack(let ack): return "#\(ack.seq)"
         case .ping(let ping): return "\(ping.t)"
         case .pong(let pong): return "\(pong.t)"
+        }
+    }
+}
+
+/// RR-456: pick a project registered on the Mac and start its session, or stop
+/// the running one. Once it is ready the session reconnects and attaches by
+/// itself. The Mac's provider, model and effort defaults apply.
+struct MacSessionSection: View {
+    let session: RemoteSession
+    @Binding var chosenProject: String?
+    @State private var confirmingStop = false
+
+    var body: some View {
+        let status = MacSessionStatus(session)
+        Section {
+            Label(Self.title(status), systemImage: Self.symbol(status.phase))
+            if let error = status.error {
+                Text(error).font(.footnote).foregroundStyle(.red)
+            }
+            if status.phase == .noSession || status.phase == .failed {
+                if status.projects.isEmpty {
+                    Text("No projects are registered on this Mac.").foregroundStyle(.secondary)
+                } else {
+                    Picker("Project", selection: Binding(
+                        get: { status.startProject(chosen: chosenProject) ?? "" },
+                        set: { chosenProject = $0 }
+                    )) {
+                        ForEach(status.projects, id: \.projectId) { project in
+                            Text(project.isAvailable ? project.displayName : "\(project.displayName) (unavailable)")
+                                .tag(project.projectId)
+                                .selectionDisabled(!project.isAvailable)
+                        }
+                    }
+                }
+                Button("Start session", systemImage: "play.fill") {
+                    session.send(sessionCommand: .start, projectID: status.startProject(chosen: chosenProject))
+                }
+                .disabled(!status.canStart(chosen: chosenProject))
+            }
+            if status.canStop {
+                Button("Stop session", systemImage: "stop.fill", role: .destructive) { confirmingStop = true }
+            }
+        } header: {
+            Text("Mac session")
+        }
+        .confirmationDialog("Stop the session on the Mac?", isPresented: $confirmingStop) {
+            Button("Stop session", role: .destructive) { session.send(sessionCommand: .stop) }
+        }
+    }
+
+    static func title(_ status: MacSessionStatus) -> String {
+        switch status.phase {
+        case .unreachable: return "Mac unreachable"
+        case .connecting: return "Connecting to the Mac"
+        case .appNotRunning: return "Relay Runner is not running on the Mac"
+        case .noSession: return "No session running"
+        case .starting: return "Starting \(status.projectName ?? "a session")"
+        case .ready: return status.projectName.map { "\($0) is ready" } ?? "Session ready"
+        case .failed: return "Could not start \(status.projectName ?? "the session")"
+        }
+    }
+
+    static func symbol(_ phase: MacSessionStatus.Phase) -> String {
+        switch phase {
+        case .unreachable: return "wifi.slash"
+        case .connecting: return "arrow.triangle.2.circlepath"
+        case .appNotRunning: return "desktopcomputer.trianglebadge.exclamationmark"
+        case .noSession: return "pause.circle"
+        case .starting: return "hourglass"
+        case .ready: return "checkmark.circle"
+        case .failed: return "exclamationmark.triangle"
         }
     }
 }
