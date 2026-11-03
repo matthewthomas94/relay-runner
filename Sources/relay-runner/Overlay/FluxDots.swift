@@ -10,17 +10,11 @@ struct FluxDotStyle: Equatable {
     let highlight: NSColor
     let opacity: Float
 
-    static let loader = FluxDotStyle(
+    /// The skeleton loaders and the hover on the Workspace tabs and the
+    /// Settings sidebar: opaque, so the dots show on black.
+    static let standard = FluxDotStyle(
         base: SkeletonLoaderView.boneBaseColor,
         highlight: SkeletonLoaderView.boneHighlightColor,
-        opacity: SkeletonLoaderView.boneOpacity
-    )
-
-    /// The Workspace tabs' hover. The tabs sit on the black strip, where
-    /// the loader's faint dots don't show, so these are opaque and brighter.
-    static let tabHover = FluxDotStyle(
-        base: SkeletonLoaderView.boneBaseColor,
-        highlight: NSColor(srgbRed: 52 / 255, green: 60 / 255, blue: 74 / 255, alpha: 1),
         opacity: 1
     )
 }
@@ -37,7 +31,7 @@ final class FluxDotLayers {
     let phaseLayers = (0..<FluxColumnsAnimation.steps).map { _ in CAShapeLayer() }
     let style: FluxDotStyle
 
-    init(style: FluxDotStyle = .loader) {
+    init(style: FluxDotStyle = .standard) {
         self.style = style
         for layer in phaseLayers {
             layer.fillColor = style.base.cgColor
@@ -46,20 +40,26 @@ final class FluxDotLayers {
         container.opacity = style.opacity
     }
 
-    /// Fills each rounded shape with dots and starts the shimmer.
-    func fill(_ shapes: [(rect: CGRect, cornerRadius: CGFloat)], in bounds: CGRect) {
+    /// Fills each rounded shape in the view with dots and starts the
+    /// shimmer. Like the notch glyph's, each dot sits on whole screen pixels,
+    /// so its edges stay crisp; half a pixel off, it blurs and looks smaller.
+    func fill(_ shapes: [(rect: CGRect, cornerRadius: CGFloat)], in view: NSView) {
         let diameter = SkeletonLoaderView.dotDiameter
         let paths = phaseLayers.map { _ in CGMutablePath() }
         for shape in shapes {
             for dot in SkeletonLoaderView.dots(in: shape.rect, cornerRadius: shape.cornerRadius) {
-                paths[dot.fluxPhase].addEllipse(in: CGRect(
-                    x: dot.centre.x - diameter / 2,
-                    y: dot.centre.y - diameter / 2,
-                    width: diameter,
-                    height: diameter
+                paths[dot.fluxPhase].addEllipse(in: view.backingAlignedRect(
+                    CGRect(
+                        x: dot.centre.x - diameter / 2,
+                        y: dot.centre.y - diameter / 2,
+                        width: diameter,
+                        height: diameter
+                    ),
+                    options: [.alignMinXNearest, .alignMinYNearest, .alignWidthNearest, .alignHeightNearest]
                 ))
             }
         }
+        let bounds = view.bounds
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         container.frame = bounds
@@ -100,7 +100,12 @@ final class FluxDotsView: NSView {
 
     override func layout() {
         super.layout()
-        dots.fill([(bounds, cornerRadius)], in: bounds)
+        dots.fill([(bounds, cornerRadius)], in: self)
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        needsLayout = true
     }
 }
 

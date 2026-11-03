@@ -51,11 +51,12 @@ struct SkeletonDot: Equatable {
 /// main thread. Reduce Motion holds it still.
 final class SkeletonLoaderView: NSView {
     static let boneBaseColor = NSColor(srgbRed: 22 / 255, green: 27 / 255, blue: 36 / 255, alpha: 1)
-    static let boneHighlightColor = NSColor(srgbRed: 44 / 255, green: 52 / 255, blue: 66 / 255, alpha: 1)
+    static let boneHighlightColor = NSColor(srgbRed: 52 / 255, green: 60 / 255, blue: 74 / 255, alpha: 1)
     static let outlineWidth: CGFloat = 1.5
-    static let boneOpacity: Float = 0.33
-    static let dotPitch: CGFloat = 4
-    /// The same size as the dots in the notch's glyph.
+    /// The outlines sit back at a third opacity.
+    static let outlineOpacity: Float = 0.33
+    /// The dots sit on the notch glyph's grid, at its dot size.
+    static let dotPitch: CGFloat = 5
     static let dotDiameter: CGFloat = 3
     static let shimmerKey = "skeletonShimmer"
 
@@ -79,12 +80,12 @@ final class SkeletonLoaderView: NSView {
         panelsLayer.lineWidth = 1
         layer?.addSublayer(panelsLayer)
 
+        layer?.addSublayer(dots.container)
         outlineLayer.fillColor = nil
         outlineLayer.strokeColor = Self.boneBaseColor.cgColor
         outlineLayer.lineWidth = Self.outlineWidth
-        // The outlines sit back at the dots' opacity too.
-        dots.container.addSublayer(outlineLayer)
-        layer?.addSublayer(dots.container)
+        outlineLayer.opacity = Self.outlineOpacity
+        layer?.addSublayer(outlineLayer)
 
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
@@ -124,7 +125,12 @@ final class SkeletonLoaderView: NSView {
         outlineLayer.path = outlines
         CATransaction.commit()
 
-        dots.fill(bones.filter { $0.style == .fill }.map { ($0.rect, $0.radius) }, in: bounds)
+        dots.fill(bones.filter { $0.style == .fill }.map { ($0.rect, $0.radius) }, in: self)
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        needsLayout = true
     }
 
     /// Changes what VoiceOver announces.
@@ -134,8 +140,12 @@ final class SkeletonLoaderView: NSView {
 
     // MARK: Dots
 
-    /// A filled bone's dots: a grid centred in it, keeping only the dots
-    /// inside its rounded corners. As in Flux Columns, the first column's
+    /// A filled bone's dots: a grid centred in it, whose own corners round
+    /// like the bone's. The area the dot centres span is the bone scaled
+    /// down, corner radius included, and a dot stays if it touches that
+    /// rounded area, so the corner dots drop where the bone curves. Two
+    /// rows or columns are too few to show a curve, so they keep every
+    /// dot. As in Flux Columns, the first column's
     /// snake rises, the next falls, and so on across the bone. The snakes'
     /// rows count from the loader's top rather than the bone's, so bones
     /// at different heights light at different moments.
@@ -144,15 +154,24 @@ final class SkeletonLoaderView: NSView {
         let rows = max(1, Int(((rect.height - dotDiameter) / dotPitch).rounded(.down)) + 1)
         let left = rect.midX - CGFloat(columns - 1) * dotPitch / 2
         let top = rect.midY - CGFloat(rows - 1) * dotPitch / 2
-        let corner = min(cornerRadius, rect.width / 2, rect.height / 2)
-        let core = rect.insetBy(dx: corner, dy: corner)
+        let span = CGRect(
+            x: left,
+            y: top,
+            width: CGFloat(columns - 1) * dotPitch,
+            height: CGFloat(rows - 1) * dotPitch
+        )
+        let scale = rect.width > 0 && rect.height > 0 ? min(span.width / rect.width, span.height / rect.height) : 0
+        let corner = rows < 3 || columns < 3
+            ? 0
+            : min(cornerRadius * scale, span.width / 2, span.height / 2)
+        let core = span.insetBy(dx: corner, dy: corner)
         var dots: [SkeletonDot] = []
         for row in 0..<rows {
             for column in 0..<columns {
                 let point = CGPoint(x: left + CGFloat(column) * dotPitch, y: top + CGFloat(row) * dotPitch)
                 let dx = max(core.minX - point.x, point.x - core.maxX, 0)
                 let dy = max(core.minY - point.y, point.y - core.maxY, 0)
-                if hypot(dx, dy) <= corner - dotDiameter / 4 || (dx == 0 && dy == 0) {
+                if hypot(dx, dy) <= corner + dotDiameter / 2 {
                     let steps = FluxColumnsAnimation.steps
                     let loaderRow = Int((point.y / dotPitch).rounded())
                     let position = column % 2 == 0 ? -loaderRow : loaderRow
@@ -604,7 +623,7 @@ enum FluxColumnsAnimation {
     /// dot fades out to the background for the fifth step.
     static let levels: [CGFloat] = [1, 0.65, 0.26, 0.15]
 
-    static func palette(_ style: FluxDotStyle = .loader) -> [CGColor] {
+    static func palette(_ style: FluxDotStyle = .standard) -> [CGColor] {
         let base = style.base
         let highlight = style.highlight
         // Blend in sRGB: NSColor.blended works in Generic RGB and shifts
@@ -627,12 +646,12 @@ enum FluxColumnsAnimation {
 
     /// The colours the dots in `phase` show over one cycle, one per step.
     /// The head reaches phase 0 on the first step and phase 4 on the last.
-    static func colors(forPhase phase: Int, style: FluxDotStyle = .loader) -> [CGColor] {
+    static func colors(forPhase phase: Int, style: FluxDotStyle = .standard) -> [CGColor] {
         let palette = palette(style)
         return (0..<steps).map { step in palette[((step - phase) % steps + steps) % steps] }
     }
 
-    static func run(on layers: [CAShapeLayer], style: FluxDotStyle = .loader) {
+    static func run(on layers: [CAShapeLayer], style: FluxDotStyle = .standard) {
         for (phase, layer) in layers.enumerated() {
             guard !RelayLayerMotion.reduceMotion else {
                 layer.removeAnimation(forKey: SkeletonLoaderView.shimmerKey)

@@ -144,11 +144,10 @@ final class SkeletonLoaderTests: XCTestCase {
         XCTAssertNil(view.hitTest(CGPoint(x: 450, y: 333)))
         XCTAssertEqual(view.accessibilityLabel(), "Starting Claude")
 
-        let bones = try XCTUnwrap(view.layer?.sublayers?.last)
-        XCTAssertEqual(bones.opacity, 0.33, "The bones sit back at a third opacity")
-        let layers = try XCTUnwrap(bones.sublayers as? [CAShapeLayer])
-        XCTAssertEqual(layers.count, FluxColumnsAnimation.steps + 1, "A layer per snake phase, then the outlines")
-        let dotLayers = layers.dropLast()
+        let sublayers = try XCTUnwrap(view.layer?.sublayers)
+        let bones = try XCTUnwrap(sublayers.first { $0.sublayers?.count == FluxColumnsAnimation.steps })
+        XCTAssertEqual(bones.opacity, FluxDotStyle.standard.opacity, "The dots look like the Workspace tabs' hover")
+        let dotLayers = try XCTUnwrap(bones.sublayers as? [CAShapeLayer], "A layer per snake phase")
         for (phase, dots) in dotLayers.enumerated() {
             XCTAssertFalse(try XCTUnwrap(dots.path).isEmpty, "The terminal has dots in phase \(phase)")
             let flux = try XCTUnwrap(dots.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation)
@@ -169,7 +168,8 @@ final class SkeletonLoaderTests: XCTestCase {
             let colors = FluxColumnsAnimation.colors(forPhase: phase)
             XCTAssertEqual(try XCTUnwrap(flux.values as? [CGColor]), colors + [colors[0]], "Each cycle ends where it began")
         }
-        let outline = try XCTUnwrap(layers.last)
+        let outline = try XCTUnwrap(sublayers.last as? CAShapeLayer)
+        XCTAssertEqual(outline.opacity, SkeletonLoaderView.outlineOpacity, "Borders keep their faint look")
         XCTAssertFalse(try XCTUnwrap(outline.path).isEmpty, "The terminal has an outline")
         XCTAssertNil(outline.fillColor)
         XCTAssertEqual(outline.strokeColor, SkeletonLoaderView.boneBaseColor.cgColor)
@@ -194,9 +194,12 @@ final class SkeletonLoaderTests: XCTestCase {
     func testFilledBonesAreDrawnAsDotMatrices() {
         let pitch = SkeletonLoaderView.dotPitch
         let dotRadius = SkeletonLoaderView.dotDiameter / 2
-        for dot in NotchStatusGlyph.listening.dots {
-            XCTAssertEqual(dot.diameter, SkeletonLoaderView.dotDiameter, "The dots match the notch glyph's")
+        let glyph = NotchStatusGlyph.neutral.dots
+        for dot in glyph {
+            XCTAssertEqual(dot.diameter, SkeletonLoaderView.dotDiameter, "The dots are the notch glyph's size")
         }
+        let glyphColumns = Set(glyph.map(\.x)).sorted()
+        XCTAssertEqual(glyphColumns[1] - glyphColumns[0], pitch, "On the glyph's grid")
 
         let bar = CGRect(x: 10, y: 20, width: 100, height: 10)
         let barDots = SkeletonLoaderView.dots(in: bar, cornerRadius: 5).map(\.centre)
@@ -210,18 +213,37 @@ final class SkeletonLoaderTests: XCTestCase {
         }
 
         let iconDots = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 0, width: 24, height: 24), cornerRadius: 8)
-        XCTAssertLessThan(iconDots.count, 36, "A rounded icon drops its corner dots")
-        XCTAssertGreaterThan(iconDots.count, 28)
+        XCTAssertEqual(iconDots.count, 5 * 5 - 4, "A rounded icon drops its corner dots")
+    }
+
+    func testDotsRoundTheirCornersLikeTheirShape() {
+        let pitch = SkeletonLoaderView.dotPitch
+        // A Workspace tab: the corner dots drop so the dots round like the
+        // selected tab's fill.
+        let tab = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 0, width: 60, height: 24), cornerRadius: 6).map(\.centre)
+        let xs = Set(tab.map(\.x)).sorted(), ys = Set(tab.map(\.y)).sorted()
+        XCTAssertEqual(tab.count, xs.count * ys.count - 4, "Only the four corner dots drop")
+        for corner in [CGPoint(x: xs.first!, y: ys.first!), CGPoint(x: xs.last!, y: ys.first!),
+                       CGPoint(x: xs.first!, y: ys.last!), CGPoint(x: xs.last!, y: ys.last!)] {
+            XCTAssertFalse(tab.contains(corner), "\(corner)")
+        }
+        XCTAssertTrue(tab.contains(CGPoint(x: xs.first! + pitch, y: ys.first!)))
+
+        let avatar = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 0, width: 24, height: 24), cornerRadius: 12)
+        XCTAssertEqual(avatar.count, 5 * 5 - 4, "A round avatar stays round rather than a diamond")
+
+        let bar = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 0, width: 100, height: 10), cornerRadius: 5)
+        XCTAssertEqual(bar.count, 2 * 20, "Two rows are too few to round, so a text bar keeps every dot")
     }
 
     func testAlternateColumnsRiseAndFall() {
         let steps = FluxColumnsAnimation.steps
         let square = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 2, width: 24, height: 24), cornerRadius: 0)
         let columns = Dictionary(grouping: square) { $0.centre.x }.sorted { $0.key < $1.key }.map(\.value)
-        XCTAssertEqual(columns.count, 6)
+        XCTAssertEqual(columns.count, 5)
         for (index, column) in columns.enumerated() {
             let topToBottom = column.sorted { $0.centre.y < $1.centre.y }.map(\.fluxPhase)
-            XCTAssertEqual(topToBottom.count, 6)
+            XCTAssertEqual(topToBottom.count, 5)
             // The head lights phase 0 first, so a rising snake's phases
             // count down the column and a falling one's count up.
             let stride = index % 2 == 0 ? steps - 1 : 1
@@ -239,15 +261,11 @@ final class SkeletonLoaderTests: XCTestCase {
     }
 
     func testHoverBackgroundFillsItsRoundedShapeWithShimmeringDots() throws {
-        let view = FluxDotsView(cornerRadius: 6, style: .tabHover)
-        view.frame = CGRect(x: 0, y: 0, width: 120, height: 26)
+        let view = FluxDotsView(cornerRadius: 6, style: .standard)
+        view.frame = CGRect(x: 0, y: 0, width: 120, height: 24)
         view.layoutSubtreeIfNeeded()
-        XCTAssertNil(view.hitTest(CGPoint(x: 60, y: 13)), "Clicks reach the item underneath")
-        XCTAssertEqual(view.dots.container.opacity, 1, "Tab hover dots are opaque so they show on the black strip")
-        let hoverHead = try XCTUnwrap(FluxColumnsAnimation.palette(.tabHover).first?.components)
-        let loaderHead = try XCTUnwrap(FluxColumnsAnimation.palette(.loader).first?.components)
-        XCTAssertGreaterThan(hoverHead[0] + hoverHead[1] + hoverHead[2], loaderHead[0] + loaderHead[1] + loaderHead[2],
-                             "The tab hover's head is brighter than the loader's")
+        XCTAssertNil(view.hitTest(CGPoint(x: 60, y: 12)), "Clicks reach the item underneath")
+        XCTAssertEqual(view.dots.container.opacity, 1, "Hover dots are opaque so they show on dark backgrounds")
         for (phase, layer) in view.dots.phaseLayers.enumerated() {
             let path = try XCTUnwrap(layer.path)
             XCTAssertFalse(path.isEmpty, "Phase \(phase) has dots")
@@ -255,8 +273,31 @@ final class SkeletonLoaderTests: XCTestCase {
             if !RelayLayerMotion.reduceMotion {
                 let flux = try XCTUnwrap(layer.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation,
                                          "Phase \(phase) shimmers")
-                let colors = FluxColumnsAnimation.colors(forPhase: phase, style: .tabHover)
-                XCTAssertEqual(flux.values as? [CGColor], colors + [colors[0]], "In the tab hover colours")
+                let colors = FluxColumnsAnimation.colors(forPhase: phase, style: .standard)
+                XCTAssertEqual(flux.values as? [CGColor], colors + [colors[0]], "In the hover colours")
+            }
+        }
+    }
+
+    func testDotsLandOnWholePixelsLikeTheGlyph() throws {
+        // A tab's width follows its label, so its dots rarely start on a
+        // whole pixel; half a pixel off, they blur and look smaller.
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 100),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        let view = FluxDotsView(cornerRadius: 6, style: .standard)
+        view.frame = CGRect(x: 10.25, y: 20.25, width: 63.25, height: 24)
+        window.contentView?.addSubview(view)
+        view.layoutSubtreeIfNeeded()
+        let diameter = try XCTUnwrap(NotchStatusGlyph.neutral.dots.first).diameter
+        for layer in view.dots.phaseLayers {
+            for dot in try XCTUnwrap(layer.path).componentsSeparated() {
+                let rect = dot.boundingBoxOfPath
+                let pixels = window.convertToBacking(view.convert(rect, to: nil))
+                for edge in [pixels.minX, pixels.minY, pixels.maxX, pixels.maxY] {
+                    XCTAssertEqual(edge, edge.rounded(), accuracy: 0.001, "\(rect) sits on whole pixels")
+                }
+                XCTAssertEqual(rect.width, diameter, accuracy: 0.001, "The glyph's dot size")
+                XCTAssertEqual(rect.height, diameter, accuracy: 0.001, "The glyph's dot size")
             }
         }
     }
