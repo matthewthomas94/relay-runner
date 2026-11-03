@@ -264,7 +264,7 @@ struct ProgramBoardOverlayView: View {
                     .transition(.relayReplacing(.surface))
             } else {
                 SkeletonLoader(layout: .notes, label: "Loading notes")
-                    .transition(.relayReplacing(.surface))
+                    .transition(.dotDisintegrateReplacing)
             }
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.notesLoaded)

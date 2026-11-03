@@ -35,6 +35,9 @@ struct SkeletonDot: Equatable {
     /// The dot's grid distance from the ripple's origin: ring 0 lights
     /// first, each ring after it a little later.
     var ring: Int
+    /// Which cohort the dot arrives and leaves with when the field
+    /// disintegrates in or out.
+    var cohort: Int
 }
 
 /// A loading state that sketches the screen it stands in for: bare shapes
@@ -137,6 +140,18 @@ final class SkeletonLoaderView: NSView {
         setAccessibilityLabel(label)
     }
 
+    /// Shows the share of the dots present, from 0 (none) to 1 (all), at
+    /// once; SwiftUI drives this frame by frame through the disintegrate
+    /// transition.
+    func setPresence(_ presence: Double) {
+        dots.setPresence(presence)
+    }
+
+    /// Disintegrates the dots in (to 1) or out (to 0) over `duration`.
+    func animatePresence(to presence: Double, duration: TimeInterval, completion: (() -> Void)? = nil) {
+        dots.animatePresence(to: presence, duration: duration, completion: completion)
+    }
+
     // MARK: Dots
 
     /// A filled bone's dots: a grid centred in it, whose own corners round
@@ -173,7 +188,8 @@ final class SkeletonLoaderView: NSView {
                     let loaderRow = Int((point.y / dotPitch).rounded())
                     dots.append(SkeletonDot(
                         centre: point,
-                        ring: DotRippleAnimation.ring(column: loaderColumn, row: loaderRow)
+                        ring: DotRippleAnimation.ring(column: loaderColumn, row: loaderRow),
+                        cohort: DotPresence.cohort(column: loaderColumn, row: loaderRow)
                     ))
                 }
             }
@@ -709,16 +725,55 @@ enum DotRippleAnimation {
     }
 }
 
+/// How a dot field arrives and leaves: it disintegrates. The dots are dealt
+/// into cohorts in a fixed, scattered order across the grid. As presence
+/// rises from 0 to 1 each cohort fades in a little after the last, so dots
+/// appear here and there across the field until it is full; falling back
+/// to 0 runs the same way in reverse, the last dots to arrive leaving first.
+enum DotPresence {
+    static let cohorts = 12
+    /// The share of the presence sweep each cohort spends fading.
+    static let fade: Double = 0.4
+
+    /// Deals a dot to a cohort by its grid position: fixed, so a relayout
+    /// never reshuffles a field mid-transition, and scattered, so the
+    /// cohorts do not form stripes.
+    static func cohort(column: Int, row: Int) -> Int {
+        var hash = UInt32(truncatingIfNeeded: column) &* 0x9E37_79B1
+        hash ^= UInt32(truncatingIfNeeded: row) &* 0x85EB_CA77
+        hash ^= hash >> 15
+        hash &*= 0x2C1B_3C6D
+        hash ^= hash >> 12
+        return Int(hash % UInt32(cohorts))
+    }
+
+    /// The slice of the sweep, from 0 to 1, over which a cohort fades.
+    static func window(ofCohort cohort: Int) -> (start: Double, end: Double) {
+        let start = Double(cohort) / Double(cohorts) * (1 - fade)
+        return (start, start + fade)
+    }
+
+    /// A cohort's opacity at a presence between 0 (gone) and 1 (all there).
+    static func opacity(ofCohort cohort: Int, presence: Double) -> Float {
+        let window = window(ofCohort: cohort)
+        return Float(min(1, max(0, (presence - window.start) / fade)))
+    }
+}
+
 /// The skeleton loader for SwiftUI screens.
 struct SkeletonLoader: NSViewRepresentable {
     let layout: SkeletonLoaderLayout
     let label: String
+    @Environment(\.dotPresence) private var presence
 
     func makeNSView(context: Context) -> SkeletonLoaderView {
-        SkeletonLoaderView(layout: layout, label: label)
+        let view = SkeletonLoaderView(layout: layout, label: label)
+        view.setPresence(presence)
+        return view
     }
 
     func updateNSView(_ view: SkeletonLoaderView, context: Context) {
         view.setLabel(label)
+        view.setPresence(presence)
     }
 }

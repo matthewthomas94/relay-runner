@@ -3972,7 +3972,7 @@ struct EmbeddedTerminalTab: View {
                 ZStack {
                     if let loadingStatus = session.loadingStatus {
                         SkeletonLoader(layout: .terminal, label: loadingStatus)
-                            .transition(.relayReplacing(.surface))
+                            .transition(.dotDisintegrateReplacing)
                     } else if !session.presentsTerminal {
                         emptyState
                             .transition(.relayReplacing(.surface))

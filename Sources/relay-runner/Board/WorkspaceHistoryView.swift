@@ -34,7 +34,7 @@ struct WorkspaceHistoryView: View {
                     .transition(.relayReplacing(.surface))
                 } else {
                     SkeletonLoader(layout: .history, label: "Loading Workspace history")
-                        .transition(.relayReplacing(.surface))
+                        .transition(.dotDisintegrateReplacing)
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.historyLoaded)

@@ -145,11 +145,18 @@ final class SkeletonLoaderTests: XCTestCase {
         XCTAssertEqual(view.accessibilityLabel(), "Starting Claude")
 
         let sublayers = try XCTUnwrap(view.layer?.sublayers)
-        let bones = try XCTUnwrap(sublayers.first { $0.sublayers?.count == DotRippleAnimation.phases })
+        let bones = try XCTUnwrap(sublayers.first { $0.sublayers?.count == DotPresence.cohorts })
         XCTAssertEqual(bones.opacity, FluxDotStyle.standard.opacity, "The dots look like the Workspace tabs' hover")
-        let dotLayers = try XCTUnwrap(bones.sublayers as? [CAShapeLayer], "A layer per ripple phase")
-        for (phase, dots) in dotLayers.enumerated() {
-            XCTAssertFalse(try XCTUnwrap(dots.path).isEmpty, "The terminal has dots in phase \(phase)")
+        let cohorts = try XCTUnwrap(bones.sublayers, "A layer per presence cohort")
+        var dotLayers: [(phase: Int, layer: CAShapeLayer)] = []
+        for cohort in cohorts {
+            XCTAssertEqual(cohort.opacity, 1, "Outside a transition the whole field is there")
+            let phases = try XCTUnwrap(cohort.sublayers as? [CAShapeLayer], "A layer per ripple phase")
+            XCTAssertEqual(phases.count, DotRippleAnimation.phases)
+            XCTAssertTrue(phases.contains { !($0.path?.isEmpty ?? true) }, "Every cohort has some of the terminal's dots")
+            dotLayers += phases.enumerated().map { ($0.offset, $0.element) }
+        }
+        for (phase, dots) in dotLayers {
             XCTAssertEqual(dots.fillColor, SkeletonLoaderView.boneHighlightColor.cgColor, "Dots are the highlight; only their opacity moves")
             let ripple = try XCTUnwrap(dots.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation)
             XCTAssertEqual(ripple.keyPath, "opacity")
@@ -296,17 +303,23 @@ final class SkeletonLoaderTests: XCTestCase {
         view.layoutSubtreeIfNeeded()
         XCTAssertNil(view.hitTest(CGPoint(x: 60, y: 12)), "Clicks reach the item underneath")
         XCTAssertEqual(view.dots.container.opacity, 1, "Hover dots are opaque so they show on dark backgrounds")
-        for (phase, layer) in view.dots.phaseLayers.enumerated() {
-            let path = try XCTUnwrap(layer.path)
-            XCTAssertFalse(path.isEmpty, "Phase \(phase) has dots")
-            XCTAssertTrue(view.bounds.contains(path.boundingBoxOfPath), "Phase \(phase) stays inside the item")
-            XCTAssertEqual(layer.fillColor, FluxDotStyle.standard.highlight.cgColor, "In the hover colour")
-            if !RelayLayerMotion.reduceMotion {
-                let ripple = try XCTUnwrap(layer.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation,
-                                           "Phase \(phase) shimmers")
-                XCTAssertEqual(ripple.values as? [Float], DotRippleAnimation.levels, "With the ripple's levels")
+        var dotCount = 0
+        for (cohort, phases) in view.dots.phaseLayers.enumerated() {
+            for (phase, layer) in phases.enumerated() {
+                let path = try XCTUnwrap(layer.path)
+                if !path.isEmpty {
+                    dotCount += path.componentsSeparated().count
+                    XCTAssertTrue(view.bounds.contains(path.boundingBoxOfPath), "Cohort \(cohort) phase \(phase) stays inside the item")
+                }
+                XCTAssertEqual(layer.fillColor, FluxDotStyle.standard.highlight.cgColor, "In the hover colour")
+                if !RelayLayerMotion.reduceMotion {
+                    let ripple = try XCTUnwrap(layer.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation,
+                                               "Cohort \(cohort) phase \(phase) shimmers")
+                    XCTAssertEqual(ripple.values as? [Float], DotRippleAnimation.levels, "With the ripple's levels")
+                }
             }
         }
+        XCTAssertEqual(dotCount, SkeletonLoaderView.dots(in: view.bounds, cornerRadius: 6).count, "Every dot is drawn once")
     }
 
     func testDotsLandOnWholePixelsLikeTheGlyph() throws {
@@ -319,7 +332,7 @@ final class SkeletonLoaderTests: XCTestCase {
         window.contentView?.addSubview(view)
         view.layoutSubtreeIfNeeded()
         let diameter = try XCTUnwrap(NotchStatusGlyph.neutral.dots.first).diameter
-        for layer in view.dots.phaseLayers {
+        for layer in view.dots.phaseLayers.flatMap({ $0 }) {
             for dot in try XCTUnwrap(layer.path).componentsSeparated() {
                 let rect = dot.boundingBoxOfPath
                 let pixels = window.convertToBacking(view.convert(rect, to: nil))
@@ -341,5 +354,97 @@ final class SkeletonLoaderTests: XCTestCase {
     func testLoaderLabelsHaveNoEllipsis() {
         XCTAssertFalse(BoardUpdateStatus.workingLabel.contains("…"))
         XCTAssertFalse(BoardUpdateStatus.workingLabel.hasSuffix("..."))
+    }
+
+    func testDotsAreDealtIntoScatteredFixedCohorts() {
+        let bar = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 0, width: 200, height: 20), cornerRadius: 0)
+        XCTAssertEqual(Set(bar.map(\.cohort)).count, DotPresence.cohorts, "A text bar uses every cohort")
+        XCTAssertEqual(bar.map(\.cohort), SkeletonLoaderView.dots(in: CGRect(x: 0, y: 0, width: 200, height: 20), cornerRadius: 0).map(\.cohort),
+                       "The deal is fixed, so a relayout never reshuffles the field")
+        let columns = Dictionary(grouping: bar) { $0.centre.x }.values
+        let stripes = columns.filter { Set($0.map(\.cohort)).count == 1 }.count
+        XCTAssertLessThan(stripes, columns.count / 4, "Cohorts scatter rather than form stripes")
+        for cohort in 0..<DotPresence.cohorts {
+            XCTAssertGreaterThan(bar.filter { $0.cohort == cohort }.count, 0)
+        }
+    }
+
+    func testPresenceFadesCohortsInTurnAndBackOut() {
+        for cohort in 0..<DotPresence.cohorts {
+            XCTAssertEqual(DotPresence.opacity(ofCohort: cohort, presence: 0), 0, "Nothing is there at 0")
+            XCTAssertEqual(DotPresence.opacity(ofCohort: cohort, presence: 1), 1, "Everything is there at 1")
+        }
+        XCTAssertEqual(DotPresence.opacity(ofCohort: 0, presence: 0.2), 0.5, accuracy: 0.0001, "The first cohort is halfway at 0.2")
+        XCTAssertEqual(DotPresence.opacity(ofCohort: DotPresence.cohorts - 1, presence: 0.2), 0, "The last has not started")
+        let last = DotPresence.window(ofCohort: DotPresence.cohorts - 1)
+        XCTAssertEqual(last.end, 0.95, accuracy: 0.0001, "The last cohort finishes just before the sweep ends")
+        var previous = DotPresence.window(ofCohort: 0)
+        for cohort in 1..<DotPresence.cohorts {
+            let window = DotPresence.window(ofCohort: cohort)
+            XCTAssertGreaterThan(window.start, previous.start, "Each cohort starts after the last")
+            XCTAssertLessThan(window.start, previous.end, "And overlaps it, so the field fills continuously")
+            previous = window
+        }
+    }
+
+    func testSettingPresenceShowsThatShareOfTheDotsAtOnce() {
+        let view = FluxDotsView(cornerRadius: 6, style: .standard)
+        view.frame = CGRect(x: 0, y: 0, width: 120, height: 24)
+        view.layoutSubtreeIfNeeded()
+        view.dots.setPresence(0)
+        XCTAssertTrue(view.dots.cohortLayers.allSatisfy { $0.opacity == 0 }, "Gone")
+        view.dots.setPresence(0.5)
+        let halfway = view.dots.cohortLayers.map(\.opacity)
+        XCTAssertEqual(halfway.first, 1, "The first cohort has fully arrived")
+        XCTAssertEqual(halfway.last, 0, "The last has not started")
+        XCTAssertTrue(halfway.contains { $0 > 0 && $0 < 1 }, "Some are mid-fade")
+        XCTAssertEqual(halfway, (0..<DotPresence.cohorts).map { DotPresence.opacity(ofCohort: $0, presence: 0.5) })
+        view.dots.setPresence(1)
+        XCTAssertTrue(view.dots.cohortLayers.allSatisfy { $0.opacity == 1 }, "All there")
+        view.layoutSubtreeIfNeeded()
+        XCTAssertTrue(view.dots.cohortLayers.allSatisfy { $0.opacity == 1 }, "A relayout keeps the presence")
+    }
+
+    func testAnimatedPresenceStaggersTheCohortsAndReversesOnTheWayOut() throws {
+        let view = FluxDotsView(cornerRadius: 6, style: .standard)
+        view.frame = CGRect(x: 0, y: 0, width: 120, height: 24)
+        view.layoutSubtreeIfNeeded()
+        view.dots.setPresence(0)
+        let duration: TimeInterval = 1
+        view.dots.animatePresence(to: 1, duration: duration)
+        var begins: [CFTimeInterval] = []
+        for (cohort, layer) in view.dots.cohortLayers.enumerated() {
+            let fade = try XCTUnwrap(layer.animation(forKey: FluxDotLayers.presenceKey) as? CABasicAnimation)
+            XCTAssertEqual(fade.keyPath, "opacity")
+            XCTAssertEqual(fade.fromValue as? Float, 0)
+            XCTAssertEqual(fade.toValue as? Float, 1)
+            XCTAssertEqual(fade.duration, DotPresence.fade * duration, accuracy: 0.0001, "Each cohort fades over its slice")
+            XCTAssertEqual(fade.fillMode, .both, "It waits unseen for its turn and stays once in")
+            XCTAssertEqual(layer.opacity, 1, "The model value is where it ends up")
+            begins.append(fade.beginTime)
+            if cohort > 0 {
+                XCTAssertGreaterThan(fade.beginTime, begins[cohort - 1], "Cohort \(cohort) starts after the last")
+            }
+        }
+        XCTAssertEqual(begins.last! - begins.first!, DotPresence.window(ofCohort: DotPresence.cohorts - 1).start * duration,
+                       accuracy: 0.0001, "The last cohort starts where its slice of the sweep begins")
+
+        view.dots.animatePresence(to: 0, duration: duration)
+        var outBegins: [CFTimeInterval] = []
+        for layer in view.dots.cohortLayers {
+            let fade = try XCTUnwrap(layer.animation(forKey: FluxDotLayers.presenceKey) as? CABasicAnimation)
+            XCTAssertEqual(fade.fromValue as? Float, 1)
+            XCTAssertEqual(fade.toValue as? Float, 0)
+            XCTAssertEqual(layer.opacity, 0)
+            outBegins.append(fade.beginTime)
+        }
+        for (earlier, later) in zip(outBegins, outBegins.dropFirst()) {
+            XCTAssertGreaterThan(earlier, later, "The last cohort to arrive leaves first")
+        }
+
+        let done = expectation(description: "Zero-length presence change completes at once")
+        view.dots.animatePresence(to: 1, duration: 0) { done.fulfill() }
+        wait(for: [done], timeout: 1)
+        XCTAssertTrue(view.dots.cohortLayers.allSatisfy { $0.opacity == 1 && $0.animation(forKey: FluxDotLayers.presenceKey) == nil })
     }
 }
