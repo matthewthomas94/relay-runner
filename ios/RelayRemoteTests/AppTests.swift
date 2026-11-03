@@ -59,6 +59,22 @@ final class AppTests: XCTestCase {
     }
 
     @MainActor
+    func testPlaybackModeDefaultsToAutoPlayAndPersists() throws {
+        let suite = "com.relayrunner.remote.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preference = PlaybackModePreference(defaults: defaults)
+        let model = AppModel(remoteModePreference: RemoteModePreference(defaults: defaults),
+                             playbackModePreference: preference)
+        XCTAssertEqual(model.playbackMode, .autoPlay)
+        model.playbackMode = .onDemand
+        XCTAssertEqual(AppModel(remoteModePreference: RemoteModePreference(defaults: defaults),
+                                playbackModePreference: preference).playbackMode, .onDemand)
+        XCTAssertEqual(DebugView.playbackLabel(.onDemand), "Play on demand")
+        XCTAssertEqual(DebugView.activityLabel(.buffering), "Buffering")
+    }
+
+    @MainActor
     func testMicrophoneDoesNotOpenWhileRemoteModeIsOff() throws {
         let store = KeychainStore(service: "com.relayrunner.remote.tests.\(UUID().uuidString)")
         defer { try? store.delete("device-key.ed25519"); try? store.delete("device-key.secure-enclave-p256") }

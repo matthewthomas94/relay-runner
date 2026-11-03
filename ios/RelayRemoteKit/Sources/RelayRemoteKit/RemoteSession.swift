@@ -102,7 +102,13 @@ public final class RemoteSession {
     /// The code of the last non-terminal connection failure, for the debug screen.
     public private(set) var lastDisconnect: String?
 
-    public var resumeAfterSeq: Int? { core.lastSeq }
+    public var resumeAfterSeq: Int? {
+        guard let last = core.lastSeq, let ceiling = resumeCeiling?() else { return core.lastSeq }
+        return min(last, max(0, ceiling))
+    }
+    /// The playback queue's `resumeCeiling` (RR-458): a reconnect resumes no
+    /// later than this, so a reply whose audio was cut off is replayed whole.
+    public var resumeCeiling: (() -> Int?)?
     /// On: the phone owns the microphone and speaker. Off: the Mac speaks and
     /// listens while the phone shows text (RR-454).
     public var remoteMode: Bool { core.remoteMode }
@@ -286,7 +292,7 @@ public final class RemoteSession {
             pinger?.cancel()
         }
 
-        let hello = core.connectionOpened()
+        let hello = core.connectionOpened(resumeCeiling: resumeCeiling?())
         transmit(.hello(hello), on: connection)
         var welcomedAt: Double?
         for try await line in connection.lines {

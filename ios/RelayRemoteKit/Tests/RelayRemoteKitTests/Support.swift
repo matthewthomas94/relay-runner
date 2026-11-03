@@ -81,6 +81,28 @@ final class FakeMac: @unchecked Sendable {
         return seq.last
     }
 
+    /// Emits a `speech` frame whose audio follows in `audio(...)` (RR-457).
+    @discardableResult
+    func speakVoiced(_ text: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let frame = Frame.speech(Speech(seq: seq.next(), kind: .final, source: .orchestrator, text: text,
+                                        spokenBy: .phone, audio: true))
+        try! replay.record(frame, at: now)
+        connection?.deliver(frame)
+        return seq.last
+    }
+
+    /// Emits one `speech_audio` part, kept for replay with its frame.
+    func audio(_ seq: Int, part: Int, _ text: String, last: Bool = false) {
+        lock.lock()
+        defer { lock.unlock() }
+        let audio = SpeechAudio(seq: seq, part: part, parts: last ? part + 1 : 0, format: .aac, sampleRate: 24000,
+                                data: Data(text.utf8).base64EncodedString(), last: last ? true : nil)
+        replay.attach(audio)
+        connection?.deliver(.speechAudio(audio))
+    }
+
     /// Emits a sequenced `speech_control` frame, held for replay like speech.
     @discardableResult
     func speechControl(_ action: SpeechControlAction, reason: String? = nil) -> Int {

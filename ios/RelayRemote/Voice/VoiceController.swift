@@ -4,8 +4,9 @@ import RelayRemoteKit
 import RelayRemoteProtocol
 
 /// Speech on the phone (RR-429): spoken requests become `utterance` frames,
-/// `speech` frames are spoken here while the Mac stays silent, and the stop,
-/// replay and cancel buttons send `control` frames. Two input modes: push to
+/// `speech` frames play here in the Mac's voice when it streams one (RR-458)
+/// and in the phone's own voice otherwise, while the Mac stays silent, and the
+/// stop, replay and cancel buttons send `control` frames. Two input modes: push to
 /// talk (hold the button) and hands-free (continuous listening with the kit's
 /// endpointer deciding where an utterance ends).
 @MainActor
@@ -21,6 +22,7 @@ final class VoiceController {
         case listening
         case hearing
         case transcribing
+        case buffering
         case speaking
     }
 
@@ -33,6 +35,12 @@ final class VoiceController {
     var remoteMode = true {
         didSet { if remoteMode != oldValue { remoteModeChanged() } }
     }
+    /// Auto-play, or wait for `play()` (RR-458).
+    var playbackMode = PlaybackMode.autoPlay {
+        didSet { queue.mode = playbackMode }
+    }
+    /// The newest reply waiting for Play in play-on-demand mode.
+    private(set) var waitingReply: String?
     private(set) var activity = Activity.idle
     private(set) var transcript = ""
     private(set) var isListening = false
@@ -47,6 +55,7 @@ final class VoiceController {
     @ObservationIgnored private let session: RemoteSession
     @ObservationIgnored private let audio = AudioSessionController()
     @ObservationIgnored private let synthesizer = SystemSpeechSynthesizer()
+    @ObservationIgnored private let player = AudioQueueSpeechPlayer()
     @ObservationIgnored private let recognizer = SpeechRecognizer()
     @ObservationIgnored private let queue: SpeechPlaybackQueue
     @ObservationIgnored private var endpointer = UtteranceEndpointer()
@@ -55,11 +64,13 @@ final class VoiceController {
 
     init(session: RemoteSession) {
         self.session = session
-        queue = SpeechPlaybackQueue(synthesizer: synthesizer, log: .system) { [weak session] ack in
+        queue = SpeechPlaybackQueue(synthesizer: synthesizer, player: player, log: .system) { [weak session] ack in
             session?.send(ack: ack)
         }
         queue.onPlaybackStateChange = { [weak self] speaking in self?.playbackChanged(speaking) }
+        queue.onChange = { [weak self] in self?.queueChanged() }
         session.onInbound = { [weak self] frame in self?.queue.receive(frame) }
+        session.resumeCeiling = { [weak self] in self?.queue.resumeCeiling }
         recognizer.onLevel = { [weak self] level, time in self?.observeLevel(level, at: time) }
         recognizer.onTranscript = { [weak self] text in self?.transcript = text }
         audio.onInterruption = { [weak self] interruption in self?.interrupted(interruption) }
@@ -115,7 +126,14 @@ final class VoiceController {
         session.send(control: .stop)
     }
 
+    /// The Play control in play-on-demand mode.
+    func play() {
+        queue.play()
+    }
+
+    /// The replayed reply plays at once in either playback mode.
     func replay() {
+        queue.playNextReply()
         session.send(control: .replay)
     }
 
@@ -128,6 +146,7 @@ final class VoiceController {
     func shutdown() {
         isListening = false
         synthesizer.stopSpeaking()
+        player.stop()
         Task { await closeUtterance(send: false) }
     }
 
@@ -263,7 +282,10 @@ final class VoiceController {
     private func interrupted(_ interruption: AudioSessionController.Interruption) {
         switch interruption {
         case .began:
-            if queue.isSpeaking { synthesizer.pause() }
+            if queue.isSpeaking {
+                synthesizer.pause()
+                player.pause()
+            }
             if utteranceOpen {
                 if mode == .pushToTalk { isListening = false }
                 Task { await closeUtterance(send: false) }
@@ -272,6 +294,9 @@ final class VoiceController {
             audio.reactivate()
             if synthesizer.isPaused {
                 if shouldResume { synthesizer.resume() } else { synthesizer.stopSpeaking() }
+            }
+            if player.isPaused {
+                if shouldResume { player.resume() } else { player.stop() }
             }
             continueHandsFreeIfNeeded()
         }
@@ -283,9 +308,14 @@ final class VoiceController {
         Task { await closeUtterance(send: false) }
     }
 
+    private func queueChanged() {
+        waitingReply = queue.waitingReply
+        if queue.isSpeaking { refreshActivity() }
+    }
+
     private func refreshActivity() {
         if queue.isSpeaking {
-            activity = .speaking
+            activity = queue.playbackState == .buffering ? .buffering : .speaking
         } else if utteranceOpen {
             activity = .listening
         } else {
