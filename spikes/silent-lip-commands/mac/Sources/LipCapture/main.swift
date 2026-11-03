@@ -13,6 +13,8 @@ import Vision
 // Options: --device <name-substring>, --no-velocity. Dataset: ~/.lipspike/dataset.json (LIPSPIKE_DATASET).
 
 let args = Array(CommandLine.arguments.dropFirst())
+// Line-buffer stdout so progress lines reach a pipe/tee (test.sh) as they happen.
+setvbuf(stdout, nil, _IOLBF, 0)
 
 func option(_ name: String) -> String? {
     guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
@@ -96,8 +98,14 @@ final class FrameBuffer {
     func drain() -> [(t: Double, g: [Double])] { lock.lock(); defer { lock.unlock() }; let out = items; items = []; return out }
 }
 
+/// Captures started by this process. Callers ignore the return value, and nothing
+/// else retains the Capture (the output delegate is unowned), so without this the
+/// session was freed right after startRunning() and no frame ever arrived.
+var liveCaptures: [Capture] = []
+
 func startCamera(onFrame: @escaping (Double, [Double]) -> Void) -> Capture {
     let capture = Capture()
+    liveCaptures.append(capture)
     capture.onFrame = onFrame
     let sem = DispatchSemaphore(value: 0)
     var granted = false
