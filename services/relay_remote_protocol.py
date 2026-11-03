@@ -30,6 +30,9 @@ CONTROL_ACTIONS = frozenset({"stop", "interrupt", "cancel", "play", "replay"})
 SPEECH_CONTROL_ACTIONS = frozenset({"stop", "skip"})
 SPOKEN_BY = frozenset({"mac", "phone"})
 AUDIO_FORMATS = frozenset({"aac", "opus"})
+# RR-456: session control from the phone.
+SESSION_ACTIONS = frozenset({"list_projects", "start", "stop", "state"})
+SESSION_PHASES = frozenset({"none", "starting", "ready", "failed"})
 
 
 class FrameError(Exception):
@@ -79,6 +82,26 @@ class RemoteMode:
     enabled: bool
     TYPE = "remote_mode"
     PHONE_TO_MAC = True
+
+
+@dataclass(frozen=True)
+class SessionCommand:
+    """RR-456: list projects, or start, stop or inspect the Mac's session."""
+
+    client_id: str
+    action: str
+    project_id: str | None = None
+    TYPE = "session_command"
+    PHONE_TO_MAC = True
+
+
+@dataclass(frozen=True)
+class ProjectEntry:
+    """One registered project inside ``SessionState.projects`` (not a frame)."""
+
+    project_id: str
+    display_name: str
+    availability: str
 
 
 @dataclass(frozen=True)
@@ -183,11 +206,29 @@ class Pong:
     PHONE_TO_MAC = False
 
 
+@dataclass(frozen=True)
+class SessionState:
+    """RR-456: Relay Runner's session as the Mac app reports it.
+
+    ``projects`` is a tuple of ``ProjectEntry``; ``app_running`` is false only
+    when the forced-command helper found neither the bridge nor the app.
+    """
+
+    app_running: bool
+    session: str
+    project_id: str | None = None
+    project_name: str | None = None
+    projects: tuple | None = None
+    error: str | None = None
+    TYPE = "session_state"
+    PHONE_TO_MAC = False
+
+
 FRAME_TYPES = {
     cls.TYPE: cls
     for cls in (
-        Hello, Utterance, Control, RemoteMode, Ack, Ping, Welcome, Accepted,
-        Speech, SpeechAudio, SpeechControl, Status, ErrorFrame, Pong,
+        Hello, Utterance, Control, RemoteMode, SessionCommand, Ack, Ping, Welcome,
+        Accepted, Speech, SpeechAudio, SpeechControl, Status, ErrorFrame, Pong, SessionState,
     )
 }
 _ENUMS = {
@@ -196,12 +237,17 @@ _ENUMS = {
     ("speech", "kind"): SPEECH_KINDS,
     ("speech", "source"): SPEECH_SOURCES,
     ("speech", "spoken_by"): SPOKEN_BY,
+    ("session_command", "action"): SESSION_ACTIONS,
+    ("session_state", "session"): SESSION_PHASES,
     ("speech_audio", "format"): AUDIO_FORMATS,
 }
+# Fields holding a list of nested objects, decoded into tuples of this type.
+_NESTED = {("session_state", "projects"): ProjectEntry}
 _UUID_FIELDS = {
     ("utterance", "client_id"),
     ("control", "client_id"),
     ("remote_mode", "client_id"),
+    ("session_command", "client_id"),
     ("accepted", "client_id"),
 }
 
@@ -215,6 +261,13 @@ def _check(type_name: str, name: str, value: Any, annotation: str) -> None:
         ok = isinstance(value, int) and not isinstance(value, bool)
     elif base == "bool":
         ok = isinstance(value, bool)
+    elif base == "tuple":
+        nested = _NESTED[(type_name, name)]
+        ok = isinstance(value, tuple) and all(isinstance(item, nested) for item in value)
+        if ok:
+            for item in value:
+                for f in fields(item):
+                    _check(type_name, f.name, getattr(item, f.name), f.type)
     else:
         ok = isinstance(value, str)
     if not ok:
@@ -239,7 +292,7 @@ def _validate(frame: Any) -> None:
 def encode(frame: Any) -> bytes:
     """One canonical line (sorted keys, compact) including the trailing newline."""
     _validate(frame)
-    obj = {f.name: getattr(frame, f.name) for f in fields(frame) if getattr(frame, f.name) is not None}
+    obj = {f.name: _plain(getattr(frame, f.name)) for f in fields(frame) if getattr(frame, f.name) is not None}
     obj["type"] = frame.TYPE
     line = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(line) > MAX_LINE_BYTES:
@@ -269,7 +322,8 @@ def decode(line: bytes | str) -> Any:
     kwargs = {}
     for f in fields(cls):
         if f.name in obj:
-            kwargs[f.name] = obj[f.name]
+            nested = _NESTED.get((type_name, f.name))
+            kwargs[f.name] = obj[f.name] if nested is None else _decode_nested(nested, f.name, obj[f.name])
         elif not f.type.endswith("| None") and f.name != "protocol":
             raise FrameError("missing_field", f.name)
     try:
@@ -278,6 +332,30 @@ def decode(line: bytes | str) -> Any:
         raise FrameError("invalid_json") from None
     _validate(frame)
     return frame
+
+
+def _plain(value: Any) -> Any:
+    """A tuple of nested dataclasses becomes a list of JSON objects."""
+    if isinstance(value, tuple):
+        return [{f.name: getattr(item, f.name) for f in fields(item)} for item in value]
+    return value
+
+
+def _decode_nested(cls: Any, name: str, value: Any) -> Any:
+    """Mirror Swift's decoder: a wrong shape is ``invalid_field``, a missing key ``missing_field``."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise FrameError("invalid_field", name)
+    items = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise FrameError("invalid_field", name)
+        for f in fields(cls):
+            if f.name not in raw:
+                raise FrameError("missing_field", f.name)
+        items.append(cls(**{f.name: raw[f.name] for f in fields(cls)}))
+    return tuple(items)
 
 
 def frame_seq(frame: Any) -> int | None:

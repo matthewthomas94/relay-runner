@@ -4,10 +4,18 @@ import Foundation
 // Copies NDJSON lines between the SSH channel (stdin/stdout) and a local Unix
 // socket. It holds no protocol logic: it only enforces the 64 KiB line limit,
 // checks that each line is a JSON object, and reports failures as `error` frames.
+//
+// RR-456 routing for `--device`: the voice bridge's socket when a session is
+// running; otherwise the app's session-control socket, which reports the
+// session and starts or stops one. While attached to the bridge, the phone's
+// `session_command` lines go to the app socket instead. With neither socket
+// listening the helper reports `session_state` with `app_running: false`.
 
 let maxLineBytes = 64 * 1024
 let deviceSocketPath = ProcessInfo.processInfo.environment["RELAY_REMOTE_SOCKET_PATH"] ?? "/tmp/relay_remote.sock"
 let pairSocketPath = ProcessInfo.processInfo.environment["RELAY_REMOTE_PAIR_SOCKET_PATH"] ?? "/tmp/relay_remote_pair.sock"
+let controlSocketPath = ProcessInfo.processInfo.environment["RELAY_SESSION_CONTROL_SOCKET_PATH"]
+    ?? "/tmp/relay_session_control.sock"
 
 signal(SIGPIPE, SIG_IGN)
 
@@ -66,6 +74,10 @@ enum LineCheck {
     case ok
     case tooLong
     case invalid
+}
+
+func frameType(_ line: Data) -> String? {
+    ((try? JSONSerialization.jsonObject(with: line)) as? [String: Any])?["type"] as? String
 }
 
 func check(line: Data) -> LineCheck {
@@ -128,15 +140,60 @@ if wantsStatus && isPair {
 
 // MARK: - Connect and identify
 
-guard let sock = connectSocket(isPair ? pairSocketPath : deviceSocketPath) else {
-    fail("bridge_unavailable", "Relay Runner is not running", exitCode: 1)
-}
-
 var identify: [String: Any] = ["type": "identify"]
 identify[isPair ? "pairing_id" : "device_id"] = args[1]
 if wantsStatus { identify["command"] = "status" }
-guard writeAll(sock, jsonLine(identify)) else {
+let identifyLine = jsonLine(identify)
+
+let sock: Int32
+/// True when `sock` is the voice bridge rather than the app's session-control socket.
+var attachedToBridge = true
+if let bridge = connectSocket(isPair ? pairSocketPath : deviceSocketPath) {
+    sock = bridge
+} else if isPair || wantsStatus {
+    fail("bridge_unavailable", "Relay Runner is not running", exitCode: 1)
+} else if let app = connectSocket(controlSocketPath) {
+    sock = app
+    attachedToBridge = false
+} else {
+    // The same bytes FrameCodec writes for SessionState(appRunning: false, session: .noSession).
+    writeAll(STDOUT_FILENO, jsonLine(["type": "session_state", "app_running": false, "session": "none"]))
+    exit(1)
+}
+guard writeAll(sock, identifyLine) else {
     fail("bridge_unavailable", "Relay Runner closed the connection", exitCode: 1)
+}
+
+/// The app's session-control socket beside the bridge, opened by the first
+/// `session_command` so its replies always follow the bridge's `welcome`.
+var control: Int32?
+
+func openControl() -> Int32? {
+    guard let fd = connectSocket(controlSocketPath) else { return nil }
+    guard writeAll(fd, identifyLine) else {
+        close(fd)
+        return nil
+    }
+    return fd
+}
+
+func closeControl() {
+    if let control { close(control) }
+    control = nil
+}
+
+/// Sends a phone line to the socket it belongs to. False when the line could
+/// not be delivered and the session must end.
+func route(_ line: Data) -> Bool {
+    guard attachedToBridge, frameType(line) == "session_command" else { return writeAll(sock, line) }
+    if control == nil { control = openControl() }
+    if let fd = control, writeAll(fd, line) { return true }
+    closeControl()
+    return writeAll(STDOUT_FILENO, jsonLine([
+        "type": "error",
+        "code": "app_unavailable",
+        "message": "Relay Runner is not running, so this session cannot be started or stopped from the phone",
+    ]))
 }
 
 // MARK: - Copy loop
@@ -153,11 +210,15 @@ func readChunk(_ fd: Int32) -> Data? {
 
 var fromClient = LineBuffer()
 var fromBridge = LineBuffer()
+var fromControl = LineBuffer()
 var clientOpen = !wantsStatus
 
 while true {
     var fds = [pollfd(fd: sock, events: Int16(POLLIN), revents: 0)]
+    let clientIndex = clientOpen ? fds.count : nil
     if clientOpen { fds.append(pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)) }
+    let controlIndex = control.map { _ in fds.count }
+    if let control { fds.append(pollfd(fd: control, events: Int16(POLLIN), revents: 0)) }
     if poll(&fds, nfds_t(fds.count), -1) < 0 {
         if errno == EINTR { continue }
         exit(1)
@@ -177,13 +238,28 @@ while true {
         }
         if let violation { violationExit(violation) }
     }
-    if clientOpen, fds.count > 1, fds[1].revents & ready != 0 {
+    if let clientIndex, fds[clientIndex].revents & ready != 0 {
         guard let chunk = readChunk(STDIN_FILENO) else { exit(0) }
         let (lines, violation) = fromClient.feed(chunk)
         for line in lines {
             var out = line
             out.append(0x0A)
-            if !writeAll(sock, out) { exit(0) }
+            if !route(out) { exit(0) }
+        }
+        if let violation { violationExit(violation) }
+    }
+    if let controlIndex, let fd = control, fds[controlIndex].revents & ready != 0 {
+        // The app closing its side ends only the control link, not the bridge session.
+        guard let chunk = readChunk(fd) else {
+            closeControl()
+            fromControl = LineBuffer()
+            continue
+        }
+        let (lines, violation) = fromControl.feed(chunk)
+        for line in lines {
+            var out = line
+            out.append(0x0A)
+            if !writeAll(STDOUT_FILENO, out) { exit(0) }
         }
         if let violation { violationExit(violation) }
     }

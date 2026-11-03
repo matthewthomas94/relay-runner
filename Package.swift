@@ -34,6 +34,7 @@ let package = Package(
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
                 .product(name: "TOMLKit", package: "TOMLKit"),
                 .target(name: "RelayPowerHelperProtocol"),
+                .target(name: "RelayRemoteProtocol"),
                 .target(name: "TrueWhisper"),
             ],
             path: "Sources/relay-runner",
@@ -87,6 +88,7 @@ let package = Package(
                 .target(name: "relay-power-helper"),
                 .target(name: "relay-remote-shell"),
                 .target(name: "relay-vision-mcp"),
+                .target(name: "RelayRemoteProtocol"),
                 .target(name: "TrueWhisper"),
             ],
             path: "tests/RelayRunnerTests"

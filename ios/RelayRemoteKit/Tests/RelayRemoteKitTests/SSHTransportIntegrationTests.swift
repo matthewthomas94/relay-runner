@@ -48,7 +48,9 @@ final class SSHTransportIntegrationTests: XCTestCase {
         await eventually(timeout: 15) { session.state == .connected }
         // Today the bridge answers the helper's `identify` line with an
         // `unknown_type` error before `welcome`; the session must survive it.
-        XCTAssertTrue(session.lastError == nil || session.lastError?.code == "unknown_type")
+        // This driver has no app socket, so the post-welcome `state` command
+        // may also come back `app_unavailable` (RR-456).
+        XCTAssertTrue([nil, "unknown_type", "app_unavailable"].contains(session.lastError?.code))
 
         session.send(text: "hello mac")
         await eventually(timeout: 10) { session.records.contains { $0.speechText == "reply: hello mac" } }
@@ -66,6 +68,37 @@ final class SSHTransportIntegrationTests: XCTestCase {
         await eventually(timeout: 15) { session.records.contains { $0.speechText == "reply: later please" } }
         XCTAssertEqual(session.resumeAfterSeq, 2)
         XCTAssertFalse(session.missedUpdates)
+        session.stop()
+    }
+
+    /// RR-456: with no session running the real helper joins a scripted
+    /// session-control socket; `start` brings up the real bridge module and the
+    /// phone attaches to it on its own, then the session takes a typed request.
+    func testStartsASessionFromThePhoneAndAttachesWhenItIsReady() async throws {
+        let key = try DeviceKeyStore.loadOrCreate(in: InMemorySecretStore(), secureEnclaveAvailable: false)
+        try await startServer(deviceKeys: ["phone-1": key], driver: Self.sessionAppDriver)
+        let session = makeSession(key: key)
+        session.start()
+        await eventually(timeout: 15) { session.state == .connectedToApp }
+        XCTAssertEqual(MacSessionStatus(session).phase, .noSession)
+        XCTAssertEqual(MacSessionStatus(session).projects.map(\.displayName), ["relay-runner"])
+
+        session.send(text: "hello mac")
+        XCTAssertTrue(session.send(sessionCommand: .start, projectID: "p-relay"))
+        await eventually(timeout: 20) { session.state == .connected }
+        await eventually(timeout: 10) { session.records.contains { $0.speechText == "reply: hello mac" } }
+        // The post-welcome `state` went through the helper to the app socket.
+        await eventually(timeout: 10) { MacSessionStatus(session).projectName == "relay-runner" }
+        XCTAssertEqual(MacSessionStatus(session).phase, .ready)
+        session.stop()
+    }
+
+    func testReportsThatRelayRunnerIsNotRunningWhenNoSocketListens() async throws {
+        let key = try DeviceKeyStore.loadOrCreate(in: InMemorySecretStore(), secureEnclaveAvailable: false)
+        try await startServer(deviceKeys: ["phone-1": key], driver: "print('ready', flush=True)\nimport time\ntime.sleep(3600)\n")
+        let session = makeSession(key: key)
+        session.start()
+        await eventually(timeout: 15) { MacSessionStatus(session).phase == .appNotRunning }
         session.stop()
     }
 
@@ -145,7 +178,8 @@ final class SSHTransportIntegrationTests: XCTestCase {
                              endpoints: StaticEndpoints([endpoint]), log: .silent)
     }
 
-    private func startServer(deviceKeys: [String: DeviceKey], pairingID: String? = nil) async throws {
+    private func startServer(deviceKeys: [String: DeviceKey], pairingID: String? = nil,
+                             driver: String = bridgeDriver) async throws {
         try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: "/usr/sbin/sshd"), "sshd unavailable")
         try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: "/usr/bin/python3"), "python3 unavailable")
         let helper = try Self.compiledHelper()
@@ -173,9 +207,11 @@ final class SSHTransportIntegrationTests: XCTestCase {
 
         let deviceSocket = root.appendingPathComponent("remote.sock").path
         let pairSocket = root.appendingPathComponent("pair.sock").path
+        let controlSocket = root.appendingPathComponent("control.sock").path
         let bridge = Process()
         bridge.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        bridge.arguments = ["-c", Self.bridgeDriver, Self.repo.path, deviceSocket, pairSocket, Self.pairingToken, pairRequest.path]
+        bridge.arguments = ["-c", driver, Self.repo.path, deviceSocket, pairSocket, Self.pairingToken, pairRequest.path,
+                            controlSocket]
         let ready = Pipe()
         bridge.standardOutput = ready
         try bridge.run()
@@ -196,7 +232,7 @@ final class SSHTransportIntegrationTests: XCTestCase {
         PasswordAuthentication no
         KbdInteractiveAuthentication no
         PubkeyAuthentication yes
-        SetEnv RELAY_REMOTE_SOCKET_PATH=\(deviceSocket) RELAY_REMOTE_PAIR_SOCKET_PATH=\(pairSocket)
+        SetEnv RELAY_REMOTE_SOCKET_PATH=\(deviceSocket) RELAY_REMOTE_PAIR_SOCKET_PATH=\(pairSocket) RELAY_SESSION_CONTROL_SOCKET_PATH=\(controlSocket)
         LogLevel ERROR
 
         """.write(to: config, atomically: true, encoding: .utf8)
@@ -256,6 +292,84 @@ final class SSHTransportIntegrationTests: XCTestCase {
                 threading.Timer(1.0, reply).start()
             else:
                 reply()
+    """
+
+    /// A scripted Relay Runner app on the session-control socket (RR-456):
+    /// `identify` gets the project list, `start` reports `starting`, brings up
+    /// the real bridge module half a second later and pushes `ready`.
+    private static let sessionAppDriver = """
+    import json, select, socket, sys, threading
+    repo, device_sock, pair_sock, token, pair_out, control_sock = sys.argv[1:7]
+    sys.path.insert(0, repo)
+    from services import relay_remote, relay_remote_protocol as proto
+
+    lock = threading.Lock()
+    phase = {"session": "none"}
+    clients = []
+
+    def state(projects=False):
+        running = phase["session"] != "none"
+        return proto.encode(proto.SessionState(
+            app_running=True, session=phase["session"],
+            project_id="p-relay" if running else None, project_name="relay-runner" if running else None,
+            projects=(proto.ProjectEntry("p-relay", "relay-runner", "available"),) if projects else None))
+
+    def send(conn, data):
+        with lock:
+            conn.sendall(data)
+
+    def consume(ingress, server):
+        count = 0
+        while True:
+            select.select([ingress], [], [], 0.2)
+            for item in ingress.drain():
+                if item.on_accepted is None:
+                    continue
+                count += 1
+                item.on_accepted({"relay_command_seq": count, "relay_command_id": "cmd-%d" % count})
+                server.session(item.device_id).speech(
+                    kind="final", source="orchestrator", text="reply: " + item.text, relay_command_seq=count)
+
+    def start_bridge():
+        ingress = relay_remote.RemoteIngress()
+        ingress.attached = True
+        server = relay_remote.RelayRemoteServer(ingress, path=device_sock)
+        server.start()
+        threading.Thread(target=consume, args=(ingress, server), daemon=True).start()
+        with lock:
+            phase["session"] = "ready"
+            for conn in list(clients):
+                try:
+                    conn.sendall(state())
+                except OSError:
+                    clients.remove(conn)
+
+    def serve(conn):
+        with lock:
+            clients.append(conn)
+        for raw in conn.makefile("rb"):
+            frame = json.loads(raw)
+            if frame.get("type") == "identify":
+                send(conn, state(projects=True))
+            elif frame.get("type") == "ping":
+                send(conn, proto.encode(proto.Pong(frame["t"])))
+            elif frame.get("type") == "session_command":
+                command = proto.decode(raw)
+                if command.action == "start" and phase["session"] == "none":
+                    phase["session"] = "starting"
+                    threading.Timer(0.5, start_bridge).start()
+                send(conn, state(projects=command.action == "list_projects"))
+        with lock:
+            if conn in clients:
+                clients.remove(conn)
+
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(control_sock)
+    listener.listen(4)
+    print("ready", flush=True)
+    while True:
+        conn, _ = listener.accept()
+        threading.Thread(target=serve, args=(conn,), daemon=True).start()
     """
 
     private static var helperBinary: URL?

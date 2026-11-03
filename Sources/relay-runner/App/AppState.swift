@@ -402,6 +402,8 @@ final class AppState {
         return session
     }()
     private var actionsBus: ActionsConfirmBus?
+    /// RR-456: lets a paired phone list projects and start or stop a session.
+    @ObservationIgnored private var sessionControlServer: RelaySessionControlServer?
     private var sttPollTimer: Timer?
     private var notchActivityPollingActive = false
     private var notchActivityRunStates: [RunState] = []
@@ -4263,6 +4265,16 @@ final class AppState {
         )
         actionsBus = actions
         Task { await actions.start() }
+
+        // RR-456: the Relay Remote session-control socket, live while the app
+        // runs so a paired phone can start a session when none is running.
+        let sessionControl = RelaySessionControlServer(control: RelaySessionControl(host: remoteSessionControlHost()))
+        do {
+            try sessionControl.start()
+            sessionControlServer = sessionControl
+        } catch {
+            NSLog("[AppState] Relay Remote session control unavailable: \(error)")
+        }
         // Wire CapsLockGesture's modal yes/no resolution back to the bus.
         // Gesture handler runs on the main thread; bridge to the actor via Task.
         sttEngine?.wireConfirmationGate(stateMachine: stateMachine) { [weak actions] confirmed in
@@ -4929,6 +4941,39 @@ final class AppState {
         programBoardOverlay.suspendForExternalWindow()
     }
 
+    /// RR-456: the phone starts a session exactly as the Workspace Start button
+    /// does, without raising the Workspace on a Mac nobody may be looking at,
+    /// and Stop ends every session as the menu's End Session does.
+    private func remoteSessionControlHost() -> RelaySessionControlHost {
+        RelaySessionControlHost(
+            projects: { [weak self] in
+                (self?.registeredProjectsV2() ?? [])
+                    .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+                    .map { .init(id: $0.projectID, name: $0.displayName, path: $0.lastResolvedPath,
+                                 availability: $0.availability.rawValue) }
+            },
+            snapshot: { [weak self] in self?.remoteSessionSnapshot ?? .init() },
+            start: { [weak self] path in
+                self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false
+            },
+            stop: { [weak self] in self?.endSession() },
+            message: { [weak self] in self?.contextSwitchMessage }
+        )
+    }
+
+    private var remoteSessionSnapshot: RelaySessionControlHost.Snapshot {
+        let focused = activeContext.id
+        let live = sessionRegistry.liveContextIDs
+            .sorted { $0 == focused && $1 != focused }
+            .compactMap { assistantSessionStore.document.bindings[$0]?.context }
+            .map { RelaySessionControlHost.LiveSession(projectID: $0.projectID, name: $0.displayName) }
+        // A running session already refuses a start, so the wheel's session
+        // limit cannot apply here; a note in progress can.
+        return .init(live: live, launching: pendingSessionLaunchID != nil || pendingContextSelection != nil,
+                     startBlockedReason: meetingNoteSnapshot.phase.ownsForeground
+                        ? "Relay Runner is taking notes on this Mac. Finish the note first." : nil)
+    }
+
     private func suspendWorkspaceForProjectPicker(_ completion: @escaping () -> Void) {
         programBoardOverlay.suspendForExternalWindowAnimated(completion: completion)
     }
@@ -4954,6 +4999,9 @@ final class AppState {
 
         Task { await actionsBus?.stop() }
         actionsBus = nil
+
+        sessionControlServer?.stop()
+        sessionControlServer = nil
 
         stateMachine.reset()
         syncNotchStatusSurface()

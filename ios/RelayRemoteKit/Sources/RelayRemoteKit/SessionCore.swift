@@ -18,7 +18,20 @@ public struct PendingUtterance: Equatable, Sendable, Identifiable {
 ///   `played: false`, which the coordinator records as receipt only.
 /// - Utterances stay queued until `accepted` and are resent with their
 ///   original `client_id` after every `welcome`; the Mac de-duplicates them.
+/// - With no session running, the helper joins the channel to Relay Runner's
+///   session-control socket instead (RR-456): `session_state` arrives where
+///   `welcome` would. Once that session is `ready` the channel is closed and
+///   reopened so the helper attaches to the new voice bridge.
 public struct SessionCore: Sendable {
+    /// When to reopen a session-control channel whose session became ready.
+    public enum Reattach: Equatable, Sendable {
+        /// The phone watched it start on this channel: reconnect at once.
+        case now
+        /// It was already ready on arrival, so the helper raced the bridge;
+        /// back off so a Mac that keeps answering this way is not hammered.
+        case afterBackoff
+    }
+
     public struct Reaction: Equatable, Sendable {
         /// Frames to send now, in order.
         public var send: [Frame] = []
@@ -26,6 +39,8 @@ public struct SessionCore: Sendable {
         public var isNew = false
         /// Utterances dropped because they outlived `outboxLifetime`.
         public var expired: [PendingUtterance] = []
+        /// Close this channel and reconnect to attach to the session.
+        public var reattach: Reattach?
     }
 
     public let deviceID: String
@@ -42,6 +57,20 @@ public struct SessionCore: Sendable {
     public private(set) var lastError: ErrorFrame?
     /// The Remote mode switch (RR-454), carried by every `hello`.
     public var remoteMode: Bool
+    /// The Mac's latest `session_state` (RR-456), across connections. A
+    /// state without `projects` keeps the last list.
+    public private(set) var macSession: SessionState?
+    /// The Mac's reason for a refused or failed session command, kept until
+    /// the next command or until the session changes on its own.
+    public private(set) var sessionError: String?
+    /// The helper last reported that Relay Runner is not running on the Mac.
+    /// Cleared by the next channel that gets further, or by a transport failure.
+    public private(set) var appUnavailable = false
+    /// This channel reached Relay Runner's session-control socket: there is
+    /// no voice bridge, but sessions can be listed, started and stopped.
+    public private(set) var isControlLink = false
+    /// The session phase last reported on this channel.
+    private var channelPhase: SessionPhase?
     /// `welcome.server_seq` until the first `pong` after it. The Mac writes
     /// `welcome` and every replayed frame before it reads our next line, so
     /// that pong proves the replay is complete even when nothing was replayed.
@@ -58,11 +87,15 @@ public struct SessionCore: Sendable {
     }
 
     public var isWelcomed: Bool { welcome != nil }
+    /// Welcomed by a voice bridge, or answered by the session-control socket.
+    public var isEstablished: Bool { isWelcomed || isControlLink }
 
     /// The channel is open: the `hello` that must be the first frame.
     public mutating func connectionOpened() -> Hello {
         welcome = nil
         replayBarrier = nil
+        isControlLink = false
+        channelPhase = nil
         return Hello(deviceId: deviceID, deviceName: deviceName, appVersion: appVersion, resumeAfterSeq: lastSeq,
                      remoteMode: remoteMode)
     }
@@ -70,6 +103,18 @@ public struct SessionCore: Sendable {
     public mutating func connectionClosed() {
         welcome = nil
         replayBarrier = nil
+        isControlLink = false
+        channelPhase = nil
+    }
+
+    /// No channel opened, or it failed: the Mac itself was not reached.
+    public mutating func connectionFailed() {
+        appUnavailable = false
+    }
+
+    /// A session command is about to go out; its answer replaces the old reason.
+    public mutating func sessionCommandSent() {
+        sessionError = nil
     }
 
     /// Queues an utterance; returns it when it can be sent right away.
@@ -97,6 +142,7 @@ public struct SessionCore: Sendable {
             }
             if welcome.dropped { missedUpdates = true }
             self.welcome = welcome
+            appUnavailable = false
             reaction.expired = pending.filter { now - $0.queuedAt > outboxLifetime }
             pending.removeAll { now - $0.queuedAt > outboxLifetime }
             reaction.send = pending.map { .utterance($0.utterance) }
@@ -124,11 +170,28 @@ public struct SessionCore: Sendable {
             // Not fatal: the Mac closes the channel itself when it gives up.
             lastError = error
             reaction.isNew = true
+        case .sessionState(var state):
+            let previous = macSession
+            if state.projects == nil { state.projects = previous?.projects }
+            if let error = state.error {
+                sessionError = error
+            } else if previous?.session != state.session || previous?.appRunning != state.appRunning {
+                sessionError = nil
+            }
+            macSession = state
+            appUnavailable = !state.appRunning
+            if !isWelcomed, state.appRunning { isControlLink = true }
+            if isControlLink, state.session == .ready {
+                let watchedItStart = channelPhase != nil && channelPhase != .ready
+                reaction.reattach = watchedItStart ? .now : .afterBackoff
+            }
+            channelPhase = state.session
+            reaction.isNew = true
         case .speechAudio:
             // The Mac's voice for an earlier `speech` frame (RR-457). It takes no
             // seq of its own, so it never moves the resume point.
             break
-        case .hello, .utterance, .control, .remoteMode, .ack, .ping:
+        case .hello, .utterance, .control, .remoteMode, .sessionCommand, .ack, .ping:
             break
         }
         return reaction
