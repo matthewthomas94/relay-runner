@@ -739,11 +739,15 @@ enum DotPresence {
     /// never reshuffles a field mid-transition, and scattered, so the
     /// cohorts do not form stripes.
     static func cohort(column: Int, row: Int) -> Int {
+        // MurmurHash3's finaliser over the two coordinates, so neighbouring
+        // dots land in unrelated cohorts.
         var hash = UInt32(truncatingIfNeeded: column) &* 0x9E37_79B1
-        hash ^= UInt32(truncatingIfNeeded: row) &* 0x85EB_CA77
-        hash ^= hash >> 15
-        hash &*= 0x2C1B_3C6D
-        hash ^= hash >> 12
+        hash = hash &+ UInt32(truncatingIfNeeded: row) &* 0x85EB_CA77
+        hash ^= hash >> 16
+        hash &*= 0x85EB_CA6B
+        hash ^= hash >> 13
+        hash &*= 0xC2B2_AE35
+        hash ^= hash >> 16
         return Int(hash % UInt32(cohorts))
     }
 

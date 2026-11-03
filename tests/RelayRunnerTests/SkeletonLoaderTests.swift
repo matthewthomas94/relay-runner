@@ -363,9 +363,13 @@ final class SkeletonLoaderTests: XCTestCase {
                        "The deal is fixed, so a relayout never reshuffles the field")
         let columns = Dictionary(grouping: bar) { $0.centre.x }.values
         let stripes = columns.filter { Set($0.map(\.cohort)).count == 1 }.count
-        XCTAssertLessThan(stripes, columns.count / 4, "Cohorts scatter rather than form stripes")
+        XCTAssertLessThan(stripes, columns.count / 8, "Cohorts scatter rather than form stripes")
         for cohort in 0..<DotPresence.cohorts {
-            XCTAssertGreaterThan(bar.filter { $0.cohort == cohort }.count, 0)
+            let members = bar.filter { $0.cohort == cohort }
+            XCTAssertGreaterThan(members.count, 0)
+            XCTAssertGreaterThanOrEqual(Set(members.map(\.centre.x)).count * 2, members.count,
+                                        "Cohort \(cohort) spreads across columns rather than clumping")
+            XCTAssertGreaterThan(Set(members.map(\.centre.y)).count, 1, "Cohort \(cohort) spans rows")
         }
     }
 
