@@ -35,37 +35,34 @@ inter-ocular distance, so templates and evaluation never see raw landmarks.
 
 ## Run it on your Mac
 
+Everything the user touches is Swift + Vision, on-device, no Python:
+
 ```sh
-cd spikes/silent-lip-commands/python
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[test]"
-pytest -q
+cd spikes/silent-lip-commands/mac
+swift build -c release
+BIN=.build/release/LipCapture
+$BIN --list-devices                      # first run triggers the camera permission prompt for Terminal
 
-# Vision-based capture (first run triggers the camera permission prompt for Terminal)
-swift run -c release --package-path ../mac LipCapture --list-devices
-
-# Record 10 silent takes of each command word, ~1.5 s each
-lipspike record --label stop   --takes 10
-lipspike record --label cancel --takes 10
-lipspike record --label play   --takes 10
-lipspike record --label replay --takes 10
+# Record 10 silent takes of each command word, ~1.5 s each (Enter starts each take)
+$BIN record --label stop   --takes 10
+$BIN record --label cancel --takes 10
+$BIN record --label play   --takes 10
+$BIN record --label replay --takes 10
 
 # Is the signal real? Leave-one-out accuracy vs 500 shuffled-label runs.
-lipspike evaluate
+$BIN evaluate
 
 # Live decode with auto segmentation (hold still 2 s to calibrate, then mouth words)
-lipspike decode
+$BIN decode
 ```
 
-`--source` overrides the capture command; e.g. to use MediaPipe instead of Vision:
+The dataset is plain JSON at `~/.lipspike/dataset.json` (`LIPSPIKE_DATASET` to move it) and is
+the same format the Python harness reads, so `python -m lipspike.cli evaluate` on the same file
+cross-checks the Swift port. `LipCapture stream` prints the raw per-frame geometry as JSONL for
+that purpose.
 
-```sh
-pip install -e ".[video]"
-curl -LO https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
-lipspike --source "python -m lipspike.mediapipe_source --model face_landmarker.task" record --label stop
-```
-
-The dataset is a plain JSON file at `~/.lipspike/dataset.json` (`LIPSPIKE_DATASET` to move it).
+The Python package is the validation harness used for the GRID experiment on Linux; it is not
+needed on the Mac.
 
 ## Reproduce the GRID experiment
 

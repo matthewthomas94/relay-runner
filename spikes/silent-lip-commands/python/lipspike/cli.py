@@ -31,7 +31,7 @@ from .classifier import Evaluation, Template, TemplateClassifier
 from .segmenter import Segmenter
 
 DEFAULT_DATASET = Path(os.environ.get("LIPSPIKE_DATASET", Path.home() / ".lipspike" / "dataset.json"))
-DEFAULT_SOURCE = os.environ.get("LIPSPIKE_SOURCE", "swift run -c release --package-path ../mac LipCapture")
+DEFAULT_SOURCE = os.environ.get("LIPSPIKE_SOURCE", "../mac/.build/release/LipCapture stream")
 
 
 def load_dataset(path: Path) -> list[Template]:
