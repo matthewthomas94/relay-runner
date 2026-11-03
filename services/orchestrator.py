@@ -170,7 +170,7 @@ from followup_tickets import (
     sanitize_followup_draft,
 )
 from pm_frontstage import OrchestrationTraceEvent, PMStatusEvent, RelayCommandMetadata
-from program_status import build_program_dashboard, build_program_status
+from program_status import build_program_dashboard, build_program_status, program_context
 from relay_authorization import (
     authorization_exists,
     mark_mutations_canceled,
@@ -11946,11 +11946,20 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
 
         self._program_refresh_single_flight("dashboard").run(refresh)
         store = GraphifyCoreStore(self.graphify_path)
+        # The Work tab polls every 10 s. Decoding every graph node again for
+        # an unchanged graph was its largest idle cost (RR-449); the file
+        # state is read first, so a concurrent write forces the next rebuild.
+        key = (graph_file_state(self.graphify_path), None if repo_paths is None else tuple(repo_paths))
+        cached = getattr(self, "_program_dashboard_context", None)
+        if cached is None or cached[0] != key:
+            cached = (key, program_context(store, repo_paths=repo_paths))
+            self._program_dashboard_context = cached
         return build_program_dashboard(
             store,
             provider=provider,
             repo_paths=repo_paths,
             limit=limit,
+            context=cached[1],
         )
 
     def session_capture(

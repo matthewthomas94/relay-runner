@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
@@ -281,6 +282,31 @@ class ProgramStatusTests(unittest.TestCase):
 
         self.assertEqual(len(dashboard["backlog"]["items"]), 60)
         self.assertEqual(dashboard["summary"]["items"][0]["backlog_tickets"], 60)
+
+    def test_daemon_dashboard_rebuilds_graph_context_only_after_a_graph_change(self):
+        # The Work tab polls every 10 s; decoding an unchanged graph each
+        # time was its largest idle cost (RR-449).
+        import orchestrator
+
+        store = self.make_store()
+        project = _project(store, "/tmp/relay-runner", "Relay Runner")
+        _ticket(store, project, "RR-1", "First", "backlog")
+        daemon = object.__new__(orchestrator.Daemon)
+        daemon.graphify_path = store.path
+        with mock.patch.object(orchestrator.Daemon, "sweep_program_ready_tickets"), \
+                mock.patch.object(orchestrator.Daemon, "_ingest_program_graph", return_value={}), \
+                mock.patch.object(orchestrator, "program_context", wraps=orchestrator.program_context) as context:
+            first = daemon.program_dashboard(limit=0)
+            again = daemon.program_dashboard(limit=0)
+            self.assertEqual(context.call_count, 1)
+            _ticket(store, project, "RR-2", "Second", "backlog")
+            changed = daemon.program_dashboard(limit=0)
+
+        self.assertEqual(context.call_count, 2)
+        self.assertEqual(again["backlog"], first["backlog"])
+        self.assertEqual(
+            {item["ticket_id"] for item in changed["backlog"]["items"]}, {"RR-1", "RR-2"}
+        )
 
     def test_dashboard_shows_materialized_done_and_canceled_pool_only(self):
         store = self.make_store()

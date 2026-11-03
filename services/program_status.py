@@ -138,12 +138,14 @@ def build_program_dashboard(
     limit: int = 0,
     now: float | None = None,
     stale_after_seconds: int = STALE_AFTER_SECONDS,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """`context` is a reusable `program_context(store, repo_paths)` result."""
     provider_key = _provider_key(provider)
     raw_limit = int(limit if limit is not None else 0)
     item_limit = None if raw_limit <= 0 else max(1, min(raw_limit, 500))
     now = time.time() if now is None else now
-    ctx = _context(store, repo_paths=repo_paths)
+    ctx = context if context is not None else _context(store, repo_paths=repo_paths)
     build = lambda query: _build_program_status_from_context(
         ctx,
         query=query,
@@ -243,6 +245,14 @@ def _build_program_status_from_context(
 
     items = _summary_items(ctx, provider_key, now, stale_after_seconds)
     return _response(query, provider_key, _summary_text(items, provider_key), _limit_items(items, item_limit), ctx)
+
+
+def program_context(
+    store: GraphifyCoreStore,
+    repo_paths: list[str] | None = None,
+) -> dict[str, Any]:
+    """Graph-derived inputs of every Program view. Builders only read it."""
+    return _context(store, repo_paths=repo_paths)
 
 
 def _context(
