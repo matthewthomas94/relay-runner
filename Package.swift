@@ -45,6 +45,10 @@ let package = Package(
             path: "Sources/relay-vision-mcp"
         ),
         .executableTarget(
+            name: "relay-desktop-mcp",
+            path: "Sources/relay-desktop-mcp"
+        ),
+        .executableTarget(
             name: "relay-orchestrator-mcp",
             path: "Sources/relay-orchestrator-mcp"
         ),
@@ -73,6 +77,7 @@ let package = Package(
             dependencies: [
                 .target(name: "relay-runner"),
                 .target(name: "relay-actions-mcp"),
+                .target(name: "relay-desktop-mcp"),
                 .target(name: "relay-orchestrator-mcp"),
                 .target(name: "relay-power-helper"),
                 .target(name: "relay-remote-shell"),

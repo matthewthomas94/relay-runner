@@ -7,19 +7,33 @@ enum Instructions {
 
 The Relay Runner project ships its own MCP servers for voice-driven screen control. Whenever they are connected, **always use the custom path — never native `mcp__computer-use__*` fallbacks** — even when both are connected. This rule overrides the generic "tier of tool" guidance the computer-use MCP injects.
 
-The custom stack has three pieces: **RelayActions** (screen manipulation), **RelayVision** (screen observation), and **ActionGlow** (the perimeter-glow overlay). The naming notes spell out the split.
+The custom stack has four pieces: **RelayDesktop** (accessibility-tree observation and headless semantic actions), **RelayActions** (physical screen manipulation), **RelayVision** (pixel observation), and **ActionGlow** (the perimeter-glow overlay). The naming notes spell out the split.
 
 ### Prefer direct system commands before visual navigation
 
-A deterministic shell or operating-system command is not a screen-control fallback. For direct requests such as launching an app, opening or revealing a known folder or file, or locating a filesystem item, use the direct command first. Do not take screenshots or click through Finder, the Dock, or a browser merely to reach a result the operating system can produce directly. Use RelayVision when the request genuinely requires visible pixels, then RelayActions only when simulated UI interaction is necessary.
+A deterministic shell or operating-system command is not a screen-control fallback. For direct requests such as launching an app, opening or revealing a known folder or file, or locating a filesystem item, use the direct command first. Do not take screenshots or click through Finder, the Dock, or a browser merely to reach a result the operating system can produce directly. After that, prefer RelayDesktop: `snapshot` reads the app's accessibility tree and `act` operates a ref, so most reads and clicks need neither pixels nor coordinates. Use RelayVision only when the request genuinely requires visible pixels, and RelayActions only when physical input is necessary.
 
-### RelayActions — the screen-manipulation tools
+### RelayActions — the physical screen-manipulation tools
 
-When screen *manipulation* is necessary — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app`, `toggle_board` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions. (Screen *observation* — `screenshot` and `record` — lives in RelayVision; see the look-at-screen rule.)
+When *physical* screen manipulation is necessary — `click`, `type`, `scroll`, `key`, `list_windows`, `frontmost_app`, `toggle_board` — use the `mcp__relay-actions__*` tools. Do **not** use `mcp__computer-use__*` for anything covered by RelayActions. (Accessibility-tree reads and ref actions live in RelayDesktop; screen *observation* — `screenshot` and `record` — lives in RelayVision; see the look-at-screen rule.)
 
 If you genuinely need an operation RelayActions doesn't yet expose, surface that gap to the human before falling through to `mcp__computer-use__*`. The default answer is "extend RelayActions," not "fall back to native."
 
 RelayActions + ActionGlow is the product. Native MCPs work fine in any other context, but here they bypass the project's instrumentation and visual surface. The custom path is non-negotiable.
+
+## Relay Desktop — read and operate apps through the accessibility tree first
+
+Relay Desktop (`mcp__relay-desktop__*`) wraps the bundled [agent-desktop](https://github.com/vercel-labs/agent-desktop) CLI. `snapshot` returns an app's accessibility tree as JSON with a ref for every element that can be acted on, and `act` targets a ref headlessly through semantic accessibility calls: no pixel matching, no pointer movement, no focus change. Reach for it before a screenshot or a coordinate click whenever the app exposes accessibility.
+
+- **Observe with `snapshot` or `find`, not `screenshot`.** To learn what a window contains, read its text, values or control states, or prepare to act, call `snapshot` (interactive elements only and compacted by default; `skeleton` first for a dense app, then `root` to drill into one region) or `find` (role, name, text). Call `mcp__relay-vision__screenshot` only when the pixels themselves matter — rendering, layout, colour, images, canvas or game content, a video — or when the user asks to *see* the screen or the tree comes back empty.
+- **Act on refs, not coordinates.** Pass a ref from the latest snapshot to `act` (click, type, set-value, select, toggle, check, expand, scroll …) or send a shortcut with `press`. Refs belong to their snapshot; after any UI change take a new one. A `STALE_REF` or `AMBIGUOUS_TARGET` error means snapshot again, not retry. Use Relay Actions coordinate `click`/`type` only when no ref path exists (a canvas, a game, a custom control with no accessibility) or the user asked for physical input.
+- **Verify by observation.** Accessibility return codes do not prove an effect; snapshot, `find` or `get` again after acting. Retry an action only when the result's `disposition.retry` is `safe`; otherwise read the live state first, because a repeat can click, type or submit twice.
+- **Wait for conditions, not time.** `wait` blocks on text, an element predicate, a window, a menu or a lifecycle event; a fixed sleep is a race.
+- **Surfaces.** Menus, the menu bar, sheets, alerts and popovers are surfaces: pass `surface` to `snapshot` or `find` while one is open, because refs from the window behind it are the wrong target.
+- **Headless only.** Double-click, hover, drag, raw mouse input, quit shortcuts, the clipboard and `--headed` delivery are not exposed. Relay Actions covers physical input the user has asked for.
+- **Privacy.** A snapshot can contain private text from the user's apps and is returned to the requesting provider, like a screenshot. Read only the app and region the request needs.
+
+Every successful Relay Desktop call pulses ActionGlow like every other Relay tool. The CLI runs inside Relay Runner.app, so Accessibility is granted to Relay Runner once; Codex, Claude, Terminal and editors need nothing.
 
 ## Asking for permission — don't use `propose_action`
 
@@ -39,15 +53,18 @@ When the user says "bring up the Workspace", "show the Workspace", or similar, c
 
 For all screen *observation* — `screenshot` for a still and `record` for a short mp4 — use the `mcp__relay-vision__*` tools. This namespace was split out of RelayActions (RR-10) so "looking at the screen" and "acting on the screen" are separate tool families. Do **not** use `mcp__computer-use__*` for anything covered by RelayVision, and never run `screencapture` from a shell: it makes macOS prompt the agent's host app for Screen Recording, while the Relay tools capture through Relay Runner's own grant. The namespace is designed to grow (future tools could include region reads), but today it's `screenshot` and `record`.
 
+That rule is about *seeing*. When the request is to read what an app says, check a control's state, fill a form or operate a dialog, Relay Desktop `snapshot` and `find` are the right first read: they return the accessibility tree without pixels, and their refs feed `act` directly. See the Relay Desktop rules.
+
 When the user says "look at my screen", "what's on my screen", "can you see X", "check the screen", or any similar voice intent to have you observe the current display, fire `mcp__relay-vision__screenshot` immediately. Do not explore the codebase, do not ask clarifying questions about which display, do not summarize before looking. The screenshot tool pulses ActionGlow automatically as it runs, so the user gets the visual signal at the same moment you get the pixels.
 
 When the user wants to see motion — an animation, a transition, a loading state, "record the screen", "send me a recording" — call `mcp__relay-vision__record` with a `duration_seconds` that covers the moment (default 4s, at most 30s, at most 30 fps), trigger the motion while it records, then send the returned mp4 path to the user. The tool returns the file path, not the video, so read or send the file from that path.
 
 ## Naming notes
 
-- **Relay Actions** = the screen-*manipulation* feature and its MCP tool family (`mcp__relay-actions__*`): click, type, scroll, key, list_windows, frontmost_app.
+- **Relay Desktop** = the *accessibility-tree* feature and its MCP tool family (`mcp__relay-desktop__*`): snapshot, find, act, press, get, wait, list_apps, list_windows, focus_window, launch, status. Backed by the bundled agent-desktop CLI, run inside Relay Runner.app.
+- **Relay Actions** = the *physical* screen-manipulation feature and its MCP tool family (`mcp__relay-actions__*`): click, type, scroll, key, list_windows, frontmost_app.
 - **Relay Vision** = the screen-*observation* feature and its MCP tool family (`mcp__relay-vision__*`): screenshot, record. Split out of Relay Actions in RR-10.
-- **ActionGlow** = the perimeter-glow overlay that pulses whenever a RelayActions *or* RelayVision tool runs. It is automatic — driven by the `tool_fired` notification every RelayActions and RelayVision tool sends after running — so you never call it directly. It is a **visual signal**, not a confirmation gate. (`OverlayState.actionGlow` in code.)
+- **ActionGlow** = the perimeter-glow overlay that pulses whenever a RelayDesktop, RelayActions *or* RelayVision tool runs. It is automatic — driven by the `tool_fired` notification every RelayDesktop, RelayActions and RelayVision tool sends after running — so you never call it directly. It is a **visual signal**, not a confirmation gate. (`OverlayState.actionGlow` in code.)
 - Together: **the Relay stack**. Don't conflate any of these with native "computer-use" or "computer-vision" — those are different MCPs from a different vendor.
 """#
 
@@ -56,7 +73,7 @@ When the user wants to see motion — an animation, a transition, a loading stat
 
 This is a summary. For the full screen-control rules, call `mcp__relay-actions__get_relay_instructions` (read-only).
 
-- Always use the Relay stack for screen control: `mcp__relay-actions__*` (click, type, scroll, key, list_windows, frontmost_app, toggle_board) to act and `mcp__relay-vision__screenshot` to look. Never fall back to `mcp__computer-use__*`, even when it is connected; if an operation is missing, tell the user instead.
+- Always use the Relay stack for screen control: `mcp__relay-desktop__*` (snapshot, find, act, press) to read and operate apps through accessibility, `mcp__relay-actions__*` (click, type, scroll, key, list_windows, frontmost_app, toggle_board) for physical input, and `mcp__relay-vision__screenshot` to look at pixels. Prefer a desktop snapshot before a screenshot and a ref action before a coordinate click. Never fall back to `mcp__computer-use__*`, even when it is connected; if an operation is missing, tell the user instead.
 - Prefer a direct shell or OS command (launch an app, open or reveal a known path, find a file) before visual navigation.
 - "Look at my screen", "what's on my screen", "can you see X": call `mcp__relay-vision__screenshot` immediately, without exploring code or asking which display.
 - "Bring up / show the Workspace": call `mcp__relay-actions__toggle_board`.

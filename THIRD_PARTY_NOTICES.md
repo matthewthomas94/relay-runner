@@ -19,6 +19,14 @@ Sparkle and SwiftTerm credit additional upstream contributors in their license f
 
 text-processing-rs is copyright 2026 FluidInference. It is a Rust port of [NVIDIA NeMo Text Processing](https://github.com/NVIDIA/NeMo-text-processing) (Apache License 2.0), and its FST engine includes compiled grammars derived from NeMo Text Processing. It statically links rustfst, flate2 and other MIT- and/or Apache-2.0-licensed crates; its upstream `NOTICE` and `THIRD-PARTY-LICENSES.md` are authoritative. Because SwiftPM keeps this binary artifact outside `.build/checkouts`, the packaging script's copied license files do not include it; the Apache License 2.0 text shipped for FluidAudio applies.
 
+## Bundled native executables
+
+| Component | Pinned release | Use | License |
+| --- | --- | --- | --- |
+| [agent-desktop](https://github.com/vercel-labs/agent-desktop) (`agent-desktop`, `agent-desktop-macos-helper`) | 1.0.2, downloaded from the GitHub release and verified against SHA-256 pins in `scripts/fetch-agent-desktop.sh` | Relay Desktop accessibility-tree observation and headless actions, run by Relay Runner.app as its own child | Apache License 2.0 |
+
+agent-desktop is copyright Vercel, Inc. Its binaries are re-signed with Relay Runner's Developer ID so the bundle notarises; the packaging script ships its verified `LICENSE` as `ThirdPartyLicenses/agent-desktop.txt`. Relay Runner exposes only the headless subset of its commands (see [Relay Desktop](docs/specs/relay-desktop.md)).
+
 ## Installed into the local voice environment
 
 These packages are not committed to the repository or pre-bundled in the signed app. First-run setup installs the ranges in `services/requirements.txt` into `~/Library/Application Support/relay-runner/services/.venv/`:

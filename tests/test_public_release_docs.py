@@ -23,6 +23,7 @@ class PublicReleaseDocumentationTests(unittest.TestCase):
         "docs/repository-audit.md",
         "docs/troubleshooting.md",
         "docs/specs/relay-actions.md",
+        "docs/specs/relay-desktop.md",
         "docs/specs/relay-vision.md",
     )
 

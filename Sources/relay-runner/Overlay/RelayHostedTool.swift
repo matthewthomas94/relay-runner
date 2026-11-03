@@ -16,7 +16,7 @@ enum RelayHostedToolResult {
 enum RelayHostedTool {
     static func requiredPermission(for tool: String) -> PermissionKind? {
         switch tool {
-        case "click", "type", "key", "scroll":
+        case "click", "type", "key", "scroll", "desktop":
             return .accessibility
         case "screenshot", "record":
             return .screenRecording
@@ -51,6 +51,8 @@ enum RelayHostedTool {
                 return .success(try await performScreenshot(arguments: arguments))
             case "record":
                 return .success(try await performRecord(arguments: arguments))
+            case "desktop":
+                return .success(try await performDesktop(arguments: arguments))
             default:
                 return .failure("Relay Runner does not host a tool named '\(tool)'.")
             }
@@ -205,6 +207,15 @@ enum RelayHostedTool {
 
             Codex, Claude, Terminal, and other agent hosts do not need this permission for Relay Actions.
             """)
+    }
+
+    // MARK: - Relay Desktop
+
+    /// Runs one policy-checked agent-desktop command as a child of the app, so
+    /// the CLI's own Accessibility check resolves to Relay Runner's grant.
+    private static func performDesktop(arguments: [String: Any]) async throws -> [[String: Any]] {
+        try ensureAccessibility(purpose: arguments["purpose"] as? String ?? "read or operate an app through its accessibility tree")
+        return try await RelayDesktopHost.perform(arguments: arguments)
     }
 
     // MARK: - Screenshot

@@ -2,7 +2,7 @@
 
 This is a summary. For the full screen-control rules, call `mcp__relay-actions__get_relay_instructions` (read-only).
 
-- Always use the Relay stack for screen control: `mcp__relay-actions__*` (click, type, scroll, key, list_windows, frontmost_app, toggle_board) to act and `mcp__relay-vision__screenshot` to look. Never fall back to `mcp__computer-use__*`, even when it is connected; if an operation is missing, tell the user instead.
+- Always use the Relay stack for screen control: `mcp__relay-desktop__*` (snapshot, find, act, press) to read and operate apps through accessibility, `mcp__relay-actions__*` (click, type, scroll, key, list_windows, frontmost_app, toggle_board) for physical input, and `mcp__relay-vision__screenshot` to look at pixels. Prefer a desktop snapshot before a screenshot and a ref action before a coordinate click. Never fall back to `mcp__computer-use__*`, even when it is connected; if an operation is missing, tell the user instead.
 - Prefer a direct shell or OS command (launch an app, open or reveal a known path, find a file) before visual navigation.
 - "Look at my screen", "what's on my screen", "can you see X": call `mcp__relay-vision__screenshot` immediately, without exploring code or asking which display.
 - "Bring up / show the Workspace": call `mcp__relay-actions__toggle_board`.

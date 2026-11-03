@@ -13,6 +13,7 @@ from pathlib import Path
 ADAPTERS = (
     "relay-actions-mcp",
     "relay-vision-mcp",
+    "relay-desktop-mcp",
     "relay-orchestrator-mcp",
 )
 META = {

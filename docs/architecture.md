@@ -50,9 +50,9 @@ Freshness identifiers prevent a superseded voice command from speaking or mutati
 
 ## Screen capabilities
 
-`relay-actions-mcp` exposes manipulation and window-introspection operations. `relay-vision-mcp` exposes screenshot observation separately. The helpers forward privileged work to Relay Runner.app so macOS attributes Accessibility and Screen Recording to the app. Successful calls pulse ActionGlow.
+`relay-desktop-mcp` exposes accessibility-tree observation and headless semantic actions through the bundled agent-desktop CLI, which Relay Runner.app runs as its own child. `relay-actions-mcp` exposes physical manipulation and window-introspection operations. `relay-vision-mcp` exposes screenshot observation separately. The helpers forward privileged work to Relay Runner.app so macOS attributes Accessibility and Screen Recording to the app. Successful calls pulse ActionGlow.
 
-Current tool and permission details are in [Relay Actions](specs/relay-actions.md), [Relay Vision](specs/relay-vision.md), and [Privacy](privacy.md).
+Current tool and permission details are in [Relay Desktop](specs/relay-desktop.md), [Relay Actions](specs/relay-actions.md), [Relay Vision](specs/relay-vision.md), and [Privacy](privacy.md).
 
 ## Projects, tickets, and workers
 

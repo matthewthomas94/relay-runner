@@ -111,6 +111,12 @@ else
     swift build -c "$CONFIG"
 fi
 
+# Relay Desktop bundles the pinned vercel-labs/agent-desktop release. The fetch
+# script verifies the archive and license against their pinned SHA-256 before
+# anything is extracted.
+echo "==> Fetching agent-desktop (Relay Desktop)..."
+AGENT_DESKTOP_DIR="$("$SCRIPT_DIR/fetch-agent-desktop.sh")"
+
 echo "==> Creating app bundle..."
 remove_tree "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
@@ -147,6 +153,15 @@ cp "$BUILD_DIR/relay-actions-mcp" "$APP_DIR/Contents/MacOS/relay-actions-mcp"
 # the menu-bar app so Screen Recording prompts/checks target Relay Runner.
 cp "$BUILD_DIR/relay-vision-mcp" "$APP_DIR/Contents/MacOS/relay-vision-mcp"
 
+# Helper binary: Relay Desktop MCP server, plus the vercel-labs/agent-desktop
+# CLI and its macOS helper it forwards to (Apache-2.0; see
+# THIRD_PARTY_NOTICES.md). Relay Runner.app runs the CLI as its own child so
+# Accessibility belongs to the app, and the helper must sit beside the CLI.
+cp "$BUILD_DIR/relay-desktop-mcp" "$APP_DIR/Contents/MacOS/relay-desktop-mcp"
+cp "$AGENT_DESKTOP_DIR/agent-desktop" "$APP_DIR/Contents/MacOS/agent-desktop"
+cp "$AGENT_DESKTOP_DIR/agent-desktop-macos-helper" "$APP_DIR/Contents/MacOS/agent-desktop-macos-helper"
+chmod 755 "$APP_DIR/Contents/MacOS/agent-desktop" "$APP_DIR/Contents/MacOS/agent-desktop-macos-helper"
+
 # Helper binary: Relay Orchestrator MCP server. The orchestrator daemon process
 # itself runs under launchd (via scripts/relay-orchestrator) and is just a
 # Python script, but the MCP proxy is the Swift binary registered with the
@@ -174,7 +189,7 @@ cp "$PROJECT_ROOT/scripts/LaunchDaemons/com.relayrunner.app.power-helper.plist" 
 DSYM_DIR="$DIST_DIR/dSYMs"
 remove_tree "$DSYM_DIR"
 mkdir -p "$DSYM_DIR"
-for binary in relay-runner relay-actions-mcp relay-vision-mcp relay-orchestrator-mcp relay-remote-shell relay-power-helper; do
+for binary in relay-runner relay-actions-mcp relay-vision-mcp relay-desktop-mcp relay-orchestrator-mcp relay-remote-shell relay-power-helper; do
     binary_path="$APP_DIR/Contents/MacOS/$binary"
     dsym_path="$DSYM_DIR/$binary.dSYM"
     xcrun dsymutil "$binary_path" -o "$dsym_path"
@@ -273,6 +288,9 @@ if [ "$DEPENDENCY_LICENSE_COUNT" -eq 0 ]; then
     echo "error: no resolved dependency licenses were copied" >&2
     exit 1
 fi
+# agent-desktop is a downloaded release, not a SwiftPM checkout, so its
+# verified LICENSE is copied from the fetch cache.
+cp "$AGENT_DESKTOP_DIR/LICENSE" "$THIRD_PARTY_LICENSES_DIR/agent-desktop.txt"
 
 # Python services
 for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py intent_qualification.py continuity_incidents.py continuity_agent.py continuity_recovery.py continuity_reports.py continuity_resume.py relay_authorization.py relay_remote.py relay_remote_protocol.py intent_arbitration.py intent_inbox.py provider_turn_broker.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py claude_subscription.py harness_update.py \
@@ -368,6 +386,18 @@ if [ -n "$SIGN_IDENTITY" ]; then
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR/Contents/MacOS/relay-vision-mcp"
+    codesign --force --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/relay-desktop-mcp"
+    # The agent-desktop release binaries arrive ad-hoc linker-signed; they are
+    # re-signed with the same Developer ID and hardened runtime so the bundle
+    # notarises and Gatekeeper accepts them as part of Relay Runner.
+    codesign --force --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/agent-desktop"
+    codesign --force --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/agent-desktop-macos-helper"
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR/Contents/MacOS/relay-orchestrator-mcp"

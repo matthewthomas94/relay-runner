@@ -20,6 +20,7 @@ Relay Runner does not provide a hosted speech, repository, or ticket service.
 - Transcribed prompts are delivered as text to the active Codex or Claude session.
 - The provider CLI can read source, terminal context, and tool output according to its working directory, configuration, and permissions.
 - A Relay Vision screenshot is returned to the requesting agent. It can therefore be transmitted to that agent's provider.
+- A Relay Desktop snapshot is the accessibility tree of the requested app, which can contain that app's text. It is returned to the requesting agent and can therefore be transmitted to that agent's provider. The bundled agent-desktop CLI also keeps recent snapshot ref maps locally under `~/.agent-desktop/` so refs resolve between calls; Relay Runner never uploads them.
 - Relay Actions results, orchestrator summaries, and public worker progress can become provider context.
 - Git content leaves the Mac when the user or an agent explicitly pushes or syncs it.
 - Project-note transcripts are intentional Git-backed project content and can leave the Mac through the project's configured artifact sync. Starting capture does not itself start a provider or send transcript text to one.
@@ -32,13 +33,13 @@ OpenAI and Anthropic process data under their own product settings and terms. Re
 | Permission | Why it is requested | If it is denied |
 | --- | --- | --- |
 | Microphone | Capture speech for local transcription. | Voice input is unavailable; other app surfaces can still open. |
-| Accessibility | Host Relay Actions clicks, typing, keys, scrolling, window automation, and global shortcut observation. | Voice can still use the menu-bar control; Relay Actions and some shortcuts are unavailable. |
+| Accessibility | Host Relay Desktop accessibility-tree reads and headless actions, Relay Actions clicks, typing, keys, scrolling, window automation, and global shortcut observation. | Voice can still use the menu-bar control; Relay Desktop, Relay Actions and some shortcuts are unavailable. |
 | Input Monitoring | Listen-only fallback for global shortcuts, including non-modifier activation keys and the Workspace hotkey when Accessibility is absent. | Caps Lock and menu controls still provide reduced voice operation; affected global shortcuts are unavailable. |
 | Screen Recording | Capture the selected display when Relay Vision is explicitly invoked, or computer/meeting audio when the user explicitly starts Note Taker. | Relay Vision returns a permission error and Note Taker visibly reports that computer audio is unavailable; microphone capture, ordinary voice, and Relay Actions can continue independently. |
 
 Accessibility and Screen Recording belong to Relay Runner.app because the app hosts the privileged operation. macOS may require the app to relaunch after a grant or revoke. Settings shows the current permission state and recovery routes.
 
-Permissions are capability gates, not per-action confirmations. A successful Relay Actions or Relay Vision call pulses ActionGlow around the screen edge. For a consequential action, the foreground agent should ask in the normal conversation when intent is not already clear.
+Permissions are capability gates, not per-action confirmations. A successful Relay Desktop, Relay Actions or Relay Vision call pulses ActionGlow around the screen edge. For a consequential action, the foreground agent should ask in the normal conversation when intent is not already clear.
 
 ## Storage and deletion
 

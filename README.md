@@ -26,7 +26,7 @@ Relay Runner adds a voice and coordination layer to the coding agents you alread
 - Keep listening, transcription, playback, and permission state visible in a compact macOS overlay.
 - Register Git projects from anywhere on the Mac and start sessions with an explicit project scope.
 - Turn project work into repo-owned Relay tickets, dispatch isolated workers, and review progress in Workspace.
-- Optionally let the active agent manipulate macOS through Relay Actions or inspect the screen through Relay Vision.
+- Optionally let the active agent read and operate apps through Relay Desktop's accessibility tree, manipulate macOS physically through Relay Actions, or inspect the screen through Relay Vision.
 
 Voice augments the normal CLI session; Relay Runner is not a hosted IDE, a cloud copy of your repositories, or an autonomous release service.
 
@@ -88,7 +88,7 @@ The repository remains the durable boundary. Relay artifacts live with the regis
 | State | Capabilities |
 | --- | --- |
 | **Shipped** | Native macOS app; Codex and Claude sessions; local Parakeet transcription and Kokoro speech; embedded Terminal; project registry; Workspace tickets; orchestrator and isolated worker runs; visible lifecycle and replay controls. |
-| **Optional** | Relay Actions for clicks, typing, keys, scrolling, project activation, and window inspection; Relay Vision for screenshots. These are installed for both providers and work only with the macOS permissions you grant. |
+| **Optional** | Relay Desktop for reading an app's accessibility tree and operating its controls without pixels or coordinates; Relay Actions for clicks, typing, keys, scrolling, project activation, and window inspection; Relay Vision for screenshots. These are installed for both providers and work only with the macOS permissions you grant. |
 | **Evolving** | Artifact-ref storage, synchronization, retention, migration, and staged lifecycle policies have explicit per-project rollout boundaries. The early-release UI and provider model catalog will continue to change. |
 | **Known limits** | The shipped release requires an Apple Silicon Mac running macOS 14 or later; TTS is currently English; provider models and effort levels depend on the user's account; agents can make consequential changes when permission bypass is enabled; the orchestrator stops at reviewed project work and does not release or deploy automatically. |
 
@@ -103,13 +103,14 @@ Speech processing is local, but the configured coding agent is still an online p
 | Transcribed prompts | Sent as text to the active Codex or Claude session, like text typed into that session. |
 | Source and terminal context | Available to the provider CLI under that CLI's permissions and the working directory you selected. |
 | Relay Vision screenshots | Captured only when the tool is invoked, then returned to the requesting agent and therefore may reach its provider. |
+| Relay Desktop snapshots | Read only when the tool is invoked. The accessibility tree can contain text from the app, is returned to the requesting agent, and therefore may reach its provider. |
 | Project registry and run state | Stored locally. Ticket and artifact files remain in the project repository and travel only when you commit or sync them. |
 | Updates, models, and setup packages | Downloaded over the network from the documented release, model, and package sources. |
 
 Permissions are deliberately separate:
 
 - **Microphone** is required for voice input.
-- **Accessibility** is optional. It hosts Relay Actions and can observe global shortcuts; without it, voice still works from the menu-bar record control.
+- **Accessibility** is optional. It hosts Relay Desktop and Relay Actions and can observe global shortcuts; without it, voice still works from the menu-bar record control.
 - **Input Monitoring** is an optional listen-only fallback for global shortcuts, including non-Caps-Lock activation keys and the Workspace hotkey.
 - **Screen Recording** is optional and used only by Relay Vision screenshots.
 
@@ -137,14 +138,14 @@ microphone → Parakeet STT → foreground Codex or Claude session → provider
                     └─ tool-free provider messenger → Kokoro TTS → speakers
 ```
 
-The Swift app owns audio, Workspace, the embedded terminal, permissions, and the visible overlays. Local Python services coordinate voice, messaging, tickets, and worker lifecycle. Bundled MCP helpers expose Relay Actions, Relay Vision, and the orchestrator to both supported providers. See the [architecture overview](docs/architecture.md) for process and storage boundaries.
+The Swift app owns audio, Workspace, the embedded terminal, permissions, and the visible overlays. Local Python services coordinate voice, messaging, tickets, and worker lifecycle. Bundled MCP helpers expose Relay Desktop, Relay Actions, Relay Vision, and the orchestrator to both supported providers. See the [architecture overview](docs/architecture.md) for process and storage boundaries.
 
 ## Go further
 
 - [Architecture](docs/architecture.md) · [project scope](docs/architecture/project-scope-v2.md) · [registry](docs/architecture/registry-v2.md)
 - [Orchestrator](docs/orchestrator.md) · [ticket schema](docs/specs/orchestrator-tickets.md)
 - [Artifact store](docs/architecture/artifact-store.md) · [lifecycle](docs/architecture/artifact-lifecycle.md) · [sync](docs/architecture/artifact-sync.md) · [retention](docs/architecture/artifact-retention.md)
-- [Relay Actions](docs/specs/relay-actions.md) · [Relay Vision](docs/specs/relay-vision.md) · [Relay Remote guide](docs/relay-remote.md)
+- [Relay Desktop](docs/specs/relay-desktop.md) · [Relay Actions](docs/specs/relay-actions.md) · [Relay Vision](docs/specs/relay-vision.md) · [Relay Remote guide](docs/relay-remote.md)
 - [Configuration](docs/configuration.md) · [Troubleshooting](docs/troubleshooting.md) · [Testing](TESTING.md) · [Release process](docs/release-updates.md)
 
 ## Project routes

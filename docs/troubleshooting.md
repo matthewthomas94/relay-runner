@@ -27,6 +27,10 @@ Enable **Relay Runner** in Accessibility, then relaunch if macOS requests it. Th
 
 ActionGlow indicates a successful Relay tool call. It does not prove the target application accepted an input or that the requested user outcome occurred; verify consequential results in the target application.
 
+## Relay Desktop cannot read or operate an app
+
+Relay Desktop runs the bundled agent-desktop CLI inside Relay Runner, so it needs the same **Accessibility** grant as Relay Actions: enable **Relay Runner** in Accessibility (Device Control and Data Access on newer macOS) and retry. A `PERM_DENIED` result from `status` after a grant means macOS has not refreshed the grant yet; relaunch the app. An empty tree or `WINDOW_NOT_FOUND` means the app exposes no accessibility for that window, so use Relay Vision for pixels and Relay Actions for input. "Relay Desktop is unavailable" means the `agent-desktop` binary is missing from `Contents/MacOS`; reinstall the release build.
+
 ## Relay Vision cannot take a screenshot
 
 Enable **Relay Runner** in Screen Recording and relaunch the app if requested. Voice transcription, speech, and non-visual Relay Actions do not require Screen Recording. DRM-protected content can remain unavailable even with permission.
