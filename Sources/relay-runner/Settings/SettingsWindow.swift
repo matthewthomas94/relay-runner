@@ -289,7 +289,8 @@ private struct SettingsContent: View {
             STTSettingsTab(
                 config: $draft.stt,
                 migrationState: appState.phononMigration?.state,
-                onRetryMigration: { appState.phononMigration?.retry() }
+                onRetryMigration: { appState.phononMigration?.retry() },
+                cameraPermission: appState.permissions
             )
         case .textToSpeech:
             TTSSettingsTab(config: $draft.tts, appState: appState)

@@ -68,6 +68,7 @@ final class ConfigManager {
             if let v = tomlString(stt, "phonon_migration_previous_model") {
                 config.stt.phonon_migration_previous_model = v
             }
+            if let v = tomlBool(stt, "true_whisper") { config.stt.true_whisper = v }
         }
 
         // TTS
@@ -149,6 +150,7 @@ final class ConfigManager {
         lines.append("vad_sensitivity = \"\(c.stt.vad_sensitivity)\"")
         lines.append("phonon_migration = \"\(c.stt.phonon_migration)\"")
         lines.append("phonon_migration_previous_model = \"\(c.stt.phonon_migration_previous_model)\"")
+        lines.append("true_whisper = \(c.stt.true_whisper)")
         lines.append("")
 
         lines.append("[tts]")
