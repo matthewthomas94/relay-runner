@@ -57,9 +57,9 @@ Forwarding port 22 on your router puts your Mac's SSH server on the public inter
 
 ## 8. Sleep and keep-awake
 
-A sleeping Mac drops every connection and cannot be woken from the phone. While at least one phone is connected, Relay Runner holds a power assertion that stops idle system sleep, and releases it when the last phone disconnects. It does not stop a closed lid or a manual sleep, and the phone will say the connection dropped. For a Mac you want reachable all day, set Energy settings to prevent automatic sleep on power adapter, or run `caffeinate -s` in a Terminal.
+A sleeping Mac drops every connection and cannot be woken from the phone. While at least one phone has Remote mode on, Relay Runner holds a power assertion that stops idle system sleep, and releases it when the last such phone turns Remote mode off or disconnects. It does not stop a closed lid or a manual sleep, and the phone will say the connection dropped. For a Mac you want reachable all day, set Energy settings to prevent automatic sleep on power adapter, or run `caffeinate -s` in a Terminal.
 
-While a phone is the active input, Relay Runner mutes the Mac microphone so the two don't compete, and shows Remote: and the device name in its status. It takes the microphone back when the phone disconnects.
+The **Remote mode** switch at the top of the phone's screen decides which device runs the conversation. It is on by default and the phone remembers it. On, the phone listens and speaks: Relay Runner mutes the Mac microphone so the two don't compete, keeps the Mac quiet, and shows Remote: and the device name in its status. Off, the Mac listens and speaks as usual while the phone stays connected and shows the replies as text. Relay Runner takes the microphone back when the switch goes off or the phone disconnects.
 
 ## 9. When the host key changes
 

@@ -40,17 +40,20 @@ public struct SessionCore: Sendable {
     public private(set) var welcome: Welcome?
     public private(set) var missedUpdates = false
     public private(set) var lastError: ErrorFrame?
+    /// The Remote mode switch (RR-454), carried by every `hello`.
+    public var remoteMode: Bool
     /// `welcome.server_seq` until the first `pong` after it. The Mac writes
     /// `welcome` and every replayed frame before it reads our next line, so
     /// that pong proves the replay is complete even when nothing was replayed.
     private var replayBarrier: Int?
 
     public init(deviceID: String, deviceName: String, appVersion: String, resumeAfterSeq: Int?,
-                outboxLifetime: Double = ReplayBuffer.maxAge) {
+                remoteMode: Bool = true, outboxLifetime: Double = ReplayBuffer.maxAge) {
         self.deviceID = deviceID
         self.deviceName = deviceName
         self.appVersion = appVersion
         self.lastSeq = resumeAfterSeq
+        self.remoteMode = remoteMode
         self.outboxLifetime = outboxLifetime
     }
 
@@ -60,7 +63,8 @@ public struct SessionCore: Sendable {
     public mutating func connectionOpened() -> Hello {
         welcome = nil
         replayBarrier = nil
-        return Hello(deviceId: deviceID, deviceName: deviceName, appVersion: appVersion, resumeAfterSeq: lastSeq)
+        return Hello(deviceId: deviceID, deviceName: deviceName, appVersion: appVersion, resumeAfterSeq: lastSeq,
+                     remoteMode: remoteMode)
     }
 
     public mutating func connectionClosed() {
@@ -120,7 +124,7 @@ public struct SessionCore: Sendable {
             // Not fatal: the Mac closes the channel itself when it gives up.
             lastError = error
             reaction.isNew = true
-        case .hello, .utterance, .control, .ack, .ping:
+        case .hello, .utterance, .control, .remoteMode, .ack, .ping:
             break
         }
         return reaction

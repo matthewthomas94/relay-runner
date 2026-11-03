@@ -65,15 +65,16 @@ final class RelayRemoteDeviceSessionTests: XCTestCase {
         XCTAssertTrue(gate.suspended)
     }
 
-    func testKeepAwakeAcquiredOnConnectAndReleasedWithoutLeakAcrossReconnects() {
+    func testKeepAwakeHeldOnlyWhileRemoteModeIsActiveWithoutLeakAcrossReconnects() {
         session.apply(event(.connected))
+        XCTAssertFalse(awake.held)
         session.apply(event(.active))
         XCTAssertEqual(awake.acquires, 1)
         XCTAssertTrue(awake.held)
         for _ in 0..<3 {
             session.apply(event(.disconnected))
             XCTAssertFalse(awake.held)
-            session.apply(event(.connected))
+            session.apply(event(.active))
             XCTAssertTrue(awake.held)
         }
         session.apply(event(.disconnected))
@@ -81,14 +82,51 @@ final class RelayRemoteDeviceSessionTests: XCTestCase {
         XCTAssertFalse(awake.held)
     }
 
-    func testAssertionHeldUntilLastDeviceDisconnects() {
-        session.apply(event(.connected, "a", "A"))
-        session.apply(event(.connected, "b", "B"))
+    func testInactiveResumesTheMicrophoneAndReleasesKeepAwakeButStaysConnected() {
+        session.apply(event(.active))
+        XCTAssertTrue(gate.suspended)
+        XCTAssertEqual(session.statusLabel, "Remote: Matt's iPhone")
+
+        session.apply(event(.inactive))
+        XCTAssertFalse(gate.suspended)
+        XCTAssertEqual(gate.preserved, [false])
+        XCTAssertNil(session.activeDeviceID)
+        XCTAssertFalse(awake.held)
+        XCTAssertNil(session.statusLabel)
+
+        // Back on without a reconnect.
+        session.apply(event(.active))
+        XCTAssertTrue(gate.suspended)
+        XCTAssertTrue(awake.held)
+        XCTAssertEqual(session.statusLabel, "Remote: Matt's iPhone")
+
+        // The mode off, then the phone leaves: nothing more to resume.
+        session.apply(event(.inactive))
+        XCTAssertEqual(gate.preserved, [false, false])
+        session.apply(event(.disconnected))
+        XCTAssertEqual(gate.preserved, [false, false])
+        XCTAssertEqual(awake.acquires, awake.releases)
+    }
+
+    func testHelloWithModeOffNeverSuspendsOrHoldsKeepAwake() {
+        session.apply(event(.inactive))
+        XCTAssertFalse(gate.suspended)
+        XCTAssertEqual(gate.preserved, [])
+        XCTAssertFalse(awake.held)
+        XCTAssertNil(session.statusLabel)
+        session.apply(event(.disconnected))
+        XCTAssertEqual(awake.acquires, 0)
+    }
+
+    func testAssertionHeldUntilTheLastActiveDeviceLeaves() {
+        session.apply(event(.active, "a", "A"))
+        session.apply(event(.active, "b", "B"))
         session.apply(event(.disconnected, "a", "A"))
         XCTAssertTrue(awake.held)
         XCTAssertEqual(session.statusLabel, "Remote: B")
-        session.apply(event(.disconnected, "b", "B"))
+        session.apply(event(.inactive, "b", "B"))
         XCTAssertFalse(awake.held)
+        XCTAssertNil(session.statusLabel)
     }
 
     func testEventParsingAcceptsBothShapesAndIgnoresOthers() {
@@ -98,6 +136,9 @@ final class RelayRemoteDeviceSessionTests: XCTestCase {
         XCTAssertEqual(a?.deviceName, "Pad")
         let b = RemoteDeviceEvent(["source": "remote_device", "state": "connected", "device_id": "d"])
         XCTAssertEqual(b?.kind, .connected)
+        let c = RemoteDeviceEvent(["source": "remote_device", "state": "inactive", "device_id": "d",
+                                   "device_name": "Pad"])
+        XCTAssertEqual(c?.kind, .inactive)
         XCTAssertNil(RemoteDeviceEvent(["source": "bridge", "state": "idle"]))
         XCTAssertNil(RemoteDeviceEvent(["source": "bridge", "state": "remote_device", "event": "bogus", "device_id": "d"]))
     }

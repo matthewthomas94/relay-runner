@@ -10,6 +10,11 @@
   "line": "{\"app_version\":\"0.1\",\"device_id\":\"B6F1C0D2-77A4-4E1B-8C39-2A5D9E0F4B13\",\"device_name\":\"iPhone\",\"protocol\":1,\"type\":\"hello\"}"
  },
  {
+  "name": "hello_remote_mode_off",
+  "direction": "phone_to_mac",
+  "line": "{\"app_version\":\"0.1\",\"device_id\":\"B6F1C0D2-77A4-4E1B-8C39-2A5D9E0F4B13\",\"device_name\":\"iPhone\",\"protocol\":1,\"remote_mode\":false,\"resume_after_seq\":41,\"type\":\"hello\"}"
+ },
+ {
   "name": "utterance",
   "direction": "phone_to_mac",
   "line": "{\"captured_at\":\"2026-10-22T09:14:03Z\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"text\":\"move RR-120 to ready\",\"type\":\"utterance\"}"
@@ -43,6 +48,16 @@
   "name": "control_replay",
   "direction": "phone_to_mac",
   "line": "{\"action\":\"replay\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"control\"}"
+ },
+ {
+  "name": "remote_mode_on",
+  "direction": "phone_to_mac",
+  "line": "{\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"enabled\":true,\"type\":\"remote_mode\"}"
+ },
+ {
+  "name": "remote_mode_off",
+  "direction": "phone_to_mac",
+  "line": "{\"client_id\":\"9a1d6e47-2b83-4c55-8e0f-5d3c7b9a1e22\",\"enabled\":false,\"type\":\"remote_mode\"}"
  },
  {
   "name": "ack",
@@ -88,6 +103,16 @@
   "name": "speech_lifecycle_no_command",
   "direction": "mac_to_phone",
   "line": "{\"kind\":\"progress\",\"seq\":49,\"source\":\"lifecycle\",\"text\":\"Worker finished.\",\"type\":\"speech\"}"
+ },
+ {
+  "name": "speech_spoken_by_mac",
+  "direction": "mac_to_phone",
+  "line": "{\"kind\":\"final\",\"relay_command_seq\":812,\"seq\":46,\"source\":\"orchestrator\",\"spoken_by\":\"mac\",\"text\":\"RR-120 is in ready and dispatching.\",\"type\":\"speech\"}"
+ },
+ {
+  "name": "speech_spoken_by_phone",
+  "direction": "mac_to_phone",
+  "line": "{\"kind\":\"progress\",\"seq\":47,\"source\":\"lifecycle\",\"spoken_by\":\"phone\",\"text\":\"Worker RR-120 started.\",\"type\":\"speech\"}"
  },
  {
   "name": "speech_control",

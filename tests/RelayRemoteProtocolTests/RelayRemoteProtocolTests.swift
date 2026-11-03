@@ -25,7 +25,7 @@ final class RelayRemoteProtocolTests: XCTestCase {
             XCTAssertEqual(try FrameCodec.encode(frame), line + Data([0x0A]), name)
             XCTAssertEqual(try FrameCodec.decode(line + Data([0x0A])), frame, name)
         }
-        XCTAssertEqual(types, ["hello", "utterance", "control", "ack", "ping", "welcome", "accepted",
+        XCTAssertEqual(types, ["hello", "utterance", "control", "remote_mode", "ack", "ping", "welcome", "accepted",
                                "speech", "speech_control", "status", "error", "pong"])
     }
 

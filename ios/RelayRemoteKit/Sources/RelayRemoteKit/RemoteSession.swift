@@ -54,15 +54,18 @@ public struct SessionConfiguration: Sendable {
     public var appVersion: String
     public var credentials: SSHCredentials
     public var resumeAfterSeq: Int?
+    /// The Remote mode switch at launch; see `RemoteSession.setRemoteMode`.
+    public var remoteMode: Bool
     public var timing = SessionTiming()
 
     public init(deviceID: String, deviceName: String, appVersion: String, credentials: SSHCredentials,
-                resumeAfterSeq: Int? = nil) {
+                resumeAfterSeq: Int? = nil, remoteMode: Bool = true) {
         self.deviceID = deviceID
         self.deviceName = deviceName
         self.appVersion = appVersion
         self.credentials = credentials
         self.resumeAfterSeq = resumeAfterSeq
+        self.remoteMode = remoteMode
     }
 }
 
@@ -100,6 +103,9 @@ public final class RemoteSession {
     public private(set) var lastDisconnect: String?
 
     public var resumeAfterSeq: Int? { core.lastSeq }
+    /// On: the phone owns the microphone and speaker. Off: the Mac speaks and
+    /// listens while the phone shows text (RR-454).
+    public var remoteMode: Bool { core.remoteMode }
 
     public static let recordLimit = 200
     /// Acks held while the channel is down; flushed after the next `welcome`.
@@ -132,7 +138,8 @@ public final class RemoteSession {
         self.environment = environment
         self.log = log
         self.core = SessionCore(deviceID: configuration.deviceID, deviceName: configuration.deviceName,
-                                appVersion: configuration.appVersion, resumeAfterSeq: configuration.resumeAfterSeq)
+                                appVersion: configuration.appVersion, resumeAfterSeq: configuration.resumeAfterSeq,
+                                remoteMode: configuration.remoteMode)
         self.backoff = configuration.timing.backoff
     }
 
@@ -185,6 +192,14 @@ public final class RemoteSession {
         guard connection != nil, core.isWelcomed else { return false }
         transmit(.control(Control(clientId: UUID().uuidString.lowercased(), action: action)))
         return true
+    }
+
+    /// Changes the Remote mode switch. A connected Mac hears it at once; the
+    /// next `hello` carries it either way, so a change made offline still lands.
+    public func setRemoteMode(_ enabled: Bool) {
+        guard core.remoteMode != enabled else { return }
+        core.remoteMode = enabled
+        transmit(.remoteMode(RemoteMode(clientId: UUID().uuidString.lowercased(), enabled: enabled)))
     }
 
     /// Acknowledges a Mac frame. While the channel is down the ack waits in a
@@ -379,7 +394,7 @@ public final class RemoteSession {
         guard let line = try? FrameCodec.encode(frame) else { return }
         connection.send(line)
         switch frame {
-        case .hello, .utterance, .control: append(.sent, frame)
+        case .hello, .utterance, .control, .remoteMode: append(.sent, frame)
         default: break
         }
     }

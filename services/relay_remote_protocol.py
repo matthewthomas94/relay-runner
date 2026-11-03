@@ -26,6 +26,7 @@ REPLAY_MAX_AGE = 300.0
 
 CONTROL_ACTIONS = frozenset({"stop", "interrupt", "cancel", "play", "replay"})
 SPEECH_CONTROL_ACTIONS = frozenset({"stop", "skip"})
+SPOKEN_BY = frozenset({"mac", "phone"})
 
 
 class FrameError(Exception):
@@ -43,6 +44,8 @@ class Hello:
     device_name: str
     app_version: str
     resume_after_seq: int | None = None
+    # RR-454: the phone's Remote mode switch; absent means on.
+    remote_mode: bool | None = None
     protocol: int = PROTOCOL_VERSION
     TYPE = "hello"
     PHONE_TO_MAC = True
@@ -62,6 +65,16 @@ class Control:
     client_id: str
     action: str
     TYPE = "control"
+    PHONE_TO_MAC = True
+
+
+@dataclass(frozen=True)
+class RemoteMode:
+    """RR-454: on, the phone owns mic and speaker; off, speech plays on the Mac."""
+
+    client_id: str
+    enabled: bool
+    TYPE = "remote_mode"
     PHONE_TO_MAC = True
 
 
@@ -107,6 +120,8 @@ class Speech:
     source: str
     text: str
     relay_command_seq: int | None = None
+    # RR-454: `mac` means Kokoro speaks it and the phone only shows the text.
+    spoken_by: str | None = None
     TYPE = "speech"
     PHONE_TO_MAC = False
 
@@ -146,7 +161,7 @@ class Pong:
 FRAME_TYPES = {
     cls.TYPE: cls
     for cls in (
-        Hello, Utterance, Control, Ack, Ping, Welcome, Accepted,
+        Hello, Utterance, Control, RemoteMode, Ack, Ping, Welcome, Accepted,
         Speech, SpeechControl, Status, ErrorFrame, Pong,
     )
 }
@@ -155,8 +170,14 @@ _ENUMS = {
     ("speech_control", "action"): SPEECH_CONTROL_ACTIONS,
     ("speech", "kind"): SPEECH_KINDS,
     ("speech", "source"): SPEECH_SOURCES,
+    ("speech", "spoken_by"): SPOKEN_BY,
 }
-_UUID_FIELDS = {("utterance", "client_id"), ("control", "client_id"), ("accepted", "client_id")}
+_UUID_FIELDS = {
+    ("utterance", "client_id"),
+    ("control", "client_id"),
+    ("remote_mode", "client_id"),
+    ("accepted", "client_id"),
+}
 
 
 def _check(type_name: str, name: str, value: Any, annotation: str) -> None:

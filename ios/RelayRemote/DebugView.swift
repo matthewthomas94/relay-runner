@@ -2,8 +2,9 @@ import RelayRemoteKit
 import RelayRemoteProtocol
 import SwiftUI
 
-/// Debug surface: connection state, the voice controls (RR-429), a field for
-/// typed utterances, and the frames that crossed the wire.
+/// Debug surface: the Remote mode switch (RR-454), connection state, the voice
+/// controls (RR-429), a field for typed utterances, and the frames that
+/// crossed the wire.
 struct DebugView: View {
     let model: AppModel
     let session: RemoteSession
@@ -13,6 +14,17 @@ struct DebugView: View {
 
     var body: some View {
         List {
+            Section {
+                Toggle(isOn: Bindable(model).remoteMode) {
+                    Label("Remote mode", systemImage: model.remoteMode ? "iphone.radiowaves.left.and.right" : "desktopcomputer")
+                        .font(.headline)
+                }
+            } footer: {
+                Text(model.remoteMode
+                     ? "This iPhone listens and speaks. Your Mac stays quiet and awake."
+                     : "Your Mac listens and speaks. Replies show here as text.")
+            }
+
             Section("Connection") {
                 LabeledContent("State", value: stateLabel)
                 if let code = session.lastDisconnect {
@@ -46,13 +58,16 @@ struct DebugView: View {
                     if !voice.transcript.isEmpty {
                         Text(voice.transcript).italic()
                     }
-                    if voice.mode == .pushToTalk {
-                        HoldToTalkButton(isHeld: voice.isListening, began: voice.pressToTalkBegan,
-                                         ended: voice.pressToTalkEnded)
-                    } else {
-                        Toggle("Listen", isOn: Binding(get: { voice.isListening },
-                                                       set: { $0 ? voice.startListening() : voice.stopListening() }))
+                    Group {
+                        if voice.mode == .pushToTalk {
+                            HoldToTalkButton(isHeld: voice.isListening, began: voice.pressToTalkBegan,
+                                             ended: voice.pressToTalkEnded)
+                        } else {
+                            Toggle("Listen", isOn: Binding(get: { voice.isListening },
+                                                           set: { $0 ? voice.startListening() : voice.stopListening() }))
+                        }
                     }
+                    .disabled(!voice.remoteMode)
                     HStack {
                         Button("Stop", systemImage: "stop.fill") { voice.stop() }
                         Spacer()
@@ -179,10 +194,12 @@ struct DebugView: View {
         case .hello(let hello): return "resume after \(hello.resumeAfterSeq.map(String.init) ?? "none")"
         case .utterance(let utterance): return utterance.text
         case .control(let control): return control.action.rawValue
+        case .remoteMode(let mode): return mode.enabled ? "on" : "off"
         case .welcome(let welcome):
             return "\(welcome.sessionState), server seq \(welcome.serverSeq)\(welcome.dropped ? ", updates dropped" : "")"
         case .accepted(let accepted): return "command \(accepted.relayCommandSeq)"
-        case .speech(let speech): return "#\(speech.seq) \(speech.kind.rawValue) · \(speech.text)"
+        case .speech(let speech):
+            return "#\(speech.seq) \(speech.kind.rawValue)\(speech.spokenBy == .mac ? " (Mac)" : "") · \(speech.text)"
         case .speechControl(let control): return "#\(control.seq) \(control.action.rawValue) \(control.reason ?? "")"
         case .status(let status): return "#\(status.seq) \(status.text)"
         case .error(let error): return "\(error.code): \(error.message)"

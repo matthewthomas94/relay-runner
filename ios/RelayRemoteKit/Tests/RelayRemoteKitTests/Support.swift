@@ -20,6 +20,7 @@ final class FakeMac: @unchecked Sendable {
     private(set) var utteranceFrames: [Utterance] = []
     private(set) var acks: [Ack] = []
     private(set) var controls: [Control] = []
+    private(set) var modes: [RemoteMode] = []
     /// When false, utterances are recorded but not accepted (a drop before the receipt).
     var acceptsUtterances = true
     /// Sent once before `welcome`, like the bridge's reply to the helper's `identify` line.
@@ -60,6 +61,8 @@ final class FakeMac: @unchecked Sendable {
             replay.ack(ack.seq)
         case .control(let control):
             controls.append(control)
+        case .remoteMode(let mode):
+            modes.append(mode)
         case .ping(let ping):
             connection.deliver(.pong(Pong(t: ping.t)))
         default:
@@ -267,10 +270,11 @@ enum Fixtures {
     /// transport tests use as their sync point.
     static func session(transport: RemoteTransport, clock: TestClock, resumeAfterSeq: Int? = nil,
                         log: RemoteLogger = .silent,
-                        endpoints: [NWEndpoint] = [endpoint], autoAck: Bool = true) -> RemoteSession {
+                        endpoints: [NWEndpoint] = [endpoint], autoAck: Bool = true,
+                        remoteMode: Bool = true) -> RemoteSession {
         var configuration = SessionConfiguration(deviceID: "b6f1c0d2-77a4-4e1b-8c39-2a5d9e0f4b13", deviceName: "Test iPhone",
                                                  appVersion: "0.1", credentials: credentials(),
-                                                 resumeAfterSeq: resumeAfterSeq)
+                                                 resumeAfterSeq: resumeAfterSeq, remoteMode: remoteMode)
         configuration.timing.backoff = Backoff(base: 0.5, cap: 30)
         let session = RemoteSession(configuration: configuration, transport: transport, endpoints: StaticEndpoints(endpoints),
                                     environment: clock.environment, log: log)

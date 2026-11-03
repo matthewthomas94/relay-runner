@@ -300,6 +300,8 @@ class SpeechCoordinator:
         self._remote_sinks: dict[str, Any] = {}
         self._remote_outstanding: dict[tuple[str, int], SpeechIntent] = {}
         self._remote_stopped_through: dict[str, int] = {}
+        # RR-454: devices with Remote mode off see Mac speech as text only.
+        self._remote_mirrors: dict[str, Any] = {}
         self._shutdown = threading.Event()
         self._control_socket_path = control_socket_path
         self._control_thread: threading.Thread | None = None
@@ -412,6 +414,7 @@ class SpeechCoordinator:
         keeps buffering until its replay window lapses, then is detached.
         """
         with self._lock:
+            self._remote_mirrors.pop(sink.device_id, None)
             self._remote_sinks.pop(sink.device_id, None)
             self._remote_sinks[sink.device_id] = sink
         self._write_diagnostic({
@@ -424,6 +427,20 @@ class SpeechCoordinator:
     def detach_remote_sink(self, device_id: str, *, reason: str = "closed") -> None:
         with self._lock:
             self._detach_remote_locked(str(device_id), reason)
+
+    def attach_remote_mirror(self, sink) -> None:
+        """Show Mac speech on a device whose Remote mode is off (RR-454).
+
+        Kokoro keeps speaking; each intent handed to it is also sent to the
+        device as a ``speech`` frame with ``spoken_by="mac"`` for display.
+        Its acks realize nothing, because the Mac's own playback does.
+        """
+        with self._lock:
+            self._remote_mirrors[sink.device_id] = sink
+
+    def detach_remote_mirror(self, device_id: str) -> None:
+        with self._lock:
+            self._remote_mirrors.pop(str(device_id), None)
 
     def remote_ack(self, device_id: str, seq: int, played: bool) -> bool:
         """A device ack: ``played`` realizes the frame, otherwise receipt only."""
@@ -1208,6 +1225,19 @@ class SpeechCoordinator:
     def _enqueue_worker(self, intent: SpeechIntent) -> None:
         self._diagnostic("tts_enqueued", intent, sink=LOCAL_SINK)
         self.worker.input_queue.put(intent.to_worker_payload())
+        with self._lock:
+            mirrors = list(self._remote_mirrors.values())
+        for mirror in mirrors:
+            try:
+                mirror.speech(
+                    kind=intent.kind,
+                    source=intent.source,
+                    text=intent.spoken_text,
+                    relay_command_seq=intent.command_seq,
+                    spoken_by="mac",
+                )
+            except Exception:  # A display copy must never stop Mac speech.
+                continue
 
     def _retain_replayable_locked(self, intent: SpeechIntent) -> bool:
         # Replay is user-requested, so it targets the last message even after

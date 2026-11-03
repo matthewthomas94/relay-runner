@@ -27,6 +27,12 @@ final class VoiceController {
     var mode = Mode.pushToTalk {
         didSet { if mode != oldValue { modeChanged() } }
     }
+    /// The Remote mode switch (RR-454): the microphone opens only while it is
+    /// on. Off, the Mac listens and speaks; `speech` frames it voiced arrive
+    /// with `spoken_by: mac` and the playback queue only shows them.
+    var remoteMode = true {
+        didSet { if remoteMode != oldValue { remoteModeChanged() } }
+    }
     private(set) var activity = Activity.idle
     private(set) var transcript = ""
     private(set) var isListening = false
@@ -64,7 +70,7 @@ final class VoiceController {
     // MARK: - Push to talk
 
     func pressToTalkBegan() {
-        guard mode == .pushToTalk, !utteranceOpen, !busy else { return }
+        guard remoteMode, mode == .pushToTalk, !utteranceOpen, !busy else { return }
         isListening = true
         bargeIn()
         Task { await openUtterance() }
@@ -79,7 +85,7 @@ final class VoiceController {
     // MARK: - Hands-free
 
     func startListening() {
-        guard mode == .handsFree, !isListening else { return }
+        guard remoteMode, mode == .handsFree, !isListening else { return }
         isListening = true
         endpointer = UtteranceEndpointer()
         bargeIn()
@@ -135,8 +141,20 @@ final class VoiceController {
         transcript = ""
     }
 
+    private func remoteModeChanged() {
+        guard !remoteMode else { return }
+        // The Mac owns the turn now: release the microphone and fall silent
+        // without asking the Mac to stop its own speech.
+        queue.stopAll()
+        if isListening {
+            isListening = false
+            Task { await closeUtterance(send: false) }
+        }
+        transcript = ""
+    }
+
     private func openUtterance() async {
-        guard !utteranceOpen, !busy else { return }
+        guard remoteMode, !utteranceOpen, !busy else { return }
         busy = true
         defer { busy = false }
         if readiness != .ready {
