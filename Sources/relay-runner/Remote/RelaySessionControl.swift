@@ -136,11 +136,16 @@ final class RelaySessionControl {
     private func perform(_ command: SessionCommand) -> SessionState {
         // A retry after a reconnect reports the current state instead of acting twice.
         if dedup.isDuplicate(command.clientId) { return state() }
-        switch command.action {
+        return perform(command.action, projectID: command.projectId)
+    }
+
+    /// One session action, shared by the phone's `session_command` and Relay App (RR-459).
+    func perform(_ action: SessionAction, projectID: String? = nil) -> SessionState {
+        switch action {
         case .listProjects: return state(includingProjects: true)
         case .state: return state()
         case .stop: return stop()
-        case .start: return start(projectID: command.projectId)
+        case .start: return start(projectID: projectID)
         }
     }
 
@@ -188,16 +193,26 @@ final class RelaySessionControl {
 
 /// Listens on `/tmp/relay_session_control.sock` while the app runs (RR-456),
 /// owner-only like the Relay Actions and pairing sockets, and accepts only
-/// peers with this user's uid. Its one client is `relay-remote-shell`, which
-/// a paired device's forced `command=` key runs, so only paired devices reach it.
+/// peers with this user's uid. It is the app's command surface with two kinds
+/// of client, told apart by a connection's first line:
+///
+/// - `relay-remote-shell`, run by a paired device's forced `command=` key,
+///   opens with `identify` and then relays the phone's `session_command`s.
+/// - `relay-app-mcp` (RR-459) opens with `app_command` and gets `app_result`
+///   replies from `RelayAppCommands`. A connection that began with anything
+///   else is refused app commands, so a phone can never reach them.
 final class RelaySessionControlServer: @unchecked Sendable {
     static let defaultSocketPath = "/tmp/relay_session_control.sock"
     static let defaultBridgeSocketPath = "/tmp/relay_remote.sock"
 
-    private final class Client {
+    /// Confined to `queue`; Relay App's main-actor hop only carries it back there.
+    private final class Client: @unchecked Sendable {
+        enum Role { case undecided, remote, app }
+
         let fd: Int32
         let source: DispatchSourceRead
         var buffer = Data()
+        var role = Role.undecided
 
         init(fd: Int32, source: DispatchSourceRead) {
             self.fd = fd
@@ -209,15 +224,17 @@ final class RelaySessionControlServer: @unchecked Sendable {
     private let bridgePath: String
     private let tickInterval: TimeInterval
     private let control: RelaySessionControl
+    private let commands: RelayAppCommands?
     private let queue = DispatchQueue(label: "com.relayrunner.session-control")
     // Confined to `queue`.
     private var listenSource: DispatchSourceRead?
     private var timer: DispatchSourceTimer?
     private var clients: [ObjectIdentifier: Client] = [:]
 
-    init(control: RelaySessionControl, path: String = defaultSocketPath,
+    init(control: RelaySessionControl, commands: RelayAppCommands? = nil, path: String = defaultSocketPath,
          bridgePath: String = defaultBridgeSocketPath, tickInterval: TimeInterval = 1) {
         self.control = control
+        self.commands = commands
         self.path = path
         self.bridgePath = bridgePath
         self.tickInterval = tickInterval
@@ -293,6 +310,15 @@ final class RelaySessionControlServer: @unchecked Sendable {
         }
         guard client.buffer.count <= RelayRemoteProtocol.maxLineBytes else { return drop(client) }
         guard !lines.isEmpty else { return }
+        var sessionLines: [Data] = []
+        for line in lines {
+            let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any]
+            let isAppCommand = object?["type"] as? String == "app_command"
+            if client.role == .undecided { client.role = isAppCommand ? .app : .remote }
+            if isAppCommand { perform(object ?? [:], for: client) } else { sessionLines.append(line) }
+        }
+        lines = sessionLines
+        guard !lines.isEmpty else { return }
         let accepting = Self.bridgeAccepting(at: bridgePath)
         DispatchQueue.main.async { [self] in
             control.bridgeAccepting = accepting
@@ -304,14 +330,30 @@ final class RelaySessionControlServer: @unchecked Sendable {
         }
     }
 
+    /// Runs one Relay App command on the main actor and answers with `app_result`.
+    private func perform(_ object: [String: Any], for client: Client) {
+        let id = object["id"] as? String ?? ""
+        guard client.role == .app, let commands else {
+            let reason = commands == nil ? "Relay App commands are not available." : "App commands are not accepted on this connection."
+            return write([RelayAppCommands.encode(id: id, .failure(.init(reason)))], to: client)
+        }
+        Task { @MainActor [self] in
+            let reply = RelayAppCommands.encode(id: id, await commands.handle(object))
+            queue.async { [self] in
+                guard clients[ObjectIdentifier(client)] === client else { return }
+                write([reply], to: client)
+            }
+        }
+    }
+
     private func tick() {
-        guard !clients.isEmpty else { return }
+        guard clients.values.contains(where: { $0.role != .app }) else { return }
         let accepting = Self.bridgeAccepting(at: bridgePath)
         DispatchQueue.main.async { [self] in
             control.bridgeAccepting = accepting
             guard let line = control.pushIfChanged().flatMap({ try? FrameCodec.encode(.sessionState($0)) }) else { return }
             queue.async { [self] in
-                for client in Array(clients.values) { write([line], to: client) }
+                for client in Array(clients.values) where client.role != .app { write([line], to: client) }
             }
         }
     }

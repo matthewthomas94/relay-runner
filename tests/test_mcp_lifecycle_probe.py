@@ -28,7 +28,7 @@ class MCPLifecycleProbeTests(unittest.TestCase):
         )
         report = json.loads(result.stdout)
         self.assertEqual(set(report["adapters"]), {
-            "relay-actions-mcp", "relay-vision-mcp", "relay-desktop-mcp", "relay-orchestrator-mcp",
+            "relay-actions-mcp", "relay-vision-mcp", "relay-desktop-mcp", "relay-app-mcp", "relay-orchestrator-mcp",
         })
         for adapter in report["adapters"].values():
             self.assertEqual(adapter["stateless_discover"], "-32601 method not found")

@@ -162,6 +162,10 @@ cp "$AGENT_DESKTOP_DIR/agent-desktop" "$APP_DIR/Contents/MacOS/agent-desktop"
 cp "$AGENT_DESKTOP_DIR/agent-desktop-macos-helper" "$APP_DIR/Contents/MacOS/agent-desktop-macos-helper"
 chmod 755 "$APP_DIR/Contents/MacOS/agent-desktop" "$APP_DIR/Contents/MacOS/agent-desktop-macos-helper"
 
+# Helper binary: Relay App MCP server (RR-459). It forwards each command to the
+# menu-bar app's owner-only command socket, which performs it.
+cp "$BUILD_DIR/relay-app-mcp" "$APP_DIR/Contents/MacOS/relay-app-mcp"
+
 # Helper binary: Relay Orchestrator MCP server. The orchestrator daemon process
 # itself runs under launchd (via scripts/relay-orchestrator) and is just a
 # Python script, but the MCP proxy is the Swift binary registered with the
@@ -189,7 +193,7 @@ cp "$PROJECT_ROOT/scripts/LaunchDaemons/com.relayrunner.app.power-helper.plist" 
 DSYM_DIR="$DIST_DIR/dSYMs"
 remove_tree "$DSYM_DIR"
 mkdir -p "$DSYM_DIR"
-for binary in relay-runner relay-actions-mcp relay-vision-mcp relay-desktop-mcp relay-orchestrator-mcp relay-remote-shell relay-power-helper; do
+for binary in relay-runner relay-actions-mcp relay-vision-mcp relay-desktop-mcp relay-app-mcp relay-orchestrator-mcp relay-remote-shell relay-power-helper; do
     binary_path="$APP_DIR/Contents/MacOS/$binary"
     dsym_path="$DSYM_DIR/$binary.dSYM"
     xcrun dsymutil "$binary_path" -o "$dsym_path"
@@ -389,6 +393,9 @@ if [ -n "$SIGN_IDENTITY" ]; then
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR/Contents/MacOS/relay-desktop-mcp"
+    codesign --force --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/relay-app-mcp"
     # The agent-desktop release binaries arrive ad-hoc linker-signed; they are
     # re-signed with the same Developer ID and hardened runtime so the bundle
     # notarises and Gatekeeper accepts them as part of Relay Runner.

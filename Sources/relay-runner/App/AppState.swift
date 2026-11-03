@@ -389,6 +389,8 @@ final class AppState {
     private var eventBus: StateEventBus?
     /// `Remote: <device>` while a Relay Remote phone is connected.
     private(set) var remoteStatusLabel: String?
+    /// RR-459: a Settings page Relay App asked for; the Settings view selects it and clears this.
+    var requestedSettingsCategory: SettingsCategory?
     @ObservationIgnored private lazy var remoteDeviceSession: RelayRemoteDeviceSession = {
         let session = RelayRemoteDeviceSession(
             gate: AppStateRemoteGate(owner: self),
@@ -4268,7 +4270,12 @@ final class AppState {
 
         // RR-456: the Relay Remote session-control socket, live while the app
         // runs so a paired phone can start a session when none is running.
-        let sessionControl = RelaySessionControlServer(control: RelaySessionControl(host: remoteSessionControlHost()))
+        // RR-459: the same socket carries Relay App's commands.
+        let control = RelaySessionControl(host: remoteSessionControlHost())
+        let commands = MainActor.assumeIsolated {
+            RelayAppCommands(host: relayAppCommandHost(), session: control, remote: RelayRemoteController.shared)
+        }
+        let sessionControl = RelaySessionControlServer(control: control, commands: commands)
         do {
             try sessionControl.start()
             sessionControlServer = sessionControl
@@ -4959,6 +4966,66 @@ final class AppState {
             stop: { [weak self] in self?.endSession() },
             message: { [weak self] in self?.contextSwitchMessage }
         )
+    }
+
+    /// RR-459: Relay App drives the same paths as the app's own controls:
+    /// the session wheel's surfaces, Settings Save, `activate_project` and the
+    /// Keep Awake toggle.
+    private func relayAppCommandHost() -> RelayAppCommandHost {
+        RelayAppCommandHost(
+            status: { [weak self] in self?.relayAppStatus ?? [:] },
+            navigate: { [weak self] in self?.openRelayAppDestination($0) ?? "Relay Runner is quitting." },
+            config: { [weak self] in self?.config ?? AppConfig() },
+            saveConfig: { [weak self] in self?.saveConfig($0) },
+            selectProject: { [weak self] projectID in
+                await self?.selectRelayAppProject(projectID) ?? .failure(RelayAppCommandError("Relay Runner is quitting."))
+            },
+            keepAwakeState: { [weak self] in self?.keepAwake.state ?? .off },
+            toggleKeepAwake: { [weak self] in self?.keepAwake.toggle() ?? false }
+        )
+    }
+
+    private var relayAppStatus: [String: Any] {
+        let info = Bundle.main.infoDictionary ?? [:]
+        return [
+            "app": [
+                "version": info["CFBundleShortVersionString"] as? String ?? "development",
+                "build": info["CFBundleVersion"] as? String ?? "development",
+            ],
+            "permissions": RelayAppCommands.permissions { [permissions] in permissions.status(for: $0) },
+            "relay_remote": [
+                "remote_mode": remoteStatusLabel != nil,
+                "remote_mode_label": remoteStatusLabel.map { $0 as Any } ?? NSNull(),
+            ],
+        ]
+    }
+
+    private func openRelayAppDestination(_ destination: RelayAppDestination) -> String? {
+        guard allowsAppShellAccess else {
+            return "Relay Runner is still in first-run setup, so its Workspace and Settings are not available yet."
+        }
+        if overlayController == nil { startOverlay() }
+        switch destination {
+        case .workspace: programBoardOverlay.showWork()
+        case .notetaker: programBoardOverlay.showNotes()
+        case .terminal: programBoardOverlay.showTerminal()
+        case .settings(let page):
+            if let page { requestedSettingsCategory = page }
+            programBoardOverlay.showSettings()
+        }
+        return nil
+    }
+
+    @MainActor
+    private func selectRelayAppProject(_ projectID: String) async -> Result<String, RelayAppCommandError> {
+        guard let project = registeredProjectsV2().first(where: { $0.projectID == projectID }) else {
+            return .failure(RelayAppCommandError("No registered project has id '\(projectID)'. Call list_projects for the ids."))
+        }
+        switch await activateProject(pathOrAlias: project.lastResolvedPath, provider: nil) {
+        case .activated(_, let message): return .success(message ?? "Selected \(project.displayName).")
+        case .queued(_, let message): return .success(message)
+        case .failed(let message): return .failure(RelayAppCommandError(message))
+        }
     }
 
     private var remoteSessionSnapshot: RelaySessionControlHost.Snapshot {

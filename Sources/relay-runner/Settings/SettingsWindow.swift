@@ -209,18 +209,29 @@ private struct SettingsContent: View {
         .tint(SettingsSurfaceColor.focusRing)
         .environment(\.colorScheme, .dark)
         .frame(width: style.fixedFrame?.width, height: style.fixedFrame?.height)
-        .onAppear { refreshAgentVoiceName() }
+        .onAppear {
+            refreshAgentVoiceName()
+            selectRequestedCategory()
+        }
+        .onChange(of: appState.requestedSettingsCategory) { _, _ in selectRequestedCategory() }
         .onChange(of: draft.tts.custom_voice_id) { _, _ in refreshAgentVoiceName() }
         .onReceive(NotificationCenter.default.publisher(for: CustomVoiceStore.didRenameNotification)) { _ in
             refreshAgentVoiceName()
         }
         .onChange(of: appState.config) { oldValue, newValue in
-            draft = draft.mergingWheelSettingsChange(from: oldValue, to: newValue)
+            // A save made elsewhere (Relay App, RR-459) shows at once unless the page has unsaved edits.
+            draft = draft == oldValue ? newValue : draft.mergingWheelSettingsChange(from: oldValue, to: newValue)
                 ?? draft.mergingCustomVoiceRemoval(from: oldValue, to: newValue)
         }
         .onChange(of: selectedCategory) { _, newValue in
             scrollTarget = newValue
         }
+    }
+
+    private func selectRequestedCategory() {
+        guard let requested = appState.requestedSettingsCategory else { return }
+        appState.requestedSettingsCategory = nil
+        selectedCategory = requested
     }
 
     private func refreshAgentVoiceName() {

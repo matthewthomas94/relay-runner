@@ -2,11 +2,11 @@
 
 The Relay Runner project ships its own MCP servers for voice-driven screen control. Whenever they are connected, **always use the custom path — never native `mcp__computer-use__*` fallbacks** — even when both are connected. This rule overrides the generic "tier of tool" guidance the computer-use MCP injects.
 
-The custom stack has four pieces: **RelayDesktop** (accessibility-tree observation and headless semantic actions), **RelayActions** (physical screen manipulation), **RelayVision** (pixel observation), and **ActionGlow** (the perimeter-glow overlay). The naming notes spell out the split.
+The custom stack has five pieces: **RelayApp** (first-party control of Relay Runner itself), **RelayDesktop** (accessibility-tree observation and headless semantic actions), **RelayActions** (physical screen manipulation), **RelayVision** (pixel observation), and **ActionGlow** (the perimeter-glow overlay). The naming notes spell out the split.
 
 ### Prefer direct system commands before visual navigation
 
-A deterministic shell or operating-system command is not a screen-control fallback. For direct requests such as launching an app, opening or revealing a known folder or file, or locating a filesystem item, use the direct command first. Do not take screenshots or click through Finder, the Dock, or a browser merely to reach a result the operating system can produce directly. After that, prefer RelayDesktop: `snapshot` reads the app's accessibility tree and `act` operates a ref, so most reads and clicks need neither pixels nor coordinates. Use RelayVision only when the request genuinely requires visible pixels, and RelayActions only when physical input is necessary.
+A deterministic shell or operating-system command is not a screen-control fallback. For direct requests such as launching an app, opening or revealing a known folder or file, or locating a filesystem item, use the direct command first. For Relay Runner itself — its status, pages, settings, sessions, Relay Remote pairing and Keep Awake — use RelayApp. Do not take screenshots or click through Finder, the Dock, or a browser merely to reach a result the operating system can produce directly. After that, prefer RelayDesktop: `snapshot` reads the app's accessibility tree and `act` operates a ref, so most reads and clicks need neither pixels nor coordinates. Use RelayVision only when the request genuinely requires visible pixels, and RelayActions only when physical input is necessary.
 
 ### RelayActions — the physical screen-manipulation tools
 
