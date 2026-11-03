@@ -77,15 +77,22 @@ struct SettingsMenuOptions<Value: Hashable>: View {
     }
 }
 
-struct SettingsCheckboxStyle: ToggleStyle {
+struct SettingsSwitchStyle: ToggleStyle {
     var showsLabel = true
 
     func makeBody(configuration: Configuration) -> some View {
-        SettingsCheckbox(configuration: configuration, showsLabel: showsLabel)
+        SettingsSwitch(configuration: configuration, showsLabel: showsLabel)
     }
 }
 
-private struct SettingsCheckbox: View {
+enum SettingsSwitchMetrics {
+    static let trackSize = CGSize(width: 34, height: 20)
+    static let knobDiameter: CGFloat = 14
+    static let inset: CGFloat = 3
+    static var knobTravel: CGFloat { trackSize.width - knobDiameter - inset * 2 }
+}
+
+private struct SettingsSwitch: View {
     let configuration: ToggleStyleConfiguration
     let showsLabel: Bool
     @Environment(\.isEnabled) private var isEnabled
@@ -93,27 +100,37 @@ private struct SettingsCheckbox: View {
     @State private var isHovered = false
     @FocusState private var isFocused: Bool
 
+    private var trackFill: Color {
+        if configuration.isOn { return SettingsSurfaceColor.neutralAccent.opacity(isHovered ? 0.4 : 0.34) }
+        return isHovered || isFocused ? SettingsSurfaceColor.rowFillHovered : SettingsSurfaceColor.rowFill
+    }
+
+    private var knobFill: Color {
+        configuration.isOn ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.mutedText
+    }
+
     var body: some View {
         Button { configuration.isOn.toggle() } label: {
             HStack(spacing: 8) {
-                Image(systemName: "checkmark")
-                    .font(AppTypography.symbolFont(size: 10, weight: .semibold))
-                    .opacity(configuration.isOn ? 1 : 0)
-                    .frame(width: 20, height: 20)
-                    .background(BoardDarkSurfaceBackground(
-                        cornerRadius: 5,
-                        fill: configuration.isOn || isHovered || isFocused
-                            ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.contentFill
-                    ))
+                Capsule()
+                    .fill(trackFill)
                     .overlay {
-                        RoundedRectangle(cornerRadius: 5)
-                            .strokeBorder(SettingsSurfaceColor.focusRing.opacity(isFocused ? 0.3 : 0.12), lineWidth: 1)
+                        Capsule().strokeBorder(
+                            SettingsSurfaceColor.focusRing.opacity(isFocused ? 0.3 : 0.12), lineWidth: 1)
                     }
-                    .frame(minWidth: 28, minHeight: 28)
+                    .overlay(alignment: .leading) {
+                        Circle()
+                            .fill(knobFill)
+                            .frame(width: SettingsSwitchMetrics.knobDiameter, height: SettingsSwitchMetrics.knobDiameter)
+                            .offset(x: SettingsSwitchMetrics.inset + (configuration.isOn ? SettingsSwitchMetrics.knobTravel : 0))
+                    }
+                    .frame(width: SettingsSwitchMetrics.trackSize.width, height: SettingsSwitchMetrics.trackSize.height)
+                    .frame(minHeight: 28)
                 if showsLabel { configuration.label }
             }
             .font(AppTypography.font(.body))
             .foregroundStyle(isEnabled ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.disabledText)
+            .opacity(isEnabled ? 1 : 0.6)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -121,10 +138,11 @@ private struct SettingsCheckbox: View {
         .focused($isFocused)
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
         .onHover { isHovered = $0 }
-        .animation(reduceMotion ? nil : RelayMotion.hover, value: configuration.isOn || isHovered || isFocused)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: configuration.isOn)
+        .animation(reduceMotion ? nil : RelayMotion.hover, value: isHovered || isFocused)
         .accessibilityRepresentation {
             Toggle(isOn: configuration.$isOn) { configuration.label }
-                .toggleStyle(.checkbox)
+                .toggleStyle(.switch)
         }
     }
 }
