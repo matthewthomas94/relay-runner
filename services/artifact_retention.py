@@ -18,6 +18,7 @@ import os
 import re
 import threading
 import uuid
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Mapping, Sequence
@@ -94,6 +95,15 @@ _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 _lease_locks_guard = threading.Lock()
 _lease_locks: dict[str, threading.RLock] = {}
 _lease_lock_depth = threading.local()
+# Archive catalog entries already verified per store, as (catalog digest,
+# head, artifact IDs). Every retention sweep previews the whole catalog, and
+# verifying each entry spawns about six git processes (RR-449). Git objects
+# are immutable and the artifact history only grows, so an entry verified at
+# one head stays verified for the same catalog bytes at any descendant head.
+_verified_catalogs: "weakref.WeakKeyDictionary[ArtifactStore, tuple[str, str, frozenset[str]]]" = (
+    weakref.WeakKeyDictionary()
+)
+_verified_catalogs_lock = threading.Lock()
 
 
 class RetentionState(str, enum.Enum):
@@ -596,13 +606,17 @@ class ArtifactRetentionManager:
             canonical[ticket.artifact_id] = ticket
 
         catalog = self._catalog_from_files(files)
+        catalog_digest = hashlib.sha256(files.get(".orchestrator/archive-index.jsonl", b"")).hexdigest()
+        already_verified = self._catalog_entries_verified_at(head, catalog_digest)
+        verified: set[str] = set()
         for artifact_id, entry in catalog.items():
             if artifact_id in canonical or entry.get("state") == RetentionState.DELETED_TOMBSTONE.value:
                 continue
             ticket_id = str(entry.get("ticket_id") or artifact_id)
             try:
                 ticket = self._catalog_ticket(entry)
-                self._verified_catalog_entry(head, catalog, entry)
+                if artifact_id not in already_verified:
+                    self._verified_catalog_entry(head, catalog, entry)
             except _MissingHistoricalObject as error:
                 raise ArtifactValidationError(
                     f"archive catalog integrity blocker for {ticket_id}: "
@@ -617,6 +631,9 @@ class ArtifactRetentionManager:
                     f"ticket {ticket.ticket_id} has conflicting materialized and catalog identities"
                 )
             canonical[artifact_id] = ticket
+            verified.add(artifact_id)
+        with _verified_catalogs_lock:
+            _verified_catalogs[self.store] = (catalog_digest, head, frozenset(verified))
 
         nonterminal = [ticket for ticket in canonical.values() if not _is_terminal(ticket.status)]
         terminal = [ticket for ticket in canonical.values() if _is_terminal(ticket.status)]
@@ -1579,6 +1596,20 @@ class ArtifactRetentionManager:
                 )
             validated.append(dict(attachment))
         return tuple(validated)
+
+    def _catalog_entries_verified_at(self, head: str, catalog_digest: str) -> frozenset[str]:
+        """IDs verified for these catalog bytes at `head` or one of its ancestors."""
+        with _verified_catalogs_lock:
+            cached = _verified_catalogs.get(self.store)
+        if cached is None or cached[0] != catalog_digest:
+            return frozenset()
+        verified_head, verified_ids = cached[1], cached[2]
+        if verified_head != head and self.store._git(
+            "merge-base", "--is-ancestor", verified_head, head,
+            allowed_statuses={0, 1, 128},
+        ).returncode != 0:
+            return frozenset()
+        return verified_ids
 
     def _verified_catalog_entry(
         self,
