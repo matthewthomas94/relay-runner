@@ -110,12 +110,28 @@ MESSENGER_OUTCOME_POLL_SECONDS = float(os.environ.get("MESSENGER_OUTCOME_POLL_SE
 MESSENGER_OUTCOME_FETCH_LIMIT = 50
 FOREGROUND_REPLY_FALLBACK_SECONDS = float(os.environ.get("FOREGROUND_REPLY_FALLBACK_SECONDS", "120"))
 PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS = float(os.environ.get("PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS", "5"))
+# RR-460: the 120 s timer is the first check; past this ceiling a still-active
+# turn no longer defers the missing-reply fallback.
+FOREGROUND_REPLY_HARD_CEILING_SECONDS = float(
+    os.environ.get("FOREGROUND_REPLY_HARD_CEILING_SECONDS", "900")
+)
+# RR-460: a PM trace this recent means the provider is still producing.
+FOREGROUND_REPLY_TRACE_ACTIVE_SECONDS = float(
+    os.environ.get("FOREGROUND_REPLY_TRACE_ACTIVE_SECONDS", "60")
+)
 _CONTINUITY_SESSION_NATIVE_ID: str | None = None
 _PROVIDER_SESSION_OWNERSHIP = None
 
 _FOREGROUND_REPLY_LOCK = threading.Lock()
 _FOREGROUND_REPLIED_COMMANDS: set[tuple[int, str]] = set()
 _FOREGROUND_REPLY_IN_FLIGHT: set[tuple[int, str]] = set()
+# RR-460: a spoken missing-reply fallback does not claim the real final.
+_FOREGROUND_FALLBACK_COMMANDS: set[tuple[int, str]] = set()
+_PM_TRACE_AT: dict[tuple[int, str], float] = {}
+# RR-460: commands awaiting an outcome, with what the bridge saw for them.
+_OUTCOME_WATCH_LOCK = threading.Lock()
+_OUTCOME_WATCH: dict[tuple[int, str], dict] = {}
+_DAEMON_FETCH_FAILURE: dict[str, object] = {}
 _VOICE_STATE_LOCK = threading.RLock()
 _COMMAND_EVENT_LOG_LOCK = threading.Lock()
 _RELAY_CONTROL_TYPE_RE = re.compile(r"^__[A-Z][A-Z0-9_]*__$")
@@ -1549,6 +1565,7 @@ def start_persistent_orchestrator_lifecycle(
             )
         except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
             print(f"[voice_bridge] Persistent orchestrator heartbeat failed: {e}", file=sys.stderr)
+            _note_daemon_fetch_failure(e)
 
     def _heartbeat_loop() -> None:
         _send_heartbeat()
@@ -1828,6 +1845,7 @@ def _fetch_pending_messenger_outcomes(
         )
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
         print(f"[voice_bridge] pending messenger outcome fetch failed: {e}", file=sys.stderr)
+        _note_daemon_fetch_failure(e)
         return []
     outcomes = response.get("outcomes") if isinstance(response, dict) else None
     if not isinstance(outcomes, list):
@@ -2108,6 +2126,7 @@ def _handle_orchestration_trace_control(
         relay_command = _read_json_file(VOICE_COMMAND_CLAIM_FILE)
     if not relay_command:
         relay_command = None
+    _note_pm_trace(relay_command)
 
     return emit_orchestration_trace(
         kind=str(data.get("kind") or "board-change"),
@@ -2970,6 +2989,7 @@ def _source_turn_reply_arbitration(
     command_path: str,
     meta_path: str,
     provider_session_id: str | None = None,
+    broker_turns_path: str | None = None,
 ) -> dict:
     """Decide a missing-final once from every intent in the current source turn."""
     key = _relay_command_key(relay_command)
@@ -3079,6 +3099,15 @@ def _source_turn_reply_arbitration(
     if any(item.get("state") in pending_states for item in noncancelled_items):
         return {**result, "decision": "defer", "reason": "sibling_pending"}
     if any(str(record.get("state") or "") == "active" for record in scoped_records):
+        return {**result, "decision": "defer", "reason": "provider_turn_active"}
+    # RR-460: the broker ledger or a fresh PM trace also shows a running turn.
+    if broker_turns_path and _provider_turn_state(
+        relay_command,
+        turns_path=broker_turns_path,
+        provider_session_id="",
+    ) == "active":
+        return {**result, "decision": "defer", "reason": "provider_turn_active"}
+    if _pm_trace_recent(relay_command):
         return {**result, "decision": "defer", "reason": "provider_turn_active"}
 
     records_by_key = {_provider_record_key(record): record for record in scoped_records}
@@ -3533,17 +3562,157 @@ def _reserve_foreground_reply_delivery(command: dict | None) -> bool:
         return True
 
 
-def _finish_foreground_reply_delivery(command: dict | None, *, delivered: bool) -> None:
+def _finish_foreground_reply_delivery(
+    command: dict | None,
+    *,
+    delivered: bool,
+    fallback: bool = False,
+) -> None:
     key = _relay_command_key(command)
     if key is None:
         return
     with _FOREGROUND_REPLY_LOCK:
         _FOREGROUND_REPLY_IN_FLIGHT.discard(key)
         if delivered:
-            _FOREGROUND_REPLIED_COMMANDS.add(key)
-            if len(_FOREGROUND_REPLIED_COMMANDS) > 100:
-                for old in list(_FOREGROUND_REPLIED_COMMANDS)[:50]:
-                    _FOREGROUND_REPLIED_COMMANDS.discard(old)
+            delivered_commands = (
+                _FOREGROUND_FALLBACK_COMMANDS if fallback else _FOREGROUND_REPLIED_COMMANDS
+            )
+            delivered_commands.add(key)
+            if len(delivered_commands) > 100:
+                for old in list(delivered_commands)[:50]:
+                    delivered_commands.discard(old)
+
+
+def _foreground_fallback_delivered(command: dict | None) -> bool:
+    key = _relay_command_key(command)
+    if key is None:
+        return False
+    with _FOREGROUND_REPLY_LOCK:
+        return key in _FOREGROUND_FALLBACK_COMMANDS
+
+
+def _note_pm_trace(command: dict | None) -> None:
+    key = _relay_command_key(command)
+    if key is None:
+        return
+    with _FOREGROUND_REPLY_LOCK:
+        _PM_TRACE_AT[key] = time.monotonic()
+        if len(_PM_TRACE_AT) > 64:
+            _PM_TRACE_AT.pop(next(iter(_PM_TRACE_AT)), None)
+
+
+def _pm_trace_recent(command: dict | None) -> bool:
+    key = _relay_command_key(command)
+    if key is None:
+        return False
+    with _FOREGROUND_REPLY_LOCK:
+        traced_at = _PM_TRACE_AT.get(key)
+    return (
+        traced_at is not None
+        and time.monotonic() - traced_at < FOREGROUND_REPLY_TRACE_ACTIVE_SECONDS
+    )
+
+
+def _note_daemon_fetch_failure(error: BaseException) -> None:
+    timed_out = isinstance(error, TimeoutError) or "timed out" in str(error).lower()
+    with _OUTCOME_WATCH_LOCK:
+        _DAEMON_FETCH_FAILURE["at"] = time.time()
+        _DAEMON_FETCH_FAILURE["signal"] = (
+            "daemon_fetch_timed_out" if timed_out else "daemon_fetch_failed"
+        )
+
+
+def _watch_command_outcome(command: dict | None) -> None:
+    """Track a voice command until it ends with or without an outcome (RR-460)."""
+    key = _relay_command_key(command)
+    if key is None:
+        return
+    with _OUTCOME_WATCH_LOCK:
+        _OUTCOME_WATCH.setdefault(key, {"started_at": time.time(), "signals": set()})
+        while len(_OUTCOME_WATCH) > 64:
+            _OUTCOME_WATCH.pop(next(iter(_OUTCOME_WATCH)), None)
+
+
+def _note_outcome_signal(command: dict | None, signal: str) -> None:
+    key = _relay_command_key(command)
+    if key is None:
+        return
+    with _OUTCOME_WATCH_LOCK:
+        watch = _OUTCOME_WATCH.get(key)
+        if watch is not None:
+            watch["signals"].add(signal)
+
+
+def _close_outcome_watch(command: dict | None, speech_gateway, *, ended_by: str) -> bool:
+    """Write one ``missing_outcome`` event when the command ended silently."""
+    key = _relay_command_key(command)
+    if key is None:
+        return False
+    with _OUTCOME_WATCH_LOCK:
+        watch = _OUTCOME_WATCH.pop(key, None)
+        failure = dict(_DAEMON_FETCH_FAILURE)
+    if watch is None:
+        return False
+    if _foreground_reply_delivered(command) or _foreground_fallback_delivered(command):
+        return False
+    signals = set(watch["signals"])
+    if "hook_received" not in signals:
+        signals.add("hook_not_received")
+    if float(failure.get("at") or 0) >= watch["started_at"]:
+        signals.add(str(failure["signal"]))
+    reason = next(
+        (
+            signal
+            for signal in (
+                "reply_helper_rejected",
+                "hook_not_received",
+                "daemon_fetch_timed_out",
+                "daemon_fetch_failed",
+            )
+            if signal in signals
+        ),
+        ended_by,
+    )
+    signals.add(ended_by)
+    signals.discard("hook_received")
+    record = getattr(speech_gateway, "record_missing_outcome", None)
+    if not callable(record):
+        return False
+    return bool(record(key[0], key[1], reason, signals=sorted(signals)))
+
+
+def _sweep_outcome_watches(
+    speech_gateway,
+    *,
+    turns_path: str = VOICE_PROVIDER_TURNS_FILE,
+    now: float | None = None,
+) -> None:
+    """Close watches whose provider turn ended or outlived the hard ceiling."""
+    now = time.time() if now is None else now
+    with _OUTCOME_WATCH_LOCK:
+        watched = [(key, dict(watch)) for key, watch in _OUTCOME_WATCH.items()]
+    if not watched:
+        return
+    ledger = _read_json_file(turns_path)
+    records = ledger.get("records") if isinstance(ledger, dict) else None
+    records = records if isinstance(records, list) else []
+    for key, watch in watched:
+        if "hook_received" in watch["signals"]:
+            continue  # The completion path or its fallback timer closes it.
+        # Any of the command's items still running keeps the turn open.
+        states = {
+            str(record.get("state") or "")
+            for record in records
+            if isinstance(record, dict) and _relay_command_key(record) == key
+        }
+        if states and "active" not in states:
+            ended_by = "provider_turn_terminal"
+        elif now - watch["started_at"] >= FOREGROUND_REPLY_HARD_CEILING_SECONDS:
+            ended_by = "hard_ceiling"
+        else:
+            continue
+        command = {"relay_command_seq": key[0], "relay_command_id": key[1]}
+        _close_outcome_watch(command, speech_gateway, ended_by=ended_by)
 
 
 def _mark_foreground_reply_delivered(command: dict | None) -> None:
@@ -3563,6 +3732,11 @@ def _reset_foreground_reply_delivery_for_tests() -> None:
     with _FOREGROUND_REPLY_LOCK:
         _FOREGROUND_REPLIED_COMMANDS.clear()
         _FOREGROUND_REPLY_IN_FLIGHT.clear()
+        _FOREGROUND_FALLBACK_COMMANDS.clear()
+        _PM_TRACE_AT.clear()
+    with _OUTCOME_WATCH_LOCK:
+        _OUTCOME_WATCH.clear()
+        _DAEMON_FETCH_FAILURE.clear()
 
 
 def _parse_args() -> dict:
@@ -4608,13 +4782,17 @@ def _deliver_missing_foreground_reply(
     key = _relay_command_key(relay_command)
     if key is None:
         return False
-    if _foreground_reply_delivered(relay_command):
+    if _foreground_reply_delivered(relay_command) or _foreground_fallback_delivered(relay_command):
         return None
     if not _relay_command_current_or_preserved(relay_command, state_path=state_path):
         return False
     effect_id = None
     if provider_turn_broker is not None:
-        reservation = provider_turn_broker.reserve_effect(relay_command)
+        # RR-460: its own effect, so the real final can still be delivered.
+        reservation = provider_turn_broker.reserve_effect(
+            relay_command,
+            effect_kind="missing_reply_fallback",
+        )
         if not reservation.accepted:
             if reservation.reason == "duplicate":
                 return None
@@ -4654,10 +4832,7 @@ def _deliver_missing_foreground_reply(
             semantic_brief=payload["text"],
             replayable=True,
         )
-    if delivered:
-        _finish_foreground_reply_delivery(relay_command, delivered=True)
-    else:
-        _finish_foreground_reply_delivery(relay_command, delivered=False)
+    _finish_foreground_reply_delivery(relay_command, delivered=delivered, fallback=True)
     if effect_id is not None:
         provider_turn_broker.finish_effect(effect_id, delivered=delivered)
     return delivered
@@ -4717,6 +4892,7 @@ def _schedule_foreground_reply_fallback(
     meta_path: str = VOICE_CMD_META_FILE,
     delay_seconds: float | None = None,
     provider_turn_broker: ProviderTurnBroker | None = None,
+    ceiling_seconds: float | None = None,
 ) -> threading.Thread | None:
     key = _relay_command_key(relay_command)
     if key is None:
@@ -4724,34 +4900,39 @@ def _schedule_foreground_reply_fallback(
     delay = FOREGROUND_REPLY_FALLBACK_SECONDS if delay_seconds is None else delay_seconds
     if delay < 0:
         return None
+    ceiling = FOREGROUND_REPLY_HARD_CEILING_SECONDS if ceiling_seconds is None else ceiling_seconds
     if action_kind is None:
         action_kind = getattr(action, "kind", None)
+    broker_turns_path = getattr(provider_turn_broker, "projection_path", None)
     _log_foreground_reply_fallback_event(
         "armed",
         relay_command=relay_command,
         turns_path=turns_path,
     )
+    armed_at = time.monotonic()
+
+    def _cancel(reason: str, arbitration: dict | None = None) -> None:
+        _log_foreground_reply_fallback_event(
+            "cancelled",
+            relay_command=relay_command,
+            turns_path=turns_path,
+            reason=reason,
+            arbitration=arbitration,
+        )
+        _close_outcome_watch(relay_command, tts_worker, ended_by=f"fallback_{reason}")
 
     def _run() -> None:
         sleep_for = delay
         while True:
             if sleep_for > 0:
                 time.sleep(sleep_for)
-            if _foreground_reply_delivered(relay_command):
-                _log_foreground_reply_fallback_event(
-                    "cancelled",
-                    relay_command=relay_command,
-                    turns_path=turns_path,
-                    reason="reply_delivered",
-                )
+            if _foreground_reply_delivered(relay_command) or _foreground_fallback_delivered(
+                relay_command
+            ):
+                _cancel("reply_delivered")
                 return
             if not _relay_command_current_or_preserved(relay_command, state_path=state_path):
-                _log_foreground_reply_fallback_event(
-                    "cancelled",
-                    relay_command=relay_command,
-                    turns_path=turns_path,
-                    reason="superseded",
-                )
+                _cancel("superseded")
                 return
             arbitration = _source_turn_reply_arbitration(
                 relay_command,
@@ -4759,9 +4940,14 @@ def _schedule_foreground_reply_fallback(
                 turns_path=turns_path,
                 command_path=command_path,
                 meta_path=meta_path,
+                broker_turns_path=broker_turns_path,
             )
             decision = arbitration["decision"]
             reason = str(arbitration.get("reason") or "source_not_terminal")
+            if decision == "defer" and time.monotonic() - armed_at >= ceiling:
+                # RR-460: a turn still running at the ceiling no longer defers.
+                decision = "eligible"
+                reason = f"hard_ceiling:{reason}"
             if decision == "defer":
                 _log_foreground_reply_fallback_event(
                     "deferred",
@@ -4773,13 +4959,7 @@ def _schedule_foreground_reply_fallback(
                 sleep_for = max(0.25, PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS)
                 continue
             if decision == "cancel":
-                _log_foreground_reply_fallback_event(
-                    "cancelled",
-                    relay_command=relay_command,
-                    turns_path=turns_path,
-                    reason=reason,
-                    arbitration=arbitration,
-                )
+                _cancel(reason, arbitration)
                 return
             _log_foreground_reply_fallback_event(
                 "eligible",
@@ -4797,18 +4977,18 @@ def _schedule_foreground_reply_fallback(
                 provider_turn_broker=provider_turn_broker,
             )
             if delivered is None:
-                _log_foreground_reply_fallback_event(
-                    "cancelled",
-                    relay_command=relay_command,
-                    turns_path=turns_path,
-                    reason="source_reply_deduplicated",
-                    arbitration=arbitration,
-                )
+                _cancel("source_reply_deduplicated", arbitration)
                 return
             _log_foreground_reply_fallback_event(
                 "emitted" if delivered else "delivery_failed",
                 relay_command=relay_command,
                 turns_path=turns_path,
+                reason=reason,
+            )
+            _close_outcome_watch(
+                relay_command,
+                tts_worker,
+                ended_by="fallback_emitted" if delivered else "fallback_delivery_failed",
             )
             return
 
@@ -4867,7 +5047,9 @@ def _handle_provider_completion_control(
         terminal_signal,
         {**data, **command, "provider": provider},
     )
+    _note_outcome_signal(command, "hook_received")
     if _foreground_reply_delivered(command):
+        _close_outcome_watch(command, tts_worker, ended_by="reply_delivered")
         return True
     origin = _reply_origin_target(data)
     if not _relay_command_current_or_preserved(
@@ -4879,6 +5061,7 @@ def _handle_provider_completion_control(
             "[voice_bridge] Dropping provider completion because its Relay command was superseded.",
             file=sys.stderr,
         )
+        _close_outcome_watch(command, tts_worker, ended_by="completion_superseded")
         return False
 
     reply = str(data.get("text") or data.get("last_assistant_message") or "").strip()
@@ -4902,13 +5085,15 @@ def _handle_provider_completion_control(
                 payload[field] = data[field]
         if origin is not None:
             payload["session_key"] = origin.session_key
-        return _handle_orchestrator_reply_control(
+        delivered = _handle_orchestrator_reply_control(
             json.dumps(payload),
             tts_worker=tts_worker,
             messenger=messenger,
             state_path=state_path,
             provider_turn_broker=provider_turn_broker,
         )
+        _close_outcome_watch(command, tts_worker, ended_by="completion_reply_not_delivered")
+        return delivered
 
     thread = _schedule_foreground_reply_fallback(
         relay_command=command,
@@ -4987,6 +5172,7 @@ def _handle_orchestrator_reply_control(
             "[voice_bridge] Dropping foreground reply because its Relay command was superseded.",
             file=sys.stderr,
         )
+        _note_outcome_signal(command, "reply_helper_rejected")
         return False
     effect_id = None
     if provider_turn_broker is not None:
@@ -4996,8 +5182,10 @@ def _handle_orchestrator_reply_control(
                 return True
             if reservation.reason == "turn_revoked":
                 _finish_foreground_reply_delivery(command, delivered=False)
+                _note_outcome_signal(command, "reply_helper_rejected")
                 return False
             if PROVIDER_TURN_BROKER_MODE != "dual_write":
+                _note_outcome_signal(command, "reply_helper_rejected")
                 return False
         else:
             effect_id = reservation.effect_id
@@ -5016,6 +5204,7 @@ def _handle_orchestrator_reply_control(
 
     if effect_id is not None and not provider_turn_broker.authorize_effect_delivery(effect_id):
         _finish_foreground_reply_delivery(command, delivered=False)
+        _note_outcome_signal(command, "reply_helper_rejected")
         return False
     if _is_background_target(origin):
         # Only the focused session speaks; the rest wait in a badge.
@@ -5033,6 +5222,7 @@ def _handle_orchestrator_reply_control(
 
     # A missing or out-of-sync messenger must not swallow a current outcome.
     # _queue_tts_text still rejects stale command metadata.
+    speech_source = payload.get("speech_source")
     delivered = _queue_tts_text(
         json.dumps({**payload, "display_text": reply}),
         tts_worker.input_queue,
@@ -5042,16 +5232,14 @@ def _handle_orchestrator_reply_control(
         notify_waiting_preview=(
             publish_authoritative_preview or _publish_authoritative_preview
         ),
+        # RR-460: a real reply keeps the real-final slot, so a spoken
+        # missing-reply fallback never deduplicates it.
         source=(
-            "lifecycle"
-            if payload.get("speech_source") == "lifecycle"
-            else "fallback"
+            speech_source
+            if speech_source in {"lifecycle", "completion"}
+            else "orchestrator"
         ),
-        kind=(
-            "final"
-            if payload.get("speech_source") == "lifecycle"
-            else "fallback"
-        ),
+        kind="final",
         authoritative=True,
         semantic_brief=reply,
         work_disposition=payload.get("work_disposition"),
@@ -5062,6 +5250,7 @@ def _handle_orchestrator_reply_control(
         _finish_foreground_reply_delivery(command, delivered=True)
     else:
         _finish_foreground_reply_delivery(command, delivered=False)
+        _note_outcome_signal(command, "reply_helper_rejected")
     if effect_id is not None:
         provider_turn_broker.finish_effect(effect_id, delivered=delivered)
     return delivered
@@ -5385,6 +5574,8 @@ def _run_relay(
                     relay_command,
                     at=relay_command.get("received_at"),
                 )
+                _sweep_outcome_watches(tts_worker)
+                _watch_command_outcome(relay_command)
                 if hasattr(tts_worker, "new_turn"):
                     tts_worker.new_turn(
                         relay_command["relay_command_seq"],

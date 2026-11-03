@@ -113,6 +113,49 @@ class RemoteSinkTests(remote_tests.ServerTestCase):
         self.assertEqual((control.action, control.reason), ("stop", "superseded"))
         self.assertEqual((fresh.text, fresh.relay_command_seq), ("New", 2))
 
+    # RR-460: the phone gets the same fallback replacement as Kokoro.
+
+    def remote_fallback(self):
+        return intent(seq=1, kind="final", source="fallback", authoritative=True, text="Fallback")
+
+    def remote_final(self, text="Real final"):
+        return intent(seq=1, kind="final", source="completion", authoritative=True, text=text)
+
+    def test_late_final_stops_an_unacked_fallback_frame_and_is_sent(self):
+        device, _ = self.connect()
+        self.assertTrue(self.coordinator.submit(self.remote_fallback()))
+        fallback = device.recv()
+
+        self.assertTrue(self.coordinator.submit(self.remote_final()))
+
+        control, final = device.recv(), device.recv()
+        self.assertEqual(control, proto.SpeechControl(fallback.seq + 1, "stop", "superseded"))
+        self.assertEqual((final.text, final.source, final.kind), ("Real final", "completion", "final"))
+        self.assert_nothing_else_sent(device)
+
+    def test_late_final_follows_a_played_fallback_frame(self):
+        device, _ = self.connect()
+        self.coordinator.submit(self.remote_fallback())
+        fallback = device.recv()
+        device.send(proto.Ack(fallback.seq, True))
+        self.assertTrue(wait_until(lambda: self.events("played")))
+
+        self.assertTrue(self.coordinator.submit(self.remote_final()))
+
+        final = device.recv()
+        self.assertEqual((final.seq, final.text), (fallback.seq + 1, "Real final"))
+        self.assert_nothing_else_sent(device)
+
+    def test_fallback_after_real_final_and_second_final_are_not_sent(self):
+        device, _ = self.connect()
+        self.assertTrue(self.coordinator.submit(self.remote_final()))
+        device.recv()
+
+        self.assertFalse(self.coordinator.submit(self.remote_fallback()))
+        self.assertFalse(self.coordinator.submit(self.remote_final("Second final")))
+
+        self.assert_nothing_else_sent(device)
+
     def test_stop_and_skip_become_speech_control_frames_once(self):
         device, _ = self.connect()
         self.coordinator.submit(intent(seq=1, kind="handoff", text="First"))

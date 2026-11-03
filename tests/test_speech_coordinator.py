@@ -305,6 +305,142 @@ class SpeechCoordinatorTests(unittest.TestCase):
         duplicate = intent(kind="fallback", text="other rendering", authoritative=True)
         self.assertFalse(coordinator.submit(duplicate))
 
+    # RR-460: a late real final replaces a provisional fallback outcome.
+
+    def fallback(self, *, source="messenger", kind="fallback", text="provisional"):
+        # kind="conversation" is the messenger's own answer; it normalizes to
+        # a fallback outcome, which is how seq 89/91 lost their real finals.
+        return SpeechIntent.build(
+            spoken_text=text,
+            command_seq=1,
+            command_id="one",
+            source=source,
+            kind=kind,
+            authoritative=source != "messenger",
+            replayable=True,
+        )
+
+    def completion_final(self, text="real final"):
+        return intent(kind="final", text=text, authoritative=True, source="completion")
+
+    def test_late_final_replaces_a_queued_fallback(self):
+        for shape in (
+            {"source": "messenger", "kind": "conversation"},
+            {"source": "fallback", "kind": "fallback"},
+            {"source": "fallback", "kind": "final"},
+        ):
+            with self.subTest(**shape):
+                worker, coordinator, _ = self.make_coordinator()
+                fallback = self.fallback(**shape)
+                final = self.completion_final()
+                self.assertTrue(fallback.is_fallback_outcome)
+                self.assertNotEqual(fallback.dedup_key, final.dedup_key)
+
+                self.assertTrue(coordinator.submit(fallback))
+                queued_fallback = worker.input_queue.get_nowait()["_speech_intent"]
+                self.assertTrue(coordinator.submit(final))
+
+                self.assertEqual(worker.calls, ["skip"])
+                queued_final = worker.input_queue.get_nowait()["_speech_intent"]
+                self.assertEqual(queued_final["utterance_id"], final.utterance_id)
+                self.assertFalse(worker.eligibility(queued_fallback))
+                self.assertTrue(worker.eligibility(queued_final))
+
+    def test_late_final_cuts_a_playing_fallback_and_owns_replay(self):
+        worker, coordinator, _ = self.make_coordinator()
+        coordinator.submit(self.fallback())
+        playing = worker.input_queue.get_nowait()["_speech_intent"]
+        worker.observer("started", playing)
+        final = self.completion_final()
+
+        self.assertTrue(coordinator.submit(final))
+
+        self.assertEqual(worker.calls, ["skip"])
+        queued_final = worker.input_queue.get_nowait()["_speech_intent"]
+        worker.observer("cancelled", playing)
+        self.assertTrue(worker.eligibility(queued_final))
+        worker.observer("started", queued_final)
+        worker.observer("completed", queued_final)
+        self.assertTrue(coordinator.replay())
+        replay = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(replay["spoken_text"], "real final")
+
+    def test_late_final_is_spoken_after_a_played_fallback(self):
+        worker, coordinator, _ = self.make_coordinator()
+        coordinator.submit(self.fallback())
+        played = worker.input_queue.get_nowait()["_speech_intent"]
+        worker.observer("started", played)
+        worker.observer("completed", played)
+
+        self.assertTrue(coordinator.submit(self.completion_final()))
+
+        self.assertEqual(worker.calls, [])
+        spoken = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual((spoken["kind"], spoken["spoken_text"]), ("final", "real final"))
+
+    def test_late_final_drops_a_fallback_waiting_behind_a_handoff(self):
+        worker, coordinator, _ = self.make_coordinator()
+        coordinator.submit(intent(kind="handoff", text="handoff"))
+        handoff = worker.input_queue.get_nowait()["_speech_intent"]
+        worker.observer("started", handoff)
+        coordinator.submit(self.fallback(source="fallback", kind="final"))
+        coordinator.submit(self.completion_final())
+
+        worker.observer("completed", handoff)
+
+        following = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(following["spoken_text"], "real final")
+        worker.observer("started", following)
+        worker.observer("completed", following)
+        self.assertTrue(worker.input_queue.empty())
+
+    def test_fallback_after_a_real_final_is_suppressed(self):
+        worker, coordinator, _ = self.make_coordinator()
+        self.assertTrue(coordinator.submit(self.completion_final()))
+        queued_final = worker.input_queue.get_nowait()["_speech_intent"]
+
+        for shape in (
+            {"source": "fallback", "kind": "final"},
+            {"source": "messenger", "kind": "conversation"},
+        ):
+            self.assertFalse(coordinator.submit(self.fallback(**shape)))
+        self.assertTrue(worker.input_queue.empty())
+        self.assertEqual(worker.calls, [])
+        self.assertTrue(worker.eligibility(queued_final))
+
+    def test_two_real_finals_are_still_deduplicated(self):
+        worker, coordinator, _ = self.make_coordinator()
+        coordinator.submit(self.fallback())
+        self.assertTrue(coordinator.submit(self.completion_final("first")))
+        self.assertFalse(coordinator.submit(
+            intent(kind="final", text="second", authoritative=True, source="orchestrator")
+        ))
+
+    def test_missing_outcome_is_logged_once_and_only_without_an_outcome(self):
+        with tempfile.TemporaryDirectory() as root:
+            log = Path(root) / "events.jsonl"
+            worker, coordinator, _ = self.make_coordinator(log=log)
+            coordinator.submit(intent(kind="handoff", text="handoff"))
+
+            self.assertTrue(coordinator.record_missing_outcome(
+                1, "one", "hook_not_received", signals=["daemon_fetch_timed_out"]
+            ))
+            self.assertFalse(coordinator.record_missing_outcome(1, "one", "again"))
+
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            missing = [record for record in records if record["event"] == "missing_outcome"]
+            self.assertEqual(len(missing), 1)
+            self.assertEqual(
+                (missing[0]["relay_command_seq"], missing[0]["relay_command_id"], missing[0]["reason"]),
+                (1, "one", "hook_not_received"),
+            )
+            self.assertEqual(missing[0]["signals"], ["daemon_fetch_timed_out"])
+
+    def test_missing_outcome_is_not_logged_after_an_accepted_outcome(self):
+        _, coordinator, _ = self.make_coordinator()
+        coordinator.submit(self.fallback())
+        self.assertFalse(coordinator.record_missing_outcome(1, "one", "hook_not_received"))
+
     def test_playing_handoff_sequences_final_after_completion(self):
         worker, coordinator, _ = self.make_coordinator()
         handoff = intent(kind="handoff", text="handoff")
