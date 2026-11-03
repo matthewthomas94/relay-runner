@@ -270,6 +270,10 @@ enum NotchStatusPlacementPlanner {
     static let fallbackNotchSpacerWidth: CGFloat = 190
     static let maximumActivityLabelWidth: CGFloat = 650
     static let maximumWorkingProgressLabelWidth: CGFloat = maximumActivityLabelWidth / 2
+    /// Allocation cap for any label shown at rest (not hovered), so the capsule
+    /// stays within 180 pt of the notch's leading edge (lead-in included)
+    /// instead of covering the frontmost app's menus. Its text is under 160 pt.
+    static let maximumRestingLabelWidth: CGFloat = 180 - compactNotchLeadInWidth
     static let fallbackSurfaceWidth: CGFloat =
         compactNotchLeadInWidth + fallbackNotchSpacerWidth + glyphSize.width + compactNotchLeadOutWidth
 
@@ -1505,9 +1509,13 @@ final class NotchStatusController {
             workingLabelPinned: workingLabelPinned
         )
         let measuredWidth = NotchStatusPlacementPlanner.activityLabelWidth(for: label)
-        return status == .working
-            ? min(measuredWidth, NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth)
-            : measuredWidth
+        let hoverReveal = status == .working && workingGlyphHovered
+            && workingProgressLabel?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        guard !hoverReveal else {
+            return min(measuredWidth, NotchStatusPlacementPlanner.maximumWorkingProgressLabelWidth)
+        }
+        // Overlong names truncate at the tail, so the state word stays.
+        return min(measuredWidth, NotchStatusPlacementPlanner.maximumRestingLabelWidth)
     }
 
     private var shouldAnimateContentPlacementUpdate: Bool {
