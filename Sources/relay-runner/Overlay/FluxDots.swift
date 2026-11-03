@@ -2,39 +2,37 @@ import AppKit
 import QuartzCore
 import SwiftUI
 
-/// The colours and opacity of shimmering dots. Every style shares the
+/// The colour and opacity of shimmering dots. Every style shares the
 /// skeleton loader's dot size, spacing and shimmer.
 struct FluxDotStyle: Equatable {
-    /// The tail's dimmest colour, which the head's highlight fades down to.
-    let base: NSColor
+    /// The dots' colour when lit; the ripple moves only their opacity.
     let highlight: NSColor
     let opacity: Float
 
     /// The skeleton loaders and the hover on the Workspace tabs and the
     /// Settings sidebar: opaque, so the dots show on black.
     static let standard = FluxDotStyle(
-        base: SkeletonLoaderView.boneBaseColor,
         highlight: SkeletonLoaderView.boneHighlightColor,
         opacity: 1
     )
 }
 
 /// Round dots that shimmer by the skeleton loader's rules: its dot size and
-/// spacing, and the Flux Columns shimmer, in a style's colours. The loader
-/// draws its filled bones with them, and hovered navigation items their
-/// backgrounds.
+/// spacing, and the dot ripple, in a style's colour. The loader draws its
+/// filled bones with them, and hovered navigation items their backgrounds.
 ///
-/// Each snake phase has its own shape layer so its dots change together.
+/// Each ripple phase has its own shape layer so its dots change together.
 final class FluxDotLayers {
     /// Holds the phase layers, at the style's opacity.
     let container = CALayer()
-    let phaseLayers = (0..<FluxColumnsAnimation.steps).map { _ in CAShapeLayer() }
+    let phaseLayers = (0..<DotRippleAnimation.phases).map { _ in CAShapeLayer() }
     let style: FluxDotStyle
 
     init(style: FluxDotStyle = .standard) {
         self.style = style
         for layer in phaseLayers {
-            layer.fillColor = style.base.cgColor
+            layer.fillColor = style.highlight.cgColor
+            layer.opacity = DotRippleAnimation.levels[0]
             container.addSublayer(layer)
         }
         container.opacity = style.opacity
@@ -46,9 +44,11 @@ final class FluxDotLayers {
     func fill(_ shapes: [(rect: CGRect, cornerRadius: CGFloat)], in view: NSView) {
         let diameter = SkeletonLoaderView.dotDiameter
         let paths = phaseLayers.map { _ in CGMutablePath() }
+        let reduceMotion = RelayLayerMotion.reduceMotion
         for shape in shapes {
             for dot in SkeletonLoaderView.dots(in: shape.rect, cornerRadius: shape.cornerRadius) {
-                paths[dot.fluxPhase].addEllipse(in: view.backingAlignedRect(
+                let phase = DotRippleAnimation.phase(forRing: dot.ring, reduceMotion: reduceMotion)
+                paths[phase].addEllipse(in: view.backingAlignedRect(
                     CGRect(
                         x: dot.centre.x - diameter / 2,
                         y: dot.centre.y - diameter / 2,
@@ -68,7 +68,7 @@ final class FluxDotLayers {
             layer.path = path
         }
         CATransaction.commit()
-        FluxColumnsAnimation.run(on: phaseLayers, style: style)
+        DotRippleAnimation.run(on: phaseLayers)
     }
 }
 

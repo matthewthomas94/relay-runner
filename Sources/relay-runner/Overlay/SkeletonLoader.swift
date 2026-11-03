@@ -32,19 +32,18 @@ struct SkeletonBone: Equatable {
 /// A dot in a filled bone.
 struct SkeletonDot: Equatable {
     var centre: CGPoint
-    /// Where the dot sits along its column's snake, from 0 to 4. The
-    /// snake lights phase 0 first and phase 4 last.
-    var fluxPhase: Int
+    /// The dot's grid distance from the ripple's origin: ring 0 lights
+    /// first, each ring after it a little later.
+    var ring: Int
 }
 
 /// A loading state that sketches the screen it stands in for: bare shapes
 /// that shimmer. It shows no text; its label is for VoiceOver only.
 ///
 /// Filled bones are drawn as a dot matrix, a grid of round dots; outlines
-/// stay solid lines. The dots shimmer like Flux Columns: each column of
-/// dots is a snake whose bright head moves along it, with alternate
-/// columns rising and falling. The end of each tail fades out to the
-/// background.
+/// stay solid lines. The dots shimmer with the dot ripple: a pulse of
+/// brightness spreads out from near the loader's top-left corner, ring by
+/// ring, and repeats.
 ///
 /// The shimmer is a Core Animation keyframe animation on each phase's
 /// layer, so it runs on the render server without per-frame work on the
@@ -145,10 +144,8 @@ final class SkeletonLoaderView: NSView {
     /// down, corner radius included, and a dot stays if it touches that
     /// rounded area, so the corner dots drop where the bone curves. Two
     /// rows or columns are too few to show a curve, so they keep every
-    /// dot. As in Flux Columns, the first column's
-    /// snake rises, the next falls, and so on across the bone. The snakes'
-    /// rows count from the loader's top rather than the bone's, so bones
-    /// at different heights light at different moments.
+    /// dot. The ripple's rings count from the loader's top-left rather
+    /// than the bone's, so one pulse crosses every bone in turn.
     static func dots(in rect: CGRect, cornerRadius: CGFloat) -> [SkeletonDot] {
         let columns = max(1, Int(((rect.width - dotDiameter) / dotPitch).rounded(.down)) + 1)
         let rows = max(1, Int(((rect.height - dotDiameter) / dotPitch).rounded(.down)) + 1)
@@ -172,10 +169,12 @@ final class SkeletonLoaderView: NSView {
                 let dx = max(core.minX - point.x, point.x - core.maxX, 0)
                 let dy = max(core.minY - point.y, point.y - core.maxY, 0)
                 if hypot(dx, dy) <= corner + dotDiameter / 2 {
-                    let steps = FluxColumnsAnimation.steps
+                    let loaderColumn = Int((point.x / dotPitch).rounded())
                     let loaderRow = Int((point.y / dotPitch).rounded())
-                    let position = column % 2 == 0 ? -loaderRow : loaderRow
-                    dots.append(SkeletonDot(centre: point, fluxPhase: (position % steps + steps) % steps))
+                    dots.append(SkeletonDot(
+                        centre: point,
+                        ring: DotRippleAnimation.ring(column: loaderColumn, row: loaderRow)
+                    ))
                 }
             }
         }
@@ -611,63 +610,101 @@ final class SkeletonLoaderView: NSView {
     }
 }
 
-/// The repeating shimmer, after the Flux Columns dot-matrix loader: every
-/// step, each column's bright head moves one dot along its snake and
-/// leaves a fading tail. Each dot eases from one brightness to the next.
-enum FluxColumnsAnimation {
-    static let steps = 5
-    static let stepDuration: TimeInterval = 0.3
-    /// The brightnesses a dot shows from the head of the snake back along
-    /// its tail, as fractions of the way from the bone colour to the
-    /// highlight. They follow Flux Columns' opacities. After the last, the
-    /// dot fades out to the background for the fifth step.
-    static let levels: [CGFloat] = [1, 0.65, 0.26, 0.15]
-
-    static func palette(_ style: FluxDotStyle = .standard) -> [CGColor] {
-        let base = style.base
-        let highlight = style.highlight
-        // Blend in sRGB: NSColor.blended works in Generic RGB and shifts
-        // the colours.
-        func mix(_ from: CGFloat, _ to: CGFloat, _ level: CGFloat) -> CGFloat {
-            from * (1 - level) + to * level
-        }
-        let visible = levels.map { level in
-            NSColor(
-                srgbRed: mix(base.redComponent, highlight.redComponent, level),
-                green: mix(base.greenComponent, highlight.greenComponent, level),
-                blue: mix(base.blueComponent, highlight.blueComponent, level),
-                alpha: 1
-            ).cgColor
-        }
-        // Clear, but keeping the bone's colour, so the fade changes only
-        // the alpha.
-        return visible + [base.withAlphaComponent(0).cgColor]
+/// The repeating shimmer, after Dotm Square 12 in the dotmatrix loaders
+/// (github.com/zzzzshawn/matrix, main at e30b80a9): a pulse spreads out
+/// from the dot one in from the top-left corner, each ring of dots (by
+/// grid distance from that origin) starting 0.16 of a cycle after the
+/// ring inside it. A dot rests dim, rises to full brightness a third of
+/// the way through its cycle, settles to a middle brightness, then fades
+/// back to rest. The dots are drawn in the style's highlight, and only
+/// their opacity moves.
+enum DotRippleAnimation {
+    /// Dotm's `speed`: a cycle lasts 1.5 s divided by it.
+    static let speed: Double = 1.25
+    static let cycle: TimeInterval = 1.5 / speed
+    /// How much later each ring starts than the one inside it, in cycles.
+    static let ringDelay: Double = 0.16
+    /// Rings 25 apart start four whole cycles apart, so they move
+    /// together: one layer per phase draws every ring in step with it.
+    static let phases = 25
+    /// Rings this far out and beyond rest at the same dimness, as in Dotm.
+    static let farRing = 6
+    /// The ripple's origin on the dot grid, one in from the top-left.
+    static let origin = (column: 1, row: 1)
+    /// Dotm's opacity triplet, `opacityBase`, `opacityMid` and
+    /// `opacityPeak`: the rest and settle levels derive from them.
+    static let opacityBase: Float = 0.12
+    static let opacityMid: Float = 0.42
+    static let opacityPeak: Float = 1
+    /// When in its cycle a dot is at rest, at its peak, settled, and back
+    /// at rest.
+    static let keyTimes: [Double] = [0, 0.34, 0.6, 1]
+    /// The opacities at those moments.
+    static var levels: [Float] {
+        [0.625 * opacityBase, opacityPeak, 0.5 * (opacityBase + opacityMid), 0.625 * opacityBase]
     }
 
-    /// The colours the dots in `phase` show over one cycle, one per step.
-    /// The head reaches phase 0 on the first step and phase 4 on the last.
-    static func colors(forPhase phase: Int, style: FluxDotStyle = .standard) -> [CGColor] {
-        let palette = palette(style)
-        return (0..<steps).map { step in palette[((step - phase) % steps + steps) % steps] }
+    static func ring(column: Int, row: Int) -> Int {
+        abs(column - origin.column) + abs(row - origin.row)
     }
 
-    static func run(on layers: [CAShapeLayer], style: FluxDotStyle = .standard) {
+    /// Which layer draws a ring. Still, under Reduce Motion, the rings
+    /// group by their resting brightness instead.
+    static func phase(forRing ring: Int, reduceMotion: Bool) -> Int {
+        reduceMotion ? min(ring, farRing) : ring % phases
+    }
+
+    /// How far into a cycle a phase's rings start, after the origin.
+    static func delay(forPhase phase: Int) -> TimeInterval {
+        (Double(phase) * ringDelay).truncatingRemainder(dividingBy: 1) * cycle
+    }
+
+    /// The brightness a ring holds when the ripple cannot move: Dotm's
+    /// still gradient, fading out from the origin, mapped onto the triplet.
+    static func restingOpacity(forRing ring: Int) -> Float {
+        let fraction = 1 - Float(min(ring, farRing)) / Float(farRing)
+        return remapped(0.2 + fraction * 0.75)
+    }
+
+    /// Dotm's piecewise map from its source opacities (0.08, 0.34, 0.94)
+    /// onto the configured triplet.
+    static func remapped(_ opacity: Float) -> Float {
+        let source: [Float] = [0, 0.08, 0.34, 0.94, 1]
+        let target: [Float] = [0, opacityBase, opacityMid, opacityPeak, 1]
+        let value = min(1, max(0, opacity))
+        for index in 1..<source.count where value <= source[index] {
+            let progress = (value - source[index - 1]) / (source[index] - source[index - 1])
+            return target[index - 1] + (target[index] - target[index - 1]) * progress
+        }
+        return 1
+    }
+
+    static func run(on layers: [CAShapeLayer]) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         for (phase, layer) in layers.enumerated() {
             guard !RelayLayerMotion.reduceMotion else {
                 layer.removeAnimation(forKey: SkeletonLoaderView.shimmerKey)
+                layer.opacity = restingOpacity(forRing: phase)
                 continue
             }
+            layer.opacity = levels[0]
             guard layer.animation(forKey: SkeletonLoaderView.shimmerKey) == nil else { continue }
-            let colors = colors(forPhase: phase, style: style)
-            let flux = CAKeyframeAnimation(keyPath: "fillColor")
-            // Back to the first colour at the end, so the loop is seamless.
-            flux.values = colors + [colors[0]]
-            flux.keyTimes = (0...steps).map { NSNumber(value: Double($0) / Double(steps)) }
-            flux.calculationMode = .linear
-            flux.timingFunctions = Array(repeating: RelayMotion.loopCurve.mediaTimingFunction, count: steps)
-            flux.duration = stepDuration * Double(steps)
-            flux.repeatCount = .infinity
-            layer.add(flux, forKey: SkeletonLoaderView.shimmerKey)
+            let ripple = CAKeyframeAnimation(keyPath: "opacity")
+            ripple.values = levels
+            ripple.keyTimes = keyTimes.map { NSNumber(value: $0) }
+            ripple.calculationMode = .linear
+            ripple.timingFunctions = Array(
+                repeating: RelayMotion.loopCurve.mediaTimingFunction,
+                count: keyTimes.count - 1
+            )
+            ripple.duration = cycle
+            ripple.repeatCount = .infinity
+            // Shift the loop so this phase's rings run their delay behind
+            // the origin's.
+            ripple.timeOffset = (cycle - delay(forPhase: phase)).truncatingRemainder(dividingBy: cycle)
+            layer.add(ripple, forKey: SkeletonLoaderView.shimmerKey)
         }
     }
 }
