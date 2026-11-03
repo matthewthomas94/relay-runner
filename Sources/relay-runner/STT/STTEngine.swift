@@ -1,6 +1,7 @@
 import FluidAudio
 import Foundation
 import QuartzCore
+import TrueWhisper
 
 /// Process-facing seams for `STTEngine`. Production uses `.live`; tests inject
 /// a controllable model load, a fake capture backend, and a silent voice writer
@@ -23,6 +24,11 @@ struct STTEngineDependencies {
     var makeGesture: (_ activationKey: String) -> CapsLockGesture
     var prepareVoiceOutput: () -> Void
     var writeVoiceOutput: (String) -> Bool
+    /// True Whisper seams: the camera source opened per Caps Lock hold, the
+    /// enrolled templates, and the log its decisions go to.
+    var makeFrameSource: () -> FrameSource = { LipCaptureSession() }
+    var loadTrueWhisperTemplates: () -> [Template] = { TemplateStore().load() }
+    var log: (String) -> Void = { NSLog("%@", $0) }
 
     static let live = STTEngineDependencies(
         loadModel: STTEngine.loadSTTModel,
@@ -116,6 +122,9 @@ final class STTEngine: @unchecked Sendable {
     @ObservationIgnored private var voiceTargetKey: String?
     @ObservationIgnored private var recordingTargetKey: String?
     @ObservationIgnored private var requestedRecordingTargetKey: String?
+    /// Non-nil when True Whisper owns Caps Lock: each hold opens the camera
+    /// instead of the microphone, and neither the mic nor the model is used.
+    @ObservationIgnored private let trueWhisper: TemplateClassifier?
 
     // MARK: - Init
 
@@ -129,6 +138,7 @@ final class STTEngine: @unchecked Sendable {
         self.keepSamples = sampleRate * 200 / 1000  // 200ms
         self.recordingChunkSamples = sampleRate * 25
         self.recordingKeepSamples = sampleRate
+        self.trueWhisper = Self.makeTrueWhisperClassifier(config: config, dependencies: dependencies)
         self.audioCapture = dependencies.makeCapture(
             { [weak self] samples in
                 self?.audioBuffer.append(samples)
@@ -139,6 +149,39 @@ final class STTEngine: @unchecked Sendable {
             }
         )
     }
+
+    /// Words with fewer takes than this are left out, matching the settings
+    /// rule that a word counts as enrolled from three takes.
+    static let trueWhisperEnrolledTakes = 3
+    static let trueWhisperMinimumFrames = 6
+    /// The spike's decode defaults.
+    static let trueWhisperMaxDistance = 1.5
+    static let trueWhisperMinConfidence = 0.1
+
+    /// Builds the classifier when True Whisper is on and at least two words
+    /// are enrolled; otherwise logs why and leaves the microphone path in place.
+    private static func makeTrueWhisperClassifier(
+        config: SttConfig,
+        dependencies: STTEngineDependencies
+    ) -> TemplateClassifier? {
+        guard config.true_whisper else { return nil }
+        guard config.input_mode == "caps_lock_toggle" else {
+            dependencies.log("[STTEngine] True Whisper needs Caps Lock input; using the microphone.")
+            return nil
+        }
+        let templates = dependencies.loadTrueWhisperTemplates()
+        let counts = Dictionary(grouping: templates, by: \.label).mapValues(\.count)
+        let enrolled = templates.filter { counts[$0.label, default: 0] >= trueWhisperEnrolledTakes }
+        guard let classifier = TemplateClassifier(templates: enrolled, useVelocity: true) else {
+            dependencies.log("[STTEngine] True Whisper is on but fewer than 2 words are enrolled; using the microphone.")
+            return nil
+        }
+        dependencies.log("[STTEngine] True Whisper active: Caps Lock reads lips. words=\(classifier.labels.joined(separator: ","))")
+        return classifier
+    }
+
+    /// True when Caps Lock captures from the camera rather than the microphone.
+    var usesTrueWhisper: Bool { trueWhisper != nil }
 
     /// Inject the modal-confirmation hooks for Relay Actions `propose_action`
     /// prompts. When `stateMachine.pendingConfirmation != nil`, double-tap
@@ -156,26 +199,31 @@ final class STTEngine: @unchecked Sendable {
     func start() async throws {
         dependencies.prepareVoiceOutput()
 
-        // Load model (with download progress feedback)
-        NSLog("[STTEngine] Loading model: \(modelName)...")
-        statusMessage = "Loading STT model..."
-        _ = dependencies.writeVoiceOutput("__STATUS__:Loading \(modelName) model...")
+        if trueWhisper != nil {
+            // Lip reading needs neither the speech model nor the microphone.
+            NSLog("[STTEngine] True Whisper owns Caps Lock; speech model not loaded.")
+        } else {
+            // Load model (with download progress feedback)
+            NSLog("[STTEngine] Loading model: \(modelName)...")
+            statusMessage = "Loading STT model..."
+            _ = dependencies.writeVoiceOutput("__STATUS__:Loading \(modelName) model...")
 
-        let manager = try await dependencies.loadModel(modelName) { [weak self] message in
-            Task { @MainActor in
-                self?.statusMessage = message
+            let manager = try await dependencies.loadModel(modelName) { [weak self] message in
+                Task { @MainActor in
+                    self?.statusMessage = message
+                }
+                _ = self?.dependencies.writeVoiceOutput("__STATUS__:\(message)")
+                NSLog("[STTEngine] \(message)")
             }
-            _ = self?.dependencies.writeVoiceOutput("__STATUS__:\(message)")
-            NSLog("[STTEngine] \(message)")
+            // A model load that finishes after stop() must not reopen the mic.
+            guard !isEngineStopped else {
+                NSLog("[STTEngine] Model load finished after stop; capture stays closed.")
+                await manager.cleanup()
+                return
+            }
+            self.asrManager = manager
+            NSLog("[STTEngine] Model loaded.")
         }
-        // A model load that finishes after stop() must not reopen the mic.
-        guard !isEngineStopped else {
-            NSLog("[STTEngine] Model load finished after stop; capture stays closed.")
-            await manager.cleanup()
-            return
-        }
-        self.asrManager = manager
-        NSLog("[STTEngine] Model loaded.")
         statusMessage = "Listening"
         _ = dependencies.writeVoiceOutput("__STATUS__:Listening")
 
@@ -310,6 +358,11 @@ final class STTEngine: @unchecked Sendable {
             captureInterruptionLock.unlock()
             resetRecordingBuffer()
             audioCapture.stop()
+            return
+        }
+        if trueWhisper != nil {
+            // The camera opens per hold in runCapsLockMode; the mic never does.
+            setCaptureReady(true)
             return
         }
         if let route = try audioCapture.start() {
@@ -626,6 +679,8 @@ final class STTEngine: @unchecked Sendable {
         var transcript = TranscriptAccumulator()
         var transcribeCounter = 0
         var mediaSettleDeadline: Date?
+        var lipCapture: LipCapture?
+        defer { if let lipCapture { _ = stopLipCapture(lipCapture) } }
 
         // Don't accumulate audio while idle — saves memory over long sessions.
         // A wheel request made before this loop started keeps its target.
@@ -633,6 +688,13 @@ final class STTEngine: @unchecked Sendable {
 
         while !Task.isCancelled {
             try await Task.sleep(for: .milliseconds(pollMs))
+
+            // The camera is on only while the key is held: a tap, cancel,
+            // dropped owner or suspension turns it off.
+            if let capture = lipCapture, !gesture.isActivationHeld || !captureEpochIsCurrent(capture.epoch) {
+                _ = stopLipCapture(capture)
+                lipCapture = nil
+            }
 
             if referenceAudioSuspended {
                 transcript.reset()
@@ -695,6 +757,18 @@ final class STTEngine: @unchecked Sendable {
                     if let targetKey = stampRecordingVoiceTarget() {
                         writeVoiceOutput("__VOICE_TARGET__:\(targetKey)")
                     }
+                    if trueWhisper != nil {
+                        if let previous = lipCapture { _ = stopLipCapture(previous) }
+                        lipCapture = startLipCapture()
+                        guard lipCapture != nil else {
+                            gesture.reset()
+                            resetRecordingBuffer()
+                            isRecording = false
+                            partialTranscription = ""
+                            reportTrueWhisperStatus("True Whisper: camera unavailable")
+                            continue
+                        }
+                    }
                     audioBuffer.setMaxSamples(nil)
                     audioBuffer.accepting = true
                     audioBuffer.clear()
@@ -707,6 +781,15 @@ final class STTEngine: @unchecked Sendable {
                     writeVoiceOutput("__STATUS__:preparing...")
 
                 case .stopRecording(_):
+                    if let classifier = trueWhisper {
+                        finishTrueWhisperHold(&lipCapture, classifier: classifier)
+                        transcript.reset()
+                        resetRecordingBuffer()
+                        isRecording = false
+                        partialTranscription = ""
+                        mediaSettleDeadline = nil
+                        continue
+                    }
                     let captureEpoch = currentCaptureEpoch()
                     let finalText = try await finalizeRecordingTranscript(into: &transcript)
                     guard captureEpochIsCurrent(captureEpoch) else { continue }
@@ -726,6 +809,10 @@ final class STTEngine: @unchecked Sendable {
                     mediaSettleDeadline = nil
 
                 case .cancel:
+                    if let capture = lipCapture {
+                        _ = stopLipCapture(capture)
+                        lipCapture = nil
+                    }
                     writeVoiceOutput("__CANCEL__")
                     NSLog("[STTEngine] Cancelled (2x Ctrl)")
                     transcript.reset()
@@ -736,6 +823,17 @@ final class STTEngine: @unchecked Sendable {
                     mediaSettleDeadline = nil
 
                 case .interrupt:
+                    // Releasing a True Whisper hold always arrives here: lip
+                    // reading leaves no live transcript segment.
+                    if let classifier = trueWhisper {
+                        finishTrueWhisperHold(&lipCapture, classifier: classifier)
+                        transcript.reset()
+                        resetRecordingBuffer()
+                        isRecording = false
+                        partialTranscription = ""
+                        mediaSettleDeadline = nil
+                        continue
+                    }
                     let captureEpoch = currentCaptureEpoch()
                     let finalText = try await finalizeRecordingTranscript(into: &transcript)
                     guard captureEpochIsCurrent(captureEpoch) else { continue }
@@ -834,6 +932,83 @@ final class STTEngine: @unchecked Sendable {
                 partialTranscription = transcript.transcript
             }
         }
+    }
+
+    // MARK: - True Whisper
+
+    private struct LipCapture {
+        let source: FrameSource
+        let buffer: FrameBuffer
+        let epoch: UInt64
+    }
+
+    private func startLipCapture() -> LipCapture? {
+        let source = dependencies.makeFrameSource()
+        let buffer = FrameBuffer()
+        source.onFrame = { t, g in buffer.push(t, g) }
+        do {
+            try source.start()
+        } catch {
+            source.onFrame = nil
+            source.stop()
+            dependencies.log("[STTEngine] True Whisper camera failed to start: \(error)")
+            return nil
+        }
+        NSLog("[STTEngine] True Whisper camera on")
+        return LipCapture(source: source, buffer: buffer, epoch: currentCaptureEpoch())
+    }
+
+    /// Turns the camera off and returns the frames collected during the hold.
+    private func stopLipCapture(_ capture: LipCapture) -> [[Double]] {
+        capture.source.stop()
+        capture.source.onFrame = nil
+        return capture.buffer.drain().map(\.g)
+    }
+
+    /// Ends a hold: camera off first, then classify and deliver the word the
+    /// way a spoken transcript is delivered. A rejected hold sends nothing.
+    private func finishTrueWhisperHold(_ capture: inout LipCapture?, classifier: TemplateClassifier) {
+        guard let active = capture else { return }
+        capture = nil
+        let frames = stopLipCapture(active)
+        guard captureEpochIsCurrent(active.epoch),
+              let label = recognizeLipFrames(frames, classifier: classifier)
+        else { return }
+        if tutorialActive {
+            tutorialTranscriptSerial += 1
+            NSLog("[STTEngine] Tutorial transcript consumed locally")
+        } else if writeVoiceOutput(label) {
+            deliveredTranscriptSerial += 1
+            NSLog("[STTEngine] >> \(label)")
+        }
+    }
+
+    private func recognizeLipFrames(_ frames: [[Double]], classifier: TemplateClassifier) -> String? {
+        guard frames.count >= Self.trueWhisperMinimumFrames else {
+            dependencies.log("[STTEngine] True Whisper decision label=none confidence=0.000 frames=\(frames.count) accepted=false")
+            reportTrueWhisperStatus("True Whisper: no face seen")
+            return nil
+        }
+        let prediction = classifier.predict(
+            frames,
+            maxDistance: Self.trueWhisperMaxDistance,
+            minConfidence: Self.trueWhisperMinConfidence
+        )
+        dependencies.log(
+            "[STTEngine] True Whisper decision label=\(prediction.best ?? "none") " +
+            String(format: "confidence=%.3f ", prediction.confidence) +
+            "frames=\(frames.count) accepted=\(prediction.accepted)"
+        )
+        guard prediction.accepted, let label = prediction.best else {
+            reportTrueWhisperStatus("True Whisper: no confident match")
+            return nil
+        }
+        return label
+    }
+
+    private func reportTrueWhisperStatus(_ message: String) {
+        statusMessage = message
+        writeVoiceOutput("__STATUS__:\(message)")
     }
 
     private func finalizeRecordingTranscript(into transcript: inout TranscriptAccumulator) async throws -> String? {
