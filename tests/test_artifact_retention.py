@@ -4,6 +4,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -627,6 +628,39 @@ class ArtifactRetentionTests(unittest.TestCase):
         ):
             self.manager.preview()
         self.assertNotIn(".orchestrator/RR-1.md", self.store.snapshot().files)
+
+    def test_unchanged_catalog_is_verified_once_per_store(self):
+        # Each background sweep builds a new manager; re-verifying every
+        # archived entry each time cost seconds of git subprocesses (RR-449).
+        self.seed_retained_terminal()
+        self.write_ticket(
+            "RR-1", "Archived terminal", activity_at=self.now - timedelta(days=31),
+            extra={"status": "done"},
+        )
+        self.manager.archive(self.manager.preview(), event_id="archive-once", device_id="device-a")
+        first = self.manager.preview()
+        sweep_manager = ArtifactRetentionManager(
+            self.store, lease_store=self.leases, remote_mode="enabled",
+            remote_confirmation=self.confirmation, synchronizer=self.synchronizer,
+            enabled=True, now=lambda: self.now,
+        )
+        commands = []
+        original_git = self.store._git
+
+        def counting_git(*arguments, **options):
+            commands.append(arguments[0])
+            return original_git(*arguments, **options)
+
+        with mock.patch.object(sweep_manager, "_verified_catalog_entry") as verify, \
+                mock.patch.object(self.store, "_git", side_effect=counting_git):
+            self.assertEqual(sweep_manager.preview(), first)
+            self.assertNotIn("merge-base", commands)
+            # A later head with the same catalog needs one ancestry check.
+            self.write_ticket("RR-3", "Unrelated", activity_at=self.now, extra={"status": "backlog"})
+            commands.clear()
+            self.assertIn("RR-3", sweep_manager.preview().nonterminal_ids)
+            verify.assert_not_called()
+        self.assertEqual(commands.count("merge-base"), 1)
 
     def test_verified_attachment_read_and_reopen_do_not_leave_terminal_work_capped(self):
         self.seed_retained_terminal()

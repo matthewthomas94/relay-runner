@@ -350,6 +350,53 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertTrue(glyphClicked)
     }
 
+    @MainActor
+    func testUnchangedPresentationTickDoesNotRedrawPill() throws {
+        _ = NSApplication.shared
+        let geometry = NotchStatusDisplayGeometry(
+            frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 944),
+            auxiliaryTopLeftArea: CGRect(x: 0, y: 950, width: 663, height: 32),
+            auxiliaryTopRightArea: CGRect(x: 848, y: 950, width: 664, height: 32)
+        )
+        let placement = try XCTUnwrap(NotchStatusPlacementPlanner.placement(for: geometry))
+        let panel = NotchStatusPanel()
+        panel.setFrame(placement.visibleFrame, display: false)
+        let pillView = NotchStatusPillContentView(frame: CGRect(origin: .zero, size: panel.frame.size))
+        panel.contentView = pillView
+        panel.orderFrontRegardless()
+        defer {
+            panel.stopFrameAnimation()
+            panel.orderOut(nil)
+        }
+        // A view in an off-screen window always reports `needsDisplay`; its
+        // layer reports whether a redraw is pending.
+        let redrawPending = { pillView.layer?.needsDisplay() ?? true }
+        let tick = { (label: String?) in
+            pillView.apply(
+                status: .notWorking,
+                label: label,
+                activityLabelWidth: placement.activityLabelWidth,
+                leadingSpacerWidth: placement.leadingSpacerWidth,
+                notchSpacerWidth: placement.notchSpacerWidth,
+                glyphScreenX: placement.glyphScreenX
+            )
+            panel.animateFrame(to: placement.visibleFrame, duration: 0)
+        }
+
+        tick(nil)
+        pillView.displayIfNeeded()
+        XCTAssertFalse(redrawPending())
+
+        // The 20 Hz STT poll re-applies the same presentation (RR-449).
+        for _ in 0..<3 { tick(nil) }
+        XCTAssertFalse(redrawPending(), "An unchanged tick must not redraw")
+        XCTAssertEqual(panel.frame, placement.visibleFrame)
+
+        tick("Reading worker activity")
+        XCTAssertTrue(redrawPending(), "A visible change still redraws")
+    }
+
     private struct MountedFrameSample {
         let panelFrame: CGRect
         let glyphFrame: CGRect

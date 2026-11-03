@@ -121,6 +121,7 @@ except ModuleNotFoundError:  # Installed direct-script layout.
     from note_contract import NoteUpdate, note_source
 from general_work import GeneralWorkStore, general_worker_environment
 from personal_file_storage import PersonalFileStorage, StorageError, handle_personal_storage_request
+from sampling_profiler import start_from_environment as start_sampling_profiler
 from command_actions import refined_command_summary, refined_ticket_title, resolve_command_action
 from continuity_incidents import (
     ContinuityIncidentDetector,
@@ -169,7 +170,7 @@ from followup_tickets import (
     sanitize_followup_draft,
 )
 from pm_frontstage import OrchestrationTraceEvent, PMStatusEvent, RelayCommandMetadata
-from program_status import build_program_dashboard, build_program_status
+from program_status import build_program_dashboard, build_program_status, program_context
 from relay_authorization import (
     authorization_exists,
     mark_mutations_canceled,
@@ -7316,7 +7317,7 @@ Title: {ticket['title']}
         latest_run: dict[str, Any] | None,
         skip: dict[str, Any] | None,
         source_blocker: dict[str, Any] | None,
-        dispatch_blocker: dict[str, Any] | None,
+        dispatch_blocker: Callable[[], dict[str, Any] | None],
         drive_reviews: bool,
         now: float,
     ) -> dict[str, Any]:
@@ -7539,8 +7540,9 @@ Title: {ticket['title']}
                 )
 
         if ticket.get("status") == "ready":
-            if dispatch_blocker is not None:
-                return self._integration_blocked_item(ticket_id, blocker=dispatch_blocker)
+            blocker = dispatch_blocker()
+            if blocker is not None:
+                return self._integration_blocked_item(ticket_id, blocker=blocker)
             return {
                 "ticket_id": ticket_id,
                 "state": "scheduled",
@@ -7655,14 +7657,18 @@ Title: {ticket['title']}
             )
             else None
         )
-        dispatch_blocker = (
-            _source_checkout_blocker(str(repo), ignore_board_metadata=True)
-            if any(
-                (tickets_by_id.get(ticket_id) or {}).get("status") == "ready"
-                for ticket_id in observed_ids
-            )
-            else None
-        )
+        dispatch_blockers: list[dict[str, Any] | None] = []
+
+        def dispatch_blocker() -> dict[str, Any] | None:
+            # Only a ready ticket whose predecessors are done reads this, so
+            # tickets queued behind running work no longer cost a full
+            # `git status` on every ready sweep and monitor tick (RR-449).
+            if not dispatch_blockers:
+                dispatch_blockers.append(
+                    _source_checkout_blocker(str(repo), ignore_board_metadata=True)
+                )
+            return dispatch_blockers[0]
+
         items = [
             self._classify_queue_drain_item(
                 repo=repo,
@@ -11940,11 +11946,20 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
 
         self._program_refresh_single_flight("dashboard").run(refresh)
         store = GraphifyCoreStore(self.graphify_path)
+        # The Work tab polls every 10 s. Decoding every graph node again for
+        # an unchanged graph was its largest idle cost (RR-449); the file
+        # state is read first, so a concurrent write forces the next rebuild.
+        key = (graph_file_state(self.graphify_path), None if repo_paths is None else tuple(repo_paths))
+        cached = getattr(self, "_program_dashboard_context", None)
+        if cached is None or cached[0] != key:
+            cached = (key, program_context(store, repo_paths=repo_paths))
+            self._program_dashboard_context = cached
         return build_program_dashboard(
             store,
             provider=provider,
             repo_paths=repo_paths,
             limit=limit,
+            context=cached[1],
         )
 
     def session_capture(
@@ -13105,6 +13120,8 @@ def main() -> None:
         phase="orchestrator_launch",
         outcome="started",
     )
+    # Off unless RELAY_ORCHESTRATOR_PROFILE names an output file.
+    profiler = start_sampling_profiler()
     try:
         args = _parse_args()
         cfg = load_config(args.config) if args.config else load_config()
@@ -13122,6 +13139,9 @@ def main() -> None:
             attributes={"error_code": type(error).__name__},
         )
         raise
+    finally:
+        if profiler is not None:
+            profiler.stop()
 
 
 if __name__ == "__main__":

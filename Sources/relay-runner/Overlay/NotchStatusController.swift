@@ -1652,7 +1652,10 @@ final class NotchStatusPanel: NSPanel {
             targetFrame: targetFrame
         )
         guard duration > 0, frame != targetFrame else {
-            setFrame(targetFrame, display: true)
+            // The 20 Hz STT poll re-applies an unchanged placement (RR-449).
+            if frame != targetFrame {
+                setFrame(targetFrame, display: true)
+            }
             completion?()
             return
         }
@@ -1756,22 +1759,33 @@ final class NotchStatusPillContentView: NSView {
                 now: now
             )
         }
+        let hoverStartedAt = NotchActivityLabelRenderPolicy.hoverStartTime(
+            current: glyphHoverStartedAt,
+            glyphHovered: glyphHovered,
+            labelChanged: labelChanged,
+            now: CACurrentMediaTime()
+        )
+        // The 20 Hz STT poll re-applies an unchanged presentation every tick.
+        // Redrawing the pill for it cost the idle app a full CoreGraphics
+        // render 20 times a second (RR-449), so only a visible change redraws.
+        let changed = statusChanged || labelChanged
+            || self.activityLabelWidth != activityLabelWidth
+            || self.leadingSpacerWidth != leadingSpacerWidth
+            || self.notchSpacerWidth != notchSpacerWidth
+            || self.glyphScreenX != glyphScreenX
+            || glyphHoverStartedAt != hoverStartedAt
         self.status = status
         self.label = label
         self.activityLabelWidth = activityLabelWidth
         self.leadingSpacerWidth = leadingSpacerWidth
         self.notchSpacerWidth = notchSpacerWidth
         self.glyphScreenX = glyphScreenX
-        glyphHoverStartedAt = NotchActivityLabelRenderPolicy.hoverStartTime(
-            current: glyphHoverStartedAt,
-            glyphHovered: glyphHovered,
-            labelChanged: labelChanged,
-            now: CACurrentMediaTime()
-        )
+        glyphHoverStartedAt = hoverStartedAt
         if statusChanged {
             notifyWorkingGlyphHoverChanged()
         }
         updateWaveTimer(restart: glyphChanged || statusChanged)
+        guard changed else { return }
         updateTrackingAreas()
         needsDisplay = true
     }
