@@ -25,8 +25,9 @@ final class RelayRemoteProtocolTests: XCTestCase {
             XCTAssertEqual(try FrameCodec.encode(frame), line + Data([0x0A]), name)
             XCTAssertEqual(try FrameCodec.decode(line + Data([0x0A])), frame, name)
         }
-        XCTAssertEqual(types, ["hello", "utterance", "control", "remote_mode", "ack", "ping", "welcome", "accepted",
-                               "speech", "speech_audio", "speech_control", "status", "error", "pong"])
+        XCTAssertEqual(types, ["hello", "utterance", "control", "remote_mode", "session_command", "ack", "ping",
+                               "welcome", "accepted", "speech", "speech_audio", "speech_control", "status",
+                               "error", "pong", "session_state"])
     }
 
     func testInvalidVectorsReportSharedErrorCodes() throws {
@@ -59,6 +60,22 @@ final class RelayRemoteProtocolTests: XCTestCase {
         XCTAssertThrowsError(try FrameCodec.decode(over)) {
             XCTAssertEqual(($0 as? FrameError)?.code, "line_too_long")
         }
+    }
+
+    func testSessionFramesCarryNoSeqAndDecodeTheirProjects() throws {
+        let frames = try objects("frames")
+        let line = try XCTUnwrap(frames.first { $0["name"] as? String == "session_state_no_session_with_projects" }?["line"] as? String)
+        guard case .sessionState(let state) = try FrameCodec.decode(Data(line.utf8)) else {
+            return XCTFail("expected session_state")
+        }
+        XCTAssertNil(Frame.sessionState(state).seq, "session_state is not replayed")
+        XCTAssertTrue(state.appRunning)
+        XCTAssertEqual(state.session, .noSession)
+        XCTAssertEqual(state.projects?.map(\.displayName), ["relay-runner", "café notes"])
+        XCTAssertEqual(state.projects?.map(\.isAvailable), [true, false])
+        let command = Frame.sessionCommand(SessionCommand(clientId: UUID().uuidString, action: .start, projectId: "p"))
+        XCTAssertNil(command.seq)
+        XCTAssertEqual(command.direction, .phoneToMac)
     }
 
     func testAudioDataLimitOnEncodeAndDecode() throws {

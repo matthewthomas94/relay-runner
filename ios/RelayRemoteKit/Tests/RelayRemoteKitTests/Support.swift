@@ -26,16 +26,70 @@ final class FakeMac: @unchecked Sendable {
     /// Sent once before `welcome`, like the bridge's reply to the helper's `identify` line.
     var errorBeforeWelcome: ErrorFrame?
     var now: Double = 0
+    /// RR-456: false stands in for a Mac with no voice bridge. The helper then
+    /// joins Relay Runner's session-control socket, which answers its
+    /// `identify` with `session_state`, ignores `hello` and answers `ping`.
+    var sessionRunning = true
+    /// False: neither socket listens, so the helper reports `app_running: false` and exits.
+    var appRunning = true
+    var phase = SessionPhase.noSession
+    var projects = [
+        ProjectSummary(projectId: "p-relay", displayName: "relay-runner", availability: "available"),
+        ProjectSummary(projectId: "p-old", displayName: "old", availability: "missing"),
+    ]
+    private(set) var sessionCommands: [SessionCommand] = []
 
     var isConnected: Bool { lock.withLock { connection != nil } }
 
     func attach(_ connection: FakeConnection) {
-        lock.withLock { self.connection = connection }
+        lock.lock()
+        defer { lock.unlock() }
+        guard appRunning else {
+            connection.deliver(.sessionState(SessionState(appRunning: false, session: .noSession)))
+            connection.finish()
+            return
+        }
+        self.connection = connection
+        if !sessionRunning {
+            connection.isControlLink = true
+            connection.deliver(.sessionState(controlState(includingProjects: true)))
+        }
+    }
+
+    /// The `start` the phone asked for has finished: the bridge is consuming.
+    func finishStart() {
+        lock.lock()
+        defer { lock.unlock() }
+        phase = .ready
+        sessionRunning = true
+        connection?.deliver(.sessionState(controlState()))
+    }
+
+    private func controlState(includingProjects: Bool = false) -> SessionState {
+        SessionState(appRunning: true, session: phase,
+                     projectId: phase == .noSession ? nil : "p-relay",
+                     projectName: phase == .noSession ? nil : "relay-runner",
+                     projects: includingProjects ? projects : nil)
     }
 
     func receive(_ frame: Frame, on connection: FakeConnection) {
         lock.lock()
         defer { lock.unlock() }
+        if case .sessionCommand(let command) = frame {
+            // The app answers, on a control link or through the helper beside a bridge.
+            sessionCommands.append(command)
+            switch command.action {
+            case .start where phase == .noSession || phase == .failed: phase = .starting
+            case .stop: phase = .noSession
+            default: break
+            }
+            connection.deliver(.sessionState(controlState(includingProjects: command.action == .listProjects)))
+            return
+        }
+        if connection.isControlLink {
+            if case .ping(let ping) = frame { connection.deliver(.pong(Pong(t: ping.t))) }
+            return
+        }
         switch frame {
         case .hello(let hello):
             hellos.append(hello)
@@ -146,6 +200,8 @@ final class FakeConnection: RemoteConnection, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var sentLines: [Data] = []
     private(set) var closed = false
+    /// Joined to the app's session-control socket rather than a voice bridge.
+    var isControlLink = false
     /// Replaces the Mac for tests that answer by hand.
     var onSend: ((Data) -> Void)?
 

@@ -29,7 +29,7 @@ Relay Remote is the proposed path for a native iOS app to drive a Relay Runner v
 - No hosted relay, account, push notification service or Relay-operated server. Push notifications would require a server and are out of scope.
 - No audio from the phone to the Mac: the phone sends text only. From the Mac to the phone, audio is limited to synthesised reply speech (RR-457 retired the earlier text-only rule for that direction). The Mac's microphone and speaker output are never streamed.
 - No remote screen viewing or screen control from the phone. Relay Actions and Relay Vision remain Mac-local.
-- No starting of a Relay session from the phone in the first version; the phone attaches to a session that is already running.
+- No choice of provider, model or effort from the phone, and no switching projects while a session runs. The phone attaches to a running session, or starts one for a registered project when none is running (RR-456, [Session control](#session-control)); that session uses the Mac's current defaults, and starting a different project is refused until the running one is stopped.
 - No multi-user access. One Mac login user, that user's keys, that user's session.
 - No waking of a sleeping Mac. A sleeping or logged-out Mac is unreachable by design.
 
@@ -48,15 +48,18 @@ Mac                                         v
                  - utterances  -> bridge ingress queue -> command pipeline -> PM session
                  - controls    -> existing __TTS_STOP__ / __INTERRUPT__ / __CANCEL__ / __PLAY__ / __REPLAY__
                  - speech      <- SpeechCoordinator remote sink (Kokoro synthesises; the Mac speaker stays closed)
+          <-> /tmp/relay_session_control.sock              (Unix stream socket, app-owned, RR-456)
+                 - session_command -> list projects, start, stop, state
   Relay Runner.app
      - pairing UI, authorized_keys writer, /tmp/relay_remote_pair.sock
      - microphone and speaker gate while a remote device is active, status, keep-awake
+     - session control: /tmp/relay_session_control.sock while the app runs
 ```
 
 | Component | Lives in | Responsibility |
 | --- | --- | --- |
 | Relay Remote iOS app | new `ios/` project in this repo plus a shared SwiftPM protocol target | Capture speech, transcribe on device, hold the SSH connection, play the Mac's reply audio or speak text frames that carry none, pair and store the device key |
-| `relay-remote-shell` | new Swift executable target, embedded and signed by `scripts/build-dmg.sh` | The forced command. Copies NDJSON between the SSH channel and the local Unix socket, enforces frame limits, exits when either side closes |
+| `relay-remote-shell` | new Swift executable target, embedded and signed by `scripts/build-dmg.sh` | The forced command. Copies NDJSON between the SSH channel and the bridge socket, or the session-control socket when no bridge listens; enforces frame limits, exits when either side closes |
 | `services/relay_remote.py` | Python module imported by `services/voice_bridge.py` | Owns `/tmp/relay_remote.sock`, device sessions, sequence numbers and the replay buffer; feeds utterances into the bridge's ingress; is the `SpeechCoordinator` remote sink |
 | Pairing and gate | `Sources/relay-runner` | Pairing flow and `~/.ssh/authorized_keys` management, Remote Login detection, suspending the Mac microphone and Kokoro output while a phone is active, status in the notch and menu bar, no-idle-sleep assertion |
 | `RelayRemoteProtocol` | SwiftPM library target (macOS 14, iOS 18) with a Python twin | Frame schema, codec and golden test vectors shared by the helper, the iOS app and the bridge |
@@ -86,6 +89,7 @@ phone -> Mac
 {"type":"utterance","client_id":"...","text":"move RR-120 to ready","captured_at":"2026-10-22T09:14:03Z"}
 {"type":"control","client_id":"...","action":"stop"}           stop | interrupt | cancel | play | replay
 {"type":"remote_mode","client_id":"...","enabled":false}
+{"type":"session_command","client_id":"...","action":"start","project_id":"..."}   list_projects | start | stop | state
 {"type":"ack","seq":44,"played":true}
 {"type":"ping","t":1761124443}
 
@@ -100,6 +104,9 @@ Mac -> phone
 {"type":"status","seq":48,"text":"worker RR-120 started"}
 {"type":"error","code":"no_session","message":"Relay Runner is not running a session"}
 {"type":"pong","t":1761124443}
+{"type":"session_state","app_running":true,"session":"none","projects":[{"project_id":"...","display_name":"relay-runner","availability":"available"}]}
+{"type":"session_state","app_running":true,"session":"ready","project_id":"...","project_name":"relay-runner"}
+{"type":"session_state","app_running":false,"session":"none"}
 ```
 
 - `accepted` is the phone's receipt that an utterance entered the intent inbox, the remote equivalent of the notch's visual receipt. The phone shows it; it does not speak it.
@@ -115,6 +122,16 @@ Mac -> phone
 - The Mac keeps a bounded replay buffer per device (the last 200 frames or five minutes). A `hello` with `resume_after_seq` replays what the phone missed, or sets `dropped: true` so the phone can say that updates were missed rather than pretending nothing happened. Frames the phone has acknowledged are trimmed.
 - Controls map one-to-one onto the FIFO tokens the bridge already dispatches: `stop` to `__TTS_STOP__`, `interrupt` to `__INTERRUPT__`, `cancel` to `__CANCEL__`, `play` to `__PLAY__`, `replay` to `__REPLAY__`. No new control semantics are introduced.
 - `SSH_ORIGINAL_COMMAND` is ignored except for an allow-listed `status` subcommand that returns one `status` frame and exits, used by the phone's connection check.
+- `session_command` and `session_state` (RR-456) are described under [Session control](#session-control). Neither carries a `seq` or is replayed. Protocol version 1 is unchanged: both decoders ignore unknown keys, the phone logs an unknown frame type and continues, and the helper hands `session_command` to the app, so a voice bridge never receives it.
+
+### Session control
+
+Relay Runner listens on `/tmp/relay_session_control.sock` whenever the app runs, with or without a session (RR-456). The socket is created mode 600, every connection's uid is checked with `getpeereid`, and its only client is `relay-remote-shell`, which only a paired device's forced command runs.
+
+- **Routing.** `relay-remote-shell --device` connects to `/tmp/relay_remote.sock` when a session's bridge listens, as before. When it does not, the helper connects to the session-control socket instead; the app answers the helper's `identify` with `session_state` and the project list, ignores `hello` and answers `ping`. While attached to a bridge, the helper opens the session-control socket on the phone's first `session_command` and sends every `session_command` there, so Stop and the running project's name work from an attached session; without the app it answers `app_unavailable`. When neither socket listens the helper writes `session_state` with `app_running: false` and exits. An SSH failure remains "Mac unreachable" on the phone. The `status` and `--pair` modes never fall back.
+- **Commands.** `list_projects` and `state` report. `start` with a registered, available `project_id` calls `AppState.newSession(workingDirectory:)` with that project's path, the path the Workspace Start button uses, without raising the Workspace; the session uses the Mac's provider, model and effort defaults and behaves exactly like one started on the Mac, including its voice-command authority. `stop` calls `AppState.endSession()`. A `start` while another project's session runs is refused with an `error` naming it; starting the running project again only reports it. `client_id` de-duplicates a retried command.
+- **States.** `none`, then `starting` from the accepted start until the bridge's Relay Remote socket answers `status` with `running`, then `ready`; `failed` with an `error` when the app refuses the start or the session ends before it is ready. The app pushes each change to connected helpers once a second. A `stop` reports `none` at once.
+- **Attach.** On a session-control channel, `ready` closes the channel and the phone reconnects at once, so the helper attaches to the new bridge and `hello` carries the Remote mode as usual. If the channel reports `ready` on arrival, the phone reconnects after its normal backoff instead. Utterances typed before the session existed stay queued and are sent after `welcome`. After each `welcome` the phone sends `session_command` `state` to learn the running project.
 
 ## Mac-side integration with the voice contract
 
@@ -164,7 +181,7 @@ Mac -> phone
 
 - Authentication is public-key only for Relay's keys. Each device key is bound to `command="<shim> --device <device_id>",restrict`, so even a stolen phone key yields one program, no shell, no PTY, no forwarding. Device identity comes from the `authorized_keys` line that `sshd` matched, never from anything the phone claims.
 - The host key is pinned at pairing. There is no trust-on-first-use path in the client.
-- `/tmp/relay_remote.sock` and `/tmp/relay_remote_pair.sock` are mode 600 and the listeners verify the peer's uid with `getpeereid`; the forced command runs as the login user, so the check passes without any secret in the environment.
+- `/tmp/relay_remote.sock`, `/tmp/relay_remote_pair.sock` and `/tmp/relay_session_control.sock` are mode 600 and the listeners verify the peer's uid with `getpeereid`; the forced command runs as the login user, so the check passes without any secret in the environment. The session-control socket starts and stops sessions only through the app's own Start and End Session paths.
 - Pairing keys expire by `expiry-time=` and are removed on completion; a permanent key is installed only after a click on the Mac that shows the device's fingerprint.
 - Relay never prints key material, tokens or fingerprints into logs, run logs or tickets. The QR payload is rendered once and is not persisted.
 - Enabling Remote Login exposes `sshd` password authentication for the Mac user by default. Relay Remote does not need it. The user guide shows the one-time, administrator-run drop-in `/etc/ssh/sshd_config.d/01-relay-remote.conf` with `PasswordAuthentication no` and `KbdInteractiveAuthentication no`, notes that macOS upgrades can reset `/etc/ssh/sshd_config` but keep the drop-in directory, and recommends leaving "Allow full disk access for remote users" off. The app does not edit `/etc`.
@@ -194,7 +211,6 @@ No iOS code, SSH prototype or model inference was run while preparing this spec.
 - Which iOS STT engine ships first: FluidAudio for vocabulary parity with the Mac, or `SpeechAnalyzer` for zero model download at the cost of an iOS 26 minimum. The engine spike decides.
 - How first-audio latency for the Mac's streamed voice compares on Wi-Fi, Tailscale and cellular; `remote_audio_latency` in the speech latency report records it per reply. Kokoro on the iPhone is no longer needed for voice parity.
 - How long an exec channel actually survives with the screen locked while audio is playing, measured on a physical device, and whether the audio session interruption path reconnects cleanly.
-- Whether to allow `status` or `start_session` from the phone when no session is running, which would move session start into the app-owned socket.
 - Whether per-command routing (reply to the device that asked) or per-session routing (one active output device) feels right when the user moves between phone and Mac mid-conversation. The spec starts with per-command routing for replies and active-device routing for lifecycle speech.
 
 ## Verification targets
@@ -205,8 +221,9 @@ No iOS code, SSH prototype or model inference was run while preparing this spec.
 - The coordinator's remote sink records realization from device `ack` frames, keeps the Mac's speaker closed for remote-routed speech while streaming its synthesised audio, and cancels that synthesis on every stop, with the speech event log showing the sink and first-audio latency.
 - A per-user `sshd -D -f <temporary config> -p <high port>` with a temporary host key and `authorized_keys` runs the real helper end to end on a Mac, with no privileged setup.
 - On a physical iPhone: pair by QR, send an utterance, hear the reply in the Mac's voice, lock the phone during a reply, reconnect and receive the replayed frames; repeat over Tailscale from cellular.
+- Session control (RR-456): unit tests cover the app handler, the helper's socket order and the codec vectors, and a kit loopback test runs the real helper against a scripted session-control socket that brings up the real bridge module. On a physical iPhone, with Relay Runner running and no session: the phone lists the Mac's projects, Start shows starting then ready, the phone attaches by itself and a typed or spoken request is answered, Stop ends the session on the Mac, and with Relay Runner quit the phone says it is not running.
 
-Push notifications, a hosted relay, multi-user access, remote screen viewing or control, audio from the phone to the Mac, streaming of the Mac's microphone or speaker output, starting a session remotely and waking a sleeping Mac are not capabilities of this proposal.
+Push notifications, a hosted relay, multi-user access, remote screen viewing or control, audio from the phone to the Mac, streaming of the Mac's microphone or speaker output, choosing the provider or model from the phone and waking a sleeping Mac are not capabilities of this proposal.
 
 ## Proposed ticket breakdown
 

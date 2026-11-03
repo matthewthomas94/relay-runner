@@ -45,6 +45,15 @@ final class AppTests: XCTestCase {
         XCTAssertEqual(DebugView.summary(.remoteMode(.init(clientId: "c0ffee", enabled: false))), "off")
         XCTAssertEqual(DebugView.summary(.speech(.init(seq: 3, kind: .final, source: .orchestrator, text: "Hi",
                                                        spokenBy: .mac))), "#3 final (Mac) · Hi")
+        XCTAssertEqual(DebugView.summary(.sessionCommand(.init(clientId: "c0ffee", action: .start, projectId: "p1"))),
+                       "start p1")
+        XCTAssertEqual(DebugView.summary(.sessionState(.init(appRunning: true, session: .failed, projectName: "notes",
+                                                             error: "No."))), "failed · notes · No.")
+        XCTAssertEqual(DebugView.summary(.sessionState(.init(appRunning: false, session: .noSession))),
+                       "Relay Runner not running")
+        XCTAssertEqual(MacSessionSection.title(MacSessionStatus(
+            connection: .connectedToApp, appUnavailable: false,
+            mac: .init(appRunning: true, session: .starting, projectName: "notes"), error: nil)), "Starting notes")
     }
 
     @MainActor
