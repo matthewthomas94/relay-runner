@@ -75,7 +75,7 @@ final class SessionControlTests: XCTestCase {
         let session = Fixtures.session(transport: transport, clock: clock)
         session.start()
         await eventually { if case .waiting = session.state { return true } else { return false } }
-        XCTAssertEqual(clock.delays, [0.5])
+        await eventually { clock.delays == [0.5] }
         XCTAssertEqual(transport.attemptCount, 1)
         session.stop()
     }
