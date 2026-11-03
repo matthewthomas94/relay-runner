@@ -518,4 +518,40 @@ final class RemoteSessionSpeechPlumbingTests: XCTestCase {
         XCTAssertEqual(synthesizer.stops, 1)
         session.stop()
     }
+
+    func testReconnectMidStreamReplaysTheCutReplyAndPlaysEachSeqOnce() async throws {
+        let mac = FakeMac()
+        let clock = TestClock()
+        clock.holdBackoff = true
+        let session = Fixtures.session(transport: FakeTransport(mac: mac), clock: clock, autoAck: false)
+        let player = FakeAudioPlayer()
+        let queue = SpeechPlaybackQueue(synthesizer: FakeSynthesizer(), player: player,
+                                        schedule: { _, _ in }) { [weak session] in session?.send(ack: $0) }
+        session.onInbound = { queue.receive($0) }
+        session.resumeCeiling = { queue.resumeCeiling }
+        session.start()
+        await eventually { session.state == .connected }
+
+        mac.status("worker started")
+        let seq = mac.speakVoiced("A reply cut by a drop")
+        mac.audio(seq, part: 0, "aa")
+        await eventually { player.played == "aa" }
+        await eventually { mac.acks == [Ack(seq: 1, played: false)] }
+        XCTAssertEqual(session.resumeAfterSeq, 1, "the saved resume point sits below the cut reply")
+
+        mac.dropConnection()
+        await eventually { if case .waiting = session.state { return true } else { return false } }
+        mac.audio(seq, part: 1, "bb", last: true)
+
+        session.retryNow()
+        await eventually { player.current?.ended == true }
+        XCTAssertEqual(mac.hellos.last?.resumeAfterSeq, 1)
+        XCTAssertEqual(player.streams.count, 1)
+        XCTAssertEqual(player.played, "aabb", "the replayed part 0 is dropped")
+        player.finishCurrent()
+        await eventually { mac.acks.count == 2 }
+        XCTAssertEqual(mac.acks, [Ack(seq: 1, played: false), Ack(seq: 2, played: true)])
+        XCTAssertEqual(session.resumeAfterSeq, 2)
+        session.stop()
+    }
 }

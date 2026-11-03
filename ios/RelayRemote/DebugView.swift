@@ -56,8 +56,19 @@ struct DebugView: View {
                         ForEach(VoiceController.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
+                    Picker("Playback", selection: Bindable(model).playbackMode) {
+                        ForEach(PlaybackMode.allCases, id: \.self) { Text(Self.playbackLabel($0)).tag($0) }
+                    }
                     readinessRow(voice.readiness)
                     LabeledContent("Activity", value: Self.activityLabel(voice.activity))
+                    if let reply = voice.waitingReply {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(reply)
+                            Spacer()
+                            Button("Play", systemImage: "play.fill") { voice.play() }
+                                .buttonStyle(.borderedProminent)
+                        }
+                    }
                     if !voice.transcript.isEmpty {
                         Text(voice.transcript).italic()
                     }
@@ -189,7 +200,15 @@ struct DebugView: View {
         case .listening: return "Listening"
         case .hearing: return "Hearing you"
         case .transcribing: return "Transcribing"
+        case .buffering: return "Buffering"
         case .speaking: return "Speaking"
+        }
+    }
+
+    static func playbackLabel(_ mode: PlaybackMode) -> String {
+        switch mode {
+        case .autoPlay: return "Auto-play"
+        case .onDemand: return "Play on demand"
         }
     }
 

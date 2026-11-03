@@ -91,11 +91,17 @@ public struct SessionCore: Sendable {
     public var isEstablished: Bool { isWelcomed || isControlLink }
 
     /// The channel is open: the `hello` that must be the first frame.
-    public mutating func connectionOpened() -> Hello {
+    /// `resumeCeiling` lowers the resume point below a reply whose audio is
+    /// still incomplete (RR-458), so the Mac replays that frame and its parts;
+    /// the playback queue drops what it already has.
+    public mutating func connectionOpened(resumeCeiling: Int? = nil) -> Hello {
         welcome = nil
         replayBarrier = nil
         isControlLink = false
         channelPhase = nil
+        if let ceiling = resumeCeiling, let last = lastSeq, ceiling < last {
+            lastSeq = max(0, ceiling)
+        }
         return Hello(deviceId: deviceID, deviceName: deviceName, appVersion: appVersion, resumeAfterSeq: lastSeq,
                      remoteMode: remoteMode)
     }

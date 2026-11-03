@@ -36,16 +36,29 @@ final class AppModel {
         }
     }
 
+    /// Auto-play or play on demand (RR-458). Persisted.
+    var playbackMode: PlaybackMode {
+        didSet {
+            guard playbackMode != oldValue else { return }
+            playbackModePreference.mode = playbackMode
+            voice?.playbackMode = playbackMode
+        }
+    }
+
     @ObservationIgnored private let secrets = KeychainStore()
     @ObservationIgnored private var pairingStore: PairingStore { PairingStore(store: secrets) }
     @ObservationIgnored private let pathMonitor = NWPathMonitor()
     @ObservationIgnored private var bootstrapped = false
     @ObservationIgnored private var isForeground = true
     @ObservationIgnored private let remoteModePreference: RemoteModePreference
+    @ObservationIgnored private let playbackModePreference: PlaybackModePreference
 
-    init(remoteModePreference: RemoteModePreference = RemoteModePreference()) {
+    init(remoteModePreference: RemoteModePreference = RemoteModePreference(),
+         playbackModePreference: PlaybackModePreference = PlaybackModePreference()) {
         self.remoteModePreference = remoteModePreference
+        self.playbackModePreference = playbackModePreference
         remoteMode = remoteModePreference.isOn
+        playbackMode = playbackModePreference.mode
     }
 
     func bootstrap() {
@@ -131,6 +144,7 @@ final class AppModel {
         self.session = session
         let voice = VoiceController(session: session)
         voice.remoteMode = remoteMode
+        voice.playbackMode = playbackMode
         voice.onAudioIdle = { [weak self] in self?.audioBecameIdle() }
         self.voice = voice
         if isForeground { session.start() }
