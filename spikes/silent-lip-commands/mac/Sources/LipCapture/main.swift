@@ -5,7 +5,7 @@ import Vision
 // LipCapture: silent lip-command spike, entirely on-device.
 //
 //   LipCapture stream                      print one JSON object per frame: {"t": s, "g": [6 channels]}
-//   LipCapture record --label stop [--takes 10] [--seconds 1.5]
+//   LipCapture record --label stop [--takes 10] [--seconds 1.5] [--countdown]   (--countdown: spoken cues, no Enter)
 //   LipCapture evaluate [--perms 500]      leave-one-out accuracy vs shuffled-label null
 //   LipCapture decode [--max-distance 1.5] [--min-confidence 0.1] [--trigger-ratio 3]
 //   LipCapture --list-devices
@@ -19,6 +19,15 @@ func option(_ name: String) -> String? {
     return args[i + 1]
 }
 func stderr(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
+
+/// Blocking spoken cue via /usr/bin/say (macOS built-in). Silently no-op if unavailable.
+func speak(_ text: String) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+    p.arguments = ["-r", "220", text]
+    try? p.run()
+    p.waitUntilExit()
+}
 
 let useVelocity = !args.contains("--no-velocity")
 let command = args.first.flatMap { $0.hasPrefix("--") ? nil : $0 } ?? "stream"
@@ -122,9 +131,19 @@ func runRecord() {
     print("Recording \(takes) takes of '\(label)', \(seconds)s each. Dataset: \(Dataset.url.path)")
     print("Waiting for the camera to see a face...")
     while buffer.drain().isEmpty { Thread.sleep(forTimeInterval: 0.1) }
+    let handsFree = args.contains("--countdown")
     for k in 1...takes {
-        print("[\(k)/\(takes)] Enter to record '\(label)'... ", terminator: "")
-        _ = readLine()
+        if handsFree {
+            // Spoken cue so the take can run without touching the keyboard:
+            // "stop ... 3, 2, 1" then a beep marks the start of the recording window.
+            speak("\(label). ready")
+            Thread.sleep(forTimeInterval: 0.8)
+            speak("3, 2, 1")
+            print("[\(k)/\(takes)] mouth '\(label)' now")
+        } else {
+            print("[\(k)/\(takes)] Enter to record '\(label)'... ", terminator: "")
+            _ = readLine()
+        }
         _ = buffer.drain()
         var frames: [[Double]] = []
         let end = Date().addingTimeInterval(seconds)
@@ -135,7 +154,9 @@ func runRecord() {
         guard frames.count >= 6 else { print("   too few frames; is the face in view? take discarded"); continue }
         templates.append(Template(label: label, frames: frames))
         print("   stored \(frames.count) frames")
+        if handsFree { Thread.sleep(forTimeInterval: 1.0) }
     }
+    if handsFree { speak("done") }
     do { try Dataset.save(templates) } catch { stderr("save failed: \(error)"); exit(1) }
     print("Saved. Dataset now has \(templates.count) takes across \(Set(templates.map(\.label)).count) labels.")
 }
