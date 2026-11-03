@@ -2,7 +2,7 @@ import Foundation
 
 extension PermissionKind {
     var opensSystemSettingsDuringSetup: Bool {
-        self != .microphone
+        self != .microphone && self != .camera
     }
 
     var requiresAutomaticRelaunchGuard: Bool {

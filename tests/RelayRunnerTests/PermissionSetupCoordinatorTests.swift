@@ -27,6 +27,7 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
             XCTAssertTrue(prepared.isEmpty)
             XCTAssertTrue(permissions.openedSettings.isEmpty)
             XCTAssertNil(permissions.microphoneCompletion)
+            XCTAssertNil(permissions.cameraCompletion)
             XCTAssertFalse(permissions.promptedAccessibility)
             XCTAssertFalse(permissions.promptedInputMonitoring)
             XCTAssertFalse(permissions.promptedScreenRecording)
@@ -34,6 +35,28 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
             XCTAssertTrue(companion.shownRequests.isEmpty)
             XCTAssertNil(coordinator.activePermission)
         }
+    }
+
+    func testCameraUsesInAppPromptWithoutOpeningSettings() {
+        let permissions = FakePermissionSetupPermissions()
+        var prepared: [PermissionKind] = []
+        var granted: [PermissionKind] = []
+        let coordinator = PermissionSetupCoordinator(
+            permissions: permissions,
+            setSetupNotchState: { _ in },
+            prepareForExternalWindow: { prepared.append($0) },
+            postGrantReady: { kind, _ in granted.append(kind) },
+            companion: FakePermissionSetupCompanion(),
+            successAcknowledgementDelay: 0
+        )
+
+        coordinator.request(.camera, source: .settingsPermissions)
+
+        XCTAssertNotNil(permissions.cameraCompletion)
+        XCTAssertNil(permissions.microphoneCompletion)
+        XCTAssertTrue(prepared.isEmpty)
+        XCTAssertTrue(permissions.openedSettings.isEmpty)
+        XCTAssertEqual(coordinator.activePermission, .camera)
     }
 
     func testPermissionGrantedSinceLastPollIsRefreshedBeforeRequestingAgain() {
@@ -1120,6 +1143,7 @@ final class PermissionSetupCoordinatorTests: XCTestCase {
 private final class FakePermissionSetupPermissions: PermissionSetupPermissionManaging {
     var statuses: [PermissionKind: PermissionStatus] = [:]
     var microphoneCompletion: ((Bool) -> Void)?
+    var cameraCompletion: ((Bool) -> Void)?
     private(set) var promptedAccessibility = false
     private(set) var promptedInputMonitoring = false
     private(set) var promptedScreenRecording = false
@@ -1139,6 +1163,10 @@ private final class FakePermissionSetupPermissions: PermissionSetupPermissionMan
 
     func requestMicrophonePrompt(completion: @escaping (Bool) -> Void) {
         microphoneCompletion = completion
+    }
+
+    func requestCameraPrompt(completion: @escaping (Bool) -> Void) {
+        cameraCompletion = completion
     }
 
     func promptAccessibility() {

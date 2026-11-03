@@ -31,11 +31,14 @@ enum PermissionStatus: Equatable {
 /// - Screen Recording: required by Relay Runner's app-hosted Relay Vision
 ///   screenshot tool. Without it, the screenshot tool returns a clear error
 ///   string but the rest of the app keeps working.
+/// - Camera: required only by True Whisper, the experimental lip-reading
+///   input mode. Not part of guided setup.
 enum PermissionKind: String, CaseIterable, Identifiable {
     case microphone
     case accessibility
     case inputMonitoring
     case screenRecording
+    case camera
 
     var id: String { rawValue }
 
@@ -46,6 +49,7 @@ enum PermissionKind: String, CaseIterable, Identifiable {
         case .accessibility:   return "Accessibility"
         case .inputMonitoring: return "Input Monitoring"
         case .screenRecording: return "Screen Recording"
+        case .camera:          return "Camera"
         }
     }
 
@@ -73,9 +77,11 @@ final class PermissionsManager {
     /// Screen Recording is gated only by Relay Runner's hosted Relay Vision
     /// screenshot path. Voice features work even when this is denied.
     private(set) var screenRecording: PermissionStatus = .notDetermined
+    /// Camera is used only by True Whisper lip reading.
+    private(set) var camera: PermissionStatus = .notDetermined
 
     /// Permissions blocked by a device policy. Only populated for
-    /// Microphone — the system reports `.restricted` directly via
+    /// Microphone and Camera — the system reports `.restricted` directly via
     /// `AVCaptureDevice.authorizationStatus`. Accessibility and Input
     /// Monitoring have no equivalent API, so we don't infer policy
     /// blocks for them from "user clicked Open Settings but stayed
@@ -147,6 +153,7 @@ final class PermissionsManager {
         case .accessibility:   return accessibility
         case .inputMonitoring: return inputMonitoring
         case .screenRecording: return screenRecording
+        case .camera:          return camera
         }
     }
 
@@ -181,6 +188,7 @@ final class PermissionsManager {
         let ax = Self.checkAccessibility()
         let im = Self.checkInputMonitoring()
         let sr = Self.checkScreenRecording()
+        let cam = Self.checkCamera()
         if mic != microphone {
             let old = microphone; microphone = mic
             onChange?(.microphone, old, mic)
@@ -205,13 +213,24 @@ final class PermissionsManager {
             Self.persistLastKnown(.screenRecording, status: sr)
             if sr == .granted { resetSinceLastRun.remove(.screenRecording) }
         }
-        // Microphone is the only kind for which the system reports a real
-        // policy lock. Mirror its restricted state into likelyRestricted
+        if cam != camera {
+            let old = camera; camera = cam
+            onChange?(.camera, old, cam)
+            Self.persistLastKnown(.camera, status: cam)
+            if cam == .granted { resetSinceLastRun.remove(.camera) }
+        }
+        // Microphone and Camera are the only kinds for which the system reports
+        // a real policy lock. Mirror their restricted state into likelyRestricted
         // so views have a single API for "blocked by IT" UI.
         if microphone == .restricted {
             likelyRestricted.insert(.microphone)
         } else {
             likelyRestricted.remove(.microphone)
+        }
+        if camera == .restricted {
+            likelyRestricted.insert(.camera)
+        } else {
+            likelyRestricted.remove(.camera)
         }
     }
 
@@ -307,6 +326,56 @@ final class PermissionsManager {
         }
     }
 
+    /// Trigger the system camera prompt. Resolves on main with the result.
+    func requestCamera(completion: @escaping (Bool) -> Void) {
+        AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+            DispatchQueue.main.async {
+                self?.setCameraStatus(granted ? .granted : .denied)
+                completion(granted)
+            }
+        }
+    }
+
+    private func setCameraStatus(_ newStatus: PermissionStatus) {
+        let old = camera
+        camera = newStatus
+        if old != newStatus {
+            onChange?(.camera, old, newStatus)
+            Self.persistLastKnown(.camera, status: newStatus)
+        }
+        if newStatus == .granted {
+            resetSinceLastRun.remove(.camera)
+        }
+        if newStatus == .restricted {
+            likelyRestricted.insert(.camera)
+        } else {
+            likelyRestricted.remove(.camera)
+        }
+    }
+
+    /// Ask for camera access in-app, like `requestMicrophonePrompt`: a prior
+    /// denial resets only this app's Camera TCC entry so macOS can prompt again.
+    func requestCameraPrompt(completion: @escaping (Bool) -> Void) {
+        refresh()
+        switch camera {
+        case .notDetermined:
+            requestCamera(completion: completion)
+        case .denied:
+            let bundleID = Bundle.main.bundleIdentifier ?? "com.relayrunner.app"
+            Task.detached(priority: .userInitiated) { [weak self] in
+                _ = Self.resetTCC(service: "Camera", bundleID: bundleID)
+                DispatchQueue.main.async {
+                    self?.refresh()
+                    self?.requestCamera(completion: completion)
+                }
+            }
+        case .granted:
+            completion(true)
+        case .restricted:
+            completion(false)
+        }
+    }
+
     /// Trigger the Accessibility system prompt. This doesn't grant directly —
     /// the user still has to toggle the app in System Settings. But calling
     /// this makes Relay Runner *appear* in the Accessibility list, which is
@@ -354,6 +423,20 @@ final class PermissionsManager {
 
     private static func checkMicrophone() -> PermissionStatus {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:    return .granted
+        case .denied:        return .denied
+        case .restricted:    return .restricted
+        case .notDetermined: return .notDetermined
+        @unknown default:    return .notDetermined
+        }
+    }
+
+    private static func checkCamera() -> PermissionStatus {
+        cameraStatus(for: AVCaptureDevice.authorizationStatus(for: .video))
+    }
+
+    static func cameraStatus(for authorization: AVAuthorizationStatus) -> PermissionStatus {
+        switch authorization {
         case .authorized:    return .granted
         case .denied:        return .denied
         case .restricted:    return .restricted
@@ -459,6 +542,8 @@ extension PermissionKind {
             return "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
         case .screenRecording:
             return "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        case .camera:
+            return "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera"
         }
     }
 }
