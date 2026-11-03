@@ -5,7 +5,7 @@ import SwiftUI
 /// The colour and opacity of shimmering dots. Every style shares the
 /// skeleton loader's dot size, spacing and shimmer.
 struct FluxDotStyle: Equatable {
-    /// The dots' colour when lit; the ripple moves only their opacity.
+    /// The dots' colour when lit; the shimmer moves only their opacity.
     let highlight: NSColor
     let opacity: Float
 
@@ -18,11 +18,11 @@ struct FluxDotStyle: Equatable {
 }
 
 /// Round dots that shimmer by the skeleton loader's rules: its dot size and
-/// spacing, and the dot ripple, in a style's colour. The loader draws its
+/// spacing, and the column-snake shimmer, in a style's colour. The loader draws its
 /// filled bones with them, and hovered navigation items their backgrounds.
 ///
 /// Each presence cohort has its own layer, whose opacity is how far the
-/// cohort has arrived, and inside it each ripple phase has its own shape
+/// cohort has arrived, and inside it each snake position has its own shape
 /// layer so its dots shimmer together.
 final class FluxDotLayers {
     static let presenceKey = "dotPresence"
@@ -31,7 +31,7 @@ final class FluxDotLayers {
     let container = CALayer()
     /// One per cohort; its opacity is the cohort's presence.
     let cohortLayers = (0..<DotPresence.cohorts).map { _ in CALayer() }
-    /// The ripple layers, one per phase, inside each cohort.
+    /// The shimmer layers, one per snake position, inside each cohort.
     let phaseLayers: [[CAShapeLayer]]
     let style: FluxDotStyle
     /// How much of the field is there, from 0 to 1.
@@ -39,11 +39,11 @@ final class FluxDotLayers {
 
     init(style: FluxDotStyle = .standard) {
         self.style = style
-        phaseLayers = cohortLayers.map { _ in (0..<DotRippleAnimation.phases).map { _ in CAShapeLayer() } }
+        phaseLayers = cohortLayers.map { _ in (0..<DotColumnSnakeAnimation.phases).map { _ in CAShapeLayer() } }
         for (cohort, cohortLayer) in cohortLayers.enumerated() {
             for layer in phaseLayers[cohort] {
                 layer.fillColor = style.highlight.cgColor
-                layer.opacity = DotRippleAnimation.levels[0]
+                layer.opacity = DotColumnSnakeAnimation.levels[DotColumnSnakeAnimation.phases - 1]
                 cohortLayer.addSublayer(layer)
             }
             container.addSublayer(cohortLayer)
@@ -105,11 +105,9 @@ final class FluxDotLayers {
     func fill(_ shapes: [(rect: CGRect, cornerRadius: CGFloat)], in view: NSView) {
         let diameter = SkeletonLoaderView.dotDiameter
         let paths = phaseLayers.map { cohort in cohort.map { _ in CGMutablePath() } }
-        let reduceMotion = RelayLayerMotion.reduceMotion
         for shape in shapes {
             for dot in SkeletonLoaderView.dots(in: shape.rect, cornerRadius: shape.cornerRadius) {
-                let phase = DotRippleAnimation.phase(forRing: dot.ring, reduceMotion: reduceMotion)
-                paths[dot.cohort][phase].addEllipse(in: view.backingAlignedRect(
+                paths[dot.cohort][dot.snakePosition].addEllipse(in: view.backingAlignedRect(
                     CGRect(
                         x: dot.centre.x - diameter / 2,
                         y: dot.centre.y - diameter / 2,
@@ -133,7 +131,7 @@ final class FluxDotLayers {
         }
         CATransaction.commit()
         for cohort in phaseLayers {
-            DotRippleAnimation.run(on: cohort)
+            DotColumnSnakeAnimation.run(on: cohort)
         }
     }
 }

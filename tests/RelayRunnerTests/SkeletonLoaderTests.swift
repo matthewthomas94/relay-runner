@@ -151,32 +151,23 @@ final class SkeletonLoaderTests: XCTestCase {
         var dotLayers: [(phase: Int, layer: CAShapeLayer)] = []
         for cohort in cohorts {
             XCTAssertEqual(cohort.opacity, 1, "Outside a transition the whole field is there")
-            let phases = try XCTUnwrap(cohort.sublayers as? [CAShapeLayer], "A layer per ripple phase")
-            XCTAssertEqual(phases.count, DotRippleAnimation.phases)
+            let phases = try XCTUnwrap(cohort.sublayers as? [CAShapeLayer], "A layer per snake position")
+            XCTAssertEqual(phases.count, DotColumnSnakeAnimation.phases)
             XCTAssertTrue(phases.contains { !($0.path?.isEmpty ?? true) }, "Every cohort has some of the terminal's dots")
             dotLayers += phases.enumerated().map { ($0.offset, $0.element) }
         }
         for (phase, dots) in dotLayers {
             XCTAssertEqual(dots.fillColor, SkeletonLoaderView.boneHighlightColor.cgColor, "Dots are the highlight; only their opacity moves")
-            let ripple = try XCTUnwrap(dots.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation)
-            XCTAssertEqual(ripple.keyPath, "opacity")
-            XCTAssertEqual(ripple.calculationMode, .linear, "The dots fade smoothly between levels")
-            let easing = try XCTUnwrap(ripple.timingFunctions)
-            XCTAssertEqual(easing.count, DotRippleAnimation.keyTimes.count - 1, "Every segment is eased")
-            for function in easing {
-                var first: [Float] = [0, 0], second: [Float] = [0, 0]
-                function.getControlPoint(at: 1, values: &first)
-                function.getControlPoint(at: 2, values: &second)
-                let curve = RelayMotion.loopCurve
-                XCTAssertEqual(first + second, [curve.x1, curve.y1, curve.x2, curve.y2].map(Float.init), "With the loop curve")
-            }
-            XCTAssertEqual(ripple.repeatCount, .infinity)
-            XCTAssertEqual(ripple.duration, 1.2, accuracy: 0.001, "Dotm's 1.5 s cycle at speed 1.25")
-            XCTAssertEqual(ripple.keyTimes?.map(\.doubleValue), DotRippleAnimation.keyTimes)
-            XCTAssertEqual(ripple.values as? [Float], DotRippleAnimation.levels, "Rest, peak, settle, rest")
-            let delay = (Double(phase) * DotRippleAnimation.ringDelay).truncatingRemainder(dividingBy: 1) * ripple.duration
-            let expectedOffset = (ripple.duration - delay).truncatingRemainder(dividingBy: ripple.duration)
-            XCTAssertEqual(ripple.timeOffset, expectedOffset, accuracy: 0.0001, "Phase \(phase) runs 0.16 of a cycle per ring behind the origin")
+            let snake = try XCTUnwrap(dots.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation)
+            XCTAssertEqual(snake.keyPath, "opacity")
+            XCTAssertEqual(snake.calculationMode, .discrete, "Dotm steps between levels rather than fading")
+            XCTAssertEqual(snake.repeatCount, .infinity)
+            XCTAssertEqual(snake.duration, 1.2, accuracy: 0.001, "Dotm's 1.5 s cycle at speed 1.25")
+            XCTAssertEqual(snake.keyTimes?.map(\.doubleValue), DotColumnSnakeAnimation.keyTimes)
+            XCTAssertEqual(snake.values as? [Float], DotColumnSnakeAnimation.levels, "Head, then the dimming tail")
+            let delay = Double(phase) / 5 * snake.duration
+            let expectedOffset = (snake.duration - delay).truncatingRemainder(dividingBy: snake.duration)
+            XCTAssertEqual(snake.timeOffset, expectedOffset, accuracy: 0.0001, "Position \(phase) lights a fifth of a cycle after the last")
         }
         let outline = try XCTUnwrap(sublayers.last as? CAShapeLayer)
         XCTAssertEqual(outline.opacity, SkeletonLoaderView.outlineOpacity, "Borders keep their faint look")
@@ -187,41 +178,30 @@ final class SkeletonLoaderTests: XCTestCase {
         XCTAssertNil(outline.animation(forKey: SkeletonLoaderView.shimmerKey), "Outlines stay still")
     }
 
-    func testRippleLevelsFollowDotmSquare12() {
-        // DotmSquare12 speed=1.25 opacityBase=0.12 opacityMid=0.42 opacityPeak=1.
-        XCTAssertEqual(DotRippleAnimation.cycle, 1.2, accuracy: 0.0001)
-        let levels = DotRippleAnimation.levels
-        XCTAssertEqual(levels.count, 4)
-        XCTAssertEqual(levels[0], 0.075, accuracy: 0.0001, "Rest: 0.625 of the base")
-        XCTAssertEqual(levels[1], 1, "Peak")
-        XCTAssertEqual(levels[2], 0.27, accuracy: 0.0001, "Settle: halfway between base and mid")
-        XCTAssertEqual(levels[3], levels[0], "Each cycle ends where it began")
-        XCTAssertEqual(DotRippleAnimation.keyTimes, [0, 0.34, 0.6, 1])
-
-        XCTAssertEqual(DotRippleAnimation.ring(column: 1, row: 1), 0, "The origin is one in from the top-left")
-        XCTAssertEqual(DotRippleAnimation.ring(column: 0, row: 0), 2)
-        XCTAssertEqual(DotRippleAnimation.ring(column: 4, row: 4), 6, "The far corner of a 5 by 5 grid")
-        XCTAssertEqual(DotRippleAnimation.ring(column: 30, row: 1), 29, "Wide fields keep counting")
-        XCTAssertEqual(DotRippleAnimation.phase(forRing: 29, reduceMotion: false), 4,
-                       "Ring 29 starts four cycles after ring 4, so they share a layer")
-        XCTAssertEqual(DotRippleAnimation.delay(forPhase: 0), 0)
-        XCTAssertEqual(DotRippleAnimation.delay(forPhase: 1), 0.16 * 1.2, accuracy: 0.0001)
-        XCTAssertEqual(DotRippleAnimation.delay(forPhase: 7), 0.12 * 1.2, accuracy: 0.0001, "Ring 7 wraps past one cycle")
-
-        // Still, under Reduce Motion: Dotm's gradient out from the origin,
-        // mapped onto the triplet; rings past the sixth all rest alike.
-        XCTAssertEqual(DotRippleAnimation.phase(forRing: 29, reduceMotion: true), 6)
-        let resting = (0...7).map(DotRippleAnimation.restingOpacity(forRing:))
-        XCTAssertEqual(resting[0], DotRippleAnimation.remapped(0.95), accuracy: 0.0001)
-        XCTAssertEqual(resting[6], DotRippleAnimation.remapped(0.2), accuracy: 0.0001)
-        XCTAssertEqual(resting[7], resting[6])
-        for (nearer, farther) in zip(resting, resting.dropFirst()) {
-            XCTAssertGreaterThanOrEqual(nearer, farther, "Dimmer with distance")
+    func testSnakeLevelsFollowDotmSquare6() {
+        // DotmSquare6 speed=1.25 opacityBase=0.12 opacityMid=0.42 opacityPeak=1.
+        XCTAssertEqual(DotColumnSnakeAnimation.cycle, 1.2, accuracy: 0.0001)
+        let levels = DotColumnSnakeAnimation.levels
+        let expected: [Float] = [0.723, 0.534, 0.3, 0.18, 0.075]
+        XCTAssertEqual(levels.count, 5)
+        for (level, value) in zip(levels, expected) {
+            XCTAssertEqual(level, value, accuracy: 0.0001)
         }
-        XCTAssertEqual(DotRippleAnimation.remapped(0.08), 0.12, accuracy: 0.0001, "Source base maps to the base")
-        XCTAssertEqual(DotRippleAnimation.remapped(0.34), 0.42, accuracy: 0.0001, "Source mid maps to the mid")
-        XCTAssertEqual(DotRippleAnimation.remapped(0.94), 1, accuracy: 0.0001, "Source peak maps to the peak")
-        XCTAssertEqual(DotRippleAnimation.remapped(0.21), 0.12 + 0.3 * 0.5, accuracy: 0.0001, "Linear between stops")
+        for (brighter, dimmer) in zip(levels, levels.dropFirst()) {
+            XCTAssertGreaterThan(brighter, dimmer, "The tail dims behind the head")
+        }
+        XCTAssertEqual(DotColumnSnakeAnimation.keyTimes, [0, 0.2, 0.4, 0.6, 0.8, 1])
+        XCTAssertEqual(DotColumnSnakeAnimation.delay(forPhase: 0), 0)
+        XCTAssertEqual(DotColumnSnakeAnimation.delay(forPhase: 3), 0.6 * 1.2, accuracy: 0.0001)
+
+        // Still, under Reduce Motion: Dotm's gradient along the column,
+        // mapped onto the triplet.
+        let resting = (0..<5).map(DotColumnSnakeAnimation.restingOpacity(forPhase:))
+        XCTAssertEqual(resting[0], DotColumnSnakeAnimation.remapped(0.22), accuracy: 0.0001)
+        XCTAssertEqual(resting[4], DotColumnSnakeAnimation.remapped(0.88), accuracy: 0.0001)
+        XCTAssertEqual(DotColumnSnakeAnimation.remapped(0.08), 0.12, accuracy: 0.0001, "Source base maps to the base")
+        XCTAssertEqual(DotColumnSnakeAnimation.remapped(0.34), 0.42, accuracy: 0.0001, "Source mid maps to the mid")
+        XCTAssertEqual(DotColumnSnakeAnimation.remapped(0.94), 1, accuracy: 0.0001, "Source peak maps to the peak")
     }
 
     func testFilledBonesAreDrawnAsDotMatrices() {
@@ -269,31 +249,32 @@ final class SkeletonLoaderTests: XCTestCase {
         XCTAssertEqual(bar.count, 2 * 20, "Two rows are too few to round, so a text bar keeps every dot")
     }
 
-    func testRingsSpreadFromOneInFromTheTopLeft() {
-        // A 5 by 5 square at the loader's corner, like DotmSquare12.
+    func testAlternateColumnsRiseAndFall() {
+        // A 5 by 5 square, like DotmSquare6: even columns rise from the
+        // bottom, odd columns fall from the top.
         let square = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 0, width: 24, height: 24), cornerRadius: 0)
         XCTAssertEqual(square.count, 25)
         let columns = Dictionary(grouping: square) { $0.centre.x }.sorted { $0.key < $1.key }.map(\.value)
-        let rings = columns.map { $0.sorted { $0.centre.y < $1.centre.y }.map(\.ring) }
-        XCTAssertEqual(rings, [
-            [2, 1, 2, 3, 4],
-            [1, 0, 1, 2, 3],
-            [2, 1, 2, 3, 4],
-            [3, 2, 3, 4, 5],
-            [4, 3, 4, 5, 6],
-        ], "Manhattan distance from the second dot in from the top-left")
+        let positions = columns.map { $0.sorted { $0.centre.y < $1.centre.y }.map(\.snakePosition) }
+        XCTAssertEqual(positions, [
+            [4, 3, 2, 1, 0],
+            [0, 1, 2, 3, 4],
+            [4, 3, 2, 1, 0],
+            [0, 1, 2, 3, 4],
+            [4, 3, 2, 1, 0],
+        ], "Top to bottom per column; the head lights position 0 first")
     }
 
-    func testOneRippleCrossesEveryBone() {
+    func testSnakesLineUpAcrossBones() {
         let upper = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 2, width: 24, height: 8), cornerRadius: 0)
-        let lower = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 10, width: 24, height: 8), cornerRadius: 0)
-        XCTAssertNotEqual(upper.map(\.ring), lower.map(\.ring),
+        let lower = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 12, width: 24, height: 8), cornerRadius: 0)
+        XCTAssertNotEqual(upper.map(\.snakePosition), lower.map(\.snakePosition),
                           "Bones at different heights light at different moments")
         for dot in lower {
             let column = Int((dot.centre.x / SkeletonLoaderView.dotPitch).rounded())
             let row = Int((dot.centre.y / SkeletonLoaderView.dotPitch).rounded())
-            XCTAssertEqual(dot.ring, DotRippleAnimation.ring(column: column, row: row),
-                           "Rings count from the loader's grid, not the bone's")
+            XCTAssertEqual(dot.snakePosition, DotColumnSnakeAnimation.position(column: column, row: row),
+                           "Snakes count from the loader's grid, not the bone's")
         }
     }
 
@@ -315,7 +296,7 @@ final class SkeletonLoaderTests: XCTestCase {
                 if !RelayLayerMotion.reduceMotion {
                     let ripple = try XCTUnwrap(layer.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation,
                                                "Cohort \(cohort) phase \(phase) shimmers")
-                    XCTAssertEqual(ripple.values as? [Float], DotRippleAnimation.levels, "With the ripple's levels")
+                    XCTAssertEqual(ripple.values as? [Float], DotColumnSnakeAnimation.levels, "With the snake's levels")
                 }
             }
         }

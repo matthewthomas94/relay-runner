@@ -32,9 +32,9 @@ struct SkeletonBone: Equatable {
 /// A dot in a filled bone.
 struct SkeletonDot: Equatable {
     var centre: CGPoint
-    /// The dot's grid distance from the ripple's origin: ring 0 lights
-    /// first, each ring after it a little later.
-    var ring: Int
+    /// Where the dot sits along its column's snake, from 0 to 4: the head
+    /// lights position 0 first and position 4 last.
+    var snakePosition: Int
     /// Which cohort the dot arrives and leaves with when the field
     /// disintegrates in or out.
     var cohort: Int
@@ -44,9 +44,9 @@ struct SkeletonDot: Equatable {
 /// that shimmer. It shows no text; its label is for VoiceOver only.
 ///
 /// Filled bones are drawn as a dot matrix, a grid of round dots; outlines
-/// stay solid lines. The dots shimmer with the dot ripple: a pulse of
-/// brightness spreads out from near the loader's top-left corner, ring by
-/// ring, and repeats.
+/// stay solid lines. The dots shimmer as column snakes: in each column a
+/// bright head steps along with a dimming tail, alternate columns rising
+/// and falling.
 ///
 /// The shimmer is a Core Animation keyframe animation on each phase's
 /// layer, so it runs on the render server without per-frame work on the
@@ -159,8 +159,8 @@ final class SkeletonLoaderView: NSView {
     /// down, corner radius included, and a dot stays if it touches that
     /// rounded area, so the corner dots drop where the bone curves. Two
     /// rows or columns are too few to show a curve, so they keep every
-    /// dot. The ripple's rings count from the loader's top-left rather
-    /// than the bone's, so one pulse crosses every bone in turn.
+    /// dot. The snakes' rows count from the loader's top rather than the
+    /// bone's, so bones at different heights light at different moments.
     static func dots(in rect: CGRect, cornerRadius: CGFloat) -> [SkeletonDot] {
         let columns = max(1, Int(((rect.width - dotDiameter) / dotPitch).rounded(.down)) + 1)
         let rows = max(1, Int(((rect.height - dotDiameter) / dotPitch).rounded(.down)) + 1)
@@ -188,7 +188,7 @@ final class SkeletonLoaderView: NSView {
                     let loaderRow = Int((point.y / dotPitch).rounded())
                     dots.append(SkeletonDot(
                         centre: point,
-                        ring: DotRippleAnimation.ring(column: loaderColumn, row: loaderRow),
+                        snakePosition: DotColumnSnakeAnimation.position(column: loaderColumn, row: loaderRow),
                         cohort: DotPresence.cohort(column: loaderColumn, row: loaderRow)
                     ))
                 }
@@ -626,60 +626,53 @@ final class SkeletonLoaderView: NSView {
     }
 }
 
-/// The repeating shimmer, after Dotm Square 12 in the dotmatrix loaders
-/// (github.com/zzzzshawn/matrix, main at e30b80a9): a pulse spreads out
-/// from the dot one in from the top-left corner, each ring of dots (by
-/// grid distance from that origin) starting 0.16 of a cycle after the
-/// ring inside it. A dot rests dim, rises to full brightness a third of
-/// the way through its cycle, settles to a middle brightness, then fades
-/// back to rest. The dots are drawn in the style's highlight, and only
-/// their opacity moves.
-enum DotRippleAnimation {
+/// The repeating shimmer, after Dotm Square 6 in the dotmatrix loaders
+/// (github.com/zzzzshawn/matrix, main at e30b80a9): each column of dots is
+/// a snake whose bright head steps one dot along it every fifth of a cycle,
+/// leaving a tail that dims behind it. Alternate columns run up and down.
+/// The dots are drawn in the style's highlight, and only their opacity
+/// moves, in steps rather than fades, as in Dotm.
+enum DotColumnSnakeAnimation {
     /// Dotm's `speed`: a cycle lasts 1.5 s divided by it.
     static let speed: Double = 1.25
     static let cycle: TimeInterval = 1.5 / speed
-    /// How much later each ring starts than the one inside it, in cycles.
-    static let ringDelay: Double = 0.16
-    /// Rings 25 apart start four whole cycles apart, so they move
-    /// together: one layer per phase draws every ring in step with it.
-    static let phases = 25
-    /// Rings this far out and beyond rest at the same dimness, as in Dotm.
-    static let farRing = 6
-    /// The ripple's origin on the dot grid, one in from the top-left.
-    static let origin = (column: 1, row: 1)
+    /// A snake is five dots long, so a column repeats every five rows.
+    static let phases = 5
     /// Dotm's opacity triplet, `opacityBase`, `opacityMid` and
-    /// `opacityPeak`: the rest and settle levels derive from them.
+    /// `opacityPeak`, from which the head and tail levels derive.
     static let opacityBase: Float = 0.12
     static let opacityMid: Float = 0.42
     static let opacityPeak: Float = 1
-    /// When in its cycle a dot is at rest, at its peak, settled, and back
-    /// at rest.
-    static let keyTimes: [Double] = [0, 0.34, 0.6, 1]
-    /// The opacities at those moments.
+    /// The levels a dot steps through, from the head back along the tail.
     static var levels: [Float] {
-        [0.625 * opacityBase, opacityPeak, 0.5 * (opacityBase + opacityMid), 0.625 * opacityBase]
+        [
+            0.6 * opacityPeak + 0.25 * opacityMid + 0.15 * opacityBase,
+            0.3 * opacityPeak + 0.5 * opacityMid + 0.2 * opacityBase,
+            0.6 * opacityMid + 0.4 * opacityBase,
+            0.2 * opacityMid + 0.8 * opacityBase,
+            0.625 * opacityBase,
+        ]
+    }
+    /// Each level holds for a fifth of the cycle.
+    static let keyTimes: [Double] = [0, 0.2, 0.4, 0.6, 0.8, 1]
+
+    /// Where a dot sits along its column's snake, from 0 (lit first) to 4.
+    /// Even columns rise, so their snake starts at the bottom of each run
+    /// of five rows; odd columns fall.
+    static func position(column: Int, row: Int) -> Int {
+        let raw = column % 2 == 0 ? -row - 1 : row
+        return (raw % phases + phases) % phases
     }
 
-    static func ring(column: Int, row: Int) -> Int {
-        abs(column - origin.column) + abs(row - origin.row)
-    }
-
-    /// Which layer draws a ring. Still, under Reduce Motion, the rings
-    /// group by their resting brightness instead.
-    static func phase(forRing ring: Int, reduceMotion: Bool) -> Int {
-        reduceMotion ? min(ring, farRing) : ring % phases
-    }
-
-    /// How far into a cycle a phase's rings start, after the origin.
+    /// How far into a cycle a position's dots start: a fifth per position.
     static func delay(forPhase phase: Int) -> TimeInterval {
-        (Double(phase) * ringDelay).truncatingRemainder(dividingBy: 1) * cycle
+        Double(phase) / Double(phases) * cycle
     }
 
-    /// The brightness a ring holds when the ripple cannot move: Dotm's
-    /// still gradient, fading out from the origin, mapped onto the triplet.
-    static func restingOpacity(forRing ring: Int) -> Float {
-        let fraction = 1 - Float(min(ring, farRing)) / Float(farRing)
-        return remapped(0.2 + fraction * 0.75)
+    /// The brightness a position holds when the snake cannot move: Dotm's
+    /// still gradient along the column, mapped onto the triplet.
+    static func restingOpacity(forPhase phase: Int) -> Float {
+        remapped(0.22 + Float(phase) / Float(phases - 1) * 0.66)
     }
 
     /// Dotm's piecewise map from its source opacities (0.08, 0.34, 0.94)
@@ -702,25 +695,21 @@ enum DotRippleAnimation {
         for (phase, layer) in layers.enumerated() {
             guard !RelayLayerMotion.reduceMotion else {
                 layer.removeAnimation(forKey: SkeletonLoaderView.shimmerKey)
-                layer.opacity = restingOpacity(forRing: phase)
+                layer.opacity = restingOpacity(forPhase: phase)
                 continue
             }
-            layer.opacity = levels[0]
+            layer.opacity = levels[phases - 1]
             guard layer.animation(forKey: SkeletonLoaderView.shimmerKey) == nil else { continue }
-            let ripple = CAKeyframeAnimation(keyPath: "opacity")
-            ripple.values = levels
-            ripple.keyTimes = keyTimes.map { NSNumber(value: $0) }
-            ripple.calculationMode = .linear
-            ripple.timingFunctions = Array(
-                repeating: RelayMotion.loopCurve.mediaTimingFunction,
-                count: keyTimes.count - 1
-            )
-            ripple.duration = cycle
-            ripple.repeatCount = .infinity
-            // Shift the loop so this phase's rings run their delay behind
-            // the origin's.
-            ripple.timeOffset = (cycle - delay(forPhase: phase)).truncatingRemainder(dividingBy: cycle)
-            layer.add(ripple, forKey: SkeletonLoaderView.shimmerKey)
+            let snake = CAKeyframeAnimation(keyPath: "opacity")
+            snake.values = levels
+            snake.keyTimes = keyTimes.map { NSNumber(value: $0) }
+            snake.calculationMode = .discrete
+            snake.duration = cycle
+            snake.repeatCount = .infinity
+            // Shift the loop so this position lights its delay behind the
+            // head's start.
+            snake.timeOffset = (cycle - delay(forPhase: phase)).truncatingRemainder(dividingBy: cycle)
+            layer.add(snake, forKey: SkeletonLoaderView.shimmerKey)
         }
     }
 }
