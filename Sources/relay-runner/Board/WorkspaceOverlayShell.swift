@@ -282,7 +282,7 @@ struct WorkspaceNavigationButton: View {
             .background {
                 if isHovered && !selected {
                     FluxDotsBackground(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .standard)
-                        .transition(.opacity)
+                        .transition(.dotDisintegrate)
                 }
             }
             .contentShape(

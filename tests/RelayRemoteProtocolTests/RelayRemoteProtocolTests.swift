@@ -26,8 +26,8 @@ final class RelayRemoteProtocolTests: XCTestCase {
             XCTAssertEqual(try FrameCodec.decode(line + Data([0x0A])), frame, name)
         }
         XCTAssertEqual(types, ["hello", "utterance", "control", "remote_mode", "session_command", "ack", "ping",
-                               "welcome", "accepted", "speech", "speech_control", "status", "error", "pong",
-                               "session_state"])
+                               "welcome", "accepted", "speech", "speech_audio", "speech_control", "status",
+                               "error", "pong", "session_state"])
     }
 
     func testInvalidVectorsReportSharedErrorCodes() throws {
@@ -78,6 +78,27 @@ final class RelayRemoteProtocolTests: XCTestCase {
         XCTAssertEqual(command.direction, .phoneToMac)
     }
 
+    func testAudioDataLimitOnEncodeAndDecode() throws {
+        let limits = try XCTUnwrap(vector("limits") as? [String: Any])
+        let limit = limits["max_audio_data_bytes"] as! Int
+        XCTAssertEqual(limit, RelayRemoteProtocol.maxAudioDataBytes)
+        func part(_ bytes: Int) -> Frame {
+            .speechAudio(SpeechAudio(seq: 46, part: 0, parts: 1, format: .aac, sampleRate: 24000,
+                                     data: String(repeating: "A", count: bytes), last: true))
+        }
+        let line = try FrameCodec.encode(part(limit))
+        XCTAssertLessThan(line.count, RelayRemoteProtocol.maxLineBytes)
+        XCTAssertEqual(try FrameCodec.decode(line), part(limit))
+        XCTAssertThrowsError(try FrameCodec.encode(part(limit + 1))) {
+            XCTAssertEqual(($0 as? FrameError)?.code, "invalid_field")
+        }
+        let over = Data(String(decoding: line, as: UTF8.self)
+            .replacingOccurrences(of: "\"data\":\"", with: "\"data\":\"A").utf8)
+        XCTAssertThrowsError(try FrameCodec.decode(over)) {
+            XCTAssertEqual(($0 as? FrameError)?.code, "invalid_field")
+        }
+    }
+
     func testSeqCounterIsMonotonic() {
         var counter = SeqCounter()
         XCTAssertEqual([counter.next(), counter.next(), counter.next()], [1, 2, 3])
@@ -112,6 +133,52 @@ final class RelayRemoteProtocolTests: XCTestCase {
                     if let first = seqs.first, let last = seqs.last { XCTAssertEqual(seqs, Array(first...last), name) }
                     let range = (expect["replayed_range"] as? [Int]).map { [$0[0], $0[1]] }
                     XCTAssertEqual(seqs.isEmpty ? nil : [seqs.first!, seqs.last!], range, name)
+                    XCTAssertEqual(result.dropped, expect["dropped"] as? Bool, name)
+                    XCTAssertEqual(result.serverSeq, expect["server_seq"] as? Int, name)
+                }
+            }
+        }
+    }
+
+    func testAudioReplayVectors() throws {
+        func label(_ frame: Frame) -> String {
+            switch frame {
+            case .speechAudio(let audio): return "audio \(audio.seq).\(audio.part)"
+            default: return "\(frame.typeName) \(frame.seq ?? -1)"
+            }
+        }
+        for scenario in try objects("audio_replay") {
+            let name = scenario["name"] as! String
+            var counter = SeqCounter()
+            var buffer = ReplayBuffer()
+            var parts: [Int: Int] = [:]
+            for step in scenario["steps"] as! [[String: Any]] {
+                let at = (step["at"] as? NSNumber)?.doubleValue ?? 0
+                switch step["op"] as! String {
+                case "speech":
+                    let seq = counter.next()
+                    try buffer.record(.speech(Speech(seq: seq, kind: .final, source: .orchestrator,
+                                                     text: "frame \(seq)", audio: true)), at: at)
+                case "status":
+                    let seq = counter.next()
+                    try buffer.record(.status(Status(seq: seq, text: "frame \(seq)")), at: at)
+                case "audio":
+                    let seq = step["seq"] as! Int
+                    for _ in 0..<(step["count"] as! Int) {
+                        let part = parts[seq, default: 0]
+                        parts[seq] = part + 1
+                        let audio = SpeechAudio(seq: seq, part: part, parts: 0, format: .aac, sampleRate: 24000,
+                                                data: "AAAA")
+                        XCTAssertEqual(buffer.attach(audio), step["kept"] as? Bool, name)
+                        XCTAssertNil(Frame.speechAudio(audio).seq, name)
+                        XCTAssertThrowsError(try buffer.record(.speechAudio(audio), at: 0), name)
+                    }
+                case "ack":
+                    buffer.ack(step["seq"] as! Int)
+                default:
+                    let result = buffer.resume(after: step["after"] as? Int, at: at)
+                    let expect = step["expect"] as! [String: Any]
+                    XCTAssertEqual(result.frames.map(label), expect["replayed"] as? [String], name)
                     XCTAssertEqual(result.dropped, expect["dropped"] as? Bool, name)
                     XCTAssertEqual(result.serverSeq, expect["server_seq"] as? Int, name)
                 }

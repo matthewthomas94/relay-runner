@@ -626,29 +626,24 @@ private final class BoardRevealSurfaceView: NSView {
     }
 
     /// Shows the update-check loader across the expanded surface, below the
-    /// notch strip, once the surface has room for it. It expands in and contracts
-    /// out like any surface, and leaves the view hierarchy once it has gone
-    /// so its animation stops.
+    /// notch strip, once the surface has room for it. Its dots disintegrate
+    /// in and out, and it leaves the view hierarchy once it has gone so its
+    /// animation stops.
     private func updateLoadingIndicator(animated: Bool) {
         let visible = loading && surfaceFrame.height > plan.fullWidthFrame.height + 40
         guard visible != loadingVisible else { return }
         loadingVisible = visible
         let duration = animated && window != nil
-            ? (visible ? RelayMotion.enterDuration : RelayMotion.exitDuration)
+            ? (visible ? DotPresence.enterDuration : DotPresence.exitDuration)
             : 0
         if visible {
             loadingExitEndsAt = 0
             let view = loadingView ?? makeLoadingView()
-            RelayLayerMotion.animateIn(view, style: .surface, duration: duration) { [weak self, weak view] in
-                // The shimmer never stops, so the loader rests without a blur pass.
-                guard let self, self.loadingVisible, let layer = view?.layer else { return }
-                layer.filters = layer.filters?.filter {
-                    ($0 as? CIFilter)?.name != RelayLayerMotion.blurFilterName
-                }
-            }
+            view.isHidden = false
+            view.animatePresence(to: 1, duration: duration)
         } else if let view = loadingView {
             loadingExitEndsAt = CACurrentMediaTime() + duration
-            RelayLayerMotion.animateOut(view, style: .surface, duration: duration) { [weak self, weak view] in
+            view.animatePresence(to: 0, duration: duration) { [weak self, weak view] in
                 guard let self, !self.loadingVisible, let view, self.loadingView === view else { return }
                 view.removeFromSuperview()
                 self.loadingView = nil
@@ -669,6 +664,7 @@ private final class BoardRevealSurfaceView: NSView {
             height: max(0, plan.expandedFrame.height - notchStrip)
         )
         view.isHidden = true
+        view.setPresence(0)
         addSubview(view)
         loadingView = view
         return view

@@ -32,19 +32,21 @@ struct SkeletonBone: Equatable {
 /// A dot in a filled bone.
 struct SkeletonDot: Equatable {
     var centre: CGPoint
-    /// Where the dot sits along its column's snake, from 0 to 4. The
-    /// snake lights phase 0 first and phase 4 last.
-    var fluxPhase: Int
+    /// Where the dot sits along its column's snake, from 0 to 4: the head
+    /// lights position 0 first and position 4 last.
+    var snakePosition: Int
+    /// Which cohort the dot arrives and leaves with when the field
+    /// disintegrates in or out.
+    var cohort: Int
 }
 
 /// A loading state that sketches the screen it stands in for: bare shapes
 /// that shimmer. It shows no text; its label is for VoiceOver only.
 ///
 /// Filled bones are drawn as a dot matrix, a grid of round dots; outlines
-/// stay solid lines. The dots shimmer like Flux Columns: each column of
-/// dots is a snake whose bright head moves along it, with alternate
-/// columns rising and falling. The end of each tail fades out to the
-/// background.
+/// stay solid lines. The dots shimmer as column snakes: in each column a
+/// bright head steps along with a dimming tail, alternate columns rising
+/// and falling.
 ///
 /// The shimmer is a Core Animation keyframe animation on each phase's
 /// layer, so it runs on the render server without per-frame work on the
@@ -138,6 +140,18 @@ final class SkeletonLoaderView: NSView {
         setAccessibilityLabel(label)
     }
 
+    /// Shows the share of the dots present, from 0 (none) to 1 (all), at
+    /// once; SwiftUI drives this frame by frame through the disintegrate
+    /// transition.
+    func setPresence(_ presence: Double) {
+        dots.setPresence(presence)
+    }
+
+    /// Disintegrates the dots in (to 1) or out (to 0) over `duration`.
+    func animatePresence(to presence: Double, duration: TimeInterval, completion: (() -> Void)? = nil) {
+        dots.animatePresence(to: presence, duration: duration, completion: completion)
+    }
+
     // MARK: Dots
 
     /// A filled bone's dots: a grid centred in it, whose own corners round
@@ -145,10 +159,8 @@ final class SkeletonLoaderView: NSView {
     /// down, corner radius included, and a dot stays if it touches that
     /// rounded area, so the corner dots drop where the bone curves. Two
     /// rows or columns are too few to show a curve, so they keep every
-    /// dot. As in Flux Columns, the first column's
-    /// snake rises, the next falls, and so on across the bone. The snakes'
-    /// rows count from the loader's top rather than the bone's, so bones
-    /// at different heights light at different moments.
+    /// dot. The snakes' rows count from the loader's top rather than the
+    /// bone's, so bones at different heights light at different moments.
     static func dots(in rect: CGRect, cornerRadius: CGFloat) -> [SkeletonDot] {
         let columns = max(1, Int(((rect.width - dotDiameter) / dotPitch).rounded(.down)) + 1)
         let rows = max(1, Int(((rect.height - dotDiameter) / dotPitch).rounded(.down)) + 1)
@@ -172,10 +184,13 @@ final class SkeletonLoaderView: NSView {
                 let dx = max(core.minX - point.x, point.x - core.maxX, 0)
                 let dy = max(core.minY - point.y, point.y - core.maxY, 0)
                 if hypot(dx, dy) <= corner + dotDiameter / 2 {
-                    let steps = FluxColumnsAnimation.steps
+                    let loaderColumn = Int((point.x / dotPitch).rounded())
                     let loaderRow = Int((point.y / dotPitch).rounded())
-                    let position = column % 2 == 0 ? -loaderRow : loaderRow
-                    dots.append(SkeletonDot(centre: point, fluxPhase: (position % steps + steps) % steps))
+                    dots.append(SkeletonDot(
+                        centre: point,
+                        snakePosition: DotColumnSnakeAnimation.position(column: loaderColumn, row: loaderRow),
+                        cohort: DotPresence.cohort(column: loaderColumn, row: loaderRow)
+                    ))
                 }
             }
         }
@@ -611,64 +626,140 @@ final class SkeletonLoaderView: NSView {
     }
 }
 
-/// The repeating shimmer, after the Flux Columns dot-matrix loader: every
-/// step, each column's bright head moves one dot along its snake and
-/// leaves a fading tail. Each dot eases from one brightness to the next.
-enum FluxColumnsAnimation {
-    static let steps = 5
-    static let stepDuration: TimeInterval = 0.3
-    /// The brightnesses a dot shows from the head of the snake back along
-    /// its tail, as fractions of the way from the bone colour to the
-    /// highlight. They follow Flux Columns' opacities. After the last, the
-    /// dot fades out to the background for the fifth step.
-    static let levels: [CGFloat] = [1, 0.65, 0.26, 0.15]
+/// The repeating shimmer, after Dotm Square 6 in the dotmatrix loaders
+/// (github.com/zzzzshawn/matrix, main at e30b80a9): each column of dots is
+/// a snake whose bright head steps one dot along it every fifth of a cycle,
+/// leaving a tail that dims behind it. Alternate columns run up and down.
+/// The dots are drawn in the style's highlight, and only their opacity
+/// moves, in steps rather than fades, as in Dotm.
+enum DotColumnSnakeAnimation {
+    /// Dotm's `speed`: a cycle lasts 1.5 s divided by it.
+    static let speed: Double = 1.25
+    static let cycle: TimeInterval = 1.5 / speed
+    /// A snake is five dots long, so a column repeats every five rows.
+    static let phases = 5
+    /// Dotm's opacity triplet, `opacityBase`, `opacityMid` and
+    /// `opacityPeak`, from which the head and tail levels derive.
+    static let opacityBase: Float = 0.12
+    static let opacityMid: Float = 0.42
+    static let opacityPeak: Float = 1
+    /// The levels a dot steps through, from the head back along the tail.
+    static var levels: [Float] {
+        [
+            0.6 * opacityPeak + 0.25 * opacityMid + 0.15 * opacityBase,
+            0.3 * opacityPeak + 0.5 * opacityMid + 0.2 * opacityBase,
+            0.6 * opacityMid + 0.4 * opacityBase,
+            0.2 * opacityMid + 0.8 * opacityBase,
+            0.625 * opacityBase,
+        ]
+    }
+    /// Each level holds for a fifth of the cycle.
+    static let keyTimes: [Double] = [0, 0.2, 0.4, 0.6, 0.8, 1]
 
-    static func palette(_ style: FluxDotStyle = .standard) -> [CGColor] {
-        let base = style.base
-        let highlight = style.highlight
-        // Blend in sRGB: NSColor.blended works in Generic RGB and shifts
-        // the colours.
-        func mix(_ from: CGFloat, _ to: CGFloat, _ level: CGFloat) -> CGFloat {
-            from * (1 - level) + to * level
-        }
-        let visible = levels.map { level in
-            NSColor(
-                srgbRed: mix(base.redComponent, highlight.redComponent, level),
-                green: mix(base.greenComponent, highlight.greenComponent, level),
-                blue: mix(base.blueComponent, highlight.blueComponent, level),
-                alpha: 1
-            ).cgColor
-        }
-        // Clear, but keeping the bone's colour, so the fade changes only
-        // the alpha.
-        return visible + [base.withAlphaComponent(0).cgColor]
+    /// Where a dot sits along its column's snake, from 0 (lit first) to 4.
+    /// Even columns rise, so their snake starts at the bottom of each run
+    /// of five rows; odd columns fall.
+    static func position(column: Int, row: Int) -> Int {
+        let raw = column % 2 == 0 ? -row - 1 : row
+        return (raw % phases + phases) % phases
     }
 
-    /// The colours the dots in `phase` show over one cycle, one per step.
-    /// The head reaches phase 0 on the first step and phase 4 on the last.
-    static func colors(forPhase phase: Int, style: FluxDotStyle = .standard) -> [CGColor] {
-        let palette = palette(style)
-        return (0..<steps).map { step in palette[((step - phase) % steps + steps) % steps] }
+    /// How far into a cycle a position's dots start: a fifth per position.
+    static func delay(forPhase phase: Int) -> TimeInterval {
+        Double(phase) / Double(phases) * cycle
     }
 
-    static func run(on layers: [CAShapeLayer], style: FluxDotStyle = .standard) {
+    /// The brightness a position holds when the snake cannot move: Dotm's
+    /// still gradient along the column, mapped onto the triplet.
+    static func restingOpacity(forPhase phase: Int) -> Float {
+        remapped(0.22 + Float(phase) / Float(phases - 1) * 0.66)
+    }
+
+    /// Dotm's piecewise map from its source opacities (0.08, 0.34, 0.94)
+    /// onto the configured triplet.
+    static func remapped(_ opacity: Float) -> Float {
+        let source: [Float] = [0, 0.08, 0.34, 0.94, 1]
+        let target: [Float] = [0, opacityBase, opacityMid, opacityPeak, 1]
+        let value = min(1, max(0, opacity))
+        for index in 1..<source.count where value <= source[index] {
+            let progress = (value - source[index - 1]) / (source[index] - source[index - 1])
+            return target[index - 1] + (target[index] - target[index - 1]) * progress
+        }
+        return 1
+    }
+
+    static func run(on layers: [CAShapeLayer]) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         for (phase, layer) in layers.enumerated() {
             guard !RelayLayerMotion.reduceMotion else {
                 layer.removeAnimation(forKey: SkeletonLoaderView.shimmerKey)
+                layer.opacity = restingOpacity(forPhase: phase)
                 continue
             }
+            layer.opacity = levels[phases - 1]
             guard layer.animation(forKey: SkeletonLoaderView.shimmerKey) == nil else { continue }
-            let colors = colors(forPhase: phase, style: style)
-            let flux = CAKeyframeAnimation(keyPath: "fillColor")
-            // Back to the first colour at the end, so the loop is seamless.
-            flux.values = colors + [colors[0]]
-            flux.keyTimes = (0...steps).map { NSNumber(value: Double($0) / Double(steps)) }
-            flux.calculationMode = .linear
-            flux.timingFunctions = Array(repeating: RelayMotion.loopCurve.mediaTimingFunction, count: steps)
-            flux.duration = stepDuration * Double(steps)
-            flux.repeatCount = .infinity
-            layer.add(flux, forKey: SkeletonLoaderView.shimmerKey)
+            let snake = CAKeyframeAnimation(keyPath: "opacity")
+            snake.values = levels
+            snake.keyTimes = keyTimes.map { NSNumber(value: $0) }
+            snake.calculationMode = .discrete
+            snake.duration = cycle
+            snake.repeatCount = .infinity
+            // Shift the loop so this position lights its delay behind the
+            // head's start.
+            snake.timeOffset = (cycle - delay(forPhase: phase)).truncatingRemainder(dividingBy: cycle)
+            layer.add(snake, forKey: SkeletonLoaderView.shimmerKey)
         }
+    }
+}
+
+/// How a dot field arrives and leaves: it disintegrates. The dots are dealt
+/// into cohorts in a fixed, scattered order across the grid. As presence
+/// rises from 0 to 1 each cohort fades in a little after the last, so dots
+/// appear here and there across the field until it is full; falling back
+/// to 0 runs the same way in reverse, the last dots to arrive leaving first.
+enum DotPresence {
+    /// Enough cohorts, each fading briefly, that dots visibly arrive one
+    /// by one rather than the field fading as a block.
+    static let cohorts = 24
+    /// The share of the presence sweep each cohort spends fading.
+    static let fade: Double = 0.12
+    /// The sweep runs longer than an ordinary fade so the scatter reads.
+    static let enterDuration: TimeInterval = 0.45
+    static let exitDuration: TimeInterval = 0.35
+    /// How long content replacing a dot field waits: its exit plus a beat.
+    static let replacementDelay: TimeInterval = exitDuration + RelayMotion.replacementGap
+    /// The sweep moves at an even pace so cohorts arrive evenly spaced.
+    static var enter: Animation { .linear(duration: enterDuration) }
+    static var exit: Animation { .linear(duration: exitDuration) }
+
+    /// Deals a dot to a cohort by its grid position: fixed, so a relayout
+    /// never reshuffles a field mid-transition, and scattered, so the
+    /// cohorts do not form stripes.
+    static func cohort(column: Int, row: Int) -> Int {
+        // MurmurHash3's finaliser over the two coordinates, so neighbouring
+        // dots land in unrelated cohorts.
+        var hash = UInt32(truncatingIfNeeded: column) &* 0x9E37_79B1
+        hash = hash &+ UInt32(truncatingIfNeeded: row) &* 0x85EB_CA77
+        hash ^= hash >> 16
+        hash &*= 0x85EB_CA6B
+        hash ^= hash >> 13
+        hash &*= 0xC2B2_AE35
+        hash ^= hash >> 16
+        return Int(hash % UInt32(cohorts))
+    }
+
+    /// The slice of the sweep, from 0 to 1, over which a cohort fades.
+    static func window(ofCohort cohort: Int) -> (start: Double, end: Double) {
+        let start = Double(cohort) / Double(cohorts) * (1 - fade)
+        return (start, start + fade)
+    }
+
+    /// A cohort's opacity at a presence between 0 (gone) and 1 (all there).
+    static func opacity(ofCohort cohort: Int, presence: Double) -> Float {
+        let window = window(ofCohort: cohort)
+        return Float(min(1, max(0, (presence - window.start) / fade)))
     }
 }
 
@@ -676,12 +767,16 @@ enum FluxColumnsAnimation {
 struct SkeletonLoader: NSViewRepresentable {
     let layout: SkeletonLoaderLayout
     let label: String
+    @Environment(\.dotPresence) private var presence
 
     func makeNSView(context: Context) -> SkeletonLoaderView {
-        SkeletonLoaderView(layout: layout, label: label)
+        let view = SkeletonLoaderView(layout: layout, label: label)
+        view.setPresence(presence)
+        return view
     }
 
     func updateNSView(_ view: SkeletonLoaderView, context: Context) {
         view.setLabel(label)
+        view.setPresence(presence)
     }
 }

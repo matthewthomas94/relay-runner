@@ -32,6 +32,7 @@ import relay_remote_protocol as proto  # noqa: E402
 from speech_coordinator import SpeechCoordinator  # noqa: E402
 import test_relay_remote as remote_tests  # noqa: E402
 import test_speech_coordinator as coordinator_tests  # noqa: E402
+from test_speech_coordinator_remote import AudioWorker, part  # noqa: E402
 
 wait_until = remote_tests.wait_until
 SSHD = "/usr/sbin/sshd"
@@ -90,8 +91,9 @@ class RelayRemoteLoopbackTests(remote_tests.BridgeRemoteIngressTests):
 
     def start_server(self, *, attached: bool = True, **kwargs):
         self.log = Path(self.root) / "speech-events.jsonl"
+        self.worker = AudioWorker()
         self.coordinator = SpeechCoordinator(
-            coordinator_tests.FakeWorker(),
+            self.worker,
             is_current=lambda seq, command_id: (seq, command_id) in self.current,
             event_log_path=self.log,
         )
@@ -196,6 +198,16 @@ class RelayRemoteLoopbackTests(remote_tests.BridgeRemoteIngressTests):
         self.assertIsInstance(speech, proto.Speech)
         self.assertEqual((speech.text, speech.kind, speech.relay_command_seq), ("Looking now", "handoff", command[0]))
 
+        # RR-457: the Mac's voice follows as audio parts, a full-size one included.
+        self.assertTrue(speech.audio)
+        voicing = self.worker.jobs[0]
+        voicing.emit(part(0, data="A" * proto.MAX_AUDIO_DATA_BYTES))
+        voicing.emit(part(1, parts=2, last=True, data="QkJC"))
+        audio = [device.recv(), device.recv()]
+        self.assertEqual([(a.seq, a.part, len(a.data)) for a in audio],
+                         [(speech.seq, 0, proto.MAX_AUDIO_DATA_BYTES), (speech.seq, 1, 4)])
+        self.assertTrue(audio[1].last)
+
         # A played ack is recorded as a realization.
         device.send(proto.Ack(speech.seq, True))
         self.assertTrue(wait_until(lambda: self.events("realization")))
@@ -213,11 +225,13 @@ class RelayRemoteLoopbackTests(remote_tests.BridgeRemoteIngressTests):
         self.coordinator.submit(coordinator_tests.intent(
             seq=command[0], command_id=command[1], kind="final", authoritative=True, text="Result"
         ))
+        self.worker.jobs[-1].emit(part(0, parts=1, last=True, data="UmVzdWx0"))
         again, welcome = self.connect(resume_after_seq=speech.seq)
         self.assertEqual((welcome.server_seq, welcome.dropped), (speech.seq + 2, False))
-        missed = [again.recv(), again.recv()]
-        self.assertEqual([f.seq for f in missed], [speech.seq + 1, speech.seq + 2])
-        self.assertEqual([f.text for f in missed], ["While away", "Result"])
+        missed = [again.recv(), again.recv(), again.recv()]
+        self.assertEqual([f.seq for f in missed], [speech.seq + 1, speech.seq + 2, speech.seq + 2])
+        self.assertEqual([f.text for f in missed[:2]], ["While away", "Result"])
+        self.assertEqual((type(missed[2]).__name__, missed[2].data), ("SpeechAudio", "UmVzdWx0"))
 
     # Inherited from the bridge ingress suite; they run there, not over SSH.
     test_fifo_and_remote_commands_share_one_ordered_sequence = None

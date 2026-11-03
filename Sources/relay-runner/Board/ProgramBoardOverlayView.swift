@@ -261,10 +261,10 @@ struct ProgramBoardOverlayView: View {
         ZStack {
             if model.notesLoaded {
                 notesLibraryContent
-                    .transition(.relayReplacing(.surface))
+                    .transition(.relayAfterDots(.surface))
             } else {
                 SkeletonLoader(layout: .notes, label: "Loading notes")
-                    .transition(.relayReplacing(.surface))
+                    .transition(.dotDisintegrateReplacing)
             }
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.notesLoaded)

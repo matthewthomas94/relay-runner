@@ -1215,6 +1215,8 @@ class MessengerRuntime:
         self._parked_partitions: dict[str, tuple[deque[str], int, tuple[int, str] | None, bool]] = {}
         self._bound_partition = ""
         self._final_commands: set[tuple[int, str]] = set()
+        # RR-460: a missing-reply fallback never claims the real final's slot.
+        self._fallback_final_commands: set[tuple[int, str]] = set()
         self._active_event: _MessengerEvent | None = None
         self._action_kinds: dict[tuple[int, str], str] = {}
         self._work_dispositions: dict[tuple[int, str], dict] = {}
@@ -1419,12 +1421,17 @@ class MessengerRuntime:
             disposition = None
         if not text:
             return False
+        final_commands = (
+            self._fallback_final_commands
+            if str(payload.get("speech_source") or "") == "fallback"
+            else self._final_commands
+        )
         interrupt_handoff = False
         with self._lock:
             command_key = command_key or self._current_command
             if command_key is None or command_key != self._current_command:
                 return False
-            if command_key in self._final_commands:
+            if command_key in self._final_commands or command_key in final_commands:
                 return True
             # A conversational turn the messenger answered itself stays quiet
             # only when the final adds nothing to that answer. A final with new
@@ -1441,13 +1448,13 @@ class MessengerRuntime:
                     )[0],
                 )
             ):
-                self._final_commands.add(command_key)
+                final_commands.add(command_key)
                 self._context.append(f"AUTHORITATIVE ORCHESTRATOR FINAL: {text}")
                 return True
-            self._final_commands.add(command_key)
-            if len(self._final_commands) > 100:
-                for old in list(self._final_commands)[:50]:
-                    self._final_commands.discard(old)
+            final_commands.add(command_key)
+            if len(final_commands) > 100:
+                for old in list(final_commands)[:50]:
+                    final_commands.discard(old)
             active = self._active_event
             interrupt_handoff = (
                 active is not None

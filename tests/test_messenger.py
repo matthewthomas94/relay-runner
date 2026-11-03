@@ -1314,6 +1314,37 @@ class MessengerRuntimeTests(unittest.TestCase):
         finally:
             runtime.shutdown()
 
+    def test_missing_reply_fallback_does_not_claim_the_real_final(self):
+        # RR-460: the speech coordinator replaces the fallback with the final.
+        backend = FakeBackend(["__SILENT__"])
+        spoken: list[str] = []
+        runtime = MessengerRuntime(
+            backend,
+            speak=lambda text, seq, command_id: spoken.append(text),
+            is_current=lambda seq, command_id: True,
+        )
+        runtime.start()
+        try:
+            command = {"relay_command_seq": 16, "relay_command_id": "cmd-16"}
+            runtime.submit_user("Finish the task", command)
+            self.assertTrue(wait_until(lambda: len(backend.prompts) == 1))
+            fallback = {"text": "No reply yet.", "speech_source": "fallback", **command}
+
+            self.assertTrue(runtime.submit_final(fallback))
+            self.assertTrue(runtime.submit_final(fallback))
+            self.assertTrue(runtime.submit_final({
+                "text": "Finished.", "speech_source": "completion", **command,
+            }))
+            self.assertTrue(runtime.submit_final(fallback))
+
+            self.assertTrue(wait_until(lambda: spoken == [
+                MESSENGER_DEGRADED_TEXT,
+                "No reply yet.",
+                "Finished.",
+            ]))
+        finally:
+            runtime.shutdown()
+
     def test_final_replaces_queued_handoff_before_messenger_starts(self):
         backend = FakeBackend(["The work is complete."])
         spoken: list[str] = []

@@ -23,10 +23,13 @@ MAX_LINE_BYTES = 64 * 1024
 DEFAULT_DEDUP_WINDOW = 1024
 REPLAY_MAX_FRAMES = 200
 REPLAY_MAX_AGE = 300.0
+# RR-457: base64 bytes of Mac-voiced audio per `speech_audio` frame.
+MAX_AUDIO_DATA_BYTES = 32 * 1024
 
 CONTROL_ACTIONS = frozenset({"stop", "interrupt", "cancel", "play", "replay"})
 SPEECH_CONTROL_ACTIONS = frozenset({"stop", "skip"})
 SPOKEN_BY = frozenset({"mac", "phone"})
+AUDIO_FORMATS = frozenset({"aac", "opus"})
 # RR-456: session control from the phone.
 SESSION_ACTIONS = frozenset({"list_projects", "start", "stop", "state"})
 SESSION_PHASES = frozenset({"none", "starting", "ready", "failed"})
@@ -145,7 +148,29 @@ class Speech:
     relay_command_seq: int | None = None
     # RR-454: `mac` means Kokoro speaks it and the phone only shows the text.
     spoken_by: str | None = None
+    # RR-457: true when `speech_audio` parts in the Mac's voice follow.
+    audio: bool | None = None
     TYPE = "speech"
+    PHONE_TO_MAC = False
+
+
+@dataclass(frozen=True)
+class SpeechAudio:
+    """RR-457: one slice of the Mac's voice for the `speech` frame `seq`.
+
+    The parts of one seq are consecutive slices of one encoded stream. `parts`
+    is the total once known, otherwise 0; the final part carries `last: true`.
+    It takes no seq of its own and is replayed with the frame it voices.
+    """
+
+    seq: int
+    part: int
+    parts: int
+    format: str
+    sample_rate: int
+    data: str
+    last: bool | None = None
+    TYPE = "speech_audio"
     PHONE_TO_MAC = False
 
 
@@ -203,7 +228,7 @@ FRAME_TYPES = {
     cls.TYPE: cls
     for cls in (
         Hello, Utterance, Control, RemoteMode, SessionCommand, Ack, Ping, Welcome,
-        Accepted, Speech, SpeechControl, Status, ErrorFrame, Pong, SessionState,
+        Accepted, Speech, SpeechAudio, SpeechControl, Status, ErrorFrame, Pong, SessionState,
     )
 }
 _ENUMS = {
@@ -214,6 +239,7 @@ _ENUMS = {
     ("speech", "spoken_by"): SPOKEN_BY,
     ("session_command", "action"): SESSION_ACTIONS,
     ("session_state", "session"): SESSION_PHASES,
+    ("speech_audio", "format"): AUDIO_FORMATS,
 }
 # Fields holding a list of nested objects, decoded into tuples of this type.
 _NESTED = {("session_state", "projects"): ProjectEntry}
@@ -259,6 +285,8 @@ def _check(type_name: str, name: str, value: Any, annotation: str) -> None:
 def _validate(frame: Any) -> None:
     for f in fields(frame):
         _check(frame.TYPE, f.name, getattr(frame, f.name), f.type)
+    if isinstance(frame, SpeechAudio) and len(frame.data.encode("utf-8")) > MAX_AUDIO_DATA_BYTES:
+        raise FrameError("invalid_field", "data")
 
 
 def encode(frame: Any) -> bytes:
@@ -331,7 +359,8 @@ def _decode_nested(cls: Any, name: str, value: Any) -> Any:
 
 
 def frame_seq(frame: Any) -> int | None:
-    return getattr(frame, "seq", None) if not isinstance(frame, Ack) else None
+    """The sequence number a replayable frame takes; `speech_audio` takes none."""
+    return getattr(frame, "seq", None) if not isinstance(frame, (Ack, SpeechAudio)) else None
 
 
 class SeqCounter:
@@ -376,7 +405,8 @@ class ReplayBuffer:
     """
 
     def __init__(self) -> None:
-        self._entries: list[tuple[int, Any, float]] = []
+        # (seq, frame, recorded at, audio parts kept with that frame)
+        self._entries: list[tuple[int, Any, float, list]] = []
         self._highest_acked = 0
         self.server_seq = 0
 
@@ -385,8 +415,23 @@ class ReplayBuffer:
         if seq is None or seq <= self.server_seq:
             raise FrameError("invalid_field", "seq")
         self.server_seq = seq
-        self._entries.append((seq, frame, now))
+        self._entries.append((seq, frame, now, []))
         self._prune(now)
+
+    def attach(self, part: SpeechAudio) -> bool:
+        """Keep an audio part with the `speech` frame it voices (RR-457).
+
+        A resume replays the parts straight after that frame; they leave with
+        it on ack or expiry and do not count towards the frame limit. False
+        when the frame is no longer held.
+        """
+        for seq, frame, _, parts in reversed(self._entries):
+            if seq == part.seq:
+                if isinstance(frame, Speech):
+                    parts.append(part)
+                    return True
+                return False
+        return False
 
     def ack(self, seq: int) -> None:
         if seq > self.server_seq:
@@ -405,7 +450,12 @@ class ReplayBuffer:
         if after > self.server_seq:
             return Resume([], True, self.server_seq)
         effective = max(after, self._highest_acked)
-        frames = [frame for seq, frame, _ in self._entries if seq > effective]
+        frames = [
+            sent
+            for seq, frame, _, parts in self._entries
+            if seq > effective
+            for sent in (frame, *parts)
+        ]
         first = frame_seq(frames[0]) if frames else None
         dropped = effective < self.server_seq and (first is None or first > effective + 1)
         return Resume(frames, dropped, self.server_seq)

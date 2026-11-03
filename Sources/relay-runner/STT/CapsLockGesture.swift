@@ -215,6 +215,10 @@ final class CapsLockGesture {
 
     var isRecording: Bool { recording }
 
+    /// The activation key is down as of the last `poll`, before or after the
+    /// recording threshold. False once released or after an external reset.
+    var isActivationHeld: Bool { prevKeyOn && !suppressed }
+
     /// The activation key was pressed and no `poll` has consumed it yet.
     var activationPending: Bool { !suppressed && isKeyOn && !prevKeyOn }
 

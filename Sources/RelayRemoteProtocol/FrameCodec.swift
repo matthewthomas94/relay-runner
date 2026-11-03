@@ -70,6 +70,8 @@ public enum FrameCodec {
         case .remoteMode(let f): try requireUUID(f.clientId)
         case .sessionCommand(let f): try requireUUID(f.clientId)
         case .accepted(let f): try requireUUID(f.clientId)
+        case .speechAudio(let f):
+            guard f.data.utf8.count <= RelayRemoteProtocol.maxAudioDataBytes else { throw FrameError.invalidField("data") }
         default: break
         }
     }

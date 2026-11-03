@@ -4,7 +4,8 @@ Owned by voice_bridge.py. Accepts the forced-command helper on a Unix socket,
 keys sessions by device id, and feeds utterances and controls into the
 bridge's ingress queue so remote and microphone input share one ordered path
 through ``_begin_relay_command``. Each session is also the SpeechCoordinator's
-remote sink (RR-424): speech becomes ``speech`` frames and acks feed realization.
+remote sink (RR-424): speech becomes ``speech`` frames, followed by
+``speech_audio`` parts in the Mac's voice (RR-457), and acks feed realization.
 """
 
 from __future__ import annotations
@@ -186,6 +187,7 @@ class DeviceSession:
         text: str,
         relay_command_seq: int | None,
         spoken_by: str = "phone",
+        audio: bool | None = None,
     ) -> int:
         return self.emit(lambda seq: proto.Speech(
             seq=seq,
@@ -194,7 +196,27 @@ class DeviceSession:
             text=text,
             relay_command_seq=relay_command_seq,
             spoken_by=spoken_by,
+            audio=audio,
         )).seq
+
+    def speech_audio(self, seq: int, part: Any) -> None:
+        """Send a ``remote_audio.AudioPart`` of the ``speech`` frame ``seq`` (RR-457).
+
+        It takes no seq of its own; the replay buffer keeps it with that frame.
+        """
+        frame = proto.SpeechAudio(
+            seq=seq,
+            part=part.part,
+            parts=part.parts,
+            format=part.format,
+            sample_rate=part.sample_rate,
+            data=part.data,
+            last=part.last or None,
+        )
+        with self.lock:
+            proto.encode(frame)  # Reject an invalid frame before replay keeps it.
+            self.replay.attach(frame)
+            self.send(frame)
 
     def speech_control(self, action: str, reason: str) -> int:
         return self.emit(lambda seq: proto.SpeechControl(seq=seq, action=action, reason=reason)).seq

@@ -212,7 +212,7 @@ final class BoardRevealTransitionTests: XCTestCase {
         XCTAssertEqual(loader.accessibilityLabel(), BoardUpdateStatus.workingLabel)
 
         container.setLoading(false)
-        waitForAnimations(RelayMotion.exitDuration + 0.25)
+        waitForAnimations(DotPresence.exitDuration + 0.25)
         XCTAssertNil(skeletonLoader(in: container), "It leaves the hierarchy so its shimmer stops")
     }
 

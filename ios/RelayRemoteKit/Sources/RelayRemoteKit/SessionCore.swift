@@ -187,6 +187,10 @@ public struct SessionCore: Sendable {
             }
             channelPhase = state.session
             reaction.isNew = true
+        case .speechAudio:
+            // The Mac's voice for an earlier `speech` frame (RR-457). It takes no
+            // seq of its own, so it never moves the resume point.
+            break
         case .hello, .utterance, .control, .remoteMode, .sessionCommand, .ack, .ping:
             break
         }
