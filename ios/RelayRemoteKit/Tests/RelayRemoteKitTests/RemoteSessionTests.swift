@@ -413,6 +413,45 @@ final class RemoteSessionSpeechPlumbingTests: XCTestCase {
         session.stop()
     }
 
+    func testRemoteModeRidesEveryHelloAndChangesAreSentWhileConnected() async throws {
+        let mac = FakeMac()
+        let session = Fixtures.session(transport: FakeTransport(mac: mac), clock: TestClock())
+        XCTAssertTrue(session.remoteMode, "on by default")
+        session.setRemoteMode(false)  // Offline: the next hello carries it.
+        session.start()
+        await eventually { session.state == .connected }
+        XCTAssertEqual(mac.hellos.map(\.remoteMode), [false])
+        XCTAssertTrue(mac.modes.isEmpty)
+
+        session.setRemoteMode(true)
+        session.setRemoteMode(true)  // Unchanged: not sent again.
+        XCTAssertTrue(session.send(control: .stop))
+        await eventually { mac.controls.count == 1 }
+        XCTAssertEqual(mac.modes.map(\.enabled), [true])
+        XCTAssertNotNil(UUID(uuidString: mac.modes[0].clientId))
+        XCTAssertTrue(session.records.contains { record in
+            if case .remoteMode = record.frame, record.direction == .sent { return true } else { return false }
+        })
+
+        session.stop()
+        session.start()
+        await eventually { mac.hellos.count == 2 }
+        XCTAssertEqual(mac.hellos.map(\.remoteMode), [false, true])
+        session.stop()
+    }
+
+    func testRemoteModePreferenceDefaultsOnAndPersists() throws {
+        let suite = "RemoteModePreferenceTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertTrue(RemoteModePreference(defaults: defaults).isOn)
+        RemoteModePreference(defaults: defaults).isOn = false
+        XCTAssertFalse(RemoteModePreference(defaults: defaults).isOn)
+        XCTAssertEqual(defaults.object(forKey: RemoteModePreference.key) as? Bool, false)
+        RemoteModePreference(defaults: defaults).isOn = true
+        XCTAssertTrue(RemoteModePreference(defaults: defaults).isOn)
+    }
+
     func testInboundHookSeesNewFramesOnlyAndAcksAreAppDriven() async throws {
         let mac = FakeMac()
         let session = Fixtures.session(transport: FakeTransport(mac: mac), clock: TestClock(), autoAck: false)

@@ -82,9 +82,10 @@ One connection per device, one exec channel, newline-delimited UTF-8 JSON in bot
 
 ```
 phone -> Mac
-{"type":"hello","protocol":1,"device_id":"...","device_name":"iPhone","app_version":"0.1","resume_after_seq":41}
+{"type":"hello","protocol":1,"device_id":"...","device_name":"iPhone","app_version":"0.1","resume_after_seq":41,"remote_mode":true}
 {"type":"utterance","client_id":"...","text":"move RR-120 to ready","captured_at":"2026-10-22T09:14:03Z"}
 {"type":"control","client_id":"...","action":"stop"}           stop | interrupt | cancel | play | replay
+{"type":"remote_mode","client_id":"...","enabled":false}
 {"type":"ack","seq":44,"played":true}
 {"type":"ping","t":1761124443}
 
@@ -92,7 +93,7 @@ Mac -> phone
 {"type":"welcome","protocol":1,"session_state":"running","server_seq":44,"resumed_from":41,"dropped":false}
 {"type":"accepted","client_id":"...","relay_command_seq":812,"relay_command_id":"4711-1761124443123456789-812"}
 {"type":"speech","seq":45,"kind":"handoff","source":"messenger","text":"Looking at RR-120 now.","relay_command_seq":812}
-{"type":"speech","seq":46,"kind":"final","source":"orchestrator","text":"RR-120 is in ready and dispatching.","relay_command_seq":812}
+{"type":"speech","seq":46,"kind":"final","source":"orchestrator","text":"RR-120 is in ready and dispatching.","relay_command_seq":812,"spoken_by":"phone"}
 {"type":"speech_control","seq":47,"action":"stop","reason":"superseded"}
 {"type":"status","seq":48,"text":"worker RR-120 started"}
 {"type":"error","code":"no_session","message":"Relay Runner is not running a session"}
@@ -101,6 +102,7 @@ Mac -> phone
 
 - `accepted` is the phone's receipt that an utterance entered the intent inbox, the remote equivalent of the notch's visual receipt. The phone shows it; it does not speak it.
 - `speech` mirrors `SpeechIntent` from `services/speech_coordinator.py`: the same `kind` values (`handoff`, `progress`, `clarification`, `final`, `fallback`, `control`) and `source` values (`messenger`, `orchestrator`, `lifecycle`, `completion`, `fallback`). The phone speaks it with its own synthesizer and answers `ack` with `played` so the coordinator's realization record and played coverage stay truthful.
+- `remote_mode` is the phone's Remote mode switch (RR-454), and `hello` carries its current value so a reconnect restores it; an absent value means on. On, the phone owns the microphone and speaker: the device is the coordinator's speech sink, the bridge posts `remote_device` `active`, the Mac microphone gate is suspended and the Mac is kept awake. Off, the bridge detaches the sink without closing the connection, posts `inactive`, Kokoro speaks on the Mac and the Mac microphone is live; each intent Kokoro speaks is also sent as `speech` with `spoken_by: mac`, which the phone shows without synthesising and acknowledges `played: true` at once. Disconnecting posts `disconnected`; the replay window below applies only while the mode was on. Protocol version 1 is unchanged: both decoders ignore unknown keys, and an older Mac answers the new frame type with an `unknown_type` error that the phone logs and survives.
 - `speech_control` carries the coordinator's stop and skip decisions, including stale-output suppression when a newer command exists.
 - The Mac keeps a bounded replay buffer per device (the last 200 frames or five minutes). A `hello` with `resume_after_seq` replays what the phone missed, or sets `dropped: true` so the phone can say that updates were missed rather than pretending nothing happened. Frames the phone has acknowledged are trimmed.
 - Controls map one-to-one onto the FIFO tokens the bridge already dispatches: `stop` to `__TTS_STOP__`, `interrupt` to `__INTERRUPT__`, `cancel` to `__CANCEL__`, `play` to `__PLAY__`, `replay` to `__REPLAY__`. No new control semantics are introduced.
@@ -265,7 +267,7 @@ Settings section in the app: Remote Login detection via the SSH banner on loopba
 
 ### 8. Mac microphone gate, status and keep-awake
 
-The bridge posts `remote_device` connected, active and disconnected events on `/tmp/voice_state.sock`; `AppState` suspends the microphone through a reason-based extension of `suspendForReferenceAudio` while a phone is active and resumes on disconnect or user takeover; the notch and menu bar show `Remote: <device>`; a prevent-idle-sleep assertion is held while a device is connected.
+The bridge posts `remote_device` active, inactive and disconnected events on `/tmp/voice_state.sock` as the phone's Remote mode switch changes (RR-454); `AppState` suspends the microphone through a reason-based extension of `suspendForReferenceAudio` while a phone is active and resumes on inactive, disconnect or user takeover; the notch and menu bar show `Remote: <device>` while Remote mode is active; a prevent-idle-sleep assertion is held only while Remote mode is active.
 
 - Mode: `implementation`.
 - Depends on: 4.

@@ -56,8 +56,8 @@ class Device:
             raise EOFError("connection closed")
         return proto.decode(line)
 
-    def hello(self, device_id: str = "phone-1", resume_after_seq=None):
-        self.send(proto.Hello(device_id, "iPhone", "0.1", resume_after_seq))
+    def hello(self, device_id: str = "phone-1", resume_after_seq=None, remote_mode=None):
+        self.send(proto.Hello(device_id, "iPhone", "0.1", resume_after_seq, remote_mode=remote_mode))
         return self.recv()
 
     def close(self) -> None:
@@ -159,6 +159,53 @@ class RelayRemoteServerTests(ServerTestCase):
         device.send(proto.Control(str(uuid.uuid4()), "stop"))
         self.assertEqual(device.recv().code, "no_session")
         self.assertEqual(server.ingress.drain(), [])
+
+    def test_remote_mode_posts_device_events_without_a_running_session(self):
+        posted = []
+        server = self.start_server(attached=False, notify=posted.append)
+        device = self.device()
+        device.hello()
+        self.assertTrue(wait_until(lambda: len(posted) == 1))
+        self.assertEqual(posted[0], {
+            "source": "remote_device",
+            "state": "active",
+            "device_id": "phone-1",
+            "device_name": "iPhone",
+        })
+        client_id = str(uuid.uuid4())
+        device.send(proto.RemoteMode(client_id, False))
+        device.send(proto.RemoteMode(client_id.upper(), True))  # A retry: ignored.
+        device.send(proto.Ping(4))
+        self.assertEqual(device.recv(), proto.Pong(4))
+        self.assertEqual([event["state"] for event in posted], ["active", "inactive"])
+        self.assertFalse(server.session("phone-1").remote_mode)
+        device.close()
+        self.assertTrue(wait_until(lambda: len(posted) == 3))
+        self.assertEqual(posted[2]["state"], "disconnected")
+        self.assertEqual(server.ingress.drain(), [])
+
+    def test_hello_restores_remote_mode_and_a_replaced_connection_posts_no_disconnect(self):
+        posted = []
+        server = self.start_server(notify=posted.append)
+        first = self.device()
+        first.hello(remote_mode=False)
+        second = self.device()
+        second.hello(remote_mode=True)
+        self.assertEqual(first.reader.readline(), b"")
+        second.send(proto.Ping(5))
+        self.assertEqual(second.recv(), proto.Pong(5))
+        self.assertEqual([event["state"] for event in posted], ["inactive", "active"])
+        self.assertTrue(server.session("phone-1").remote_mode)
+
+    def test_post_device_event_reaches_the_state_socket(self):
+        path = os.path.join(self.root, "state.sock")
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(listener.close)
+        listener.bind(path)
+        listener.settimeout(3)
+        relay_remote.post_device_event({"source": "remote_device", "state": "active"}, path)
+        self.assertEqual(json.loads(listener.recv(4096)), {"source": "remote_device", "state": "active"})
+        relay_remote.post_device_event({"state": "x"}, os.path.join(self.root, "missing.sock"))
 
     def test_second_connection_replaces_the_first(self):
         server = self.start_server()

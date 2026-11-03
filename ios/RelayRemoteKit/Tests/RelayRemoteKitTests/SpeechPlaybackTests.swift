@@ -46,6 +46,33 @@ final class SpeechPlaybackTests: XCTestCase {
         .speech(Speech(seq: seq, kind: .final, source: .orchestrator, text: text, relayCommandSeq: 7))
     }
 
+    private func macSpeech(_ seq: Int, _ text: String) -> Frame {
+        .speech(Speech(seq: seq, kind: .final, source: .orchestrator, text: text, relayCommandSeq: 7, spokenBy: .mac))
+    }
+
+    func testMacSpokenFramesAreShownNotSpokenAndAckedPlayedAtOnce() {
+        queue.receive(macSpeech(1, "Kokoro has this one."))
+        XCTAssertEqual(synthesizer.spoken, [])
+        XCTAssertEqual(acks, [Ack(seq: 1, played: true)])
+        XCTAssertEqual(states, [], "a display-only frame never activates audio")
+        XCTAssertFalse(queue.isSpeaking)
+
+        queue.receive(.speech(Speech(seq: 2, kind: .final, source: .orchestrator, text: "Phone voice.",
+                                     spokenBy: .phone)))
+        XCTAssertEqual(synthesizer.spoken, ["Phone voice."])
+    }
+
+    func testDisplayOnlyAckWaitsBehindEarlierPhoneSpeech() {
+        queue.receive(speech(1, "Spoken here."))
+        queue.receive(macSpeech(2, "Shown only."))
+        XCTAssertEqual(synthesizer.spoken, ["Spoken here."])
+        XCTAssertTrue(acks.isEmpty, "acks leave in seq order")
+
+        synthesizer.finishCurrent()
+        XCTAssertEqual(acks, [Ack(seq: 1, played: true), Ack(seq: 2, played: true)])
+        XCTAssertEqual(synthesizer.spoken, ["Spoken here."])
+    }
+
     func testFramesPlayInSeqOrderAndPlayedAcksFollowCompletion() {
         queue.receive(speech(45, "Looking at RR-120 now."))
         queue.receive(speech(46, "RR-120 is in ready and dispatching."))

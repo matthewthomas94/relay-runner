@@ -27,20 +27,30 @@ public enum SpeechControlAction: String, Codable, Sendable {
     case stop, skip
 }
 
+/// Which device voices a `speech` frame (RR-454). `mac`: Kokoro speaks it and
+/// the phone only shows the text. Absent means `phone`, as before RR-454.
+public enum SpokenBy: String, Codable, Sendable {
+    case mac, phone
+}
+
 public struct Hello: Codable, Equatable, Sendable {
     public var `protocol`: Int
     public var deviceId: String
     public var deviceName: String
     public var appVersion: String
     public var resumeAfterSeq: Int?
+    /// The phone's Remote mode switch, restored on every reconnect (RR-454).
+    /// Absent means on, matching phones built before the switch existed.
+    public var remoteMode: Bool?
 
     public init(protocol: Int = RelayRemoteProtocol.version, deviceId: String, deviceName: String,
-                appVersion: String, resumeAfterSeq: Int? = nil) {
+                appVersion: String, resumeAfterSeq: Int? = nil, remoteMode: Bool? = nil) {
         self.protocol = `protocol`
         self.deviceId = deviceId
         self.deviceName = deviceName
         self.appVersion = appVersion
         self.resumeAfterSeq = resumeAfterSeq
+        self.remoteMode = remoteMode
     }
 }
 
@@ -63,6 +73,18 @@ public struct Control: Codable, Equatable, Sendable {
     public init(clientId: String, action: ControlAction) {
         self.clientId = clientId
         self.action = action
+    }
+}
+
+/// The phone's Remote mode switch changed (RR-454). On: the phone owns the
+/// microphone and speaker. Off: speech plays on the Mac and the phone shows text.
+public struct RemoteMode: Codable, Equatable, Sendable {
+    public var clientId: String
+    public var enabled: Bool
+
+    public init(clientId: String, enabled: Bool) {
+        self.clientId = clientId
+        self.enabled = enabled
     }
 }
 
@@ -117,13 +139,16 @@ public struct Speech: Codable, Equatable, Sendable {
     public var source: SpeechSource
     public var text: String
     public var relayCommandSeq: Int?
+    public var spokenBy: SpokenBy?
 
-    public init(seq: Int, kind: SpeechKind, source: SpeechSource, text: String, relayCommandSeq: Int? = nil) {
+    public init(seq: Int, kind: SpeechKind, source: SpeechSource, text: String, relayCommandSeq: Int? = nil,
+                spokenBy: SpokenBy? = nil) {
         self.seq = seq
         self.kind = kind
         self.source = source
         self.text = text
         self.relayCommandSeq = relayCommandSeq
+        self.spokenBy = spokenBy
     }
 }
 
@@ -173,6 +198,7 @@ public enum Frame: Equatable, Sendable {
     case hello(Hello)
     case utterance(Utterance)
     case control(Control)
+    case remoteMode(RemoteMode)
     case ack(Ack)
     case ping(Ping)
     case welcome(Welcome)
@@ -188,6 +214,7 @@ public enum Frame: Equatable, Sendable {
         case .hello: return "hello"
         case .utterance: return "utterance"
         case .control: return "control"
+        case .remoteMode: return "remote_mode"
         case .ack: return "ack"
         case .ping: return "ping"
         case .welcome: return "welcome"
@@ -202,7 +229,7 @@ public enum Frame: Equatable, Sendable {
 
     public var direction: FrameDirection {
         switch self {
-        case .hello, .utterance, .control, .ack, .ping: return .phoneToMac
+        case .hello, .utterance, .control, .remoteMode, .ack, .ping: return .phoneToMac
         default: return .macToPhone
         }
     }
@@ -228,6 +255,7 @@ extension Frame: Codable {
         case .hello(let f): try f.encode(to: encoder)
         case .utterance(let f): try f.encode(to: encoder)
         case .control(let f): try f.encode(to: encoder)
+        case .remoteMode(let f): try f.encode(to: encoder)
         case .ack(let f): try f.encode(to: encoder)
         case .ping(let f): try f.encode(to: encoder)
         case .welcome(let f): try f.encode(to: encoder)
@@ -247,6 +275,7 @@ extension Frame: Codable {
         case "hello": self = .hello(try Hello(from: decoder))
         case "utterance": self = .utterance(try Utterance(from: decoder))
         case "control": self = .control(try Control(from: decoder))
+        case "remote_mode": self = .remoteMode(try RemoteMode(from: decoder))
         case "ack": self = .ack(try Ack(from: decoder))
         case "ping": self = .ping(try Ping(from: decoder))
         case "welcome": self = .welcome(try Welcome(from: decoder))

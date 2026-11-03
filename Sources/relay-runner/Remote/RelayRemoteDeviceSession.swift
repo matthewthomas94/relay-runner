@@ -1,9 +1,10 @@
 import Foundation
 import IOKit.pwr_mgt
 
-/// A `remote_device` event from the bridge's Relay Remote module.
+/// A `remote_device` event from the bridge's Relay Remote module. `active` and
+/// `inactive` follow the phone's Remote mode switch (RR-454).
 struct RemoteDeviceEvent: Equatable {
-    enum Kind: String { case connected, active, disconnected }
+    enum Kind: String { case connected, active, inactive, disconnected }
 
     let kind: Kind
     let deviceID: String
@@ -60,7 +61,7 @@ final class IOKitKeepAwake: RemoteKeepAwake {
         let result = IOPMAssertionCreateWithName(
             kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
             IOPMAssertionLevel(kIOPMAssertionLevelOn),
-            "Relay Remote device connected" as CFString,
+            "Relay Remote mode active" as CFString,
             &assertionID
         )
         held = result == kIOReturnSuccess
@@ -76,18 +77,22 @@ final class IOKitKeepAwake: RemoteKeepAwake {
 }
 
 /// Which phone is in control of voice input, and the keep-awake it needs.
-/// Connected devices hold the assertion; an active one holds the microphone
-/// gate. A Mac user action takes the microphone back without disconnecting.
+/// A device whose Remote mode is on holds the keep-awake assertion; the one
+/// that turned it on most recently holds the microphone gate. A device with
+/// the mode off stays connected while the Mac keeps its microphone and voice.
+/// A Mac user action takes the microphone back without changing the mode.
 final class RelayRemoteDeviceSession {
     private let gate: RemoteMicrophoneGate
     private let keepAwake: RemoteKeepAwake
     private var connected: [String: String] = [:]
     private var order: [String] = []
+    private var remoteMode: Set<String> = []
     private(set) var activeDeviceID: String?
 
-    /// `Remote: <device name>` while a device is connected, else nil.
+    /// `Remote: <device name>` while a device's Remote mode is on, else nil.
     var statusLabel: String? {
-        let id = activeDeviceID.flatMap { connected[$0] != nil ? $0 : nil } ?? order.last
+        let id = activeDeviceID.flatMap { remoteMode.contains($0) ? $0 : nil }
+            ?? order.last(where: { remoteMode.contains($0) })
         return id.flatMap { connected[$0] }.map { "Remote: \($0)" }
     }
 
@@ -104,18 +109,21 @@ final class RelayRemoteDeviceSession {
             connect(event)
         case .active:
             connect(event)
+            remoteMode.insert(event.deviceID)
             activeDeviceID = event.deviceID
             gate.suspendForRemoteDevice()
+        case .inactive:
+            connect(event)
+            remoteMode.remove(event.deviceID)
+            releaseMicrophone(from: event.deviceID)
         case .disconnected:
             guard connected[event.deviceID] != nil else { return }
             connected[event.deviceID] = nil
             order.removeAll { $0 == event.deviceID }
-            if activeDeviceID == event.deviceID {
-                activeDeviceID = nil
-                gate.resumeAfterRemoteDevice(preservingGesture: false)
-            }
-            if connected.isEmpty { keepAwake.release() }
+            remoteMode.remove(event.deviceID)
+            releaseMicrophone(from: event.deviceID)
         }
+        if remoteMode.isEmpty { keepAwake.release() } else { keepAwake.acquire() }
         onChange?()
     }
 
@@ -130,6 +138,11 @@ final class RelayRemoteDeviceSession {
     private func connect(_ event: RemoteDeviceEvent) {
         if connected[event.deviceID] == nil { order.append(event.deviceID) }
         connected[event.deviceID] = event.deviceName
-        keepAwake.acquire()
+    }
+
+    private func releaseMicrophone(from deviceID: String) {
+        guard activeDeviceID == deviceID else { return }
+        activeDeviceID = nil
+        gate.resumeAfterRemoteDevice(preservingGesture: false)
     }
 }

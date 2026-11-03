@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover - run from inside services/
     import relay_remote_protocol as proto
 
 REMOTE_SOCK = os.environ.get("RELAY_REMOTE_SOCK", "/tmp/relay_remote.sock")
+VOICE_STATE_SOCK = os.environ.get("VOICE_STATE_SOCK", "/tmp/voice_state.sock")
 INPUT_SOURCE = "remote"
 CONTROL_TOKENS = {
     "stop": "__TTS_STOP__",
@@ -53,6 +54,19 @@ def peer_uid(conn: socket.socket) -> int:
         return uid
     raw = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
     return struct.unpack("3i", raw)[1]
+
+
+def post_device_event(event: dict, path: str = VOICE_STATE_SOCK) -> None:
+    """Send a ``remote_device`` event to the app's StateEventBus (RR-454).
+
+    ``RelayRemoteDeviceSession`` suspends the Mac microphone and holds the
+    keep-awake assertion while a device's Remote mode is active.
+    """
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.sendto(json.dumps(event).encode(), path)
+    except OSError:
+        pass  # The app is not running.
 
 
 @dataclass(frozen=True)
@@ -120,6 +134,10 @@ class DeviceSession:
         self.lock = threading.RLock()
         self.conn: socket.socket | None = None
         self.disconnected_at: float | None = None
+        self.device_name = ""
+        # RR-454: the phone's Remote mode switch. On, this session is the
+        # coordinator's speech sink; off, it only mirrors Mac speech as text.
+        self.remote_mode = True
         self.seq = proto.SeqCounter()
         self.replay = proto.ReplayBuffer()
         self.dedup = proto.ClientIDDeduplicator()
@@ -150,22 +168,32 @@ class DeviceSession:
             return frame
 
     def routable(self) -> bool:
-        """Connected, or disconnected within the replay window."""
+        """Connected, or in Remote mode and disconnected within the replay window."""
         with self.lock:
             if self.conn is not None:
                 return True
             return (
-                self.disconnected_at is not None
+                self.remote_mode
+                and self.disconnected_at is not None
                 and self._clock() - self.disconnected_at <= proto.REPLAY_MAX_AGE
             )
 
-    def speech(self, *, kind: str, source: str, text: str, relay_command_seq: int | None) -> int:
+    def speech(
+        self,
+        *,
+        kind: str,
+        source: str,
+        text: str,
+        relay_command_seq: int | None,
+        spoken_by: str = "phone",
+    ) -> int:
         return self.emit(lambda seq: proto.Speech(
             seq=seq,
             kind=kind,
             source=source,
             text=text,
             relay_command_seq=relay_command_seq,
+            spoken_by=spoken_by,
         )).seq
 
     def speech_control(self, action: str, reason: str) -> int:
@@ -218,10 +246,14 @@ class RelayRemoteServer:
         peer_uid: Callable[[socket.socket], int] = peer_uid,
         clock: Callable[[], float] = time.monotonic,
         speech: Any = None,
+        notify: Callable[[dict], None] | None = None,
     ):
         self.ingress = ingress
-        # The SpeechCoordinator: attach_remote_sink, detach_remote_sink, remote_ack.
+        # The SpeechCoordinator: attach_remote_sink, detach_remote_sink,
+        # attach_remote_mirror, detach_remote_mirror, remote_ack.
         self.speech = speech
+        # Receives `remote_device` events; the bridge passes post_device_event.
+        self._notify = notify
         self.path = path
         self._peer_uid = peer_uid
         self._clock = clock
@@ -255,6 +287,7 @@ class RelayRemoteServer:
                 _close(conn)
             if self.speech is not None:
                 self.speech.detach_remote_sink(session.device_id)
+                self.speech.detach_remote_mirror(session.device_id)
         self.ingress.close()
         try:
             os.unlink(self.path)
@@ -330,11 +363,22 @@ class RelayRemoteServer:
         finally:
             reader.close()
             if session is not None:
-                with session.lock:
-                    if session.conn is conn:
-                        session.conn = None
-                        session.disconnected_at = self._clock()
+                self._disconnected(session, conn)
             _close(conn)
+
+    def _disconnected(self, session: DeviceSession, conn: socket.socket) -> None:
+        with session.lock:
+            if session.conn is conn:
+                session.conn = None
+                session.disconnected_at = self._clock()
+            elif session.conn is not None:
+                return  # Replaced by a newer connection for this device.
+            remote_mode = session.remote_mode
+        # In Remote mode the sink keeps buffering for the replay window. With
+        # the mode off there is no sink, and the text mirror ends now.
+        if self.speech is not None and not remote_mode:
+            self.speech.detach_remote_mirror(session.device_id)
+        self._post(session, "disconnected")
 
     def _reply(self, conn, session: DeviceSession | None, code: str, message: str) -> None:
         frame = proto.ErrorFrame(code, message)
@@ -368,9 +412,32 @@ class RelayRemoteServer:
             ))
             for missed in resume.frames:
                 session.send(missed)
-        if self.speech is not None:
-            self.speech.attach_remote_sink(session)
+            session.device_name = frame.device_name
+        # A phone built before the switch existed always drove the turn.
+        self._set_remote_mode(session, True if frame.remote_mode is None else frame.remote_mode)
         return session
+
+    def _set_remote_mode(self, session: DeviceSession, enabled: bool) -> None:
+        """On: the device is the speech sink. Off: Kokoro speaks, the device shows text."""
+        with session.lock:
+            session.remote_mode = enabled
+        if self.speech is not None:
+            if enabled:
+                self.speech.attach_remote_sink(session)
+            else:
+                self.speech.detach_remote_sink(session.device_id, reason="remote_mode_off")
+                self.speech.attach_remote_mirror(session)
+        self._post(session, "active" if enabled else "inactive")
+
+    def _post(self, session: DeviceSession, kind: str) -> None:
+        if self._notify is None:
+            return
+        self._notify({
+            "source": "remote_device",
+            "state": kind,
+            "device_id": session.device_id,
+            "device_name": session.device_name,
+        })
 
     def _handle(self, session: DeviceSession, frame: Any) -> None:
         if isinstance(frame, proto.Ping):
@@ -380,6 +447,11 @@ class RelayRemoteServer:
                 session.replay.ack(frame.seq)
             if self.speech is not None:
                 self.speech.remote_ack(session.device_id, frame.seq, frame.played)
+        elif isinstance(frame, proto.RemoteMode):
+            with session.lock:
+                duplicate = session.dedup.is_duplicate(frame.client_id)
+            if not duplicate:
+                self._set_remote_mode(session, frame.enabled)
         elif isinstance(frame, (proto.Utterance, proto.Control)):
             self._submit(session, frame)
         else:

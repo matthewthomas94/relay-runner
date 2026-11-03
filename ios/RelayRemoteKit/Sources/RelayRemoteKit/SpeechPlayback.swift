@@ -22,6 +22,9 @@ public protocol SpeechSynthesizing: AnyObject {
 /// - Acks leave in `seq` order, because the Mac trims its replay buffer through
 ///   the highest acknowledged seq. A frame waits behind earlier unresolved ones.
 /// - A seq seen before is ignored, so a reconnect replay never speaks twice.
+/// - A `speech` frame with `spoken_by: mac` is the Mac's own Kokoro speech
+///   shown while Remote mode is off (RR-454): it is never synthesised here and
+///   is acknowledged `played: true` at once, in seq order.
 @MainActor
 public final class SpeechPlaybackQueue {
     public private(set) var isSpeaking = false
@@ -62,7 +65,10 @@ public final class SpeechPlaybackQueue {
         switch frame {
         case .speech(let speech):
             guard insert(seq: speech.seq, text: speech.text) else { return }
-            if speech.seq <= stoppedThrough {
+            if speech.spokenBy == .mac {
+                resolve(seq: speech.seq, played: true)
+                log("speech shown")
+            } else if speech.seq <= stoppedThrough {
                 resolve(seq: speech.seq, played: false)
                 log("speech superseded")
             } else {

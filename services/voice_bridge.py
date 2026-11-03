@@ -59,6 +59,7 @@ from relay_remote import (
     RelayRemoteServer,
     RemoteIngress,
     RemoteItem,
+    post_device_event as post_remote_device_event,
 )
 from relay_authorization import (
     allowed_mutations_for_metadata,
@@ -5786,6 +5787,7 @@ def main():
         remote_server: RelayRemoteServer | None = RelayRemoteServer(
             RemoteIngress(),
             speech=tts_worker,
+            notify=post_remote_device_event,
         )
         try:
             remote_server.start()

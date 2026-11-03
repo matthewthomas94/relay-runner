@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 import unittest
+import uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "services"))
@@ -33,7 +34,12 @@ class RemoteSinkTests(remote_tests.ServerTestCase):
             is_current=lambda seq, command_id: (seq, command_id) in self.current,
             event_log_path=self.log,
         )
-        self.server = self.start_server(speech=self.coordinator, clock=lambda: self.now)
+        self.posted: list[dict] = []
+        self.server = self.start_server(
+            speech=self.coordinator,
+            clock=lambda: self.now,
+            notify=self.posted.append,
+        )
 
     def connect(self, resume_after_seq=None):
         device = self.device()
@@ -198,6 +204,95 @@ class RemoteSinkTests(remote_tests.ServerTestCase):
         content = self.log.read_text()
         self.assertNotIn("Remote words", content)
         self.assertNotIn("Local words", content)
+
+
+    # RR-454: the phone's Remote mode switch.
+
+    def states(self) -> list[str]:
+        return [event["state"] for event in self.posted]
+
+    def set_mode(self, device, enabled: bool) -> None:
+        device.send(proto.RemoteMode(str(uuid.uuid4()), enabled))
+        device.send(proto.Ping(11))
+        self.assertEqual(device.recv(), proto.Pong(11))
+
+    def test_hello_in_remote_mode_posts_active_and_the_phone_speaks(self):
+        device, _ = self.connect()
+        self.assertTrue(wait_until(lambda: self.states() == ["active"]))
+
+        self.coordinator.submit(intent(seq=1, kind="handoff", text="On the phone"))
+
+        frame = device.recv()
+        self.assertEqual((frame.text, frame.spoken_by), ("On the phone", "phone"))
+        self.assertTrue(self.worker.input_queue.empty())
+
+    def test_mode_off_returns_speech_to_kokoro_and_the_phone_gets_text_only(self):
+        device, _ = self.connect()
+
+        self.set_mode(device, False)
+
+        self.assertNotIn("phone-1", self.coordinator._remote_sinks)
+        self.assertEqual(self.states(), ["active", "inactive"])
+        self.assertEqual(self.events("remote_sink_detached")[0]["reason"], "remote_mode_off")
+        self.coordinator.submit(intent(seq=1, kind="handoff", text="On the Mac"))
+        self.assertEqual(self.worker.input_queue.get_nowait()["text"], "On the Mac")
+        shown = device.recv()
+        self.assertIsInstance(shown, proto.Speech)
+        self.assertEqual((shown.text, shown.spoken_by, shown.relay_command_seq), ("On the Mac", "mac", 1))
+        # The phone acks a display-only frame as played; the Mac's own
+        # playback, not the ack, is what realizes it.
+        device.send(proto.Ack(shown.seq, True))
+        self.assert_nothing_else_sent(device)
+        self.assertEqual(self.events("played"), [])
+        self.assertEqual(self.events("realization"), [])
+
+    def test_mode_back_on_reattaches_without_a_reconnect(self):
+        device, _ = self.connect()
+        self.set_mode(device, False)
+        self.set_mode(device, True)
+
+        self.assertIn("phone-1", self.coordinator._remote_sinks)
+        self.assertNotIn("phone-1", self.coordinator._remote_mirrors)
+        self.assertEqual(self.states(), ["active", "inactive", "active"])
+        self.coordinator.submit(intent(seq=1, kind="handoff", text="Phone again"))
+        frame = device.recv()
+        self.assertEqual((frame.text, frame.spoken_by), ("Phone again", "phone"))
+        self.assertTrue(self.worker.input_queue.empty())
+
+    def test_hello_with_mode_off_never_attaches_the_sink(self):
+        device = self.device()
+        device.hello("phone-1", remote_mode=False)
+        self.assertTrue(wait_until(lambda: "phone-1" in self.coordinator._remote_mirrors))
+
+        self.assertNotIn("phone-1", self.coordinator._remote_sinks)
+        self.assertEqual(self.states(), ["inactive"])
+        self.coordinator.read_out("Mac reply")
+        self.assertEqual(self.worker.input_queue.get_nowait()["text"], "Mac reply")
+        self.assertEqual(device.recv().spoken_by, "mac")
+
+    def test_disconnect_in_remote_mode_keeps_the_replay_window(self):
+        device, _ = self.connect()
+        device.close()
+        self.assertTrue(wait_until(lambda: self.states() == ["active", "disconnected"]))
+        self.now += proto.REPLAY_MAX_AGE - 1
+
+        self.coordinator.submit(intent(seq=1, kind="handoff", text="Held for the phone"))
+
+        self.assertTrue(self.worker.input_queue.empty())
+        self.assertIn("phone-1", self.coordinator._remote_sinks)
+
+    def test_disconnect_with_mode_off_expires_at_once(self):
+        device, _ = self.connect()
+        self.set_mode(device, False)
+        device.close()
+        self.assertTrue(wait_until(lambda: self.states() == ["active", "inactive", "disconnected"]))
+
+        self.coordinator.submit(intent(seq=1, kind="handoff", text="Mac only"))
+
+        self.assertEqual(self.worker.input_queue.get_nowait()["text"], "Mac only")
+        self.assertEqual(self.coordinator._remote_sinks, {})
+        self.assertEqual(self.coordinator._remote_mirrors, {})
+        self.assertFalse(self.server.session("phone-1").routable())
 
 
 if __name__ == "__main__":

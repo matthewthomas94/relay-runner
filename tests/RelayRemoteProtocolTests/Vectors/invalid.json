@@ -58,5 +58,30 @@
   "name": "client_id_not_uuid",
   "line": "{\"type\":\"utterance\",\"client_id\":\"abc\",\"text\":\"hi\",\"captured_at\":\"2026-10-22T09:14:03Z\"}",
   "error": "invalid_field"
+ },
+ {
+  "name": "remote_mode_client_id_not_uuid",
+  "line": "{\"type\":\"remote_mode\",\"client_id\":\"abc\",\"enabled\":true}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "remote_mode_missing_enabled",
+  "line": "{\"type\":\"remote_mode\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\"}",
+  "error": "missing_field"
+ },
+ {
+  "name": "remote_mode_enabled_not_bool",
+  "line": "{\"type\":\"remote_mode\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"enabled\":1}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "unknown_spoken_by",
+  "line": "{\"type\":\"speech\",\"seq\":1,\"kind\":\"final\",\"source\":\"orchestrator\",\"text\":\"x\",\"spoken_by\":\"tablet\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "hello_remote_mode_not_bool",
+  "line": "{\"type\":\"hello\",\"protocol\":1,\"device_id\":\"d\",\"device_name\":\"iPhone\",\"app_version\":\"0.1\",\"remote_mode\":\"on\"}",
+  "error": "invalid_field"
  }
 ]

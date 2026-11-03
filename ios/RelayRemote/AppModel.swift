@@ -24,12 +24,29 @@ final class AppModel {
     private(set) var voice: VoiceController?
     private(set) var pairingState = PairingState.idle
     private(set) var startupError: String?
+    /// The Remote mode switch (RR-454). On: this phone owns the microphone and
+    /// speaker and the Mac stays quiet. Off: the Mac listens and speaks and the
+    /// phone shows the text. Persisted, and sent to the Mac on connect and change.
+    var remoteMode: Bool {
+        didSet {
+            guard remoteMode != oldValue else { return }
+            remoteModePreference.isOn = remoteMode
+            session?.setRemoteMode(remoteMode)
+            voice?.remoteMode = remoteMode
+        }
+    }
 
     @ObservationIgnored private let secrets = KeychainStore()
     @ObservationIgnored private var pairingStore: PairingStore { PairingStore(store: secrets) }
     @ObservationIgnored private let pathMonitor = NWPathMonitor()
     @ObservationIgnored private var bootstrapped = false
     @ObservationIgnored private var isForeground = true
+    @ObservationIgnored private let remoteModePreference: RemoteModePreference
+
+    init(remoteModePreference: RemoteModePreference = RemoteModePreference()) {
+        self.remoteModePreference = remoteModePreference
+        remoteMode = remoteModePreference.isOn
+    }
 
     func bootstrap() {
         guard !bootstrapped else { return }
@@ -106,12 +123,14 @@ final class AppModel {
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
             credentials: SSHCredentials(user: mac.user, privateKey: deviceKey.privateKey,
                                         pinnedHostKeys: Set(mac.hostKeyFingerprints)),
-            resumeAfterSeq: UserDefaults.standard.object(forKey: Self.resumeKey(mac)) as? Int
+            resumeAfterSeq: UserDefaults.standard.object(forKey: Self.resumeKey(mac)) as? Int,
+            remoteMode: remoteMode
         )
         let session = RemoteSession(configuration: configuration, transport: SSHTransport(),
                                     endpoints: MacEndpointResolver(mac: mac))
         self.session = session
         let voice = VoiceController(session: session)
+        voice.remoteMode = remoteMode
         voice.onAudioIdle = { [weak self] in self?.audioBecameIdle() }
         self.voice = voice
         if isForeground { session.start() }
