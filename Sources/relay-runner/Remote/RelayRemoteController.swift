@@ -20,9 +20,19 @@ final class RelayRemoteController {
         let pairingID: UUID
         let image: CGImage
         let expiresAt: Date
+        /// The payload's non-secret fields, for Relay App (RR-459). The
+        /// one-time pairing key and token exist only in the image.
+        let details: PairingDetails
 
         static func == (lhs: Self, rhs: Self) -> Bool { lhs.pairingID == rhs.pairingID }
         func hash(into hasher: inout Hasher) { hasher.combine(pairingID) }
+    }
+
+    struct PairingDetails: Hashable {
+        let pairingID: String
+        let user: String
+        let hosts: [String]
+        let port: Int
     }
 
     enum Phase: Hashable {
@@ -47,12 +57,20 @@ final class RelayRemoteController {
     var restrictToNetwork = false
 
     @ObservationIgnored private let environment: RelayRemoteEnvironment
+    @ObservationIgnored private let hostCandidates: @Sendable () -> [String]
+    @ObservationIgnored private let networkRanges: @Sendable () -> [String]
     @ObservationIgnored private var session: RelayRemotePairingSession?
     @ObservationIgnored private var attempt: UUID?
     @ObservationIgnored private var pendingDecision: CheckedContinuation<RelayRemotePairingDecision, Never>?
 
-    init(environment: RelayRemoteEnvironment = .live) {
+    init(
+        environment: RelayRemoteEnvironment = .live,
+        hostCandidates: @escaping @Sendable () -> [String] = { RelayRemoteHostInfo.hostCandidates() },
+        networkRanges: @escaping @Sendable () -> [String] = { RelayRemoteHostInfo.networkRanges() }
+    ) {
         self.environment = environment
+        self.hostCandidates = hostCandidates
+        self.networkRanges = networkRanges
     }
 
     func refresh() async {
@@ -83,6 +101,8 @@ final class RelayRemoteController {
         let attempt = UUID()
         let session = RelayRemotePairingSession(
             environment: environment,
+            hostCandidates: hostCandidates,
+            networkRanges: networkRanges,
             confirm: { [weak self] request in
                 await self?.requestDecision(request, attempt: attempt) ?? .deny
             },
@@ -109,7 +129,10 @@ final class RelayRemoteController {
                 phase = .showingCode(PairingCode(
                     pairingID: attempt,
                     image: image,
-                    expiresAt: Date().addingTimeInterval(RelayRemotePairingSession.lifetime)
+                    expiresAt: Date().addingTimeInterval(RelayRemotePairingSession.lifetime),
+                    details: PairingDetails(
+                        pairingID: payload.pairingID, user: payload.user, hosts: payload.hosts, port: payload.port
+                    )
                 ))
             } catch {
                 guard self.attempt == attempt else { return }

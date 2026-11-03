@@ -2038,6 +2038,12 @@ available_agents_have_mcp relay-vision relay-vision-mcp && RELAY_VISION_MCP_OK=t
 RELAY_DESKTOP_MCP_OK=false
 available_agents_have_mcp relay-desktop relay-desktop-mcp && RELAY_DESKTOP_MCP_OK=true
 
+# Relay App (RR-459) controls Relay Runner itself (status, settings, sessions,
+# Relay Remote pairing) over the app's command socket. Tracked separately so a
+# partial install still triggers the missing registration below.
+RELAY_APP_MCP_OK=false
+available_agents_have_mcp relay-app relay-app-mcp && RELAY_APP_MCP_OK=true
+
 # Orchestrator install gate: covers the slash commands, MCP server
 # registration, and the launchd plist that keeps the daemon alive.
 # Uses the same all-available-agents MCP probe used for relay-actions.
@@ -2342,6 +2348,11 @@ PYEOF
     if ! $RELAY_DESKTOP_MCP_OK; then
         emit_progress 99 "Registering Relay Desktop MCP server..."
         register_mcp_for_available_agents relay-desktop relay-desktop-mcp "Relay Desktop"
+    fi
+
+    if ! $RELAY_APP_MCP_OK; then
+        emit_progress 99 "Registering Relay App MCP server..."
+        register_mcp_for_available_agents relay-app relay-app-mcp "Relay App"
     fi
 
     # Skip the orchestrator install branch under --venv-only:

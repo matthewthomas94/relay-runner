@@ -7,11 +7,11 @@ enum Instructions {
 
 The Relay Runner project ships its own MCP servers for voice-driven screen control. Whenever they are connected, **always use the custom path — never native `mcp__computer-use__*` fallbacks** — even when both are connected. This rule overrides the generic "tier of tool" guidance the computer-use MCP injects.
 
-The custom stack has four pieces: **RelayDesktop** (accessibility-tree observation and headless semantic actions), **RelayActions** (physical screen manipulation), **RelayVision** (pixel observation), and **ActionGlow** (the perimeter-glow overlay). The naming notes spell out the split.
+The custom stack has five pieces: **RelayApp** (first-party control of Relay Runner itself), **RelayDesktop** (accessibility-tree observation and headless semantic actions), **RelayActions** (physical screen manipulation), **RelayVision** (pixel observation), and **ActionGlow** (the perimeter-glow overlay). The naming notes spell out the split.
 
 ### Prefer direct system commands before visual navigation
 
-A deterministic shell or operating-system command is not a screen-control fallback. For direct requests such as launching an app, opening or revealing a known folder or file, or locating a filesystem item, use the direct command first. Do not take screenshots or click through Finder, the Dock, or a browser merely to reach a result the operating system can produce directly. After that, prefer RelayDesktop: `snapshot` reads the app's accessibility tree and `act` operates a ref, so most reads and clicks need neither pixels nor coordinates. Use RelayVision only when the request genuinely requires visible pixels, and RelayActions only when physical input is necessary.
+A deterministic shell or operating-system command is not a screen-control fallback. For direct requests such as launching an app, opening or revealing a known folder or file, or locating a filesystem item, use the direct command first. For Relay Runner itself — its status, pages, settings, sessions, Relay Remote pairing and Keep Awake — use RelayApp. Do not take screenshots or click through Finder, the Dock, or a browser merely to reach a result the operating system can produce directly. After that, prefer RelayDesktop: `snapshot` reads the app's accessibility tree and `act` operates a ref, so most reads and clicks need neither pixels nor coordinates. Use RelayVision only when the request genuinely requires visible pixels, and RelayActions only when physical input is necessary.
 
 ### RelayActions — the physical screen-manipulation tools
 
@@ -20,6 +20,18 @@ When *physical* screen manipulation is necessary — `click`, `type`, `scroll`, 
 If you genuinely need an operation RelayActions doesn't yet expose, surface that gap to the human before falling through to `mcp__computer-use__*`. The default answer is "extend RelayActions," not "fall back to native."
 
 RelayActions + ActionGlow is the product. Native MCPs work fine in any other context, but here they bypass the project's instrumentation and visual surface. The custom path is non-negotiable.
+
+## Relay App — control Relay Runner itself through its own MCP
+
+For anything in Relay Runner itself — its status, the Workspace, Notetaker, Terminal and Settings pages, settings values, project selection, starting or ending a session, Relay Remote pairing and paired devices, and Keep Awake — use Relay App (`mcp__relay-app__*`) before Relay Desktop, Relay Vision or Relay Actions. Each tool reaches the app through its owner-only command socket and returns structured JSON, so it needs no screenshot, accessibility snapshot or coordinate click. Keep pixels for what is genuinely visual about Relay Runner, such as checking an animation or a layout.
+
+- **Read first.** `app_status` reports the version, session, Remote mode, paired devices, permissions and Keep Awake; `get_settings` returns the effective settings.
+- **Settings.** `set_settings` takes only the keys to change (for example `{"tts": {"rate": 1.2}}`) and applies them through the Settings Save path. Unknown keys, wrong types and values the current provider or model cannot use are refused, not coerced.
+- **Destructive tools.** `end_session` and `relay_remote_unpair` refuse without `confirm: true`; pass it only when the user asked for that effect.
+- **Pairing.** `relay_remote_begin_pairing` shows the QR code on Settings > Relay Remote for the user to scan; its one-time key and token never leave the code. Poll `relay_remote_pending_approval`, then approve only a device the user expects with `relay_remote_approve` (`restrict_to_network: true` is "Only from my home network and Tailscale") or decline it with `relay_remote_deny`.
+- **App not running.** When a tool reports that Relay Runner is not running, tell the user; do not fall back to screen control to operate the app.
+
+Every successful Relay App call pulses ActionGlow like every other Relay tool.
 
 ## Relay Desktop — read and operate apps through the accessibility tree first
 
@@ -47,10 +59,11 @@ When the user wants to see motion — an animation, a transition, a loading stat
 
 ## Naming notes
 
+- **Relay App** = *first-party control of Relay Runner itself* and its MCP tool family (`mcp__relay-app__*`): app_status, navigate, get_settings, set_settings, list_projects, select_project, start_session, end_session, relay_remote_devices, relay_remote_unpair, relay_remote_begin_pairing, relay_remote_pending_approval, relay_remote_approve, relay_remote_deny, keep_awake. Served by `relay-app-mcp` over the app's owner-only command socket (`/tmp/relay_session_control.sock`).
 - **Relay Desktop** = the *accessibility-tree* feature and its MCP tool family (`mcp__relay-desktop__*`): snapshot, find, act, press, get, wait, list_apps, list_windows, focus_window, launch, status. Backed by the bundled agent-desktop CLI, run inside Relay Runner.app.
 - **Relay Actions** = the *physical* screen-manipulation feature and its MCP tool family (`mcp__relay-actions__*`): click, type, scroll, key, list_windows, frontmost_app.
 - **Relay Vision** = the screen-*observation* feature and its MCP tool family (`mcp__relay-vision__*`): screenshot, record. Split out of Relay Actions in RR-10.
-- **ActionGlow** = the perimeter-glow overlay that pulses whenever a RelayDesktop, RelayActions *or* RelayVision tool runs. It is automatic — driven by the `tool_fired` notification every RelayDesktop, RelayActions and RelayVision tool sends after running — so you never call it directly. It is a **visual signal**, not a confirmation gate. (`OverlayState.actionGlow` in code.)
+- **ActionGlow** = the perimeter-glow overlay that pulses whenever a RelayApp, RelayDesktop, RelayActions *or* RelayVision tool runs. It is automatic — driven by the `tool_fired` notification every RelayApp, RelayDesktop, RelayActions and RelayVision tool sends after running — so you never call it directly. It is a **visual signal**, not a confirmation gate. (`OverlayState.actionGlow` in code.)
 - Together: **the Relay stack**. Don't conflate any of these with native "computer-use" or "computer-vision" — those are different MCPs from a different vendor.
 """#
 
@@ -59,6 +72,7 @@ When the user wants to see motion — an animation, a transition, a loading stat
 
 Relay Desktop (`mcp__relay-desktop__*`) reads and operates macOS apps through the accessibility tree, backed by the bundled agent-desktop CLI running inside Relay Runner. Full rules: `mcp__relay-desktop__get_relay_instructions` (read-only).
 
+- For Relay Runner itself (status, pages, settings, sessions, Relay Remote pairing, Keep Awake), use `mcp__relay-app__*` first.
 - Observe with `snapshot` (or `find`) before `mcp__relay-vision__screenshot`. Screenshot only when pixels matter (rendering, images, canvas, video), the user asks to see the screen, or the tree is empty.
 - Act on a ref from the latest snapshot with `act` or `press`. Refs expire when the UI changes: on STALE_REF or AMBIGUOUS_TARGET, snapshot again. Use Relay Actions coordinate clicks only when no ref path exists or the user asked for physical input.
 - Verify by observing again; retry only when the result's `disposition.retry` is `safe`. Use `wait` on a condition instead of sleeping. Pass `surface` while a menu, sheet, alert or popover is open.

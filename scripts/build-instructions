@@ -29,6 +29,7 @@ CHUNKS = REPO / "services" / "instructions"
 # Which chunks each MCP server's `instructions` payload concatenates, in order.
 ACTIONS = [
     "relay-actions-vs-computer-use",
+    "relay-app-first",
     "desktop-accessibility-first",
     "propose-action",
     "board-hotkey",
@@ -39,8 +40,15 @@ ACTIONS = [
 # look-at-screen split it shares with Relay Vision.
 DESKTOP = [
     "relay-actions-vs-computer-use",
+    "relay-app-first",
     "desktop-accessibility-first",
     "look-at-screen-intent",
+    "naming",
+]
+# Relay App (RR-459): the stack rule, its own Relay-Runner-first rules, and naming.
+APP = [
+    "relay-actions-vs-computer-use",
+    "relay-app-first",
     "naming",
 ]
 # Full orchestrator rules: non-Claude clients get them as `initialize`
@@ -57,7 +65,7 @@ ORCHESTRATOR = [
 # clients therefore get the compact payload in compact/<server>.md and fetch
 # the full rules with the server's read-only `get_relay_instructions` tool.
 CLAUDE_INSTRUCTIONS_LIMIT = 2048
-COMPACT_SERVERS = ["relay-actions", "relay-desktop", "relay-orchestrator", "relay-vision"]
+COMPACT_SERVERS = ["relay-actions", "relay-app", "relay-desktop", "relay-orchestrator", "relay-vision"]
 # Order the chunks appear in the CLAUDE.md and AGENTS.md generated blocks.
 CLAUDE_MD = [
     "subscription-only",
@@ -65,6 +73,7 @@ CLAUDE_MD = [
     "artifact-tickets",
     "program-manager-capture",
     "relay-actions-vs-computer-use",
+    "relay-app-first",
     "desktop-accessibility-first",
     "board-hotkey",
     "look-at-screen-intent",
@@ -215,6 +224,11 @@ def main() -> None:
                 "payload": concat(DESKTOP),
                 "claudeCompact": compact("relay-desktop"),
             }, "relay-desktop"),
+        REPO / "Sources" / "relay-app-mcp" / "Instructions.generated.swift":
+            swift_constant({
+                "payload": concat(APP),
+                "claudeCompact": compact("relay-app"),
+            }, "relay-app"),
     }
     drifted = []
     for path, content in targets.items():

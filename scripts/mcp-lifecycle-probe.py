@@ -14,6 +14,7 @@ ADAPTERS = (
     "relay-actions-mcp",
     "relay-vision-mcp",
     "relay-desktop-mcp",
+    "relay-app-mcp",
     "relay-orchestrator-mcp",
 )
 META = {
