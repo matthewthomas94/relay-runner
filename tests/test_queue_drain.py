@@ -253,6 +253,27 @@ worker_provider_notes: Codex and Claude share the same lifecycle.
             self.assertEqual(len(dispatched["dispatched"]), 1)
             self.assertEqual(len(daemon.runs.list()), 1)
 
+    def test_ready_ticket_waiting_on_predecessor_costs_no_source_status_scan(self):
+        # The app sweeps every 3 s and the monitor every 5 s; a queued ticket
+        # behind running work must not run `git status` each time (RR-449).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            self.make_git_repo(repo)
+            self.write_ticket(repo, "RR-1", status="in_progress", run_id=None)
+            self.write_ticket(repo, "RR-2", status="ready", run_id=None, depends_on=["RR-1"], sizing=True)
+            self.git(repo, "add", ".orchestrator")
+            self.git(repo, "commit", "-m", "tickets")
+            daemon = self.make_daemon(root, provider="codex")
+
+            with patch("orchestrator._source_checkout_blocker", return_value=None) as blocker:
+                result = daemon.sweep_ready_tickets(repo_path=str(repo), trigger="bridge-watchdog")
+                daemon.reconcile_queue_drain(repo_path=str(repo), trigger="queue-drain-monitor")
+
+            blocker.assert_not_called()
+            item = next(item for item in result["drain"]["items"] if item["ticket_id"] == "RR-2")
+            self.assertEqual(item["state"], "dependency_waiting")
+
     def test_dirty_after_review_survives_restart_and_reconciliation_merges_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

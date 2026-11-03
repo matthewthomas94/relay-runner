@@ -7317,7 +7317,7 @@ Title: {ticket['title']}
         latest_run: dict[str, Any] | None,
         skip: dict[str, Any] | None,
         source_blocker: dict[str, Any] | None,
-        dispatch_blocker: dict[str, Any] | None,
+        dispatch_blocker: Callable[[], dict[str, Any] | None],
         drive_reviews: bool,
         now: float,
     ) -> dict[str, Any]:
@@ -7540,8 +7540,9 @@ Title: {ticket['title']}
                 )
 
         if ticket.get("status") == "ready":
-            if dispatch_blocker is not None:
-                return self._integration_blocked_item(ticket_id, blocker=dispatch_blocker)
+            blocker = dispatch_blocker()
+            if blocker is not None:
+                return self._integration_blocked_item(ticket_id, blocker=blocker)
             return {
                 "ticket_id": ticket_id,
                 "state": "scheduled",
@@ -7656,14 +7657,18 @@ Title: {ticket['title']}
             )
             else None
         )
-        dispatch_blocker = (
-            _source_checkout_blocker(str(repo), ignore_board_metadata=True)
-            if any(
-                (tickets_by_id.get(ticket_id) or {}).get("status") == "ready"
-                for ticket_id in observed_ids
-            )
-            else None
-        )
+        dispatch_blockers: list[dict[str, Any] | None] = []
+
+        def dispatch_blocker() -> dict[str, Any] | None:
+            # Only a ready ticket whose predecessors are done reads this, so
+            # tickets queued behind running work no longer cost a full
+            # `git status` on every ready sweep and monitor tick (RR-449).
+            if not dispatch_blockers:
+                dispatch_blockers.append(
+                    _source_checkout_blocker(str(repo), ignore_board_metadata=True)
+                )
+            return dispatch_blockers[0]
+
         items = [
             self._classify_queue_drain_item(
                 repo=repo,
