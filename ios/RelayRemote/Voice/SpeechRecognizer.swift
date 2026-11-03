@@ -137,6 +137,12 @@ final class SpeechRecognizer {
         tap.setFeeding(false)
     }
 
+    /// Feeds the analyzer again after `pauseFeeding`, if an utterance is open.
+    func resumeFeeding() {
+        guard analyzer != nil else { return }
+        tap.setFeeding(true)
+    }
+
     func stopCapture() {
         guard isCapturing else { return }
         engine.inputNode.removeTap(onBus: 0)
