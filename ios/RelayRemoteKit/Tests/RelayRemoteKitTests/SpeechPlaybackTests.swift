@@ -112,6 +112,19 @@ final class SpeechPlaybackTests: XCTestCase {
         XCTAssertFalse(queue.isSpeaking)
     }
 
+    func testReplayAfterBargeInStopPlaysTheReplayedReply() {
+        queue.receive(speech(45, "A long reply"))
+        queue.stopAll()
+        queue.stopAll()
+        XCTAssertEqual(acks, [Ack(seq: 45, played: false)])
+        XCTAssertFalse(queue.isSpeaking)
+        // The Mac replays the interrupted reply under a fresh seq.
+        queue.receive(speech(46, "A long reply"))
+        XCTAssertEqual(synthesizer.spoken, ["A long reply", "A long reply"])
+        XCTAssertTrue(queue.isSpeaking)
+        XCTAssertEqual(states, [true, false, true])
+    }
+
     func testFramesWithoutSeqAreIgnored() {
         queue.receive(.accepted(Accepted(clientId: "c", relayCommandSeq: 1, relayCommandId: "id")))
         queue.receive(.error(ErrorFrame(code: "no_session", message: "x")))

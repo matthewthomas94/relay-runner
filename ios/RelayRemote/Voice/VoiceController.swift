@@ -66,6 +66,7 @@ final class VoiceController {
     func pressToTalkBegan() {
         guard mode == .pushToTalk, !utteranceOpen, !busy else { return }
         isListening = true
+        bargeIn()
         Task { await openUtterance() }
     }
 
@@ -81,6 +82,7 @@ final class VoiceController {
         guard mode == .handsFree, !isListening else { return }
         isListening = true
         endpointer = UtteranceEndpointer()
+        bargeIn()
         Task { await openUtterance() }
     }
 
@@ -91,6 +93,15 @@ final class VoiceController {
     }
 
     // MARK: - Controls
+
+    /// Starting to talk is the interrupt: silence the phone, tell the Mac to
+    /// stop, and only then open the utterance. The local stop happens even
+    /// when the channel is down. Replay is unaffected (the Mac keeps the reply).
+    private func bargeIn() {
+        queue.stopAll()
+        synthesizer.stopSpeaking()
+        session.send(control: .stop)
+    }
 
     /// Silences the phone at once and asks the Mac to stop as well.
     func stop() {
@@ -143,7 +154,12 @@ final class VoiceController {
             transcript = ""
             lastProblem = nil
             endpointer.reset()
-            if !queue.isSpeaking { activity = .listening }
+            if queue.isSpeaking {
+                // Playback began while the utterance was opening.
+                recognizer.pauseFeeding()
+            } else {
+                activity = .listening
+            }
         } catch {
             lastProblem = "Recording could not start."
             isListening = false
@@ -216,6 +232,10 @@ final class VoiceController {
                 Task {
                     await closeUtterance(send: false)
                 }
+            } else if utteranceOpen {
+                // Audio heard during playback was dropped; resume from here.
+                recognizer.resumeFeeding()
+                endpointer.reset()
             } else {
                 notifyIfIdle()
             }
