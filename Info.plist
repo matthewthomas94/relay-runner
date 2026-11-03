@@ -2,39 +2,43 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleDisplayName</key>
-	<string>Relay Runner</string>
-	<key>CFBundleExecutable</key>
-	<string>relay-runner</string>
-	<key>CFBundleIconFile</key>
-	<string>AppIcon</string>
-	<key>CFBundleIdentifier</key>
-	<string>com.relayrunner.app</string>
-	<key>CFBundleName</key>
-	<string>Relay Runner</string>
-	<key>CFBundlePackageType</key>
-	<string>APPL</string>
-	<key>CFBundleShortVersionString</key>
-	<string>0.4.99</string>
-	<key>CFBundleVersion</key>
-	<string>103</string>
-	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Relay Runner uses the microphone for speech-to-text.</string>
-	<key>NSScreenCaptureUsageDescription</key>
-	<string>Relay Runner uses Screen Recording for optional Relay Vision screenshots and, when you start Note Taker, to capture computer and meeting audio. Normal voice commands and Relay Actions work without this permission.</string>
-	<key>SUAllowsAutomaticUpdates</key>
-	<true/>
-	<key>SUAutomaticallyUpdate</key>
-	<true/>
-	<key>SUEnableAutomaticChecks</key>
-	<true/>
-	<key>SUFeedURL</key>
-	<string>https://github.com/matthewthomas94/relay-runner-updates/releases/latest/download/appcast.xml</string>
-	<key>SUPublicEDKey</key>
-	<string>a7hLtPfE0+/AM/igmohxiCV/GXonRJKUPuAzScAeXPo=</string>
-	<key>SUScheduledCheckInterval</key>
-	<integer>86400</integer>
+    <key>CFBundleExecutable</key>
+    <string>relay-runner</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.relayrunner.app</string>
+    <key>CFBundleName</key>
+    <string>Relay Runner</string>
+    <key>CFBundleDisplayName</key>
+    <string>Relay Runner</string>
+    <key>CFBundleVersion</key>
+    <string>103</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.4.99</string>
+    <!-- Sparkle update feed and EdDSA public key. Keep these in sync with docs/release-updates.md. -->
+    <key>SUFeedURL</key>
+    <string>https://github.com/matthewthomas94/relay-runner-updates/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>a7hLtPfE0+/AM/igmohxiCV/GXonRJKUPuAzScAeXPo=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
+    <key>SUAllowsAutomaticUpdates</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Relay Runner uses the microphone for speech-to-text.</string>
+    <!-- Screen Recording is requested by the app-hosted Relay Vision screenshot
+         path and by an explicitly started Note Taker system-audio stream. Normal
+         voice commands and Relay Actions work without it. -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Relay Runner uses Screen Recording for optional Relay Vision screenshots and, when you start Note Taker, to capture computer and meeting audio. Normal voice commands and Relay Actions work without this permission.</string>
 </dict>
 </plist>
