@@ -2329,9 +2329,21 @@ final class AppState {
         }
 
         // Restart STT if settings changed, after any in-flight command capture.
-        if oldConfig.stt != newConfig.stt {
+        if Self.sttSettingsRequireRestart(old: oldConfig.stt, new: newConfig.stt) {
             restartSTTAfterCurrentRecording()
         }
+    }
+
+    /// Any STT change, including the True Whisper toggle, rebuilds the engine.
+    static func sttSettingsRequireRestart(old: SttConfig, new: SttConfig) -> Bool {
+        old != new
+    }
+
+    /// True Whisper enrollment changed the saved templates. The engine builds
+    /// its classifier at start, so rebuild it when lip reading is on.
+    func trueWhisperTemplatesChanged() {
+        guard isRunning, config.stt.true_whisper else { return }
+        restartSTTAfterCurrentRecording()
     }
 
     private func restartSTTAfterCurrentRecording() {

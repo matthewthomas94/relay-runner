@@ -213,6 +213,26 @@ final class TrueWhisperSettingsModelTests: XCTestCase {
         XCTAssertTrue(model.showsPermissionNote(enabled: false))
     }
 
+    func testFinishedRecordingAndClearNotifyTheEngineOfNewTemplates() async throws {
+        let store = TemplateStore(url: dir.appendingPathComponent("templates.json"))
+        try store.save(TrueWhisperFixtures.templates(perLabel: 3))
+        var changes = 0
+        let enrollment = TrueWhisperEnrollment(
+            store: store,
+            makeSource: { PushFrameSource(framesOnStart: 1, startError: LipCaptureError.notAuthorized) },
+            speak: { _ in }
+        )
+        let model = TrueWhisperSettingsModel(
+            permission: FakeCameraPermission(.granted), enrollment: enrollment, onTemplatesChanged: { changes += 1 })
+
+        model.record("stop")
+        for _ in 0..<200 where changes == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(changes, 1)
+
+        model.clearAll()
+        XCTAssertEqual(changes, 2)
+    }
+
     func testDescriptions() {
         XCTAssertTrue(TrueWhisperSettingsModel.toggleDescription(isReady: false).hasSuffix("at least two words are enrolled below."))
         XCTAssertTrue(TrueWhisperSettingsModel.toggleDescription(isReady: true).hasSuffix("no video is stored."))

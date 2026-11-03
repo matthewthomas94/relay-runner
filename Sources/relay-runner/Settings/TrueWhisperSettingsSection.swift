@@ -49,13 +49,18 @@ final class TrueWhisperSettingsModel {
     @ObservationIgnored let permission: TrueWhisperCameraPermission
     @ObservationIgnored private let evaluate: @Sendable ([Template]) -> Evaluation?
     @ObservationIgnored private var readoutTask: Task<Void, Never>?
+    /// Called after a recording or Clear changes the saved templates, so the
+    /// running engine picks them up without a relaunch.
+    @ObservationIgnored private let onTemplatesChanged: () -> Void
 
     init(
         permission: TrueWhisperCameraPermission,
         enrollment: TrueWhisperEnrollment? = nil,
-        evaluate: @escaping @Sendable ([Template]) -> Evaluation? = { Evaluation.run(templates: $0, permutations: 100) }
+        evaluate: @escaping @Sendable ([Template]) -> Evaluation? = { Evaluation.run(templates: $0, permutations: 100) },
+        onTemplatesChanged: @escaping () -> Void = {}
     ) {
         self.permission = permission
+        self.onTemplatesChanged = onTemplatesChanged
         self.enrollment = enrollment ?? TrueWhisperEnrollment()
         self.evaluate = evaluate
     }
@@ -96,12 +101,14 @@ final class TrueWhisperSettingsModel {
         Task { [weak self] in
             await self?.enrollment.waitUntilIdle()
             self?.refreshReadout()
+            self?.onTemplatesChanged()
         }
     }
 
     func clearAll() {
         try? enrollment.clearAll()
         refreshReadout()
+        onTemplatesChanged()
     }
 
     /// Runs leave-one-out evaluation off the main thread over the words with
@@ -165,9 +172,9 @@ struct TrueWhisperSettingsSection: View {
     @State private var confirmClear = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(enabled: Binding<Bool>, permission: TrueWhisperCameraPermission) {
+    init(enabled: Binding<Bool>, permission: TrueWhisperCameraPermission, onTemplatesChanged: @escaping () -> Void = {}) {
         _enabled = enabled
-        _model = State(initialValue: TrueWhisperSettingsModel(permission: permission))
+        _model = State(initialValue: TrueWhisperSettingsModel(permission: permission, onTemplatesChanged: onTemplatesChanged))
     }
 
     private var enrollment: TrueWhisperEnrollment { model.enrollment }
