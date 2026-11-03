@@ -104,7 +104,9 @@ class SamplingProfilerOnTests(unittest.TestCase):
         self.assertTrue(any(stack.endswith("test_sampling_profiler.py:_busy_until") for stack in busy_stacks))
         self.assertGreater(sum(stacks[stack] for stack in busy_stacks), 100_000)
         if profiler.measures_cpu:
-            self.assertFalse(any(stack.startswith("idle-waiter;") for stack in stacks), lines)
+            # Only its start-up CPU: waiting costs nothing.
+            idle = sum(weight for stack, weight in stacks.items() if stack.startswith("idle-waiter;"))
+            self.assertLess(idle, 10_000, lines)
 
     @unittest.skipUnless(sys.platform == "darwin", "per-thread CPU uses libproc")
     def test_darwin_reader_matches_thread_time(self):

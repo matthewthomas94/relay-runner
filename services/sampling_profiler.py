@@ -13,7 +13,8 @@ wall-clock interval instead. The output holds collapsed stacks, one
 ``thread;file.py:function;... <microseconds>`` line per stack, which
 flamegraph.pl and speedscope read directly. It is rewritten atomically every
 few seconds and when the daemon stops. The profiler's own CPU appears as the
-``(profiler)`` line, so its overhead is visible.
+``(profiler)`` line, so its overhead is visible, and CPU of threads that ran
+and exited between two samples appears as ``(exited threads)``.
 """
 
 from __future__ import annotations
@@ -130,12 +131,13 @@ class SamplingProfiler:
 
     def _run(self) -> None:
         own = threading.get_ident()
-        last_wall = time.monotonic()
+        last_wall, last_process = time.monotonic(), time.process_time()
         next_flush = last_wall + self.flush_interval
+        primed = False
         while not self._stop.wait(self.interval):
-            now = time.monotonic()
-            self._sample(own, now - last_wall)
-            last_wall = now
+            now, process = time.monotonic(), time.process_time()
+            self._sample(own, now - last_wall, process - last_process, primed)
+            last_wall, last_process, primed = now, process, True
             if now >= next_flush:
                 next_flush = now + self.flush_interval
                 try:
@@ -149,10 +151,11 @@ class SamplingProfiler:
             with self._lock:
                 self._stacks[stack] = self._stacks.get(stack, 0) + micros
 
-    def _sample(self, own: int, wall: float) -> None:
+    def _sample(self, own: int, wall: float, process_cpu: float, primed: bool) -> None:
         frames = sys._current_frames()
         threads = {thread.ident: thread for thread in threading.enumerate()}
         live: set[int] = set()
+        charged = 0.0
         for ident, frame in frames.items():
             thread = threads.get(ident)
             native_id = getattr(thread, "native_id", None)
@@ -164,13 +167,14 @@ class SamplingProfiler:
                 if cpu is None:
                     continue
                 live.add(native_id)
-                previous = self._last_cpu.get(native_id)
+                # Threads that start after the first sample are charged
+                # from zero, so a short request thread is not lost.
+                previous = self._last_cpu.get(native_id, 0.0 if primed else cpu)
                 self._last_cpu[native_id] = cpu
-                if previous is None:
-                    continue
                 weight = cpu - previous
             if weight <= 0:
                 continue
+            charged += weight
             if ident == own:
                 self._charge("(profiler)", weight)
                 continue
@@ -184,6 +188,9 @@ class SamplingProfiler:
             for native_id in list(self._last_cpu):
                 if native_id not in live:
                     del self._last_cpu[native_id]
+            if primed:
+                # CPU of threads that ran and exited between two samples.
+                self._charge("(exited threads)", process_cpu - charged)
 
 
 def start_from_environment(environ: Mapping[str, str] = os.environ) -> SamplingProfiler | None:
