@@ -731,9 +731,19 @@ enum DotRippleAnimation {
 /// appear here and there across the field until it is full; falling back
 /// to 0 runs the same way in reverse, the last dots to arrive leaving first.
 enum DotPresence {
-    static let cohorts = 12
+    /// Enough cohorts, each fading briefly, that dots visibly arrive one
+    /// by one rather than the field fading as a block.
+    static let cohorts = 24
     /// The share of the presence sweep each cohort spends fading.
-    static let fade: Double = 0.4
+    static let fade: Double = 0.12
+    /// The sweep runs longer than an ordinary fade so the scatter reads.
+    static let enterDuration: TimeInterval = 0.45
+    static let exitDuration: TimeInterval = 0.35
+    /// How long content replacing a dot field waits: its exit plus a beat.
+    static let replacementDelay: TimeInterval = exitDuration + RelayMotion.replacementGap
+    /// The sweep moves at an even pace so cohorts arrive evenly spaced.
+    static var enter: Animation { .linear(duration: enterDuration) }
+    static var exit: Animation { .linear(duration: exitDuration) }
 
     /// Deals a dot to a cohort by its grid position: fixed, so a relayout
     /// never reshuffles a field mid-transition, and scattered, so the

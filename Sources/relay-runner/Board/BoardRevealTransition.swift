@@ -634,7 +634,7 @@ private final class BoardRevealSurfaceView: NSView {
         guard visible != loadingVisible else { return }
         loadingVisible = visible
         let duration = animated && window != nil
-            ? (visible ? RelayMotion.enterDuration : RelayMotion.exitDuration)
+            ? (visible ? DotPresence.enterDuration : DotPresence.exitDuration)
             : 0
         if visible {
             loadingExitEndsAt = 0

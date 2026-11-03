@@ -3961,11 +3961,13 @@ struct EmbeddedTerminalTab: View {
                     // in, then arrives once the loader has left.
                     .opacity(session.loadingStatus == nil ? 1 : 0)
                     .animation(
-                        session.loadingStatus == nil ? RelayMotion.replacingEnter : RelayMotion.exit,
+                        session.loadingStatus == nil
+                            ? RelayMotion.enter.delay(DotPresence.replacementDelay)
+                            : RelayMotion.exit,
                         value: session.loadingStatus == nil
                     )
                     .transition(.asymmetric(
-                        insertion: .opacity.animation(RelayMotion.replacingEnter),
+                        insertion: .opacity.animation(RelayMotion.enter.delay(DotPresence.replacementDelay)),
                         removal: .opacity.animation(RelayMotion.exit)
                     ))
                 }
@@ -3975,7 +3977,7 @@ struct EmbeddedTerminalTab: View {
                             .transition(.dotDisintegrateReplacing)
                     } else if !session.presentsTerminal {
                         emptyState
-                            .transition(.relayReplacing(.surface))
+                            .transition(.relayAfterDots(.surface))
                     }
                 }
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: session.loadingStatus == nil)

@@ -76,7 +76,6 @@ final class FluxDotLayers {
         }
         presence = target
         let arriving = target > from
-        let curve = arriving ? RelayMotion.enterCurve : RelayMotion.exitCurve
         let now = CACurrentMediaTime()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -92,7 +91,7 @@ final class FluxDotLayers {
             fade.beginTime = now + begin * duration
             fade.duration = (end - begin) * duration
             fade.fillMode = .both
-            fade.timingFunction = curve.mediaTimingFunction
+            fade.timingFunction = CAMediaTimingFunction(name: .linear)
             layer.removeAnimation(forKey: Self.presenceKey)
             layer.opacity = fade.toValue as? Float ?? layer.opacity
             layer.add(fade, forKey: Self.presenceKey)
@@ -236,8 +235,8 @@ extension AnyTransition {
     /// A dot field that disintegrates in and out, such as a hover fill.
     static var dotDisintegrate: AnyTransition {
         .asymmetric(
-            insertion: AnyTransition(DotDisintegrateTransition()).animation(RelayMotion.enter),
-            removal: AnyTransition(DotDisintegrateTransition()).animation(RelayMotion.exit)
+            insertion: AnyTransition(DotDisintegrateTransition()).animation(DotPresence.enter),
+            removal: AnyTransition(DotDisintegrateTransition()).animation(DotPresence.exit)
         )
     }
 
@@ -246,8 +245,21 @@ extension AnyTransition {
     /// content has finished its exit.
     static var dotDisintegrateReplacing: AnyTransition {
         .asymmetric(
-            insertion: AnyTransition(DotDisintegrateTransition()).animation(RelayMotion.replacingEnter),
-            removal: AnyTransition(DotDisintegrateTransition()).animation(RelayMotion.exit)
+            insertion: AnyTransition(DotDisintegrateTransition()).animation(
+                DotPresence.enter.delay(RelayMotion.replacementDelay)
+            ),
+            removal: AnyTransition(DotDisintegrateTransition()).animation(DotPresence.exit)
+        )
+    }
+
+    /// Content that takes the place of a disintegrating dot field: it
+    /// arrives once the dots have finished leaving, so the two never overlap.
+    static func relayAfterDots(_ style: RelayMotion.Style = .surface) -> AnyTransition {
+        .asymmetric(
+            insertion: AnyTransition(RelayTransition(style: style)).animation(
+                RelayMotion.enter.delay(DotPresence.replacementDelay)
+            ),
+            removal: AnyTransition(RelayTransition(style: style)).animation(RelayMotion.exit)
         )
     }
 }

@@ -357,9 +357,9 @@ final class SkeletonLoaderTests: XCTestCase {
     }
 
     func testDotsAreDealtIntoScatteredFixedCohorts() {
-        let bar = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 0, width: 200, height: 20), cornerRadius: 0)
-        XCTAssertEqual(Set(bar.map(\.cohort)).count, DotPresence.cohorts, "A text bar uses every cohort")
-        XCTAssertEqual(bar.map(\.cohort), SkeletonLoaderView.dots(in: CGRect(x: 0, y: 0, width: 200, height: 20), cornerRadius: 0).map(\.cohort),
+        let bar = SkeletonLoaderView.dots(in: CGRect(x: 0, y: 0, width: 200, height: 60), cornerRadius: 0)
+        XCTAssertEqual(Set(bar.map(\.cohort)).count, DotPresence.cohorts, "A panel-sized field uses every cohort")
+        XCTAssertEqual(bar.map(\.cohort), SkeletonLoaderView.dots(in: CGRect(x: 0, y: 0, width: 200, height: 60), cornerRadius: 0).map(\.cohort),
                        "The deal is fixed, so a relayout never reshuffles the field")
         let columns = Dictionary(grouping: bar) { $0.centre.x }.values
         let stripes = columns.filter { Set($0.map(\.cohort)).count == 1 }.count
@@ -378,10 +378,17 @@ final class SkeletonLoaderTests: XCTestCase {
             XCTAssertEqual(DotPresence.opacity(ofCohort: cohort, presence: 0), 0, "Nothing is there at 0")
             XCTAssertEqual(DotPresence.opacity(ofCohort: cohort, presence: 1), 1, "Everything is there at 1")
         }
-        XCTAssertEqual(DotPresence.opacity(ofCohort: 0, presence: 0.2), 0.5, accuracy: 0.0001, "The first cohort is halfway at 0.2")
+        XCTAssertEqual(DotPresence.opacity(ofCohort: 0, presence: DotPresence.fade / 2), 0.5, accuracy: 0.0001,
+                       "The first cohort is halfway through its brief fade")
         XCTAssertEqual(DotPresence.opacity(ofCohort: DotPresence.cohorts - 1, presence: 0.2), 0, "The last has not started")
         let last = DotPresence.window(ofCohort: DotPresence.cohorts - 1)
-        XCTAssertEqual(last.end, 0.95, accuracy: 0.0001, "The last cohort finishes just before the sweep ends")
+        XCTAssertLessThanOrEqual(last.end, 1, "The last cohort finishes within the sweep")
+        XCTAssertGreaterThan(last.end, 0.95, "And close to its end, so the sweep is spread evenly")
+        let midFade = (0..<DotPresence.cohorts).filter {
+            let opacity = DotPresence.opacity(ofCohort: $0, presence: 0.5)
+            return opacity > 0 && opacity < 1
+        }.count
+        XCTAssertLessThanOrEqual(midFade, 4, "Only a few cohorts fade at once, so dots arrive one by one rather than as a block")
         var previous = DotPresence.window(ofCohort: 0)
         for cohort in 1..<DotPresence.cohorts {
             let window = DotPresence.window(ofCohort: cohort)
