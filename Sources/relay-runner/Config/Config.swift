@@ -52,6 +52,9 @@ struct SttConfig: Codable, Equatable {
     var phonon_migration: String = PhononMigration.pending
     /// Model active before the automatic migration, kept for rollback.
     var phonon_migration_previous_model: String = ""
+    /// Experimental True Whisper lip reading. Takes effect only once at least
+    /// two words are enrolled; templates live in `TemplateStore`, not here.
+    var true_whisper: Bool = false
 
     enum PhononMigration {
         /// No decision recorded; an implicit v2 user may still be migrated.
