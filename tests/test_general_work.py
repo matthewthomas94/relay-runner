@@ -343,7 +343,8 @@ class GeneralCommandRoutingTests(unittest.TestCase):
         action = resolve_command_action("Fix the source code in report.py")
         self.assertEqual(action.kind, "needs_project")
         self.assertIsNone(action.repo_path)
-        project = resolve_command_action("Fix the source code in report.py", repo_path="/tmp/confirmed-project")
+        with patch.dict(os.environ, {"RELAY_WORK_STYLE": "orchestrated"}):
+            project = resolve_command_action("Fix the source code in report.py", repo_path="/tmp/confirmed-project")
         self.assertEqual(project.scope, "project")
         self.assertEqual(project.repo_path, "/private/tmp/confirmed-project" if sys.platform == "darwin" else "/tmp/confirmed-project")
 

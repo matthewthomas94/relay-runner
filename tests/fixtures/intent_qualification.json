@@ -149,7 +149,7 @@
       "id": "inline",
       "text": "Fix the login bug inline",
       "context": [],
-      "expected_bucket": "task",
+      "expected_bucket": "action",
       "expected_action_kind": "inline_work",
       "tags": [
         "inline"

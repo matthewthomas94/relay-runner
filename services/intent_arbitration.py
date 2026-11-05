@@ -511,6 +511,18 @@ def resolve_intent_disposition(
             resource_claims=resources,
         )
 
+    if kind == "inline_work" and not active:
+        return IntentDisposition(
+            intent_id=intent_id,
+            route=IntentRoute.CONTINUE_CURRENT,
+            target_work_ids=(),
+            conflicting_work_ids=(),
+            public_reason="The change is done now in this session, not on the ticket path.",
+            clarification_question=None,
+            authorization_effect=AuthorizationEffect.PRESERVE,
+            resource_claims=tuple(sorted({*resources, ExclusiveResource.REPOSITORY.value})),
+        )
+
     if project_mutation:
         reason_text = (
             "Project-changing work is queued on the native Relay ticket path."

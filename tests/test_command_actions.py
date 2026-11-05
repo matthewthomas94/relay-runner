@@ -392,6 +392,9 @@ class CommandActionsTests(unittest.TestCase):
             orch.mkdir()
             (orch / "config.toml").write_text('prefix = "RR"\nnext_id = 3\n')
 
+            # Orchestrated keeps the ticket-first route; auto and direct are
+            # covered by tests/fixtures/work_style_routing.json.
+            (repo / ".relay-runner.toml").write_text('work_style = "orchestrated"\n')
             action = resolve_command_action("fix the login retry bug", repo_path=repo)
 
             self.assertEqual(action.kind, "create_ticket")
@@ -523,6 +526,7 @@ class CommandActionsTests(unittest.TestCase):
 
     def test_work_without_project_still_avoids_board_creation(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".relay-runner.toml").write_text('work_style = "orchestrated"\n')
             action = resolve_command_action("implement the sidebar", repo_path=tmp)
 
             self.assertEqual(action.kind, "create_ticket")

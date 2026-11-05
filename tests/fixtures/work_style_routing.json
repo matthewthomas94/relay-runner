@@ -1,0 +1,515 @@
+{
+  "schema_version": 1,
+  "provenance": "Hand-labelled routes per project work style (auto, direct, orchestrated). Each entry is [bucket, action_kind] from resolve_command_action with a confirmed project path. 'undecided' means the PM decides by size or asks the user which route.",
+  "cases": [
+    {
+      "id": "edit-fade",
+      "text": "Make the title fade in slower",
+      "auto": [
+        "undecided",
+        "conversation"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "creative",
+        "undecided"
+      ]
+    },
+    {
+      "id": "edit-colour",
+      "text": "Change the background to blue",
+      "auto": [
+        "undecided",
+        "conversation"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "creative",
+        "undecided"
+      ]
+    },
+    {
+      "id": "edit-polite",
+      "text": "Can you make the intro two seconds shorter?",
+      "auto": [
+        "undecided",
+        "conversation"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "creative",
+        "polite",
+        "undecided"
+      ]
+    },
+    {
+      "id": "edit-add",
+      "text": "Add a lower third with my name at 0:12",
+      "auto": [
+        "undecided",
+        "conversation"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "creative",
+        "undecided"
+      ]
+    },
+    {
+      "id": "edit-swap",
+      "text": "Swap the second and third clips",
+      "auto": [
+        "undecided",
+        "conversation"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "creative",
+        "undecided"
+      ]
+    },
+    {
+      "id": "edit-trim",
+      "text": "Trim the last shot by half a second",
+      "auto": [
+        "undecided",
+        "conversation"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "creative",
+        "undecided"
+      ]
+    },
+    {
+      "id": "edit-typo",
+      "text": "Fix the typo in the caption",
+      "auto": [
+        "undecided",
+        "conversation"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "creative",
+        "undecided"
+      ]
+    },
+    {
+      "id": "edit-render",
+      "text": "Render it",
+      "auto": [
+        "undecided",
+        "conversation"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "creative",
+        "undecided"
+      ]
+    },
+    {
+      "id": "edit-volume",
+      "text": "Turn the music down",
+      "auto": [
+        "undecided",
+        "conversation"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "creative",
+        "undecided"
+      ]
+    },
+    {
+      "id": "code-fix",
+      "text": "Fix the login retry bug",
+      "auto": [
+        "undecided",
+        "conversation"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "code",
+        "undecided"
+      ]
+    },
+    {
+      "id": "code-build",
+      "text": "Build the onboarding retry screen and add tests",
+      "auto": [
+        "undecided",
+        "conversation"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "code",
+        "undecided"
+      ]
+    },
+    {
+      "id": "explicit-ticket",
+      "text": "Create a ticket to build the onboarding retry screen",
+      "auto": [
+        "task",
+        "create_ticket"
+      ],
+      "direct": [
+        "task",
+        "create_ticket"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "explicit-route"
+      ]
+    },
+    {
+      "id": "explicit-worker",
+      "text": "Have a worker fix the login bug",
+      "auto": [
+        "task",
+        "create_ticket"
+      ],
+      "direct": [
+        "task",
+        "create_ticket"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "explicit-route"
+      ]
+    },
+    {
+      "id": "explicit-background",
+      "text": "Fix the export pipeline in the background",
+      "auto": [
+        "task",
+        "create_ticket"
+      ],
+      "direct": [
+        "task",
+        "create_ticket"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "explicit-route"
+      ]
+    },
+    {
+      "id": "explicit-handoff",
+      "text": "Refactor the renderer and hand it off",
+      "auto": [
+        "task",
+        "create_ticket"
+      ],
+      "direct": [
+        "task",
+        "create_ticket"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "explicit-route"
+      ]
+    },
+    {
+      "id": "explicit-backlog",
+      "text": "Add caption styling to the backlog",
+      "auto": [
+        "task",
+        "create_ticket"
+      ],
+      "direct": [
+        "task",
+        "create_ticket"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "explicit-route"
+      ]
+    },
+    {
+      "id": "explicit-track",
+      "text": "Track a spike into the render failures",
+      "auto": [
+        "task",
+        "create_ticket"
+      ],
+      "direct": [
+        "task",
+        "create_ticket"
+      ],
+      "orchestrated": [
+        "task",
+        "create_ticket"
+      ],
+      "tags": [
+        "explicit-route"
+      ]
+    },
+    {
+      "id": "explicit-inline",
+      "text": "Fix the login bug inline",
+      "auto": [
+        "action",
+        "inline_work"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "action",
+        "inline_work"
+      ],
+      "tags": [
+        "explicit-route"
+      ]
+    },
+    {
+      "id": "explicit-now",
+      "text": "Change the font, just do it",
+      "auto": [
+        "action",
+        "inline_work"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "action",
+        "inline_work"
+      ],
+      "tags": [
+        "explicit-route"
+      ]
+    },
+    {
+      "id": "negated-ticket",
+      "text": "Right, don't write a ticket. Just fix it inline here.",
+      "auto": [
+        "action",
+        "inline_work"
+      ],
+      "direct": [
+        "action",
+        "inline_work"
+      ],
+      "orchestrated": [
+        "action",
+        "inline_work"
+      ],
+      "tags": [
+        "negation",
+        "explicit-route"
+      ]
+    },
+    {
+      "id": "opinion",
+      "text": "I think the transition feels off, what do you reckon?",
+      "auto": [
+        "discussion",
+        "conversation"
+      ],
+      "direct": [
+        "discussion",
+        "conversation"
+      ],
+      "orchestrated": [
+        "discussion",
+        "conversation"
+      ],
+      "tags": [
+        "discussion"
+      ]
+    },
+    {
+      "id": "figure-out",
+      "text": "Help me figure out why the render is slow",
+      "auto": [
+        "discussion",
+        "conversation"
+      ],
+      "direct": [
+        "discussion",
+        "conversation"
+      ],
+      "orchestrated": [
+        "discussion",
+        "conversation"
+      ],
+      "tags": [
+        "discussion"
+      ]
+    },
+    {
+      "id": "discuss-only",
+      "text": "Can you build this? I only want to discuss feasibility, do not implement it.",
+      "auto": [
+        "discussion",
+        "conversation"
+      ],
+      "direct": [
+        "discussion",
+        "conversation"
+      ],
+      "orchestrated": [
+        "discussion",
+        "conversation"
+      ],
+      "tags": [
+        "discussion",
+        "negation"
+      ]
+    },
+    {
+      "id": "audit-topic",
+      "text": "Okay, one thing I'd like to improve is the way that we interpret when tickets um when work is done. Can you audit what we have?",
+      "auto": [
+        "discussion",
+        "conversation"
+      ],
+      "direct": [
+        "discussion",
+        "conversation"
+      ],
+      "orchestrated": [
+        "discussion",
+        "conversation"
+      ],
+      "tags": [
+        "discussion",
+        "pending-work-topic"
+      ]
+    },
+    {
+      "id": "question",
+      "text": "How long is the intro right now?",
+      "auto": [
+        "discussion",
+        "conversation"
+      ],
+      "direct": [
+        "discussion",
+        "conversation"
+      ],
+      "orchestrated": [
+        "discussion",
+        "conversation"
+      ],
+      "tags": [
+        "discussion"
+      ]
+    },
+    {
+      "id": "open-app",
+      "text": "Open Chrome",
+      "auto": [
+        "action",
+        "direct_action"
+      ],
+      "direct": [
+        "action",
+        "direct_action"
+      ],
+      "orchestrated": [
+        "action",
+        "direct_action"
+      ],
+      "tags": [
+        "action"
+      ]
+    }
+  ]
+}

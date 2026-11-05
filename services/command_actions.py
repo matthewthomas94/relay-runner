@@ -39,7 +39,7 @@ INSPECT_RE = re.compile(
     re.IGNORECASE,
 )
 INLINE_RE = re.compile(
-    r"\b(inline|in\s+this\s+session|do\s+it\s+here|don'?t\s+dispatch|without\s+(a\s+)?ticket)\b",
+    r"\b(inline|in\s+this\s+session|do\s+it\s+(?:here|now)|just\s+do\s+it|don'?t\s+dispatch|without\s+(a\s+)?ticket)\b",
     re.IGNORECASE,
 )
 SESSION_OPERATION_RE = re.compile(
@@ -62,12 +62,73 @@ DESKTOP_CONTROL_RE = re.compile(
     re.IGNORECASE,
 )
 PENDING_WORK_RE = re.compile(
-    r"\b(?:once|when|after)\s+"
+    # Anchored to a clause start: "interpret when tickets are done" is a
+    # topic, while "once those tickets are done, merge them" is an instruction.
+    r"(?:^|[.,;:!?]\s*|\b(?:and|then|so|okay|ok)\s+)(?:once|when|after)\s+"
     r"(?:(?:all|any|the|these|those|this|that)\s+)?"
     r"(?:[A-Za-z][A-Za-z0-9]*-\d+|ticket|tickets|run|runs|worker|workers|it|they|these|those)\b"
     r"[^.?!]*\b(done|finish|finished|complete|completed|merge|merged|review|reviewed)\b",
     re.IGNORECASE,
 )
+WORK_STYLES = ("auto", "direct", "orchestrated")
+WORK_STYLE_FILE = ".relay-runner.toml"
+_WORK_STYLE_RE = re.compile(r'^\s*work_style\s*=\s*["\']?(\w+)["\']?\s*$', re.MULTILINE)
+# Words that ask for tracked or delegated work rather than an immediate change.
+EXPLICIT_TRACKING_RE = re.compile(
+    r"\b(?:ticket|tickets|backlog|board|worker|workers|sub[- ]?agents?|delegate|dispatch|"
+    r"hand\s+(?:it|this|that)\s+off|in\s+the\s+background|track\s+(?:it|this|that))\b",
+    re.IGNORECASE,
+)
+NEGATED_TICKET_RE = re.compile(
+    r"\b(?:do\s+not|don['’]?t|no|never|without)\s+(?:(?:write|create|make|open|need)\s+)?(?:an?\s+)?ticket",
+    re.IGNORECASE,
+)
+
+
+def work_styles_file() -> Path:
+    override = os.environ.get("RELAY_WORK_STYLES_FILE")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / "Library/Application Support/relay-runner/work-styles.json"
+
+
+def _workspace_work_style(repo_path: str | Path) -> str:
+    try:
+        import json
+        styles = json.loads(work_styles_file().read_text())
+        key = str(Path(repo_path).expanduser().resolve())
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(styles, dict):
+        return ""
+    for path, style in styles.items():
+        try:
+            if str(Path(path).expanduser().resolve()) == key:
+                return str(style).strip().lower()
+        except OSError:
+            continue
+    return ""
+
+
+def project_work_style(repo_path: str | Path | None = None) -> str:
+    """Return the project's work style: auto (default), direct or orchestrated.
+
+    Precedence: RELAY_WORK_STYLE, then the Workspace choice in Relay Runner's
+    `work-styles.json` (keyed by resolved project path), then `work_style` in
+    the project's `.relay-runner.toml`. Unknown values fall back to auto.
+    """
+    style = (os.environ.get("RELAY_WORK_STYLE") or "").strip().lower()
+    if not style and repo_path:
+        style = _workspace_work_style(repo_path)
+    if not style and repo_path:
+        try:
+            match = _WORK_STYLE_RE.search((Path(repo_path).expanduser() / WORK_STYLE_FILE).read_text())
+        except OSError:
+            match = None
+        style = match.group(1).lower() if match else ""
+    return style if style in WORK_STYLES else "auto"
+
+
 ORCHESTRATION_CORRECTION_RE = re.compile(
     r"\bwhy\s+did\s+you\s+(?:write|create|make|dispatch)\b.*\b(ticket|orchestrator)\b"
     r"|\bthe\s+(?:entire\s+)?point\s+is\b.*\borchestrator\b.*\b(?:write|create|author)\b.*\bticket\b"
@@ -113,6 +174,8 @@ LEADING_TARGET_CONTEXT_RE = re.compile(
 _MUTATION_VERB = (
     r"(?:add|build|change|clean\s+up|create|debug|delete|design|fix|implement|"
     r"install|make|merge|migrate|refactor|remove|repair|ship|test|wire|write|"
+    r"swap|move|trim|shorten|lengthen|slow\s+down|speed\s+up|render|export|rename|replace|"
+    r"resize|crop|mute|tweak|adjust|turn\s+(?:it|this|that|the\s+\w+)\s+(?:up|down)|"
     r"update(?!\s+(?:me|us)\b)|run(?!\s+(?:me|us)\s+through\b))"
 )
 EXPLICIT_MUTATION_REQUEST_RE = re.compile(
@@ -288,6 +351,9 @@ class CommandAction:
     reason: str = ""
     relay_command_id: str | None = None
     relay_command_seq: int | None = None
+    # A change verb with no word about tracking or timing; the project's work
+    # style decides whether that is done now, tracked, or left to the PM.
+    implicit_route: bool = False
 
     @property
     def outcome(self) -> str:
@@ -301,6 +367,8 @@ class CommandAction:
             return f"edit ticket {self.ticket_id}"
         if self.kind == "inspect_ticket" and self.ticket_id:
             return f"inspect ticket {self.ticket_id}"
+        if self.kind == "inline_work" and self.reason == "work_style_direct":
+            return "done now in this session (project work style: direct)"
         if self.kind == "inline_work":
             return "inline work explicitly requested"
         if self.kind == "direct_action":
@@ -465,7 +533,8 @@ def classify_command(text: str) -> CommandAction:
             reason="relay_runner_self_explanation",
         )
 
-    explicit_ticket = bool(re.search(r"\b(?:create|write|draft)\s+(?:a\s+)?ticket\b", source, re.IGNORECASE))
+    explicit_ticket = bool(re.search(r"\b(?:create|write|draft)\s+(?:a\s+)?ticket\b", source, re.IGNORECASE)) \
+        and not NEGATED_TICKET_RE.search(source)
     if INLINE_RE.search(source) and not explicit_ticket:
         return CommandAction(kind="inline_work", source_text=source)
 
@@ -477,11 +546,15 @@ def classify_command(text: str) -> CommandAction:
     if project_work_kind is not None:
         if SESSION_OPERATION_RE.search(source):
             return CommandAction(kind="inline_work", source_text=source)
+        implicit = (project_work_kind == "create_ticket"
+                    and not EXPLICIT_TRACKING_RE.search(source)
+                    and not DURABLE_WORK_ESCALATION_RE.search(_command_clause(source)))
         return CommandAction(
             kind=project_work_kind,
             source_text=source,
             requires_ticket=True,
             ticket_id=ticket_id if project_work_kind != "create_ticket" else None,
+            implicit_route=implicit,
         )
 
     if is_mixed_query_and_mutation(source):
@@ -534,6 +607,15 @@ def resolve_command_action(
         repo_path is None or (root and Path(repo_path).expanduser().resolve() == Path(root).expanduser().resolve()))
     if action.ticket_id and action.ticket_id.startswith("GEN-"):
         return CommandAction(**{**action.__dict__, "scope": "general", **_relay_fields(relay_command)})
+    if (action.kind == "create_ticket" and action.implicit_route
+            and repo_path is not None and not managed_general):
+        # A change verb alone doesn't say whether the user wants it now or
+        # tracked; the project's work style decides, and auto defers to the PM.
+        style = project_work_style(repo_path)
+        if style == "direct":
+            action = CommandAction(kind="inline_work", source_text=action.source_text, reason="work_style_direct")
+        elif style == "auto":
+            action = CommandAction(kind="conversation", source_text=action.source_text, reason="route_undecided")
     if action.kind != "create_ticket":
         return _with_relay(_with_repo(action, None if managed_general else repo_path), relay_command)
     if repo_path is None or managed_general:
@@ -622,9 +704,27 @@ def refined_ticket_title(source_text: str) -> str:
     return title
 
 
+ROUTE_UNDECIDED_GUIDANCE = (
+    "Relay Runner command action:\n"
+    "- action: route_undecided\n"
+    "- mutation_authorized: pending your route decision\n"
+    "- work_style: auto. The request asks for a change but doesn't say whether to do it now or track it.\n"
+    "- Do it now (Action) when it is small, reversible, quick to verify and the user is iterating.\n"
+    "- Make it a ticket (Task) when it is multi-step or long, needs an isolated branch and review, can run in "
+    "parallel, or the user wants it tracked.\n"
+    "- If neither is clearly true, ask one short question offering only the routes that fit, for example "
+    "\"Want me to change that now, put it on the board for a worker, or talk it through first?\"\n"
+    "- Name the route you took in the reply.\n"
+    "- You are the foreground orchestrator/PM. If you then create or dispatch a ticket, pass relay_command_seq and "
+    "relay_command_id; doing the change now uses no ticket."
+)
+
+
 def format_command_for_agent(action: CommandAction, disposition: dict | None = None) -> str:
     if action.kind in {"conversation", "control"}:
         prompt = action.source_text
+        if action.reason == "route_undecided":
+            prompt = f"{prompt}\n\n" + ROUTE_UNDECIDED_GUIDANCE + "\n" + _relay_prompt_lines(action).rstrip("\n")
         if action.reason in {"mixed_query_and_mutation_clarification", "mixed_scope_resolution"}:
             prompt = (
                 f"{prompt}\n\n"
@@ -675,6 +775,21 @@ def format_command_for_agent(action: CommandAction, disposition: dict | None = N
             "- Report the completed action or exact blocker concisely through the normal authoritative reply path so the messenger can speak it.",
         ])
         return _append_work_disposition("\n".join(lines), disposition)
+
+    if action.kind == "inline_work" and action.reason == "work_style_direct":
+        prompt = (
+            f"{action.source_text}\n\n"
+            "Relay Runner command action:\n"
+            "- action: inline_work\n"
+            "- ticket_id: null\n"
+            "- work_style: direct\n"
+            "- outcome_to_report: done now in this session\n"
+            f"{_relay_prompt_lines(action)}"
+            "- This project's work style is direct: make the change yourself now, verify it, and say it is done. "
+            "Create a ticket only if the user asks for tracking, a worker, or background work, or if the change is "
+            "clearly too large to finish here; then ask before writing one.\n"
+        )
+        return _append_work_disposition(prompt, disposition)
 
     if action.kind == "inline_work":
         metadata = _relay_prompt_lines(action)

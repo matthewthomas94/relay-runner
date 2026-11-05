@@ -128,9 +128,11 @@ def qualify_intent(
     unresolved = mixed or context_dependent_assent(text) or not (text or "").strip()
     if action_kind == "control":
         bucket, unresolved, mixed = None, False, False
-    elif action_kind == "direct_action":
+    elif action_kind in {"direct_action", "inline_work"}:
         bucket = "action"
-    elif action_kind in {"create_ticket", "update_ticket", "dispatch_ticket", "inline_work", "needs_project"}:
+    elif action_reason == "route_undecided":
+        bucket, unresolved = "undecided", True
+    elif action_kind in {"create_ticket", "update_ticket", "dispatch_ticket", "needs_project"}:
         bucket = "task"
     else:
         bucket = "discussion"
@@ -152,7 +154,8 @@ def format_qualification_for_agent(qualification: IntentQualification) -> str:
         f"- command_seq: {qualification.command_seq}\n"
         "- The PM qualifies the full original turn and may correct this hint. "
         "Task means authorized project, substantial General or tracked work; Action means a bounded foreground operation; "
-        "Discussion includes research and status with read-only tools.\n"
+        "Discussion includes research and status with read-only tools. "
+        "Undecided means a change request without a route signal: decide by size, or ask the user which route they want.\n"
         "- This bucket does not authorize any effect. Apply whole-turn negations and corrections. "
         "Resolve references and mixed scope from conversation; preserve ordered requests and existing accepted work. "
         "Do not invent work from an assent, a discussion, or metadata. Ticket creation, dispatch, "

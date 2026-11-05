@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 import types
 import unittest
 
@@ -14,8 +16,8 @@ except ModuleNotFoundError:
     # Match the voice-bridge harness only when optional audio dependencies are absent.
     sys.modules.setdefault("numpy", types.SimpleNamespace(asarray=lambda samples: samples, int16=object()))
 
-from command_actions import classify_command
-from intent_arbitration import ActiveWork
+from command_actions import classify_command, format_command_for_agent, project_work_style, resolve_command_action
+from intent_arbitration import ActiveWork, resolve_intent_disposition
 from intent_qualification import qualify_intent
 from relay_authorization import allowed_mutations_for_metadata
 from voice_bridge import _resolve_voice_work_items
@@ -100,6 +102,74 @@ class IntentQualificationTests(unittest.TestCase):
     def test_control_path_is_separate(self):
         for text in ("__TTS_STOP__", "Cancel RR-400"):
             self.assertIsNone(qualify_intent(text).bucket)
+
+
+class WorkStyleRoutingTests(unittest.TestCase):
+    def setUp(self):
+        self._saved = {key: os.environ.pop(key, None) for key in ("RELAY_WORK_STYLE", "RELAY_WORK_STYLES_FILE")}
+        self._styles_dir = tempfile.TemporaryDirectory()
+        os.environ["RELAY_WORK_STYLES_FILE"] = str(Path(self._styles_dir.name) / "work-styles.json")
+
+    def tearDown(self):
+        for key, value in self._saved.items():
+            os.environ.pop(key, None)
+            if value is not None:
+                os.environ[key] = value
+        self._styles_dir.cleanup()
+
+    def test_workspace_choice_beats_the_project_file_and_the_env_beats_both(self):
+        with tempfile.TemporaryDirectory() as repo:
+            (Path(repo) / ".relay-runner.toml").write_text('work_style = "orchestrated"\n')
+            self.assertEqual(project_work_style(repo), "orchestrated")
+            Path(os.environ["RELAY_WORK_STYLES_FILE"]).write_text(json.dumps({repo: "direct"}))
+            self.assertEqual(project_work_style(repo), "direct")
+            os.environ["RELAY_WORK_STYLE"] = "auto"
+            self.assertEqual(project_work_style(repo), "auto")
+
+    def test_labelled_routes_for_every_work_style(self):
+        corpus = json.loads((ROOT / "tests/fixtures/work_style_routing.json").read_text())
+        with tempfile.TemporaryDirectory() as repo:
+            for style in ("auto", "direct", "orchestrated"):
+                os.environ["RELAY_WORK_STYLE"] = style
+                for case in corpus["cases"]:
+                    with self.subTest(style=style, case=case["id"]):
+                        action = resolve_command_action(case["text"], repo_path=repo)
+                        hint = qualify_intent(case["text"], action_kind=action.kind, action_reason=action.reason)
+                        self.assertEqual([hint.bucket, action.kind], case[style])
+                        if hint.bucket == "undecided":
+                            self.assertTrue(hint.unresolved)
+                            prompt = format_command_for_agent(action)
+                            self.assertIn("ask one short question", prompt)
+                            self.assertNotIn("action: create_ticket", prompt)
+
+    def test_work_style_file_sets_the_style_and_unknown_values_fall_back_to_auto(self):
+        with tempfile.TemporaryDirectory() as repo:
+            self.assertEqual(project_work_style(repo), "auto")
+            (Path(repo) / ".relay-runner.toml").write_text('# Remotion project\nwork_style = "direct"\n')
+            self.assertEqual(project_work_style(repo), "direct")
+            action = resolve_command_action("Make the title fade in slower", repo_path=repo)
+            self.assertEqual((action.kind, action.reason), ("inline_work", "work_style_direct"))
+            self.assertIn("work_style: direct", format_command_for_agent(action))
+            (Path(repo) / ".relay-runner.toml").write_text('work_style = "sometimes"\n')
+            self.assertEqual(project_work_style(repo), "auto")
+
+    def test_without_a_confirmed_project_change_requests_still_need_a_target(self):
+        os.environ["RELAY_WORK_STYLE"] = "direct"
+        self.assertEqual(resolve_command_action("Fix the login retry bug in the repo").kind, "needs_project")
+
+    def test_inline_work_continues_now_unless_other_work_is_active(self):
+        free = resolve_intent_disposition(intent_id="a", action_kind="inline_work", action_reason="",
+                                          source_text="Fix it inline")
+        self.assertEqual(free.route.value, "continue_current")
+        busy = resolve_intent_disposition(intent_id="b", action_kind="inline_work", action_reason="",
+                                          source_text="Fix it inline",
+                                          active_work=(ActiveWork("accepted", ("repository",)),))
+        self.assertEqual(busy.route.value, "queue_project_work")
+
+    def test_pending_work_needs_a_clause_start(self):
+        self.assertEqual(classify_command("Once those tickets are done, merge them").kind, "control")
+        self.assertNotEqual(
+            classify_command("I want to improve how we interpret when tickets are done").kind, "control")
 
 
 if __name__ == "__main__":

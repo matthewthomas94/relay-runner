@@ -232,6 +232,9 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             "RELAY_RECOVERY_GENERATION": "test-generation",
             "RELAY_ACTOR_ROLE": "foreground_pm",
             "RELAY_FOREGROUND_GATE_HANDLE": "test-gate",
+            # These tests cover the ticket path's fan-out and authority; auto
+            # and direct routing live in tests/fixtures/work_style_routing.json.
+            "RELAY_WORK_STYLE": "orchestrated",
         })
         ownership.start()
         self.addCleanup(ownership.stop)
