@@ -410,6 +410,9 @@ final class AppState {
     private var notchActivityPollingActive = false
     private var notchActivityRunStates: [RunState] = []
     private var notchActivityTickets: [Ticket] = []
+    /// Whether a ready ticket waits on a predecessor, worked out once per
+    /// activity refresh instead of on every 20 Hz STT poll (RR-449).
+    @ObservationIgnored private var notchActivityHasWaitingDependency = false
     private var notchActivityTicketsByRunKey: [String: Ticket] = [:]
     private var workspaceActivitySnapshot = WorkspaceActivitySnapshot.empty
     private var onboardingNotchOverrideActive = false
@@ -681,6 +684,7 @@ final class AppState {
         updateWorkspaceActivityPolling()
         notchActivityRunStates = []
         notchActivityTickets = []
+        notchActivityHasWaitingDependency = false
         notchActivityTicketsByRunKey = [:]
         notchStatusController.clearWorkingActivity()
     }
@@ -713,6 +717,8 @@ final class AppState {
             if self.hasActiveSession {
                 self.notchActivityRunStates = snapshot.runStates
                 self.notchActivityTickets = snapshot.tickets
+                self.notchActivityHasWaitingDependency =
+                    NotchActivityLabelPlanner.hasWaitingDependency(in: snapshot.tickets)
                 self.notchActivityTicketsByRunKey = snapshot.ticketsByRunKey
             } else {
                 self.clearNotchActivityProjectState(cancelRefresh: false)
@@ -745,6 +751,7 @@ final class AppState {
         }
         notchActivityRunStates = []
         notchActivityTickets = []
+        notchActivityHasWaitingDependency = false
         notchActivityTicketsByRunKey = [:]
         syncNotchActivitySurface()
     }
@@ -821,11 +828,13 @@ final class AppState {
                 ]
             }
         )
-        let hasActiveWork = NotchActivityLabelPlanner.hasActiveWork(
+        // A waiting dependency is precomputed per activity refresh; with no
+        // tickets the planner checks everything else.
+        let hasActiveWork = notchActivityHasWaitingDependency || NotchActivityLabelPlanner.hasActiveWork(
             state: stateMachine.state,
             foregroundActivity: foregroundActivityLabel,
             activeRuns: notchActivityRunStates,
-            tickets: notchActivityTickets,
+            tickets: [],
             bridgeRecoveryInFlight: bridgeRecoveryInFlight,
             bridgeStartingUp: bridgeStartingUp,
             boardIsLoading: boardIsLoading

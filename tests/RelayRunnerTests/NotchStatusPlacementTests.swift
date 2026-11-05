@@ -397,6 +397,35 @@ final class NotchStatusPlacementTests: XCTestCase {
         XCTAssertTrue(redrawPending(), "A visible change still redraws")
     }
 
+    /// While only the looping glyph moves, the pill repaints just the glyph's
+    /// frame (RR-449). Every dot, at every phase, must stay inside it.
+    func testLoopingGlyphMotionStaysInsideTheGlyphFrame() {
+        let artwork = NotchStatusGlyph.artworkSize
+        let frame = NotchStatusPlacementPlanner.glyphSize
+        XCTAssertLessThanOrEqual(artwork.width, frame.width)
+        XCTAssertLessThanOrEqual(artwork.height, frame.height)
+        // The artwork is centred in the glyph frame.
+        let allowed = CGRect(origin: .zero, size: artwork).insetBy(
+            dx: -(frame.width - artwork.width) / 2,
+            dy: -(frame.height - artwork.height) / 2
+        )
+        let motion = NotchContentMotion()
+        for status in [NotchSessionStatus.working, .listening, .playing] {
+            XCTAssertTrue(NotchStatusGlyphMotion.shouldAnimate(status: status, reduceMotion: false))
+            for step in 0...1_200 {
+                let now = 1_000 + Double(step) * NotchStatusGlyphMotion.duration / 600
+                for dot in motion.renderedGlyphDots(status: status, now: now, reduceMotion: false) {
+                    let radius = dot.diameter / 2 + dot.softness
+                    let extent = CGRect(
+                        x: dot.center.x - radius, y: dot.center.y - radius,
+                        width: radius * 2, height: radius * 2
+                    )
+                    XCTAssertTrue(allowed.contains(extent), "\(status) dot \(dot.index) at \(now): \(extent)")
+                }
+            }
+        }
+    }
+
     private struct MountedFrameSample {
         let panelFrame: CGRect
         let glyphFrame: CGRect

@@ -916,4 +916,33 @@ final class ProcessManagerLaunchTests: XCTestCase {
             providerSessionID: "other"
         ))
     }
+
+    /// RR-449 reuses the parsed store while the file is unchanged; every
+    /// rewrite, atomic or in place, is read again.
+    func testProviderTurnStoreIsReadAgainWhenItChanges() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("provider-turns-\(UUID().uuidString).json")
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: url)
+        }
+        let store = { (state: String) in
+            #"{"schema_version": 2, "records": [{"state": "\#(state)", "provider_session_id": "current"}]}"#
+        }
+
+        try store("active").write(to: url, atomically: true, encoding: .utf8)
+        XCTAssertTrue(ProcessManager.providerTurnActive(providerTurnsURL: url, providerSessionID: "current"))
+        XCTAssertTrue(ProcessManager.providerTurnActive(providerTurnsURL: url, providerSessionID: "current"))
+
+        try store("stale!").write(to: url, atomically: true, encoding: .utf8)
+        XCTAssertFalse(ProcessManager.providerTurnActive(providerTurnsURL: url, providerSessionID: "current"))
+
+        // Same size, same inode: only the write time differs.
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.write(contentsOf: Data(store("active").utf8))
+        try handle.close()
+        XCTAssertTrue(ProcessManager.providerTurnActive(providerTurnsURL: url, providerSessionID: "current"))
+
+        try FileManager.default.removeItem(at: url)
+        XCTAssertFalse(ProcessManager.providerTurnActive(providerTurnsURL: url, providerSessionID: "current"))
+    }
 }

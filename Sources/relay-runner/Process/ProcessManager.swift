@@ -589,20 +589,70 @@ final class ProcessManager {
         providerTurnsURL: URL,
         providerSessionID: String? = nil
     ) -> Bool {
-        guard let data = try? Data(contentsOf: providerTurnsURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              (object["schema_version"] as? NSNumber)?.intValue == 2,
-              let records = object["records"] as? [[String: Any]] else {
+        guard let activeSessionIDs = activeProviderTurnSessionIDs(in: providerTurnsURL) else {
             return false
         }
-        return records.contains { record in
-            let active = (record["state"] as? String)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) == "active"
-            guard active, let providerSessionID, !providerSessionID.isEmpty else {
-                return active
-            }
-            return (record["provider_session_id"] as? String) == providerSessionID
+        guard let providerSessionID, !providerSessionID.isEmpty else {
+            return !activeSessionIDs.isEmpty
         }
+        return activeSessionIDs.contains(providerSessionID)
+    }
+
+    /// Identifies one version of a file: replacing or writing it changes
+    /// the inode, size, or change time.
+    private struct FileVersion: Equatable {
+        let path: String
+        let device: dev_t
+        let inode: ino_t
+        let size: off_t
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+        let changedSeconds: Int
+        let changedNanoseconds: Int
+
+        init?(path: String) {
+            var info = stat()
+            guard stat(path, &info) == 0 else { return nil }
+            self.path = path
+            device = info.st_dev
+            inode = info.st_ino
+            size = info.st_size
+            modifiedSeconds = info.st_mtimespec.tv_sec
+            modifiedNanoseconds = info.st_mtimespec.tv_nsec
+            changedSeconds = info.st_ctimespec.tv_sec
+            changedNanoseconds = info.st_ctimespec.tv_nsec
+        }
+    }
+
+    private static let providerTurnStoreLock = NSLock()
+    private static var providerTurnStoreCache: (version: FileVersion, activeSessionIDs: [String?]?)?
+
+    /// The `provider_session_id` of each active record, or nil when the store
+    /// is missing or unreadable. The store keeps every turn of a session
+    /// (a few hundred records, ~170 KB) and the idle app asks about it every
+    /// second, so it is parsed again only when the file changes (RR-449).
+    private static func activeProviderTurnSessionIDs(in url: URL) -> [String?]? {
+        guard let version = FileVersion(path: url.path) else { return nil }
+        providerTurnStoreLock.lock()
+        let cached = providerTurnStoreCache
+        providerTurnStoreLock.unlock()
+        if let cached, cached.version == version {
+            return cached.activeSessionIDs
+        }
+
+        var activeSessionIDs: [String?]?
+        if let data = try? Data(contentsOf: url),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           (object["schema_version"] as? NSNumber)?.intValue == 2,
+           let records = object["records"] as? [[String: Any]] {
+            activeSessionIDs = records.filter { record in
+                (record["state"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) == "active"
+            }.map { $0["provider_session_id"] as? String }
+        }
+        providerTurnStoreLock.lock()
+        providerTurnStoreCache = (version, activeSessionIDs)
+        providerTurnStoreLock.unlock()
+        return activeSessionIDs
     }
 
     struct BridgeRecoveryContext: Equatable {

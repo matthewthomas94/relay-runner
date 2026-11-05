@@ -1578,6 +1578,43 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         }
     }
 
+    func testIdleTickCreatesThenTouchesHeartbeatAtDeliveryClock() throws {
+        let fixture = try makeFixture()
+        var clock = Date(timeIntervalSince1970: 1_800_000_000.25)
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { _ in },
+            isRunning: { true },
+            now: { clock }
+        )
+        let modified = {
+            try XCTUnwrap(
+                FileManager.default.attributesOfItem(atPath: fixture.heartbeat.path)[.modificationDate] as? Date
+            ).timeIntervalSince1970
+        }
+
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.heartbeat.path))
+
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+        let touched = clock.timeIntervalSince1970
+        XCTAssertEqual(try modified(), touched, accuracy: 0.001)
+
+        // The 200 ms tick refreshes it at most once a second; its reader
+        // allows 30 s (RR-449).
+        clock = clock.addingTimeInterval(0.6)
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+        XCTAssertEqual(try modified(), touched, accuracy: 0.001)
+
+        clock = clock.addingTimeInterval(0.4)
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+        XCTAssertEqual(try modified(), clock.timeIntervalSince1970, accuracy: 0.001)
+
+        clock = clock.addingTimeInterval(7.5)
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+        XCTAssertEqual(try modified(), clock.timeIntervalSince1970, accuracy: 0.001)
+    }
+
     func testClaimPublishesMetadataBeforeSubmitAndWaitsForProviderAcknowledgement() throws {
         let fixture = try makeFixture()
         try "Fix the bridge\n".write(to: fixture.command, atomically: true, encoding: .utf8)

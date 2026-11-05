@@ -1357,6 +1357,7 @@ final class RelayVoiceCommandDelivery {
     private var deliveryOrder = 0
     private var lastProviderProgressAt: Date?
     private var lastProviderOutputAt: Date?
+    private var heartbeatTouchedAt: Date?
     private var pendingInterruptRelease: (nonce: String, sentAt: Date, turns: [[String: Any]])?
     private var interruptedTurnIdentities: Set<[String]> = []
 
@@ -2938,12 +2939,22 @@ final class RelayVoiceCommandDelivery {
         )
     }
 
+    /// Its reader allows 30 s of silence, and on a live session each touch
+    /// cost the idle app about 0.45 ms, so the 200 ms tick refreshes the
+    /// heartbeat at most once a second, with one utimes call (RR-449).
+    private static let heartbeatTouchInterval: TimeInterval = 1
+
     private func touchHeartbeat() {
-        if fileManager.fileExists(atPath: paths.heartbeat) {
-            try? fileManager.setAttributes(
-                [.modificationDate: now()],
-                ofItemAtPath: paths.heartbeat
-            )
+        let touchedAt = now()
+        if let heartbeatTouchedAt {
+            let elapsed = touchedAt.timeIntervalSince(heartbeatTouchedAt)
+            if elapsed >= 0, elapsed < Self.heartbeatTouchInterval { return }
+        }
+        let seconds = touchedAt.timeIntervalSince1970
+        let time = timeval(tv_sec: Int(seconds), tv_usec: Int32((seconds - seconds.rounded(.down)) * 1e6))
+        var times = [time, time]
+        if utimes(paths.heartbeat, &times) == 0 {
+            heartbeatTouchedAt = touchedAt
         } else {
             _ = fileManager.createFile(atPath: paths.heartbeat, contents: Data())
         }
