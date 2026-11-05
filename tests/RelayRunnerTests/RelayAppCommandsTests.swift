@@ -208,6 +208,91 @@ final class RelayAppCommandsTests: XCTestCase {
         XCTAssertEqual(blocked, "Relay Runner is still in first-run setup.")
     }
 
+    // MARK: Weakly held AppState
+
+    /// Stands in for `AppState` behind `RelayAppCommandHost(weaklyHolding:)`.
+    private final class WeakOwner: RelayAppCommandOwner {
+        var refusal: String?
+        var destinations: [RelayAppDestination] = []
+        var relayAppStatus: [String: Any] { ["app": ["version": "1.0", "build": "1"]] }
+        func openRelayAppDestination(_ destination: RelayAppDestination) -> String? {
+            if let refusal { return refusal }
+            destinations.append(destination)
+            return nil
+        }
+        var relayAppConfig = AppConfig()
+        func saveRelayAppConfig(_ config: AppConfig) { relayAppConfig = config }
+        @MainActor func selectRelayAppProject(_ projectID: String) async -> Result<String, RelayAppCommandError> {
+            projectID == "p-notes" ? .success("Opened the notes board.") : .failure(RelayAppCommandError("No project '\(projectID)'."))
+        }
+        var relayAppKeepAwakeState = KeepAwakeState.off
+        func toggleRelayAppKeepAwake() -> Bool { true }
+    }
+
+    private func bind(_ owner: WeakOwner) {
+        commands = RelayAppCommands(
+            host: RelayAppCommandHost(weaklyHolding: owner),
+            session: RelaySessionControl(host: app.sessionHost),
+            remote: remote
+        )
+        commands.settleTimeout = 5
+    }
+
+    func testWeaklyHeldNavigateSeparatesSuccessRefusalAndAGoneApp() async throws {
+        var owner: WeakOwner? = WeakOwner()
+        bind(owner!)
+        let opened = try await ok("navigate", ["destination": "settings", "settings_page": "relay_remote"])
+        XCTAssertEqual(opened["opened"] as? String, "settings")
+        XCTAssertEqual(owner?.destinations, [.settings(.relayRemote)])
+
+        owner?.refusal = "Relay Runner is still in first-run setup."
+        let refusedNavigation = await refused("navigate", ["destination": "workspace"])
+        XCTAssertEqual(refusedNavigation, "Relay Runner is still in first-run setup.")
+
+        let host = RelayAppCommandHost(weaklyHolding: owner!)
+        owner = nil
+        XCTAssertEqual(host.navigate(.workspace), RelayAppCommandHost.quittingMessage)
+        XCTAssertFalse(host.isAvailable())
+        let selection = await host.selectProject("p-notes")
+        guard case .failure(let error) = selection else { return XCTFail("select_project succeeded without an app") }
+        XCTAssertEqual(error.message, RelayAppCommandHost.quittingMessage)
+        let gone: [(String, [String: Any])] = [
+            ("app_status", [:]),
+            ("navigate", ["destination": "workspace"]),
+            ("get_settings", [:]),
+            ("set_settings", ["settings": ["tts": ["rate": 1.1]]]),
+            ("select_project", ["project_id": "p-notes"]),
+            ("keep_awake", ["on": true]),
+        ]
+        for (command, arguments) in gone {
+            let message = await refused(command, arguments)
+            XCTAssertEqual(message, RelayAppCommandHost.quittingMessage, command)
+        }
+    }
+
+    func testWeaklyHeldSelectProjectPassesResultsThrough() async throws {
+        let owner = WeakOwner()
+        bind(owner)
+        let selected = try await ok("select_project", ["project_id": "p-notes"])
+        XCTAssertEqual(selected["message"] as? String, "Opened the notes board.")
+        let missing = await refused("select_project", ["project_id": "p-gone"])
+        XCTAssertEqual(missing, "No project 'p-gone'.")
+    }
+
+    func testWeaklyHeldBeginPairingReportsTheCodeShownUnlessNavigationIsRefused() async throws {
+        let owner = WeakOwner()
+        bind(owner)
+        let shown = try await ok("relay_remote_begin_pairing")
+        XCTAssertEqual(shown["pairing"] as? String, "showing_code")
+        XCTAssertTrue((shown["qr_code"] as? String ?? "").hasPrefix("Shown on Settings > Relay Remote."), "\(shown)")
+        XCTAssertEqual(owner.destinations, [.settings(.relayRemote)])
+
+        remote.cancelPairing()
+        owner.refusal = "Relay Runner is still in first-run setup."
+        let hidden = try await ok("relay_remote_begin_pairing")
+        XCTAssertEqual(hidden["qr_code"] as? String, "Not shown: Relay Runner is still in first-run setup. Open Settings > Relay Remote to show it.")
+    }
+
     // MARK: Settings
 
     func testSetSettingsAppliesAPartialUpdateThroughSaveAndWritesConfigToml() async throws {

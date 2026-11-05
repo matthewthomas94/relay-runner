@@ -4975,20 +4975,15 @@ final class AppState {
     /// the session wheel's surfaces, Settings Save, `activate_project` and the
     /// Keep Awake toggle.
     private func relayAppCommandHost() -> RelayAppCommandHost {
-        RelayAppCommandHost(
-            status: { [weak self] in self?.relayAppStatus ?? [:] },
-            navigate: { [weak self] in self?.openRelayAppDestination($0) ?? "Relay Runner is quitting." },
-            config: { [weak self] in self?.config ?? AppConfig() },
-            saveConfig: { [weak self] in self?.saveConfig($0) },
-            selectProject: { [weak self] projectID in
-                await self?.selectRelayAppProject(projectID) ?? .failure(RelayAppCommandError("Relay Runner is quitting."))
-            },
-            keepAwakeState: { [weak self] in self?.keepAwake.state ?? .off },
-            toggleKeepAwake: { [weak self] in self?.keepAwake.toggle() ?? false }
-        )
+        RelayAppCommandHost(weaklyHolding: self)
     }
 
-    private var relayAppStatus: [String: Any] {
+    var relayAppConfig: AppConfig { config }
+    func saveRelayAppConfig(_ config: AppConfig) { saveConfig(config) }
+    var relayAppKeepAwakeState: KeepAwakeState { keepAwake.state }
+    func toggleRelayAppKeepAwake() -> Bool { keepAwake.toggle() }
+
+    var relayAppStatus: [String: Any] {
         let info = Bundle.main.infoDictionary ?? [:]
         return [
             "app": [
@@ -5003,7 +4998,7 @@ final class AppState {
         ]
     }
 
-    private func openRelayAppDestination(_ destination: RelayAppDestination) -> String? {
+    func openRelayAppDestination(_ destination: RelayAppDestination) -> String? {
         guard allowsAppShellAccess else {
             return "Relay Runner is still in first-run setup, so its Workspace and Settings are not available yet."
         }
@@ -5020,7 +5015,7 @@ final class AppState {
     }
 
     @MainActor
-    private func selectRelayAppProject(_ projectID: String) async -> Result<String, RelayAppCommandError> {
+    func selectRelayAppProject(_ projectID: String) async -> Result<String, RelayAppCommandError> {
         guard let project = registeredProjectsV2().first(where: { $0.projectID == projectID }) else {
             return .failure(RelayAppCommandError("No registered project has id '\(projectID)'. Call list_projects for the ids."))
         }
@@ -5089,3 +5084,5 @@ private final class AppStateRemoteGate: RemoteMicrophoneGate {
         owner?.sttEngine?.resumeAfterRemoteDevice(preservingGesture: preservingGesture)
     }
 }
+
+extension AppState: RelayAppCommandOwner {}

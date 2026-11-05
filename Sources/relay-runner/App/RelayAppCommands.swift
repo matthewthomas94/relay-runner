@@ -29,6 +29,46 @@ struct RelayAppCommandHost {
     var keepAwakeState: () -> KeepAwakeState
     /// `KeepAwakeController.toggle()`; false when a pending change ignores it.
     var toggleKeepAwake: () -> Bool
+    /// False once the app that supplies these closures is gone; every command then refuses.
+    var isAvailable: () -> Bool = { true }
+}
+
+/// The app side of `RelayAppCommandHost`, held weakly so a command arriving
+/// while Relay Runner quits reports that instead of a default value.
+protocol RelayAppCommandOwner: AnyObject {
+    var relayAppStatus: [String: Any] { get }
+    /// Why the surface could not be shown, or nil once it is.
+    func openRelayAppDestination(_ destination: RelayAppDestination) -> String?
+    var relayAppConfig: AppConfig { get }
+    func saveRelayAppConfig(_ config: AppConfig)
+    @MainActor func selectRelayAppProject(_ projectID: String) async -> Result<String, RelayAppCommandError>
+    var relayAppKeepAwakeState: KeepAwakeState { get }
+    func toggleRelayAppKeepAwake() -> Bool
+}
+
+extension RelayAppCommandHost {
+    static let quittingMessage = "Relay Runner is quitting."
+
+    /// Closures over a weakly held owner. A gone owner is the only quitting
+    /// case: `navigate`'s nil still means the surface opened.
+    init(weaklyHolding owner: some RelayAppCommandOwner) {
+        self.init(
+            status: { [weak owner] in owner?.relayAppStatus ?? [:] },
+            navigate: { [weak owner] destination in
+                guard let owner else { return Self.quittingMessage }
+                return owner.openRelayAppDestination(destination)
+            },
+            config: { [weak owner] in owner?.relayAppConfig ?? AppConfig() },
+            saveConfig: { [weak owner] in owner?.saveRelayAppConfig($0) },
+            selectProject: { [weak owner] projectID in
+                guard let owner else { return .failure(RelayAppCommandError(Self.quittingMessage)) }
+                return await owner.selectRelayAppProject(projectID)
+            },
+            keepAwakeState: { [weak owner] in owner?.relayAppKeepAwakeState ?? .off },
+            toggleKeepAwake: { [weak owner] in owner?.toggleRelayAppKeepAwake() ?? false },
+            isAvailable: { [weak owner] in owner != nil }
+        )
+    }
 }
 
 /// Relay App (RR-459): the app's first-party command surface, reached through
@@ -80,6 +120,7 @@ final class RelayAppCommands {
     }
 
     func run(_ command: String, _ arguments: [String: Any]) async -> Result<[String: Any], RelayAppCommandError> {
+        guard host.isAvailable() else { return .failure(RelayAppCommandError(RelayAppCommandHost.quittingMessage)) }
         do {
             return .success(try await perform(command, Arguments(command: command, values: arguments)))
         } catch let error as RelayAppCommandError {

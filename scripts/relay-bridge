@@ -2056,7 +2056,10 @@ if [ -f "$HOME/.claude/skills/relay-dispatch/SKILL.md" ] \
     available_agents_have_mcp relay-orchestrator relay-orchestrator-mcp && ORCH_OK=true
 fi
 
-if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $AGENT_CLI_OK || ! $RELAY_SKILLS_OK || ! $RELAY_MCP_OK || ! $ORCH_OK; then
+# Every MCP flag gates the block: an existing install whose Relay Actions entry
+# is healthy still needs any later server (Vision, Desktop, App) registered.
+if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $AGENT_CLI_OK || ! $RELAY_SKILLS_OK || ! $RELAY_MCP_OK \
+   || ! $RELAY_VISION_MCP_OK || ! $RELAY_DESKTOP_MCP_OK || ! $RELAY_APP_MCP_OK || ! $ORCH_OK; then
     echo ''
     echo '╔══════════════════════════════════════════╗'
     echo '║  Relay Runner — First-time setup         ║'

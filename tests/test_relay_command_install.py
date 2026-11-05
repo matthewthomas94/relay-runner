@@ -453,5 +453,48 @@ class McpRegistrationTests(RelayInstallHarness):
         )
 
 
+
+class ExistingInstallSetupTests(RelayInstallHarness):
+    """RR-459: setup on an otherwise healthy install registers missing servers."""
+
+    SERVERS = ("relay-actions", "relay-vision", "relay-desktop", "relay-app", "relay-orchestrator")
+
+    def test_missing_relay_app_and_desktop_are_registered_for_both_providers(self):
+        macos = self.expected_mcp.parent
+        for server in self.SERVERS:
+            executable(macos / f"{server}-mcp", "#!/bin/bash\nexit 0\n")
+        support = self.home / "Library" / "Application Support" / "relay-runner"
+        # Healthy venv, speech models, skills and orchestrator plist.
+        executable(support / "services" / ".venv" / "bin" / "python3", "#!/bin/bash\nexit 0\n")
+        kokoro = self.home / ".local" / "share" / "kokoro"
+        kokoro.mkdir(parents=True)
+        for name in ("kokoro-v1.0.onnx", "voices-v1.0.bin"):
+            (kokoro / name).write_text("")
+        for provider in (".claude", ".codex"):
+            for skill in ("relay-bridge", "relay-stop", "relay-dispatch", "relay-workflow"):
+                path = self.home / provider / "skills" / skill / "SKILL.md"
+                path.parent.mkdir(parents=True)
+                path.write_text("")
+        plist = self.home / "Library" / "LaunchAgents" / "com.relay.orchestrator.plist"
+        plist.parent.mkdir(parents=True)
+        plist.write_text("")
+        for server in ("relay-actions", "relay-vision", "relay-orchestrator"):
+            binary = str(macos / f"{server}-mcp")
+            (self.state / f"claude-user-{server}").write_text(binary)
+            (self.state / f"codex-{server}").write_text(binary)
+
+        result = self.run_script("relay-bridge", "--venv-only")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for server in ("relay-desktop", "relay-app"):
+            binary = str(macos / f"{server}-mcp")
+            self.assertEqual((self.state / f"claude-user-{server}").read_text(), binary)
+            self.assertEqual((self.state / f"codex-{server}").read_text(), binary)
+        log = (self.state / "log").read_text()
+        for server in ("relay-actions", "relay-vision", "relay-orchestrator"):
+            self.assertNotIn(f"add -s user {server} ", log)
+            self.assertNotIn(f"codex mcp add {server} ", log)
+
+
 if __name__ == "__main__":
     unittest.main()
