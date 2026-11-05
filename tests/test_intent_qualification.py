@@ -16,7 +16,9 @@ except ModuleNotFoundError:
     # Match the voice-bridge harness only when optional audio dependencies are absent.
     sys.modules.setdefault("numpy", types.SimpleNamespace(asarray=lambda samples: samples, int16=object()))
 
-from command_actions import classify_command, format_command_for_agent, project_work_style, resolve_command_action
+from command_actions import (
+    classify_command, format_command_for_agent, project_work_style, resolve_command_action, set_project_work_style,
+)
 from intent_arbitration import ActiveWork, resolve_intent_disposition
 from intent_qualification import qualify_intent
 from relay_authorization import allowed_mutations_for_metadata
@@ -116,6 +118,37 @@ class WorkStyleRoutingTests(unittest.TestCase):
             if value is not None:
                 os.environ[key] = value
         self._styles_dir.cleanup()
+
+    def test_switching_style_by_voice_is_a_foreground_action_not_a_ticket(self):
+        for text, style in (
+            ("Switch to direct mode", "direct"),
+            ("Okay, can you change to orchestrated mode?", "orchestrated"),
+            ("Set the work style to auto", "auto"),
+            ("Use direct mode for this project", "direct"),
+        ):
+            with self.subTest(text=text):
+                action = classify_command(text)
+                self.assertEqual((action.kind, action.reason), ("direct_action", "set_work_style"))
+                self.assertEqual(qualify_intent(text).bucket, "action")
+                prompt = format_command_for_agent(action)
+                self.assertIn(f"relay-work-style set {style}", prompt)
+                self.assertIn("Do not create a ticket", prompt)
+        self.assertNotEqual(classify_command("What does direct mode do?").reason, "set_work_style")
+
+    def test_setter_and_cli_write_the_file_the_workspace_reads(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as repo:
+            set_project_work_style(repo, "orchestrated")
+            self.assertEqual(project_work_style(repo), "orchestrated")
+            out = subprocess.run(
+                [str(ROOT / "scripts/relay-work-style"), "set", "direct", "--repo", repo],
+                capture_output=True, text=True, check=True, env=dict(os.environ),
+            ).stdout
+            self.assertIn("direct (makes changes now", out)
+            styles = json.loads(Path(os.environ["RELAY_WORK_STYLES_FILE"]).read_text())
+            self.assertEqual(styles, {str(Path(repo).resolve()): "direct"})
+            with self.assertRaises(ValueError):
+                set_project_work_style(repo, "sometimes")
 
     def test_workspace_choice_beats_the_project_file_and_the_env_beats_both(self):
         with tempfile.TemporaryDirectory() as repo:

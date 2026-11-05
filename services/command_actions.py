@@ -110,6 +110,31 @@ def _workspace_work_style(repo_path: str | Path) -> str:
     return ""
 
 
+def set_project_work_style(repo_path: str | Path, style: str) -> str:
+    """Save the project's work style where the Workspace picker keeps it."""
+    style = (style or "").strip().lower()
+    if style not in WORK_STYLES:
+        raise ValueError(f"work style must be one of {', '.join(WORK_STYLES)}")
+    import json
+    import tempfile
+    path = work_styles_file()
+    try:
+        styles = json.loads(path.read_text())
+        if not isinstance(styles, dict):
+            styles = {}
+    except (OSError, ValueError):
+        styles = {}
+    key = str(Path(repo_path).expanduser().resolve())
+    styles = {k: v for k, v in styles.items() if str(Path(k).expanduser().resolve()) != key}
+    styles[key] = style
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, suffix=".tmp") as handle:
+        json.dump(styles, handle, indent=2, sort_keys=True)
+        temp = handle.name
+    os.replace(temp, path)
+    return style
+
+
 def project_work_style(repo_path: str | Path | None = None) -> str:
     """Return the project's work style: auto (default), direct or orchestrated.
 
@@ -127,6 +152,24 @@ def project_work_style(repo_path: str | Path | None = None) -> str:
             match = None
         style = match.group(1).lower() if match else ""
     return style if style in WORK_STYLES else "auto"
+
+
+# "Switch to direct mode", "set the work style to orchestrated", "use auto mode".
+WORK_STYLE_SWITCH_RE = re.compile(
+    r"^\s*(?:(?:hey|hi|okay|ok|so|please|can\s+you|could\s+you)\b[,!\s]*)*"
+    r"(?:switch|change|set|use|go|move|put)\b[^.?!]{0,40}?\b(?P<style>auto|direct|orchestrated)\s+"
+    r"(?:mode|work\s*style|style)\b"
+    r"|^\s*(?:(?:okay|ok|so|please)\b[,!\s]*)*(?:set|change|switch)\s+(?:the\s+)?(?:work\s*style|mode)\s+"
+    r"(?:to\s+|into\s+)?(?P<style2>auto|direct|orchestrated)\b",
+    re.IGNORECASE,
+)
+
+
+def requested_work_style(text: str) -> str | None:
+    match = WORK_STYLE_SWITCH_RE.search(text or "")
+    if not match:
+        return None
+    return (match.group("style") or match.group("style2")).lower()
 
 
 ORCHESTRATION_CORRECTION_RE = re.compile(
@@ -491,6 +534,9 @@ def classify_command(text: str) -> CommandAction:
     if explicit_cancel_requested(source):
         return CommandAction(kind="control", source_text=source, reason="cancel")
 
+    if requested_work_style(source):
+        return CommandAction(kind="direct_action", source_text=source, reason="set_work_style")
+
     # Qualify the complete turn before a positive opening clause can create work.
     if discussion_only_requested(source):
         return CommandAction(kind="conversation", source_text=source, reason="discussion_only")
@@ -762,6 +808,14 @@ def format_command_for_agent(action: CommandAction, disposition: dict | None = N
         if action.repo_path:
             lines.append(f"- repo_path: {action.repo_path}")
         lines.extend(_relay_prompt_lines(action).splitlines())
+        if action.reason == "set_work_style":
+            style = requested_work_style(action.source_text)
+            lines.extend([
+                f"- work_style_requested: {style}",
+                f"- Set it now with `relay-work-style set {style}` (installed at /Applications/Relay Runner.app/"
+                "Contents/SharedSupport/scripts/relay-work-style) for this session's project, then confirm in one "
+                "sentence what the style now does. It applies from the next request; no ticket.",
+            ])
         lines.extend([
             "",
             "Foreground computer-action contract:",

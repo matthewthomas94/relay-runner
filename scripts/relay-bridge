@@ -499,6 +499,7 @@ install_skills() {
     local stop_md="$claude_skills_dir/relay-stop/SKILL.md"
     local dispatch_md="$claude_skills_dir/relay-dispatch/SKILL.md"
     local workflow_md="$claude_skills_dir/relay-workflow/SKILL.md"
+    local work_style_md="$claude_skills_dir/work-style/SKILL.md"
     local legacy_link_md="$cmds_dir/relay-link-project.md"
     local legacy_orchestrate_md="$cmds_dir/relay-orchestrate.md"
     local legacy_pm_sync_md="$cmds_dir/pm-sync.md"
@@ -512,13 +513,16 @@ install_skills() {
     local codex_stop_md="$codex_stop_dir/SKILL.md"
     local codex_dispatch_md="$codex_dispatch_dir/SKILL.md"
     local codex_workflow_md="$codex_workflow_dir/SKILL.md"
+    local codex_work_style_dir="$codex_skills_dir/work-style"
+    local codex_work_style_md="$codex_work_style_dir/SKILL.md"
     local relay_bridge_path="$SCRIPT_DIR/relay-bridge"
     local relay_reply_helper_path="$SERVICES_BUNDLE/relay_reply.py"
     local staged
 
     mkdir -p "$(dirname "$bridge_md")" "$(dirname "$stop_md")" \
-        "$(dirname "$dispatch_md")" "$(dirname "$workflow_md")"
-    mkdir -p "$codex_bridge_dir" "$codex_stop_dir" "$codex_dispatch_dir" "$codex_workflow_dir"
+        "$(dirname "$dispatch_md")" "$(dirname "$workflow_md")" "$(dirname "$work_style_md")"
+    mkdir -p "$codex_bridge_dir" "$codex_stop_dir" "$codex_dispatch_dir" "$codex_workflow_dir" \
+        "$codex_work_style_dir"
 
     # Relay-named launchers from earlier releases (the project-linking flow
     # and the relay-orchestrate → relay-dispatch rename) could carry Linear
@@ -1556,6 +1560,67 @@ osascript -e 'tell application "Terminal" to activate' \
 ```
 CODEX_DISPATCH_MD_EOF
     install_relay_command "$mode" "$staged" "$codex_dispatch_md"
+
+    # Generated from services/instructions/commands/relay-work-style.md.
+    staged="$work_style_md.relay-new"
+    cat > "$staged" <<'WORK_STYLE_MD_EOF'
+---
+name: work-style
+description: Use when the user runs /work-style or asks to show or change the project's Relay work style (auto, direct or orchestrated) during a session.
+---
+
+Show or change how this project's Relay sessions route change requests. The choice is saved for the project and applies from the next request, without restarting the session. The Workspace's Start menu and voice requests such as "switch to direct mode" change the same setting.
+
+| Style | What it does |
+|---|---|
+| `auto` | Decides per request: small, quick, reversible changes are done now; large or long work becomes a ticket. Asks when unsure. Default. |
+| `direct` | Makes changes now in this session. A ticket only when the user asks for tracking, a worker or background work. |
+| `orchestrated` | Turns every change request into a ticket for a worker. |
+
+## Steps
+
+1. Read the requested style from the arguments (`/work-style direct`). With no argument, show the current style and stop.
+2. Run the helper for the current project. In an installed app it is `/Applications/Relay Runner.app/Contents/SharedSupport/scripts/relay-work-style`; inside the relay-runner repository, `scripts/relay-work-style` also works.
+
+```bash
+"/Applications/Relay Runner.app/Contents/SharedSupport/scripts/relay-work-style" set direct
+```
+
+   Use `show` instead of `set <style>` to read it. Pass `--repo <path>` when the session's project is not the current directory's git project.
+3. Confirm in one sentence: the project, the new style and what it now does. Create no ticket and dispatch nothing.
+WORK_STYLE_MD_EOF
+    install_relay_command "$mode" "$staged" "$work_style_md"
+
+    staged="$codex_work_style_md.relay-new"
+    cat > "$staged" <<'CODEX_WORK_STYLE_MD_EOF'
+---
+name: work-style
+description: Show or change the project's Relay work style (auto, direct or orchestrated) during a session. Use when the user asks for /work-style or to switch mode.
+---
+
+# work-style
+
+Show or change how this project's Relay sessions route change requests. The choice is saved for the project and applies from the next request, without restarting the session. The Workspace's Start menu and voice requests such as "switch to direct mode" change the same setting.
+
+| Style | What it does |
+|---|---|
+| `auto` | Decides per request: small, quick, reversible changes are done now; large or long work becomes a ticket. Asks when unsure. Default. |
+| `direct` | Makes changes now in this session. A ticket only when the user asks for tracking, a worker or background work. |
+| `orchestrated` | Turns every change request into a ticket for a worker. |
+
+## Steps
+
+1. Read the requested style from the arguments (`/work-style direct`). With no argument, show the current style and stop.
+2. Run the helper for the current project. In an installed app it is `/Applications/Relay Runner.app/Contents/SharedSupport/scripts/relay-work-style`; inside the relay-runner repository, `scripts/relay-work-style` also works.
+
+```bash
+"/Applications/Relay Runner.app/Contents/SharedSupport/scripts/relay-work-style" set direct
+```
+
+   Use `show` instead of `set <style>` to read it. Pass `--repo <path>` when the session's project is not the current directory's git project.
+3. Confirm in one sentence: the project, the new style and what it now does. Create no ticket and dispatch nothing.
+CODEX_WORK_STYLE_MD_EOF
+    install_relay_command "$mode" "$staged" "$codex_work_style_md"
 }
 
 find_claude_bin() {
@@ -2033,6 +2098,8 @@ RELAY_SKILLS_OK=false
     && [ -f "$HOME/.claude/skills/relay-stop/SKILL.md" ] \
     && [ -f "$HOME/.codex/skills/relay-bridge/SKILL.md" ] \
     && [ -f "$HOME/.codex/skills/relay-stop/SKILL.md" ] \
+    && [ -f "$HOME/.claude/skills/work-style/SKILL.md" ] \
+    && [ -f "$HOME/.codex/skills/work-style/SKILL.md" ] \
     && RELAY_SKILLS_OK=true
 # The Relay Actions MCP server gives available agents click/type/screen-control
 # tools for UAT and dashboard automation. Treat setup as healthy only when every

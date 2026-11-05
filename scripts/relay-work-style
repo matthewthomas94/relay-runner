@@ -1,0 +1,14 @@
+#!/bin/bash
+# Show or set the current project's Relay work style; shared by Codex and Claude.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+for candidate in "$HOME/Library/Application Support/relay-runner/python/bin/python3" \
+    "$HOME/Library/Application Support/relay-runner/services/.venv/bin/python" \
+    /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if [[ -x "$candidate" ]]; then
+        exec "$candidate" -B "$PROJECT_ROOT/services/work_style_cli.py" "$@"
+    fi
+done
+echo "relay-work-style requires Relay's bundled Python or a local Python 3" >&2
+exit 1

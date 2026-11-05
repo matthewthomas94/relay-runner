@@ -297,7 +297,7 @@ fi
 cp "$AGENT_DESKTOP_DIR/LICENSE" "$THIRD_PARTY_LICENSES_DIR/agent-desktop.txt"
 
 # Python services
-for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py intent_qualification.py continuity_incidents.py continuity_agent.py continuity_recovery.py continuity_reports.py continuity_resume.py relay_authorization.py relay_remote.py relay_remote_protocol.py intent_arbitration.py intent_inbox.py provider_turn_broker.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py claude_subscription.py harness_update.py \
+for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py work_style_cli.py intent_qualification.py continuity_incidents.py continuity_agent.py continuity_recovery.py continuity_reports.py continuity_resume.py relay_authorization.py relay_remote.py relay_remote_protocol.py intent_arbitration.py intent_inbox.py provider_turn_broker.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py claude_subscription.py harness_update.py \
          custom_voice.py custom_voice_worker.py custom_voice_install.py voice_audio_lease.py speech_player.py remote_audio.py \
          artifact_lifecycle.py artifact_migration.py artifact_migration_cli.py artifact_history_cli.py automatic_retention.py \
          artifact_catalog.py artifact_retention.py artifact_rollout.py artifact_rollout_cli.py artifact_store.py artifact_sync.py note_contract.py project_notes.py global_notes.py general_work.py personal_file_storage.py personal_notes.py note_metadata.py \
@@ -321,6 +321,8 @@ cp "$PROJECT_ROOT/scripts/relay-artifact-migrate" "$APP_DIR/Contents/SharedSuppo
 chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-artifact-migrate"
 cp "$PROJECT_ROOT/scripts/relay-ticket-history" "$APP_DIR/Contents/SharedSupport/scripts/"
 chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-ticket-history"
+cp "$PROJECT_ROOT/scripts/relay-work-style" "$APP_DIR/Contents/SharedSupport/scripts/"
+chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-work-style"
 cp "$PROJECT_ROOT/scripts/relay-runner-fresh-install" "$APP_DIR/Contents/SharedSupport/scripts/"
 chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-runner-fresh-install"
 cp "$PROJECT_ROOT/scripts/relay-artifact-verify" "$APP_DIR/Contents/SharedSupport/scripts/"
