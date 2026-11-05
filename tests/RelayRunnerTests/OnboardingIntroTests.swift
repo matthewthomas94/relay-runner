@@ -672,6 +672,56 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
     }
 
+    func testDockReopenDuringSignInWaitRestoresTheStepForBothProviders() throws {
+        for provider in [GeneralConfig.AgentProvider.claude, .codex] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let intro = CapturingIntroPresenter()
+            let gateMessage = "Relay Runner only uses your \(provider.displayName) subscription."
+            var authenticated = false
+            let controller = OnboardingController(
+                permissions: PermissionsManager(),
+                flagURLs: OnboardingFlagURLs.testURLs(in: directory),
+                permissionStatus: { _ in .granted },
+                makeIntroController: { intro },
+                makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+                runtimeAlreadyInstalled: { _ in false },
+                isAgentAuthenticated: { _ in authenticated },
+                refreshAgentReadiness: { _, completion in
+                    DispatchQueue.main.async { completion(authenticated ? nil : gateMessage) }
+                },
+                openAgentLoginInTerminal: { _ in true },
+                runtimePollInterval: 0.01,
+                authPollInterval: 0.01,
+                introAdvanceDelay: 0,
+                loginPromptDwell: 0,
+                reduceMotion: { true }
+            )
+
+            XCTAssertFalse(controller.resumeAgentLoginIfWaiting())
+            controller.showIfNeeded()
+            if provider == .claude { intro.performClaudeAction() } else { intro.performCodexAction() }
+            waitForMainQueue(after: 0.05)
+            let promptsBeforeSignIn = intro.loginPrompts.count
+            intro.performLoginAction()
+            waitForMainQueue(after: 0.05)
+            XCTAssertEqual(intro.loginPrompts.count, promptsBeforeSignIn, "\(provider)")
+
+            // Sign-in finished but the account did not pass; the app is
+            // already active, so only the Dock click can bring setup back.
+            XCTAssertTrue(controller.resumeAgentLoginIfWaiting())
+            waitForMainQueue(after: 0.05)
+            XCTAssertEqual(intro.loginPrompts.last?.provider, provider)
+            XCTAssertEqual(intro.loginPrompts.last?.signedIn, false)
+            XCTAssertEqual(intro.loginPrompts.last?.message, gateMessage)
+            XCTAssertFalse(controller.resumeAgentLoginIfWaiting(), "\(provider)")
+        }
+    }
+
     func testLoginSuccessShowsWorkspaceLastAndWorkspaceSelectionCompletesOnboarding() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -34,6 +34,20 @@ final class ClaudeOnboardingReadinessTests: XCTestCase {
         XCTAssertTrue(login.contains("Pro, Max, Team or Enterprise subscription"))
     }
 
+    func testBothSignInCommandsReturnToRelayRunnerWhenTheyExit() throws {
+        let app = "/Applications/Relay Runner.app"
+        let claude = ClaudeAuth.loginCommand(claudePath: homebrewClaude, appPath: app)
+        let codex = CodexAuth.loginCommand(codexPath: "/opt/homebrew/bin/codex", appPath: app)
+        for (command, login) in [(claude, "auth login --claudeai; "), (codex, "' login; ")] {
+            XCTAssertTrue(command.hasSuffix("open -a '/Applications/Relay Runner.app'"), command)
+            let loginRange = try XCTUnwrap(command.range(of: login))
+            let returnRange = try XCTUnwrap(command.range(of: "open -a"))
+            XCTAssertLessThan(loginRange.lowerBound, returnRange.lowerBound)
+            // The command runs inside an AppleScript string literal.
+            XCTAssertFalse(command.contains("\""))
+        }
+    }
+
     func testInstallerSymlinkIsPreferredAndNpmInstallsAreFoundThroughTheLaunchShell() {
         let local = (NSHomeDirectory() as NSString).appendingPathComponent(".local/bin/claude")
         XCTAssertEqual(ClaudeAuth.candidatePaths, [local, homebrewClaude, "/usr/local/bin/claude"])

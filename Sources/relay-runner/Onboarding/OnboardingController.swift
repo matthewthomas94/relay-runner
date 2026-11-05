@@ -856,6 +856,16 @@ final class OnboardingController {
         }
     }
 
+    /// A Dock click during the sign-in wait. When Relay Runner is already
+    /// active no activation notification fires, so this is the other way
+    /// back to the sign-in step. Returns false when onboarding isn't waiting.
+    @discardableResult
+    func resumeAgentLoginIfWaiting() -> Bool {
+        guard authPollTimer != nil, let provider = agentSetupState?.provider else { return false }
+        restoreLoginIfAuthenticationDidNotComplete(provider: provider)
+        return true
+    }
+
     private func restoreLoginIfAuthenticationDidNotComplete(provider: GeneralConfig.AgentProvider) {
         refreshAgentReadiness(provider) { [weak self] detail in
             guard let self,

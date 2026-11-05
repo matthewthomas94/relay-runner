@@ -3350,7 +3350,10 @@ final class AppState {
     }
 
     func showWorkspaceSettings() {
-        guard allowsAppShellAccess else { return }
+        guard allowsAppShellAccess else {
+            onboarding.resumeAgentLoginIfWaiting()
+            return
+        }
         if overlayController == nil { startOverlay() }
         programBoardOverlay.showSettings()
     }

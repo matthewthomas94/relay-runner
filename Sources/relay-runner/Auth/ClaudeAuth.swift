@@ -59,10 +59,13 @@ enum ClaudeAuth {
     /// `claude auth login` exits on its own, unlike `claude /login`, which
     /// opens a full interactive session. `--claudeai` picks subscription
     /// sign-in over Console; the gate still rechecks the account's plan.
-    static func loginCommand(claudePath: String) -> String {
+    /// When it exits, Relay Runner is brought back so onboarding rechecks
+    /// the account and either continues or shows why it can't.
+    static func loginCommand(claudePath: String, appPath: String = Bundle.main.bundlePath) -> String {
         "echo '[Relay Runner] Sign in with the Claude.ai account that has your Pro, Max, Team or Enterprise subscription. Relay Runner does not use Anthropic Console or API billing.'; "
             + "'\(claudePath)' auth login --claudeai; "
-            + "echo ''; echo '[Relay Runner] Return to Relay Runner to finish setup. You can close this window.'"
+            + "echo ''; echo '[Relay Runner] Returning to Relay Runner to finish setup. You can close this window.'; "
+            + AgentAuth.returnToAppCommand(appPath: appPath)
     }
 
     /// Open Terminal.app and run `claude auth login` in it. Returns once
@@ -154,13 +157,21 @@ enum CodexAuth {
         return FileManager.default.fileExists(atPath: path)
     }
 
+    /// Like Claude's, the command brings Relay Runner back when `codex login`
+    /// exits so onboarding continues or shows the sign-in step again.
+    static func loginCommand(codexPath: String, appPath: String = Bundle.main.bundlePath) -> String {
+        "'\(codexPath)' login; "
+            + "echo ''; echo '[Relay Runner] Returning to Relay Runner to finish setup. You can close this window.'; "
+            + AgentAuth.returnToAppCommand(appPath: appPath)
+    }
+
     @discardableResult
     static func openLoginInTerminal() -> Bool {
         let codex = codexBinaryPath
         let script = """
         tell application "Terminal"
             activate
-            do script "'\(codex)' login; echo ''; echo '[Relay Runner] Codex sign-in complete — you can close this window.'"
+            do script "\(loginCommand(codexPath: codex))"
         end tell
         """
         let proc = Process()
@@ -178,6 +189,13 @@ enum CodexAuth {
 }
 
 enum AgentAuth {
+    /// Reactivates this Relay Runner once a Terminal sign-in command exits.
+    /// Activation is what onboarding waits for, so a sign-in that ends
+    /// without passing the readiness check can't leave setup invisible.
+    static func returnToAppCommand(appPath: String) -> String {
+        "open -a '\(appPath)'"
+    }
+
     static func isAuthenticated(for provider: GeneralConfig.AgentProvider) -> Bool {
         switch provider {
         case .codex: return CodexAuth.isAuthenticated
