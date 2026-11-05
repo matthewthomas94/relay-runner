@@ -1539,6 +1539,83 @@ private struct ProgramAddProjectMenu: View {
     }
 }
 
+/// Start the session, or pick how it routes change requests: Auto, Direct or
+/// Orchestrated. Same split-button look as Add project.
+private struct ProgramStartSessionMenu: View {
+    let title: String
+    let help: String
+    let workStyle: ProjectWorkStyle
+    let onStart: () -> Void
+    let onSelectWorkStyle: (ProjectWorkStyle) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    private var palette: SharedActionButtonPalette { .settingsSecondary }
+
+    private var presentation: SettingsActionPresentation {
+        SettingsActionPresentation.resolve(
+            isEnabled: true,
+            isHovered: isHovered,
+            isFocused: false,
+            reduceMotion: reduceMotion
+        )
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 0) {
+            Button(action: onStart) {
+                Text(title)
+                    .font(AppTypography.font(.programAction))
+                    .lineLimit(1)
+                    .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
+                    .frame(height: SharedActionButtonMetrics.controlHeight)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("\(help) (\(workStyle.title): \(workStyle.detail.lowercased()))")
+            .accessibilityLabel(title)
+
+            Rectangle()
+                .fill(palette.stroke.opacity(presentation.sharedStrokeOpacity(for: .secondary)))
+                .frame(width: ProgramAddProjectMenuMetrics.dividerWidth, height: SharedActionButtonMetrics.controlHeight)
+
+            Menu {
+                Picker("Work style", selection: Binding(
+                    get: { workStyle },
+                    set: { onSelectWorkStyle($0) }
+                )) {
+                    ForEach(ProjectWorkStyle.allCases) { style in
+                        Text("\(style.title) — \(style.detail)").tag(style)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(AppTypography.symbolFont(size: 9, weight: .semibold))
+                    .frame(width: ProgramAddProjectMenuMetrics.disclosureWidth, height: SharedActionButtonMetrics.controlHeight)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Work style: \(workStyle.title)")
+            .accessibilityLabel("Work style, \(workStyle.title)")
+        }
+        .foregroundStyle(palette.foreground.opacity(presentation.foregroundOpacity))
+        .frame(height: SharedActionButtonMetrics.controlHeight)
+        .background(
+            SharedActionButtonSurface(prominence: .secondary, presentation: presentation, palette: palette)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius, style: .continuous))
+        .fixedSize()
+        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
+        .programButtonCursor(enabled: true)
+    }
+}
+
 private struct ProgramProjectCard: View {
     let item: ProgramStatusItem
     let isSelected: Bool
@@ -1552,6 +1629,7 @@ private struct ProgramProjectCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isFocused: Bool
     @State private var isHovered = false
+    @State private var workStyle: ProjectWorkStyle = .auto
 
     private var isEnabled: Bool {
         item.project?.path != nil
@@ -1572,15 +1650,17 @@ private struct ProgramProjectCard: View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .center, spacing: 8) {
+                    // Long repository names keep both ends; the full name is in the tooltip.
                     Text(item.project?.name ?? "Unknown project")
                         .font(AppTypography.font(.projectTitle))
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                         .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(item.project?.name ?? "")
                     if hasSession {
-                        Circle()
-                            .fill(ProgramBoardStyle.green)
-                            .frame(width: 8, height: 8)
+                        DotMatrixLoader(size: 14, color: ProgramBoardStyle.green)
                             .transition(.relayElement)
+                            .accessibilityElement()
                             .accessibilityLabel("Session running")
                             .help("Session running")
                     }
@@ -1590,7 +1670,9 @@ private struct ProgramProjectCard: View {
                     }
                     Spacer(minLength: 0)
                     // Reserves room for the actions overlaid outside the card button.
-                    actions.hidden().accessibilityHidden(true)
+                    // Fixed size: if this copy could shrink, a long name would run
+                    // under the real actions drawn on top.
+                    actions.fixedSize().hidden().accessibilityHidden(true)
                 }
 
                 ProjectBoardOverview(item: item)
@@ -1637,8 +1719,15 @@ private struct ProgramProjectCard: View {
         .programButtonCursor(enabled: isEnabled)
         .help("Show tickets for \(item.project?.name ?? "this project")")
         .overlay(alignment: .topTrailing) {
-            actions.padding(16)
+            actions.fixedSize().padding(16)
         }
+        .onAppear { refreshWorkStyle() }
+        .onChange(of: item.project?.path) { _, _ in refreshWorkStyle() }
+    }
+
+    private func refreshWorkStyle() {
+        guard let path = item.project?.path else { return }
+        workStyle = ProjectWorkStyleStore.style(for: path)
     }
 
     /// Finder, then this project's session at the far right.
@@ -1654,14 +1743,27 @@ private struct ProgramProjectCard: View {
                     onOpenInFinder()
                 }
                 let session = ProgramSessionToolbarPresentation.resolve(hasActiveSession: hasSession, provider: sessionProvider)
-                SettingsActionButton(
-                    title: session.title,
-                    systemImage: nil,
-                    prominence: .secondary,
-                    accessibilityLabel: session.title,
-                    helpText: session.help,
-                    action: hasSession ? onEndSession : onStartSession
-                )
+                if hasSession {
+                    SettingsActionButton(
+                        title: session.title,
+                        systemImage: nil,
+                        prominence: .secondary,
+                        accessibilityLabel: session.title,
+                        helpText: session.help,
+                        action: onEndSession
+                    )
+                } else {
+                    ProgramStartSessionMenu(
+                        title: session.title,
+                        help: session.help,
+                        workStyle: workStyle,
+                        onStart: onStartSession,
+                        onSelectWorkStyle: { style in
+                            workStyle = style
+                            ProjectWorkStyleStore.setStyle(style, for: path)
+                        }
+                    )
+                }
             }
         }
     }

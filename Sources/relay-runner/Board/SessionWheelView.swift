@@ -210,9 +210,9 @@ struct SessionWheelView: View {
                                 }
                             }
                         if !pickingProject, let session {
-                            Circle().fill(Color(.sRGB, red: 43 / 255, green: 17 / 255, blue: 232 / 255, opacity: 1))
-                                .frame(width: 8, height: 8)
-                                .overlay(Circle().stroke(.black, lineWidth: 2))
+                            DotMatrixLoader(size: 14, color: SessionWheelLiveIndicator.color)
+                                .padding(2)
+                                .background(Circle().fill(.black))
                             if session.unreadCount > 0 {
                                 Text("\(session.unreadCount)")
                                     .font(AppTypography.font(.smallCaption))
@@ -621,4 +621,9 @@ struct SessionWheelThumb: Shape {
         path.addLine(to: point(geometry.actionOuterRadius - 7))
         return path
     }
+}
+
+enum SessionWheelLiveIndicator {
+    /// The wheel's live-session colour, brightened so faint loader dots read on black.
+    static let color = Color(.sRGB, red: 120 / 255, green: 100 / 255, blue: 1, opacity: 1)
 }
