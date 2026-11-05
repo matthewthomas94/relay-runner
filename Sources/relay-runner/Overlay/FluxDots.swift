@@ -36,6 +36,9 @@ final class FluxDotLayers {
     let style: FluxDotStyle
     /// How much of the field is there, from 0 to 1.
     private(set) var presence: Double = 1
+    /// Whether the dots shimmer. A field that has left stops, so a hidden
+    /// hover fill costs no frames.
+    private(set) var isShimmering = true
 
     init(style: FluxDotStyle = .standard) {
         self.style = style
@@ -130,8 +133,22 @@ final class FluxDotLayers {
             }
         }
         CATransaction.commit()
+        if isShimmering {
+            startShimmer()
+        }
+    }
+
+    func startShimmer() {
+        isShimmering = true
         for cohort in phaseLayers {
             DotColumnSnakeAnimation.run(on: cohort)
+        }
+    }
+
+    func stopShimmer() {
+        isShimmering = false
+        for layer in phaseLayers.joined() {
+            layer.removeAnimation(forKey: SkeletonLoaderView.shimmerKey)
         }
     }
 }
@@ -143,8 +160,24 @@ final class FluxDotsView: NSView {
     }
 
     let dots: FluxDotLayers
+    private(set) var isVisible = true
 
     override var isFlipped: Bool { true }
+
+    /// Disintegrates the dots in or out. Core Animation runs the sweep, so
+    /// leaving plays as fully as arriving and both run at the display rate.
+    func setVisible(_ visible: Bool, animated: Bool = true) {
+        guard visible != isVisible else { return }
+        isVisible = visible
+        if visible {
+            dots.startShimmer()
+        }
+        let duration = animated ? (visible ? DotPresence.enterDuration : DotPresence.exitDuration) : 0
+        dots.animatePresence(to: visible ? 1 : 0, duration: duration) { [weak self] in
+            guard let self, !self.isVisible else { return }
+            self.dots.stopShimmer()
+        }
+    }
 
     init(cornerRadius: CGFloat, style: FluxDotStyle) {
         self.cornerRadius = cornerRadius
@@ -174,21 +207,23 @@ final class FluxDotsView: NSView {
 }
 
 /// The hover background for navigation items: shimmering dots in place of
-/// a solid fill.
+/// a solid fill. It stays mounted and disintegrates in and out with
+/// `isVisible`; a SwiftUI removal transition stops updating the view, so it
+/// could only animate the dots in.
 struct FluxDotsBackground: NSViewRepresentable {
     let cornerRadius: CGFloat
     let style: FluxDotStyle
-    @Environment(\.dotPresence) private var presence
+    let isVisible: Bool
 
     func makeNSView(context: Context) -> FluxDotsView {
         let view = FluxDotsView(cornerRadius: cornerRadius, style: style)
-        view.dots.setPresence(presence)
+        view.setVisible(isVisible, animated: false)
         return view
     }
 
     func updateNSView(_ view: FluxDotsView, context: Context) {
         view.cornerRadius = cornerRadius
-        view.dots.setPresence(presence)
+        view.setVisible(isVisible)
     }
 }
 
@@ -230,14 +265,6 @@ struct DotDisintegrateTransition: Transition {
 }
 
 extension AnyTransition {
-    /// A dot field that disintegrates in and out, such as a hover fill.
-    static var dotDisintegrate: AnyTransition {
-        .asymmetric(
-            insertion: AnyTransition(DotDisintegrateTransition()).animation(DotPresence.enter),
-            removal: AnyTransition(DotDisintegrateTransition()).animation(DotPresence.exit)
-        )
-    }
-
     /// A dot field that takes the place of content leaving, such as a
     /// skeleton loader in an `if`/`else`: it arrives only once the outgoing
     /// content has finished its exit.

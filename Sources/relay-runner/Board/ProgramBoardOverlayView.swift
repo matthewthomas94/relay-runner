@@ -1477,15 +1477,12 @@ private struct ProgramAddProjectMenu: View {
         )
     }
 
+    @State private var isPresented = false
+
+    private enum Choice: Hashable { case existing, create }
+
     var body: some View {
-        Menu {
-            Button("Add existing project", systemImage: "folder.badge.plus") {
-                onAddExistingProject()
-            }
-            Button("Create new project", systemImage: "plus") {
-                onCreateProject()
-            }
-        } label: {
+        Button { isPresented.toggle() } label: {
             HStack(alignment: .center, spacing: 0) {
                 Text(title)
                     .font(AppTypography.font(.programAction))
@@ -1526,9 +1523,7 @@ private struct ProgramAddProjectMenu: View {
                 )
             )
         }
-        .menuStyle(.button)
         .buttonStyle(.plain)
-        .menuIndicator(.hidden)
         .fixedSize()
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
         .onHover { isHovered = $0 }
@@ -1536,19 +1531,43 @@ private struct ProgramAddProjectMenu: View {
         .programButtonCursor(enabled: true)
         .accessibilityLabel("Add project")
         .help("Add an existing project or create a new project")
+        .background {
+            SettingsDropdownPresenter(isPresented: $isPresented, alignsTrailing: true) {
+                SettingsMenuOptions(
+                    title: "Add project",
+                    selection: Binding<Choice?>(
+                        get: { nil },
+                        set: { choice in
+                            switch choice {
+                            case .existing: onAddExistingProject()
+                            case .create: onCreateProject()
+                            case nil: break
+                            }
+                        }
+                    ),
+                    options: [("Add existing project", .existing), ("Create new project", .create)],
+                    showsCheckmarks: false
+                ) { isPresented = false }
+                .environment(\.colorScheme, .dark)
+            }
+        }
     }
 }
 
-/// Start the session, or pick how it routes change requests: Auto, Direct or
-/// Orchestrated. Same split-button look as Add project.
+/// Start (or end) the session, or pick how it routes change requests: Auto,
+/// Direct or Orchestrated. Same split-button look as Add project. Before a
+/// session, picking a style starts it; during one, it only changes the style,
+/// which applies from the next request.
 private struct ProgramStartSessionMenu: View {
     let title: String
     let help: String
     let workStyle: ProjectWorkStyle
+    var startsOnSelect = true
     let onStart: () -> Void
     let onSelectWorkStyle: (ProjectWorkStyle) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
+    @State private var isPresented = false
 
     private var palette: SharedActionButtonPalette { .settingsSecondary }
 
@@ -1579,28 +1598,16 @@ private struct ProgramStartSessionMenu: View {
                 .fill(palette.stroke.opacity(presentation.sharedStrokeOpacity(for: .secondary)))
                 .frame(width: ProgramAddProjectMenuMetrics.dividerWidth, height: SharedActionButtonMetrics.controlHeight)
 
-            Menu {
-                Picker("Work style", selection: Binding(
-                    get: { workStyle },
-                    set: { onSelectWorkStyle($0) }
-                )) {
-                    ForEach(ProjectWorkStyle.allCases) { style in
-                        Text("\(style.title) — \(style.detail)").tag(style)
-                    }
-                }
-                .pickerStyle(.inline)
-            } label: {
+            Button { isPresented.toggle() } label: {
                 Image(systemName: "chevron.down")
                     .font(AppTypography.symbolFont(size: 9, weight: .semibold))
                     .frame(width: ProgramAddProjectMenuMetrics.disclosureWidth, height: SharedActionButtonMetrics.controlHeight)
                     .contentShape(Rectangle())
             }
-            .menuStyle(.button)
             .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Work style: \(workStyle.title)")
-            .accessibilityLabel("Work style, \(workStyle.title)")
+            .help(startsOnSelect ? "Start with a work style (now \(workStyle.title))"
+                  : "Change the work style (now \(workStyle.title))")
+            .accessibilityLabel("Work style, now \(workStyle.title)")
         }
         .foregroundStyle(palette.foreground.opacity(presentation.foregroundOpacity))
         .frame(height: SharedActionButtonMetrics.controlHeight)
@@ -1613,6 +1620,25 @@ private struct ProgramStartSessionMenu: View {
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
         .programButtonCursor(enabled: true)
+        .background {
+            SettingsDropdownPresenter(isPresented: $isPresented, alignsTrailing: true) {
+                SettingsMenuOptions(
+                    title: "Start with a work style",
+                    selection: Binding(
+                        get: { workStyle },
+                        // Before a session, picking a style starts it with that style.
+                        set: { style in
+                            onSelectWorkStyle(style)
+                            if startsOnSelect { onStart() }
+                        }
+                    ),
+                    options: ProjectWorkStyle.allCases.map { ($0.title, $0) },
+                    // Mid-session the menu only switches style, so names suffice.
+                    subtitle: startsOnSelect ? { $0.detail } : nil
+                ) { isPresented = false }
+                .environment(\.colorScheme, .dark)
+            }
+        }
     }
 }
 
@@ -1657,13 +1683,6 @@ private struct ProgramProjectCard: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help(item.project?.name ?? "")
-                    if hasSession {
-                        DotMatrixLoader(size: 14, color: ProgramBoardStyle.green)
-                            .transition(.relayElement)
-                            .accessibilityElement()
-                            .accessibilityLabel("Session running")
-                            .help("Session running")
-                    }
                     if replyBadgeCount > 0 {
                         SessionReplyBadge(count: replyBadgeCount)
                             .transition(.relayElement)
@@ -1715,7 +1734,11 @@ private struct ProgramProjectCard: View {
         .focusable(isEnabled)
         .focusEffectDisabled(true)
         .focused($isFocused)
-        .onHover { isHovered = isEnabled && $0 }
+        .onHover { hovering in
+            isHovered = isEnabled && hovering
+            // /work-style and voice can change the style mid-session.
+            if hovering { refreshWorkStyle() }
+        }
         .programButtonCursor(enabled: isEnabled)
         .help("Show tickets for \(item.project?.name ?? "this project")")
         .overlay(alignment: .topTrailing) {
@@ -1743,27 +1766,17 @@ private struct ProgramProjectCard: View {
                     onOpenInFinder()
                 }
                 let session = ProgramSessionToolbarPresentation.resolve(hasActiveSession: hasSession, provider: sessionProvider)
-                if hasSession {
-                    SettingsActionButton(
-                        title: session.title,
-                        systemImage: nil,
-                        prominence: .secondary,
-                        accessibilityLabel: session.title,
-                        helpText: session.help,
-                        action: onEndSession
-                    )
-                } else {
-                    ProgramStartSessionMenu(
-                        title: session.title,
-                        help: session.help,
-                        workStyle: workStyle,
-                        onStart: onStartSession,
-                        onSelectWorkStyle: { style in
-                            workStyle = style
-                            ProjectWorkStyleStore.setStyle(style, for: path)
-                        }
-                    )
-                }
+                ProgramStartSessionMenu(
+                    title: session.title,
+                    help: session.help,
+                    workStyle: workStyle,
+                    startsOnSelect: !hasSession,
+                    onStart: hasSession ? onEndSession : onStartSession,
+                    onSelectWorkStyle: { style in
+                        workStyle = style
+                        ProjectWorkStyleStore.setStyle(style, for: path)
+                    }
+                )
             }
         }
     }

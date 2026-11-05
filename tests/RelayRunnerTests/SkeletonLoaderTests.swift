@@ -160,11 +160,11 @@ final class SkeletonLoaderTests: XCTestCase {
             XCTAssertEqual(dots.fillColor, SkeletonLoaderView.boneHighlightColor.cgColor, "Dots are the highlight; only their opacity moves")
             let snake = try XCTUnwrap(dots.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation)
             XCTAssertEqual(snake.keyPath, "opacity")
-            XCTAssertEqual(snake.calculationMode, .discrete, "Dotm steps between levels rather than fading")
+            XCTAssertEqual(snake.calculationMode, .linear, "Dots glide between levels at the display rate")
             XCTAssertEqual(snake.repeatCount, .infinity)
             XCTAssertEqual(snake.duration, 1.2, accuracy: 0.001, "Dotm's 1.5 s cycle at speed 1.25")
             XCTAssertEqual(snake.keyTimes?.map(\.doubleValue), DotColumnSnakeAnimation.keyTimes)
-            XCTAssertEqual(snake.values as? [Float], DotColumnSnakeAnimation.levels, "Head, then the dimming tail")
+            XCTAssertEqual(snake.values as? [Float], DotColumnSnakeAnimation.levels + [DotColumnSnakeAnimation.levels[0]], "Head, the dimming tail, then back to the head")
             let delay = Double(phase) / 5 * snake.duration
             let expectedOffset = (snake.duration - delay).truncatingRemainder(dividingBy: snake.duration)
             XCTAssertEqual(snake.timeOffset, expectedOffset, accuracy: 0.0001, "Position \(phase) lights a fifth of a cycle after the last")
@@ -296,7 +296,7 @@ final class SkeletonLoaderTests: XCTestCase {
                 if !RelayLayerMotion.reduceMotion {
                     let ripple = try XCTUnwrap(layer.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation,
                                                "Cohort \(cohort) phase \(phase) shimmers")
-                    XCTAssertEqual(ripple.values as? [Float], DotColumnSnakeAnimation.levels, "With the snake's levels")
+                    XCTAssertEqual(ripple.values as? [Float], DotColumnSnakeAnimation.loopValues, "With the snake's levels")
                 }
             }
         }
@@ -438,5 +438,24 @@ final class SkeletonLoaderTests: XCTestCase {
         view.dots.animatePresence(to: 1, duration: 0) { done.fulfill() }
         wait(for: [done], timeout: 1)
         XCTAssertTrue(view.dots.cohortLayers.allSatisfy { $0.opacity == 1 && $0.animation(forKey: FluxDotLayers.presenceKey) == nil })
+    }
+
+    func testHoverDotsDisintegrateOutAsWellAsIn() throws {
+        let view = FluxDotsView(cornerRadius: 8, style: .standard)
+        view.setVisible(false, animated: false)
+        view.frame = CGRect(x: 0, y: 0, width: 120, height: 32)
+        view.layoutSubtreeIfNeeded()
+        XCTAssertTrue(view.dots.cohortLayers.allSatisfy { $0.opacity == 0 }, "Hidden until hovered")
+        XCTAssertFalse(view.dots.isShimmering, "A hidden fill costs no frames")
+
+        view.setVisible(true)
+        XCTAssertTrue(view.dots.isShimmering)
+        XCTAssertTrue(view.dots.cohortLayers.allSatisfy { $0.animation(forKey: FluxDotLayers.presenceKey) != nil })
+
+        view.setVisible(false)
+        for layer in view.dots.cohortLayers {
+            let fade = try XCTUnwrap(layer.animation(forKey: FluxDotLayers.presenceKey) as? CABasicAnimation, "Leaving animates too")
+            XCTAssertEqual(fade.toValue as? Float, 0)
+        }
     }
 }

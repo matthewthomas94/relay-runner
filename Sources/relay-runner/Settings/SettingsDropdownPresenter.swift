@@ -4,11 +4,25 @@ import SwiftUI
 /// A child panel keeps dropdowns above scrolling Settings content without native popover chrome.
 struct SettingsDropdownPresenter<Content: View>: NSViewRepresentable {
     @Binding var isPresented: Bool
+    /// The panel is at least this wide; by default it matches the anchor.
+    var minWidth: CGFloat = 0
+    /// Align the panel's right edge with the anchor's, for controls at a trailing edge.
+    var alignsTrailing = false
     @ViewBuilder let content: Content
+
+    init(isPresented: Binding<Bool>, minWidth: CGFloat = 0, alignsTrailing: Bool = false,
+         @ViewBuilder content: () -> Content) {
+        self._isPresented = isPresented
+        self.minWidth = minWidth
+        self.alignsTrailing = alignsTrailing
+        self.content = content()
+    }
 
     func makeNSView(context: Context) -> SettingsDropdownAnchorView { SettingsDropdownAnchorView() }
 
     func updateNSView(_ view: SettingsDropdownAnchorView, context: Context) {
+        view.minWidth = minWidth
+        view.alignsTrailing = alignsTrailing
         if isPresented {
             view.present(AnyView(content)) { isPresented = false }
         } else {
@@ -25,6 +39,8 @@ final class SettingsDropdownAnchorView: NSView, NSWindowDelegate {
     private var panel: SettingsDropdownPanel?
     private var eventMonitor: Any?
     private var onDismiss: (() -> Void)?
+    var minWidth: CGFloat = 0
+    var alignsTrailing = false
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -86,9 +102,12 @@ final class SettingsDropdownAnchorView: NSView, NSWindowDelegate {
     private func positionPanel() {
         guard let panel, let window, let hosting = panel.contentView else { return }
         let anchor = window.convertToScreen(convert(bounds, to: nil))
-        let size = NSSize(width: anchor.width, height: hosting.fittingSize.height)
+        // Wide content would otherwise stretch the panel past a trailing anchor.
+        let fitting = hosting.fittingSize
+        let size = NSSize(width: max(anchor.width, minWidth, fitting.width), height: fitting.height)
         let gap: CGFloat = 8
-        var origin = NSPoint(x: anchor.minX, y: anchor.minY - gap - size.height)
+        var origin = NSPoint(x: alignsTrailing ? anchor.maxX - size.width : anchor.minX,
+                             y: anchor.minY - gap - size.height)
         if let visible = window.screen?.visibleFrame, visible.intersects(anchor) {
             origin.x = min(max(origin.x, visible.minX), visible.maxX - size.width)
             if origin.y < visible.minY { origin.y = anchor.maxY + gap }

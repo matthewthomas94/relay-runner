@@ -280,10 +280,11 @@ struct WorkspaceNavigationButton: View {
             // dots. The selected fill is drawn by the strip so it can glide
             // between tabs.
             .background {
-                if isHovered && !selected {
-                    FluxDotsBackground(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .standard)
-                        .transition(.dotDisintegrate)
-                }
+                FluxDotsBackground(
+                    cornerRadius: WorkspaceNavigationStyle.cornerRadius,
+                    style: .standard,
+                    isVisible: isHovered && !selected
+                )
             }
             .contentShape(
                 RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)

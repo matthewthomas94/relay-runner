@@ -23,17 +23,4 @@ final class ProjectWorkStyleTests: XCTestCase {
     func testTheThreeStylesMatchThePythonClassifier() {
         XCTAssertEqual(ProjectWorkStyle.allCases.map(\.rawValue), ["auto", "direct", "orchestrated"])
     }
-
-    func testLoaderUsesTheRingCellsAndTheRippleEchoKeyframes() {
-        let cells = DotMatrixLoaderModel.ringCells
-        XCTAssertEqual(cells.count, 20)
-        XCTAssertFalse(cells.contains(.init(row: 2, col: 2)), "the centre is empty")
-        XCTAssertFalse(cells.contains(.init(row: 0, col: 0)), "corners are empty")
-        XCTAssertEqual(DotMatrixLoaderModel.opacity(atPhase: 0), 0.075, accuracy: 0.0001)
-        XCTAssertEqual(DotMatrixLoaderModel.opacity(atPhase: 0.28), 0.98, accuracy: 0.0001)
-        XCTAssertEqual(DotMatrixLoaderModel.opacity(atPhase: 0.56), 0.42, accuracy: 0.0001)
-        let layout = DotMatrixLoaderModel.layout(span: 108)
-        XCTAssertEqual(layout.dot, 16, accuracy: 0.01)
-        XCTAssertEqual(layout.dot * 5 + layout.gap * 4, 108, accuracy: 0.01)
-    }
 }

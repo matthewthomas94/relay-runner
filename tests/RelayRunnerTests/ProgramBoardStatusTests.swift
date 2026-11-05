@@ -202,9 +202,8 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         XCTAssertTrue(contents.contains("ProgramAddProjectMenu("))
         XCTAssertTrue(contents.contains("title: presentation.actionTitle"))
-        XCTAssertTrue(contents.contains("Menu {"))
-        XCTAssertTrue(contents.contains("Button(\"Add existing project\", systemImage: \"folder.badge.plus\")"))
-        XCTAssertTrue(contents.contains("Button(\"Create new project\", systemImage: \"plus\")"))
+        XCTAssertTrue(contents.contains("SettingsDropdownPresenter(isPresented: $isPresented, alignsTrailing: true)"))
+        XCTAssertTrue(contents.contains("(\"Add existing project\", .existing), (\"Create new project\", .create)"))
         XCTAssertTrue(contents.contains("Image(systemName: \"chevron.down\")"))
         XCTAssertTrue(contents.contains("spacing: 0"))
         XCTAssertTrue(contents.contains("ProgramAddProjectMenuMetrics.disclosureWidth"))
@@ -223,7 +222,7 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         let menuStart = try XCTUnwrap(contents.range(of: "private struct ProgramAddProjectMenu: View"))
         let menuEnd = try XCTUnwrap(
-            contents.range(of: "private struct ProgramProjectCard: View", range: menuStart.upperBound..<contents.endIndex)
+            contents.range(of: "private struct ProgramStartSessionMenu: View", range: menuStart.upperBound..<contents.endIndex)
         )
         let menu = String(contents[menuStart.lowerBound..<menuEnd.lowerBound])
         XCTAssertTrue(menu.contains("SettingsActionPresentation.resolve("))
@@ -258,10 +257,10 @@ final class ProgramBoardStatusTests: XCTestCase {
         let card = String(contents[cardStart.lowerBound..<cardEnd.lowerBound])
 
         XCTAssertTrue(card.contains("ProgramSessionToolbarPresentation.resolve(hasActiveSession: hasSession, provider: sessionProvider)"))
-        XCTAssertTrue(card.contains("prominence: .secondary"))
+        XCTAssertTrue(contents.contains("SharedActionButtonSurface(prominence: .secondary, presentation: presentation, palette: palette)"))
         // Finder comes first, so the session button sits at the far right.
         let finder = try XCTUnwrap(card.range(of: "systemName: \"folder\""))
-        let session = try XCTUnwrap(card.range(of: "SettingsActionButton("))
+        let session = try XCTUnwrap(card.range(of: "ProgramStartSessionMenu("))
         XCTAssertLessThan(finder.lowerBound, session.lowerBound)
         XCTAssertTrue(contents.contains("if lane != .done, canCreate {"))
     }
@@ -275,10 +274,10 @@ final class ProgramBoardStatusTests: XCTestCase {
         let contents = try String(contentsOf: source, encoding: .utf8)
         let menuStart = try XCTUnwrap(contents.range(of: "private struct ProgramAddProjectMenu: View"))
         let menuEnd = try XCTUnwrap(
-            contents.range(of: "private struct ProgramProjectCard: View", range: menuStart.upperBound..<contents.endIndex)
+            contents.range(of: "private struct ProgramStartSessionMenu: View", range: menuStart.upperBound..<contents.endIndex)
         )
         let menu = String(contents[menuStart.lowerBound..<menuEnd.lowerBound])
-        let styleStart = try XCTUnwrap(menu.range(of: "\n        .menuStyle(.button)"))
+        let styleStart = try XCTUnwrap(menu.range(of: "\n        .buttonStyle(.plain)"))
         let label = String(menu[..<styleStart.lowerBound])
         let outerModifiers = String(menu[styleStart.lowerBound...])
 

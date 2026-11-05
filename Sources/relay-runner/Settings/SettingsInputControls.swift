@@ -4,9 +4,15 @@ struct SettingsMenuOptions<Value: Hashable>: View {
     let title: String
     @Binding var selection: Value
     let options: [(label: String, value: Value)]
+    /// False for a list of actions, where nothing is "selected".
+    var showsCheckmarks = true
+    /// A secondary line under an option's label, when it has one.
+    var subtitle: ((Value) -> String?)? = nil
     let dismiss: () -> Void
     @FocusState private var focusedIndex: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var rowHeight: CGFloat { subtitle == nil ? 32 : 48 }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -19,19 +25,29 @@ struct SettingsMenuOptions<Value: Hashable>: View {
                             dismiss()
                         } label: {
                             HStack(spacing: 8) {
-                                Image(systemName: "checkmark")
-                                    .font(AppTypography.symbolFont(size: 10, weight: .semibold))
-                                    .opacity(option.value == selection ? 1 : 0)
-                                    .frame(width: 12)
-                                    .accessibilityHidden(true)
-                                Text(option.label)
-                                    .font(AppTypography.font(.action))
-                                    .lineLimit(1)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                if showsCheckmarks {
+                                    Image(systemName: "checkmark")
+                                        .font(AppTypography.symbolFont(size: 10, weight: .semibold))
+                                        .opacity(option.value == selection ? 1 : 0)
+                                        .frame(width: 12)
+                                        .accessibilityHidden(true)
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option.label)
+                                        .font(AppTypography.font(.action))
+                                        .lineLimit(1)
+                                    if let detail = subtitle?(option.value) {
+                                        Text(detail)
+                                            .font(AppTypography.font(.settingsDescription))
+                                            .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .foregroundStyle(SettingsSurfaceColor.primaryText)
                             .padding(.horizontal, 10)
-                            .frame(height: 32)
+                            .frame(height: rowHeight)
                             .background(
                                 focusedIndex == index ? BoardDarkSurfaceStyle.cardActiveFill : .clear,
                                 in: RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius)
@@ -51,7 +67,7 @@ struct SettingsMenuOptions<Value: Hashable>: View {
                 .padding(6)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: min(284, CGFloat(options.count) * 34 + 10))
+            .frame(height: min(284, CGFloat(options.count) * (rowHeight + 2) + 10))
             .background(BoardDarkSurfaceBackground(cornerRadius: 12))
             .onAppear { focusedIndex = options.firstIndex { $0.value == selection } ?? options.indices.first }
             .onChange(of: focusedIndex) { _, index in

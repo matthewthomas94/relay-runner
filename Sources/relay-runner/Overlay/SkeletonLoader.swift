@@ -631,7 +631,8 @@ final class SkeletonLoaderView: NSView {
 /// a snake whose bright head steps one dot along it every fifth of a cycle,
 /// leaving a tail that dims behind it. Alternate columns run up and down.
 /// The dots are drawn in the style's highlight, and only their opacity
-/// moves, in steps rather than fades, as in Dotm.
+/// moves. Dotm steps between levels; here each dot glides from one level
+/// to the next so the snake reads as smooth motion at the display's rate.
 enum DotColumnSnakeAnimation {
     /// Dotm's `speed`: a cycle lasts 1.5 s divided by it.
     static let speed: Double = 1.25
@@ -653,8 +654,10 @@ enum DotColumnSnakeAnimation {
             0.625 * opacityBase,
         ]
     }
-    /// Each level holds for a fifth of the cycle.
+    /// Each level is reached a fifth of a cycle after the last.
     static let keyTimes: [Double] = [0, 0.2, 0.4, 0.6, 0.8, 1]
+    /// The levels in order, closing back on the head so the loop is seamless.
+    static var loopValues: [Float] { levels + [levels[0]] }
 
     /// Where a dot sits along its column's snake, from 0 (lit first) to 4.
     /// Even columns rise, so their snake starts at the bottom of each run
@@ -701,9 +704,9 @@ enum DotColumnSnakeAnimation {
             layer.opacity = levels[phases - 1]
             guard layer.animation(forKey: SkeletonLoaderView.shimmerKey) == nil else { continue }
             let snake = CAKeyframeAnimation(keyPath: "opacity")
-            snake.values = levels
+            snake.values = loopValues
             snake.keyTimes = keyTimes.map { NSNumber(value: $0) }
-            snake.calculationMode = .discrete
+            snake.calculationMode = .linear
             snake.duration = cycle
             snake.repeatCount = .infinity
             // Shift the loop so this position lights its delay behind the

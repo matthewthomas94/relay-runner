@@ -210,9 +210,6 @@ struct SessionWheelView: View {
                                 }
                             }
                         if !pickingProject, let session {
-                            DotMatrixLoader(size: 14, color: SessionWheelLiveIndicator.color)
-                                .padding(2)
-                                .background(Circle().fill(.black))
                             if session.unreadCount > 0 {
                                 Text("\(session.unreadCount)")
                                     .font(AppTypography.font(.smallCaption))
@@ -623,7 +620,4 @@ struct SessionWheelThumb: Shape {
     }
 }
 
-enum SessionWheelLiveIndicator {
-    /// The wheel's live-session colour, brightened so faint loader dots read on black.
-    static let color = Color(.sRGB, red: 120 / 255, green: 100 / 255, blue: 1, opacity: 1)
-}
+
