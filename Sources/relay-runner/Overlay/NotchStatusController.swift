@@ -354,9 +354,22 @@ enum NotchStatusPlacementPlanner {
               !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return 0
         }
-        let font = AppTypography.appKitFont(.notchStatus)
-        let textWidth = (label as NSString).size(withAttributes: [.font: font]).width
-        return min(maximumActivityLabelWidth, ceil(textWidth) + activityLabelMeasurementPadding)
+        return min(maximumActivityLabelWidth, ceil(labelTextWidth(label)) + activityLabelMeasurementPadding)
+    }
+
+    /// The label font, looked up once: the STT poll places the pill 20 times
+    /// a second and the pill draws its label up to 60 (RR-449).
+    static let labelFont = AppTypography.appKitFont(.notchStatus)
+    private static let labelTextWidths = NSCache<NSString, NSNumber>()
+
+    static func labelTextWidth(_ label: String) -> CGFloat {
+        let key = label as NSString
+        if let width = labelTextWidths.object(forKey: key) {
+            return CGFloat(width.doubleValue)
+        }
+        let width = key.size(withAttributes: [.font: labelFont]).width
+        labelTextWidths.setObject(NSNumber(value: Double(width)), forKey: key)
+        return width
     }
 
     private static func notchFrame(for geometry: NotchStatusDisplayGeometry) -> CGRect? {
@@ -1707,6 +1720,9 @@ final class NotchStatusPillContentView: NSView {
     private var glyphHovered = false
     private var glyphHoverStartedAt: CFTimeInterval?
     private var contentMotion = NotchContentMotion()
+    /// Whether the last draw that painted the label did so at rest, so a
+    /// glyph-only frame cannot leave it mid-transition.
+    private var labelDrawnAtRest = false
     var onWorkingGlyphHoverChanged: ((Bool) -> Void)?
     var onGlyphClicked: (() -> Void)?
     private static let glyphHoverSlop: CGFloat = 8
@@ -1888,12 +1904,30 @@ final class NotchStatusPillContentView: NSView {
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         contentMotion.prune(now: now)
 
+        // A glyph-only frame repaints its region from clear, like a full one.
+        NSColor.clear.setFill()
+        dirtyRect.fill(using: .copy)
         NSColor(calibratedWhite: 0, alpha: 0.985).setFill()
         bottomRoundedPillPath(in: bounds).fill()
 
-        drawDepartingLabels(now: now, reduceMotion: reduceMotion)
-        let labelWidth = drawLabelIfNeeded(now: now, reduceMotion: reduceMotion)
-        drawGlyph(after: labelWidth, now: now, reduceMotion: reduceMotion)
+        if needsToDraw(labelTransitionClip().union(currentLabelTextRect())) {
+            drawDepartingLabels(now: now, reduceMotion: reduceMotion)
+            _ = drawLabelIfNeeded(now: now, reduceMotion: reduceMotion)
+            labelDrawnAtRest = !contentAnimating(at: now)
+        }
+        drawGlyph(after: drawnLabelWidth, now: now, reduceMotion: reduceMotion)
+    }
+
+    /// The label width the glyph is placed after, as `drawLabelIfNeeded` returns it.
+    private var drawnLabelWidth: CGFloat {
+        label != nil && activityLabelWidth > 0 ? activityLabelWidth : 0
+    }
+
+    /// Anything other than the looping glyph changing: copy and presence
+    /// transitions, glyph changes and settling, the hover disc, and the
+    /// label scrolling while the glyph is hovered.
+    private func contentAnimating(at now: CFTimeInterval) -> Bool {
+        glyphHovered || contentMotion.isAnimating(now: now)
     }
 
     private func bottomRoundedPillPath(in rect: NSRect) -> NSBezierPath {
@@ -1984,7 +2018,7 @@ final class NotchStatusPillContentView: NSView {
         )
         paragraph.alignment = .left
         return [
-            .font: AppTypography.appKitFont(.notchStatus),
+            .font: NotchStatusPlacementPlanner.labelFont,
             .foregroundColor: NSColor.white.withAlphaComponent(alpha),
             .paragraphStyle: paragraph,
         ]
@@ -2025,9 +2059,8 @@ final class NotchStatusPillContentView: NSView {
     private func drawLabelIfNeeded(now: CFTimeInterval, reduceMotion: Bool) -> CGFloat {
         guard let label, activityLabelWidth > 0 else { return 0 }
 
-        let font = AppTypography.appKitFont(.notchStatus)
         let labelString = label as NSString
-        let textWidth = labelString.size(withAttributes: [.font: font]).width
+        let textWidth = NotchStatusPlacementPlanner.labelTextWidth(label)
         let textRect = currentLabelTextRect()
         guard textRect.width > 0 else { return activityLabelWidth }
         let hoverDuration = glyphHoverStartedAt.map { now - $0 } ?? 0
@@ -2152,8 +2185,16 @@ final class NotchStatusPillContentView: NSView {
     }
 
     private func animationFrameTick() {
-        needsDisplay = true
-        if !needsAnimationFrames(at: CACurrentMediaTime()) {
+        let now = CACurrentMediaTime()
+        // While only the looping glyph moves, repaint just the glyph: a full
+        // redraw re-rendered the label text 60 times a second, the idle
+        // app's largest cost while work was active (RR-449).
+        if labelDrawnAtRest, !contentAnimating(at: now) {
+            setNeedsDisplay(currentGlyphFrame(labelWidth: drawnLabelWidth))
+        } else {
+            needsDisplay = true
+        }
+        if !needsAnimationFrames(at: now) {
             waveTimer?.invalidate()
             waveTimer = nil
         }
