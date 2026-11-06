@@ -95,6 +95,21 @@ final class OverlayController {
     /// Unread replies waiting in other sessions, shown as cards stacked
     /// above the reply pill.
     func setReplyStackDepth(_ depth: Int, now: TimeInterval = CACurrentMediaTime()) {
+        replyBadgeDepth = max(0, depth)
+        applyReplyStackDepth(now: now)
+    }
+
+    /// RR-464: replies queued behind the current one in the speech queue
+    /// also stack above the pill, alongside other sessions' unread replies.
+    private func syncSpeechQueueDepth(_ queued: Int, now: TimeInterval) {
+        let waiting = max(0, queued - 1)
+        guard waiting != speechQueueWaiting else { return }
+        speechQueueWaiting = waiting
+        applyReplyStackDepth(now: now)
+    }
+
+    private func applyReplyStackDepth(now: TimeInterval) {
+        let depth = replyBadgeDepth + speechQueueWaiting
         if depth < replyStackDepth { replyStackDroppedAt = now }
         replyStackDepth = depth
         pill.setStackDepth(depth)
@@ -277,6 +292,8 @@ final class OverlayController {
     /// forward. The badge count is polled, so a drop just before the reply
     /// ends still counts as queued.
     private var replyStackDepth = 0
+    private var replyBadgeDepth = 0
+    private var speechQueueWaiting = 0
     private var replyStackDroppedAt: TimeInterval = -.infinity
     private var replyQueueHoldUntil: TimeInterval?
     private var replyQueueHoldTheme: ParticleFieldRenderer.Theme?
@@ -372,6 +389,7 @@ final class OverlayController {
         now: TimeInterval = CACurrentMediaTime(),
         reduceMotion: Bool = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     ) {
+        syncSpeechQueueDepth(sm.speechQueueDepth, now: now)
         let state = sm.state
         let partial = sm.partialTranscription
         let preview = sm.messagePreview

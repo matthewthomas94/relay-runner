@@ -533,7 +533,8 @@ class TTSWorkerReplayTests(unittest.TestCase):
         self.assertEqual(events[0]["utterance_id"], speech.utterance_id)
         self.assertEqual(events[0]["session_key"], "a")
         self.assertEqual(finished, [])
-        self.assertEqual(coordinator.session_playback_states(), {"a": "replay"})
+        # RR-464: a wheel stop keeps the unheard reply queued for Play.
+        self.assertEqual(coordinator.session_playback_states(), {"a": "play"})
 
     def test_stopped_generation_reports_one_terminal_lifecycle(self):
         worker = self.make_worker()

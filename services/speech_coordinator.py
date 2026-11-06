@@ -28,6 +28,14 @@ FINAL_KINDS = frozenset({"final", "fallback"})
 # RR-460: real finals that may replace a provisional fallback outcome.
 REAL_FINAL_SOURCES = frozenset({"completion", "orchestrator"})
 SUPERSEDING_KINDS = frozenset({"clarification", "final", "fallback"})
+# RR-464: replies the queue keeps until they are played or skipped. Only a
+# same-command handoff/progress, or a fallback its real final replaces, may
+# be replaced; nothing else removes a queued reply.
+QUEUED_REPLY_KINDS = SUPERSEDING_KINDS
+# A safety bound on queued speech; reaching it is diagnosed, never silent.
+SPEECH_QUEUE_LIMIT = 50
+# Skips that remove the current item without bringing the next one forward.
+NON_ADVANCING_SKIP_REASONS = frozenset({"focus_switch", "wheel_stop"})
 FRESHNESS_SCOPES = frozenset({"conversation", "work"})
 LIFECYCLE_ROLES = frozenset({
     "acknowledgement",
@@ -316,6 +324,9 @@ class SpeechCoordinator:
         self._backlog: list[SpeechIntent] = []
         self._replayable_history: list[SpeechIntent] = []
         self._stopped_attempt_reasons: dict[str, str] = {}
+        # RR-464: items skipped or replaced, so their cancellation never
+        # returns them to the queue.
+        self._retired_ids: dict[str, str] = {}
         self._played_coverage: dict[tuple[int, str], list[dict[str, Any]]] = {}
         self._waiting_preview: tuple[tuple[int, str], str] | None = None
         self._play_requested = False
@@ -352,6 +363,13 @@ class SpeechCoordinator:
     def has_pending_speech(self) -> bool:
         with self._lock:
             return bool(self._committed_id or self._playing_id or self._backlog)
+
+    @property
+    def queue_depth(self) -> int:
+        """Unplayed items: the one playing or waiting, everything behind it,
+        and frames a Relay Remote device has not acknowledged yet."""
+        with self._lock:
+            return self._queue_depth_locked()
 
     @property
     def speaking(self) -> bool:
@@ -457,6 +475,9 @@ class SpeechCoordinator:
     def detach_remote_sink(self, device_id: str, *, reason: str = "closed") -> None:
         with self._lock:
             self._detach_remote_locked(str(device_id), reason)
+            next_intent = self._advance_locked()
+        if next_intent is not None:
+            self._enqueue_worker(next_intent)
 
     def attach_remote_mirror(self, sink) -> None:
         """Show Mac speech on a device whose Remote mode is off (RR-454).
@@ -592,8 +613,10 @@ class SpeechCoordinator:
             self._diagnostic("expired", intent, latency_ms=_elapsed_ms(started))
             return False
 
-        replace_committed = False
-        commit_now = False
+        # RR-464: one FIFO for every session. ``head`` is what the worker
+        # receives now; ``cut_worker`` discards the worker's current item.
+        head: SpeechIntent | None = None
+        cut_worker = False
         with self._lock:
             if intent.dedup_key in self._accepted_keys or self._final_already_accepted_locked(intent):
                 self._diagnostic("deduplicated", intent, latency_ms=_elapsed_ms(started))
@@ -603,66 +626,63 @@ class SpeechCoordinator:
             if sink is not None:
                 return self._submit_remote_locked(sink, intent, started)
 
-            current = self._intent_for(self._playing_id or self._committed_id)
-            replaced_playing: SpeechIntent | None = None
-            if current is not None and self._newer_command(intent, current):
-                replace_committed = True
-                self._backlog.clear()
-            elif current is not None and self._replaces_fallback(intent, current):
-                # RR-460: the real final cuts a queued or playing fallback.
-                replace_committed = True
-                self._drop_obsolete_backlog(intent)
-                if self._playing_id == current.utterance_id:
-                    replaced_playing = current
-            elif current is not None and self._supersedes(intent, current):
-                if self._playing_id:
-                    self._drop_obsolete_backlog(intent)
-                    self._backlog.append(intent)
-                    self._accept_locked(intent)
-                    self._arm_accepted_waiting_playback_locked(
-                        intent,
-                        waiting_playback_kind,
-                    )
-                    self._diagnostic("accepted", intent, latency_ms=_elapsed_ms(started))
-                    return True
-                replace_committed = True
-            elif current is not None:
-                self._drop_obsolete_backlog(intent)
-                self._backlog.append(intent)
-                self._accept_locked(intent)
-                self._arm_accepted_waiting_playback_locked(
+            if self._queue_depth_locked() >= SPEECH_QUEUE_LIMIT:
+                self._diagnostic(
+                    "queue_full",
                     intent,
-                    waiting_playback_kind,
+                    limit=SPEECH_QUEUE_LIMIT,
+                    latency_ms=_elapsed_ms(started),
                 )
-                self._diagnostic("accepted", intent, latency_ms=_elapsed_ms(started))
-                return True
-            else:
-                commit_now = True
+                return False
 
+            current = self._intent_for(self._playing_id or self._committed_id)
+            playing = self._intent_for(self._playing_id)
             self._accept_locked(intent)
-            self._arm_accepted_waiting_playback_locked(
-                intent,
-                waiting_playback_kind,
-            )
-            self._intent_committed_at[intent.utterance_id] = time.time()
-            if len(self._intent_committed_at) > 512:
-                oldest = next(iter(self._intent_committed_at))
-                self._intent_committed_at.pop(oldest, None)
-            if replace_committed:
-                old = self._intent_for(self._committed_id)
-                self._committed_id = intent.utterance_id
-                if old is not None:
-                    if self._play_dispatched_id == old.utterance_id:
-                        self._play_dispatched_id = None
-                    self._diagnostic("replaced", old, replaced_by=intent.utterance_id)
-                if replaced_playing is not None:
-                    self._diagnostic("replaced", replaced_playing, replaced_by=intent.utterance_id)
-            elif commit_now:
-                self._committed_id = intent.utterance_id
+            self._arm_accepted_waiting_playback_locked(intent, waiting_playback_kind)
+            replaced: list[SpeechIntent] = []
+            if current is not None and (
+                self._replaces_fallback(intent, current)
+                or (playing is None and self._supersedes(intent, current))
+            ):
+                # Same command: the real final, or a reply replacing its own
+                # unstarted handoff/progress, takes the head's place.
+                replaced.append(current)
+                if self._committed_id and self._committed_id != current.utterance_id:
+                    replaced.append(self._intents[self._committed_id])
+                self._drop_obsolete_backlog(intent)
+                self._commit_locked(intent)
+                head = intent
+                cut_worker = True
+            elif (
+                current is not None
+                and self._newer_command(intent, current)
+                and current.kind not in QUEUED_REPLY_KINDS
+                and current.freshness_scope != "work"
+            ):
+                # A newer command retires stale handoff/progress speech; the
+                # queue, not the newer command, decides what plays next.
+                self._retire_locked(current, "newer_command")
+                if self._committed_id == current.utterance_id:
+                    self._committed_id = None
+                self._drop_obsolete_backlog(intent)
+                self._append_backlog_locked(intent)
+                head = self._advance_locked()
+                cut_worker = True
+                self._diagnostic("interrupted", current, reason="newer_command")
+            else:
+                self._drop_obsolete_backlog(intent)
+                self._append_backlog_locked(intent)
+                head = self._advance_locked()
+            for old in replaced:
+                self._retire_locked(old, "replaced")
+                if self._play_dispatched_id == old.utterance_id:
+                    self._play_dispatched_id = None
+                self._diagnostic("replaced", old, replaced_by=intent.utterance_id)
 
-        if replace_committed:
+        if cut_worker:
             self.worker.skip()
-        self._enqueue_worker(intent)
+        if head is not None:
+            self._enqueue_worker(head)
         self._dispatch_requested_play()
         self._diagnostic("accepted", intent, latency_ms=_elapsed_ms(started))
         return True
@@ -741,72 +761,82 @@ class SpeechCoordinator:
             })
 
     def new_turn(self, command_seq: int, command_id: str) -> None:
-        """Suppress stale speech without revoking accepted background work."""
-        stale_ids: list[str] = []
+        """Suppress stale speech without revoking accepted background work.
+
+        RR-464: queued replies from older commands stay queued; one that is
+        playing stops and returns to the head of the queue.
+        """
         command_key = (int(command_seq), str(command_id))
+
+        def stale(intent: SpeechIntent) -> bool:
+            return intent.freshness_scope != "work" and intent.command_key != command_key
+
         self._stop_remote(
             "stop",
             REMOTE_STOP_REASONS["newer_command"],
-            lambda sent: sent.freshness_scope != "work" and sent.command_key != command_key,
+            lambda sent: stale(sent) and sent.kind not in QUEUED_REPLY_KINDS,
+            preserve_replies=True,
         )
+        retired: list[SpeechIntent] = []
+        interrupted: SpeechIntent | None = None
+        next_intent: SpeechIntent | None = None
+        cut_committed = False
         with self._lock:
             self._speech_stopped = False
             self._clear_play_request_locked()
-            for intent_id in [self._committed_id, self._playing_id]:
-                intent = self._intent_for(intent_id)
-                if (
-                    intent is not None
-                    and intent.freshness_scope != "work"
-                    and intent.command_key != command_key
-                ):
-                    stale_ids.append(intent.utterance_id)
+            playing = self._intent_for(self._playing_id)
+            if playing is not None and stale(playing):
+                interrupted = playing
+                self._stopped_attempt_reasons[playing.utterance_id] = "newer_command"
+                self._retain_replayable_locked(playing)
+            committed = self._intent_for(self._committed_id)
+            if committed is not None and stale(committed) and committed.kind not in QUEUED_REPLY_KINDS:
+                retired.append(committed)
+                self._retire_locked(committed, "newer_command")
+                self._committed_id = None
+                cut_committed = True
             dropped = [
                 intent
                 for intent in self._backlog
-                if intent.freshness_scope != "work" and intent.command_key != command_key
+                if stale(intent) and intent.kind not in QUEUED_REPLY_KINDS
             ]
             self._backlog = [intent for intent in self._backlog if intent not in dropped]
+            retired.extend(dropped)
             # Stale speech stops, but the last message stays replayable.
-            for intent in [*map(self._intent_for, stale_ids), *dropped]:
-                if intent is not None:
-                    self._retain_replayable_locked(intent)
-            if self._committed_id in stale_ids:
-                self._committed_id = None
-        if stale_ids:
+            for intent in retired:
+                self._retain_replayable_locked(intent)
+            if interrupted is None:
+                next_intent = self._advance_locked()
+        if interrupted is not None:
+            self.worker.stop_playback(reason="newer_command")
+            self._diagnostic("interrupted", interrupted, reason="newer_command", requeued=True)
+        if cut_committed:
             self.worker.skip()
-            for intent_id in stale_ids:
-                intent = self._intent_for(intent_id)
-                if intent is not None:
-                    self._diagnostic("interrupted", intent, reason="newer_command")
+        for intent in retired:
+            self._diagnostic("interrupted", intent, reason="newer_command")
+        if next_intent is not None:
+            self._enqueue_worker(next_intent)
 
     def stop(self) -> None:
-        """Barge-in retires speech plans only; it does not alter work authorization."""
-        stale: list[SpeechIntent] = []
+        """Barge-in stops speech and holds the queue until play (RR-464).
+
+        Nothing is dropped: the item playing returns to the head of the queue
+        once the worker reports it cancelled. Work authorization is unchanged.
+        """
         self._stop_remote("stop", "speech_only_barge_in")
         with self._lock:
             self._speech_stopped = True
             self._clear_play_request_locked()
-            stale = [
-                intent
-                for intent in (
-                    self._intent_for(self._playing_id),
-                    self._intent_for(self._committed_id),
-                    *self._backlog,
-                )
-                if intent is not None
-            ]
-            self._committed_id = None
-            self._playing_id = None
-            self._backlog.clear()
-            for intent in stale:
-                self._stopped_attempt_reasons.pop(intent.utterance_id, None)
-                self._retain_replayable_locked(intent)
+            playing = self._intent_for(self._playing_id)
+            if playing is not None:
+                self._stopped_attempt_reasons[playing.utterance_id] = "speech_only_barge_in"
+                self._retain_replayable_locked(playing)
         self.worker.stop_playback()
-        for intent in stale:
-            self._diagnostic("interrupted", intent, reason="speech_only_barge_in")
+        if playing is not None:
+            self._diagnostic("interrupted", playing, reason="speech_only_barge_in", requeued=True)
 
     def stop_playback(self, *, reason: str = "user_stop", session_key: str | None = None) -> None:
-        """Stop one active attempt without revoking its replay eligibility."""
+        """Stop one active attempt; it stays queued and replayable (RR-464)."""
         normalized_reason = str(reason or "user_stop").strip() or "user_stop"
         self._stop_remote(
             "stop",
@@ -820,8 +850,10 @@ class SpeechCoordinator:
             if intent is not None:
                 self._stopped_attempt_reasons[intent.utterance_id] = normalized_reason
                 self._clear_play_request_locked()
-                if normalized_reason not in REPLAY_RETAINING_STOP_REASONS:
+                if intent.utterance_id not in self._retired_ids:
+                    # A stop holds the queue; a skip moves along.
                     self._speech_stopped = True
+                if normalized_reason not in REPLAY_RETAINING_STOP_REASONS:
                     self._retain_replayable_locked(intent)
         if intent is None:
             self.stop()
@@ -829,40 +861,47 @@ class SpeechCoordinator:
         self.worker.stop_playback(reason=normalized_reason)
 
     def skip(self, *, reason: str = "user_stop") -> None:
+        """Remove only the current item (RR-464); the rest stay queued."""
         self._stop_remote("skip", REMOTE_STOP_REASONS.get(reason, reason))
         with self._lock:
-            if self._playing_id is not None:
-                stop_active_attempt = True
-            else:
-                stop_active_attempt = False
-        if stop_active_attempt:
+            active = self._intent_for(self._playing_id)
+            if active is not None:
+                self._retire_locked(active, reason)
+        if active is not None:
             self.stop_playback(reason=reason)
             return
+        next_intent: SpeechIntent | None = None
         with self._lock:
             self._clear_play_request_locked()
-            stale = [
-                intent
-                for intent in (
-                    self._intent_for(self._committed_id),
-                    self._intent_for(self._playing_id),
-                    *self._backlog,
-                )
-                if intent is not None
-            ]
-            self._committed_id = None
-            self._backlog.clear()
-            # A message cancelled before it ever played stays replayable and
-            # becomes the newest replay target.
-            for intent in stale:
-                self._retain_replayable_locked(intent)
+            target = self._intent_for(self._committed_id)
+            if target is not None:
+                self._committed_id = None
+            elif reason not in NON_ADVANCING_SKIP_REASONS and self._backlog:
+                target = self._backlog.pop(0)
+            if target is not None:
+                self._retire_locked(target, reason)
+                # A message cancelled before it ever played stays replayable
+                # and becomes the newest replay target.
+                self._retain_replayable_locked(target)
+            if reason not in NON_ADVANCING_SKIP_REASONS:
+                next_intent = self._advance_locked()
         self.worker.skip()
-        for intent in stale:
-            self._diagnostic("interrupted", intent, reason="skip")
+        if target is not None:
+            self._diagnostic("interrupted", target, reason="skip")
+        if next_intent is not None:
+            self._enqueue_worker(next_intent)
 
     def play(self, *, session_key: str | None = None, waiting_session_key: str = "") -> None:
+        resumed: SpeechIntent | None = None
         with self._lock:
             if self._playing_id:
                 return
+            if not self._committed_id and self._waiting_preview is None and self._backlog:
+                # RR-464: Play resumes the head of the queue.
+                head = self._backlog[0]
+                if session_key is None or head.session_key == session_key:
+                    self._speech_stopped = False
+                    resumed = self._advance_locked()
             pending = self._intent_for(self._committed_id)
             if session_key is not None and not (
                 (pending is not None and pending.session_key == session_key)
@@ -886,14 +925,20 @@ class SpeechCoordinator:
                         timing.get("option_detected_at"), timing["latched_at"]
                     ),
                 })
+        if resumed is not None:
+            self._enqueue_worker(resumed)
         self._dispatch_requested_play()
 
     def play_or_replay(self) -> bool:
-        """Play pending speech, or replay the last completed current message."""
+        """Play queued speech, or replay the last completed current message."""
         with self._lock:
             if self._playing_id:
                 return True
-            should_replay = not self._committed_id and self._waiting_preview is None
+            should_replay = (
+                not self._committed_id
+                and self._waiting_preview is None
+                and not any(self._fresh(intent) for intent in self._backlog)
+            )
         if should_replay:
             return self.replay()
         self.play()
@@ -1034,7 +1079,8 @@ class SpeechCoordinator:
 
     def _matches_waiting_preview(self, intent: SpeechIntent) -> bool:
         target = self._waiting_preview
-        if target is None:
+        # RR-464: a queued reply plays in its turn whatever preview is armed.
+        if target is None or intent.kind in QUEUED_REPLY_KINDS:
             return True
         command_key, kind = target
         if intent.command_key != command_key:
@@ -1098,6 +1144,9 @@ class SpeechCoordinator:
         # An explicit replay is user-requested, so an older command is fine.
         if intent.freshness_scope == "work" or intent.replay_of:
             return True
+        # RR-464: an accepted reply stays queued after newer commands.
+        if intent.kind in QUEUED_REPLY_KINDS and self._intents.get(intent.utterance_id) is intent:
+            return True
         key = intent.command_key
         if key is None or self._is_current(key[0], key[1]):
             return True
@@ -1129,6 +1178,7 @@ class SpeechCoordinator:
         next_intent: SpeechIntent | None = None
         retained_after_stop = False
         stop_reason: str | None = None
+        requeued: SpeechIntent | None = None
         with self._lock:
             intent = self._intent_for(intent_id)
             if intent is None:
@@ -1147,6 +1197,8 @@ class SpeechCoordinator:
                     self._clear_play_request_locked(preserve_timing=True)
             elif state in {"completed", "cancelled", "failed"}:
                 stop_reason = self._stopped_attempt_reasons.pop(intent_id, None)
+                retired_reason = self._retired_ids.pop(intent_id, None)
+                was_head = intent_id in {self._committed_id, self._playing_id}
                 stopped_attempt = (
                     state == "cancelled"
                     and stop_reason in REPLAY_RETAINING_STOP_REASONS
@@ -1162,15 +1214,25 @@ class SpeechCoordinator:
                     self._retain_replayable_locked(intent)
                 if state == "completed":
                     self._record_played_coverage_locked(intent)
+                # RR-464: a stopped or held reply was not played, so it goes
+                # back to the head of the queue; only a skip removes it.
                 if (
-                    not stopped_attempt
-                    and not self._committed_id
-                    and not self._playing_id
-                    and not self._speech_stopped
+                    state == "cancelled"
+                    and was_head
+                    and retired_reason is None
+                    and not intent.replay_of
+                    and (stop_reason is not None or intent.kind in QUEUED_REPLY_KINDS)
+                    and self._fresh(intent)
                 ):
-                    next_intent = self._next_eligible_locked()
-                    if next_intent is not None:
-                        self._committed_id = next_intent.utterance_id
+                    requeued = self._requeue_locked(intent)
+                # A stop holds the queue through ``_speech_stopped``.
+                advances = (
+                    retired_reason not in NON_ADVANCING_SKIP_REASONS
+                    if retired_reason is not None
+                    else requeued is None
+                )
+                if advances:
+                    next_intent = self._advance_locked()
         stage_event = {
             "preparing": "tts_preparing",
             "wav_ready": "first_wav_ready",
@@ -1198,6 +1260,7 @@ class SpeechCoordinator:
                 intent,
                 at=observed_at,
                 stop_reason=stop_reason,
+                **({"requeued_as": requeued.utterance_id} if requeued is not None else {}),
             )
         if next_intent is not None:
             self._enqueue_worker(next_intent)
@@ -1224,10 +1287,17 @@ class SpeechCoordinator:
     def _detach_remote_locked(self, device_id: str, reason: str) -> None:
         if self._remote_sinks.pop(device_id, None) is None:
             return
-        self._remote_stopped_through.pop(device_id, None)
-        for key in [key for key in self._remote_outstanding if key[0] == device_id]:
-            del self._remote_outstanding[key]
+        stopped_through = self._remote_stopped_through.pop(device_id, 0)
+        returned: list[SpeechIntent] = []
+        for key in sorted(key for key in self._remote_outstanding if key[0] == device_id):
+            sent = self._remote_outstanding.pop(key)
+            # RR-464: an unplayed reply returns to the Mac queue in seq order.
+            if key[1] > stopped_through and sent.kind in QUEUED_REPLY_KINDS and not self._expired(sent):
+                returned.append(sent)
         self._cancel_remote_voices_locked(device_id)
+        self._backlog.extend(returned)
+        for sent in returned:
+            self._diagnostic("remote_returned", sent, sink=REMOTE_SINK, device_id=device_id)
         self._write_diagnostic({
             "event": "remote_sink_detached",
             "at": time.time(),
@@ -1244,11 +1314,13 @@ class SpeechCoordinator:
         phone speaks it with its own voice.
         """
         fields = {"sink": REMOTE_SINK, "device_id": sink.device_id}
+        # RR-464: older handoff/progress frames give way; queued replies stay.
         self._stop_remote_locked(
             sink,
             "stop",
             REMOTE_STOP_REASONS["newer_command"],
-            lambda sent: self._newer_command(intent, sent),
+            lambda sent: self._newer_command(intent, sent) and sent.kind not in QUEUED_REPLY_KINDS,
+            preserve_replies=True,
         )
         # RR-460: an unacked fallback frame gives way to the real final.
         self._stop_remote_locked(
@@ -1256,6 +1328,7 @@ class SpeechCoordinator:
             "stop",
             REMOTE_STOP_REASONS["newer_command"],
             lambda sent: self._replaces_fallback(intent, sent),
+            preserve_replies=True,
         )
         available = getattr(self.worker, "remote_audio_available", None)
         audio = bool(available and available())
@@ -1321,21 +1394,39 @@ class SpeechCoordinator:
         ]:
             self._remote_voices.pop(key).cancelled.set()
 
-    def _stop_remote(self, action: str, reason: str, stale=None) -> None:
+    def _stop_remote(self, action: str, reason: str, stale=None, *, preserve_replies: bool = False) -> None:
         with self._lock:
             sink = self._active_remote_sink_locked()
             if sink is not None:
-                self._stop_remote_locked(sink, action, reason, stale)
+                self._stop_remote_locked(sink, action, reason, stale, preserve_replies=preserve_replies)
 
-    def _stop_remote_locked(self, sink, action: str, reason: str, stale=None) -> None:
-        """Send ``speech_control`` once for unacked frames not already stopped."""
+    def _stop_remote_locked(
+        self,
+        sink,
+        action: str,
+        reason: str,
+        stale=None,
+        *,
+        preserve_replies: bool = False,
+    ) -> None:
+        """Send ``speech_control`` once for unacked frames not already stopped.
+
+        The device drops every frame before a ``speech_control``. With
+        ``preserve_replies`` (RR-464) no stop is sent while an unacked reply
+        that is not itself stale would be dropped with it.
+        """
         device_id = sink.device_id
         stopped_through = self._remote_stopped_through.get(device_id, 0)
-        if not any(
-            key[0] == device_id
-            and key[1] > stopped_through
-            and (stale is None or stale(sent))
+        unacked = [
+            sent
             for key, sent in self._remote_outstanding.items()
+            if key[0] == device_id and key[1] > stopped_through
+        ]
+        if not any(stale is None or stale(sent) for sent in unacked):
+            return
+        if preserve_replies and any(
+            sent.kind in QUEUED_REPLY_KINDS and not (stale is None or stale(sent))
+            for sent in unacked
         ):
             return
         seq = sink.speech_control(action, reason)
@@ -1392,6 +1483,49 @@ class SpeechCoordinator:
                 reason=reason,
             )
         self._diagnostic("replay_invalidated", intent, reason=reason)
+
+    def _queue_depth_locked(self) -> int:
+        heads = {intent_id for intent_id in (self._playing_id, self._committed_id) if intent_id}
+        return len(heads) + len(self._backlog) + len(self._remote_outstanding)
+
+    def _append_backlog_locked(self, intent: SpeechIntent) -> None:
+        # An explicit replay is user-requested now, so it goes first.
+        if intent.replay_of:
+            self._backlog.insert(0, intent)
+        else:
+            self._backlog.append(intent)
+
+    def _commit_locked(self, intent: SpeechIntent) -> None:
+        self._committed_id = intent.utterance_id
+        self._intent_committed_at[intent.utterance_id] = time.time()
+        if len(self._intent_committed_at) > 512:
+            self._intent_committed_at.pop(next(iter(self._intent_committed_at)), None)
+
+    def _advance_locked(self) -> SpeechIntent | None:
+        """Commit the queue head when nothing is playing, waiting, or held."""
+        if self._committed_id or self._playing_id or self._speech_stopped:
+            return None
+        next_intent = self._next_eligible_locked()
+        if next_intent is not None:
+            self._commit_locked(next_intent)
+        return next_intent
+
+    def _retire_locked(self, intent: SpeechIntent, reason: str) -> None:
+        """Mark an item skipped or replaced so its cancellation is final."""
+        self._retired_ids[intent.utterance_id] = reason
+        if len(self._retired_ids) > 256:
+            self._retired_ids.pop(next(iter(self._retired_ids)), None)
+
+    def _requeue_locked(self, intent: SpeechIntent) -> SpeechIntent:
+        """Return an unplayed item to the head of the queue (RR-464).
+
+        The copy gets a new utterance id so the notch never mistakes its
+        next attempt for a late event from the stopped one.
+        """
+        copy = replace(intent, utterance_id=str(uuid.uuid4()))
+        self._intents[copy.utterance_id] = copy
+        self._backlog.insert(0, copy)
+        return copy
 
     def _next_eligible_locked(self) -> SpeechIntent | None:
         while self._backlog:
@@ -1453,8 +1587,10 @@ class SpeechCoordinator:
 
     @staticmethod
     def _supersedes(incoming: SpeechIntent, current: SpeechIntent) -> bool:
-        if incoming.command_key != current.command_key:
-            return incoming.priority > current.priority
+        # RR-464: only the same command's handoff/progress gives way; a queued
+        # reply, or another command's speech, keeps its place.
+        if incoming.command_key != current.command_key or current.kind in QUEUED_REPLY_KINDS:
+            return False
         if incoming.kind in SUPERSEDING_KINDS and current.kind in {"handoff", "progress"}:
             return True
         return incoming.priority > current.priority and current.kind != "handoff"
@@ -1465,7 +1601,8 @@ class SpeechCoordinator:
         kept: list[SpeechIntent] = []
         for queued in self._backlog:
             obsolete = (
-                queued.command_key == incoming.command_key
+                incoming.command_key is not None
+                and queued.command_key == incoming.command_key
                 and queued.kind in {"handoff", "progress"}
             ) or self._replaces_fallback(incoming, queued)
             if obsolete:
