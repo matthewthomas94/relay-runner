@@ -61,10 +61,6 @@ class FreshInstallTests(unittest.TestCase):
         )
 
     def test_normal_reinstall_requires_execute_and_preserves_all_state_and_registered_repositories(self):
-        custom_runtime = self.state / "services/custom-voice/runtime-test/models"
-        custom_runtime.mkdir(parents=True)
-        (custom_runtime / "kanade.safetensors").write_bytes(b"local cloned voice runtime fixture")
-        (self.state / "custom-voice-runtime.json").write_text('{"schema_version": 1}')
         state_before = self.tree(self.state)
         repo_before = self.repo_snapshot()
         preview = self.coordinator().preview_reinstall(

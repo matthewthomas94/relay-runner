@@ -75,7 +75,6 @@ final class ConfigManager {
         if let tts = table["tts"]?.tomlValue.table {
             if let v = tomlString(tts, "engine") { config.tts.engine = v }
             if let v = tomlString(tts, "voice") { config.tts.voice = v }
-            if let v = tomlString(tts, "custom_voice_id"), !v.isEmpty { config.tts.custom_voice_id = v }
             if let v = tomlDouble(tts, "rate") { config.tts.rate = v }
             if let v = tomlBool(tts, "auto_play") { config.tts.auto_play = v }
             if let v = tomlString(tts, "chime") { config.tts.chime = v }
@@ -156,11 +155,6 @@ final class ConfigManager {
         lines.append("[tts]")
         lines.append("engine = \"\(c.tts.engine)\"")
         lines.append("voice = \"\(c.tts.voice)\"")
-        // Only opaque managed IDs enter TOML, never user names or file paths.
-        if let id = c.tts.custom_voice_id,
-           id.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil {
-            lines.append("custom_voice_id = \"\(id)\"")
-        }
         lines.append("rate = \(String(format: "%.1f", c.tts.rate))")
         lines.append("auto_play = \(c.tts.auto_play)")
         lines.append("chime = \"\(c.tts.chime)\"")

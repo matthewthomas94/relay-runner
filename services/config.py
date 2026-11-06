@@ -181,7 +181,6 @@ def load_config(
         "tts": {
             "engine": "kokoro",
             "voice": "am_puck",
-            "custom_voice_id": "",
             "rate": 1.3,
             "auto_play": False,
             "chime": "Tink",
@@ -263,6 +262,9 @@ def _migrate_config(
     orchestrator.pop("worker_timeout_seconds", None)
 
     tts = config.get("tts", {})
+    # RR-462 removed custom voices; a leftover id is discarded and speech
+    # keeps the built-in voice.
+    tts.pop("custom_voice_id", None)
 
     # Migrate say/piper -> kokoro
     if tts.get("engine") in ("say", "piper"):

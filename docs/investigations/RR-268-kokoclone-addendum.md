@@ -1,5 +1,7 @@
 # RR-268 — Inline rerun including KokoClone
 
+> **Removed:** the custom voices feature this investigation informed was removed from Relay Runner by RR-462 (2026-11-06). Kept as history; referenced code and scripts no longer exist.
+
 Date: 2026-09-08. Relay source baseline: `f2f684c`.
 
 ## Outcome

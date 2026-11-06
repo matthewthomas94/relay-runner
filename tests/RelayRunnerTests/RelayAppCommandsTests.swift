@@ -321,6 +321,8 @@ final class RelayAppCommandsTests: XCTestCase {
         let cases: [([String: Any], String)] = [
             (["voice": ["rate": 1]], "Unknown settings section 'voice'"),
             (["tts": ["speed": 1]], "Unknown setting 'tts.speed'"),
+            // RR-462 removed custom voices; the legacy key is no longer a setting.
+            (["tts": ["custom_voice_id": "voice-1"]], "Unknown setting 'tts.custom_voice_id'"),
             (["tts": [String: Any]()], "settings.tts must be an object"),
             (["stt": ["phonon_migration": "completed"]], "'stt.phonon_migration' is recorded by Relay Runner"),
             (["tts": ["rate": "fast"]], "Invalid value for 'tts.rate': expected a number."),
@@ -351,12 +353,6 @@ final class RelayAppCommandsTests: XCTestCase {
         XCTAssertEqual(app.config.general.model, "sonnet")
         let invalid = await refused("set_settings", ["settings": ["general": ["model": "sol"]]])
         XCTAssertTrue(invalid.contains("Relay Runner would use 'opus'"), invalid)
-
-        // The custom voice is the one optional setting, so it alone can be cleared.
-        try await ok("set_settings", ["settings": ["tts": ["custom_voice_id": "voice-1"]]])
-        XCTAssertEqual(app.config.tts.custom_voice_id, "voice-1")
-        try await ok("set_settings", ["settings": ["tts": ["custom_voice_id": NSNull()]]])
-        XCTAssertNil(app.config.tts.custom_voice_id)
     }
 
     // MARK: Projects and sessions

@@ -13,20 +13,7 @@ struct TTSSettingsTab: View {
     var body: some View {
         SettingsStack {
             SettingsSection("Standard Voices") {
-                SettingsControlRow("Mode") {
-                    RelaySwap(config.custom_voice_id == nil, style: .text, alignment: .trailing) { usesStandardVoice in
-                        Text(usesStandardVoice ? "Standard" : "Custom")
-                    }
-                    if config.custom_voice_id != nil {
-                        SettingsActionButton(title: "Use Standard", systemImage: nil) {
-                            preview.invalidate()
-                            config.custom_voice_id = nil
-                        }
-                        .transition(.relayElement)
-                    }
-                }
-                SettingsDivider()
-                SettingsControlRow(config.custom_voice_id == nil ? "Voice" : "Base Voice") {
+                SettingsControlRow("Voice") {
                     HStack(spacing: 8) {
                         SettingsMenuPicker(
                             "Voice",
@@ -66,8 +53,6 @@ struct TTSSettingsTab: View {
                 }
             }
 
-            CustomVoiceSettingsSection(config: $config, appState: appState, preview: preview)
-
             SettingsSection("Playback") {
                 SettingsControlRow("Playback Mode") {
                     SettingsSegmentedPicker("Playback Mode", selection: $config.auto_play, options: [
@@ -102,12 +87,11 @@ struct TTSSettingsTab: View {
                 }
             }
         }
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: config.custom_voice_id)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: preview.isBusy || preview.error != nil)
         .onAppear { loadChimes() }
         .onDisappear { preview.stop() }
-        .onChange(of: config.voice) { _, _ in preview.invalidate() }
-        .onChange(of: config.rate) { _, _ in preview.invalidate() }
+        .onChange(of: config.voice) { _, _ in preview.stop() }
+        .onChange(of: config.rate) { _, _ in preview.stop() }
         .onChange(of: appState.settingsAudioBusy) { _, busy in if busy { preview.stop() } }
         .onChange(of: appState.sttEngine.map(ObjectIdentifier.init)) { _, _ in preview.stop() }
     }
@@ -147,6 +131,6 @@ struct TTSSettingsTab: View {
 
     private func previewSelectedVoice() {
         if preview.isBusy { preview.stop(); return }
-        preview.preview(voice: config.voice, rate: config.rate, key: "standard", appState: appState)
+        preview.preview(voice: config.voice, rate: config.rate, appState: appState)
     }
 }

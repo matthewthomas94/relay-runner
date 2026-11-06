@@ -8,21 +8,6 @@ struct AppConfig: Codable, Equatable {
     var general = GeneralConfig()
     var awareness = AwarenessConfig()
 
-    /// Deletion applies immediately; it must not discard unrelated unsaved Settings edits.
-    func mergingCustomVoiceRemoval(from previous: AppConfig, to saved: AppConfig) -> AppConfig {
-        guard let removed = previous.tts.custom_voice_id else { return saved }
-        var removalOnly = previous
-        removalOnly.tts.custom_voice_id = nil
-        removalOnly.tts.voice = "bm_george"
-        guard removalOnly == saved else { return saved }
-        var draft = self
-        if draft.tts.custom_voice_id == removed {
-            draft.tts.custom_voice_id = nil
-            draft.tts.voice = "bm_george"
-        }
-        return draft
-    }
-
     /// The session wheel saves intensity and auto-play immediately. Returns nil for any other
     /// change; otherwise adopts the new value unless the draft holds its own unsaved one.
     func mergingWheelSettingsChange(from previous: AppConfig, to saved: AppConfig) -> AppConfig? {
@@ -122,7 +107,6 @@ struct TtsConfig: Codable, Equatable {
 
     var engine: String = "kokoro"
     var voice: String = "am_puck"
-    var custom_voice_id: String? = nil
     var rate: Double = 1.3
     var auto_play: Bool = false
     var chime: String = "Tink"

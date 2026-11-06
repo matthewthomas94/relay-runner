@@ -443,13 +443,13 @@ final class STTEngine: @unchecked Sendable {
         onRemoteTakeover?()
     }
 
-    /// Keeps the ASR model loaded but disconnects command capture. Neither
-    /// imported playback nor microphone references may become provider input.
+    /// Keeps the ASR model loaded but disconnects command capture so voice
+    /// preview playback never becomes provider input.
     func suspendForReferenceAudio() throws -> UUID {
         captureInterruptionLock.lock()
         guard referenceAudioToken == nil, !isRecording, !gesture.isRecording else {
             captureInterruptionLock.unlock()
-            throw CustomVoiceFailure.busy
+            throw VoicePreviewFailure.busy
         }
         let token = UUID()
         referenceAudioToken = token
