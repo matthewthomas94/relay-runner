@@ -374,7 +374,7 @@ actor StateEventBus {
                 let presentationLog = presentation.map {
                     " utterance=\($0.utteranceID) command_seq=\($0.commandSequence.map(String.init) ?? "none") command_id=\($0.commandID ?? "none") mode=\($0.mode.rawValue)"
                 } ?? ""
-                if state != "session_playback" {
+                if state != "session_playback" && state != "speech_queue" {
                     NSLog("[StateEventBus] \(source):\(state) has_text=\(text != nil)\(presentationLog)")
                 }
 

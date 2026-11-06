@@ -50,10 +50,14 @@ final class TranscriptionPill: NSView {
     /// of ending on a hard line.
     private let bodyFadeMask = CAGradientLayer()
     private var bodyEdgeFade: (top: Bool, bottom: Bool) = (false, false)
-    /// Cards that peek above the reply for unread replies in other sessions,
-    /// nearest first. Notification-style, but cascading from the top.
-    private let stackCards: [NSView] = (0..<2).map { _ in NSView() }
+    /// Cards that peek above the reply, one per reply queued behind it (in the
+    /// speech queue or unread in another session), nearest first.
+    /// Notification-style, but cascading from the top. RR-464: up to three.
+    private let stackCards: [NSView] = (0..<TranscriptionPill.maxStackCards).map { _ in NSView() }
+    /// Cards shown: the queued count clamped to `maxStackCards`.
     private(set) var stackDepth = 0
+    /// Every reply queued behind the current one, for the count badge.
+    private(set) var queuedReplyCount = 0
     private var cardSize: NSSize = .zero
 
     private let maxWidth: CGFloat = 460
@@ -70,9 +74,10 @@ final class TranscriptionPill: NSView {
     static let bodyFadeHeight: CGFloat = 22
     /// How far each stacked card peeks above the one in front of it.
     static let stackPeek: CGFloat = 8
+    static let maxStackCards = 3
     /// Horizontal inset of each stacked card, per side, nearest first.
-    static let stackInsets: [CGFloat] = [14, 28]
-    static let stackAlphas: [CGFloat] = [0.85, 0.6]
+    static let stackInsets: [CGFloat] = [14, 28, 42]
+    static let stackAlphas: [CGFloat] = [0.85, 0.6, 0.4]
 
     private let textColor = NSColor(red: 226 / 255, green: 232 / 255, blue: 240 / 255, alpha: 1)
 
@@ -574,10 +579,12 @@ final class TranscriptionPill: NSView {
 
     // MARK: - Reply stack
 
-    /// Shows up to two cards peeking above the reply, one per unread reply
-    /// waiting in another session. Only full replies carry the stack.
-    func setStackDepth(_ depth: Int) {
-        let depth = max(0, min(depth, stackCards.count))
+    /// Shows up to three cards peeking above the reply, one per reply queued
+    /// behind it; `queuedReplyCount` keeps the full count. Only full replies
+    /// carry the stack.
+    func setStackDepth(_ queued: Int) {
+        queuedReplyCount = max(0, queued)
+        let depth = min(queuedReplyCount, stackCards.count)
         guard depth != stackDepth else { return }
         stackDepth = depth
         guard superview != nil, cardSize != .zero, !isTransitioning else { return }

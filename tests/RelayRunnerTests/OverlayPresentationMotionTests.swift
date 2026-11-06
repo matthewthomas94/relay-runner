@@ -145,6 +145,28 @@ final class OverlayPresentationMotionTests: XCTestCase {
         }
     }
 
+    /// RR-464: replies waiting in the speech queue stack above the current
+    /// one together with other sessions' unread replies.
+    func testSpeechQueueDepthDrivesTheReplyStackWithBackgroundBadges() {
+        let scene = Scene(showsCard: true)
+        defer { scene.stop() }
+        scene.controller.setReplyStackDepth(1, now: 0)
+        scene.state.handleServiceEvent(source: "tts", newState: "speaking", text: "First reply.")
+        scene.state.handleServiceEvent(source: "bridge", newState: "speech_queue", text: "5")
+        for time in [0.0, 0.31, 0.62] { scene.step(time) }
+        XCTAssertEqual(scene.state.speechQueueDepth, 5)
+        XCTAssertEqual(scene.pill.queuedReplyCount, 5)
+        XCTAssertEqual(scene.pill.stackDepth, 3)
+
+        scene.state.handleServiceEvent(source: "bridge", newState: "speech_queue", text: "2")
+        scene.step(0.7)
+        XCTAssertEqual(scene.pill.queuedReplyCount, 2)
+        XCTAssertEqual(scene.pill.stackDepth, 2)
+
+        scene.controller.setReplyStackDepth(0, now: 0.8)
+        XCTAssertEqual(scene.pill.queuedReplyCount, 1)
+    }
+
     func testWheelStopDismissesPillAndParticlesEvenWithQueuedReplies() {
         for phase in ["preparing", "speaking"] {
             for depth in [0, 1] {

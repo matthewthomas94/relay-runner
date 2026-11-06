@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import XCTest
 @testable import relay_runner
 
@@ -274,8 +275,9 @@ final class TranscriptionPillScrollTests: XCTestCase {
         let height = mounted.pill.frame.height
 
         mounted.pill.setStackDepth(5)
-        XCTAssertEqual(mounted.pill.stackDepth, 2)
-        XCTAssertEqual(mounted.pill.frame.height, height + 2 * TranscriptionPill.stackPeek, accuracy: 0.01)
+        XCTAssertEqual(mounted.pill.stackDepth, 3)
+        XCTAssertEqual(mounted.pill.queuedReplyCount, 5)
+        XCTAssertEqual(mounted.pill.frame.height, height + 3 * TranscriptionPill.stackPeek, accuracy: 0.01)
 
         mounted.pill.setStackDepth(1)
         XCTAssertEqual(mounted.pill.frame.height, height + TranscriptionPill.stackPeek, accuracy: 0.01)
@@ -284,6 +286,46 @@ final class TranscriptionPillScrollTests: XCTestCase {
         let compactHeight = mounted.pill.frame.height
         mounted.pill.setStackDepth(2)
         XCTAssertEqual(mounted.pill.frame.height, compactHeight, accuracy: 0.01)
+    }
+
+    /// RR-464: the stack shows `min(queued, 3)` cards and keeps the true count.
+    func testReplyStackClampsToThreeCardsAndKeepsTheQueuedCount() throws {
+        let mounted = mountLongPill()
+        defer { mounted.close() }
+        for (queued, shown) in [(0, 0), (1, 1), (2, 2), (3, 3), (5, 3), (50, 3), (-1, 0)] {
+            mounted.pill.setStackDepth(queued)
+            XCTAssertEqual(mounted.pill.stackDepth, shown, "queued \(queued)")
+            XCTAssertEqual(mounted.pill.queuedReplyCount, max(0, queued), "queued \(queued)")
+        }
+    }
+
+    func testThreeStackedCardsFanOutAtTheirPeekPositions() throws {
+        let mounted = mountLongPill()
+        defer { mounted.close() }
+        let width = mounted.pill.frame.width
+        mounted.pill.setStackDepth(3)
+
+        let cards = mounted.pill.subviews
+            .filter { view in
+                (view.layer?.filters ?? []).contains { ($0 as? CIFilter)?.name == "stackBlur" }
+            }
+            .sorted { $0.frame.minY < $1.frame.minY }
+        XCTAssertEqual(cards.count, TranscriptionPill.maxStackCards)
+        for (index, card) in cards.enumerated() {
+            let inset = TranscriptionPill.stackInsets[index]
+            XCTAssertFalse(card.isHidden, "card \(index)")
+            XCTAssertEqual(card.frame.minY, CGFloat(index + 1) * TranscriptionPill.stackPeek, accuracy: 0.001)
+            XCTAssertEqual(card.frame.minX, inset, accuracy: 0.001)
+            XCTAssertEqual(card.frame.width, width - inset * 2, accuracy: 0.001)
+            let entrance = try XCTUnwrap(card.layer?.animation(forKey: "stackScale") as? CABasicAnimation)
+            let contracted = try XCTUnwrap((entrance.fromValue as? NSValue)?.caTransform3DValue)
+            XCTAssertEqual(contracted.m11, RelayMotion.Style.surface.hiddenScale, accuracy: 0.001)
+        }
+        XCTAssertEqual(
+            TranscriptionPill.stackAlphas,
+            TranscriptionPill.stackAlphas.sorted(by: >),
+            "Farther cards are fainter"
+        )
     }
 
     func testReplyStackScalesAtItsPeekPositionInBothDirections() throws {

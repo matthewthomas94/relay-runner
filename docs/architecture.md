@@ -48,6 +48,27 @@ Freshness identifiers prevent a superseded voice command from speaking or mutati
 
 `RELAY_AUDIO_DEVICE_TESTS=1 python3 -m unittest tests.test_speech_player` adds a check against the default output device that plays only silence.
 
+### Speech queue rules
+
+`services/speech_coordinator.py` is the single gateway in front of the worker. It keeps one first-in, first-out queue for every session (RR-464). An item leaves the queue only when it has been played or skipped. A **reply** is a `final`, `fallback` or `clarification` intent; `handoff` and `progress` are status speech. The `QUEUE_RULES` table in `tests/test_speech_coordinator.py` runs each rule below.
+
+| Rule | Event | Queue effect | Diagnostic |
+| --- | --- | --- | --- |
+| Q1 | A reply arrives from any session | It joins the tail of the queue. Order is arrival order and does not change with session or focus. | `accepted` |
+| Q2 | The playing item finishes, or the phone acknowledges it `played: true` | It leaves the queue. The next item plays when auto-play is on, or waits for Play. | `played` |
+| Q3 | A reply arrives for a command whose handoff or progress is still queued | Only that command's handoff or progress is replaced. | `replaced`, same `command_key` |
+| Q4 | A command's real final arrives while its fallback is queued or playing (RR-460) | The real final replaces the fallback. | `replaced`, same `command_key` |
+| Q5 | A newer voice command arrives while a reply plays | Playback stops and the reply returns to the head of the queue, unplayed. Queued replies from other commands stay where they are. | `interrupted` with `requeued` on the playing reply only |
+| Q6 | A newer voice command arrives while items wait | Queued replies stay. Older handoff and progress items are retired unless their `freshness_scope` is `work`. | `interrupted` on retired status speech only |
+| Q7 | Stop, pause, a wheel stop or a barge-in | The current item returns to the head of the queue, and the queue is held until Play or the next voice command. | `stopped` or `cancelled` with `requeued_as` |
+| Q8 | Play | Play resumes the head of the queue. | `played` once it completes |
+| Q9 | Skip or cancel | Only the current item is removed, and the next item comes forward. A focus switch also removes it, but does not advance; the bridge keeps it as that session's unread badge reply. | `interrupted`, reason `skip` |
+| Q10 | Replay | Replay plays the last played item again. It never consumes the queue, and Play prefers queued items over replay. | `replayed` |
+| Q11 | 50 items are already queued | The new item is rejected. Below the cap, nothing is dropped. | `queue_full` |
+| Q12 | A Relay Remote device owns playback | Frames leave in arrival order, and each frame gets one ack. A newer command never sends a `speech_control` stop while an unacked reply would be dropped with it. When the device detaches, its unacked replies return to the Mac queue in seq order. | `remote_speech_sent`, `remote_returned` |
+
+The bridge publishes the queue depth as a `speech_queue` state event whenever it changes. The notch stacks one card for each reply queued behind the current one, added to other sessions' unread badge replies. It shows at most three cards; `TranscriptionPill.queuedReplyCount` keeps the full count. The per-session badge counts that the Workspace and the session wheel use do not change.
+
 ## Screen capabilities
 
 `relay-desktop-mcp` exposes accessibility-tree observation and headless semantic actions through the bundled agent-desktop CLI, which Relay Runner.app runs as its own child. `relay-actions-mcp` exposes physical manipulation and window-introspection operations. `relay-vision-mcp` exposes screenshot observation separately. The helpers forward privileged work to Relay Runner.app so macOS attributes Accessibility and Screen Recording to the app. Successful calls pulse ActionGlow.

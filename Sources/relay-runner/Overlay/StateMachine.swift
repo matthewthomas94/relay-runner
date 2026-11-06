@@ -156,6 +156,8 @@ final class StateMachine: @unchecked Sendable {
     private(set) var replayRetained = false
     private(set) var speechPresentation: SpeechPresentation?
     private(set) var sessionPlayback: [String: SessionVoicePlayback] = [:]
+    /// RR-464: unplayed replies in the bridge's speech queue, the current one included.
+    private(set) var speechQueueDepth = 0
     private(set) var workingProgress: String?
     private(set) var workingProgressUpdatedAt: Date?
 
@@ -226,6 +228,11 @@ final class StateMachine: @unchecked Sendable {
                let states = try? JSONDecoder().decode([String: SessionVoicePlayback].self, from: data),
                states != sessionPlayback {
                 sessionPlayback = states
+            }
+
+        case ("bridge", "speech_queue"):
+            if let depth = text.flatMap({ Int($0) }), depth != speechQueueDepth {
+                speechQueueDepth = max(0, depth)
             }
 
         case ("tts", "message_waiting"):
@@ -588,6 +595,7 @@ final class StateMachine: @unchecked Sendable {
     /// Reset to idle (services stopped).
     func reset() {
         sessionPlayback = [:]
+        speechQueueDepth = 0
         storyboardRecording = false
         state = .idle
         partialTranscription = ""
