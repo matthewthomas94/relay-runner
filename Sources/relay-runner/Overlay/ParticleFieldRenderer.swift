@@ -361,6 +361,21 @@ final class ParticleFieldRenderer {
         return half == half.rounded() && step == step.rounded()
     }
 
+    /// Per-position alpha multipliers for the column-snake shimmer, or nil
+    /// for the fields that keep their plain look.
+    static func snakeFactors(
+        theme: Theme, coverage: Coverage, elapsed: Double, reduceMotion: Bool
+    ) -> [CGFloat]? {
+        guard coverage == .lowerScreen, theme == .stt || theme == .tts else { return nil }
+        let peak = DotColumnSnakeAnimation.levels[0]
+        return (0..<DotColumnSnakeAnimation.phases).map { phase in
+            let level = reduceMotion
+                ? DotColumnSnakeAnimation.restingOpacity(forPhase: phase)
+                : DotColumnSnakeAnimation.opacity(forPhase: phase, at: elapsed)
+            return CGFloat(min(1, level / peak))
+        }
+    }
+
     private func drawDots(
         _ grid: [Dot],
         theme: Theme,
@@ -375,6 +390,10 @@ final class ParticleFieldRenderer {
         // within a few 8-bit levels at antialiased edges.
         let pixels = dotsAlignToPixels && !drawsDotsWithCoreGraphics
             ? ctx.data?.assumingMemoryBound(to: UInt8.self) : nil
+        // Listening and speaking screen fields carry the column-snake
+        // shimmer on top of the waves, normalised so the head keeps the
+        // wave alpha and the tail dims behind it.
+        let snake = Self.snakeFactors(theme: theme, coverage: coverage, elapsed: elapsed, reduceMotion: reduceMotion)
         for dot in grid {
             // The card's silhouette changes through the density field. Keep
             // its dot centres fixed so the halftone grid stays crisp.
@@ -396,7 +415,12 @@ final class ParticleFieldRenderer {
             let baseAlpha = theme == .workspace
                 ? dot.baseAlpha
                 : dot.baseAlpha * (1.0 + wave * 0.1)
-            let alpha = baseAlpha * alphaScale
+            var alpha = baseAlpha * alphaScale
+            if let snake {
+                let column = Int(((dot.x - spacing / 2) / spacing).rounded())
+                let row = Int(((dot.y - spacing / 2) / spacing).rounded())
+                alpha *= snake[DotColumnSnakeAnimation.position(column: column, row: row)]
+            }
             guard baseAlpha > 0.02, alpha > 0.002 else { continue }
 
             if let pixels {

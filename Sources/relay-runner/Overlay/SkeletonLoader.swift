@@ -691,6 +691,20 @@ enum DotColumnSnakeAnimation {
         return 1
     }
 
+    /// The glided level a position holds at `time`, matching the layer
+    /// animation in `run(on:)`: linear between `loopValues` a fifth of a
+    /// cycle apart, each position starting `delay(forPhase:)` after the head.
+    static func opacity(forPhase phase: Int, at time: TimeInterval) -> Float {
+        var local = (time - delay(forPhase: phase)).truncatingRemainder(dividingBy: cycle)
+        if local < 0 { local += cycle }
+        let progress = local / cycle
+        let values = loopValues
+        let index = min(values.count - 2, Int(progress / keyTimes[1]))
+        let span = keyTimes[index + 1] - keyTimes[index]
+        let fraction = Float((progress - keyTimes[index]) / span)
+        return values[index] + (values[index + 1] - values[index]) * fraction
+    }
+
     static func run(on layers: [CAShapeLayer]) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)

@@ -1775,7 +1775,9 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 self.assertEqual(speech["display_text"], "The authoritative result.")
                 self.assertTrue(executor.eligibility(speech))
 
-    def test_three_ordered_tool_turns_keep_latest_final_playable_and_replayable(self):
+    def test_three_ordered_tool_turns_queue_every_final_in_arrival_order(self):
+        # RR-464: a newer command's final queues behind older unheard finals
+        # instead of replacing them; replay then targets the last one played.
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp_dir:
                 voice_bridge._reset_foreground_reply_delivery_for_tests()
@@ -1792,22 +1794,8 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                 ]
                 holder = {"key": voice_bridge._relay_command_key(commands[0])}
                 previews = []
-                advanced = False
-                coordinator = None
-
-                def advance_third_turn(payload):
-                    nonlocal advanced
-                    speech = payload["_speech_intent"]
-                    if speech["command_seq"] != 70 or advanced:
-                        return
-                    advanced = True
-                    holder["key"] = voice_bridge._relay_command_key(commands[2])
-                    Path(state_path).write_text(json.dumps(commands[2]))
-                    coordinator.new_turn(*holder["key"])
-
                 executor = SynchronousTTSWorker(
                     on_preview=lambda text, speech: previews.append((text, speech)),
-                    on_queued=advance_third_turn,
                 )
                 coordinator = voice_bridge.SpeechCoordinator(
                     executor,
@@ -1836,41 +1824,28 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     )
 
                 with mock.patch.object(voice_bridge, "_post_continuity_event"):
-                    Path(state_path).write_text(json.dumps(commands[0]))
-                    coordinator.new_turn(*holder["key"])
-                    self.assertTrue(deliver(0))
+                    for index, command in enumerate(commands):
+                        holder["key"] = voice_bridge._relay_command_key(command)
+                        Path(state_path).write_text(json.dumps(command))
+                        coordinator.new_turn(*holder["key"])
+                        self.assertTrue(deliver(index))
 
-                    holder["key"] = voice_bridge._relay_command_key(commands[1])
-                    Path(state_path).write_text(json.dumps(commands[1]))
-                    coordinator.new_turn(*holder["key"])
-                    self.assertTrue(deliver(1))
-                    self.assertTrue(advanced)
-
-                    self.assertTrue(deliver(2))
-
-                latest = executor.pending["_speech_intent"]
-                self.assertEqual(
-                    (latest["command_seq"], latest["command_id"]),
-                    holder["key"],
-                )
-                self.assertEqual(latest["display_text"], finals[2])
-                self.assertTrue(latest["utterance_id"])
-                self.assertEqual(previews[-1], (finals[2], latest))
+                self.assertEqual(coordinator.queue_depth, 3)
+                self.assertEqual(executor.cancelled_payloads, [])
                 self.publish_waiting_preview.assert_not_called()
-                self.assertNotIn(
-                    latest["utterance_id"],
-                    {
-                        payload["_speech_intent"]["utterance_id"]
-                        for payload in executor.cancelled_payloads
-                    },
-                )
 
-                coordinator.note_play_control()
-                self.assertTrue(coordinator.play_or_replay())
-                self.assertEqual(executor.current["_speech_intent"], latest)
-                executor.complete()
+                spoken = []
+                for _ in finals:
+                    coordinator.note_play_control()
+                    self.assertTrue(coordinator.play_or_replay())
+                    spoken.append(executor.current["_speech_intent"])
+                    executor.complete()
+                self.assertEqual([speech["display_text"] for speech in spoken], finals)
+                self.assertEqual(previews[-1], (finals[2], spoken[-1]))
+                self.assertEqual(coordinator.queue_depth, 0)
+                latest = spoken[-1]
+
                 executor.calls.clear()
-
                 coordinator.note_play_control()
                 self.assertTrue(coordinator.play_or_replay())
                 replay = executor.current["_speech_intent"]
@@ -1888,13 +1863,15 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     json.loads(line)
                     for line in Path(event_log_path).read_text().splitlines()
                 ]
-                latest_events = [
-                    record["event"]
-                    for record in records
-                    if record.get("utterance_id") == latest["utterance_id"]
-                ]
-                self.assertIn("queued", latest_events)
-                self.assertNotIn("cancelled", latest_events)
+                for speech in spoken:
+                    events = [
+                        record["event"]
+                        for record in records
+                        if record.get("utterance_id") == speech["utterance_id"]
+                    ]
+                    self.assertIn("played", events)
+                    self.assertNotIn("cancelled", events)
+                    self.assertNotIn("interrupted", events)
                 self.assertNotIn(finals[2], Path(event_log_path).read_text())
 
     def test_continue_current_handoff_yields_first_play_and_replay_to_authoritative_final(self):
@@ -7546,7 +7523,7 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
                     self.assertEqual(speech_intent["realization_decision"], "full")
                     self.assertTrue(executor.eligibility(speech_intent))
 
-    def test_barge_in_makes_pending_coordinated_speech_ineligible(self):
+    def test_barge_in_holds_pending_coordinated_speech_until_the_next_turn(self):
         state = {"key": (1, "cmd-1")}
         executor = FakeTTSWorker()
         coordinator = voice_bridge.SpeechCoordinator(
@@ -7572,9 +7549,10 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
         self.assertFalse(executor.eligibility(queued))
         state["key"] = (2, "cmd-2")
         coordinator.new_turn(2, "cmd-2")
-        self.assertFalse(executor.eligibility(queued))
+        # RR-464: the unheard final stays queued for the newer command's turn.
+        self.assertTrue(executor.eligibility(queued))
         coordinator.play()
-        self.assertEqual(executor.calls, ["stop_playback"])
+        self.assertEqual(executor.calls, ["stop_playback", "play"])
 
     def test_newer_pending_project_work_does_not_create_visible_tickets(self):
         with tempfile.TemporaryDirectory() as temp_dir:

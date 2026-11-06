@@ -88,6 +88,23 @@ class BackgroundReplyTests(FocusTestCase):
         self.assertEqual(notify.call_args.args, ("session_playback",))
         self.assertEqual(json.loads(notify.call_args.kwargs["text"]), {"a": "play", "b": "stop"})
 
+    def test_speech_queue_depth_is_published_when_it_changes(self):
+        # RR-464: the notch stack follows the coordinator's queue.
+        self.tts.session_playback_states = mock.Mock(return_value={})
+        published = []
+        with mock.patch.object(
+            voice_bridge,
+            "_notify_state",
+            side_effect=lambda state, **fields: published.append((state, fields.get("text"))),
+        ):
+            for depth in (5, 5, 2):
+                self.tts.queue_depth = depth
+                voice_bridge._publish_session_playback(self.tts)
+        self.assertEqual(
+            [event for event in published if event[0] == "speech_queue"],
+            [("speech_queue", "5"), ("speech_queue", "2")],
+        )
+
     def setUp(self):
         super().setUp()
         voice_bridge._reset_foreground_reply_delivery_for_tests()

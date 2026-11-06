@@ -1149,11 +1149,20 @@ def _handle_session_playback(payload: dict, tts_worker) -> bool:
     return True
 
 
+_PUBLISHED_SPEECH_QUEUE_DEPTH: int | None = None
+
+
 def _publish_session_playback(tts_worker) -> None:
+    global _PUBLISHED_SPEECH_QUEUE_DEPTH
     snapshot = getattr(tts_worker, "session_playback_states", None)
     if callable(snapshot):
         states = snapshot(waiting_session_key=(_SPOKEN_REPLY or {}).get("session_key", ""))
         _notify_state("session_playback", text=json.dumps(states))
+    # RR-464: the notch stacks one card per reply queued behind the current one.
+    depth = getattr(tts_worker, "queue_depth", None)
+    if isinstance(depth, int) and depth != _PUBLISHED_SPEECH_QUEUE_DEPTH:
+        _PUBLISHED_SPEECH_QUEUE_DEPTH = depth
+        _notify_state("speech_queue", text=str(depth))
 
 
 VOICE_ACKNOWLEDGEMENT_DELAY_SECONDS = 0.0
@@ -3727,8 +3736,9 @@ def _mark_foreground_reply_delivered(command: dict | None) -> None:
 
 
 def _reset_foreground_reply_delivery_for_tests() -> None:
-    global _SPOKEN_REPLY
+    global _SPOKEN_REPLY, _PUBLISHED_SPEECH_QUEUE_DEPTH
     _SPOKEN_REPLY = None
+    _PUBLISHED_SPEECH_QUEUE_DEPTH = None
     with _FOREGROUND_REPLY_LOCK:
         _FOREGROUND_REPLIED_COMMANDS.clear()
         _FOREGROUND_REPLY_IN_FLIGHT.clear()

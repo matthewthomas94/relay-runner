@@ -13,7 +13,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(ROOT, "services"))
 
-from speech_coordinator import SpeechCoordinator, SpeechIntent  # noqa: E402
+from speech_coordinator import SPEECH_QUEUE_LIMIT, SpeechCoordinator, SpeechIntent  # noqa: E402
 
 
 class FakeWorker:
@@ -85,6 +85,14 @@ class SpeechCoordinatorTests(unittest.TestCase):
         self.assertTrue(coordinator.control_session("a", "stop"))
         self.assertIn("stop", worker.calls)
         worker.observer("cancelled", payload)
+        # RR-464: a stopped reply was not heard, so it stays queued.
+        self.assertEqual(coordinator.session_playback_states(), {"a": "play"})
+        self.assertTrue(coordinator.control_session("a", "play"))
+        resumed = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(resumed["original_utterance_id"], speech.utterance_id)
+        self.assertIsNone(resumed["replay_of"])
+        worker.observer("started", resumed)
+        worker.observer("completed", resumed)
         self.assertEqual(coordinator.session_playback_states(), {"a": "replay"})
         self.assertTrue(coordinator.control_session("a", "replay"))
         replay = worker.input_queue.get_nowait()["_speech_intent"]
@@ -126,9 +134,11 @@ class SpeechCoordinatorTests(unittest.TestCase):
         worker.observer("cancelled", payload)
 
         self.assertEqual(finished, [], "Stopping from the wheel must not surface the next reply")
-        self.assertEqual(coordinator.session_playback_states(), {"a": "replay"})
-        self.assertTrue(coordinator.control_session("a", "replay"))
-        self.assertEqual(worker.input_queue.get_nowait()["_speech_intent"]["replay_of"], speech.utterance_id)
+        self.assertEqual(coordinator.session_playback_states(), {"a": "play"})
+        self.assertTrue(coordinator.control_session("a", "play"))
+        resumed = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(resumed["original_utterance_id"], speech.utterance_id)
+        self.assertIsNone(resumed["replay_of"])
 
     def test_session_play_latches_before_messenger_finishes_without_changing_other_session(self):
         worker, coordinator, _ = self.make_coordinator()
@@ -147,7 +157,7 @@ class SpeechCoordinatorTests(unittest.TestCase):
         coordinator.submit(SpeechIntent.build(spoken_text="Next B", session_key="b"))
         self.assertTrue(coordinator.control_session("a", "stop"))
         worker.observer("cancelled", active)
-        self.assertEqual(coordinator.session_playback_states(), {"a": "replay", "b": "play"})
+        self.assertEqual(coordinator.session_playback_states(), {"a": "play", "b": "play"})
         self.assertTrue(coordinator.control_session("b", "play"))
         self.assertEqual(worker.input_queue.get_nowait()["_speech_intent"]["session_key"], "b")
 
@@ -523,8 +533,10 @@ class SpeechCoordinatorTests(unittest.TestCase):
         worker.observer("started", payload["_speech_intent"])
         worker.observer("cancelled", payload["_speech_intent"])
 
-        self.assertFalse(coordinator.play_or_replay())
+        # RR-464: it was not heard, so it stays queued rather than replayable.
+        self.assertFalse(coordinator.replay())
         self.assertTrue(worker.input_queue.empty())
+        self.assertEqual(coordinator.queue_depth, 1)
 
     def test_finished_final_reports_completion_and_user_stop_only(self):
         for state, reason, expected in (
@@ -573,16 +585,17 @@ class SpeechCoordinatorTests(unittest.TestCase):
         coordinator.stop_playback()
         worker.observer("cancelled", payload)
 
-        # The stopped message stays replayable without a notch announcement.
+        # The stopped message stays queued and replayable without a notch
+        # announcement; Play resumes it as the same message (RR-464).
         self.assertEqual(worker.calls, ["stop"])
         self.assertTrue(coordinator.play_or_replay())
-        replay = worker.input_queue.get_nowait()["_speech_intent"]
-        self.assertEqual(replay["spoken_text"], final.spoken_text)
-        self.assertEqual(replay["command_seq"], final.command_seq)
-        self.assertEqual(replay["command_id"], final.command_id)
-        self.assertEqual(replay["replacement_policy"], "replay")
-        self.assertEqual(replay["original_utterance_id"], payload["original_utterance_id"])
-        self.assertEqual(replay["replay_of"], payload["utterance_id"])
+        resumed = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(resumed["spoken_text"], final.spoken_text)
+        self.assertEqual(resumed["command_seq"], final.command_seq)
+        self.assertEqual(resumed["command_id"], final.command_id)
+        self.assertEqual(resumed["replacement_policy"], "semantic")
+        self.assertEqual(resumed["original_utterance_id"], payload["original_utterance_id"])
+        self.assertIsNone(resumed["replay_of"])
         self.assertEqual(worker.calls, ["stop", "play"])
         self.assertTrue(worker.input_queue.empty())
 
@@ -716,8 +729,10 @@ class SpeechCoordinatorTests(unittest.TestCase):
                 coordinator.stop_playback()
                 worker.observer("cancelled", payload)
 
-                # A newer command doesn't stop a replayable message replaying.
-                self.assertEqual(coordinator.play_or_replay(), replayable)
+                # A newer command doesn't stop a replayable message replaying;
+                # either way the unheard message stays queued (RR-464).
+                self.assertEqual(coordinator.replay(), replayable)
+                self.assertGreaterEqual(coordinator.queue_depth, 1)
 
     def test_stopped_attempt_retention_covers_supported_speech_sources(self):
         cases = (
@@ -747,7 +762,7 @@ class SpeechCoordinatorTests(unittest.TestCase):
                 self.assertEqual(replay["spoken_text"], original.spoken_text)
                 self.assertEqual(replay["command_id"], original.command_id)
 
-    def test_stopped_attempt_is_not_played_until_later_replay_completes(self):
+    def test_stopped_attempt_is_played_when_its_resumed_delivery_completes(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "speech.jsonl"
             worker, coordinator, _ = self.make_coordinator(log=log)
@@ -759,9 +774,9 @@ class SpeechCoordinatorTests(unittest.TestCase):
             worker.observer("cancelled", initial)
 
             self.assertTrue(coordinator.play_or_replay())
-            replay = worker.input_queue.get_nowait()["_speech_intent"]
-            worker.observer("started", replay)
-            worker.observer("completed", replay)
+            resumed = worker.input_queue.get_nowait()["_speech_intent"]
+            worker.observer("started", resumed)
+            worker.observer("completed", resumed)
 
             terminal = [
                 record
@@ -779,17 +794,19 @@ class SpeechCoordinatorTests(unittest.TestCase):
                 terminal[0]["utterance_id"],
                 terminal[1]["utterance_id"],
             )
+            # RR-464: Play resumes the same message, not a replay of it.
             self.assertEqual(
-                terminal[1]["replay_of"],
+                terminal[1]["original_utterance_id"],
                 terminal[0]["original_utterance_id"],
             )
             self.assertEqual(
                 [record["presentation_mode"] for record in terminal],
-                ["new_delivery", "explicit_replay"],
+                ["new_delivery", "new_delivery"],
             )
+            self.assertEqual(terminal[0]["requeued_as"], terminal[1]["utterance_id"])
             self.assertEqual(terminal[0]["stop_reason"], "user_stop")
 
-    def test_stop_holds_next_queued_message_until_explicit_replay_finishes(self):
+    def test_stop_holds_the_queue_and_play_resumes_the_stopped_message(self):
         worker, coordinator, _ = self.make_coordinator()
         first = intent(kind="handoff", text="first", replayable=True)
         second = intent(kind="final", text="second", authoritative=True)
@@ -805,13 +822,14 @@ class SpeechCoordinatorTests(unittest.TestCase):
         self.assertEqual(worker.calls, ["stop"])
 
         self.assertTrue(coordinator.play_or_replay())
-        replay = worker.input_queue.get_nowait()["_speech_intent"]
-        self.assertEqual(replay["spoken_text"], "first")
-        self.assertEqual(replay["replacement_policy"], "replay")
+        resumed = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(resumed["spoken_text"], "first")
+        self.assertEqual(resumed["original_utterance_id"], first_payload["utterance_id"])
+        self.assertIsNone(resumed["replay_of"])
         self.assertEqual(worker.calls, ["stop", "play"])
 
-        worker.observer("started", replay)
-        worker.observer("completed", replay)
+        worker.observer("started", resumed)
+        worker.observer("completed", resumed)
         next_payload = worker.input_queue.get_nowait()["_speech_intent"]
         self.assertEqual(next_payload["spoken_text"], "second")
 
@@ -851,22 +869,27 @@ class SpeechCoordinatorTests(unittest.TestCase):
         self.assertEqual(final["_speech_intent"]["kind"], "final")
         self.assertTrue(worker.eligibility(final["_speech_intent"]))
 
-    def test_retained_play_follows_a_newer_preview_without_playing_stale_text(self):
+    def test_retained_play_plays_queued_finals_in_arrival_order_across_previews(self):
         worker = FakeWorker()
         coordinator = SpeechCoordinator(worker, is_current=lambda _seq, _command_id: True)
         coordinator.arm_waiting_playback(1, "one", kind="final")
         coordinator.play()
         coordinator.arm_waiting_playback(2, "two", kind="final")
 
+        # RR-464: an older final is not stale; it plays in its turn.
         coordinator.submit(intent(seq=1, command_id="one", kind="final", text="old"))
-        old = worker.input_queue.get_nowait()
-        self.assertEqual(worker.calls, [])
-        self.assertFalse(worker.eligibility(old["_speech_intent"]))
+        old = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(worker.calls, ["play"])
+        self.assertTrue(worker.eligibility(old))
 
         coordinator.submit(intent(seq=2, command_id="two", kind="final", text="new"))
-        new = worker.input_queue.get_nowait()
-        self.assertEqual(worker.calls, ["skip", "play"])
-        self.assertTrue(worker.eligibility(new["_speech_intent"]))
+        self.assertTrue(worker.input_queue.empty())
+        self.assertEqual(worker.calls, ["play"])
+        worker.observer("started", old)
+        worker.observer("completed", old)
+        new = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(new["spoken_text"], "new")
+        self.assertTrue(worker.eligibility(new))
 
     def test_cancel_clears_a_retained_play_request(self):
         worker, coordinator, _ = self.make_coordinator()
@@ -1062,3 +1085,254 @@ class SpeechCoordinatorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeRemoteSink:
+    """A Relay Remote device: frames and controls share one seq counter."""
+
+    device_id = "phone-1"
+
+    def __init__(self):
+        self.online = True
+        self.seq = 0
+        self.frames: list[tuple[int, str]] = []
+        self.controls: list[tuple[int, str, str]] = []
+
+    def routable(self):
+        return self.online
+
+    def speech(self, **frame):
+        self.seq += 1
+        self.frames.append((self.seq, frame["text"]))
+        return self.seq
+
+    def speech_control(self, action, reason):
+        self.seq += 1
+        self.controls.append((self.seq, action, reason))
+        return self.seq
+
+
+def reply(label: str, seq: int, session: str, kind: str = "final") -> dict:
+    return {"label": label, "seq": seq, "session": session, "kind": kind}
+
+
+# RR-464: the queue rules from docs/architecture.md ("Speech queue rules").
+# Each row is (rule, steps, expected spoken order once the queue drains).
+# Steps: ("submit", reply), ("reject", reply), ("turn", seq), ("start",),
+# ("stop",), ("skip",), ("depth", n), ("no_event", event, label),
+# ("event", event, label).
+QUEUE_RULES = (
+    ("Q1 two finals from one session play in arrival order", [
+        ("submit", reply("A1", 1, "a")),
+        ("submit", reply("A2", 2, "a")),
+        ("depth", 2),
+    ], ["A1", "A2"]),
+    ("Q1/Q3 finals from three sessions keep arrival order; only the newer command's progress is replaced", [
+        ("submit", reply("A", 1, "a")),
+        ("submit", reply("B", 2, "b")),
+        ("turn", 4),
+        ("submit", reply("P4", 4, "d", kind="progress")),
+        ("submit", reply("C", 3, "c")),
+        ("submit", reply("D", 4, "d")),
+        ("depth", 4),
+        ("event", "replaced", "P4"),
+        ("no_event", "replaced", "A"),
+        ("no_event", "interrupted", "B"),
+        ("no_event", "interrupted", "C"),
+    ], ["A", "B", "C", "D"]),
+    ("Q5 a newer command during playback returns the playing final to the head", [
+        ("submit", reply("A", 1, "a")),
+        ("start",),
+        ("submit", reply("B", 2, "b")),
+        ("turn", 3),
+        ("depth", 2),
+        ("event", "interrupted", "A"),
+        ("no_event", "interrupted", "B"),
+    ], ["A", "B"]),
+    ("Q5/Q9 a final interrupted by a newer command is lost only when skipped", [
+        ("submit", reply("A", 1, "a")),
+        ("start",),
+        ("submit", reply("B", 2, "b")),
+        ("turn", 3),
+        ("skip",),
+        ("depth", 1),
+    ], ["B"]),
+    ("Q7/Q8 stop holds the queue and Play resumes the same item", [
+        ("submit", reply("A", 1, "a")),
+        ("start",),
+        ("stop",),
+        ("submit", reply("B", 2, "b")),
+        ("depth", 2),
+        ("event", "stopped", "A"),
+    ], ["A", "B"]),
+    ("Q9 skip removes only the current item", [
+        ("submit", reply("A", 1, "a")),
+        ("submit", reply("B", 2, "b")),
+        ("submit", reply("C", 3, "c")),
+        ("start",),
+        ("skip",),
+        ("depth", 2),
+        ("no_event", "interrupted", "B"),
+    ], ["B", "C"]),
+    ("Q1 five queued finals are all kept", [
+        *(("submit", reply(f"F{n}", n, f"s{n}")) for n in range(1, 6)),
+        ("depth", 5),
+    ], [f"F{n}" for n in range(1, 6)]),
+    ("Q11 the 50-item cap rejects the 51st with a diagnostic", [
+        *(("submit", reply(f"F{n}", n, "a")) for n in range(1, 51)),
+        ("reject", reply("F51", 51, "a")),
+        ("event", "queue_full", "F51"),
+        ("depth", 50),
+    ], [f"F{n}" for n in range(1, 51)]),
+)
+
+
+class SpeechQueueRuleTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.log = Path(self.directory.name) / "speech.jsonl"
+        self.current = (1, "cmd-1")
+        self.worker = FakeWorker()
+        self.coordinator = SpeechCoordinator(
+            self.worker,
+            is_current=lambda seq, command_id: (seq, command_id) == self.current,
+            # Accepted background finals are preserved, as the bridge does.
+            is_preserved=lambda seq, command_id, disposition: True,
+            event_log_path=self.log,
+        )
+        self.ids: dict[str, str] = {}
+        self.pending = None
+        self.playing = None
+        self.seen_calls = 0
+
+    def build(self, spec: dict) -> SpeechIntent:
+        speech = SpeechIntent.build(
+            spoken_text=spec["label"],
+            command_seq=spec["seq"],
+            command_id=f"cmd-{spec['seq']}",
+            source="orchestrator" if spec["kind"] == "final" else "lifecycle",
+            kind=spec["kind"],
+            authoritative=spec["kind"] == "final",
+            session_key=spec["session"],
+        )
+        self.ids[spec["label"]] = speech.utterance_id
+        return speech
+
+    def sync_worker(self) -> None:
+        """Mirror TTSWorker: stop/skip cancel what it holds; collect the rest."""
+        calls = self.worker.calls[self.seen_calls:]
+        self.seen_calls = len(self.worker.calls)
+        if any(call in {"stop", "skip"} for call in calls) and self.playing is not None:
+            playing, self.playing = self.playing, None
+            self.worker.observer("cancelled", playing)
+        if "skip" in calls and self.pending is not None:
+            pending, self.pending = self.pending, None
+            self.worker.observer("cancelled", pending)
+        while not self.worker.input_queue.empty():
+            self.pending = self.worker.input_queue.get_nowait()["_speech_intent"]
+
+    def start(self) -> None:
+        self.sync_worker()
+        self.playing, self.pending = self.pending, None
+        self.worker.observer("started", self.playing)
+
+    def records(self, event: str, label: str) -> list[dict]:
+        original = self.ids[label]
+        return [
+            record
+            for record in (json.loads(line) for line in self.log.read_text().splitlines())
+            if record["event"] == event and record["original_utterance_id"] == original
+        ]
+
+    def drain(self) -> list[str]:
+        spoken = []
+        for _ in range(SPEECH_QUEUE_LIMIT + 5):
+            self.sync_worker()
+            if self.pending is None:
+                self.coordinator.play()
+                self.sync_worker()
+            if self.pending is None:
+                break
+            self.start()
+            spoken.append(self.playing["spoken_text"])
+            playing, self.playing = self.playing, None
+            self.worker.observer("completed", playing)
+        return spoken
+
+    def run_rule(self, steps) -> list[str]:
+        for step in steps:
+            op = step[0]
+            if op == "submit":
+                self.assertTrue(self.coordinator.submit(self.build(step[1])), step)
+            elif op == "reject":
+                self.assertFalse(self.coordinator.submit(self.build(step[1])), step)
+            elif op == "turn":
+                self.current = (step[1], f"cmd-{step[1]}")
+                self.coordinator.new_turn(*self.current)
+            elif op == "start":
+                self.start()
+            elif op == "stop":
+                self.coordinator.stop_playback()
+            elif op == "skip":
+                self.coordinator.skip()
+            elif op == "depth":
+                self.assertEqual(self.coordinator.queue_depth, step[1], step)
+            elif op == "event":
+                self.assertTrue(self.records(step[1], step[2]), step)
+            elif op == "no_event":
+                self.assertEqual(self.records(step[1], step[2]), [], step)
+            self.sync_worker()
+        return self.drain()
+
+    def test_queue_rules(self):
+        for rule, steps, expected in QUEUE_RULES:
+            with self.subTest(rule=rule):
+                self.setUp()
+                self.assertEqual(self.run_rule(steps), expected)
+                self.assertEqual(self.coordinator.queue_depth, 0)
+                self.assert_replacements_name_their_own_command()
+
+    def assert_replacements_name_their_own_command(self) -> None:
+        records = [json.loads(line) for line in self.log.read_text().splitlines()]
+        accepted = {
+            record["utterance_id"]: (record["relay_command_seq"], record["relay_command_id"])
+            for record in records
+            if record["event"] == "accepted"
+        }
+        for record in records:
+            if record["event"] == "replaced":
+                self.assertEqual(
+                    (record["relay_command_seq"], record["relay_command_id"]),
+                    accepted[record["replaced_by"]],
+                )
+
+    def test_remote_sink_keeps_order_one_ack_each_and_returns_unplayed_finals(self):
+        sink = FakeRemoteSink()
+        self.coordinator.attach_remote_sink(sink)
+        for step in (
+            ("submit", reply("A", 1, "a")),
+            ("submit", reply("B", 2, "b")),
+            ("turn", 4),
+            ("submit", reply("P4", 4, "d", kind="progress")),
+            ("submit", reply("C", 3, "c")),
+            ("submit", reply("D", 4, "d")),
+        ):
+            self.run_rule([step])
+        self.assertEqual([text for _, text in sink.frames], ["A", "B", "P4", "C", "D"])
+        # A newer command never sends a stop that would drop a queued reply.
+        self.assertEqual(sink.controls, [])
+        self.assertTrue(self.worker.input_queue.empty())
+        seqs = {text: seq for seq, text in sink.frames}
+
+        self.assertTrue(self.coordinator.remote_ack(sink.device_id, seqs["A"], True))
+        self.assertFalse(self.coordinator.remote_ack(sink.device_id, seqs["A"], True))
+        self.assertTrue(self.coordinator.remote_ack(sink.device_id, seqs["B"], True))
+        self.assertEqual(len(self.records("played", "A")), 1)
+        self.assertEqual(len(self.records("played", "B")), 1)
+
+        # The device leaves: its unplayed replies come back in seq order.
+        sink.online = False
+        self.assertEqual(self.run_rule([("submit", reply("E", 5, "e"))]), ["C", "D", "E"])
+        self.assertTrue(self.records("remote_returned", "C"))
+        self.assertEqual(self.records("remote_returned", "P4"), [])
