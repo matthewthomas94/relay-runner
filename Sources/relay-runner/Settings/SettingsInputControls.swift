@@ -113,11 +113,13 @@ private struct SettingsSwitch: View {
     let showsLabel: Bool
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var isHovered = false
     @FocusState private var isFocused: Bool
 
+    /// On matches the segmented picker's selected segment.
     private var trackFill: Color {
-        if configuration.isOn { return SettingsSurfaceColor.neutralAccent.opacity(isHovered ? 0.4 : 0.34) }
+        if configuration.isOn { return SettingsSlider.fillColor(contrast: contrast, isEnabled: isEnabled) }
         return isHovered || isFocused ? SettingsSurfaceColor.rowFillHovered : SettingsSurfaceColor.rowFill
     }
 
@@ -130,6 +132,11 @@ private struct SettingsSwitch: View {
             HStack(spacing: 8) {
                 Capsule()
                     .fill(trackFill)
+                    .background(FluxDotsBackground(
+                        cornerRadius: SettingsSwitchMetrics.trackSize.height / 2,
+                        style: .standard,
+                        isVisible: isHovered
+                    ))
                     .overlay {
                         Capsule().strokeBorder(
                             SettingsSurfaceColor.focusRing.opacity(isFocused ? 0.3 : 0.12), lineWidth: 1)
@@ -256,6 +263,11 @@ struct SettingsSlider: View {
                 ProgramBoardInteractiveBackground(shape: .custom(AnyShape(shape)), presentation: presentation,
                                                   disabled: !isEnabled, usesCardStyle: true)
                 shape.fill(Self.fillColor(contrast: contrast, isEnabled: isEnabled))
+                    .background(FluxDotsBackground(
+                        cornerRadius: SharedActionButtonMetrics.cornerRadius,
+                        style: .standard,
+                        isVisible: isEnabled && (isHovered || isDragging)
+                    ))
                     .mask(alignment: .leading) {
                         Rectangle().frame(width: fraction >= 1 ? width : thumb)
                     }

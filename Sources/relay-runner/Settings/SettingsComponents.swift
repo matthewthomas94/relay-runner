@@ -303,13 +303,19 @@ private struct SettingsSegmentButton: View {
                 )
                 .frame(maxWidth: .infinity, minHeight: SharedActionButtonMetrics.controlHeight)
                 .background {
-                    // Hover and focus brighten the text only; the selection sits inside the group's stroke.
+                    // The selection sits inside the group's stroke; hovering it
+                    // shimmers with the Settings sidebar's dots.
                     if isSelected {
                         RoundedRectangle(
                             cornerRadius: SharedActionButtonMetrics.cornerRadius - selectionInset,
                             style: .continuous
                         )
                         .fill(SettingsSlider.fillColor(contrast: contrast))
+                        .background(FluxDotsBackground(
+                            cornerRadius: SharedActionButtonMetrics.cornerRadius - selectionInset,
+                            style: .standard,
+                            isVisible: isHovered
+                        ))
                         .padding(selectionInset)
                     }
                 }
