@@ -270,6 +270,8 @@ scripts/relay-bridge --install-skills
 ```
 `scripts/relay-bridge --refresh-skills` runs the edit-preserving refresh by hand. If you're validating the bundled app instead of the repo checkout, rebuild or reinstall the app first so the bundled scripts match the updated source.
 
+**Voice bridge restarted mid-turn.** The app watchdog checks the voice bridge every 3 s. It reads the pid in `/tmp/voice_bridge.pid` with `kill(pid, 0)` and checks the process's arguments through the kernel, so the check starts no new process. `pgrep` and `ps` run only when that check is inconclusive. A check that cannot run, for example because a process cannot be spawned under heavy memory pressure, counts as unknown, never as dead. The watchdog relaunches the bridge only after two consecutive samples find it dead, or after it has been unreachable for 60 s. A watchdog restart keeps the provider session id. The stopping bridge, the `relay-bridge` launcher and the new bridge therefore keep the provider turn ledger (`/tmp/voice_provider_turns.json`), the claimed command and the command state. If the ledger is missing anyway, the completion hook finds the running turn in the broker database (`/tmp/relay_intent_inbox.sqlite3`). The final reply of the turn that was running still gets spoken. Ending the session or an explicit stop still removes these files. Each restart is recorded as a `bridge_recovery` event in the support diagnostics, and its summary names the probes that failed (`probe=socket_missing`, `pid_signal`, `ps`, `pgrep`, or `none`).
+
 **Worker hangs.** Cancel and inspect:
 ```
 cancel_run --run_id=N --prune_worktree=false

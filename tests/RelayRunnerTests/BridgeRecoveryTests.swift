@@ -747,6 +747,65 @@ final class BridgeRecoveryTests: XCTestCase {
         XCTAssertTrue(script.contains("another voice command is already pending"))
     }
 
+    // MARK: - RR-465 two-sample liveness rule
+
+    private enum Sample { case alive, dead, unknown }
+
+    /// Feeds watchdog samples 3 s apart through the liveness history and the
+    /// watchdog decision, as `applyBridgeWatchdogSample` does.
+    private func watchdogActions(_ samples: [Sample], interval: TimeInterval = 3) -> [AppState.BridgeWatchdogAction] {
+        var history = AppState.BridgeLivenessHistory()
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        return samples.enumerated().map { index, sample in
+            let now = start.addingTimeInterval(TimeInterval(index) * interval)
+            history.record(
+                daemonAlive: sample == .alive,
+                livenessUnknown: sample == .unknown,
+                bridgeProcessAlive: false,
+                now: now
+            )
+            return AppState.bridgeWatchdogAction(
+                menuSessionActive: true,
+                daemonAlive: sample == .alive,
+                consumerAlive: sample == .alive,
+                wasAlive: true,
+                sessionBridgeSeen: true,
+                elapsedSinceSessionStart: 120,
+                bridgeUnreachableFor: history.unreachableFor(now: now),
+                livenessUnknown: sample == .unknown,
+                consecutiveDeadSamples: history.consecutiveDeadSamples
+            )
+        }
+    }
+
+    func testUnknownProbeSamplesNeverRecoverALiveBridge() {
+        let actions = watchdogActions([.alive, .unknown, .unknown, .alive])
+        XCTAssertFalse(actions.contains(.recoverDaemon))
+        XCTAssertEqual(actions, [.alive, .awaitLivenessConfirmation, .awaitLivenessConfirmation, .alive])
+    }
+
+    func testTwoConsecutiveDeadSamplesRecoverTheBridge() {
+        XCTAssertEqual(watchdogActions([.dead, .dead]), [.awaitLivenessConfirmation, .recoverDaemon])
+        XCTAssertEqual(watchdogActions([.alive, .dead, .alive, .dead]).filter { $0 == .recoverDaemon }, [],
+                       "dead samples separated by a live one are not consecutive")
+        XCTAssertEqual(watchdogActions([.dead, .unknown, .dead]).last, .awaitLivenessConfirmation,
+                       "an unknown sample never counts as dead")
+    }
+
+    func testPersistentUnknownProbeRecoversAfterTheGrace() {
+        let samples = [Sample](repeating: .unknown, count: 22)
+        let actions = watchdogActions(samples)
+        XCTAssertEqual(actions.firstIndex(of: .recoverDaemon), 20, "60 s after the first unreachable sample")
+    }
+
+    func testProbeSummaryNamesFailedProbes() {
+        XCTAssertEqual(AppState.probeSummary([]), "none")
+        XCTAssertEqual(
+            AppState.probeSummary(AppState.uniqueProbes(["pid_signal", "pgrep", "pid_signal"])),
+            "pid_signal,pgrep"
+        )
+    }
+
     func testRecoveryFailurePresentationSurfacesUndeliveredCommand() {
         let presentation = AppState.bridgeRecoveryFailurePresentation(reason: "voice-delivery-timeout")
 

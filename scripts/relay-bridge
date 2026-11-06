@@ -256,11 +256,33 @@ record_support_event() {
     release_support_journal_lock "$directory"
 }
 
+# RR-465: app watchdog recovery records the provider session id it carries
+# across the restart (first line). That provider's completion hook still needs
+# its claim, command state and turn ledger to deliver the running turn's reply.
+BRIDGE_WATCHDOG_RESTART_FILE="/tmp/voice_bridge_watchdog_restart"
+
+watchdog_restart_preserves_turns() {
+    [ -n "${RELAY_PROVIDER_SESSION_ID:-}" ] || return 1
+    [ -f "$BRIDGE_STOP_REQUESTED_FILE" ] && return 1
+    [ "$(head -n 1 "$BRIDGE_WATCHDOG_RESTART_FILE" 2>/dev/null)" = "$RELAY_PROVIDER_SESSION_ID" ]
+}
+
 cleanup_bridge_runtime_files() {
     if [ -f /tmp/voice_bridge_heartbeat.pid ]; then
         kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
     fi
-    rm -f "${BRIDGE_RUNTIME_FILES[@]}"
+    if watchdog_restart_preserves_turns; then
+        local path
+        for path in "${BRIDGE_RUNTIME_FILES[@]}"; do
+            case "$path" in
+                /tmp/voice_cmd_claimed.json|/tmp/voice_command_state.json|/tmp/voice_provider_turns.json|/tmp/voice_provider_turns_v2.json|/tmp/voice_provider_session_id)
+                    continue ;;
+            esac
+            rm -f "$path"
+        done
+        return 0
+    fi
+    rm -f "${BRIDGE_RUNTIME_FILES[@]}" "$BRIDGE_WATCHDOG_RESTART_FILE"
 }
 
 ensure_fifo() {
