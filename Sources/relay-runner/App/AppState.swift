@@ -167,6 +167,9 @@ final class AppState {
         let daemonAlive: Bool
         /// The recorded bridge process runs although the daemon probe missed.
         let bridgeProcessAlive: Bool
+        /// RR-465: a probe could not run, so this sample proves nothing.
+        let livenessUnknown: Bool
+        let failedProbes: [String]
         let consumerAlive: Bool
         let hasSessionContext: Bool
         let pendingDeliveryState: ProcessManager.PendingVoiceCommandDeliveryState
@@ -487,8 +490,11 @@ final class AppState {
     private var programBoardLoadingState: ProgramBoardLoadingState = .idle
     private var lastBridgeRecoveryAt: Date = .distantPast
     private static let bridgeRecoveryCooldown: TimeInterval = 15
-    /// RR-447: when the watchdog first found a live bridge process unreachable.
-    @ObservationIgnored private var bridgeUnreachableSince: Date?
+    /// RR-447/RR-465: consecutive dead samples and when the bridge was
+    /// first found unreachable.
+    @ObservationIgnored private var bridgeLivenessHistory = BridgeLivenessHistory()
+    /// RR-465: the probes that failed in the latest sample, for diagnostics.
+    @ObservationIgnored private var bridgeLivenessFailedProbes: [String] = []
     /// A live bridge process may stay unreachable this long (provider resume,
     /// busy daemon or app) before the watchdog relaunches it.
     static let liveBridgeUnreachableGrace: TimeInterval = 60
@@ -3684,11 +3690,15 @@ final class AppState {
             ? binding?.managedProcess : nil
         bridgeWatchdogTask = Task { @MainActor [weak self] in
             let sample = await Task.detached(priority: .utility) {
-                let daemonAlive = processManager.bridgeAlive()
+                let daemon = processManager.bridgeDaemonLiveness()
+                let daemonAlive = daemon.result == .alive
+                let process = daemonAlive ? nil : ProcessManager.recordedBridgeProcessLiveness()
                 let consumerAlive = daemonAlive && processManager.bridgeConsumerAlive()
                 return BridgeWatchdogSample(
                     daemonAlive: daemonAlive,
-                    bridgeProcessAlive: !daemonAlive && ProcessManager.recordedBridgeProcessAlive(),
+                    bridgeProcessAlive: process?.result == .alive,
+                    livenessUnknown: daemon.result == .unknown || process?.result == .unknown,
+                    failedProbes: Self.uniqueProbes(daemon.failedProbes + (process?.failedProbes ?? [])),
                     consumerAlive: consumerAlive,
                     hasSessionContext: processManager.bridgeRecoveryContext(
                         fallbackConfig: fallbackConfig
@@ -3729,11 +3739,14 @@ final class AppState {
         )
         let wasAlive = bridgeAliveCache
         let elapsed = Date().timeIntervalSince(sessionStartTime)
-        if sample.bridgeProcessAlive {
-            bridgeUnreachableSince = bridgeUnreachableSince ?? Date()
-        } else {
-            bridgeUnreachableSince = nil
-        }
+        let now = Date()
+        bridgeLivenessHistory.record(
+            daemonAlive: daemonAlive,
+            livenessUnknown: sample.livenessUnknown,
+            bridgeProcessAlive: sample.bridgeProcessAlive,
+            now: now
+        )
+        bridgeLivenessFailedProbes = sample.failedProbes
         let action = Self.bridgeWatchdogAction(
             menuSessionActive: menuSessionActive,
             daemonAlive: daemonAlive,
@@ -3747,7 +3760,9 @@ final class AppState {
             stopRequested: sample.stopRequested,
             recoverySuppressed: bridgeRecoverySuppressedForUpdate,
             bridgeProcessAlive: sample.bridgeProcessAlive,
-            bridgeUnreachableFor: bridgeUnreachableSince.map { Date().timeIntervalSince($0) } ?? 0
+            bridgeUnreachableFor: bridgeLivenessHistory.unreachableFor(now: now),
+            livenessUnknown: sample.livenessUnknown,
+            consecutiveDeadSamples: bridgeLivenessHistory.consecutiveDeadSamples
         )
         surfaceInboxRecoveryBlockerIfNeeded()
 
@@ -3795,6 +3810,9 @@ final class AppState {
             return
         case .waitForLaunch:
             bridgeAliveCache = true
+            return
+        case .awaitLivenessConfirmation:
+            // RR-465: one dead or unknown sample leaves the session as it is.
             return
         case .recoverDaemon:
             bridgeAliveCache = false
@@ -3879,9 +3897,39 @@ final class AppState {
         case keepDaemon
         case waitForConsumer
         case waitForLaunch
+        /// RR-465: the daemon looked dead once or a probe could not run; wait
+        /// for the next sample before relaunching it.
+        case awaitLivenessConfirmation
         case recoverDaemon
         case reapOrphan
         case markDead
+    }
+
+    /// RR-465: watchdog liveness across samples. A single failed probe under
+    /// memory pressure is not a dead bridge, and an unknown sample never
+    /// counts as dead.
+    struct BridgeLivenessHistory: Equatable {
+        static let deadSamplesBeforeRecovery = 2
+        private(set) var consecutiveDeadSamples = 0
+        private(set) var unreachableSince: Date?
+
+        mutating func record(daemonAlive: Bool, livenessUnknown: Bool, bridgeProcessAlive: Bool, now: Date) {
+            guard !daemonAlive else {
+                self = BridgeLivenessHistory()
+                return
+            }
+            unreachableSince = unreachableSince ?? now
+            consecutiveDeadSamples = livenessUnknown || bridgeProcessAlive ? 0 : consecutiveDeadSamples + 1
+        }
+
+        func unreachableFor(now: Date) -> TimeInterval {
+            unreachableSince.map { now.timeIntervalSince($0) } ?? 0
+        }
+    }
+
+    static func uniqueProbes(_ probes: [String]) -> [String] {
+        var seen = Set<String>()
+        return probes.filter { seen.insert($0).inserted }
     }
 
     static func bridgeWatchdogAction(
@@ -3897,7 +3945,9 @@ final class AppState {
         stopRequested: Bool = false,
         recoverySuppressed: Bool = false,
         bridgeProcessAlive: Bool = false,
-        bridgeUnreachableFor: TimeInterval = 0
+        bridgeUnreachableFor: TimeInterval = 0,
+        livenessUnknown: Bool = false,
+        consecutiveDeadSamples: Int = BridgeLivenessHistory.deadSamplesBeforeRecovery
     ) -> BridgeWatchdogAction {
         if stopRequested {
             return daemonAlive ? .reapOrphan : .markDead
@@ -3921,9 +3971,18 @@ final class AppState {
         // RR-447: a relaunch kills a bridge that is only slow to answer while
         // the provider resumes, and interrupts capture and speech. Keep a live
         // bridge process through a bounded grace instead.
-        let recovery: BridgeWatchdogAction =
-            bridgeProcessAlive && bridgeUnreachableFor < liveBridgeUnreachableGrace
-                ? .keepDaemon : .recoverDaemon
+        // RR-465: relaunch only after two consecutive dead samples, or once
+        // the grace has elapsed; a probe that could not run proves nothing.
+        let recovery: BridgeWatchdogAction
+        if bridgeUnreachableFor >= liveBridgeUnreachableGrace {
+            recovery = .recoverDaemon
+        } else if bridgeProcessAlive {
+            recovery = .keepDaemon
+        } else if livenessUnknown || consecutiveDeadSamples < BridgeLivenessHistory.deadSamplesBeforeRecovery {
+            recovery = .awaitLivenessConfirmation
+        } else {
+            recovery = .recoverDaemon
+        }
         if menuSessionActive {
             if sessionBridgeSeen || elapsedSinceSessionStart > 90 {
                 return recovery
@@ -3973,6 +4032,11 @@ final class AppState {
         return .allowRecording
     }
 
+    /// RR-465: which liveness probes failed, for the `bridge_recovery` event.
+    static func probeSummary(_ failedProbes: [String]) -> String {
+        failedProbes.isEmpty ? "none" : failedProbes.joined(separator: ",")
+    }
+
     @discardableResult
     private func startBridgeRecovery(reason: String) -> Bool {
         if bridgeRecoverySuppressedForUpdate { return false }
@@ -4011,7 +4075,7 @@ final class AppState {
             phase: "bridge_recovery",
             outcome: "started",
             provider: context.provider.flatMap { RelayDiagnostics.allowedProviders.contains($0) ? $0 : nil },
-            summary: "reason=\(reason) bridge_seen=\(sessionBridgeSeen)"
+            summary: "reason=\(reason) bridge_seen=\(sessionBridgeSeen) probe=\(Self.probeSummary(bridgeLivenessFailedProbes))"
         )
 
         let processManager = self.processManager
@@ -4420,7 +4484,11 @@ final class AppState {
                         || (captureOwnerRequested && !self.onboarding.isSessionControlsTutorialActive) {
                 // An out-of-session gesture never opened the mic; it takes the
                 // same real-time bridge check so the session affordance matches.
-                let bridgeProbeAlive = self.processManager.bridgeAlive()
+                let daemonProbe = self.processManager.bridgeDaemonLiveness()
+                let bridgeProbeAlive = daemonProbe.result == .alive
+                let processProbe = bridgeProbeAlive ? nil : ProcessManager.recordedBridgeProcessLiveness()
+                self.bridgeLivenessFailedProbes = Self.uniqueProbes(
+                    daemonProbe.failedProbes + (processProbe?.failedProbes ?? []))
                 let daemonAlive = bridgeProbeAlive && self.bridgeMatchesActiveContext
                 let pendingDeliveryState = self.processManager.pendingVoiceCommandDeliveryState()
                 let consumerAlive = daemonAlive && self.processManager.bridgeConsumerAlive()
@@ -4433,7 +4501,9 @@ final class AppState {
                     consumerAlive: consumerAlive,
                     hasSessionContext: hasSessionContext,
                     pendingDeliveryState: pendingDeliveryState,
-                    bridgeProcessAlive: !bridgeProbeAlive && ProcessManager.recordedBridgeProcessAlive()
+                    // RR-465: a probe that could not run never relaunches the bridge.
+                    bridgeProcessAlive: daemonProbe.result == .unknown
+                        || processProbe.map { $0.result != .dead } ?? false
                 )
 
                 switch bridgeAction {

@@ -38,7 +38,12 @@ final class ProcessManager {
     static let pendingVoiceCommandTimeout: TimeInterval = 10
     private static let staleHeartbeatTimeout: TimeInterval = 30
     private static let missingHeartbeatGrace: TimeInterval = 30
-    private static let bridgeRuntimePaths = [
+    /// RR-465: written by watchdog recovery with the provider session id and
+    /// the stopping bridge's pid, so neither the stopping bridge nor the next
+    /// one's startup deletes the turn ledger the completion hook still needs.
+    static let bridgeWatchdogRestartPath = "/tmp/voice_bridge_watchdog_restart"
+
+    static let bridgeRuntimePaths = [
         "/tmp/voice_in.fifo",
         bridgeSocketPath,
         VoiceSessionSpool.legacy.command,
@@ -60,6 +65,7 @@ final class ProcessManager {
         VoiceSessionSpool.bridgeTargetPath,
         "/tmp/relay_board_now.txt",
         "/tmp/relay_board_prev.txt",
+        bridgeWatchdogRestartPath,
     ]
 
     /// The read-only services directory that ships in the .app bundle (or
@@ -245,11 +251,45 @@ final class ProcessManager {
     }
 
     private static func bridgeDaemonAlive() -> Bool {
-        guard FileManager.default.fileExists(atPath: bridgeSocketPath) else { return false }
-        return Self.voiceBridgeProcessAlive()
+        bridgeDaemonLiveness().result == .alive
     }
 
-    private static func voiceBridgeProcessAlive() -> Bool {
+    /// RR-465: a liveness probe answers alive, dead, or unknown when it could
+    /// not run (a spawn failure under memory pressure is not a dead bridge).
+    enum BridgeProbeResult: Equatable {
+        case alive
+        case dead
+        case unknown
+    }
+
+    struct BridgeLivenessReport: Equatable {
+        var result: BridgeProbeResult
+        /// Probes that reported dead or could not run: `socket_missing`,
+        /// `pid_signal`, `ps`, `pgrep`.
+        var failedProbes: [String] = []
+    }
+
+    func bridgeDaemonLiveness() -> BridgeLivenessReport {
+        Self.bridgeDaemonLiveness()
+    }
+
+    /// The socket must exist and the bridge must run. The recorded pid is
+    /// checked first without spawning anything; `pgrep` only runs when that
+    /// check is not conclusive.
+    static func bridgeDaemonLiveness(
+        socketExists: () -> Bool = { FileManager.default.fileExists(atPath: bridgeSocketPath) },
+        recordedProcess: () -> BridgeLivenessReport = { recordedBridgeProcessLiveness() },
+        pgrep: () -> BridgeProbeResult = voiceBridgeProcessPgrep
+    ) -> BridgeLivenessReport {
+        guard socketExists() else { return BridgeLivenessReport(result: .dead, failedProbes: ["socket_missing"]) }
+        let recorded = recordedProcess()
+        if recorded.result == .alive { return recorded }
+        let fallback = pgrep()
+        if fallback == .alive { return BridgeLivenessReport(result: .alive) }
+        return BridgeLivenessReport(result: fallback, failedProbes: recorded.failedProbes + ["pgrep"])
+    }
+
+    private static func voiceBridgeProcessPgrep() -> BridgeProbeResult {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
         proc.arguments = ["-f", "voice_bridge.py"]
@@ -258,9 +298,14 @@ final class ProcessManager {
         do {
             try proc.run()
             proc.waitUntilExit()
-            return proc.terminationStatus == 0
+            // pgrep exits 1 when nothing matched; 2 and 3 are its own errors.
+            switch proc.terminationStatus {
+            case 0: return .alive
+            case 1: return .dead
+            default: return .unknown
+            }
         } catch {
-            return false
+            return .unknown
         }
     }
 
@@ -827,6 +872,14 @@ final class ProcessManager {
         [ -f /tmp/voice_bridge_heartbeat.pid ] && kill "$(cat /tmp/voice_bridge_heartbeat.pid)" 2>/dev/null || true
         [ -f /tmp/voice_bridge_stop_requested ] && exit 1
         BRIDGE_PID=$(cat \(bridgePIDPath) 2>/dev/null || true)
+        # RR-465: the provider session continues across this restart, so the
+        # stopping bridge and the next bridge's startup keep its turn ledger
+        # and claim; the completion hook still needs them for the final reply.
+        if [ -n "$RELAY_PROVIDER_SESSION_ID" ]; then
+            printf '%s\\n%s\\n' "$RELAY_PROVIDER_SESSION_ID" "$BRIDGE_PID" > \(bridgeWatchdogRestartPath)
+        else
+            rm -f \(bridgeWatchdogRestartPath)
+        fi
         if [ -n "$BRIDGE_PID" ] && ps -p "$BRIDGE_PID" -o command= 2>/dev/null | grep -q '[v]oice_bridge.py'; then
             kill "$BRIDGE_PID" 2>/dev/null || true
         fi
@@ -835,7 +888,8 @@ final class ProcessManager {
         # RR-447: an app-owned provider outlives this bridge. Its claim, command
         # state, provider turns and terminal evidence bind a prompt it may be
         # submitting right now, so only a manual /tmp session clears them.
-        if [ -z "$RELAY_SESSION_SPOOL_DIR" ]; then
+        # RR-465: so does any provider whose session id this restart carries.
+        if [ -z "$RELAY_SESSION_SPOOL_DIR" ] && [ -z "$RELAY_PROVIDER_SESSION_ID" ]; then
             rm -f "$SPOOL"/voice_cmd_claimed.json /tmp/voice_provider_turns.json /tmp/voice_provider_turns_v2.json "$SPOOL"/relay_terminal_manual_submission.json "$SPOOL"/relay_terminal_delivery_events.jsonl
             [ "$RELAY_CONTINUITY_RECOVERY_PENDING" = "1" ] || rm -f "$SPOOL"/voice_command_state.json /tmp/voice_command_state.json
         fi
@@ -926,15 +980,73 @@ final class ProcessManager {
         recordedBridgePID(pidFile: pidFile, commandLine: commandLine) != nil
     }
 
-    private static func recordedBridgePID(pidFile: String, commandLine: (pid_t) -> String?) -> pid_t? {
-        guard let raw = try? String(contentsOfFile: pidFile, encoding: .utf8),
-              let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-              pid > 1,
-              commandLine(pid)?.contains("voice_bridge.py") == true else { return nil }
-        return pid
+    /// The outcome of reading a process command line through `/bin/ps`.
+    enum ProcessCommandLineLookup: Equatable {
+        case found(String)
+        /// `ps` ran and found no such process.
+        case missing
+        /// `ps` could not be spawned.
+        case unavailable
     }
 
-    private static func processCommandLine(of pid: pid_t) -> String? {
+    /// RR-465: `kill(pid, 0)` and the kernel's argument vector answer whether
+    /// the recorded bridge runs without spawning a process. `/bin/ps` is used
+    /// only when the kernel will not return the arguments, and a probe that
+    /// cannot run answers unknown.
+    static func recordedBridgeProcessLiveness(
+        pidFile: String = bridgePIDPath,
+        signalProbe: (pid_t) -> Int32 = { Darwin.kill($0, 0) == 0 ? 0 : errno },
+        kernelCommandLine: (pid_t) -> String? = kernelProcessArguments,
+        psCommandLine: (pid_t) -> ProcessCommandLineLookup = psProcessCommandLine
+    ) -> BridgeLivenessReport {
+        guard let raw = try? String(contentsOfFile: pidFile, encoding: .utf8),
+              let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              pid > 1 else {
+            return BridgeLivenessReport(result: .dead, failedProbes: ["pid_signal"])
+        }
+        switch signalProbe(pid) {
+        case 0, EPERM:
+            break
+        case ESRCH:
+            return BridgeLivenessReport(result: .dead, failedProbes: ["pid_signal"])
+        default:
+            return BridgeLivenessReport(result: .unknown, failedProbes: ["pid_signal"])
+        }
+        if let command = kernelCommandLine(pid) {
+            return command.contains("voice_bridge.py")
+                ? BridgeLivenessReport(result: .alive)
+                : BridgeLivenessReport(result: .dead, failedProbes: ["pid_signal"])
+        }
+        switch psCommandLine(pid) {
+        case .found(let command):
+            return command.contains("voice_bridge.py")
+                ? BridgeLivenessReport(result: .alive)
+                : BridgeLivenessReport(result: .dead, failedProbes: ["ps"])
+        case .missing:
+            return BridgeLivenessReport(result: .dead, failedProbes: ["ps"])
+        case .unavailable:
+            return BridgeLivenessReport(result: .unknown, failedProbes: ["ps"])
+        }
+    }
+
+    /// The process's executable path and arguments from `KERN_PROCARGS2`,
+    /// or nil when the kernel does not return them.
+    static func kernelProcessArguments(of pid: pid_t) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+        let argc = buffer.withUnsafeBytes { Int($0.loadUnaligned(as: Int32.self)) }
+        // The executable path, NUL padding, then argc NUL-terminated arguments.
+        let parts = buffer[MemoryLayout<Int32>.size..<size]
+            .split(separator: 0, omittingEmptySubsequences: true)
+            .prefix(max(0, argc) + 1)
+            .compactMap { String(bytes: $0, encoding: .utf8) }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    private static func psProcessCommandLine(of pid: pid_t) -> ProcessCommandLineLookup {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/ps")
         proc.arguments = ["-p", String(pid), "-o", "command="]
@@ -945,10 +1057,25 @@ final class ProcessManager {
             try proc.run()
             let data = output.fileHandleForReading.readDataToEndOfFile()
             proc.waitUntilExit()
-            return proc.terminationStatus == 0 ? String(data: data, encoding: .utf8) : nil
+            guard proc.terminationStatus == 0, let text = String(data: data, encoding: .utf8) else { return .missing }
+            return .found(text)
         } catch {
-            return nil
+            return .unavailable
         }
+    }
+
+    private static func recordedBridgePID(pidFile: String, commandLine: (pid_t) -> String?) -> pid_t? {
+        guard let raw = try? String(contentsOfFile: pidFile, encoding: .utf8),
+              let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              pid > 1,
+              commandLine(pid)?.contains("voice_bridge.py") == true else { return nil }
+        return pid
+    }
+
+    private static func processCommandLine(of pid: pid_t) -> String? {
+        if let command = kernelProcessArguments(of: pid) { return command }
+        if case .found(let command) = psProcessCommandLine(of: pid) { return command }
+        return nil
     }
 
     func stopServices() {

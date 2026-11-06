@@ -696,6 +696,43 @@ def _write_bridge_pid_file() -> None:
             pass
 
 
+# RR-465: app watchdog recovery records the provider session id and the
+# stopping bridge's pid here. That bridge keeps the provider turn ledger and
+# claim on the way out, because the provider session continues and its
+# completion hook still needs them to deliver the final reply.
+BRIDGE_WATCHDOG_RESTART_FILE = "/tmp/voice_bridge_watchdog_restart"
+BRIDGE_STOP_REQUESTED_FILE = "/tmp/voice_bridge_stop_requested"
+
+
+def _watchdog_restart_preserves_turns(
+    *,
+    stopping: bool,
+    marker_path: str = BRIDGE_WATCHDOG_RESTART_FILE,
+    stop_path: str = BRIDGE_STOP_REQUESTED_FILE,
+    provider_session_id: str | None = None,
+    pid: int | None = None,
+) -> bool:
+    """Whether a same-session watchdog restart is stopping or starting this bridge.
+
+    The stopping bridge must be the one the marker names; the starting bridge
+    must carry the same provider session id. An explicit stop always cleans.
+    """
+    session_id = PROVIDER_SESSION_ID if provider_session_id is None else provider_session_id
+    if not session_id or os.path.exists(stop_path):
+        return False
+    try:
+        with open(marker_path) as f:
+            fields = f.read().split()
+    except OSError:
+        return False
+    if not fields or fields[0] != session_id:
+        return False
+    if not stopping:
+        return True
+    current_pid = os.getpid() if pid is None else pid
+    return fields[1:2] == [str(current_pid)]
+
+
 def _remove_bridge_pid_file() -> None:
     """Drop the PID file only while it still names this process."""
     try:
@@ -5390,15 +5427,19 @@ def _run_relay(
     # The continuity handoff still needs the authoritative recovery generation.
     # Keep its full command state so a newer command remains able to reject the
     # recovering turn instead of reconstructing or overwriting command identity.
+    # RR-465: a same-session watchdog restart keeps the provider's claim,
+    # turn ledger and command state so its completion hook can still deliver
+    # the final reply of the turn that was running when the bridge stopped.
+    watchdog_restart = _watchdog_restart_preserves_turns(stopping=False)
     cleanup_paths = [
         TTS_IN_FIFO,
         VOICE_CMD_FILE,
         VOICE_CMD_META_FILE,
-        VOICE_COMMAND_CLAIM_FILE,
         VOICE_MANUAL_CLAIM_ACK_FILE,
-        VOICE_PROVIDER_TURNS_FILE,
     ]
-    if os.environ.get("RELAY_CONTINUITY_RECOVERY_PENDING") != "1":
+    if not watchdog_restart:
+        cleanup_paths += [VOICE_COMMAND_CLAIM_FILE, VOICE_PROVIDER_TURNS_FILE]
+    if os.environ.get("RELAY_CONTINUITY_RECOVERY_PENDING") != "1" and not watchdog_restart:
         cleanup_paths.append(VOICE_COMMAND_STATE_FILE)
     if os.environ.get("RELAY_PRESERVE_CONTEXT_AUTHORIZATION") != "1":
         cleanup_paths.append(VOICE_COMMAND_AUTHORIZATION_FILE)
@@ -5752,6 +5793,11 @@ def _run_relay(
                 pass
         for lifecycle in _clear_voice_targets():
             stop_persistent_orchestrator_lifecycle(lifecycle, reason="bridge stopped")
+        preserved = (
+            {VOICE_COMMAND_STATE_FILE, VOICE_COMMAND_CLAIM_FILE, VOICE_PROVIDER_TURNS_FILE}
+            if _watchdog_restart_preserves_turns(stopping=True)
+            else set()
+        )
         for path in [
             TTS_IN_FIFO,
             VOICE_CMD_FILE,
@@ -5762,6 +5808,8 @@ def _run_relay(
             VOICE_PROVIDER_TURNS_FILE,
             *([LEGACY_VOICE_COMMAND_STATE_FILE] if _MIRRORED_COMMAND_STATE_FILE else []),
         ]:
+            if path in preserved:
+                continue
             try:
                 os.unlink(path)
             except OSError:

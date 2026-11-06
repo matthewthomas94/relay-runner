@@ -52,11 +52,105 @@ final class WatchdogSessionRecoveryTests: XCTestCase {
             }
             XCTAssertTrue(unconditional.contains("/tmp/voice_bridge.sock"))
             XCTAssertTrue(unconditional.contains("\"$SPOOL\"/voice_cmd_ready.meta"))
-            let manualOnly = try XCTUnwrap(lines.firstIndex { $0.contains("if [ -z \"$RELAY_SESSION_SPOOL_DIR\" ]; then") })
+            let manualOnly = try XCTUnwrap(lines.firstIndex {
+                $0.contains("if [ -z \"$RELAY_SESSION_SPOOL_DIR\" ] && [ -z \"$RELAY_PROVIDER_SESSION_ID\" ]; then")
+            })
             XCTAssertTrue(lines[manualOnly + 1].contains("rm -f \"$SPOOL\"/voice_cmd_claimed.json /tmp/voice_provider_turns.json"))
             XCTAssertTrue(lines[manualOnly + 2].contains("rm -f \"$SPOOL\"/voice_command_state.json"))
             XCTAssertEqual(lines[manualOnly + 3].trimmingCharacters(in: .whitespaces), "fi")
         }
+    }
+
+    /// RR-465: a watchdog restart that carries the provider session id keeps
+    /// the turn ledger and claim the completion hook needs; explicit stop
+    /// still removes them.
+    func testSameSessionRecoveryPreservesTurnLedgerAndExplicitStopCleansIt() throws {
+        for spool in ["/tmp/relay-sessions/a", nil] as [String?] {
+            let lines = script(provider: "claude", spool: spool).components(separatedBy: "\n")
+            let unconditional = try XCTUnwrap(lines.first { $0.contains("rm -f /tmp/voice_in.fifo") })
+            XCTAssertFalse(unconditional.contains("/tmp/voice_provider_turns.json"))
+            XCTAssertFalse(unconditional.contains("\"$SPOOL\"/voice_cmd_claimed.json"))
+            let manualOnly = try XCTUnwrap(lines.firstIndex { $0.contains("[ -z \"$RELAY_PROVIDER_SESSION_ID\" ]; then") })
+            XCTAssertTrue(lines[manualOnly + 1].contains("/tmp/voice_provider_turns.json"))
+            XCTAssertTrue(lines[manualOnly + 1].contains("\"$SPOOL\"/voice_cmd_claimed.json"))
+
+            let marker = try XCTUnwrap(lines.firstIndex { $0.contains("if [ -n \"$RELAY_PROVIDER_SESSION_ID\" ]; then") })
+            XCTAssertTrue(lines[marker + 1].contains("\"$RELAY_PROVIDER_SESSION_ID\" \"$BRIDGE_PID\" > \(ProcessManager.bridgeWatchdogRestartPath)"))
+            let kill = try XCTUnwrap(lines.firstIndex { $0.contains("kill \"$BRIDGE_PID\"") })
+            XCTAssertLessThan(marker, kill, "the marker exists before the bridge is signalled")
+        }
+        for path in ["/tmp/voice_provider_turns.json", "/tmp/voice_cmd_claimed.json",
+                     ProcessManager.bridgeWatchdogRestartPath] {
+            XCTAssertTrue(ProcessManager.bridgeRuntimePaths.contains(path), "explicit stop removes \(path)")
+        }
+    }
+
+    func testRecordedBridgeLivenessSignalsThePidWithoutSpawning() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rr465-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pidFile = dir.appendingPathComponent("voice_bridge.pid").path
+        try "4242\n".write(toFile: pidFile, atomically: true, encoding: .utf8)
+        let bridge = "python3 /app/services/voice_bridge.py --relay"
+
+        func probe(
+            signal: Int32,
+            kernel: String?,
+            ps: ProcessManager.ProcessCommandLineLookup = .unavailable
+        ) -> ProcessManager.BridgeLivenessReport {
+            ProcessManager.recordedBridgeProcessLiveness(
+                pidFile: pidFile,
+                signalProbe: { _ in signal },
+                kernelCommandLine: { _ in kernel },
+                psCommandLine: { _ in ps }
+            )
+        }
+
+        XCTAssertEqual(probe(signal: 0, kernel: bridge).result, .alive)
+        XCTAssertEqual(probe(signal: EPERM, kernel: bridge).result, .alive)
+        XCTAssertEqual(probe(signal: ESRCH, kernel: nil), .init(result: .dead, failedProbes: ["pid_signal"]))
+        XCTAssertEqual(probe(signal: 0, kernel: "/usr/bin/vim"), .init(result: .dead, failedProbes: ["pid_signal"]))
+        XCTAssertEqual(probe(signal: EAGAIN, kernel: bridge), .init(result: .unknown, failedProbes: ["pid_signal"]))
+        XCTAssertEqual(probe(signal: 0, kernel: nil, ps: .found(bridge)).result, .alive)
+        XCTAssertEqual(probe(signal: 0, kernel: nil, ps: .missing), .init(result: .dead, failedProbes: ["ps"]))
+        XCTAssertEqual(probe(signal: 0, kernel: nil, ps: .unavailable), .init(result: .unknown, failedProbes: ["ps"]),
+                       "a ps that cannot spawn is not a dead bridge")
+        try FileManager.default.removeItem(atPath: pidFile)
+        XCTAssertEqual(probe(signal: 0, kernel: bridge).result, .dead, "no pid file")
+    }
+
+    func testDaemonLivenessUsesPgrepOnlyWhenThePidCheckIsInconclusive() {
+        var pgrepRuns = 0
+        func probe(
+            socket: Bool,
+            recorded: ProcessManager.BridgeLivenessReport,
+            pgrep: ProcessManager.BridgeProbeResult
+        ) -> ProcessManager.BridgeLivenessReport {
+            ProcessManager.bridgeDaemonLiveness(
+                socketExists: { socket },
+                recordedProcess: { recorded },
+                pgrep: { pgrepRuns += 1; return pgrep }
+            )
+        }
+        let deadPid = ProcessManager.BridgeLivenessReport(result: .dead, failedProbes: ["pid_signal"])
+
+        XCTAssertEqual(probe(socket: false, recorded: .init(result: .alive), pgrep: .alive),
+                       .init(result: .dead, failedProbes: ["socket_missing"]))
+        XCTAssertEqual(probe(socket: true, recorded: .init(result: .alive), pgrep: .dead).result, .alive)
+        XCTAssertEqual(pgrepRuns, 0, "a verified pid never spawns pgrep")
+        XCTAssertEqual(probe(socket: true, recorded: deadPid, pgrep: .alive).result, .alive)
+        XCTAssertEqual(probe(socket: true, recorded: deadPid, pgrep: .dead),
+                       .init(result: .dead, failedProbes: ["pid_signal", "pgrep"]))
+        XCTAssertEqual(probe(socket: true, recorded: deadPid, pgrep: .unknown),
+                       .init(result: .unknown, failedProbes: ["pid_signal", "pgrep"]))
+    }
+
+    func testKernelProcessArgumentsReadsThisProcessWithoutSpawning() throws {
+        let arguments = try XCTUnwrap(ProcessManager.kernelProcessArguments(of: getpid()))
+        let executable = try XCTUnwrap(CommandLine.arguments.first.map { URL(fileURLWithPath: $0).lastPathComponent })
+        XCTAssertTrue(arguments.contains(executable), arguments)
+        XCTAssertNil(ProcessManager.kernelProcessArguments(of: 999_999))
     }
 
     func testRecordedBridgeProcessAliveRequiresAVerifiedBridgePid() throws {

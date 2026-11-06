@@ -239,6 +239,39 @@ class EffectReservation:
     reason: str = ""
 
 
+_PROJECTION_FIELDS = (
+    "app_session_id",
+    "recovery_generation",
+    "actor_role",
+    "foreground_gate_handle",
+    "provider",
+    "provider_session_id",
+    "local_turn_seq",
+    "origin",
+    "intent_id",
+    "manual_submission_id",
+    "manual_submit_evidence_source",
+    "state",
+    "release_reason",
+    "created_at",
+    "updated_at",
+)
+_PROJECTION_RENAMES = {
+    "native_session_id": "session_id",
+    "native_turn_id": "turn_id",
+    "command_seq": "relay_command_seq",
+    "command_id": "relay_command_id",
+}
+
+
+def _projection_record(row: sqlite3.Row) -> dict[str, Any]:
+    record = {key: row[key] for key in _PROJECTION_FIELDS if row[key] is not None}
+    for source, destination in _PROJECTION_RENAMES.items():
+        if row[source] is not None:
+            record[destination] = row[source]
+    return record
+
+
 class ProviderTurnBroker:
     """SQLite authority for provider turns, ownership, transitions, and effects."""
 
@@ -718,38 +751,7 @@ class ProviderTurnBroker:
                      ORDER BY app_session_id, recovery_generation, created_at, turn_id
                     """
                 ).fetchall()
-            records: list[dict[str, Any]] = []
-            mappings = {
-                "native_session_id": "session_id",
-                "native_turn_id": "turn_id",
-                "command_seq": "relay_command_seq",
-                "command_id": "relay_command_id",
-            }
-            for row in rows:
-                record: dict[str, Any] = {}
-                for key in (
-                    "app_session_id",
-                    "recovery_generation",
-                    "actor_role",
-                    "foreground_gate_handle",
-                    "provider",
-                    "provider_session_id",
-                    "local_turn_seq",
-                    "origin",
-                    "intent_id",
-                    "manual_submission_id",
-                    "manual_submit_evidence_source",
-                    "state",
-                    "release_reason",
-                    "created_at",
-                    "updated_at",
-                ):
-                    if row[key] is not None:
-                        record[key] = row[key]
-                for source, destination in mappings.items():
-                    if row[source] is not None:
-                        record[destination] = row[source]
-                records.append(record)
+            records = [_projection_record(row) for row in rows]
             payload = {
                 "schema_version": PROJECTION_VERSION,
                 "updated_at": time.time(),
@@ -759,6 +761,22 @@ class ProviderTurnBroker:
             tmp.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))
             os.chmod(tmp, 0o600)
             os.replace(tmp, projection)
+
+    def session_records(self, native_session_id: str) -> list[dict[str, Any]]:
+        """Turns of one native provider session, shaped like the v1 ledger.
+
+        RR-465: the completion hook falls back to these when a bridge restart
+        removed the v1 ledger while the turn was still running.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM provider_turns WHERE native_session_id=?
+                 ORDER BY updated_at, created_at, turn_id
+                """,
+                (native_session_id,),
+            ).fetchall()
+        return [_projection_record(row) for row in rows]
 
     def table_records(self, table: str) -> list[dict[str, Any]]:
         if table not in {

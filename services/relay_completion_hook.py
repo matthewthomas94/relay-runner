@@ -777,16 +777,46 @@ def _can_reconcile_provider_identity(record: dict) -> bool:
     )
 
 
+def _broker_session_records(
+    broker: ProviderTurnBroker,
+    session_id: str,
+    *,
+    now: float | None = None,
+) -> list[dict]:
+    """Broker turns for one native session, with the v1 ledger's TTL and limit."""
+    now = time.time() if now is None else now
+    kept = []
+    for record in broker.session_records(session_id):
+        try:
+            age = now - float(record.get("updated_at") or record.get("created_at") or now)
+        except (TypeError, ValueError):
+            age = 0
+        if age <= PROVIDER_TURN_TTL_SECONDS:
+            kept.append(record)
+    return kept[-PROVIDER_TURN_LIMIT:]
+
+
 def _find_turn_record(
     path: str,
     payload: dict,
     *,
     now: float | None = None,
+    broker: ProviderTurnBroker | None = None,
 ) -> tuple[dict | None, str, list[dict]]:
     session_id = _session_id(payload)
     turn_id = _turn_id(payload)
     provider_session_id = _provider_session_id(payload)
     state = _load_turn_state(path, now=now)
+    # RR-465: a bridge restart can remove the v1 ledger mid-turn while the
+    # broker still holds the active turn, so correlate through the broker.
+    if broker is not None and not any(
+        str(r.get("session_id") or "") == session_id for r in state["records"]
+    ):
+        known = {_record_key(r) for r in state["records"]}
+        state["records"] = state["records"] + [
+            r for r in _broker_session_records(broker, session_id, now=now)
+            if _record_key(r) not in known
+        ]
     records = [
         r
         for r in state["records"]
@@ -1183,7 +1213,7 @@ def _complete_turn(
     now: float,
     stderr: TextIO,
 ) -> bool:
-    record, correlation, candidates = _find_turn_record(turns_path, payload, now=now)
+    record, correlation, candidates = _find_turn_record(turns_path, payload, now=now, broker=broker)
     if not record:
         _emit_completion_correlation_diagnostic(
             payload,
