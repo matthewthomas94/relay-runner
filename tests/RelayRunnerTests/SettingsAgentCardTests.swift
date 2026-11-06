@@ -5,16 +5,11 @@ import XCTest
 @testable import relay_runner
 
 final class SettingsAgentCardTests: XCTestCase {
-    func testNameFollowsStandardAndCustomVoiceSelection() {
+    func testNameFollowsStandardVoiceSelection() {
         var voice = TtsConfig()
-        XCTAssertEqual(SettingsAgentPresentation.voiceName(voice, customName: nil), "Puck")
+        XCTAssertEqual(SettingsAgentPresentation.voiceName(voice), "Puck")
         voice.voice = "af_bella"
-        XCTAssertEqual(SettingsAgentPresentation.voiceName(voice, customName: nil), "Bella")
-        voice.custom_voice_id = "selected-profile"
-        XCTAssertEqual(SettingsAgentPresentation.voiceName(voice, customName: "  My voice  "), "My voice")
-        XCTAssertEqual(SettingsAgentPresentation.voiceName(voice, customName: nil), "George")
-        voice.custom_voice_id = nil
-        XCTAssertEqual(SettingsAgentPresentation.voiceName(voice, customName: "My voice"), "Bella")
+        XCTAssertEqual(SettingsAgentPresentation.voiceName(voice), "Bella")
     }
 
     func testSubtitleDescribesForegroundStateWithoutWorkerActivity() {

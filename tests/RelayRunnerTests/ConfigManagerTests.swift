@@ -213,6 +213,29 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertFalse(raw.contains("message_preview"))
     }
 
+    /// RR-462 removed custom voices: a leftover id loads, speech keeps the built-in voice,
+    /// and the key is gone after the next save.
+    func testLegacyCustomVoiceIdIsIgnoredAndNotSerialized() throws {
+        let configDir = temporaryConfigDir()
+        let manager = ConfigManager(configDir: configDir)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        try """
+        [tts]
+        voice = "bm_george"
+        custom_voice_id = "x"
+        rate = 1.1
+        """.write(to: manager.configPath, atomically: true, encoding: .utf8)
+
+        let loaded = manager.load()
+        XCTAssertEqual(loaded.tts.voice, "bm_george")
+        XCTAssertEqual(loaded.tts.rate, 1.1)
+        try manager.save(loaded)
+        let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
+
+        XCTAssertFalse(raw.contains("custom_voice_id"))
+        XCTAssertTrue(raw.contains("voice = \"bm_george\""))
+    }
+
     func testLegacyCodexReasoningEffortMigratesToOrchestratorEffort() throws {
         let configDir = temporaryConfigDir()
         let manager = ConfigManager(configDir: configDir)

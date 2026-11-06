@@ -5,11 +5,7 @@ struct SettingsAgentPresentation: Equatable {
     let name: String
     let subtitle: String
 
-    static func voiceName(_ config: TtsConfig, customName: String?) -> String {
-        if config.custom_voice_id != nil {
-            let name = customName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return name.isEmpty ? "George" : name
-        }
+    static func voiceName(_ config: TtsConfig) -> String {
         let parts = config.voice.split(separator: "_", maxSplits: 1)
         let name = parts.count == 2 ? String(parts[1]) : config.voice
         return name.isEmpty ? "Agent" : name.prefix(1).uppercased() + name.dropFirst()

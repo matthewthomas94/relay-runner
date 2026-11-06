@@ -6,16 +6,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import tempfile
 import wave
 from pathlib import Path
 import signal
-from dataclasses import replace
 import threading
 import time
 
 import numpy as np
-from custom_voice import ConversionClient, load_profile, load_runtime, validate_wav
 
 
 def _find_kokoro_model() -> tuple[str, str] | None:
@@ -39,8 +36,6 @@ def main() -> int:
     parser.add_argument("--voice", required=True)
     parser.add_argument("--text", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--custom-voice-id", default="")
-    parser.add_argument("--draft", action="store_true")
     args = parser.parse_args()
 
     # Own a process group so Settings can cancel this process without touching a session.
@@ -48,11 +43,8 @@ def main() -> int:
         os.setsid()
     except OSError:
         pass
-    converter = ConversionClient() if args.custom_voice_id else None
 
     def terminate(*_):
-        if converter:
-            converter.close()
         raise SystemExit(130)
 
     signal.signal(signal.SIGTERM, terminate)
@@ -62,8 +54,6 @@ def main() -> int:
         while True:
             time.sleep(0.25)
             if os.getppid() != parent_pid:
-                if converter:
-                    converter.close()
                 os._exit(130)
 
     threading.Thread(target=parent_watchdog, daemon=True).start()
@@ -92,38 +82,16 @@ def main() -> int:
         return 1
     int16_audio = (np.clip(samples, -1, 1) * 32767).astype(np.int16)
 
-    fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="relay-preview-")
-    os.close(fd)
     try:
-        with wave.open(wav_path, "wb") as wf:
+        with wave.open(str(args.output), "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
             wf.setframerate(sample_rate)
             wf.writeframes(int16_audio.tobytes())
-
-        if converter:
-            profile = load_profile(args.custom_voice_id, draft=args.draft)
-            runtime = load_runtime()
-            # Preview is the explicit revalidation path after runtime updates.
-            # The saved profile remains unchanged until the app accepts Use Voice.
-            profile = replace(profile, runtime_id=runtime.fingerprint)
-            converter.convert(Path(wav_path), args.output, profile, runtime,
-                              utterance_id="settings-preview", generation=0)
-        else:
-            import shutil
-            shutil.copyfile(wav_path, args.output)
-            args.output.chmod(0o600)
-        validate_wav(args.output)
+        args.output.chmod(0o600)
     except Exception:
-        print("[preview_voice] Preview failed; check the reference and local runtime.", file=sys.stderr)
+        print("[preview_voice] Preview failed; check local speech setup.", file=sys.stderr)
         return 1
-    finally:
-        if converter:
-            converter.close()
-        try:
-            os.remove(wav_path)
-        except OSError:
-            pass
 
     return 0
 

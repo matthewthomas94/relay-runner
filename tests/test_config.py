@@ -71,6 +71,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["orchestrator"]["worker_health_check_seconds"], 600)
         self.assertNotIn("worker_timeout_seconds", config["orchestrator"])
 
+    def test_legacy_custom_voice_id_loads_and_is_dropped(self):
+        # RR-462 removed custom voices; an old config keeps its built-in voice.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text('[tts]\nvoice = "bm_george"\ncustom_voice_id = "x"\n', encoding="utf-8")
+
+            config = load_config(str(path))
+
+        self.assertEqual(config["tts"]["voice"], "bm_george")
+        self.assertNotIn("custom_voice_id", config["tts"])
+
     def test_load_config_defaults_claude_orchestrator_to_explicit_opus_and_medium(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"

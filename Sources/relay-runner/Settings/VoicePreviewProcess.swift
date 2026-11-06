@@ -34,11 +34,11 @@ enum VoicePreviewProcess {
             let deadline = Date().addingTimeInterval(timeout)
             while process.isRunning {
                 guard !cancelled() else { throw CancellationError() }
-                guard Date() < deadline else { throw CustomVoiceFailure.runtimeMissing }
+                guard Date() < deadline else { throw VoicePreviewFailure.previewFailed }
                 try await Task.sleep(for: .milliseconds(50))
             }
             guard !cancelled() else { throw CancellationError() }
-            guard process.terminationStatus == 0 else { throw CustomVoiceFailure.runtimeMissing }
+            guard process.terminationStatus == 0 else { throw VoicePreviewFailure.previewFailed }
         } catch {
             await stop(process)
             throw error

@@ -2,8 +2,17 @@
 import fcntl
 import os
 import time
+from pathlib import Path
 
-from custom_voice import support_root, CustomVoiceError
+from config import _default_config_path
+
+
+class VoiceAudioError(Exception):
+    """Only privacy-safe, typed error codes leave speech rendering and playback."""
+
+
+def support_root() -> Path:
+    return Path(_default_config_path()).parent
 
 
 class VoiceAudioLease:
@@ -16,14 +25,14 @@ class VoiceAudioLease:
         try:
             while True:
                 if cancelled():
-                    raise CustomVoiceError("cancelled")
+                    raise VoiceAudioError("cancelled")
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     self.fd = fd
                     return
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
-                        raise CustomVoiceError("audio_busy")
+                        raise VoiceAudioError("audio_busy")
                     time.sleep(0.025)
         except Exception:
             os.close(fd)

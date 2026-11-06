@@ -249,7 +249,6 @@ final class AppState {
     /// The focused context's session; a placeholder before any session starts.
     var embeddedTerminal: EmbeddedTerminalSession { sessionRegistry.focused }
     let permissions = PermissionsManager()
-    var customVoiceNotice: String?
     private(set) var activeContext = AssistantSessionContext.general
     private(set) var conversationHistory: [AssistantConversationEntry] = []
     private(set) var conversationID = ""
@@ -1085,6 +1084,9 @@ final class AppState {
             force: false
         )
         keepAwake.recoverIfNeeded()
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            DispatchQueue.global(qos: .utility).async { ProcessManager.removeRetiredCustomVoiceData() }
+        }
         // Watch privacy permissions continuously — macOS doesn't notify us
         // when the user grants/revokes in Settings, so we poll.
         permissions.startMonitoring()
@@ -3404,27 +3406,6 @@ final class AppState {
         refreshWorkspaceActivity(invalidateRoute: true)
     }
 
-    func chooseCustomVoiceAudio(completion: @escaping (URL?) -> Void) {
-        let resumeWorkspace = programBoardOverlay.isVisible
-        suspendWorkspaceForProjectPicker { [weak self] in
-            guard let self else {
-                completion(nil)
-                return
-            }
-            defer {
-                if resumeWorkspace { self.programBoardOverlay.showSettings() }
-            }
-            let panel = NSOpenPanel()
-            panel.title = "Import Custom Voice"
-            panel.message = "Choose a voice reference recording."
-            panel.canChooseFiles = true
-            panel.canChooseDirectories = false
-            panel.allowsMultipleSelection = false
-            panel.allowedContentTypes = [.wav, .aiff, .mp3, .mpeg4Audio]
-            completion(WorkspaceDirectoryPicker.runAppKitPanel(panel))
-        }
-    }
-
     func addExistingProject(
         resumeInSettings: Bool = false,
         completion: ((Result<RegisteredProjectV2, Error>) -> Void)? = nil
@@ -4222,9 +4203,6 @@ final class AppState {
                 )
             },
             onServiceEvent: { [weak self] source, state, text, tutorial in
-                if source == "tts", state == "custom_voice_fallback" {
-                    self?.customVoiceNotice = "Custom voice unavailable. The remaining response used George. Preview the voice again to check its local runtime."
-                }
                 self?.handleOnboardingTutorialServiceEvent(
                     source: source,
                     state: state,

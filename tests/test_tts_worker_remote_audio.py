@@ -26,10 +26,9 @@ sys.modules.setdefault("numpy", types.SimpleNamespace(asarray=lambda s: s, int16
 import relay_remote_protocol as proto  # noqa: E402
 import remote_audio  # noqa: E402
 import tts_worker  # noqa: E402
-from custom_voice import CustomVoiceError  # noqa: E402
 from speech_coordinator import SpeechCoordinator  # noqa: E402
 from speech_player import SpeechPlayer  # noqa: E402
-from tts_worker import RemoteSpeechJob, TTSWorker, VoiceSelection  # noqa: E402
+from tts_worker import RemoteSpeechJob, TTSWorker  # noqa: E402
 import test_relay_remote as remote_tests  # noqa: E402
 import test_speech_coordinator as coordinator_tests  # noqa: E402
 
@@ -47,23 +46,6 @@ def write_tone(path: str, seconds: float, rate: int = remote_audio.SAMPLE_RATE) 
         handle.setsampwidth(2)
         handle.setframerate(rate)
         handle.writeframes(frames)
-
-
-class FakeConverter:
-    def __init__(self, timeline, texts, *, fail=False):
-        self.timeline = timeline
-        self.texts = texts
-        self.fail = fail
-
-    def convert(self, source, output, profile, runtime, *, utterance_id, generation, cancelled):
-        self.timeline.append(("convert",))
-        if self.fail:
-            raise CustomVoiceError("conversion_failed")
-        Path(output).write_bytes(Path(source).read_bytes())
-        self.texts[str(output)] = self.texts[str(source)]
-
-    def close(self):
-        pass
 
 
 class RemoteWorkerTestCase(unittest.TestCase):
@@ -93,14 +75,12 @@ class RemoteWorkerTestCase(unittest.TestCase):
         worker._kokoro = object()
         worker._voice = "am_puck"
         worker._rate = 1.0
-        worker._custom_voice_id = ""
         worker._selection_epoch = 0
         worker._synth_lock = threading.Lock()
         worker._render_local = threading.local()
         worker._remote_jobs = queue.Queue()
         worker._remote_encoding_failed = False
         worker._remote_encode = self.encode
-        worker._converter = FakeConverter(self.timeline, self.texts)
         worker._synthesize_to_wav = lambda text: self.synthesize(worker, text)
         # A real player whose audio device would fail the test if it opened.
         worker._speech_player = SpeechPlayer(output_factory=lambda *a, **k: self.opened.append("device"))
@@ -211,20 +191,16 @@ class RemoteSynthesisTests(RemoteWorkerTestCase):
         self.assertNotIn(("synthesize", "Never reached.", "am_puck"), self.timeline)
 
     def test_an_unexpected_error_still_ends_the_stream_with_a_fixed_reason(self):
-        converter = FakeConverter(self.timeline, self.texts)
-        convert = converter.convert
+        split = remote_audio.split
 
-        def broken(source, output, *args, **kwargs):
-            if self.texts[str(source)] == "Second.":
+        def broken(data):
+            if data.rstrip(b"\0") == b"Second.":
                 raise OSError("/private/path/that/must/not/leak")
-            convert(source, output, *args, **kwargs)
+            return split(data)
 
-        converter.convert = broken
-        self.worker._converter = converter
-        self.worker._selection = lambda: VoiceSelection("am_puck", 1.0, "voice-1", 0)
         job, parts, failures = self.job("First. Second. Third.")
 
-        with mock.patch.object(tts_worker, "load_profile"), mock.patch.object(tts_worker, "load_runtime"):
+        with mock.patch.object(remote_audio, "split", side_effect=broken):
             self.worker._voice_remote(job)
 
         self.assertEqual([(p.part, p.parts, p.last, bool(p.data)) for p in parts],
@@ -236,29 +212,6 @@ class RemoteSynthesisTests(RemoteWorkerTestCase):
         self.worker._kokoro = None
         self.assertFalse(self.worker.remote_audio_available())
 
-    def voice_custom(self, text: str, *, fail: bool):
-        self.worker._selection = lambda: VoiceSelection("am_puck", 1.0, "voice-1", 0)
-        self.worker._converter = FakeConverter(self.timeline, self.texts, fail=fail)
-        job, parts, failures = self.job(text)
-        with mock.patch.object(tts_worker, "load_profile"), mock.patch.object(tts_worker, "load_runtime"):
-            self.worker._voice_remote(job)
-        self.assertEqual(failures, [])
-        self.assertEqual([p.last for p in parts], [False, True])
-
-    def test_a_custom_voice_converts_each_sentence(self):
-        self.voice_custom("Cloned. Also cloned.", fail=False)
-
-        self.assertEqual([step[0] for step in self.timeline],
-                         ["synthesize", "convert", "encode", "emit"] * 2)
-
-    def test_a_failed_conversion_falls_back_to_kokoro_for_the_rest_of_the_reply(self):
-        self.voice_custom("First. Second.", fail=True)
-
-        self.assertEqual([step for step in self.timeline if step[0] in {"synthesize", "convert"}], [
-            ("synthesize", "First.", "am_puck"), ("convert",),
-            ("synthesize", "First.", "bm_george"), ("synthesize", "Second.", "bm_george"),
-        ])
-
 
 @unittest.skipUnless(remote_audio.encoder_available(), "afconvert not available")
 class RealEncoderTests(unittest.TestCase):
@@ -268,7 +221,7 @@ class RealEncoderTests(unittest.TestCase):
         root = Path(temp.name)
         worker = TTSWorker.__new__(TTSWorker)
         worker._kokoro = object()
-        worker._voice, worker._rate, worker._custom_voice_id, worker._selection_epoch = "am_puck", 1.0, "", 0
+        worker._voice, worker._rate, worker._selection_epoch = "am_puck", 1.0, 0
         worker._synth_lock = threading.Lock()
         worker._render_local = threading.local()
         worker._remote_encoding_failed = False

@@ -53,12 +53,6 @@ When no compatible system Python exists, setup downloads a checksum-verified [py
 
 Models download to user storage and are not committed to this repository. Model cards are the authoritative source for use restrictions, attribution wording, and changes made after this inventory date.
 
-## Experimental custom-voice integration
-
-Relay Runner includes its own optional adapter for a separately provisioned [KokoClone](https://github.com/Ashish-Patnaik/kokoclone)/[Kanade](https://github.com/frothywater/kanade-tokenizer) runtime. The application download does not bundle or automatically download that upstream runtime, PyTorch, Kanade/Vocos/WavLM model files, or reference recordings. These are not added to the standard voice environment above.
-
-The developer-only local installer copies an already provisioned, trusted runtime into separate Application Support storage. Its upstream components retain their own terms; Relay's MIT license does not grant rights to those components. Runtime code/model provenance and redistribution review remain separate from publication of Relay's integration code. See [Custom voices](docs/custom-voices.md) for the runtime boundary and experimental limitations.
-
 ## Fonts, icons, and provider products
 
 The app bundles the Regular and SemiBold weights of [Bai Jamjuree](https://github.com/cadsondemak/Bai-Jamjuree) (Copyright 2018 Bai Jamjuree), obtained from [Google Fonts](https://github.com/google/fonts/tree/main/ofl/baijamjuree) and licensed under the SIL Open Font License 1.1. The license ships beside the fonts as `BaiJamjuree-OFL.txt` in the app's resource bundle. If the bundled fonts cannot be registered, the app deterministically uses macOS system fonts. Apple system fonts and SF Symbols are referenced through platform APIs and are not redistributed as repository font files.

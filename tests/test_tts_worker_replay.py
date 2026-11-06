@@ -1016,18 +1016,16 @@ class TTSWorkerReplayTests(unittest.TestCase):
 
     def test_cached_voice_snapshot_does_not_follow_new_config(self):
         worker = self.make_chunk_worker()
-        old = tts_worker.VoiceSelection("bf_emma", 1.1, "a" * 32, 0)
-        worker._custom_voice_id = "b" * 32
+        old = tts_worker.VoiceSelection("bf_emma", 1.1, 0)
         worker._rate = 1.8
         worker._set_last_wav(self.temp_wav(), selection=old, generation=1)
-        self.assertEqual(worker._last_wav_profile_id, "a" * 32)
         self.assertEqual(worker._last_wav_rate, 1.1)
 
     def test_audio_output_failure_is_not_reported_as_success(self):
         worker = self.make_chunk_worker()
         worker._speech_player = FakeSpeechPlayer(error="playback_failed")
         with patch.object(tts_worker, "_notify_state"):
-            with self.assertRaisesRegex(tts_worker.CustomVoiceError, "playback_failed"):
+            with self.assertRaisesRegex(tts_worker.VoiceAudioError, "playback_failed"):
                 worker._play_wav_blocking("/tmp/test.wav", generation=1)
 
     def test_missing_voice_model_surfaces_explicit_failure_state(self):

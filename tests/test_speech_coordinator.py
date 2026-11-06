@@ -20,7 +20,6 @@ class FakeWorker:
     def __init__(self):
         self.input_queue = queue.Queue()
         self.calls: list[str] = []
-        self.presentation_events: list[tuple[str, dict, str]] = []
         self.eligibility = None
         self.observer = None
 
@@ -35,10 +34,6 @@ class FakeWorker:
     def stop_playback(self, *, reason="user_stop"):
         del reason
         self.calls.append("stop")
-
-    def publish_replay_invalidated(self, speech_intent, *, reason):
-        self.calls.append("replay_invalidated")
-        self.presentation_events.append(("invalidated", speech_intent, reason))
 
     def play(self):
         self.calls.append("play")
@@ -208,86 +203,6 @@ class SpeechCoordinatorTests(unittest.TestCase):
             "Complete user-facing response.",
         )
         self.assertNotEqual(speech.display_text, speech.semantic_brief)
-
-    def custom_profiles(self, worker, selected="a"):
-        present = {"a", "b"}
-        worker.custom_voice_id = selected
-        worker.custom_profile_exists = present.__contains__
-        worker.invalidated_profiles = []
-        worker.invalidate_custom_profiles = lambda profiles: worker.invalidated_profiles.extend(profiles)
-        return present
-
-    def test_deleted_profile_retires_only_its_replay_and_preserves_other_voice(self):
-        worker, coordinator, _ = self.make_coordinator()
-        present = self.custom_profiles(worker)
-        originals = []
-        for seq, voice in enumerate(("b", "a"), start=10):
-            worker.custom_voice_id = voice
-            speech = intent(kind="final", text=f"result {voice}", replayable=True,
-                            source="lifecycle", freshness_scope="work", seq=seq, command_id=f"work-{seq}")
-            coordinator.submit(speech)
-            payload = worker.input_queue.get_nowait()["_speech_intent"]
-            worker.observer("started", payload)
-            worker.observer("completed", payload)
-            originals.append(payload)
-        present.remove("a")
-        worker.custom_voice_id = ""
-        coordinator.reload_config()
-        self.assertEqual(worker.invalidated_profiles, ["a"])
-        self.assertEqual(worker.presentation_events[-1][2], "voice_deleted")
-        self.assertTrue(coordinator.replay())
-        replay = worker.input_queue.get_nowait()["_speech_intent"]
-        self.assertEqual(replay["spoken_text"], originals[0]["spoken_text"])
-        self.assertEqual(replay["replay_of"], originals[0]["utterance_id"])
-        self.assertNotEqual(replay["utterance_id"], originals[0]["utterance_id"])
-        self.assertEqual(coordinator._voice_profiles[replay["utterance_id"]], "")
-
-    def test_deleting_active_custom_voice_does_not_strand_unrelated_queued_work(self):
-        worker, coordinator, _ = self.make_coordinator()
-        present = self.custom_profiles(worker)
-        first = intent(text="active", replayable=True)
-        coordinator.submit(first)
-        payload = worker.input_queue.get_nowait()["_speech_intent"]
-        worker.observer("started", payload)
-        worker.custom_voice_id = "b"
-        second = intent(kind="final", text="queued result", source="lifecycle", freshness_scope="work")
-        coordinator.submit(second)
-        self.assertTrue(worker.input_queue.empty())
-        present.remove("a")
-        coordinator.reload_config()
-        self.assertIn("stop", worker.calls)
-        following = worker.input_queue.get_nowait()["_speech_intent"]
-        self.assertEqual(following["utterance_id"], second.utterance_id)
-        self.assertTrue(worker.eligibility(following))
-        self.assertFalse(worker.eligibility(payload))
-        worker.observer("cancelled", payload)  # Late retirement must not clear the replacement.
-        self.assertTrue(worker.eligibility(following))
-
-    def test_initially_missing_profile_is_not_misclassified_as_deletion(self):
-        worker, coordinator, _ = self.make_coordinator()
-        self.custom_profiles(worker, selected="never-installed")
-        coordinator.submit(intent(kind="final", text="fallback result"))
-        payload = worker.input_queue.get_nowait()["_speech_intent"]
-        coordinator.reload_config()
-        self.assertTrue(worker.eligibility(payload))
-        self.assertEqual(worker.invalidated_profiles, [])
-        self.assertNotIn("stop", worker.calls)
-
-    def test_rendered_profile_not_old_queued_selection_owns_replay(self):
-        worker, coordinator, _ = self.make_coordinator()
-        present = self.custom_profiles(worker)
-        coordinator.submit(intent(kind="final", text="current voice", replayable=True))
-        payload = worker.input_queue.get_nowait()["_speech_intent"]
-        worker.custom_voice_id = "b"
-        worker.observer("preparing", dict(payload, custom_voice_id="b"))
-        worker.observer("started", payload)
-        worker.observer("completed", payload)
-        present.remove("a")
-        coordinator.reload_config()
-        self.assertTrue(coordinator.replay())
-        replay = worker.input_queue.get_nowait()["_speech_intent"]
-        self.assertEqual(replay["spoken_text"], "current voice")
-        self.assertEqual(coordinator._voice_profiles[replay["utterance_id"]], "b")
 
     def test_current_messenger_handoff_does_not_wait_for_foreground_claim(self):
         worker, coordinator, _ = self.make_coordinator(current=(2, "two"))
@@ -673,7 +588,6 @@ class SpeechCoordinatorTests(unittest.TestCase):
         # The stopped message stays queued and replayable without a notch
         # announcement; Play resumes it as the same message (RR-464).
         self.assertEqual(worker.calls, ["stop"])
-        self.assertEqual(worker.presentation_events, [])
         self.assertTrue(coordinator.play_or_replay())
         resumed = worker.input_queue.get_nowait()["_speech_intent"]
         self.assertEqual(resumed["spoken_text"], final.spoken_text)
@@ -736,7 +650,6 @@ class SpeechCoordinatorTests(unittest.TestCase):
 
         coordinator.skip()
 
-        self.assertNotIn("replay_invalidated", worker.calls)
         self.assertTrue(coordinator.play_or_replay())
         replay = worker.input_queue.get_nowait()["_speech_intent"]
         self.assertEqual(replay["spoken_text"], final.spoken_text)
@@ -751,7 +664,6 @@ class SpeechCoordinatorTests(unittest.TestCase):
         coordinator.stop()
         worker.observer("cancelled", payload)
 
-        self.assertNotIn("replay_invalidated", worker.calls)
         self.assertTrue(coordinator.play_or_replay())
         replay = worker.input_queue.get_nowait()["_speech_intent"]
         self.assertEqual(replay["spoken_text"], final.spoken_text)
@@ -766,7 +678,6 @@ class SpeechCoordinatorTests(unittest.TestCase):
         coordinator.stop_playback(reason="interrupt")
         worker.observer("cancelled", payload)
 
-        self.assertNotIn("replay_invalidated", worker.calls)
         self.assertTrue(coordinator.play_or_replay())
         replay = worker.input_queue.get_nowait()["_speech_intent"]
         self.assertEqual(replay["spoken_text"], final.spoken_text)
@@ -797,7 +708,6 @@ class SpeechCoordinatorTests(unittest.TestCase):
         holder["key"] = (2, "two")
         coordinator.new_turn(2, "two")
 
-        self.assertNotIn("replay_invalidated", worker.calls)
         self.assertTrue(coordinator.play_or_replay())
         replay = worker.input_queue.get_nowait()["_speech_intent"]
         self.assertEqual(replay["spoken_text"], final.spoken_text)

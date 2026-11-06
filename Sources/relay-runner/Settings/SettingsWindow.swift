@@ -167,7 +167,6 @@ private struct SettingsContent: View {
     @State private var saving = false
     @State private var selectedCategory: SettingsCategory = .permissions
     @State private var scrollTarget: SettingsCategory = .permissions
-    @State private var customVoiceName: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
@@ -192,7 +191,7 @@ private struct SettingsContent: View {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     SettingsAgentCard(
                         presentation: SettingsAgentPresentation(
-                            name: SettingsAgentPresentation.voiceName(draft.tts, customName: customVoiceName),
+                            name: SettingsAgentPresentation.voiceName(draft.tts),
                             subtitle: SettingsAgentPresentation.subtitle(
                                 state: appState.stateMachine.state,
                                 hasActiveSession: appState.hasActiveSession,
@@ -209,19 +208,12 @@ private struct SettingsContent: View {
         .tint(SettingsSurfaceColor.focusRing)
         .environment(\.colorScheme, .dark)
         .frame(width: style.fixedFrame?.width, height: style.fixedFrame?.height)
-        .onAppear {
-            refreshAgentVoiceName()
-            selectRequestedCategory()
-        }
+        .onAppear { selectRequestedCategory() }
         .onChange(of: appState.requestedSettingsCategory) { _, _ in selectRequestedCategory() }
-        .onChange(of: draft.tts.custom_voice_id) { _, _ in refreshAgentVoiceName() }
-        .onReceive(NotificationCenter.default.publisher(for: CustomVoiceStore.didRenameNotification)) { _ in
-            refreshAgentVoiceName()
-        }
         .onChange(of: appState.config) { oldValue, newValue in
             // A save made elsewhere (Relay App, RR-459) shows at once unless the page has unsaved edits.
             draft = draft == oldValue ? newValue : draft.mergingWheelSettingsChange(from: oldValue, to: newValue)
-                ?? draft.mergingCustomVoiceRemoval(from: oldValue, to: newValue)
+                ?? newValue
         }
         .onChange(of: selectedCategory) { _, newValue in
             scrollTarget = newValue
@@ -232,10 +224,6 @@ private struct SettingsContent: View {
         guard let requested = appState.requestedSettingsCategory else { return }
         appState.requestedSettingsCategory = nil
         selectedCategory = requested
-    }
-
-    private func refreshAgentVoiceName() {
-        customVoiceName = draft.tts.custom_voice_id.flatMap { try? CustomVoiceStore().load($0).name }
     }
 
     private var settingsPane: some View {

@@ -2290,8 +2290,7 @@ final class ProcessManager {
 
     /// Build an owned preview process. The caller drains stderr, bounds its
     /// lifetime and plays the output locally; it never enters the response queue.
-    func voicePreviewProcess(name: String, text: String, output: URL,
-                             customVoiceID: String? = nil, draft: Bool = false) throws -> Process {
+    func voicePreviewProcess(name: String, text: String, output: URL) throws -> Process {
         let python = Self.userVenvPython
         let script = bundledServicesDir.appendingPathComponent("preview_voice.py").path
 
@@ -2309,16 +2308,41 @@ final class ProcessManager {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: python)
         proc.arguments = [script, "--voice", name, "--text", text, "--output", output.path]
-        if let id = customVoiceID, !id.isEmpty {
-            guard CustomVoiceStore.validID(id) else { throw CustomVoiceFailure.invalidProfile }
-            proc.arguments! += ["--custom-voice-id", id]
-            if draft { proc.arguments!.append("--draft") }
-        }
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         proc.environment = environment
         proc.standardOutput = FileHandle.nullDevice
         return proc
+    }
+
+    // MARK: - Retired custom voices (RR-462)
+
+    /// What the removed custom voices feature left in Application Support: the
+    /// cloning runtime, its manifest and the recorded samples. `voice-audio.lock`
+    /// is the shared playback lease and stays.
+    static let retiredCustomVoicePaths = [
+        "services/custom-voice",
+        "custom-voice-runtime.json",
+        "voices",
+    ]
+
+    /// Deletes exactly `retiredCustomVoicePaths` under `supportRoot` when present.
+    /// A no-op once they are gone, so it runs on every launch and acts once.
+    @discardableResult
+    static func removeRetiredCustomVoiceData(
+        supportRoot: URL = SettingsAudioLease.supportRoot
+    ) -> [String] {
+        let fm = FileManager.default
+        let removed = retiredCustomVoicePaths.filter { relative in
+            let url = supportRoot.appendingPathComponent(relative)
+            // attributesOfItem does not follow a symlink, so a link is removed, never its target.
+            guard (try? fm.attributesOfItem(atPath: url.path)) != nil else { return false }
+            return (try? fm.removeItem(at: url)) != nil
+        }
+        if !removed.isEmpty {
+            NSLog("[ProcessManager] Removed retired custom voice data: \(removed.joined(separator: ", "))")
+        }
+        return removed
     }
 
     /// Returns the `cd` line for the launcher script using the configured

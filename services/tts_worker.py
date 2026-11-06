@@ -14,26 +14,22 @@ import tempfile
 import threading
 import time
 import wave
-from dataclasses import dataclass, replace
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
 
 from config import load_config
-from custom_voice import ConversionClient, ConversionCancelled, CustomVoiceError, ID_RE, voices_root, support_root, load_profile, load_runtime
 import remote_audio
 from speech_player import SpeechPlaybackError, SpeechPlayer
-from voice_audio_lease import VoiceAudioLease
+from voice_audio_lease import VoiceAudioError, VoiceAudioLease
 
 
 @dataclass(frozen=True)
 class VoiceSelection:
     voice: str
     rate: float
-    custom_id: str
     epoch: int
-    fingerprint: str = ""
 
 @dataclass(frozen=True)
 class RemoteSpeechJob:
@@ -257,8 +253,6 @@ class TTSWorker:
         self._selection_epoch = 0
         self._render_local = threading.local()
         self._render_selections = {}
-        self._converter = ConversionClient()
-        self._last_wav_profile_id = ""
         self._last_wav_rate = None
         # RR-457: replies voiced for a Relay Remote phone, one job at a time.
         self._remote_jobs: queue.Queue = queue.Queue()
@@ -268,7 +262,6 @@ class TTSWorker:
         # Read initial config
         cfg = load_config()["tts"]
         self._voice: str = cfg.get("voice", "am_puck")
-        self._custom_voice_id = "" if TUTORIAL_TTS_MODE else str(cfg.get("custom_voice_id") or "")
         self._rate: float = float(cfg.get("rate", 1.3))
         self._chime: str = _resolve_chime(cfg.get("chime", "Tink"))
         self._auto_play: bool = False if TUTORIAL_TTS_MODE else cfg.get("auto_play", False)
@@ -339,7 +332,6 @@ class TTSWorker:
             previous = getattr(self, "_configured_selection", self._selection())
             self._voice = cfg.get("voice", self._voice)
             self._rate = float(cfg.get("rate", self._rate))
-            self._custom_voice_id = "" if TUTORIAL_TTS_MODE else str(cfg.get("custom_voice_id") or "")
             self._chime = _resolve_chime(cfg.get("chime", "Tink"))
             self._auto_play = cfg.get("auto_play", False)
             if previous != self._selection():
@@ -347,52 +339,12 @@ class TTSWorker:
                 self._cancel_speculation()
                 self.stop_playback(reason="voice_changed")
             self._configured_selection = self._selection()
-            retained_profile = getattr(self, "_last_wav_profile_id", "")
-            if retained_profile and not self.custom_profile_exists(retained_profile):
-                self.invalidate_custom_profiles({retained_profile})
             print(f"[tts_worker] Config reloaded: voice={self._voice}, rate={self._rate}", file=sys.stderr)
         except Exception as e:
             print(f"[tts_worker] Config reload failed: {e}", file=sys.stderr)
 
-    @property
-    def custom_voice_id(self):
-        return getattr(self, "_custom_voice_id", "")
-
-    @staticmethod
-    def custom_profile_exists(profile_id):
-        return bool(isinstance(profile_id, str) and ID_RE.fullmatch(profile_id)
-                    and (voices_root() / profile_id).exists())
-
-    def invalidate_custom_profiles(self, profile_ids):
-        if getattr(self, "_last_wav_profile_id", "") in profile_ids:
-            self._remove_wav(self._last_wav)
-            self._last_wav = None
-            self._last_wav_profile_id = ""
-            self._last_response_text = self._last_response_display_text = ""
-        if self.custom_voice_id in profile_ids:
-            self._cancel_speculation()
-            self.stop_playback(reason="voice_deleted")
-
     def _selection(self):
-        fingerprint = ""
-        if self.custom_voice_id:
-            try:
-                if not ID_RE.fullmatch(self.custom_voice_id):
-                    raise CustomVoiceError("invalid_profile_id")
-                folder = voices_root() / self.custom_voice_id
-                stamps = tuple((p.stat().st_mtime_ns, p.stat().st_size, p.stat().st_ino) for p in (
-                    folder / "reference.wav", folder / "manifest.json", support_root() / "custom-voice-runtime.json"))
-                cache_key = (self.custom_voice_id, stamps)
-                cached = getattr(self, "_profile_fingerprint_cache", None)
-                if cached and cached[0] == cache_key:
-                    fingerprint = cached[1]
-                else:
-                    fingerprint = load_profile(self.custom_voice_id).content_hash + ":" + load_runtime().fingerprint
-                    self._profile_fingerprint_cache = (cache_key, fingerprint)
-            except (CustomVoiceError, OSError):
-                fingerprint = "unavailable"
-        return VoiceSelection(getattr(self, "_voice", "am_puck"), self._rate,
-                              self.custom_voice_id, getattr(self, "_selection_epoch", 0), fingerprint)
+        return VoiceSelection(getattr(self, "_voice", "am_puck"), self._rate, getattr(self, "_selection_epoch", 0))
 
     def _synthesize_selected(self, text, selection):
         local = getattr(self, "_render_local", None)
@@ -628,8 +580,7 @@ class TTSWorker:
             text=preview_text[:2000],
             **_presentation_fields(speech_intent),
         )
-        self._observe_speech("preparing", {**speech_intent, "custom_voice_id": selection.custom_id}
-                             if speech_intent else None)
+        self._observe_speech("preparing", speech_intent)
 
         t = threading.Thread(
             target=self._speak_chunks,
@@ -661,8 +612,6 @@ class TTSWorker:
         Used by __TTS_STOP__ to kill audio while preserving queued TTS."""
         with self._play_request_lock:
             self._playback_generation = getattr(self, "_playback_generation", 0) + 1
-            if hasattr(self, "_converter"):
-                self._converter.close()
             player = getattr(self, "_speech_player", None)
             if player is not None:
                 # Fades the output to silence, then stops it.
@@ -682,22 +631,6 @@ class TTSWorker:
             if intent is not None:
                 _notify_state("idle", **_presentation_fields(intent, stop_reason=reason))
             self._observe_speech("cancelled", intent)
-
-    def publish_replay_invalidated(
-        self,
-        speech_intent: dict | None = None,
-        *,
-        reason: str,
-    ):
-        """Clear a retained replay presentation without republishing its text."""
-        _notify_state(
-            "replay_invalidated",
-            **_presentation_fields(
-                speech_intent,
-                presentation_mode="retained_replay",
-                stop_reason=reason,
-            ),
-        )
 
     def skip(self, *, reason: str = "user_stop"):
         """Stop playback AND discard pending text."""
@@ -759,11 +692,6 @@ class TTSWorker:
                 return
 
             wav = self._last_wav
-            retained_profile = getattr(self, "_last_wav_profile_id", "")
-            if retained_profile and not self.custom_profile_exists(retained_profile):
-                self.invalidate_custom_profiles({retained_profile})
-                _notify_state("idle")
-                return
             if not wav or not os.path.isfile(wav):
                 print("[tts_worker] Nothing to replay", file=sys.stderr)
                 return
@@ -822,7 +750,7 @@ class TTSWorker:
                 try:
                     chunk = player.submit_wav(wav_path, rate)
                 except SpeechPlaybackError as exc:
-                    raise CustomVoiceError("playback_failed") from exc
+                    raise VoiceAudioError("playback_failed") from exc
                 _notify_state("speaking", **({"text": preview[:2000]} if preview else {}),
                               **_presentation_fields(intent))
                 # The event keeps its afplay-era name; latency reports and
@@ -832,7 +760,7 @@ class TTSWorker:
                 player.wait(chunk, cancelled=lambda: not self._playback_is_current(generation))
             except SpeechPlaybackError as exc:
                 if self._playback_is_current(generation):
-                    raise CustomVoiceError("playback_failed") from exc
+                    raise VoiceAudioError("playback_failed") from exc
 
     def _synthesize_to_wav(self, text: str) -> str | None:
         """Render `text` to a fresh WAV via Kokoro, return its path or None on failure.
@@ -844,7 +772,7 @@ class TTSWorker:
         os.close(wav_fd)
         try:
             if not self._synth_lock.acquire(timeout=30):
-                raise CustomVoiceError("synthesis_timeout")
+                raise VoiceAudioError("synthesis_timeout")
             try:
                 # Synthesize at speed=1.0 to avoid kokoro_onnx int32 truncation bug
                 # (newer ONNX exports cast speed to int32, so 1.2 → 1, 1.8 → 1, etc.)
@@ -863,7 +791,7 @@ class TTSWorker:
                 return None
             samples = np.asarray(samples)
             if not np.isfinite(samples).all():
-                raise CustomVoiceError("invalid_audio")
+                raise VoiceAudioError("invalid_audio")
             int16_audio = (np.clip(samples, -1, 1) * 32767).astype(np.int16)
             with wave.open(wav_path, "wb") as wf:
                 wf.setnchannels(1)
@@ -904,23 +832,17 @@ class TTSWorker:
 
     def _voice_remote(self, job: RemoteSpeechJob):
         selection = self._selection()
-        voice = None
-        if selection.custom_id:
-            try:
-                voice = load_profile(selection.custom_id), load_runtime()
-            except CustomVoiceError:
-                pass
         chunks = _sentence_chunks(job.text)
         sent = 0
         try:
             for index, text in enumerate(chunks):
                 if job.cancelled():
                     return
-                wav, voice = self._render_remote_sentence(text, selection, voice, job)
+                wav = self._bounded_synthesis(text, selection, lambda: not job.cancelled())
                 if not wav:
                     if job.cancelled():
                         return
-                    raise CustomVoiceError("synthesis_failed")
+                    raise VoiceAudioError("synthesis_failed")
                 try:
                     data = self._remote_encode(wav)
                 except Exception as exc:
@@ -945,35 +867,8 @@ class TTSWorker:
             if job.cancelled():
                 return
             job.emit(remote_audio.AudioPart(part=sent, parts=sent + 1, last=True, data=""))
-            known = isinstance(exc, (CustomVoiceError, remote_audio.EncodingError))
+            known = isinstance(exc, (VoiceAudioError, remote_audio.EncodingError))
             job.failed(str(exc) if known else "synthesis_failed")
-
-    def _render_remote_sentence(self, text, selection, voice, job):
-        """One sentence as a WAV path, and the custom voice still in use (None once it fails)."""
-        current = lambda: not job.cancelled()
-        if voice is not None:
-            base = self._bounded_synthesis(text, selection, current)
-            if not base:
-                return None, voice
-            fd, name = tempfile.mkstemp(suffix=".wav", prefix="relay-custom-")
-            os.close(fd)
-            try:
-                self._converter.convert(Path(base), Path(name), *voice, utterance_id=job.utterance_id,
-                                        generation=0, cancelled=job.cancelled)
-                return name, voice
-            except ConversionCancelled:
-                self._remove_wav(name)
-                return None, voice
-            except CustomVoiceError:
-                self._remove_wav(name)
-                if job.cancelled():
-                    return None, voice
-                voice = None
-            finally:
-                self._remove_wav(base)
-        if selection.custom_id:
-            selection = replace(selection, voice="bm_george")
-        return self._bounded_synthesis(text, selection, current), voice
 
     def _start_speculation(self, text: str):
         """Begin (or restart) speculative TTS gen for `text` in a daemon thread.
@@ -984,11 +879,6 @@ class TTSWorker:
         if not self._kokoro or not chunks:
             return
         selection = self._selection()
-        if selection.custom_id:
-            # Custom conversion starts only for an eligible rendering attempt.
-            # Avoid an unused heavyweight model and parallel clone speculation.
-            self._cancel_speculation()
-            return
         text = chunks[0]
         with self._spec_cond:
             if (self._spec_text == text and getattr(self, "_spec_selection", None) == selection
@@ -1091,8 +981,6 @@ class TTSWorker:
     ):
         """Synthesize sentence chunks and play them in order."""
         selection = getattr(self, "_render_selections", {}).get(generation, self._selection())
-        if selection.custom_id:
-            return self._speak_custom_chunks(chunks, generation, speech_intent, selection)
         if not self._kokoro:
             print(f"[tts_worker] Kokoro not loaded, skipping: {' '.join(chunks)[:80]}", file=sys.stderr)
             self._finish_playback(generation, speech_intent=speech_intent, failed=True)
@@ -1155,7 +1043,7 @@ class TTSWorker:
                     while next_thread.is_alive() and self._playback_is_current(generation):
                         next_thread.join(timeout=0.05)
                         if time.monotonic() >= deadline:
-                            raise CustomVoiceError("synthesis_timeout")
+                            raise VoiceAudioError("synthesis_timeout")
                     current_wav = next_result["wav"]
                     next_thread = None
                     next_result = None
@@ -1217,84 +1105,6 @@ class TTSWorker:
             self._remove_wav(wav)
             return None
         return wav
-
-    def _speak_custom_chunks(self, chunks, generation, speech_intent, selection):
-        paths = []
-        completed = failed = False
-        fallback = False
-        warned = False
-        current = lambda: (self._playback_is_current(generation)
-                           and self._speech_is_eligible(speech_intent)
-                           and selection == self._selection())
-        profile = runtime = None
-        try:
-            try:
-                profile = load_profile(selection.custom_id)
-                runtime = load_runtime()
-            except CustomVoiceError:
-                fallback = True
-            for index, text in enumerate(chunks):
-                if not current():
-                    return
-                base = self._bounded_synthesis(text, replace(selection, voice="bm_george") if fallback else selection, current)
-                if not base:
-                    raise CustomVoiceError("synthesis_failed")
-                paths.append(base)
-                if not current():
-                    return
-                rendered = base
-                if not fallback:
-                    fd, name = tempfile.mkstemp(suffix=".wav", prefix="relay-custom-")
-                    os.close(fd)
-                    paths.append(name)
-                    try:
-                        self._converter.convert(Path(base), Path(name), profile, runtime,
-                                                utterance_id=str((speech_intent or {}).get("utterance_id", generation)),
-                                                generation=generation, cancelled=lambda: not current())
-                        rendered = name
-                    except ConversionCancelled:
-                        return
-                    except CustomVoiceError:
-                        if not current():
-                            return
-                        fallback = True
-                        rendered = self._bounded_synthesis(text, replace(selection, voice="bm_george"), current)
-                        if not rendered:
-                            raise CustomVoiceError("fallback_failed")
-                        paths.append(rendered)
-                if not current():
-                    return
-                if fallback and not warned:
-                    # Privacy-safe diagnostic; preserve authoritative response text/identity.
-                    _notify_state("custom_voice_fallback", reason="custom_voice_unavailable",
-                                  **_presentation_fields(speech_intent))
-                    warned = True
-                if index == 0:
-                    self._observe_speech("wav_ready", speech_intent)
-                    self._observe_speech("started", speech_intent)
-                self._set_last_wav(rendered, preserve_old=index > 0, selection=selection, generation=generation)
-                self._play_wav_blocking(rendered, generation=generation, rate=selection.rate)
-                if not current():
-                    return
-                # Only successfully played chunks enter the retained combined audio.
-                if index == 0:
-                    played = []
-                played.append(rendered)
-            if len(played) > 1:
-                combined = self._combine_wavs(played)
-                if not combined:
-                    raise CustomVoiceError("replay_failed")
-                if not self._set_last_wav(combined, preserve_old=True, selection=selection, generation=generation):
-                    self._remove_wav(combined)
-            completed = current()
-        except Exception:
-            failed = current()
-        finally:
-            for path in paths:
-                if path != self._last_wav:
-                    self._remove_wav(path)
-            self._finish_playback(generation, speech_intent=speech_intent,
-                                  completed=completed, failed=failed)
 
     def _bounded_synthesis(self, text, selection, current, timeout=30):
         """Kokoro is in-process: abandon a hung call without letting its late WAV escape."""
@@ -1399,7 +1209,6 @@ class TTSWorker:
             old_wav = self._last_wav
             self._last_wav = wav_path
             self._last_wav_rate = selection.rate if selection else getattr(self, "_current_playback_rate", self._rate)
-            self._last_wav_profile_id = selection.custom_id if selection else self.custom_voice_id
         if old_wav and old_wav != wav_path and not preserve_old:
             self._remove_wav(old_wav)
         return True
@@ -1483,8 +1292,6 @@ class TTSWorker:
         player = getattr(self, "_speech_player", None)
         if player is not None:
             player.close()
-        if hasattr(self, "_converter"):
-            self._converter.close()
         self._remove_wav(self._last_wav)
         self._last_wav = None
 

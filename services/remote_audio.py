@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - run from inside services/
 
 AFCONVERT = "/usr/bin/afconvert"
 AUDIO_FORMAT = "aac"
-# Kokoro and the custom voice runtime both render 24 kHz mono.
+# Kokoro renders 24 kHz mono.
 SAMPLE_RATE = 24000
 # Constant bit rate: measured about 6.3 KB/s of ADTS on Kokoro speech.
 BIT_RATE = 48000
