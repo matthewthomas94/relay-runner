@@ -2264,8 +2264,11 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         let events = try String(contentsOf: fixture.deliveryEvents)
         XCTAssertTrue(events.contains(#""event":"manual_submit_barrier_started""#))
         XCTAssertTrue(events.contains(#""event":"safe_boundary_verified""#))
-        XCTAssertTrue(events.contains(#""event":"acknowledgement_timeout""#))
-        XCTAssertTrue(events.contains(#""event":"late_ack_reconciled""#))
+        // The typed turn was still running, so the steered message waited
+        // for it instead of timing out into recovery.
+        XCTAssertTrue(events.contains(#""event":"steer_held_by_active_turn""#))
+        XCTAssertFalse(events.contains(#""event":"acknowledgement_timeout""#))
+        XCTAssertFalse(events.contains(#""event":"recovery_started""#))
         XCTAssertEqual(countEvent("delivery_acknowledged", in: events), 1)
         XCTAssertFalse(events.contains(#""event":"delivery_failure_published""#))
     }
@@ -2452,6 +2455,86 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         let events = try String(contentsOf: fixture.deliveryEvents)
         XCTAssertTrue(events.contains(#""event":"claimed""#))
         XCTAssertFalse(events.contains(#""event":"stale_command_dropped""#))
+    }
+
+    func testSteeredMessageWaitsForTheRunningTurnInsteadOfRecovering() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-2\",\"relay_command_seq\":2}"
+            try "Second request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            try writeProviderTurns([
+                providerTurn(seq: 1, id: "cmd-1", provider: provider, state: "active"),
+            ], to: fixture.providerTurns)
+            var scheduled: [() -> Void] = []
+            var blocked: [Bool] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { _ in },
+                acknowledgementTimeout: 2,
+                onDeliveryBlocked: { blocked.append($0) },
+                schedule: { _, _, work in scheduled.append(work) },
+                isRunning: { true },
+                provider: provider
+            )
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            scheduled[0]()
+            // The first turn is still working through a tool call, so the
+            // provider has not taken the queued message yet.
+            scheduled[1]()
+            scheduled[2]()
+            var events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertEqual(countEvent("steer_held_by_active_turn", in: events), 1, provider)
+            XCTAssertFalse(events.contains(#""event":"acknowledgement_timeout""#), provider)
+            XCTAssertFalse(events.contains(#""event":"recovery_started""#), provider)
+            XCTAssertEqual(scheduled.count, 4, provider)
+            XCTAssertTrue(blocked.isEmpty, provider)
+
+            // The first turn ends and the provider starts on the steered one.
+            try writeProviderTurns([
+                providerTurn(seq: 1, id: "cmd-1", provider: provider, state: "completed_final"),
+                providerTurn(seq: 2, id: "cmd-2", provider: provider, state: "active"),
+            ], to: fixture.providerTurns)
+            scheduled[3]()
+            events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertEqual(countEvent("provider_acknowledged", in: events), 1, provider)
+            XCTAssertFalse(events.contains(#""event":"recovery_started""#), provider)
+            XCTAssertFalse(blocked.contains(true), provider)
+        }
+    }
+
+    func testSteeredMessageStillRecoversOnceTheRunningTurnHasEnded() throws {
+        let fixture = try makeFixture()
+        let metadata = #"{"provider":"claude","relay_command_id":"cmd-2","relay_command_seq":2}"#
+        try "Second request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        try writeProviderTurns([
+            providerTurn(seq: 1, id: "cmd-1", provider: "claude", state: "active"),
+        ], to: fixture.providerTurns)
+        var scheduled: [() -> Void] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { _ in },
+            schedule: { _, _, work in scheduled.append(work) },
+            isRunning: { true },
+            provider: "claude"
+        )
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+        scheduled[0]()
+        scheduled[1]()
+        try writeProviderTurns([
+            providerTurn(seq: 1, id: "cmd-1", provider: "claude", state: "completed_final"),
+        ], to: fixture.providerTurns)
+        scheduled[2]()
+
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertEqual(countEvent("steer_held_by_active_turn", in: events), 1)
+        XCTAssertTrue(events.contains(#""event":"acknowledgement_timeout""#))
+        XCTAssertTrue(events.contains(#""event":"recovery_started""#))
     }
 
     func testAppOwnedVoiceSteersActiveTurnOnceForCodexAndClaude() throws {
@@ -3238,16 +3321,13 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         return (cancelledTurns, eventIDs, delivered)
     }
 
-    func testHooklessClaudeManualSubmitReleasesVoiceDeliveryAfterTimeout() throws {
-        for input in ["/model", "!ls"] {
-            let results = try runHooklessManualSubmit(input, provider: "claude")
-            XCTAssertEqual(results, [false, false, false, true], input)
+    func testHooklessManualSubmitReleasesVoiceDeliveryAfterTimeoutForBothProviders() throws {
+        for provider in ["claude", "codex"] {
+            for input in ["/model", "!ls"] {
+                let results = try runHooklessManualSubmit(input, provider: provider)
+                XCTAssertEqual(results, [false, false, false, true], "\(provider) \(input)")
+            }
         }
-    }
-
-    func testCodexManualSubmitBarrierStillWaitsForItsHookRecord() throws {
-        let results = try runHooklessManualSubmit("/model", provider: "codex")
-        XCTAssertEqual(results, [false, false, false, false])
     }
 
     /// Claims at 5s, 10s (timeout, but output 0.6s ago), 10.5s (still not

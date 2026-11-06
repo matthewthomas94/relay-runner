@@ -1259,6 +1259,9 @@ final class RelayVoiceCommandDelivery {
         let key: RelayCommandKey
         let events: [[UInt8]]
         let submittedAt: Date
+        /// Submitted into a turn that was already running: the provider
+        /// holds the message until its current step ends.
+        var steering = false
     }
 
     private struct BufferedManualInput: Equatable {
@@ -1860,7 +1863,8 @@ final class RelayVoiceCommandDelivery {
             key: key,
             events: Array(events.dropFirst())
                 + (activeTurn && steeringProvider == "claude" ? [[24, 19]] : []),
-            submittedAt: now()
+            submittedAt: now(),
+            steering: activeTurn
         )
         deliveryState = .promptWritten(pending)
         promptSend(ArraySlice(first)) { [weak self] in
@@ -2277,12 +2281,12 @@ final class RelayVoiceCommandDelivery {
         }
     }
 
-    /// Claude runs no UserPromptSubmit hook for local slash commands (`/model`,
-    /// `/compact`) or `!` shell mode, so their manual record never appears.
-    /// Once the hook could no longer bind the submission and the terminal is
-    /// quiet, treat it as a hookless local command instead of waiting forever.
+    /// Neither provider runs its UserPromptSubmit hook for local slash
+    /// commands (`/model`, `/compact`) or `!` shell mode, so their manual
+    /// record never appears. Once the hook could no longer bind the
+    /// submission and the terminal is quiet, treat it as a hookless local
+    /// command instead of waiting forever.
     private func manualSubmitHookSkipped(_ boundary: ManualBoundary) -> Bool {
-        guard resolvedProvider == "claude" else { return false }
         let currentTime = now()
         let quietSince = max(boundary.startedAt, lastProviderOutputAt ?? boundary.startedAt)
         guard currentTime.timeIntervalSince(boundary.startedAt) >= Self.manualSubmitHookTimeout,
@@ -2626,6 +2630,8 @@ final class RelayVoiceCommandDelivery {
         return true
     }
 
+    private var steeringHoldRecordedKey: RelayCommandKey?
+
     private func handleAcknowledgementTimeout(for key: RelayCommandKey) {
         touchHeartbeat()
         guard case .awaitingAcknowledgement(let pending) = deliveryState,
@@ -2637,6 +2643,23 @@ final class RelayVoiceCommandDelivery {
         }
         guard isRunning() else {
             failPendingSubmission(pending, event: "provider_process_terminated")
+            return
+        }
+        // A steered message is held by the provider until the running turn's
+        // current step ends, so a missing hook is not a lost message. Keep
+        // waiting while that turn is active; the timeout applies once it ends.
+        if pending.steering, providerTurnActive() {
+            if steeringHoldRecordedKey != key {
+                steeringHoldRecordedKey = key
+                recordDeliveryEvent(
+                    "steer_held_by_active_turn",
+                    key: key,
+                    fields: ["elapsed_ms": elapsedMilliseconds(since: pending.submittedAt)]
+                )
+            }
+            schedule(acknowledgementTimeout, queue) { [weak self] in
+                self?.handleAcknowledgementTimeout(for: key)
+            }
             return
         }
         recordDeliveryEvent(
