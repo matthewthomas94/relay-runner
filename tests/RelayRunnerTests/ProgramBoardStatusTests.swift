@@ -256,7 +256,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         let contents = try String(contentsOf: source, encoding: .utf8)
         let cardStart = try XCTUnwrap(contents.range(of: "private struct ProgramProjectCard: View"))
         let cardEnd = try XCTUnwrap(
-            contents.range(of: "private struct ProjectBoardOverview: View", range: cardStart.upperBound..<contents.endIndex)
+            contents.range(of: "struct ProgramWorkColumnPanel: View", range: cardStart.upperBound..<contents.endIndex)
         )
         let card = String(contents[cardStart.lowerBound..<cardEnd.lowerBound])
 
@@ -267,6 +267,14 @@ final class ProgramBoardStatusTests: XCTestCase {
         let session = try XCTUnwrap(card.range(of: "ProgramStartSessionMenu("))
         XCTAssertLessThan(finder.lowerBound, session.lowerBound)
         XCTAssertTrue(contents.contains("if lane != .done, canCreate {"))
+        // Rows are compact: no per-project board counts, a running-session dot, a selected trait.
+        XCTAssertFalse(contents.contains("ProjectBoardOverview"))
+        XCTAssertTrue(card.contains("Circle()"))
+        XCTAssertTrue(card.contains(".accessibilityAddTraits(isSelected ? .isSelected : [])"))
+        XCTAssertTrue(card.contains(".graphicalTooltip("))
+        XCTAssertFalse(card.contains(".help("))
+        XCTAssertTrue(contents.contains("TextField(\"Search projects\""))
+        XCTAssertTrue(contents.contains("onToggleProject: model.toggleProject(path:)"))
     }
 
     func testAddProjectMenuOwnsFullLabelHitTargetWithoutStickyFocus() throws {
@@ -869,6 +877,133 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(selectedProjectRequest.status, .ready)
         XCTAssertEqual(selectedProjectRequest.title, "Untitled")
         XCTAssertTrue(selectedProjectRequest.shouldDispatch)
+    }
+
+    func testProgramBoardMultiSelectionShowsEachSelectedProjectsTicketsAndClears() throws {
+        let clientPath = "/repo/client-dashboard"
+        let toolsPath = "/repo/tools"
+        let otherPath = "/repo/other"
+        let snapshot = ProgramDashboardSnapshot(
+            summary: response(
+                query: "summary",
+                projects: 3,
+                items: [
+                    try projectItem(name: "Client Dashboard", path: clientPath),
+                    try projectItem(name: "Tools", path: toolsPath),
+                    try projectItem(name: "Other", path: otherPath),
+                ]
+            ),
+            backlogWork: response(
+                query: "backlog_lane",
+                projects: 3,
+                items: [
+                    try ticketItem(projectName: "Client Dashboard", path: clientPath, ticketID: "CD-1", title: "Client", status: "backlog"),
+                    try ticketItem(projectName: "Tools", path: toolsPath, ticketID: "TL-1", title: "Tools", status: "backlog"),
+                    try ticketItem(projectName: "Other", path: otherPath, ticketID: "OT-1", title: "Other", status: "backlog"),
+                ]
+            ),
+            readyWork: emptyResponse(query: "ready_lane", projects: 3),
+            inProgressWork: emptyResponse(query: "in_progress_lane", projects: 3),
+            doneWork: emptyResponse(query: "done_lane", projects: 3),
+            awaitingMerge: emptyResponse(query: "awaiting_merge", projects: 3)
+        )
+        let model = ProgramBoardViewModel()
+        model.snapshot = snapshot
+
+        XCTAssertTrue(model.isAllSelected)
+        XCTAssertEqual(Set(model.ticketItems(in: .backlog).map(\.ticketID)), ["CD-1", "TL-1", "OT-1"])
+        XCTAssertTrue(model.showsProjectContext)
+
+        model.toggleProject(path: clientPath)
+        XCTAssertEqual(model.selectedProjectPaths, [clientPath])
+        XCTAssertEqual(model.selectedProjectPath, clientPath)
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["CD-1"])
+        XCTAssertFalse(model.showsProjectContext)
+        XCTAssertEqual(model.selectedScopeTitle, "Client Dashboard")
+
+        model.toggleProject(path: toolsPath)
+        XCTAssertEqual(model.selectedProjectPaths, [clientPath, toolsPath])
+        XCTAssertNil(model.selectedProjectPath)
+        XCTAssertFalse(model.isAllSelected)
+        XCTAssertTrue(model.showsProjectContext)
+        XCTAssertEqual(Set(model.ticketItems(in: .backlog).map(\.ticketID)), ["CD-1", "TL-1"])
+        XCTAssertEqual(model.selectedScopeTitle, "2 projects")
+        XCTAssertTrue(model.isProjectSelected(path: toolsPath))
+        XCTAssertFalse(model.isProjectSelected(path: otherPath))
+        XCTAssertNotEqual(model.selectionScopeID, "all")
+
+        model.toggleProject(path: clientPath)
+        XCTAssertEqual(model.selectedProjectPaths, [toolsPath])
+        XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1"])
+
+        model.toggleProject(path: toolsPath)
+        XCTAssertTrue(model.isAllSelected)
+        model.toggleProject(path: clientPath)
+        model.toggleProject(path: otherPath)
+        model.selectAllProjects()
+        XCTAssertTrue(model.isAllSelected)
+        XCTAssertEqual(model.selectionScopeID, "all")
+        XCTAssertEqual(Set(model.ticketItems(in: .backlog).map(\.ticketID)), ["CD-1", "TL-1", "OT-1"])
+
+        model.selectProject(path: otherPath)
+        model.toggleProject(path: clientPath)
+        XCTAssertEqual(snapshot.ticketItems(in: .backlog, selectedProjectPaths: [otherPath, clientPath]).count, 2)
+    }
+
+    func testProgramBoardCreateFlowRequiresProjectForNoneOrSeveralSelectedProjects() throws {
+        let clientPath = "/repo/client-dashboard"
+        let toolsPath = "/repo/tools"
+        let model = ProgramBoardViewModel()
+        model.snapshot = try programBoardSnapshot(clientPath: clientPath, toolsPath: toolsPath)
+
+        model.beginCreate(in: .backlog)
+        XCTAssertNil(model.creating?.selectedProjectPath)
+
+        model.toggleProject(path: clientPath)
+        model.beginCreate(in: .backlog)
+        XCTAssertEqual(model.creating?.selectedProjectPath, clientPath)
+
+        model.toggleProject(path: toolsPath)
+        model.beginCreate(in: .backlog)
+        XCTAssertNil(model.creating?.selectedProjectPath)
+    }
+
+    func testSelectionDropsProjectsRemovedFromTheSnapshotAndKeepsTheRest() throws {
+        let clientPath = "/repo/client-dashboard"
+        let toolsPath = "/repo/tools"
+        let model = ProgramBoardViewModel()
+        model.setProjectScope([clientPath, toolsPath], selectedProjectPaths: [clientPath, toolsPath, "/repo/gone"])
+        XCTAssertEqual(model.selectedProjectPaths, [clientPath, toolsPath])
+        model.setProjectScope([clientPath], selectedProjectPaths: [clientPath, toolsPath])
+        XCTAssertEqual(model.selectedProjectPaths, [clientPath])
+    }
+
+    func testProjectRowFilterMatchesNameOrPathAndLeadsWithGeneralTasks() throws {
+        let general = "/Users/me/Library/Application Support/relay-runner/general-tasks"
+        let items = [
+            try projectItem(name: "Client Dashboard", path: "/repo/client-dashboard"),
+            try projectItem(name: "Tools", path: "/work/toolbox"),
+            try projectItem(name: "general-tasks", path: general),
+        ]
+
+        XCTAssertEqual(
+            ProgramProjectRowFilter.visibleProjects(items, query: "").map(\.project?.name),
+            ["general-tasks", "Client Dashboard", "Tools"]
+        )
+        XCTAssertEqual(
+            ProgramProjectRowFilter.visibleProjects(items, query: "dash").map(\.project?.name),
+            ["Client Dashboard"]
+        )
+        XCTAssertEqual(
+            ProgramProjectRowFilter.visibleProjects(items, query: "  toolbox ").map(\.project?.name),
+            ["Tools"]
+        )
+        XCTAssertEqual(ProgramProjectRowFilter.visibleProjects(items, query: "nothing-here").count, 0)
+        XCTAssertEqual(
+            ProgramProjectRowFilter.visibleProjects(items, query: "").count,
+            3,
+            "clearing the query restores every row"
+        )
     }
 
     func testProgramBoardTicketCreatorWritesOnlySelectedProjectAndClearsDraft() throws {

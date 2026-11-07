@@ -23,12 +23,37 @@ enum ProgramBoardProjectPath {
         return matches(lhs, rhs)
     }
 
+    static func contains(_ paths: [String], _ path: String?) -> Bool {
+        guard let path else { return false }
+        return paths.contains { matches($0, path) }
+    }
+
+    /// The preinstalled app-owned project; it always leads the Projects panel.
+    static func isGeneralTasks(_ path: String?) -> Bool {
+        guard let path else { return false }
+        return URL(fileURLWithPath: normalized(path)).lastPathComponent == "general-tasks"
+    }
+
     static func deduplicated(_ paths: [String]) -> [String] {
         var seen = Set<String>()
         return paths.compactMap { path in
             let normalizedPath = normalized(path)
             return seen.insert(normalizedPath).inserted ? path : nil
         }
+    }
+}
+
+enum ProgramProjectRowFilter {
+    /// Rows matching the query by name or path, with the general project first.
+    static func visibleProjects(_ projects: [ProgramStatusItem], query: String) -> [ProgramStatusItem] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matching = query.isEmpty ? projects : projects.filter { item in
+            [item.project?.name, item.project?.path].contains {
+                $0?.localizedStandardContains(query) == true
+            }
+        }
+        let general = matching.filter { ProgramBoardProjectPath.isGeneralTasks($0.project?.path) }
+        return general + matching.filter { !ProgramBoardProjectPath.isGeneralTasks($0.project?.path) }
     }
 }
 
@@ -87,6 +112,11 @@ struct ProgramDashboardSnapshot: Equatable {
     }
 
     func ticketItems(in lane: ProgramBoardLane, selectedProjectPath: String?) -> [ProgramStatusItem] {
+        ticketItems(in: lane, selectedProjectPaths: selectedProjectPath.map { [$0] } ?? [])
+    }
+
+    /// An empty selection shows every project's tickets.
+    func ticketItems(in lane: ProgramBoardLane, selectedProjectPaths: [String]) -> [ProgramStatusItem] {
         let items: [ProgramStatusItem]
         switch lane {
         case .backlog:
@@ -98,10 +128,8 @@ struct ProgramDashboardSnapshot: Equatable {
         case .done:
             items = doneWork.items
         }
-        let filtered = selectedProjectPath.map { path in
-            items.filter { ProgramBoardProjectPath.matches($0.project?.path, path) }
-        } ?? items
-        return filtered
+        guard !selectedProjectPaths.isEmpty else { return items }
+        return items.filter { ProgramBoardProjectPath.contains(selectedProjectPaths, $0.project?.path) }
     }
 
     func ticketItem(matching id: String) -> ProgramStatusItem? {
@@ -1551,7 +1579,12 @@ final class ProgramBoardViewModel {
     /// RR-401: unheard background replies and outcomes per project path.
     var sessionReplyBadges: [String: Int] = [:]
     var sessionProvider: GeneralConfig.AgentProvider = .codex
-    var selectedProjectPath: String?
+    /// Projects whose tickets the board shows; empty means every project.
+    private(set) var selectedProjectPaths: [String] = []
+    /// The one selected project, or nil when none or several are selected.
+    var selectedProjectPath: String? {
+        selectedProjectPaths.count == 1 ? selectedProjectPaths[0] : nil
+    }
     var selectedTicketDetail: ProgramTicketDetail?
     var selectedNoteDetail: ProgramBoardNoteDetail?
     var selectedNoteRecoveryOffer: MeetingNoteRecoveryOffer?
@@ -1648,16 +1681,19 @@ final class ProgramBoardViewModel {
     }
 
     func setProjectScope(_ paths: [String], selectedProjectPath: String? = nil) {
+        setProjectScope(paths, selectedProjectPaths: selectedProjectPath.map { [$0] } ?? [])
+    }
+
+    func setProjectScope(_ paths: [String], selectedProjectPaths: [String]) {
         let paths = ProgramBoardProjectPath.deduplicated(paths)
-        let selectedProjectPath = selectedProjectPath
-            .flatMap { selectedPath in
-                paths.first { ProgramBoardProjectPath.matches($0, selectedPath) }
-            }
+        let selectedProjectPaths = paths.filter {
+            ProgramBoardProjectPath.contains(selectedProjectPaths, $0)
+        }
         let scopeChanged = paths != projectPaths
-        let selectionChanged = selectedProjectPath != self.selectedProjectPath
+        let selectionChanged = selectedProjectPaths != self.selectedProjectPaths
         guard scopeChanged || selectionChanged else { return }
         projectPaths = paths
-        self.selectedProjectPath = selectedProjectPath
+        self.selectedProjectPaths = selectedProjectPaths
         if scopeChanged {
             snapshot = nil
         }
@@ -1752,12 +1788,29 @@ final class ProgramBoardViewModel {
     }
 
     var isAllSelected: Bool {
-        selectedProjectPath == nil
+        selectedProjectPaths.isEmpty
+    }
+
+    /// Cards name their project unless the board is filtered to a single one.
+    var showsProjectContext: Bool {
+        selectedProjectPaths.count != 1
     }
 
     var selectedScopeTitle: String {
-        guard let selectedProjectPath else { return "All projects" }
-        return snapshot?.projectName(for: selectedProjectPath) ?? "Selected project"
+        switch selectedProjectPaths.count {
+        case 0: return "All projects"
+        case 1: return snapshot?.projectName(for: selectedProjectPaths[0]) ?? "Selected project"
+        default: return "\(selectedProjectPaths.count) projects"
+        }
+    }
+
+    /// Identifies the selection so lists reset their scroll and interaction state when it changes.
+    var selectionScopeID: String {
+        selectedProjectPaths.isEmpty ? "all" : selectedProjectPaths.sorted().joined(separator: ",")
+    }
+
+    func isProjectSelected(path: String) -> Bool {
+        ProgramBoardProjectPath.contains(selectedProjectPaths, path)
     }
 
     var selectedSessionProjectPath: String? {
@@ -1782,23 +1835,42 @@ final class ProgramBoardViewModel {
     }
 
     func selectAllProjects() {
-        selectedProjectPath = nil
+        selectedProjectPaths = []
+    }
+
+    /// Adds the project to the selection, or removes it when already selected.
+    func toggleProject(path: String) {
+        if isProjectSelected(path: path) {
+            selectedProjectPaths.removeAll { ProgramBoardProjectPath.matches($0, path) }
+        } else {
+            selectedProjectPaths.append(path)
+        }
+        history = nil
+        reconcileDetailsAfterSelectionChange()
     }
 
     func selectProject(path: String) {
-        selectedProjectPath = path
+        selectedProjectPaths = [path]
         history = nil
-        if !ProgramBoardProjectPath.matches(selectedTicketDetail?.identity?.projectPath, path) {
+        reconcileDetailsAfterSelectionChange()
+    }
+
+    private func reconcileDetailsAfterSelectionChange() {
+        let visible = { (projectPath: String?) -> Bool in
+            self.selectedProjectPaths.isEmpty
+                || ProgramBoardProjectPath.contains(self.selectedProjectPaths, projectPath)
+        }
+        if !visible(selectedTicketDetail?.identity?.projectPath) {
             selectedTicketDetail = nil
         }
-        if !ProgramBoardProjectPath.matches(editing?.identity.projectPath, path) {
+        if !visible(editing?.identity.projectPath) {
             editing = nil
             editingErrorMessage = nil
         }
     }
 
     func ticketItems(in lane: ProgramBoardLane) -> [ProgramStatusItem] {
-        snapshot?.ticketItems(in: lane, selectedProjectPath: selectedProjectPath) ?? []
+        snapshot?.ticketItems(in: lane, selectedProjectPaths: selectedProjectPaths) ?? []
     }
 
     var visibleNotes: [ProgramBoardNoteItem] {
@@ -2151,8 +2223,8 @@ final class ProgramBoardViewModel {
         if self.snapshot != snapshot {
             self.snapshot = snapshot
         }
-        if let selectedProjectPath, !snapshot.containsProject(path: selectedProjectPath) {
-            self.selectedProjectPath = nil
+        if selectedProjectPaths.contains(where: { !snapshot.containsProject(path: $0) }) {
+            selectedProjectPaths = selectedProjectPaths.filter { snapshot.containsProject(path: $0) }
         }
         if let creating {
             if projectTargets.isEmpty {

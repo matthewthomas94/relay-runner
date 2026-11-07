@@ -596,6 +596,28 @@ final class ProgramBoardOverlayController {
         return nil
     }
 
+    /// Several selected projects are explicit board filters, so a refresh keeps
+    /// the ones still in scope. A single selection follows the context rules.
+    static func refreshedProjectSelections(
+        route: ProjectResolver.BoardRoute,
+        currentSelections: [String],
+        projectScope: [String],
+        committedContextPath: String? = nil,
+        preserveProjectSelection: Bool = true
+    ) -> [String] {
+        let projectScope = ProgramBoardProjectPath.deduplicated(projectScope)
+        if currentSelections.count > 1 {
+            return projectScope.filter { ProgramBoardProjectPath.contains(currentSelections, $0) }
+        }
+        return refreshedProjectSelection(
+            route: route,
+            currentSelection: currentSelections.first,
+            projectScope: projectScope,
+            committedContextPath: committedContextPath,
+            preserveProjectSelection: preserveProjectSelection
+        ).map { [$0] } ?? []
+    }
+
     func refreshProjectScopeAfterRegistryChange() {
         guard isVisible else { return }
         guard workspace.showsWorkTab else {
@@ -1091,14 +1113,14 @@ final class ProgramBoardOverlayController {
             activityProjectPaths: projectScopeProvider(),
             showsRegisteredProjectCatalog: requiresConfirmedProjectProvider()
         )
-        let selectedProjectPath = Self.refreshedProjectSelection(
+        let selectedProjectPaths = Self.refreshedProjectSelections(
             route: route,
-            currentSelection: model.selectedProjectPath,
+            currentSelections: model.selectedProjectPaths,
             projectScope: nextScope,
             committedContextPath: workspace.contextPath,
             preserveProjectSelection: preserveProjectSelection
         )
-        model.setProjectScope(nextScope, selectedProjectPath: selectedProjectPath)
+        model.setProjectScope(nextScope, selectedProjectPaths: selectedProjectPaths)
         if contentLoadBlocked {
             revealContainer?.setLoading(true)
         } else {

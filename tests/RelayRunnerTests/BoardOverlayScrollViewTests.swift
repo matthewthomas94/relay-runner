@@ -1425,6 +1425,20 @@ final class BoardOverlayScrollViewTests: XCTestCase {
             mountedHitLocations(for: scopedFirst, in: window).count,
             Int(scopedFirst.bounds.height) - 8
         )
+
+        // A second selected project keeps the lane's cards hittable under a combined scope id.
+        model.toggleProject(path: "/repo/other")
+        host.rootView = AnyView(programWorkColumnHost(model: model, lane: .backlog))
+        layout(host, width: 270, height: BoardSurfaceLayout.columnHeight)
+        drainMainQueue()
+        let multiCards = programWorkCardViews(in: try XCTUnwrap(findScrollContainer(in: host)))
+        let multiFirst = try XCTUnwrap(multiCards.first {
+            $0.interactionID == "/repo/other,/repo/relay-runner|Backlog|\(replacementFirstItem.id)"
+        })
+        XCTAssertGreaterThanOrEqual(
+            mountedHitLocations(for: multiFirst, in: window).count,
+            Int(multiFirst.bounds.height) - 8
+        )
     }
 
     func testMountedProgramWorkspaceNonDraggableFirstCardKeepsClickAndArrowCursor() throws {

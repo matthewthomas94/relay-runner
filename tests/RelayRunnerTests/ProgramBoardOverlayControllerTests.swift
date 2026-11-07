@@ -185,6 +185,40 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         )
     }
 
+    func testRefreshKeepsEveryStillRegisteredSelectedProject() {
+        let paths = ["/repo/a", "/repo/b", "/repo/c"]
+        let route = ProjectResolver.BoardRoute.project(.init(repoPath: URL(fileURLWithPath: "/repo/c")))
+
+        for preserve in [true, false] {
+            XCTAssertEqual(
+                ProgramBoardOverlayController.refreshedProjectSelections(
+                    route: route,
+                    currentSelections: ["/repo/a", "/repo/b"],
+                    projectScope: paths,
+                    preserveProjectSelection: preserve
+                ),
+                ["/repo/a", "/repo/b"]
+            )
+        }
+        XCTAssertEqual(
+            ProgramBoardOverlayController.refreshedProjectSelections(
+                route: route,
+                currentSelections: ["/repo/a", "/repo/gone"],
+                projectScope: paths
+            ),
+            ["/repo/a"]
+        )
+        // Nothing selected stays an explicit all-projects view.
+        XCTAssertEqual(
+            ProgramBoardOverlayController.refreshedProjectSelections(
+                route: route,
+                currentSelections: [],
+                projectScope: paths
+            ),
+            []
+        )
+    }
+
     func testRegistryInvalidationWiresImmediateVisibleWorkspaceScopeRefresh() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -203,7 +237,7 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertTrue(controller.contains("func refreshProjectScopeAfterRegistryChange()"))
         XCTAssertTrue(controller.contains("preserveProjectSelection: false"))
         XCTAssertTrue(controller.contains("committedContextPath: workspace.contextPath"))
-        XCTAssertTrue(controller.contains("currentSelection: model.selectedProjectPath"))
+        XCTAssertTrue(controller.contains("currentSelections: model.selectedProjectPaths"))
     }
 
     func testProjectCardSelectionValidatesScopeBeforeCommittedConfirmation() throws {
@@ -226,7 +260,7 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
 
         XCTAssertTrue(controller.contains("func setProjectSelectionHandler("))
         XCTAssertTrue(controller.contains("projectSelectionHandler?(repoPath)"))
-        XCTAssertTrue(overlayView.contains("onSelectProject: onSelectProject"))
+        XCTAssertTrue(overlayView.contains("onSelectProject(path)"))
         XCTAssertTrue(appState.contains("programBoardOverlay.setProjectSelectionHandler"))
         XCTAssertTrue(appState.contains("selectProjectContext(repositoryPath: repoPath, startsSession: runs)"))
         let launch = try XCTUnwrap(appState.range(of: "    func newSession("))
