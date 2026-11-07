@@ -30,7 +30,7 @@ You should see a running daemon, a port file, and an installed plist.
 
 ### 1. Start a session and choose a context
 
-Use Start Session for general-tasks. Select a registered repository, add an existing project or create one through the existing Projects list. Project changes save the prior provider session and resume the destination's exact native session when available; saved commands are never replayed.
+Press **Start** in the Workspace top row, at the far right after the clock, to start the general session. It is the only Start/End control: project rows have none, and there are no per-project sessions or session tabs. The general session reaches every registered project, including general-tasks; see [Reaching registered projects from the general session](providers.md#reaching-registered-projects-from-the-general-session). Add a project from the Projects list with Add existing or Create new, or by voice: the PM resolves a spoken name with `find_project`, asks whether an unmatched name is an existing folder or a new project, and `register_project` opens the folder picker. There is no default location. Selecting a project or calling `activate_project` only moves the board; it never starts, focuses or switches a session.
 
 The following `/relay-bridge` path remains available for manually hosted sessions:
 
@@ -192,7 +192,7 @@ Tickets live as version-controlled markdown under `<repo>/.orchestrator/`. Reads
 
 ## Which board you see
 
-The existing Projects list includes general-tasks and registered repositories. Selecting one shows its ordinary board; each ticket stays allocated to its owning project. Notes remain centralized. Workspace, Notes, Terminal and Settings are the available tabs.
+The Projects panel lists general-tasks first, then registered repositories. Its search box filters rows by name or path. Selecting one row shows its ordinary board. Selecting several rows shows their tickets together, each marked with its project; Clear shows every project. The new-ticket form preselects a project only when exactly one is selected. Each ticket stays allocated to its owning project. Notes remain centralized. Workspace, Notes, Terminal, Settings and History are the available tabs.
 
 Start Session defaults to the app-owned general-tasks directory, without adopting a stale configured repository. Registered projects require current scope validation before execution. Missing or replaced repositories retain their history and require location or identity repair before new work can run.
 
@@ -238,7 +238,7 @@ When registry v2 is enabled, Workspace and provider sessions use the [explicit p
 
 Projects that separately opt into artifact storage use the [private-index project artifact writer](architecture/artifact-store.md). Its orphan `refs/heads/relay/artifacts` ref is canonical; repo-root `.orchestrator/` is an excluded, verified materialization. Artifact storage begins local-only and never changes or publishes a source ref.
 
-For artifact-backed projects, select one project in Workspace and open **History** to search terminal records that are no longer materialized. Viewing detail never recreates Markdown. Restore is explicit; reopening moves the ticket to Backlog and therefore into the uncapped unfinished set. The adjacent **Storage** preview keeps all unfinished tickets, retains one combined pool of the 25 newest Done or Canceled tickets, and removes candidate Markdown or Relay-owned attachments only after confirmed publication and refetch verification. The preview accounts for reachable Git objects, archive metadata, indexes, caches, databases, and run logs separately because retention does not purge them.
+For artifact-backed projects, select one project in Workspace and open the **History** tab, which follows Terminal, to search terminal records that are no longer materialized. Viewing detail never recreates Markdown. Restore is explicit; reopening moves the ticket to Backlog and therefore into the uncapped unfinished set. The adjacent **Storage** preview keeps all unfinished tickets, retains one combined pool of the 25 newest Done or Canceled tickets, and removes candidate Markdown or Relay-owned attachments only after confirmed publication and refetch verification. The preview accounts for reachable Git objects, archive metadata, indexes, caches, databases, and run logs separately because retention does not purge them.
 
 Projects may separately opt into the [artifact-owned worker lifecycle](architecture/artifact-lifecycle.md) after draining legacy runs. Confirmed project scope selects an immutable artifact snapshot; workers commit source only and submit bounded structured outcomes. Only a reviewed source merge lets the artifact writer publish canonical completion and dependency progression. `artifact_lifecycle = "legacy"` remains the reversible compatibility gate during migration.
 

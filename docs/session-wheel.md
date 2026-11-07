@@ -6,22 +6,15 @@ fingers lift; selection requires a click. Tap again or click outside to dismiss.
 Wheel actions and clicks in its gaps keep it open. Near a display edge, the complete wheel and
 its outer controls move inside the usable screen area.
 
-The top three slots show live project sessions, including general, or
-**Start session** when empty. The bottom three are **Workspace**, **Note Taker**,
-and **Settings**, from left to right. Sessions keep their positions as other
-sessions start or stop. Relay's existing four-session limit still applies:
-when a fourth session is running, **More sessions** opens a nested wheel with all
-sessions. An overflow session fills a top slot when one becomes free.
+The top three slots show the live session at each position. When no session is
+running, the first top slot reads **Start session** and starts the general session;
+the other empty top slots are blank. The bottom three are **Workspace**, **Note Taker**,
+and **Settings**, from left to right. Sessions keep their positions as sessions
+start or stop. There is no project picker, project page, or **More sessions** slot:
+the one general session reaches every registered project.
 
-- Click the session wheel's center to toggle the Workspace while keeping the wheel
-  open. Its glyph uses the notch's live status, colours and motion: an upright
-  four-dot square at rest, rotating while working, orange while listening and
-  purple for response/playback states. Opening Workspace merges the dots into
-  one bead, then stretches it into a thin X; closing reverses the liquid morph.
-  Another click can reverse the morph immediately.
-  Nested wheels show a left arrow in the center. It morphs through the same bead
-  when switching to or from the dots or X. Escape backs out of project wheels
-  without closing the session wheel or toggling Workspace.
+- Click the wheel's centre to close the wheel. Escape is consumed and does not
+  close it.
 - Click Workspace, Note Taker, or Settings to open that Workspace tab, including
   when the Workspace is already open. The wheel stays open and above Workspace,
   even when a tab takes keyboard focus.
@@ -76,17 +69,9 @@ sessions. An overflow session fills a top slot when one becomes free.
 - Click an unselected session to switch voice to it without
   opening Workspace; the notch briefly reports the switch. Click the currently
   selected session to open Workspace directly to its terminal. Both keep the wheel open.
-- Click an empty slot to enter the project wheel. Click an available registered
-  project to start its session without opening the Workspace. The center shows
-  an icon-only left arrow, with **Back** retained in tooltips and VoiceOver labels.
-  The center has no subtitle; notices and availability details stay in its tooltip
-  and accessibility hint.
-  The entire center is the hover and click target. When projects overflow, the
-  sixth segment becomes **More projects**, with an ellipsis icon, and opens the next nested wheel.
-  Back or Escape returns one wheel at a time, then to sessions. Starting a project
-  returns to the session wheel and keeps it open. The new session occupies the
-  original empty slot, including after paging through projects or waiting for startup.
-  Session changes update tiles in place without replaying the whole wheel's transition;
+- With no session running, click **Start session** in the first top slot to start
+  the general session without opening Workspace. The other empty session slots are
+  blank. Session changes update tiles in place without replaying the whole wheel's transition;
   navigating between menus retains that transition.
 - Playback shows **Play message** for queued speech, **Stop playback** while
   preparing or playing, and **Replay message** when only replay history remains.
@@ -97,9 +82,7 @@ sessions. An overflow session fills a top slot when one becomes free.
   chosen session even if focus changes before capture starts. An existing
   recording can be stopped only from its owning session. Stop session cancels
   that session's recording before ending it.
-- Unavailable projects, absent replies, and unavailable recording controls are
-  disabled. The project wheel's center tooltip explains session-cap, launch, and
-  note-capture restrictions. Controls are also exposed as VoiceOver actions on
+- Absent replies and unavailable recording controls are disabled. Controls are also exposed as VoiceOver actions on
   session slots.
 
 The UI uses the workspace cards' shared dark fills, hover and selection treatment,
@@ -110,7 +93,7 @@ edges, around the center and outer perimeter. The 34-point-deep outer
 controls follow the wheel's tangent, keeping their icons upright on
 the lower half, with each icon centered inside its segment. Main
 wedges use Relay's 14-point card corners; submenu segments use its 6-point control
-corners. Project pages and changing center content retain their existing wheel
+corners. Changing center content retains its existing wheel
 transitions, including Reduce Motion and increased contrast handling.
 The active submenu has a detached solid black
 backdrop, separated from the wheel by an 8-point gap. It follows the controls'
@@ -124,8 +107,7 @@ emerge from behind the disc and become clickable as they settle outside it;
 playback or recording icon changes do not restart the submenu entrance.
 Reduce Motion fades the submenu in its final position without merging, travel,
 or blur. Hover stays active across
-the gap so the controls remain reachable. Project navigation rearms pointer hover so a double-click on
-an empty slot cannot launch a project in the same position.
+the gap so the controls remain reachable.
 
 The recording waveform reads a bounded 100 ms RMS window from the existing audio
 buffer only for the session that owns the recording. It never consumes samples
