@@ -519,6 +519,22 @@ final class ProjectRegistryV2Service {
         )
     }
 
+    /// RR-442: whether a record is the built-in general-tasks project.
+    func isGeneralTasksProject(_ project: RegisteredProjectV2) -> Bool {
+        normalizedPath(project.lastResolvedPath) == normalizedPath(generalTasksDirectory.path)
+    }
+
+    /// RR-442: one token per registered project that validates now, read from
+    /// the registry as it stands. Availability is not refreshed here; the
+    /// daemon still validates each token against the same records per call.
+    func registeredScopeTokens(issuedAt: Date? = nil) throws -> [ConfirmedProjectScopeToken] {
+        let document = try store.load().document
+        let issued = issuedAt ?? now()
+        return document.projects
+            .map { ConfirmedProjectScopeToken(project: $0, registrySchemaVersion: document.schemaVersion, issuedAt: issued) }
+            .filter { validateScopeToken($0).isValid }
+    }
+
     func clearConfirmedProject() throws {
         var document = try store.load().document
         guard document.activeProjectID != nil else { return }

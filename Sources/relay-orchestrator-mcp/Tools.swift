@@ -158,10 +158,7 @@ struct DispatchTicketTool: MCPTool {
         if let ctx = arguments["context"] as? String, !ctx.isEmpty {
             body["context"] = ctx
         }
-        if let token = arguments["project_scope_token"] as? String, !token.isEmpty {
-            body["project_scope_token"] = token
-        } else if let token = ProcessInfo.processInfo.environment["RELAY_PROJECT_SCOPE_TOKEN"],
-                  !token.isEmpty {
+        if let token = projectScopeToken(arguments, repoPath: body["repo_path"] as? String) {
             body["project_scope_token"] = token
         }
         if let seq = optionalInt(arguments["relay_command_seq"]),
@@ -750,7 +747,7 @@ struct ListProjectNotesTool: MCPTool {
         if let after = arguments["after"] as? String, !after.isEmpty {
             query.append("after=\(urlEscape(after))")
         }
-        if !repoPath.isEmpty, let token = projectScopeToken(arguments) {
+        if !repoPath.isEmpty, let token = projectScopeToken(arguments, repoPath: repoPath) {
             query.append("project_scope_token=\(urlEscape(token))")
         }
         return try await proxy(method: "GET", path: "/v1/artifacts/notes?" + query.joined(separator: "&"))
@@ -810,7 +807,7 @@ struct ReadProjectNoteTool: MCPTool {
 
         let repoPath = arguments["repo_path"] as? String ?? ""
         var query = ["repo_path=\(urlEscape(repoPath))"]
-        if !repoPath.isEmpty, let token = projectScopeToken(arguments) {
+        if !repoPath.isEmpty, let token = projectScopeToken(arguments, repoPath: repoPath) {
             query.append("project_scope_token=\(urlEscape(token))")
         }
         let identity = try requireString(arguments, "identity")
@@ -1010,10 +1007,7 @@ struct SessionCaptureTool: MCPTool {
         if arguments["run_id"] != nil {
             body["run_id"] = try requireInt(arguments, "run_id")
         }
-        if let token = arguments["project_scope_token"] as? String, !token.isEmpty {
-            body["project_scope_token"] = token
-        } else if let token = ProcessInfo.processInfo.environment["RELAY_PROJECT_SCOPE_TOKEN"],
-                  !token.isEmpty {
+        if let token = projectScopeToken(arguments, repoPath: body["repo_path"] as? String) {
             body["project_scope_token"] = token
         }
 
@@ -1059,12 +1053,32 @@ private func urlEscape(_ s: String) -> String {
     s.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? s
 }
 
-private func projectScopeToken(_ arguments: [String: Any]) -> String? {
+/// An explicit argument wins. A general session (RR-442) then uses the
+/// launch token for `repoPath` from `RELAY_PROJECT_SCOPE_TOKENS`; any other
+/// session falls back to its own `RELAY_PROJECT_SCOPE_TOKEN`. The daemon
+/// validates whichever token is sent.
+func projectScopeToken(
+    _ arguments: [String: Any],
+    repoPath: String?,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> String? {
     if let token = arguments["project_scope_token"] as? String, !token.isEmpty {
         return token
     }
-    if let token = ProcessInfo.processInfo.environment["RELAY_PROJECT_SCOPE_TOKEN"], !token.isEmpty {
+    if let repoPath, !repoPath.isEmpty,
+       let raw = environment["RELAY_PROJECT_SCOPE_TOKENS"],
+       let tokens = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: String] {
+        let wanted = canonicalRepositoryPath(repoPath)
+        if let match = tokens.first(where: { canonicalRepositoryPath($0.key) == wanted }), !match.value.isEmpty {
+            return match.value
+        }
+    }
+    if let token = environment["RELAY_PROJECT_SCOPE_TOKEN"], !token.isEmpty {
         return token
     }
     return nil
+}
+
+private func canonicalRepositoryPath(_ path: String) -> String {
+    URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
 }

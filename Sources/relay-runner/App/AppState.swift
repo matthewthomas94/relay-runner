@@ -3409,6 +3409,7 @@ final class AppState {
             activeSessionProjectScopeToken = nil
         }
         invalidateConfirmedProjectScopeIfNeeded()
+        syncGeneralSessionProjectAccess()
         refreshWorkspaceActivity(invalidateRoute: true)
     }
 
@@ -3485,6 +3486,7 @@ final class AppState {
             guard let self else { return }
             switch result {
             case .success(let project):
+                self.syncGeneralSessionProjectAccess()
                 self.refreshWorkspaceActivity(invalidateRoute: true) {
                     self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings)
                     completion?(.success(project))
@@ -3535,6 +3537,7 @@ final class AppState {
                         selectedURL: URL(fileURLWithPath: path, isDirectory: true)
                     )
                     self.invalidateConfirmedProjectScopeIfNeeded()
+                    self.syncGeneralSessionProjectAccess()
                     self.refreshWorkspaceActivity(invalidateRoute: true)
                     completion?(.success(project))
                 } catch {
@@ -3557,6 +3560,38 @@ final class AppState {
         guard let projectRegistryV2 else { return }
         projectScopeCoordinator.invalidateIfNeeded(using: projectRegistryV2.validateScopeToken)
         activeSessionProjectScopeToken = projectScopeCoordinator.inheritedToken()
+    }
+
+    /// RR-442: keep a running general Claude session's directory grants in
+    /// line with the registry; Claude reloads them without a restart.
+    private func syncGeneralSessionProjectAccess() {
+        guard let projectRegistryV2 else { return }
+        do {
+            try GeneralSessionAccess.syncClaudeSettings(registry: projectRegistryV2)
+        } catch {
+            NSLog("[AppState] General Claude directory settings not updated: \(error)")
+        }
+    }
+
+    /// RR-442: a token for one registered project, issued only to the general
+    /// session (`contextID` comes from the caller's launch environment).
+    @MainActor
+    func issueGeneralSessionScopeToken(project reference: String, contextID: String?) async -> ProjectScopeTokenReply {
+        guard let registry = projectRegistryV2 else {
+            return .failed(message: "The Relay Runner project registry is unavailable.")
+        }
+        return await Task.detached(priority: .utility) {
+            do {
+                let token = try GeneralSessionAccess.issueToken(
+                    for: reference, requestingContextID: contextID, registry: registry
+                )
+                let displayName = (try? registry.project(projectID: token.projectID).displayName) ?? token.projectID
+                try? GeneralSessionAccess.syncClaudeSettings(registry: registry)
+                return ProjectScopeTokenReply.issued(token, displayName: displayName)
+            } catch {
+                return .failed(message: String(describing: error))
+            }
+        }.value
     }
 
     private func surfaceProjectManagementFailure(_ error: Error) {
@@ -4311,6 +4346,10 @@ final class AppState {
             onActivateGeneral: { [weak self] continuation in
                 guard let self else { return .failed(message: "Relay Runner app state is unavailable.") }
                 return self.activateGeneral(continuation: continuation)
+            },
+            onProjectScopeToken: { [weak self] project, contextID in
+                guard let self else { return .failed(message: "Relay Runner app state is unavailable.") }
+                return await self.issueGeneralSessionScopeToken(project: project, contextID: contextID)
             },
             onHostedToolPermissionMissing: { [weak self] kind, purpose in
                 guard let appState = self else { return }

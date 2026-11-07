@@ -77,6 +77,29 @@ The messenger model and sub-agent sizing are selected independently. Shared work
 
 Disable the setting to retain each provider's normal per-tool approval flow. This provider flag is independent of macOS Microphone, Accessibility, Input Monitoring, and Screen Recording permissions.
 
+### Reaching registered projects from the general session
+
+A session started from the built-in general-tasks project keeps that folder as its working directory, but it can read and edit every registered project. It can also author tickets and dispatch workers in any of them. The authority is membership in the project registry plus the user naming the project. Nothing outside the registry is granted. Project sessions stay bound to their own project, and daemon workers still launch per repository.
+
+At launch, for both providers:
+
+- Every available registered project except general-tasks is passed as `--add-dir=<path>`, once per path. The `=` form is required. Claude's `--add-dir <directories...>` is variadic, so with a space it also swallows the following prompt argument; with Claude Code 2.1.319, `claude --add-dir /tmp auth status` treats `auth` and `status` as directories. Codex accepts either form.
+- `RELAY_PROJECT_SCOPE_TOKENS` holds a JSON object that maps each registered repository path to its confirmed scope token. The session's own `RELAY_PROJECT_SCOPE_TOKEN` is still exported. The orchestrator MCP's `dispatch_ticket`, `session_capture` and note tools pick the token that matches `repo_path`, and an explicit `project_scope_token` argument still wins. Shell commands, such as calls to the daemon ticket writer, read the same variable.
+- A project registered after launch gets its token from `mcp__relay-actions__project_scope_token`. Codex and Claude call the same tool. The app issues a token only when the calling session's `RELAY_CONTEXT_ID` is the general-tasks context, and only for a registered project; any other path is refused.
+- The daemon validates every token per call, exactly as before. A token for a removed, moved or unavailable project stops validating straight away.
+
+How each provider grants the directories:
+
+| | Claude Code | Codex |
+|---|---|---|
+| At launch | `--add-dir=<path>`. Files there are readable without a prompt, and edits follow the permission mode. Claude also loads each added directory's `.claude` skills, commands and subagents, but not its `CLAUDE.md`. | `--add-dir=<path>` adds a writable root alongside the workspace under `workspace-write`. Codex's sandbox already allows reads everywhere. A read-only sandbox ignores the flag with a warning, and Bypass makes it moot. |
+| Registered mid-session | Relay Runner keeps `permissions.additionalDirectories` in general-tasks' `.claude/settings.local.json` in line with the registry. Claude watches project-local settings and reloads permissions without a restart. (A `--settings` file is not reloaded, so it isn't used for this.) Relay Runner replaces only the entries it recorded in `projects/general-claude-directories.json` under Application Support. Your own keys and directories are kept. The file is excluded through general-tasks' `.git/info/exclude`. | There is no runtime mechanism. Codex 0.163.0 has no add-directory command: `/permissions` only picks a preset, `/cd` moves the session, and the config is not reloaded. Reads of the new project work at once. Writes go through without a prompt when Bypass is on (the default). Under `workspace-write` they go through Codex's own approval prompt until the next session start. Relay Runner does not widen the sandbox to cover them. |
+| Removed mid-session | The settings entry is dropped, so Claude stops granting it. A directory given with `--add-dir` at launch stays until the session ends. | The writable root stays until the session ends. |
+
+These are the intentional differences: Codex can't extend write access mid-session, and Claude's `--add-dir` also loads project skills and commands. With **Bypass agent permission prompts** on, neither provider prompts for file access anyway. The grants matter when Bypass is off.
+
+Evidence: Claude Code's [settings](https://code.claude.com/docs/en/settings) ("When edits take effect") and [permissions](https://code.claude.com/docs/en/permissions) ("Working directories") documentation. Codex's TUI slash commands are in `codex-rs/tui/src/slash_command.rs` at `rust-v0.163.0` (commit `83086188ae0614bd882818ff1aa23f3194962012`). The default `shell_environment_policy.ignore_default_excludes = true` keeps `*TOKEN*` variables in Codex shell commands, and the app also forwards `RELAY_PROJECT_SCOPE_TOKENS` to the orchestrator MCP through Codex's per-server `env_vars` allowlist.
+
 ### Default research access
 
 Foreground sessions and implementation/review workers can research public sources by default. Codex launches with native `--search`; Claude retains its default built-in WebSearch and WebFetch tools. This read access does not authorize publishing, messages, uploads of private workspace data, or unrelated mutations. The messenger and continuity agent remain intentionally tool-free.

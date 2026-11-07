@@ -83,6 +83,62 @@ struct ActivateGeneralTool: MCPTool {
     }
 }
 
+/// RR-442: the general session's way to a scope token for a project
+/// registered after it launched. The app refuses other sessions and any
+/// reference outside the project registry.
+struct ProjectScopeTokenTool: MCPTool {
+    let name = "project_scope_token"
+    let description = """
+        Return a confirmed project scope token for one registered Relay Runner project, for the \
+        general session only. Pass the registered repo path, project ID or name the user named. \
+        Refused for paths outside the project registry and for project sessions. Use the token as \
+        project_scope_token for that repo_path with dispatch_ticket, session_capture or the \
+        daemon ticket writer. Needed only for a project registered after the session started; \
+        RELAY_PROJECT_SCOPE_TOKENS already holds the others. Codex and Claude use the same tool.
+        """
+    var notify: () -> Bool = { ConfirmationClient.notifyToolFiredAndWait(toolName: "project_scope_token") }
+    var request: (String) -> ProjectScopeTokenOutcome = { ConfirmationClient.requestProjectScopeToken(project: $0) }
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "project": [
+                    "type": "string",
+                    "description": "Registered repo path, project ID, or project name.",
+                ],
+            ],
+            "required": ["project"],
+            "additionalProperties": false,
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        guard let project = arguments["project"] as? String,
+              !project.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw MCPToolError(message: "project_scope_token requires a non-empty registered project path or name.")
+        }
+        guard notify() else {
+            throw MCPToolError(message: "Relay Runner menu-bar app is not running or /tmp/relay_actions.sock is unavailable.")
+        }
+        switch request(project) {
+        case .issued(let projectID, let displayName, let repoPath, let token):
+            let result: [String: String] = [
+                "project_id": projectID,
+                "display_name": displayName,
+                "repo_path": repoPath,
+                "project_scope_token": token,
+            ]
+            let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys, .withoutEscapingSlashes])
+            return [["type": "text", "text": String(decoding: data, as: UTF8.self)]]
+        case .failed(let message):
+            throw MCPToolError(message: message)
+        case .menuBarUnavailable:
+            throw MCPToolError(message: "Relay Runner menu-bar app did not answer the project scope token request.")
+        }
+    }
+}
+
 private func continuationText(_ arguments: [String: Any]) throws -> String? {
     guard let value = arguments["continuation"] else { return nil }
     guard let text = value as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

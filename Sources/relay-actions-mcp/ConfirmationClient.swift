@@ -44,6 +44,12 @@ enum GeneralActivationOutcome {
     case menuBarUnavailable
 }
 
+enum ProjectScopeTokenOutcome: Equatable {
+    case issued(projectID: String, displayName: String, repoPath: String, token: String)
+    case failed(message: String)
+    case menuBarUnavailable
+}
+
 enum HostedToolOutcome {
     case succeeded(content: [[String: Any]])
     case failed(message: String)
@@ -169,6 +175,34 @@ enum ConfirmationClient {
               let result = json["result"] as? String else { return .menuBarUnavailable }
         if result == "ok", let message = json["message"] as? String { return .selected(message: message) }
         if result == "error" { return .failed(message: json["message"] as? String ?? "General context selection failed.") }
+        return .menuBarUnavailable
+    }
+
+    /// RR-442: the app issues the token only when `RELAY_CONTEXT_ID` from
+    /// this MCP process's launch names the general session.
+    static func requestProjectScopeToken(project: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> ProjectScopeTokenOutcome {
+        var payload: [String: Any] = ["type": "project_scope_token", "project": project]
+        if let contextID = environment["RELAY_CONTEXT_ID"], !contextID.isEmpty {
+            payload["context_id"] = contextID
+        }
+        guard let fd = openSocket() else { return .menuBarUnavailable }
+        defer { close(fd) }
+        guard sendJSONLine(fd: fd, payload: payload) else { return .menuBarUnavailable }
+        var tv = timeval(tv_sec: 15, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        guard let line = readLine(fd: fd),
+              let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let result = json["result"] as? String else { return .menuBarUnavailable }
+        if result == "ok",
+           let projectID = json["project_id"] as? String,
+           let repoPath = json["repo_path"] as? String,
+           let token = json["project_scope_token"] as? String {
+            return .issued(projectID: projectID, displayName: json["display_name"] as? String ?? projectID,
+                           repoPath: repoPath, token: token)
+        }
+        if result == "error" {
+            return .failed(message: json["message"] as? String ?? "Project scope token request failed.")
+        }
         return .menuBarUnavailable
     }
 
