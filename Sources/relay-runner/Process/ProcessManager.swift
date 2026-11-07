@@ -1256,6 +1256,7 @@ final class ProcessManager {
               isDirectory.boolValue else {
             throw SessionLaunchPreparationError.invalidWorkingDirectory(workingDirectory)
         }
+        var generalAccess = GeneralSessionAccess.none
         if sessionContext?.isGeneral == true {
             guard projectScopeToken == nil,
                   AssistantSessionStore.samePath(workingDirectory, AssistantSessionStore.filesDirectory.path)
@@ -1279,6 +1280,15 @@ final class ProcessManager {
                 throw SessionLaunchPreparationError.invalidProjectScope(
                     "requested cwd does not match \(projectScopeToken.projectID)"
                 )
+            }
+            // RR-442: only the general-tasks session reaches other projects.
+            generalAccess = GeneralSessionAccess.make(registry: registryV2, sessionProject: project)
+            if !generalAccess.isEmpty {
+                do {
+                    try GeneralSessionAccess.syncClaudeSettings(registry: registryV2)
+                } catch {
+                    NSLog("[ProcessManager] General Claude directory settings not updated: \(error)")
+                }
             }
         }
 
@@ -1339,6 +1349,7 @@ final class ProcessManager {
             recoveryGeneration: effectiveRecoveryGeneration,
             foregroundGateHandle: foregroundGateHandle,
             projectScopeToken: projectScopeToken,
+            generalAccess: generalAccess,
             startsVoiceBridge: startsVoiceBridge,
             joinsRunningVoiceBridge: joinsRunningVoiceBridge,
             sessionContext: sessionContext,
@@ -1428,6 +1439,7 @@ final class ProcessManager {
         resolvedCodexModel: String? = nil,
         resolvedCodexEffort: String? = nil,
         projectScopeToken: ConfirmedProjectScopeToken? = nil,
+        generalAccess: GeneralSessionAccess = .none,
         startsVoiceBridge: Bool = true,
         joinsRunningVoiceBridge: Bool = false,
         sessionContext: AssistantSessionContext? = nil,
@@ -1482,12 +1494,14 @@ final class ProcessManager {
                 voiceDelivery: voiceDelivery
             ),
             researchAccessFlag: researchAccessFlag,
+            additionalDirectoryFlag: Self.additionalDirectoryFlag(generalAccess.additionalDirectories),
             bypassFlag: bypassFlag,
             appOwnedInstructionFlag: Self.appOwnedInstructionFlag(
                 target: target,
                 voiceDelivery: voiceDelivery,
                 sessionContext: sessionContext,
-                publicHandoff: publicHandoff
+                publicHandoff: publicHandoff,
+                reachesRegisteredProjects: !generalAccess.isEmpty
             ),
             completionHookFlag: Self.appOwnedCompletionHookFlag(
                 relayBridge: relayBridge,
@@ -1515,6 +1529,7 @@ final class ProcessManager {
         export PATH="$HOME/.local/bin:$PATH"
         export RELAY_RUNNER_PROVIDER=\(Self.shellQuoted(target.providerMetadataValue))
         \(Self.projectScopeEnvironment(projectScopeToken))
+        \(generalAccess.tokensEnvironmentValue.map { "export RELAY_PROJECT_SCOPE_TOKENS=\(Self.shellQuoted($0))" } ?? "unset RELAY_PROJECT_SCOPE_TOKENS")
         \(Self.sessionContextEnvironment(sessionContext, conversationID: conversationID, providerBindingPath: providerBindingPath))
         \(preservesContextAuthorization && voiceDelivery == .appOwned ? "export RELAY_PRESERVE_CONTEXT_AUTHORIZATION=1" : "unset RELAY_PRESERVE_CONTEXT_AUTHORIZATION")
         # The agent can execute bootstrap checks inside its own sandbox, where
@@ -2025,6 +2040,12 @@ final class ProcessManager {
         }
     }
 
+    /// RR-442: both CLIs take `--add-dir` once per path. The `=` form keeps
+    /// Claude's variadic option from consuming a following prompt argument.
+    static func additionalDirectoryFlag(_ directories: [String]) -> String {
+        directories.map { "\(Self.shellQuoted("--add-dir=\($0)")) " }.joined()
+    }
+
     private static func researchAccessFlag(target: AgentTarget) -> String {
         switch target {
         case .codex:
@@ -2050,16 +2071,24 @@ final class ProcessManager {
     Provider responses, reasoning summaries, tool calls, progress, and final output should remain visible in this terminal.
     """
 
+    static let generalSessionReachInstructions = """
+    This general session can read and edit every registered Relay project, and author tickets or dispatch workers in any of them, while its cwd stays the general-tasks folder. Work in another project only when the user names it. RELAY_PROJECT_SCOPE_TOKENS maps each registered repository path to its confirmed project scope token; pass the matching token as project_scope_token for that repo_path (dispatch_ticket and session_capture pick it automatically). For a project registered after this session started, call mcp__relay-actions__project_scope_token. Paths outside the registry are refused.
+    """
+
     private static func appOwnedInstructionFlag(
         target: AgentTarget,
         voiceDelivery: SessionVoiceDelivery,
         sessionContext: AssistantSessionContext? = nil,
-        publicHandoff: String = ""
+        publicHandoff: String = "",
+        reachesRegisteredProjects: Bool = false
     ) -> String {
         guard voiceDelivery == .appOwned else { return "" }
         var instructions = appOwnedRelayInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
         if let sessionContext {
             instructions += "\nActive context: \(sessionContext.displayName) (\(sessionContext.kind.rawValue)). Execution is bound to \(sessionContext.workingDirectory). A context change requires Relay Runner to replace or resume the provider; never claim that a chat instruction changed your cwd or project mutation authority."
+            if reachesRegisteredProjects {
+                instructions += "\n" + generalSessionReachInstructions
+            }
             if sessionContext.isGeneral {
                 instructions += "\nThis restored legacy General session has no selected repository. Select the built-in general-tasks project with activate_general before tracked work, then use its ordinary project tickets and dispatch_ticket workflow. Use the existing centralized Relay notes APIs. Small authorized actions stay foreground; discussion or status never creates work. Work for another repository requires its confirmed project scope."
             }
@@ -2218,7 +2247,7 @@ final class ProcessManager {
             + VoiceSessionSpool.environmentNames
         let servers = [
             ("relay-actions", ownership + ["RELAY_RUNNER_PROVIDER", "RELAY_CONTEXT_ID"]),
-            ("relay-orchestrator", ownership + ["RELAY_PROJECT_SCOPE_TOKEN"]),
+            ("relay-orchestrator", ownership + ["RELAY_PROJECT_SCOPE_TOKEN", "RELAY_PROJECT_SCOPE_TOKENS"]),
         ]
         return servers.map { name, variables in
             let values = variables.map(tomlBasicStringLiteral).joined(separator: ",")
@@ -2316,6 +2345,7 @@ final class ProcessManager {
         reasoningEffortFlag: String,
         automaticCompactionFlag: String,
         researchAccessFlag: String,
+        additionalDirectoryFlag: String = "",
         bypassFlag: String,
         appOwnedInstructionFlag: String,
         completionHookFlag: String,
@@ -2334,7 +2364,7 @@ final class ProcessManager {
             claudeIdentity = resumeID.map { "--resume \(shellQuoted($0)) " }
                 ?? newClaudeSessionID.map { "--session-id \(shellQuoted($0)) " } ?? ""
         } else { claudeIdentity = "" }
-        let prefix = "\(Self.shellQuoted(binary)) \(subcommand)\(directoryFlag)\(modelFlag)\(reasoningEffortFlag)\(subscriptionFlag)\(researchAccessFlag)\(automaticCompactionFlag)\(appOwnedInstructionFlag)\(completionHookFlag)\(mcpEnvironmentFlag)\(bypassFlag)\(claudeIdentity)"
+        let prefix = "\(Self.shellQuoted(binary)) \(subcommand)\(directoryFlag)\(additionalDirectoryFlag)\(modelFlag)\(reasoningEffortFlag)\(subscriptionFlag)\(researchAccessFlag)\(automaticCompactionFlag)\(appOwnedInstructionFlag)\(completionHookFlag)\(mcpEnvironmentFlag)\(bypassFlag)\(claudeIdentity)"
             .trimmingCharacters(in: .whitespaces)
         guard voiceDelivery == .agentSkill else {
             return prefix

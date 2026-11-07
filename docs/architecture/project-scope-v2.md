@@ -23,6 +23,8 @@ Project resolution has two deliberately separate states:
 
 `ProjectRegistryV2Service.validateScopeToken` is the common fail-closed check. A token cannot target Relay Runner's application-support tree. `ProcessManager.prepareNewSession` also requires the requested cwd to equal the validated registered path. App-owned launches export the same `RELAY_PROJECT_SCOPE_TOKEN`, `RELAY_PROJECT_ID`, and `RELAY_PROJECT_SCOPE_VERSION` for both providers.
 
+RR-442: a session bound to the built-in general-tasks project also receives `RELAY_PROJECT_SCOPE_TOKENS`, which holds one token per available registered project. It can obtain a token for a project registered later through Relay Actions `project_scope_token`. The app issues that token only to the general-tasks context and only for a registered project. Each token is still a single-project token and validates unchanged, so registry membership plus the user naming the project remains the authority. Directory access per provider is documented in [Reaching registered projects from the general session](../providers.md#reaching-registered-projects-from-the-general-session).
+
 ## Provider parity and intentional differences
 
 Codex and Claude share project selection, token encoding, validation, inheritance, redirect/cancel, unavailable-project outcomes, and actual launch cwd. Cwd is never inferred differently by provider. Intentional differences remain limited to provider executable discovery, authentication, CLI model/effort flags, and the provider command itself.

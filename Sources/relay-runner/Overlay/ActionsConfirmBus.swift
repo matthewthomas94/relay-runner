@@ -23,7 +23,11 @@ import Foundation
 ///    — request/reply command that registers and activates a project through
 ///    the menu-bar app's project registry.
 ///
-/// 5. `{"type":"perform_tool","tool":"click|type|key|scroll|screenshot","arguments":{...}}`
+/// 5. `{"type":"project_scope_token","project":"<path-or-alias>","context_id":"<id>"}`
+///    — RR-442 request/reply command that issues the general session a
+///    confirmed scope token for one registered project.
+///
+/// 6. `{"type":"perform_tool","tool":"click|type|key|scroll|screenshot","arguments":{...}}`
 ///    — request/reply command that runs permission-gated Relay Actions/Vision
 ///    work in the Relay Runner app process. MCP helpers stay protocol adapters
 ///    while the app owns Accessibility and Screen Recording attribution.
@@ -52,6 +56,7 @@ actor ActionsConfirmBus {
     private let onToggleBoard: (() async -> Void)?
     private let onActivateProject: (@MainActor (String, String?, [String: String]?) async -> ProjectActivationReply)?
     private let onActivateGeneral: (@MainActor ([String: String]?) async -> GeneralActivationReply)?
+    private let onProjectScopeToken: (@MainActor (String, String?) async -> ProjectScopeTokenReply)?
     private let onHostedToolPermissionMissing: ((PermissionKind, String) async -> Void)?
 
     /// Outstanding `propose_action` requests, keyed by request id. Value is
@@ -81,12 +86,14 @@ actor ActionsConfirmBus {
          onToggleBoard: (() async -> Void)? = nil,
          onActivateProject: (@MainActor (String, String?, [String: String]?) async -> ProjectActivationReply)? = nil,
          onActivateGeneral: (@MainActor ([String: String]?) async -> GeneralActivationReply)? = nil,
+         onProjectScopeToken: (@MainActor (String, String?) async -> ProjectScopeTokenReply)? = nil,
          onHostedToolPermissionMissing: ((PermissionKind, String) async -> Void)? = nil) {
         self.stateMachine = stateMachine
         self.onParentPermissionRevoked = onParentPermissionRevoked
         self.onToggleBoard = onToggleBoard
         self.onActivateProject = onActivateProject
         self.onActivateGeneral = onActivateGeneral
+        self.onProjectScopeToken = onProjectScopeToken
         self.onHostedToolPermissionMissing = onHostedToolPermissionMissing
     }
 
@@ -272,6 +279,34 @@ actor ActionsConfirmBus {
             switch reply {
             case .selected(let message):
                 writePayload(fd: fd, payload: ["result": "ok", "message": message])
+            case .failed(let message):
+                writePayload(fd: fd, payload: ["result": "error", "message": message])
+            }
+            close(fd)
+
+        case "project_scope_token":
+            guard let project = json["project"] as? String,
+                  !project.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                writePayload(fd: fd, payload: ["result": "error", "message": "project_scope_token requires a project path or alias."])
+                close(fd)
+                return
+            }
+            let reply = await onProjectScopeToken?(project, json["context_id"] as? String)
+                ?? .failed(message: "Relay Runner cannot issue project scope tokens right now.")
+            switch reply {
+            case .issued(let token, let displayName):
+                var payload: [String: Any] = [
+                    "result": "ok",
+                    "project_id": token.projectID,
+                    "display_name": displayName,
+                    "repo_path": token.repositoryPath,
+                ]
+                if let encoded = token.encodedValue {
+                    payload["project_scope_token"] = encoded
+                    writePayload(fd: fd, payload: payload)
+                } else {
+                    writePayload(fd: fd, payload: ["result": "error", "message": "The project scope token could not be encoded."])
+                }
             case .failed(let message):
                 writePayload(fd: fd, payload: ["result": "error", "message": message])
             }
@@ -468,5 +503,10 @@ enum ProjectActivationReply {
 
 enum GeneralActivationReply {
     case selected(message: String)
+    case failed(message: String)
+}
+
+enum ProjectScopeTokenReply {
+    case issued(ConfirmedProjectScopeToken, displayName: String)
     case failed(message: String)
 }

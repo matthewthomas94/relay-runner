@@ -15,6 +15,7 @@ The current `relay-actions-mcp` server exposes:
 - `frontmost_app` — identify the focused application;
 - `list_windows` — list visible application windows and frames;
 - `activate_project` — select a known registered project through the app-owned project route;
+- `project_scope_token` — issue the general session a confirmed scope token for one registered project, such as one registered after the session started; refused for project sessions and for anything outside the registry (see [Reaching registered projects from the general session](../providers.md#reaching-registered-projects-from-the-general-session));
 - `toggle_board` — open or close the project Work surface.
 
 `propose_action` remains registered for protocol compatibility with older clients, but current Relay instructions explicitly tell agents not to call it. Its abandoned modifier-double-tap confirmation flow conflicts with the same gestures used for voice playback. It is not part of the supported user workflow.
