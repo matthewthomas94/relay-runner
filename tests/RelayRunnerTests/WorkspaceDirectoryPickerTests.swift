@@ -42,4 +42,27 @@ final class WorkspaceDirectoryPickerTests: XCTestCase {
 
         XCTAssertLessThan(activation.lowerBound, modalRun.lowerBound)
     }
+
+    func testPresentHidesWorkspaceThenActivatesThenPresentsThenRestores() {
+        var events: [String] = []
+        WorkspaceDirectoryPicker.present(
+            hideWorkspace: { done in events.append("hide"); done() },
+            activate: { events.append("activate") },
+            presentPanel: { events.append("present"); return "/repo" },
+            restoreWorkspace: { events.append("restore:\($0)") }
+        )
+        XCTAssertEqual(events, ["hide", "activate", "present", "restore:/repo"])
+    }
+
+    func testOnlySharedPresenterCreatesOpenPanels() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources")
+        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)!
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+        for file in files where file.lastPathComponent != "WorkspaceDirectoryPicker.swift" {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertFalse(text.contains("NSOpenPanel()"), "\(file.lastPathComponent) bypasses the shared presenter")
+        }
+    }
 }

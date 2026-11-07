@@ -4330,14 +4330,9 @@ private struct ProgramTicketImageSelector: View {
 
 enum ProgramTicketImagePicker {
     static func run() -> [URL] {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [.image]
-        panel.message = "Choose design images to attach to this ticket."
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        return panel.runModal() == .OK ? panel.urls : []
+        WorkspaceDirectoryPicker.runAppKitImagePanel(
+            message: "Choose design images to attach to this ticket."
+        )
     }
 }
 
