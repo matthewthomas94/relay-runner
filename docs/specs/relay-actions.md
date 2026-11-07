@@ -14,7 +14,7 @@ The current `relay-actions-mcp` server exposes:
 - `scroll` — send horizontal or vertical scroll input;
 - `frontmost_app` — identify the focused application;
 - `list_windows` — list visible application windows and frames;
-- `activate_project` — select a known registered project through the app-owned project route;
+- `activate_project` — move the Workspace board to a known registered project through the app-owned project route; it never starts, focuses or switches a session, and `continuation` is accepted but not forwarded;
 - `project_scope_token` — issue the general session a confirmed scope token for one registered project, such as one registered after the session started; refused for project sessions and for anything outside the registry (see [Reaching registered projects from the general session](../providers.md#reaching-registered-projects-from-the-general-session));
 - `find_project` — read-only match of a spoken project name against the project registry (display name, folder name, path; case, spacing and punctuation ignored), returning `exact`, `folder`, `fuzzy`, `ambiguous` or `none`;
 - `register_project` — after `find_project` found none and the user answered existing or new in a later turn, open the shared folder picker and register the chosen folder (or create a named project inside the chosen parent) through the same registry operations as Add existing project and Create new project. It refuses in the turn that asked, outside an app-managed session's active native turn, and without the user's answer; there is no default location;
