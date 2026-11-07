@@ -52,8 +52,9 @@ struct SkeletonDot: Equatable {
 /// layer, so it runs on the render server without per-frame work on the
 /// main thread. Reduce Motion holds it still.
 final class SkeletonLoaderView: NSView {
-    static let boneBaseColor = NSColor(srgbRed: 22 / 255, green: 27 / 255, blue: 36 / 255, alpha: 1)
-    static let boneHighlightColor = NSColor(srgbRed: 52 / 255, green: 60 / 255, blue: 74 / 255, alpha: 1)
+    // Graphical "RR" neutrals: bones rest at neutral-3 and light to neutral-5.
+    static let boneBaseColor = GraphicalTheme.neutral3NSColor
+    static let boneHighlightColor = GraphicalTheme.neutral5NSColor
     static let outlineWidth: CGFloat = 1.5
     /// The outlines sit back at a third opacity.
     static let outlineOpacity: Float = 0.33

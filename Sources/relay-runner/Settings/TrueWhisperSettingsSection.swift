@@ -262,11 +262,11 @@ struct TrueWhisperSettingsSection: View {
         .onDisappear { enrollment.stop() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in enrollment.stop() }
         .onChange(of: enabled) { _, on in model.enabledChanged(on) }
-        .alert("Clear all takes?", isPresented: $confirmClear) {
-            Button("Clear", role: .destructive) { model.clearAll() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This deletes every recorded True Whisper take. You will need to enrol words again.")
-        }
+        .graphicalAlert(
+            "Clear all takes?",
+            isPresented: $confirmClear,
+            message: "This deletes every recorded True Whisper take. You will need to enrol words again.",
+            actions: [GraphicalDialogAction("Clear", role: .destructive) { model.clearAll() }]
+        )
     }
 }

@@ -1737,7 +1737,7 @@ struct OnboardingRuntimeProgressView: View {
         if let progress {
             HStack(spacing: 10) {
                 ProgressView(value: progress, total: 1.0)
-                    .progressViewStyle(.linear)
+                    .progressViewStyle(.graphical)
                     .animation(
                         reduceMotion ? nil : OnboardingFlowMotion.contentAnimation,
                         value: progress
@@ -1866,10 +1866,10 @@ struct OnboardingIntroAgentLoginPromptView: View {
                             )
                             if let continueWithoutSignInAction {
                                 Button(Self.continueWithoutSignInTitle, action: continueWithoutSignInAction)
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.graphicalPress)
                                     .font(AppTypography.font(.body))
                                     .foregroundStyle(.white.opacity(0.72))
-                                    .help(Self.continueWithoutSignInNote)
+                                    .graphicalTooltip(Self.continueWithoutSignInNote)
                                     .accessibilityHint(Self.continueWithoutSignInNote)
                             }
                         }
@@ -2082,13 +2082,13 @@ struct OnboardingIntroWhiteActionButton: View {
                     )
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.graphicalPress)
         .scaleEffect(Self.hoverScale)
         .shadow(color: .white.opacity(showsHover ? 0.16 : 0), radius: 7)
         .animation(Self.hoverAnimation, value: showsHover)
         .onHover { isHovering = $0 }
         .accessibilityLabel(accessibilityLabel ?? title)
-        .help(accessibilityLabel ?? title)
+        .graphicalTooltip(accessibilityLabel ?? title)
     }
 }
 

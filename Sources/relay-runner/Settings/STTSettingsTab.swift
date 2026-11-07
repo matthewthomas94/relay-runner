@@ -21,7 +21,7 @@ struct STTSettingsTab: View {
                         selection: $config.model,
                         options: Self.modelOptions(operatingSystem: operatingSystem)
                     )
-                    .help(Self.modelDescription(config, operatingSystem: operatingSystem))
+                    .graphicalTooltip(Self.modelDescription(config, operatingSystem: operatingSystem))
                 }
 
                 if let migrationState, let message = Self.migrationMessage(migrationState) {

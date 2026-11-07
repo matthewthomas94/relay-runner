@@ -21,7 +21,7 @@ struct KeyCaptureView: View {
             }
             KeyCaptureField(label: label, value: $value, isCapturing: $isCapturing)
                 .frame(maxWidth: .infinity)
-                .frame(height: 34)
+                .frame(height: GraphicalTheme.controlHeight)
                 .alignmentGuide(.firstTextBaseline) { dimensions in
                     dimensions[VerticalAlignment.center] + AppTypography.appKitFont(.field).capHeight / 2
                 }
@@ -30,7 +30,7 @@ struct KeyCaptureView: View {
                     value = "Caps Lock"
                 }
                 .accessibilityLabel("Reset \(label) to Caps Lock")
-                .help("Reset \(label) to Caps Lock")
+                .graphicalTooltip("Reset \(label) to Caps Lock")
                 .transition(.relayElement)
             }
         }

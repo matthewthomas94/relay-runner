@@ -70,10 +70,10 @@ final class BoardRevealTransitionTests: XCTestCase {
 
     func testWorkspaceFirstMotionBudgetIsSeparateFromRevealDuration() {
         XCTAssertEqual(BoardRevealTransitionTiming.firstMotionBudget, 0.10)
-        XCTAssertEqual(BoardRevealTransitionTiming.expandToFullWidthDuration, 0.24 * 0.75)
-        XCTAssertEqual(BoardRevealTransitionTiming.expandDuration, 0.34 * 0.75)
-        XCTAssertEqual(BoardRevealTransitionTiming.contentRevealDuration, 0.38 * 0.75)
-        XCTAssertEqual(BoardRevealTransitionTiming.revealAnimationDuration, 0.96 * 0.75, accuracy: 0.001)
+        XCTAssertEqual(BoardRevealTransitionTiming.expandToFullWidthDuration, 0.24 * RelayMotion.durationScale)
+        XCTAssertEqual(BoardRevealTransitionTiming.expandDuration, 0.34 * RelayMotion.durationScale)
+        XCTAssertEqual(BoardRevealTransitionTiming.contentRevealDuration, 0.38 * RelayMotion.durationScale)
+        XCTAssertEqual(BoardRevealTransitionTiming.revealAnimationDuration, 0.96 * RelayMotion.durationScale, accuracy: 0.001)
         XCTAssertGreaterThan(BoardRevealTransitionTiming.revealAnimationDuration, 0.30)
     }
 
@@ -226,10 +226,10 @@ final class BoardRevealTransitionTests: XCTestCase {
 
     func testWorkspaceFirstMotionBudgetIsSeparateFromDismissDuration() {
         XCTAssertEqual(BoardRevealTransitionTiming.firstMotionBudget, 0.10)
-        XCTAssertEqual(BoardRevealTransitionTiming.contentHideDuration, 0.22 * 0.75)
-        XCTAssertEqual(BoardRevealTransitionTiming.dismissToFullWidthDuration, 0.24 * 0.75)
-        XCTAssertEqual(BoardRevealTransitionTiming.compactDuration, 0.22 * 0.75)
-        XCTAssertEqual(BoardRevealTransitionTiming.dismissAnimationDuration, 0.68 * 0.75, accuracy: 0.001)
+        XCTAssertEqual(BoardRevealTransitionTiming.contentHideDuration, 0.22 * RelayMotion.durationScale)
+        XCTAssertEqual(BoardRevealTransitionTiming.dismissToFullWidthDuration, 0.24 * RelayMotion.durationScale)
+        XCTAssertEqual(BoardRevealTransitionTiming.compactDuration, 0.22 * RelayMotion.durationScale)
+        XCTAssertEqual(BoardRevealTransitionTiming.dismissAnimationDuration, 0.68 * RelayMotion.durationScale, accuracy: 0.001)
         XCTAssertGreaterThan(BoardRevealTransitionTiming.dismissAnimationDuration, 0.25)
     }
 

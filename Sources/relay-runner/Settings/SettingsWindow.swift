@@ -527,7 +527,7 @@ private struct SettingsCategoryButton: View {
             )
             .contentShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.graphicalPress)
         .focusable()
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
         .focused($isFocused)
@@ -535,6 +535,6 @@ private struct SettingsCategoryButton: View {
         .animation(presentation.animationDuration > 0 ? RelayMotion.hover : nil, value: presentation)
         .accessibilityLabel(category.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .help(category.title)
+        .graphicalTooltip(category.title)
     }
 }

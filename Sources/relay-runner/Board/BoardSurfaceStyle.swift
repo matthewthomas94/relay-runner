@@ -5,7 +5,8 @@ enum BoardSurfaceLayout {
     static let horizontalPadding: CGFloat = 8
     static let columnSpacing: CGFloat = 12
     static let navigationTopPadding: CGFloat = 7
-    static let navigationHeight: CGFloat = 24
+    /// The kit's tab list: a 28-point trigger inside 4 points of padding.
+    static let navigationHeight: CGFloat = 36
     static let navigationToPanelSpacing: CGFloat = 16
     static let columnTopPadding: CGFloat = navigationTopPadding + navigationHeight + navigationToPanelSpacing
     static let columnHeight: CGFloat = 667

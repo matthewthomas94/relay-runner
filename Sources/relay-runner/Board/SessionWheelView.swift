@@ -277,7 +277,7 @@ struct SessionWheelView: View {
                 }
             }
         }
-        .help(!enabled && !empty ? "Project unavailable or session limit reached" : title)
+        .graphicalTooltip(!enabled && !empty ? "Project unavailable or session limit reached" : title)
     }
 
     private func actionButton(_ action: SessionWheelAction, session: SessionWheelSession, slot: Int) -> some View {
@@ -341,10 +341,12 @@ struct SessionWheelView: View {
                                        to: lowEnd))
             SessionWheelThumb(angle: thumb)
                 .stroke(foreground, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+            // The value sits on the fill from 55%, where it turns dark like the Settings slider's.
             Text(percent)
-                .font(AppTypography.font(.action, size: 10))
+                .font(AppTypography.font(.caption))
                 .monospacedDigit()
-                .foregroundStyle(foreground)
+                .foregroundStyle(value >= 0.55 ? SettingsSlider.onFillColor(isEnabled: enabled)
+                                 : (enabled ? ProgramBoardStyle.mutedText : foreground))
                 .frame(width: 40, height: geometry.actionLabelSize.height)
                 .rotationEffect(.radians(geometry.labelRotation(slot: slot, offset: labelOffset)))
                 .position(geometry.position(slot: slot, radius: geometry.actionRadius, offset: labelOffset))
@@ -366,7 +368,7 @@ struct SessionWheelView: View {
             @unknown default: break
             }
         }
-        .help(enabled ? "Particle intensity \(percent)" : "Turn on Particle field in Settings to adjust intensity")
+        .graphicalTooltip(enabled ? "Particle intensity \(percent)" : "Turn on Particle field in Settings to adjust intensity")
     }
 
     private var keepAwakeButton: some View {
@@ -449,7 +451,7 @@ struct SessionWheelView: View {
         .disabled(!enabled)
         .animation(presentation.animation, value: presentation)
         .accessibilityLabel(title)
-        .help(help)
+        .graphicalTooltip(help)
     }
 
     private var hub: some View {
@@ -468,7 +470,7 @@ struct SessionWheelView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(title)
         .accessibilityHint(detail)
-        .help(detail.isEmpty ? title : "\(title). \(detail)")
+        .graphicalTooltip(detail.isEmpty ? title : "\(title). \(detail)")
         .onHover { hubHovered = $0 }
     }
 

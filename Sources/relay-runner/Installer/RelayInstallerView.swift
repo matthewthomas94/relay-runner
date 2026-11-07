@@ -163,6 +163,7 @@ struct RelayInstallerView: View {
             }
 
             ProgressView(value: model.progress)
+                .progressViewStyle(.graphical)
                 .frame(width: 320)
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.progress)
 

@@ -13,34 +13,25 @@ final class AppTypographyTests: XCTestCase {
         XCTAssertEqual(AppTypography.appKitFont(.body).fontName, "BaiJamjuree-Regular")
     }
 
-    func testAppTypographyUsesCompactCalibratedScale() {
-        XCTAssertEqual(AppTypography.definition(for: .menuTab).size, 13)
-        XCTAssertEqual(AppTypography.definition(for: .appTitle).size, 22)
-        XCTAssertEqual(AppTypography.definition(for: .onboardingHero).size, 32)
-        XCTAssertEqual(AppTypography.definition(for: .screenTitle).size, 17)
-        XCTAssertEqual(AppTypography.definition(for: .workspaceHeading).size, 14)
-        XCTAssertEqual(AppTypography.definition(for: .sectionHeading).size, 13)
+    func testAppTypographyFollowsTheGraphicalTypeScale() {
+        let scale: Set<CGFloat> = [8, 12, 16, 20, 24, 32, 40]
+        let overlayRoles: [AppTypography.Role] = [.pillTitle, .pillBody, .notchStatus]
+        for role in AppTypography.Role.allCases where !overlayRoles.contains(role) {
+            XCTAssertTrue(scale.contains(AppTypography.definition(for: role).size), "\(role) is off the kit scale")
+        }
+        XCTAssertEqual(AppTypography.definition(for: .body).size, GraphicalTheme.textS)
+        XCTAssertEqual(AppTypography.definition(for: .button).size, GraphicalTheme.textS)
+        XCTAssertEqual(AppTypography.definition(for: .caption).size, GraphicalTheme.textXS)
+        XCTAssertEqual(AppTypography.definition(for: .screenTitle).size, GraphicalTheme.textM)
+        XCTAssertEqual(AppTypography.definition(for: .onboardingHero).size, GraphicalTheme.textXL)
         XCTAssertEqual(
             AppTypography.definition(for: .programProjectsHeading).size,
             AppTypography.definition(for: .sectionHeading).size
         )
-        XCTAssertEqual(AppTypography.definition(for: .projectTitle).size, 13)
-        XCTAssertEqual(AppTypography.definition(for: .ticketTitle).size, 13)
+        // The listening and speaking pills and the notch keep their own sizes.
         XCTAssertEqual(AppTypography.definition(for: .pillTitle).size, 13)
         XCTAssertEqual(AppTypography.definition(for: .pillBody).size, 14)
         XCTAssertEqual(AppTypography.definition(for: .notchStatus).size, 12)
-        XCTAssertEqual(AppTypography.definition(for: .field).size, 13)
-        XCTAssertEqual(AppTypography.definition(for: .metadata).size, 10)
-        XCTAssertEqual(AppTypography.definition(for: .supporting).size, 10)
-        XCTAssertEqual(AppTypography.definition(for: .action).size, 10)
-        XCTAssertEqual(AppTypography.definition(for: .programAction).size, 11)
-        XCTAssertEqual(
-            AppTypography.definition(for: .programEmptyState).size,
-            AppTypography.definition(for: .sectionHeading).size
-        )
-        XCTAssertEqual(AppTypography.definition(for: .permissionButton).size, 16)
-        XCTAssertEqual(AppTypography.definition(for: .count).size, 10)
-        XCTAssertEqual(AppTypography.definition(for: .caption).size, 9)
     }
 
     func testSemanticRolesChooseBaiJamjureeFaceByWeight() {
@@ -65,56 +56,56 @@ final class AppTypographyTests: XCTestCase {
 
         XCTAssertEqual(
             AppTypography.resolved(.workspaceHeading, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-SemiBold", size: 14, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: AppTypography.definition(for: .workspaceHeading).size, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.projectTitle, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-SemiBold", size: 13, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: AppTypography.definition(for: .projectTitle).size, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.ticketTitle, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-SemiBold", size: 13, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: AppTypography.definition(for: .ticketTitle).size, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.primaryButton, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-SemiBold", size: 11, fallbackWeight: .semibold),
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: AppTypography.definition(for: .primaryButton).size, fallbackWeight: .semibold),
             "Primary buttons label in semibold"
         )
         XCTAssertEqual(
             AppTypography.resolved(.metadata, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-Regular", size: 10, fallbackWeight: .regular)
+            .init(postScriptName: "BaiJamjuree-Regular", size: AppTypography.definition(for: .metadata).size, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.action, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-Regular", size: 10, fallbackWeight: .regular)
+            .init(postScriptName: "BaiJamjuree-Regular", size: AppTypography.definition(for: .action).size, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.programAction, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-Regular", size: 11, fallbackWeight: .regular)
+            .init(postScriptName: "BaiJamjuree-Regular", size: AppTypography.definition(for: .programAction).size, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.menuTab, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-Regular", size: 13, fallbackWeight: .regular)
+            .init(postScriptName: "BaiJamjuree-Regular", size: AppTypography.definition(for: .menuTab).size, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.pillTitle, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-SemiBold", size: 13, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: AppTypography.definition(for: .pillTitle).size, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.pillBody, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-Regular", size: 14, fallbackWeight: .regular)
+            .init(postScriptName: "BaiJamjuree-Regular", size: AppTypography.definition(for: .pillBody).size, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.onboardingHero, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-Regular", size: 32, fallbackWeight: .regular)
+            .init(postScriptName: "BaiJamjuree-Regular", size: AppTypography.definition(for: .onboardingHero).size, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.permissionButton, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-Regular", size: 16, fallbackWeight: .regular)
+            .init(postScriptName: "BaiJamjuree-Regular", size: AppTypography.definition(for: .permissionButton).size, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.notchStatus, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-SemiBold", size: 12, fallbackWeight: .semibold)
+            .init(postScriptName: "BaiJamjuree-SemiBold", size: AppTypography.definition(for: .notchStatus).size, fallbackWeight: .semibold)
         )
     }
 
@@ -123,19 +114,19 @@ final class AppTypographyTests: XCTestCase {
 
         XCTAssertEqual(
             AppTypography.resolved(.workspaceHeading, availablePostScriptNames: unavailable),
-            .init(postScriptName: nil, size: 14, fallbackWeight: .semibold)
+            .init(postScriptName: nil, size: AppTypography.definition(for: .workspaceHeading).size, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.ticketTitle, availablePostScriptNames: unavailable),
-            .init(postScriptName: nil, size: 13, fallbackWeight: .semibold)
+            .init(postScriptName: nil, size: AppTypography.definition(for: .ticketTitle).size, fallbackWeight: .semibold)
         )
         XCTAssertEqual(
             AppTypography.resolved(.metadata, availablePostScriptNames: unavailable),
-            .init(postScriptName: nil, size: 10, fallbackWeight: .regular)
+            .init(postScriptName: nil, size: AppTypography.definition(for: .metadata).size, fallbackWeight: .regular)
         )
         XCTAssertEqual(
             AppTypography.resolved(.caption, availablePostScriptNames: unavailable),
-            .init(postScriptName: nil, size: 9, fallbackWeight: .regular)
+            .init(postScriptName: nil, size: AppTypography.definition(for: .caption).size, fallbackWeight: .regular)
         )
     }
 

@@ -12,12 +12,20 @@ struct SettingsMenuOptions<Value: Hashable>: View {
     @FocusState private var focusedIndex: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var rowHeight: CGFloat { subtitle == nil ? 32 : 48 }
+    /// Kit options: 4 points above and below a 20-point line; a subtitle adds a second line.
+    private var rowHeight: CGFloat { subtitle == nil ? 28 : 48 }
+    private static var rowSpacing: CGFloat { GraphicalTheme.spaceXXS }
+    private static var popoverPadding: CGFloat { GraphicalTheme.spaceXXS }
+
+    private var contentHeight: CGFloat {
+        CGFloat(options.count) * rowHeight + CGFloat(max(0, options.count - 1)) * Self.rowSpacing
+            + Self.popoverPadding * 2
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical) {
-                VStack(spacing: 2) {
+                VStack(spacing: Self.rowSpacing) {
                     ForEach(options.indices, id: \.self) { index in
                         let option = options[index]
                         Button {
@@ -65,12 +73,14 @@ struct SettingsMenuOptions<Value: Hashable>: View {
                         .id(index)
                     }
                 }
-                .padding(GraphicalTheme.spaceXXS)
+                .padding(Self.popoverPadding)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: min(284, CGFloat(options.count) * (rowHeight + 2) + 6))
-            // Kit popover: neutral-2, radius s.
-            .background(BoardDarkSurfaceBackground(cornerRadius: GraphicalTheme.radiusS))
+            .frame(height: min(284, contentHeight))
+            // Kit popovers are neutral-2: radius s for a select, m for an action menu.
+            .background(BoardDarkSurfaceBackground(
+                cornerRadius: showsCheckmarks ? GraphicalTheme.radiusS : GraphicalTheme.radiusM
+            ))
             .onAppear { focusedIndex = options.firstIndex { $0.value == selection } ?? options.indices.first }
             .onChange(of: focusedIndex) { _, index in
                 if let index { proxy.scrollTo(index) }
@@ -119,11 +129,11 @@ private struct SettingsSwitch: View {
     @State private var isHovered = false
     @FocusState private var isFocused: Bool
 
-    /// Kit switch: neutral-4 track, accent when on, neutral-3 when disabled.
+    /// Kit switch: neutral-4 track, neutral-10 when on, neutral-3 when disabled.
     /// Slightly translucent so the hover dots behind it still read.
     private var trackFill: Color {
         guard isEnabled else { return GraphicalTheme.neutral3 }
-        if configuration.isOn { return GraphicalTheme.accent.opacity(GraphicalTheme.fillThroughDotsOpacity) }
+        if configuration.isOn { return GraphicalTheme.neutral10.opacity(GraphicalTheme.fillThroughDotsOpacity) }
         return GraphicalTheme.neutral4.opacity(GraphicalTheme.fillThroughDotsOpacity)
     }
 
@@ -144,7 +154,8 @@ private struct SettingsSwitch: View {
                     ))
                     .overlay {
                         Capsule().strokeBorder(
-                            SettingsSurfaceColor.focusRing.opacity(isFocused ? 1 : 0), lineWidth: 2)
+                            SettingsSurfaceColor.focusRing.opacity(isFocused ? 1 : 0),
+                            lineWidth: GraphicalTheme.focusRingWidth)
                     }
                     .overlay(alignment: .leading) {
                         Circle()
@@ -153,7 +164,7 @@ private struct SettingsSwitch: View {
                             .offset(x: SettingsSwitchMetrics.inset + (configuration.isOn ? SettingsSwitchMetrics.knobTravel : 0))
                     }
                     .frame(width: SettingsSwitchMetrics.trackSize.width, height: SettingsSwitchMetrics.trackSize.height)
-                    .frame(minHeight: 28)
+                    .frame(minHeight: GraphicalTheme.controlHeight)
                 if showsLabel { configuration.label }
             }
             .font(AppTypography.font(.body))
@@ -204,9 +215,8 @@ struct SettingsStepper: View {
             .monospacedDigit()
             .foregroundStyle(isEnabled ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.disabledText)
             .padding(.horizontal, GraphicalTheme.spaceS)
-            .frame(width: 112, height: 34)
-            .background(BoardDarkSurfaceBackground(cornerRadius: GraphicalTheme.radiusS,
-                                                   fill: BoardDarkSurfaceStyle.contentFill))
+            .frame(width: 112, height: GraphicalTheme.controlHeight)
+            .background(GraphicalInputSurface(isEnabled: isEnabled))
             SettingsActionButton(title: "Increase \(title)", systemImage: "plus", prominence: .icon,
                                  isEnabled: isEnabled && value < range.upperBound) {
                 boundedValue.wrappedValue = value + 1
@@ -233,11 +243,16 @@ struct SettingsSlider: View {
     /// Keeps the thumb clear of the rounded ends.
     static let thumbInset: CGFloat = 8
 
-    /// The value fill: the kit's accent indicator, neutral-5 when disabled,
+    /// The value fill: the kit's neutral-10 indicator, neutral-5 when disabled,
     /// translucent so the hover dots behind it still read.
     static func fillColor(contrast: ColorSchemeContrast, isEnabled: Bool = true) -> Color {
         let opacity = contrast == .increased ? 1 : GraphicalTheme.fillThroughDotsOpacity
-        return (isEnabled ? GraphicalTheme.accent : GraphicalTheme.neutral5).opacity(opacity)
+        return (isEnabled ? GraphicalTheme.neutral10 : GraphicalTheme.neutral5).opacity(opacity)
+    }
+
+    /// Text that sits on the value fill, dark on the light indicator.
+    static func onFillColor(isEnabled: Bool) -> Color {
+        isEnabled ? GraphicalTheme.neutral1 : GraphicalTheme.neutral7
     }
 
     init(value: Binding<Double>, in range: ClosedRange<Double>, step: Double, label: String) {
@@ -280,10 +295,12 @@ struct SettingsSlider: View {
                     .fill(foreground)
                     .frame(width: 2.5, height: height - 14)
                     .position(x: thumb, y: height / 2)
+                // Kit value text: neutral-7 beside the fill, dark on it.
                 Text(label)
-                    .font(AppTypography.font(.action, size: 10))
+                    .font(AppTypography.font(.caption))
                     .monospacedDigit()
-                    .foregroundStyle(foreground)
+                    .foregroundStyle(fraction >= 0.5 ? Self.onFillColor(isEnabled: isEnabled)
+                                     : (isEnabled ? ProgramBoardStyle.mutedText : foreground))
                     .fixedSize()
                     .position(x: fraction >= 0.5 ? thumb / 2 : (thumb + width) / 2, y: height / 2)
             }

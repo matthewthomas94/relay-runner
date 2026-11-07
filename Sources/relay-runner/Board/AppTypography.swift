@@ -144,30 +144,32 @@ enum AppTypography {
         )
     }
 
+    /// Sizes follow the Graphical "RR" type scale; faces and weights are unchanged.
+    /// The listening and speaking pills and the notch status keep their own sizes.
     static func definition(for role: Role) -> Definition {
         switch role {
         case .menuTab:
-            return Definition(face: .baiJamjureeRegular, size: 13, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textS, fallbackWeight: .regular)
         case .appTitle:
-            return Definition(face: .baiJamjureeSemibold, size: 22, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textL, fallbackWeight: .semibold)
         case .onboardingHero:
-            return Definition(face: .baiJamjureeRegular, size: 32, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textXL, fallbackWeight: .regular)
         case .screenTitle:
-            return Definition(face: .baiJamjureeSemibold, size: 17, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textM, fallbackWeight: .semibold)
         case .workspaceHeading:
-            return Definition(face: .baiJamjureeSemibold, size: 14, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textM, fallbackWeight: .semibold)
         case .programProjectsHeading:
-            return Definition(face: .baiJamjureeSemibold, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textS, fallbackWeight: .semibold)
         case .sectionHeading:
-            return Definition(face: .baiJamjureeSemibold, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textS, fallbackWeight: .semibold)
         case .cardHeading:
-            return Definition(face: .baiJamjureeSemibold, size: 12, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textS, fallbackWeight: .semibold)
         case .controlHeading:
-            return Definition(face: .baiJamjureeSemibold, size: 11, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textXS, fallbackWeight: .semibold)
         case .projectTitle:
-            return Definition(face: .baiJamjureeSemibold, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textS, fallbackWeight: .semibold)
         case .ticketTitle:
-            return Definition(face: .baiJamjureeSemibold, size: 13, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textS, fallbackWeight: .semibold)
         case .pillTitle:
             return Definition(face: .baiJamjureeSemibold, size: 13, fallbackWeight: .semibold)
         case .pillBody:
@@ -175,37 +177,37 @@ enum AppTypography {
         case .notchStatus:
             return Definition(face: .baiJamjureeSemibold, size: 12, fallbackWeight: .semibold)
         case .body:
-            return Definition(face: .baiJamjureeRegular, size: 12, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textS, fallbackWeight: .regular)
         case .label:
-            return Definition(face: .baiJamjureeRegular, size: 11, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textXS, fallbackWeight: .regular)
         case .field:
-            return Definition(face: .baiJamjureeRegular, size: 13, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textS, fallbackWeight: .regular)
         case .metadata:
-            return Definition(face: .baiJamjureeRegular, size: 10, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textXS, fallbackWeight: .regular)
         case .supporting:
-            return Definition(face: .baiJamjureeRegular, size: 10, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textXS, fallbackWeight: .regular)
         case .settingsDescription:
-            return Definition(face: .baiJamjureeRegular, size: 11, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textXS, fallbackWeight: .regular)
         case .action:
-            return Definition(face: .baiJamjureeRegular, size: 10, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textS, fallbackWeight: .regular)
         case .programAction:
-            return Definition(face: .baiJamjureeRegular, size: 11, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textS, fallbackWeight: .regular)
         case .programEmptyState:
-            return Definition(face: .baiJamjureeRegular, size: 13, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textS, fallbackWeight: .regular)
         case .permissionButton:
-            return Definition(face: .baiJamjureeRegular, size: 16, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textS, fallbackWeight: .regular)
         case .button:
-            return Definition(face: .baiJamjureeRegular, size: 11, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textS, fallbackWeight: .regular)
         case .primaryButton:
-            return Definition(face: .baiJamjureeSemibold, size: 11, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textS, fallbackWeight: .semibold)
         case .status:
-            return Definition(face: .baiJamjureeSemibold, size: 12, fallbackWeight: .semibold)
+            return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textXS, fallbackWeight: .semibold)
         case .count:
-            return Definition(face: .baiJamjureeRegular, size: 10, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textXS, fallbackWeight: .regular)
         case .caption:
-            return Definition(face: .baiJamjureeRegular, size: 9, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textXS, fallbackWeight: .regular)
         case .smallCaption:
-            return Definition(face: .baiJamjureeRegular, size: 8, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textXXS, fallbackWeight: .regular)
         }
     }
 

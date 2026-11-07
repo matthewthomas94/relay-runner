@@ -56,7 +56,7 @@ final class SettingsWindowTests: XCTestCase {
     func testSettingsDescriptionTypographyIsReadable() {
         let definition = AppTypography.definition(for: .settingsDescription)
         XCTAssertGreaterThanOrEqual(definition.size, 11)
-        XCTAssertEqual(AppTypography.definition(for: .caption).size, 9)
+        XCTAssertEqual(AppTypography.definition(for: .caption).size, GraphicalTheme.textXS)
     }
 
     func testSettingsSemanticColorsUseWorkspaceNeutralForDirtyAndFocusStates() {
@@ -174,7 +174,7 @@ final class SettingsWindowTests: XCTestCase {
 
     func testSharedActionButtonMetricsMatchSettingsActionGeometry() {
         // Graphical "RR" kit: button radius s (16), padding m (16); sidebar rows radius xs (8).
-        XCTAssertEqual(SharedActionButtonMetrics.controlHeight, 32)
+        XCTAssertEqual(SharedActionButtonMetrics.controlHeight, GraphicalTheme.controlHeight)
         XCTAssertEqual(SharedActionButtonMetrics.cornerRadius, GraphicalTheme.radiusS)
         XCTAssertEqual(SettingsLayout.sidebarCornerRadius, GraphicalTheme.radiusXS)
         XCTAssertEqual(SharedActionButtonMetrics.horizontalPadding, 16)

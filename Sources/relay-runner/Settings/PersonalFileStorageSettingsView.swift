@@ -217,12 +217,7 @@ struct PersonalFileStorageSettingsView: View {
                         if let login = model.accountLogin {
                             Text("Signed in as \(login)").foregroundStyle(SettingsSurfaceColor.secondaryText)
                             TextField("Private repository name", text: $model.repositoryName)
-                                .textFieldStyle(.plain)
-                                .font(AppTypography.font(.field))
-                                .padding(.horizontal, 10)
-                                .frame(height: 34)
-                                .background(BoardDarkSurfaceBackground(cornerRadius: SettingsLayout.sidebarCornerRadius,
-                                                                       fill: BoardDarkSurfaceStyle.contentFill))
+                                .graphicalInput()
                             SettingsActionButton(title: "Connect private repository…", systemImage: "link",
                                                  isEnabled: !model.busy && !model.repositoryName.isEmpty) { confirmConnect = true }
                                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -268,18 +263,20 @@ struct PersonalFileStorageSettingsView: View {
         }
         .disabled(model.busy)
         .task { await model.refresh() }
-        .alert("Connect private GitHub storage?", isPresented: $confirmConnect) {
-            Button("Connect") { Task { await model.configure() } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Relay Runner will create or validate \(model.repositoryName) in your signed-in GitHub account. Files are uploaded only when approved. Local sessions remain available without GitHub.")
-        }
-        .alert("Upload these personal files?", isPresented: $confirmUpload) {
-            Button("Approve and sync") { Task { await model.mutate("sync", body: ["approve": true]) } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This approves all eligible personal notes, their version history, general project files and reviewed documents. Anyone granted access to your private repository can read them. Active recordings remain local until completed.")
-        }
+        .graphicalAlert(
+            "Connect private GitHub storage?",
+            isPresented: $confirmConnect,
+            message: "Relay Runner will create or validate \(model.repositoryName) in your signed-in GitHub account. Files are uploaded only when approved. Local sessions remain available without GitHub.",
+            actions: [GraphicalDialogAction("Connect") { Task { await model.configure() } }]
+        )
+        .graphicalAlert(
+            "Upload these personal files?",
+            isPresented: $confirmUpload,
+            message: "This approves all eligible personal notes, their version history, general project files and reviewed documents. Anyone granted access to your private repository can read them. Active recordings remain local until completed.",
+            actions: [GraphicalDialogAction("Approve and sync") {
+                Task { await model.mutate("sync", body: ["approve": true]) }
+            }]
+        )
     }
 
     private func storageUsage(_ label: String, bytes: Int64) -> some View {

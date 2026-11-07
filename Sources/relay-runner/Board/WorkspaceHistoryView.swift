@@ -10,7 +10,7 @@ struct WorkspaceHistoryView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Rectangle().fill(BoardDarkSurfaceStyle.border).frame(height: 1)
+            Rectangle().fill(SettingsSurfaceColor.divider).frame(height: 1)
             if let error = model.errorMessage {
                 messageStrip(error, warning: true)
                     .transition(.relayElement)
@@ -72,13 +72,7 @@ struct WorkspaceHistoryView: View {
                 HStack(spacing: 8) {
                     TextField("Search archived tickets", text: $model.query, prompt: Text(""))
                         .appPlaceholder("Search archived tickets", when: model.query.isEmpty)
-                        .textFieldStyle(.plain)
-                        .font(AppTypography.font(.field))
-                        .foregroundStyle(ProgramBoardStyle.primaryText)
-                        .lineLimit(1)
-                        .padding(.horizontal, 10)
-                        .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
-                        .background(ProgramTicketFieldBackground())
+                        .graphicalInput()
                         .onSubmit { Task { await model.search() } }
                         .accessibilityLabel("Search Workspace history")
                     ProgramIconButton(systemName: "magnifyingglass", help: "Search history") {
@@ -111,7 +105,7 @@ struct WorkspaceHistoryView: View {
             .padding(18)
             .frame(width: 330)
 
-            Rectangle().fill(BoardDarkSurfaceStyle.border).frame(width: 1)
+            Rectangle().fill(SettingsSurfaceColor.divider).frame(width: 1)
 
             ZStack {
                 if let card = model.selectedCard {
@@ -181,7 +175,7 @@ struct WorkspaceHistoryView: View {
             .animation(RelayMotion.hover, value: hovered)
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selected)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.graphicalPress)
         .onHover { hoveredCardID = $0 ? card.id : nil }
         .accessibilityLabel("\(card.ticketID), \(card.title), \(badge.label)")
     }

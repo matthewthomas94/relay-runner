@@ -184,9 +184,10 @@ struct ProgramWorkspaceDotMatrixPresentation: Equatable {
 enum ProgramTicketPanelStyle {
     static let width: CGFloat = 560
     static let height: CGFloat = 633
-    static let horizontalPadding: CGFloat = 24
-    static let verticalPadding: CGFloat = 18
-    static let compactFieldHeight: CGFloat = 34
+    // Kit dialog: 24 points of padding all round.
+    static let horizontalPadding: CGFloat = GraphicalTheme.spaceL
+    static let verticalPadding: CGFloat = GraphicalTheme.spaceL
+    static let compactFieldHeight: CGFloat = GraphicalTheme.controlHeight
     static let createDescriptionHeight: CGFloat = 132
     static let executionModeDescriptionHeight: CGFloat = 24
     static func detailSize(fitting availableSize: CGSize) -> CGSize {
@@ -301,7 +302,7 @@ struct ProgramBoardOverlayView: View {
             }
             .padding(.horizontal, 22)
             .frame(height: 60)
-            Rectangle().fill(BoardDarkSurfaceStyle.border).frame(height: 1)
+            Rectangle().fill(SettingsSurfaceColor.divider).frame(height: 1)
             if let message = model.noteLoadErrorMessage {
                 ProgramDetailNotice(message: message)
                     .padding(.horizontal, 22)
@@ -323,9 +324,9 @@ struct ProgramBoardOverlayView: View {
                             .font(AppTypography.font(.field))
                             .foregroundStyle(ProgramBoardStyle.primaryText)
                             .lineLimit(1)
-                            .padding(.horizontal, 10)
+                            .padding(.horizontal, GraphicalTheme.spaceS)
                             .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
-                            .background(ProgramTicketFieldBackground())
+                            .background(ProgramTicketFieldBackground(isFocused: notesSearchFocused))
                             .focused($notesSearchFocused)
                             .onSubmit { notesSearchFocused = false }
                             .accessibilityLabel("Search notes")
@@ -361,7 +362,7 @@ struct ProgramBoardOverlayView: View {
                 }
                 .padding(18)
                 .frame(width: 330)
-                Rectangle().fill(BoardDarkSurfaceStyle.border).frame(width: 1)
+                Rectangle().fill(SettingsSurfaceColor.divider).frame(width: 1)
                 ZStack {
                     if let detail = model.selectedNoteDetail {
                         ProgramNoteDetailPanel(
@@ -1084,32 +1085,34 @@ struct ProgramBoardInteractiveBackground: View {
         case .capsule:
             Capsule()
                 .fill(backgroundColor)
-                .overlay(Capsule().fill(Color.white.opacity(usesCardStyle ? 0 : presentation.fillOverlayOpacity)))
-                .overlay(Capsule().strokeBorder(strokeColor, lineWidth: 1))
+                .overlay(Capsule().fill(hoverOverlay))
+                .overlay(Capsule().strokeBorder(strokeColor, lineWidth: GraphicalTheme.focusRingWidth))
         case .circle:
             Circle()
                 .fill(backgroundColor)
-                .overlay(Circle().fill(Color.white.opacity(usesCardStyle ? 0 : presentation.fillOverlayOpacity)))
-                .overlay(Circle().strokeBorder(strokeColor, lineWidth: 1))
+                .overlay(Circle().fill(hoverOverlay))
+                .overlay(Circle().strokeBorder(strokeColor, lineWidth: GraphicalTheme.focusRingWidth))
         case .rounded(let radius):
             RoundedRectangle(cornerRadius: radius)
                 .fill(backgroundColor)
                 .overlay(
                     RoundedRectangle(cornerRadius: radius)
-                        .fill(Color.white.opacity(usesCardStyle ? 0 : presentation.fillOverlayOpacity))
+                        .fill(hoverOverlay)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: radius)
-                        .strokeBorder(strokeColor, lineWidth: 1)
+                        .strokeBorder(strokeColor, lineWidth: GraphicalTheme.focusRingWidth)
                 )
         case .custom(let shape):
             shape
                 .fill(backgroundColor)
-                .overlay(shape.fill(Color.white.opacity(usesCardStyle ? 0 : presentation.fillOverlayOpacity)))
-                .overlay(shape.stroke(strokeColor, lineWidth: 1))
+                .overlay(shape.fill(hoverOverlay))
+                .overlay(shape.stroke(strokeColor, lineWidth: GraphicalTheme.focusRingWidth))
         }
     }
 
+    /// Cards rest at neutral-3 and lift to neutral-4. Controls are the kit's
+    /// secondary button: neutral-3, with neutral-4 at 20% laid over on hover.
     private var backgroundColor: Color {
         if usesCardStyle {
             let fill = presentation.usesHoverFill
@@ -1118,21 +1121,20 @@ struct ProgramBoardInteractiveBackground: View {
             return disabled ? fill.opacity(0.55) : fill
         }
         if disabled {
-            return BoardDarkSurfaceStyle.contentFill.opacity(0.55)
+            return GraphicalTheme.neutral3
         }
-        return presentation.usesHoverFill
-            ? BoardDarkSurfaceStyle.hoverFill
-            : BoardDarkSurfaceStyle.contentFill
+        return GraphicalTheme.neutral3
     }
 
+    private var hoverOverlay: Color {
+        guard !usesCardStyle, !disabled, presentation.usesHoverFill else { return .clear }
+        return GraphicalTheme.neutral4.opacity(0.2)
+    }
+
+    /// No borders in the kit; a focused control shows the soft white ring.
     private var strokeColor: Color {
-        if disabled {
-            return BoardDarkSurfaceStyle.border.opacity(0.55)
-        }
-        guard !usesCardStyle, presentation.strokeOpacity > 0 else {
-            return BoardDarkSurfaceStyle.border
-        }
-        return Color.white.opacity(presentation.strokeOpacity)
+        guard !disabled, !usesCardStyle, presentation.strokeOpacity >= 0.24 else { return .clear }
+        return GraphicalTheme.focusRing
     }
 }
 
@@ -1572,14 +1574,14 @@ private struct ProgramAddProjectMenu: View {
                 )
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.graphicalPress)
         .fixedSize()
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
         .programButtonCursor(enabled: true)
         .accessibilityLabel("Add project")
-        .help("Add an existing project or create a new project")
+        .graphicalTooltip("Add an existing project or create a new project")
         .background {
             SettingsDropdownPresenter(isPresented: $isPresented, alignsTrailing: true) {
                 SettingsMenuOptions(
@@ -1639,8 +1641,8 @@ private struct ProgramStartSessionMenu: View {
                     .frame(height: SharedActionButtonMetrics.controlHeight)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help("\(help) (\(workStyle.title): \(workStyle.detail.lowercased()))")
+            .buttonStyle(.graphicalPress)
+            .graphicalTooltip("\(help) (\(workStyle.title): \(workStyle.detail.lowercased()))")
             .accessibilityLabel(title)
 
             Rectangle()
@@ -1653,8 +1655,8 @@ private struct ProgramStartSessionMenu: View {
                     .frame(width: ProgramAddProjectMenuMetrics.disclosureWidth, height: SharedActionButtonMetrics.controlHeight)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help(startsOnSelect ? "Start with a work style (now \(workStyle.title))"
+            .buttonStyle(.graphicalPress)
+            .graphicalTooltip(startsOnSelect ? "Start with a work style (now \(workStyle.title))"
                   : "Change the work style (now \(workStyle.title))")
             .accessibilityLabel("Work style, now \(workStyle.title)")
         }
@@ -1731,7 +1733,7 @@ private struct ProgramProjectCard: View {
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .help(item.project?.name ?? "")
+                        .graphicalTooltip(item.project?.name ?? "")
                     if replyBadgeCount > 0 {
                         SessionReplyBadge(count: replyBadgeCount)
                             .transition(.relayElement)
@@ -1776,7 +1778,7 @@ private struct ProgramProjectCard: View {
                 )
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.graphicalPress)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.55)
         .animation(presentation.animation, value: presentation)
@@ -1789,7 +1791,7 @@ private struct ProgramProjectCard: View {
             if hovering { refreshWorkStyle() }
         }
         .programButtonCursor(enabled: isEnabled)
-        .help("Show tickets for \(item.project?.name ?? "this project")")
+        .graphicalTooltip("Show tickets for \(item.project?.name ?? "this project")")
         .overlay(alignment: .topTrailing) {
             actions.fixedSize().padding(16)
         }
@@ -1846,7 +1848,7 @@ private struct ProjectBoardOverview: View {
             ProjectCount(label: "Done", value: item.doneTickets)
             ProjectCount(label: "In progress", value: item.inProgressTickets ?? item.activeRuns)
         }
-        .help("Project board overview")
+        .graphicalTooltip("Project board overview")
     }
 }
 
@@ -2052,14 +2054,14 @@ private struct ProgramNoteCard: View {
                 )
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.graphicalPress)
         .animation(presentation.animation, value: presentation)
         .focusable()
         .focusEffectDisabled(true)
         .focused($isFocused)
         .onHover { isHovered = $0 }
         .programButtonCursor(enabled: true)
-        .help("Open transcript for \(item.title)")
+        .graphicalTooltip("Open transcript for \(item.title)")
         .accessibilityLabel("\(item.code), \(ProgramBoardDate.label(iso8601: item.card.createdAt) ?? ""), \(item.title)")
     }
 
@@ -2104,7 +2106,7 @@ private struct ProgramDropIndicator: View {
             .padding(.horizontal, 4)
             .padding(.bottom, ProgramBoardLayout.dropIndicatorBottomPadding)
             .animation(.easeOut(duration: 0.10 * RelayMotion.durationScale), value: target)
-            .help(target?.isValid == false ? "Cannot drop this ticket here" : "Drop ticket here")
+            .graphicalTooltip(target?.isValid == false ? "Cannot drop this ticket here" : "Drop ticket here")
     }
 
     private var indicatorColor: Color {
@@ -2167,7 +2169,7 @@ private struct DraggableProgramWorkCard: View {
                     onCancelled: cancelDrag
                 )
             )
-            .help(canDrag ? "Drag ticket to another lane" : "This ticket cannot be dragged while a worker owns its state")
+            .graphicalTooltip(canDrag ? "Drag ticket to another lane" : "This ticket cannot be dragged while a worker owns its state")
     }
 
     private var scrollBoundary: BoardOverlayScrollBoundary? {
@@ -2724,7 +2726,7 @@ private struct ProgramWorkCard: View {
                         .foregroundStyle(ProgramBoardStyle.mutedText)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .help(activityLine)
+                        .graphicalTooltip(activityLine)
                         .accessibilityLabel("Agent activity: \(activityLine)")
                 }
                 .transition(.relayText)
@@ -2855,12 +2857,12 @@ private struct ProgramNoteDetailPanel: View {
 
     var body: some View {
         content.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .alert("Delete this note?", isPresented: $confirmsDelete) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive, action: onDelete)
-        } message: {
-            Text("This removes the note from your library.")
-        }
+        .graphicalAlert(
+            "Delete this note?",
+            isPresented: $confirmsDelete,
+            message: "This removes the note from your library.",
+            actions: [GraphicalDialogAction("Delete", role: .destructive, action: onDelete)]
+        )
     }
 
     private var content: some View {
@@ -2949,14 +2951,15 @@ private struct ProgramNoteDetailPanel: View {
                 }
                 if let recoveryOffer, !isCurrentCapture, recoveryOffer.phase != .cancelling {
                     if recoveryOffer.requiresTranscriptionModelChoice {
-                        Menu(chosenTranscriptionModel?.displayName ?? "Choose model") {
-                            ForEach(recoveryOffer.transcriptionModelChoices, id: \.self) { model in
-                                Button(model.displayName) { chosenTranscriptionModel = model }
-                            }
-                        }
-                        .fixedSize()
+                        SettingsMenuPicker(
+                            "Transcription model",
+                            selection: $chosenTranscriptionModel,
+                            options: [("Choose model", nil)]
+                                + recoveryOffer.transcriptionModelChoices.map { ($0.displayName, Optional($0)) }
+                        )
+                        .frame(width: 200)
                         .disabled(recoveryInFlight)
-                        .help("Choose the model that transcribes this recording's unsaved audio")
+                        .graphicalTooltip("Choose the model that transcribes this recording's unsaved audio")
                         .transition(.relayReplacing(.element))
                     }
                     ProgramDetailActionButton(
@@ -3521,14 +3524,13 @@ private struct ProgramSpikeFollowupProposalCard: View {
             }
 
             TextField("Title", text: $title, prompt: Text(""))
-                .appPlaceholder("Title", when: title.isEmpty, inset: 6)
-                .font(AppTypography.font(.body))
-                .textFieldStyle(.roundedBorder)
+                .appPlaceholder("Title", when: title.isEmpty)
+                .graphicalInput()
                 .disabled(!isDraft)
             TextField("Target project path", text: $targetRepoPath, prompt: Text(""))
-                .appPlaceholder("Target project path", when: targetRepoPath.isEmpty, inset: 6)
-                .font(AppTypography.monospacedFont(size: 10, weight: .regular))
-                .textFieldStyle(.roundedBorder)
+                .appPlaceholder("Target project path", when: targetRepoPath.isEmpty)
+                .graphicalInput()
+                .font(AppTypography.monospacedFont(size: GraphicalTheme.textXS, weight: .regular))
                 .disabled(!isDraft)
 
             ProgramEditTextArea(title: "Description", text: $description, minHeight: 64, maxHeight: 110)
@@ -3543,24 +3545,27 @@ private struct ProgramSpikeFollowupProposalCard: View {
 
             HStack(spacing: 8) {
                 TextField("Priority", text: $priority, prompt: Text(""))
-                    .appPlaceholder("Priority", when: priority.isEmpty, inset: 6)
+                    .appPlaceholder("Priority", when: priority.isEmpty)
+                    .graphicalInput()
                 TextField("Dependencies", text: $dependsOn, prompt: Text(""))
-                    .appPlaceholder("Dependencies", when: dependsOn.isEmpty, inset: 6)
+                    .appPlaceholder("Dependencies", when: dependsOn.isEmpty)
+                    .graphicalInput()
                 TextField("Worker model", text: $workerModel, prompt: Text(""))
-                    .appPlaceholder("Worker model", when: workerModel.isEmpty, inset: 6)
+                    .appPlaceholder("Worker model", when: workerModel.isEmpty)
+                    .graphicalInput()
                 TextField("Effort", text: $workerEffort, prompt: Text(""))
-                    .appPlaceholder("Effort", when: workerEffort.isEmpty, inset: 6)
+                    .appPlaceholder("Effort", when: workerEffort.isEmpty)
+                    .graphicalInput()
             }
-            .textFieldStyle(.roundedBorder)
             .disabled(!isDraft)
 
             TextField("Sizing rationale", text: $workerSizingRationale, prompt: Text(""))
-                .appPlaceholder("Sizing rationale", when: workerSizingRationale.isEmpty, inset: 6)
-                .textFieldStyle(.roundedBorder)
+                .appPlaceholder("Sizing rationale", when: workerSizingRationale.isEmpty)
+                .graphicalInput()
                 .disabled(!isDraft)
             TextField("Provider notes", text: $workerProviderNotes, prompt: Text(""))
-                .appPlaceholder("Provider notes", when: workerProviderNotes.isEmpty, inset: 6)
-                .textFieldStyle(.roundedBorder)
+                .appPlaceholder("Provider notes", when: workerProviderNotes.isEmpty)
+                .graphicalInput()
                 .disabled(!isDraft)
 
             if let error = proposal.error, !error.isEmpty {
@@ -3921,25 +3926,23 @@ private struct ProgramTicketEditModal: View {
                         Text("Status")
                             .font(AppTypography.font(.body))
                             .foregroundStyle(ProgramBoardStyle.mutedText)
-                        Picker("Status", selection: $status) {
-                            ForEach(Ticket.Status.userSelectable, id: \.rawValue) { status in
-                                Text(status.rawValue.displayLabel).tag(status)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
+                        SettingsMenuPicker(
+                            "Status",
+                            selection: $status,
+                            options: Ticket.Status.userSelectable.map { ($0.rawValue.displayLabel, $0) }
+                        )
+                        .frame(width: 180)
                     }
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Priority")
                             .font(AppTypography.font(.body))
                             .foregroundStyle(ProgramBoardStyle.mutedText)
-                        Picker("Priority", selection: $priority) {
-                            ForEach(Ticket.Priority.allCases, id: \.rawValue) { priority in
-                                Text(priority.rawValue.displayLabel).tag(priority)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
+                        SettingsMenuPicker(
+                            "Priority",
+                            selection: $priority,
+                            options: Ticket.Priority.allCases.map { ($0.rawValue.displayLabel, $0) }
+                        )
+                        .frame(width: 180)
                     }
                     Spacer(minLength: 0)
                 }
@@ -4033,7 +4036,7 @@ private struct ProgramEditTextArea: View {
                 .foregroundStyle(ProgramBoardStyle.secondaryText)
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: minHeight, maxHeight: maxHeight)
-                .padding(8)
+                .padding(GraphicalTheme.spaceS)
                 .background(ProgramTicketFieldBackground())
         }
     }
@@ -4056,9 +4059,9 @@ private struct ProgramTicketTitleField: View {
                 .textFieldStyle(.plain)
                 .focused($isFocused)
                 .lineLimit(1)
-                .padding(.horizontal, 10)
+                .padding(.horizontal, GraphicalTheme.spaceS)
                 .frame(width: SettingsLayout.controlMaxWidth, height: ProgramTicketPanelStyle.compactFieldHeight)
-                .background(ProgramTicketFieldBackground())
+                .background(ProgramTicketFieldBackground(isFocused: isFocused))
         }
         .onAppear {
             DispatchQueue.main.async {
@@ -4081,24 +4084,15 @@ private struct ProgramTicketProjectPicker: View {
         )
         .frame(width: SettingsLayout.controlMaxWidth)
         .programButtonCursor()
-        .help("Choose the project that will own this ticket")
+        .graphicalTooltip("Choose the project that will own this ticket")
     }
 }
 
 struct ProgramTicketFieldBackground: View {
+    var isFocused = false
+
     var body: some View {
-        RoundedRectangle(
-            cornerRadius: SettingsLayout.sidebarCornerRadius,
-            style: .continuous
-        )
-        .fill(BoardDarkSurfaceStyle.contentFill)
-        .overlay(
-            RoundedRectangle(
-                cornerRadius: SettingsLayout.sidebarCornerRadius,
-                style: .continuous
-            )
-            .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
-        )
+        GraphicalInputSurface(isFocused: isFocused)
     }
 }
 
@@ -4346,8 +4340,8 @@ private struct ProgramTicketImageChip: View {
                     Image(systemName: "xmark")
                         .font(AppTypography.symbolFont(size: 9, weight: .semibold))
                 }
-                .buttonStyle(.plain)
-                .help("Remove image")
+                .buttonStyle(.graphicalPress)
+                .graphicalTooltip("Remove image")
             }
         }
         .foregroundStyle(ProgramBoardStyle.secondaryText)
@@ -4450,11 +4444,11 @@ private struct ProgramStatePanel: View {
                                 .padding(.horizontal, 12)
                                 .frame(height: ProgramBoardLayout.compactControlHeight)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.graphicalPress)
                         .disabled(reloadState.isLoading)
                         .programControlChrome(disabled: reloadState.isLoading)
                         .programButtonCursor(enabled: !reloadState.isLoading)
-                        .help("Retry Workspace readiness")
+                        .graphicalTooltip("Retry Workspace readiness")
 
                         if onCreateDiagnostics != nil {
                             Button(action: { onCreateDiagnostics?() }) {
@@ -4466,11 +4460,11 @@ private struct ProgramStatePanel: View {
                                 .padding(.horizontal, 12)
                                 .frame(height: ProgramBoardLayout.compactControlHeight)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.graphicalPress)
                             .disabled(isDiagnosticsExporting)
                             .programControlChrome(disabled: isDiagnosticsExporting)
                             .programButtonCursor(enabled: !isDiagnosticsExporting)
-                            .help("Create a privacy-safe local support bundle")
+                            .graphicalTooltip("Create a privacy-safe local support bundle")
                         }
                     }
                 }
@@ -4530,7 +4524,7 @@ private struct ProgramErrorStrip: View {
                 HStack(spacing: 10) {
                     if let onRetry {
                         Button("Retry", action: onRetry)
-                            .buttonStyle(.plain)
+                            .buttonStyle(.graphicalPress)
                     }
                     if let onCreateDiagnostics {
                         RelaySwap(isDiagnosticsExporting, style: .text, alignment: .leading) { isDiagnosticsExporting in
@@ -4538,7 +4532,7 @@ private struct ProgramErrorStrip: View {
                                 isDiagnosticsExporting ? "Exporting…" : "Export diagnostics…",
                                 action: onCreateDiagnostics
                             )
-                                .buttonStyle(.plain)
+                                .buttonStyle(.graphicalPress)
                                 .disabled(isDiagnosticsExporting)
                         }
                     }
@@ -4676,7 +4670,7 @@ struct ProgramSessionPrimaryButton: View {
             .animation(RelayMotion.hover, value: isHovered)
             .animation(RelayMotion.hover, value: isFocused)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.graphicalPress)
         .fixedSize()
         .focusable(isEnabled)
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
@@ -4687,7 +4681,7 @@ struct ProgramSessionPrimaryButton: View {
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isEnabled)
         .programButtonCursor(enabled: isEnabled)
         .accessibilityLabel(presentation.title)
-        .help(presentation.help)
+        .graphicalTooltip(presentation.help)
     }
 }
 
@@ -4745,12 +4739,10 @@ struct ProgramWorkspaceActionButton: View {
         .programButtonCursor(enabled: isEnabled)
     }
 
+    /// Kit buttons: destructive actions use the danger button.
     private var palette: SharedActionButtonPalette {
-        SharedActionButtonPalette(
-            foreground: destructive ? ProgramBoardStyle.red : prominence == .primary ? ProgramBoardStyle.neutralText : ProgramBoardStyle.primaryText,
-            fill: destructive ? ProgramBoardStyle.red : prominence == .primary ? ProgramBoardStyle.neutralText : Color.white,
-            stroke: destructive ? ProgramBoardStyle.red : ProgramBoardStyle.neutralText
-        )
+        if destructive { return .settingsDanger }
+        return prominence == .primary ? .settingsPrimary : .settingsSecondary
     }
 }
 
@@ -4786,7 +4778,7 @@ struct ProgramIconButton: View {
             helpText: help,
             palette: SharedActionButtonPalette(
                 foreground: iconColor,
-                fill: Color.white,
+                fill: GraphicalTheme.neutral3,
                 stroke: SettingsSurfaceColor.focusRing
             ),
             action: action,

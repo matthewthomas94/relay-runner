@@ -145,7 +145,7 @@ private struct WorkspaceSessionTab: View {
                 .frame(maxHeight: .infinity)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.graphicalPress)
             .contextMenu { Button("Read Out Latest Reply", action: readOut) }
             Button(action: close) {
                 Image(systemName: "xmark")
@@ -155,10 +155,10 @@ private struct WorkspaceSessionTab: View {
                                 in: RoundedRectangle(cornerRadius: 8))
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.graphicalPress)
             .padding(.trailing, 8)
             .onHover { closeHovered = $0 }
-            .help("Stop \(name) session")
+            .graphicalTooltip("Stop \(name) session")
             .accessibilityLabel("Stop \(name) session")
         }
         .foregroundStyle(ProgramBoardStyle.primaryText)

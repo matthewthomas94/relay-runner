@@ -20,9 +20,9 @@ final class WorkspaceDotMatrixTests: XCTestCase {
 
         XCTAssertEqual(ParticleFieldRenderer.Theme.workspace.baseSaturation, 0, accuracy: 0.001)
         XCTAssertEqual(ParticleFieldRenderer.Theme.workspace.fieldFraction, 1, accuracy: 0.001)
-        XCTAssertEqual(ParticleFieldRenderer.Theme.workspace.baseHighlight.r, 10.0 / 255.0, accuracy: 0.001)
-        XCTAssertEqual(ParticleFieldRenderer.Theme.workspace.baseHighlight.g, 15.0 / 255.0, accuracy: 0.001)
-        XCTAssertEqual(ParticleFieldRenderer.Theme.workspace.baseHighlight.b, 25.0 / 255.0, accuracy: 0.001)
+        XCTAssertEqual(ParticleFieldRenderer.Theme.workspace.baseHighlight.r, 0x1c / 255.0, accuracy: 0.001)
+        XCTAssertEqual(ParticleFieldRenderer.Theme.workspace.baseHighlight.g, 0x20 / 255.0, accuracy: 0.001)
+        XCTAssertEqual(ParticleFieldRenderer.Theme.workspace.baseHighlight.b, 0x26 / 255.0, accuracy: 0.001)
     }
 
     func testFullBoundsCoverageDoesNotChangeDefaultSpeechFieldSizing() {
@@ -85,12 +85,12 @@ final class WorkspaceDotMatrixTests: XCTestCase {
         XCTAssertEqual(host.shimmerLayers.count, DotColumnSnakeAnimation.phases)
         XCTAssertTrue(host.isAnimationRunning)
         for layer in host.shimmerLayers {
-            // Every snake position draws dots, in the design navy.
+            // Every snake position draws dots, in the kit neutral-2.
             XCTAssertFalse(try XCTUnwrap(layer.path).isEmpty)
             let rgb = try XCTUnwrap(layer.fillColor?.components)
-            XCTAssertEqual(rgb[0], 10.0 / 255.0, accuracy: 0.001)
-            XCTAssertEqual(rgb[1], 15.0 / 255.0, accuracy: 0.001)
-            XCTAssertEqual(rgb[2], 25.0 / 255.0, accuracy: 0.001)
+            XCTAssertEqual(rgb[0], 0x1c / 255.0, accuracy: 0.001)
+            XCTAssertEqual(rgb[1], 0x20 / 255.0, accuracy: 0.001)
+            XCTAssertEqual(rgb[2], 0x26 / 255.0, accuracy: 0.001)
 
             // The skeleton's snake, with its head lifted to the full colour.
             let snake = try XCTUnwrap(layer.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation)

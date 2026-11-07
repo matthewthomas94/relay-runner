@@ -11,7 +11,7 @@ final class ParticleFieldRenderer {
         case idle   // white orb
         case stt    // yellow/amber
         case tts    // blue/purple
-        case workspace  // modal backdrop navy
+        case workspace  // modal backdrop, Graphical neutral-2
 
         var baseHue: CGFloat {
             switch self {
@@ -46,7 +46,7 @@ final class ParticleFieldRenderer {
             case .idle: return (1, 1, 1)
             case .stt: return (1.000, 0.965, 0.900)
             case .tts: return (0.992, 0.918, 0.859)
-            case .workspace: return (10.0 / 255.0, 15.0 / 255.0, 25.0 / 255.0)
+            case .workspace: return (0x1c / 255.0, 0x20 / 255.0, 0x26 / 255.0)
             }
         }
     }

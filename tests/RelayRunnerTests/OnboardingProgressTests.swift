@@ -139,10 +139,11 @@ final class OnboardingProgressTests: XCTestCase {
         host.rootView = OnboardingRuntimeProgressView(progress: 0.98, reduceMotion: false)
         host.layoutSubtreeIfNeeded()
 
+        // The determinate bar is the Graphical progress style, drawn without an
+        // NSProgressIndicator; the ongoing activity keeps the system spinner.
         let indicators = descendants(of: NSProgressIndicator.self, in: host)
-        XCTAssertTrue(indicators.contains { !$0.isIndeterminate })
+        XCTAssertFalse(indicators.contains { !$0.isIndeterminate })
         XCTAssertTrue(indicators.contains { $0.isIndeterminate })
-        XCTAssertFalse(indicators.contains { !$0.isIndeterminate && $0.doubleValue >= $0.maxValue })
     }
 
     @MainActor
@@ -193,8 +194,8 @@ final class OnboardingProgressTests: XCTestCase {
         host.frame = CGRect(x: 0, y: 0, width: 420, height: 120)
         host.layoutSubtreeIfNeeded()
 
+        // Reduce Motion drops the spinner; the Graphical bar draws no NSProgressIndicator.
         let indicators = descendants(of: NSProgressIndicator.self, in: host)
-        XCTAssertTrue(indicators.contains { !$0.isIndeterminate })
         XCTAssertFalse(indicators.contains { $0.isIndeterminate })
     }
 

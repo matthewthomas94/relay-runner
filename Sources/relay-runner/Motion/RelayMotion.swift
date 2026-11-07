@@ -16,13 +16,22 @@ import SwiftUI
 enum RelayMotion {
     // MARK: Timing
 
-    static let durationScale: Double = 0.75
-    static let enterDuration: TimeInterval = 0.34 * durationScale
-    static let exitDuration: TimeInterval = 0.2 * durationScale
-    static let changeDuration: TimeInterval = 0.3 * durationScale
-    static let hoverDuration: TimeInterval = 0.15 * durationScale
+    // Graphical "RR" motion: a 0.2 s spring (bounce 0.2) for controls and
+    // popups, a 0.36 s spring (bounce 0.3) for large surfaces, 160 ms for
+    // hover and exits, and the kit's (0.16, 1, 0.3, 1) easing wherever a
+    // curve is needed.
+    static let durationScale: Double = 1
+    static let enterDuration: TimeInterval = 0.2
+    static let largeEnterDuration: TimeInterval = 0.36
+    static let exitDuration: TimeInterval = 0.16
+    static let changeDuration: TimeInterval = 0.2
+    static let hoverDuration: TimeInterval = 0.16
+    static let springBounce: Double = 0.2
+    static let largeSpringBounce: Double = 0.3
+    /// How far a pressed button sinks.
+    static let pressDistance: CGFloat = 1
     /// The empty beat between an exit and the entrance that replaces it.
-    static let replacementGap: TimeInterval = 0.1 * durationScale
+    static let replacementGap: TimeInterval = 0.075
     /// How long a replacement waits: the outgoing exit plus a short rest.
     static let replacementDelay: TimeInterval = exitDuration + replacementGap
 
@@ -68,23 +77,25 @@ enum RelayMotion {
         }
     }
 
-    /// Decelerates into place (ease-out quint).
-    static let enterCurve = Curve(x1: 0.22, y1: 1, x2: 0.36, y2: 1)
+    /// Decelerates into place: the kit's easing.
+    static let enterCurve = Curve(x1: 0.16, y1: 1, x2: 0.3, y2: 1)
     /// Accelerates away.
     static let exitCurve = Curve(x1: 0.4, y1: 0, x2: 1, y2: 1)
-    /// Settles an in-place change such as a resize, recolour, or state swap
-    /// (ease-out quart).
-    static let changeCurve = Curve(x1: 0.25, y1: 1, x2: 0.5, y2: 1)
+    /// Settles an in-place change such as a resize, recolour, or state swap:
+    /// the kit's easing.
+    static let changeCurve = Curve(x1: 0.16, y1: 1, x2: 0.3, y2: 1)
     /// Eases into and out of each step of a looping animation, so it never
     /// starts or stops abruptly.
     static let loopCurve = Curve(x1: 0.42, y1: 0, x2: 0.58, y2: 1)
 
-    static var enter: Animation { enterCurve.animation(duration: enterDuration) }
+    static var enter: Animation { .spring(duration: enterDuration, bounce: springBounce) }
+    /// The entrance for modals, panels, and whole pages.
+    static var largeEnter: Animation { .spring(duration: largeEnterDuration, bounce: largeSpringBounce) }
     /// The entrance for content that replaces something leaving.
     static var replacingEnter: Animation { enter.delay(replacementDelay) }
     static var exit: Animation { exitCurve.animation(duration: exitDuration) }
-    static var change: Animation { changeCurve.animation(duration: changeDuration) }
-    static var hover: Animation { .easeOut(duration: hoverDuration) }
+    static var change: Animation { .spring(duration: changeDuration, bounce: springBounce) }
+    static var hover: Animation { changeCurve.animation(duration: hoverDuration) }
 
     static func change(reduceMotion: Bool) -> Animation {
         reduceMotion ? .easeInOut(duration: 0.18 * durationScale) : change
@@ -148,7 +159,8 @@ extension AnyTransition {
 
     static func relay(_ style: RelayMotion.Style) -> AnyTransition {
         .asymmetric(
-            insertion: AnyTransition(RelayTransition(style: style)).animation(RelayMotion.enter),
+            insertion: AnyTransition(RelayTransition(style: style))
+                .animation(style == .surface ? RelayMotion.largeEnter : RelayMotion.enter),
             removal: AnyTransition(RelayTransition(style: style)).animation(RelayMotion.exit)
         )
     }
@@ -552,4 +564,20 @@ enum RelayWindowMotion {
         layer.add(scale, forKey: "relayWindowScale")
         layer.add(blur, forKey: "relayWindowBlur")
     }
+}
+
+/// The kit's press: the label sinks a point while held, with no other
+/// chrome, like `.plain`. Reduce Motion keeps it still.
+struct GraphicalPressButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .offset(y: configuration.isPressed && !reduceMotion ? RelayMotion.pressDistance : 0)
+            .animation(reduceMotion ? nil : RelayMotion.hover, value: configuration.isPressed)
+    }
+}
+
+extension ButtonStyle where Self == GraphicalPressButtonStyle {
+    static var graphicalPress: GraphicalPressButtonStyle { GraphicalPressButtonStyle() }
 }

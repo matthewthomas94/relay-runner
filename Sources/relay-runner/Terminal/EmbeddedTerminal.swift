@@ -3933,17 +3933,17 @@ struct EmbeddedTerminalTab: View {
                     }
                     .padding(14)
                     .background(Color.orange.opacity(0.12))
-                    .confirmationDialog("Skip the uncertain message?", isPresented: Binding(
-                        get: { confirmedInboxBlocker != nil },
-                        set: { if !$0 { confirmedInboxBlocker = nil } }
-                    )) {
-                        Button("Skip message", role: .destructive) {
+                    .graphicalAlert(
+                        "Skip the uncertain message?",
+                        isPresented: Binding(
+                            get: { confirmedInboxBlocker != nil },
+                            set: { if !$0 { confirmedInboxBlocker = nil } }
+                        ),
+                        message: "This skips only message \(confirmedInboxBlocker?.command_seq ?? blocker.command_seq). It does not undo any work already performed. Later messages and worker runs are preserved; the uncertain message is not replayed and the session is not restarted.",
+                        actions: [GraphicalDialogAction("Skip message", role: .destructive) { [confirmedInboxBlocker] in
                             if let expected = confirmedInboxBlocker { session.skipUncertainMessage(expected) }
-                            confirmedInboxBlocker = nil
-                        }
-                    } message: {
-                        Text("This skips only message \(confirmedInboxBlocker?.command_seq ?? blocker.command_seq). It does not undo any work already performed. Later messages and worker runs are preserved; the uncertain message is not replayed and the session is not restarted.")
-                    }
+                        }]
+                    )
                     .transition(.relayElement)
                 }
                 if session.deliveryBlocked {
@@ -3957,11 +3957,12 @@ struct EmbeddedTerminalTab: View {
                     }
                     .padding(14)
                     .background(Color.orange.opacity(0.12))
-                    .confirmationDialog("Restart the blocked session?", isPresented: $confirmsRecovery) {
-                        Button("Restart session", role: .destructive, action: recoverDelivery)
-                    } message: {
-                        Text("This ends the foreground agent. Worker runs and queued messages are preserved. The uncertain message will not be automatically repeated.")
-                    }
+                    .graphicalAlert(
+                        "Restart the blocked session?",
+                        isPresented: $confirmsRecovery,
+                        message: "This ends the foreground agent. Worker runs and queued messages are preserved. The uncertain message will not be automatically repeated.",
+                        actions: [GraphicalDialogAction("Restart session", role: .destructive, action: recoverDelivery)]
+                    )
                     .transition(.relayElement)
                 }
                 if case .failed(let message) = session.phase {
@@ -3979,7 +3980,7 @@ struct EmbeddedTerminalTab: View {
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: visibleBanners)
             if visibleBanners.contains(true) {
-                Divider().overlay(BoardDarkSurfaceStyle.border)
+                Divider().overlay(SettingsSurfaceColor.divider)
             }
 
             ZStack {
@@ -4113,7 +4114,7 @@ struct SessionReplyBadge: View {
             .padding(.horizontal, 5)
             .frame(minWidth: 16, minHeight: 16)
             .background(Capsule().fill(Color.accentColor))
-            .help("\(count) unheard \(count == 1 ? "update" : "updates")")
+            .graphicalTooltip("\(count) unheard \(count == 1 ? "update" : "updates")")
             .accessibilityLabel("\(count) unheard \(count == 1 ? "update" : "updates")")
     }
 }

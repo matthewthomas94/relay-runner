@@ -88,7 +88,8 @@ struct GeneralSettingsTab: View {
                     ) {
                         HStack(spacing: 8) {
                             TextField(Self.workspaceFolderLabel, text: $config.working_directory, prompt: Text(""))
-                                .appPlaceholder("~ (home)", when: config.working_directory.isEmpty, inset: 6)
+                                .appPlaceholder("~ (home)", when: config.working_directory.isEmpty)
+                                .graphicalInput()
                             SettingsActionButton(
                                 title: "Browse\u{2026}",
                                 systemImage: "folder"
@@ -160,12 +161,12 @@ struct GeneralSettingsTab: View {
                         }
                     }
                 }
-                .alert("Overwrite existing skills?", isPresented: $showOverwriteAlert) {
-                    Button("Overwrite", role: .destructive) { doInstallSkill() }
-                    Button("Cancel", role: .cancel) { }
-                } message: {
-                    Text("This will replace the installed Relay Runner command/skill files, including any you edited, with the default versions.")
-                }
+                .graphicalAlert(
+                    "Overwrite existing skills?",
+                    isPresented: $showOverwriteAlert,
+                    message: "This will replace the installed Relay Runner command/skill files, including any you edited, with the default versions.",
+                    actions: [GraphicalDialogAction("Overwrite", role: .destructive) { doInstallSkill() }]
+                )
             }
         }
         .animation(
@@ -198,7 +199,7 @@ struct GeneralSettingsTab: View {
             // Reflects only confirmed state; pending changes disable the switch.
             Toggle(KeepAwakeState.label, isOn: Binding(get: { state.isOn }, set: { _ in keepAwake.toggle() }))
                 .disabled(state.isPending)
-                .help(state.status)
+                .graphicalTooltip(state.status)
         }
     }
 
@@ -392,15 +393,17 @@ private struct RegisteredProjectsSettingsView: View {
             }
         }
         .onAppear(perform: reload)
-        .alert(
+        .graphicalAlert(
             "Remove registered project?",
             isPresented: Binding(
                 get: { projectPendingRemoval != nil },
                 set: { if !$0 { projectPendingRemoval = nil } }
             ),
-            presenting: projectPendingRemoval
-        ) { project in
-            Button("Remove", role: .destructive) {
+            message: projectPendingRemoval.map {
+                "Relay Runner will remove its registry entry, access grant, and derived cache for \($0.displayName). The repository is left untouched."
+            },
+            actions: projectPendingRemoval.map { project in [
+            GraphicalDialogAction("Remove", role: .destructive) {
                 animated {
                     do {
                         try appState.removeRegisteredProject(project.projectID)
@@ -411,11 +414,10 @@ private struct RegisteredProjectsSettingsView: View {
                     }
                 }
                 projectPendingRemoval = nil
-            }
-            Button("Cancel", role: .cancel) { projectPendingRemoval = nil }
-        } message: { project in
-            Text("Relay Runner will remove its registry entry, access grant, and derived cache for \(project.displayName). The repository is left untouched.")
-        }
+            },
+            GraphicalDialogAction("Cancel", role: .cancel) { projectPendingRemoval = nil },
+            ] } ?? []
+        )
     }
 
     private func projectRow(_ project: RegisteredProjectV2) -> some View {

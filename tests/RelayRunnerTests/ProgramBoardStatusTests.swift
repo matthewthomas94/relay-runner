@@ -9,7 +9,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(ProgramBoardContentPresentation.settingUpTitle, "Setting up your project...")
         let updateCheckDefinition = AppTypography.definition(for: .sectionHeading)
         XCTAssertEqual(updateCheckDefinition.face, .baiJamjureeSemibold)
-        XCTAssertEqual(updateCheckDefinition.size, 13)
+        XCTAssertEqual(updateCheckDefinition.size, GraphicalTheme.textS)
         XCTAssertEqual(updateCheckDefinition.fallbackWeight, .semibold)
     }
 
@@ -31,7 +31,7 @@ final class ProgramBoardStatusTests: XCTestCase {
             ProgramBoardContentPresentation.board.workspaceTopPadding,
             BoardSurfaceLayout.columnTopPadding
         )
-        XCTAssertEqual(BoardSurfaceLayout.columnTopPadding, 47)
+        XCTAssertEqual(BoardSurfaceLayout.columnTopPadding, 59)
     }
 
     func testProgramBoardUsesSolidDarkFigmaSurfaces() {
@@ -51,9 +51,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(BoardSurfaceLayout.horizontalPadding, 8)
         XCTAssertEqual(BoardSurfaceLayout.columnSpacing, 12)
         XCTAssertEqual(BoardSurfaceLayout.navigationTopPadding, 7)
-        XCTAssertEqual(BoardSurfaceLayout.navigationHeight, 24)
+        XCTAssertEqual(BoardSurfaceLayout.navigationHeight, 36)
         XCTAssertEqual(BoardSurfaceLayout.navigationToPanelSpacing, 16)
-        XCTAssertEqual(BoardSurfaceLayout.columnTopPadding, 47)
+        XCTAssertEqual(BoardSurfaceLayout.columnTopPadding, 59)
         XCTAssertEqual(BoardSurfaceLayout.columnHeight, 667)
         XCTAssertEqual(ProgramBoardBackdropStyle.bottomPadding, 22)
         XCTAssertEqual(ProgramBoardBackdropStyle.bottomCornerRadius, GraphicalTheme.radiusL)
@@ -99,7 +99,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(ProgramBoardLayout.headerLeadingInset, 24)
         XCTAssertEqual(ProgramBoardLayout.projectsHeaderHeight, ProgramBoardLayout.workHeaderHeight)
         XCTAssertEqual(ProgramBoardLayout.projectActionButtonHeight, SharedActionButtonMetrics.controlHeight)
-        XCTAssertEqual(ProgramBoardLayout.projectActionButtonHeight, 32)
+        XCTAssertEqual(ProgramBoardLayout.projectActionButtonHeight, GraphicalTheme.controlHeight)
         XCTAssertEqual(ProgramBoardLayout.compactControlHeight, 24)
         XCTAssertEqual(
             ProgramBoardLayout.newTicketButtonSize,
@@ -132,11 +132,12 @@ final class ProgramBoardStatusTests: XCTestCase {
     }
 
     func testProgramBoardSessionToolbarMatchesWorkspaceNavigation() {
+        // Kit tabs: triggers sit inside the list's padding.
         XCTAssertEqual(
-            WorkspaceNavigationStyle.controlHeight,
+            WorkspaceNavigationStyle.controlHeight + 2 * WorkspaceNavigationStyle.listPadding,
             BoardSurfaceLayout.navigationHeight
         )
-        XCTAssertEqual(WorkspaceNavigationStyle.horizontalPadding, 8)
+        XCTAssertEqual(WorkspaceNavigationStyle.horizontalPadding, 12)
         XCTAssertEqual(WorkspaceNavigationStyle.verticalPadding, 4)
         XCTAssertEqual(WorkspaceNavigationStyle.cornerRadius, GraphicalTheme.radiusS)
         XCTAssertEqual(WorkspaceNavigationStyle.iconTextSpacing, 6)
@@ -212,7 +213,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         // Every board dropdown, the ticket panel's project picker included,
         // is the Settings dropdown; none is a native menu.
         XCTAssertFalse(contents.contains(".menuStyle(.button)"))
-        XCTAssertTrue(contents.contains(".buttonStyle(.plain)"))
+        XCTAssertTrue(contents.contains(".buttonStyle(.graphicalPress)"))
         XCTAssertFalse(contents.contains(".menuIndicator(.hidden)"))
         XCTAssertTrue(contents.contains("SettingsMenuPicker(\n            \"Project\","))
         XCTAssertFalse(contents.contains("ProgramAddProjectMenuPresenter"))
@@ -280,7 +281,7 @@ final class ProgramBoardStatusTests: XCTestCase {
             contents.range(of: "private struct ProgramStartSessionMenu: View", range: menuStart.upperBound..<contents.endIndex)
         )
         let menu = String(contents[menuStart.lowerBound..<menuEnd.lowerBound])
-        let styleStart = try XCTUnwrap(menu.range(of: "\n        .buttonStyle(.plain)"))
+        let styleStart = try XCTUnwrap(menu.range(of: "\n        .buttonStyle(.graphicalPress)"))
         let label = String(menu[..<styleStart.lowerBound])
         let outerModifiers = String(menu[styleStart.lowerBound...])
 

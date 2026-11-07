@@ -105,9 +105,15 @@ enum TrayIconAsset {
     }
 }
 
+/// The Graphical kit's tabs: a neutral-3 list with 4 points of padding, and
+/// triggers that are neutral-7 at rest, white on hover, and white on a
+/// neutral-1 pill when selected.
 enum WorkspaceNavigationStyle {
-    static let controlHeight: CGFloat = BoardSurfaceLayout.navigationHeight
-    static let horizontalPadding: CGFloat = 8
+    static let listPadding: CGFloat = GraphicalTheme.spaceXXS
+    static let listCornerRadius: CGFloat = GraphicalTheme.radiusM
+    static let listFill = GraphicalTheme.neutral3
+    static let controlHeight: CGFloat = BoardSurfaceLayout.navigationHeight - 2 * listPadding
+    static let horizontalPadding: CGFloat = GraphicalTheme.spaceS
     static let verticalPadding: CGFloat = 4
     static let cornerRadius: CGFloat = GraphicalTheme.radiusS
     static let iconTextSpacing: CGFloat = 6
@@ -117,6 +123,8 @@ enum WorkspaceNavigationStyle {
     static let selectedFillOpacity: Double = 0.08
     static let focusedFillOpacity: Double = 0.12
     static let textColor = GraphicalTheme.neutral10.opacity(activeTextOpacity)
+    static let inactiveTextColor = GraphicalTheme.neutral7
+    static let selectedFill = GraphicalTheme.neutral1
 }
 
 /// The day, date and time at the strip's far end, where the menu bar's
@@ -164,28 +172,33 @@ struct WorkspaceMenuBarStrip: View {
             }
             .accessibilityLabel(hasActiveSession ? "Relay Runner session active" : "Relay Runner session inactive")
 
-            ForEach(workspace.availableTabs) { tab in
-                WorkspaceTabButton(
-                    tab: tab,
-                    selected: workspace.selectedTab == tab,
-                    action: { workspace.select(tab) }
-                )
-                .background {
-                    if workspace.selectedTab == tab {
-                        let shape = RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
-                        // One highlight glides between tabs; Reduce Motion
-                        // gives each tab its own id so it only crossfades.
-                        shape
-                            .fill(BoardDarkSurfaceStyle.cardActiveFill)
-                            .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1))
-                            .matchedGeometryEffect(
-                                id: reduceMotion ? AnyHashable(tab.id) : AnyHashable("selection"),
-                                in: selectionHighlight
-                            )
+            HStack(spacing: GraphicalTheme.spaceXXS) {
+                ForEach(workspace.availableTabs) { tab in
+                    WorkspaceTabButton(
+                        tab: tab,
+                        selected: workspace.selectedTab == tab,
+                        action: { workspace.select(tab) }
+                    )
+                    .background {
+                        if workspace.selectedTab == tab {
+                            // One highlight glides between tabs; Reduce Motion
+                            // gives each tab its own id so it only crossfades.
+                            RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
+                                .fill(WorkspaceNavigationStyle.selectedFill)
+                                .matchedGeometryEffect(
+                                    id: reduceMotion ? AnyHashable(tab.id) : AnyHashable("selection"),
+                                    in: selectionHighlight
+                                )
+                        }
                     }
+                    .transition(.relayElement)
                 }
-                .transition(.relayElement)
             }
+            .padding(WorkspaceNavigationStyle.listPadding)
+            .background(
+                RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.listCornerRadius, style: .continuous)
+                    .fill(WorkspaceNavigationStyle.listFill)
+            )
             if let updater = workspace.updater, let version = updater.availableVersion {
                 WorkspaceNavigationButton(
                     title: "Update available",
@@ -293,16 +306,17 @@ struct WorkspaceNavigationButton: View {
             .animation(RelayMotion.hover, value: isFocused)
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selected)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.graphicalPress)
         .focusable()
         .focusEffectDisabled(WorkspaceNavigationStyle.systemFocusEffectDisabled)
         .focused($isFocused)
         .onHover { isHovered = $0 }
         .accessibilityLabel(accessibilityLabel)
-        .help(help)
+        .graphicalTooltip(help)
     }
 
     private var foregroundColor: Color {
-        WorkspaceNavigationStyle.textColor
+        selected || isHovered || isFocused
+            ? WorkspaceNavigationStyle.textColor : WorkspaceNavigationStyle.inactiveTextColor
     }
 }

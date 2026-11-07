@@ -34,11 +34,14 @@ final class RelayMotionTests: XCTestCase {
         }
     }
 
-    func testSharedDurationsAreTwentyFivePercentShorter() {
-        XCTAssertEqual(RelayMotion.enterDuration, 0.255, accuracy: 0.0001)
-        XCTAssertEqual(RelayMotion.exitDuration, 0.15, accuracy: 0.0001)
-        XCTAssertEqual(RelayMotion.changeDuration, 0.225, accuracy: 0.0001)
-        XCTAssertEqual(RelayMotion.hoverDuration, 0.1125, accuracy: 0.0001)
+    func testSharedDurationsFollowTheGraphicalKit() {
+        XCTAssertEqual(RelayMotion.enterDuration, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(RelayMotion.largeEnterDuration, 0.36, accuracy: 0.0001)
+        XCTAssertEqual(RelayMotion.exitDuration, 0.16, accuracy: 0.0001)
+        XCTAssertEqual(RelayMotion.changeDuration, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(RelayMotion.hoverDuration, 0.16, accuracy: 0.0001)
+        XCTAssertEqual(RelayMotion.enterCurve, RelayMotion.Curve(x1: 0.16, y1: 1, x2: 0.3, y2: 1))
+        XCTAssertEqual(RelayMotion.pressDistance, 1)
         XCTAssertEqual(RelayMotion.replacementGap, 0.075, accuracy: 0.0001)
     }
 

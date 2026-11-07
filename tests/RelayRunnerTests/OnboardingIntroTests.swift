@@ -2589,7 +2589,7 @@ final class OnboardingIntroTests: XCTestCase {
             RelayMotion.exitDuration + RelayMotion.replacementGap + RelayMotion.enterDuration,
             accuracy: 0.0001
         )
-        XCTAssertEqual(OnboardingFlowMotion.controlsRevealDuration, 0.27, accuracy: 0.001)
+        XCTAssertEqual(OnboardingFlowMotion.controlsRevealDuration, 0.36 * RelayMotion.durationScale, accuracy: 0.001)
         XCTAssertGreaterThan(
             OnboardingFlowMotion.completedStepHold,
             OnboardingFlowMotion.surfaceTransitionDuration

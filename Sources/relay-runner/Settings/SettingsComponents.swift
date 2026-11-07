@@ -194,7 +194,7 @@ struct SettingsMenuPicker<Value: Hashable>: View {
             .foregroundStyle(isEnabled ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.disabledText)
             .padding(.horizontal, GraphicalTheme.spaceS)
             .frame(maxWidth: .infinity)
-            .frame(height: 34)
+            .frame(height: GraphicalTheme.controlHeight)
             // Kit select: a black control on the panel, neutral-3 when disabled,
             // with the accent focus ring while open or focused.
             .background(
@@ -204,7 +204,7 @@ struct SettingsMenuPicker<Value: Hashable>: View {
                         RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous)
                             .strokeBorder(
                                 SettingsSurfaceColor.focusRing.opacity(isEnabled && (isFocused || isPresented) ? 1 : 0),
-                                lineWidth: 2
+                                lineWidth: GraphicalTheme.focusRingWidth
                             )
                     )
             )
@@ -212,7 +212,7 @@ struct SettingsMenuPicker<Value: Hashable>: View {
                 RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.graphicalPress)
         .focusable(isEnabled)
         .focused($isFocused)
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
@@ -262,14 +262,11 @@ struct SettingsSegmentedPicker<Value: Hashable>: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: SharedActionButtonMetrics.controlHeight)
-        // One joined control in the slider's track colours.
-        .background(ProgramBoardInteractiveBackground(
-            shape: .custom(AnyShape(RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius,
-                                                     style: .continuous))),
-            presentation: presentation,
-            disabled: false,
-            usesCardStyle: true
-        ))
+        // The kit's tab list: neutral-3, radius m.
+        .background(
+            RoundedRectangle(cornerRadius: GraphicalTheme.radiusM, style: .continuous)
+                .fill(WorkspaceNavigationStyle.listFill)
+        )
         .onHover { isHovered = $0 }
         .animation(presentation.animation, value: presentation)
         .accessibilityElement(children: .contain)
@@ -297,10 +294,11 @@ private struct SettingsSegmentButton: View {
 
     var body: some View {
         let shape = RoundedRectangle(
-            cornerRadius: SharedActionButtonMetrics.cornerRadius,
+            cornerRadius: GraphicalTheme.radiusS,
             style: .continuous
         )
-        let selectionInset: CGFloat = 2
+        // Kit tab triggers sit inside the list's 4 points of padding.
+        let selectionInset = WorkspaceNavigationStyle.listPadding
 
         Button(action: action) {
             Text(title)
@@ -315,12 +313,12 @@ private struct SettingsSegmentButton: View {
                     // shimmers with the Settings sidebar's dots.
                     if isSelected {
                         RoundedRectangle(
-                            cornerRadius: SharedActionButtonMetrics.cornerRadius - selectionInset,
+                            cornerRadius: GraphicalTheme.radiusS,
                             style: .continuous
                         )
                         .fill(GraphicalTheme.neutral1.opacity(GraphicalTheme.fillThroughDotsOpacity))
                         .background(FluxDotsBackground(
-                            cornerRadius: SharedActionButtonMetrics.cornerRadius - selectionInset,
+                            cornerRadius: GraphicalTheme.radiusS,
                             style: .standard,
                             isVisible: isHovered
                         ))
@@ -329,7 +327,7 @@ private struct SettingsSegmentButton: View {
                 }
                 .contentShape(shape)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.graphicalPress)
         .focusable(true)
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
         .focused($isFocused)
@@ -348,7 +346,7 @@ enum SettingsLayout {
     static let labelControlSpacing: CGFloat = 20
     static let controlMaxWidth: CGFloat = 280
     static let detailMaxWidth: CGFloat = .infinity
-    static let sidebarRowHeight: CGFloat = 32
+    static let sidebarRowHeight: CGFloat = GraphicalTheme.controlHeight
     static let sidebarCornerRadius: CGFloat = GraphicalTheme.radiusXS
     static let systemFocusEffectDisabled = true
 }
@@ -357,10 +355,12 @@ enum SharedActionButtonProminence {
     case primary
     case secondary
     case icon
+    /// The kit's danger button: error red with a black label.
+    case danger
 }
 
 enum SharedActionButtonMetrics {
-    static let controlHeight: CGFloat = 32
+    static let controlHeight: CGFloat = GraphicalTheme.controlHeight
     static let cornerRadius: CGFloat = GraphicalTheme.radiusS
     static let horizontalPadding: CGFloat = GraphicalTheme.spaceM
     static let iconSpacing: CGFloat = 6
@@ -377,6 +377,13 @@ extension SharedActionButtonPalette {
     static let settingsSecondary = SharedActionButtonPalette(
         foreground: SettingsSurfaceColor.primaryText,
         fill: GraphicalTheme.neutral3,
+        stroke: SettingsSurfaceColor.focusRing
+    )
+
+    /// Kit danger button: error red, black label.
+    static let settingsDanger = SharedActionButtonPalette(
+        foreground: GraphicalTheme.neutral1,
+        fill: GraphicalTheme.error,
         stroke: SettingsSurfaceColor.focusRing
     )
 
@@ -407,7 +414,7 @@ struct SharedActionButtonSurface: View {
             .overlay(
                 shape.stroke(
                     palette.stroke.opacity(presentation.sharedStrokeOpacity(for: prominence)),
-                    lineWidth: 2
+                    lineWidth: GraphicalTheme.focusRingWidth
                 )
             )
     }
@@ -470,7 +477,7 @@ struct SharedActionButtonChrome<Label: View>: View {
                 )
                 .contentShape(shape)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.graphicalPress)
         .disabled(!isEnabled)
         .focusable(isEnabled)
         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
@@ -478,7 +485,7 @@ struct SharedActionButtonChrome<Label: View>: View {
         .onHover { isHovered = $0 }
         .animation(presentation.animationDuration > 0 ? RelayMotion.hover : nil, value: presentation)
         .accessibilityLabel(accessibilityLabel)
-        .help(helpText)
+        .graphicalTooltip(helpText)
     }
 }
 
@@ -487,6 +494,7 @@ struct SettingsActionButton: View {
         case primary
         case secondary
         case icon
+        case danger
     }
 
     let title: String
@@ -518,7 +526,7 @@ struct SettingsActionButton: View {
                 if prominence != .icon {
                     RelaySwap(title, style: .text, alignment: .leading) { title in
                         Text(title)
-                            .font(AppTypography.font(prominence == .primary ? .primaryButton : .button))
+                            .font(AppTypography.font(prominence == .secondary ? .button : .primaryButton))
                     }
                 }
             }
@@ -528,7 +536,11 @@ struct SettingsActionButton: View {
     }
 
     private var palette: SharedActionButtonPalette {
-        prominence == .primary ? .settingsPrimary : .settingsSecondary
+        switch prominence {
+        case .primary: return .settingsPrimary
+        case .danger: return .settingsDanger
+        case .secondary, .icon: return .settingsSecondary
+        }
     }
 
     private var sharedProminence: SharedActionButtonProminence {
@@ -539,6 +551,8 @@ struct SettingsActionButton: View {
             return .secondary
         case .icon:
             return .icon
+        case .danger:
+            return .danger
         }
     }
 }
@@ -657,7 +671,7 @@ struct SettingsActionPresentation: Equatable {
 extension SettingsActionPresentation {
     func sharedFillOpacity(for prominence: SharedActionButtonProminence) -> Double {
         switch prominence {
-        case .primary:
+        case .primary, .danger:
             return fillOpacity
         case .secondary, .icon:
             return neutralFillOpacity
@@ -666,7 +680,7 @@ extension SettingsActionPresentation {
 
     func sharedStrokeOpacity(for prominence: SharedActionButtonProminence) -> Double {
         switch prominence {
-        case .primary:
+        case .primary, .danger:
             return strokeOpacity
         case .secondary, .icon:
             return neutralStrokeOpacity
@@ -697,6 +711,6 @@ enum SettingsSurfaceColor {
     static let rowFillFocused = GraphicalTheme.neutral4
     /// The kit separator: a one-pixel neutral-4 line.
     static let divider = GraphicalTheme.neutral4
-    /// The kit focus ring, color-1.
-    static let focusRing = GraphicalTheme.accent
+    /// The kit focus ring: neutral-10 at 20%.
+    static let focusRing = GraphicalTheme.focusRing
 }

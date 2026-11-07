@@ -523,14 +523,9 @@ struct OnboardingView: View {
                 }
             }
         }
-        .padding(12)
+        .padding(GraphicalTheme.spaceS)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.secondary.opacity(0.25))
-        )
+        .background(GraphicalTheme.neutral3, in: RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous))
     }
 
     private var modelPicker: some View {
@@ -544,12 +539,11 @@ struct OnboardingView: View {
                 Text("Model")
                     .font(AppTypography.font(.cardHeading))
                 Spacer()
-                Picker("Model", selection: $selectedModel) {
-                    ForEach(GeneralConfig.modelOptions(for: selectedAgentProvider)) { option in
-                        Text(option.label).tag(option.value)
-                    }
-                }
-                .labelsHidden()
+                SettingsMenuPicker(
+                    "Model",
+                    selection: $selectedModel,
+                    options: GeneralConfig.modelOptions(for: selectedAgentProvider).map { ($0.label, $0.value) }
+                )
                 .frame(width: 180)
             }
             if let note = accessNote {
@@ -562,14 +556,9 @@ struct OnboardingView: View {
                 .transition(.relayText)
             }
         }
-        .padding(12)
+        .padding(GraphicalTheme.spaceS)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.secondary.opacity(0.25))
-        )
+        .background(GraphicalTheme.neutral3, in: RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous))
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: accessNote)
     }
 
@@ -578,22 +567,17 @@ struct OnboardingView: View {
             Text("Reasoning effort")
                 .font(AppTypography.font(.cardHeading))
             Spacer()
-            Picker("Reasoning effort", selection: $selectedCodexReasoningEffort) {
-                ForEach(GeneralConfig.reasoningEffortOptions(for: selectedAgentProvider, model: selectedModel)) { option in
-                    Text(option.label).tag(option.value)
-                }
-            }
-            .labelsHidden()
+            SettingsMenuPicker(
+                "Reasoning effort",
+                selection: $selectedCodexReasoningEffort,
+                options: GeneralConfig.reasoningEffortOptions(for: selectedAgentProvider, model: selectedModel)
+                    .map { ($0.label, $0.value) }
+            )
             .frame(width: 180)
         }
-        .padding(12)
+        .padding(GraphicalTheme.spaceS)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.secondary.opacity(0.25))
-        )
+        .background(GraphicalTheme.neutral3, in: RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous))
     }
 
     private func agentChoiceRow(provider: GeneralConfig.AgentProvider,
@@ -631,7 +615,7 @@ struct OnboardingView: View {
                             : Color.secondary.opacity(0.25))
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.graphicalPress)
     }
 
     private func selectAgentProvider(_ provider: GeneralConfig.AgentProvider) {
@@ -696,14 +680,9 @@ struct OnboardingView: View {
                 }
             }
         }
-        .padding(12)
+        .padding(GraphicalTheme.spaceS)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.secondary.opacity(0.25))
-        )
+        .background(GraphicalTheme.neutral3, in: RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous))
         .accessibilityLabel(plan.accessibilityLabel)
         .accessibilityHint(plan.instructions)
     }
@@ -795,14 +774,9 @@ struct OnboardingView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(12)
+        .padding(GraphicalTheme.spaceS)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.secondary.opacity(0.25))
-        )
+        .background(GraphicalTheme.neutral3, in: RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous))
     }
 
     private func parentPermissionStepTitle(for kind: PermissionKind) -> String {
@@ -912,7 +886,7 @@ struct OnboardingView: View {
                 ZStack(alignment: .leading) {
                     if let progress {
                         ProgressView(value: progress, total: 1.0)
-                            .progressViewStyle(.linear)
+                            .progressViewStyle(.graphical)
                             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: progress)
                             .transition(.relayReplacing(.element))
                     } else {
@@ -1228,14 +1202,9 @@ struct OnboardingView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
+        .padding(GraphicalTheme.spaceS)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.secondary.opacity(0.25))
-        )
+        .background(GraphicalTheme.neutral3, in: RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous))
     }
 
     // MARK: - Settings presentation
