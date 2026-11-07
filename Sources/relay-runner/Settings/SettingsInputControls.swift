@@ -46,11 +46,12 @@ struct SettingsMenuOptions<Value: Hashable>: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .foregroundStyle(SettingsSurfaceColor.primaryText)
-                            .padding(.horizontal, 10)
+                            .padding(.horizontal, GraphicalTheme.spaceXS)
                             .frame(height: rowHeight)
+                            // Kit option: radius xs, neutral-3 when highlighted.
                             .background(
-                                focusedIndex == index ? BoardDarkSurfaceStyle.cardActiveFill : .clear,
-                                in: RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius)
+                                focusedIndex == index ? GraphicalTheme.neutral3 : .clear,
+                                in: RoundedRectangle(cornerRadius: GraphicalTheme.radiusXS)
                             )
                             .contentShape(Rectangle())
                         }
@@ -64,11 +65,12 @@ struct SettingsMenuOptions<Value: Hashable>: View {
                         .id(index)
                     }
                 }
-                .padding(6)
+                .padding(GraphicalTheme.spaceXXS)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: min(284, CGFloat(options.count) * (rowHeight + 2) + 10))
-            .background(BoardDarkSurfaceBackground(cornerRadius: 12))
+            .frame(height: min(284, CGFloat(options.count) * (rowHeight + 2) + 6))
+            // Kit popover: neutral-2, radius s.
+            .background(BoardDarkSurfaceBackground(cornerRadius: GraphicalTheme.radiusS))
             .onAppear { focusedIndex = options.firstIndex { $0.value == selection } ?? options.indices.first }
             .onChange(of: focusedIndex) { _, index in
                 if let index { proxy.scrollTo(index) }
@@ -117,14 +119,17 @@ private struct SettingsSwitch: View {
     @State private var isHovered = false
     @FocusState private var isFocused: Bool
 
-    /// On matches the segmented picker's selected segment.
+    /// Kit switch: neutral-4 track, accent when on, neutral-3 when disabled.
+    /// Slightly translucent so the hover dots behind it still read.
     private var trackFill: Color {
-        if configuration.isOn { return SettingsSlider.fillColor(contrast: contrast, isEnabled: isEnabled) }
-        return isHovered || isFocused ? SettingsSurfaceColor.rowFillHovered : SettingsSurfaceColor.rowFill
+        guard isEnabled else { return GraphicalTheme.neutral3 }
+        if configuration.isOn { return GraphicalTheme.accent.opacity(GraphicalTheme.fillThroughDotsOpacity) }
+        return GraphicalTheme.neutral4.opacity(GraphicalTheme.fillThroughDotsOpacity)
     }
 
+    /// Kit thumb: black, neutral-6 when disabled.
     private var knobFill: Color {
-        configuration.isOn ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.mutedText
+        isEnabled ? GraphicalTheme.neutral1 : GraphicalTheme.neutral6
     }
 
     var body: some View {
@@ -139,7 +144,7 @@ private struct SettingsSwitch: View {
                     ))
                     .overlay {
                         Capsule().strokeBorder(
-                            SettingsSurfaceColor.focusRing.opacity(isFocused ? 0.3 : 0.12), lineWidth: 1)
+                            SettingsSurfaceColor.focusRing.opacity(isFocused ? 1 : 0), lineWidth: 2)
                     }
                     .overlay(alignment: .leading) {
                         Circle()
@@ -198,9 +203,9 @@ struct SettingsStepper: View {
             .font(AppTypography.font(.field))
             .monospacedDigit()
             .foregroundStyle(isEnabled ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.disabledText)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, GraphicalTheme.spaceS)
             .frame(width: 112, height: 34)
-            .background(BoardDarkSurfaceBackground(cornerRadius: SettingsLayout.sidebarCornerRadius,
+            .background(BoardDarkSurfaceBackground(cornerRadius: GraphicalTheme.radiusS,
                                                    fill: BoardDarkSurfaceStyle.contentFill))
             SettingsActionButton(title: "Increase \(title)", systemImage: "plus", prominence: .icon,
                                  isEnabled: isEnabled && value < range.upperBound) {
@@ -228,11 +233,11 @@ struct SettingsSlider: View {
     /// Keeps the thumb clear of the rounded ends.
     static let thumbInset: CGFloat = 8
 
-    /// The value fill, also used for the segmented picker's selection.
+    /// The value fill: the kit's accent indicator, neutral-5 when disabled,
+    /// translucent so the hover dots behind it still read.
     static func fillColor(contrast: ColorSchemeContrast, isEnabled: Bool = true) -> Color {
-        contrast == .increased
-            ? Color.white.opacity(isEnabled ? 0.22 : 0.04)
-            : ProgramBoardStyle.mutedText.opacity(isEnabled ? 0.06 : 0.02)
+        let opacity = contrast == .increased ? 1 : GraphicalTheme.fillThroughDotsOpacity
+        return (isEnabled ? GraphicalTheme.accent : GraphicalTheme.neutral5).opacity(opacity)
     }
 
     init(value: Binding<Double>, in range: ClosedRange<Double>, step: Double, label: String) {

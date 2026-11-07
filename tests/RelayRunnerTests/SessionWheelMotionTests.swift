@@ -295,7 +295,8 @@ final class SessionWheelMotionTests: XCTestCase {
             for point in [(264, 264), (285, 285), (264, 88), (440, 264)] {
                 let color = try XCTUnwrap(bitmap.colorAt(x: point.0, y: point.1)?.usingColorSpace(.deviceRGB))
                 let expected = try XCTUnwrap(reference?.colorAt(x: point.0, y: point.1)?.usingColorSpace(.deviceRGB))
-                XCTAssertEqual(color.redComponent, expected.redComponent, accuracy: 0.01)
+                // The kit's lighter neutral-3 tiles leave a faint blur halo (about 4/255) on the disc mid-swap.
+                XCTAssertEqual(color.redComponent, expected.redComponent, accuracy: 0.02)
                 XCTAssertEqual(color.alphaComponent, expected.alphaComponent, accuracy: 0.01)
             }
             if milliseconds == legMilliseconds {

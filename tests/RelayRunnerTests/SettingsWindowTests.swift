@@ -50,7 +50,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertFalse(SettingsContentStyle.workspace.usesStandaloneChrome)
         XCTAssertFalse(SettingsContentStyle.window.showsEmbeddedHairline)
         XCTAssertTrue(SettingsContentStyle.workspace.showsEmbeddedHairline)
-        XCTAssertEqual(SettingsContentStyle.workspace.embeddedCornerRadius, 16)
+        XCTAssertEqual(SettingsContentStyle.workspace.embeddedCornerRadius, GraphicalTheme.radiusM)
     }
 
     func testSettingsDescriptionTypographyIsReadable() {
@@ -76,10 +76,11 @@ final class SettingsWindowTests: XCTestCase {
         let muted = SettingsSurfaceColor.mutedTextNSColor.usingColorSpace(.sRGB)!
         let disabled = SettingsSurfaceColor.disabledTextNSColor.usingColorSpace(.sRGB)!
 
-        XCTAssertGreaterThan(primary.alphaComponent, secondary.alphaComponent)
-        XCTAssertGreaterThan(secondary.alphaComponent, muted.alphaComponent)
-        XCTAssertGreaterThan(muted.alphaComponent, disabled.alphaComponent)
+        // The kit steps text down the neutral scale at full alpha rather than fading it.
+        XCTAssertGreaterThan(primary.redComponent, secondary.redComponent)
         XCTAssertGreaterThan(secondary.redComponent, muted.redComponent)
+        XCTAssertGreaterThan(muted.redComponent, disabled.redComponent)
+        XCTAssertEqual(disabled.alphaComponent, 1, accuracy: 0.001)
     }
 
     func testSettingsNavigationPresentationUsesTicketPrecedenceAndMotion() {
@@ -145,10 +146,20 @@ final class SettingsWindowTests: XCTestCase {
             reduceMotion: false
         )
         XCTAssertGreaterThan(dirty.foregroundOpacity, clean.foregroundOpacity)
-        XCTAssertGreaterThan(dirty.accentOpacity, clean.accentOpacity)
-        XCTAssertGreaterThan(dirty.neutralFillOpacity, clean.neutralFillOpacity)
-        XCTAssertGreaterThan(dirty.neutralStrokeOpacity, clean.neutralStrokeOpacity)
+        XCTAssertTrue(dirty.isEnabled)
+        XCTAssertFalse(clean.isEnabled)
         XCTAssertEqual(dirty.animationDuration, ProgramBoardInteractionPresentation.motionDuration)
+
+        // The kit tints a secondary button only on hover, and rings it only on focus.
+        let hovered = SettingsActionPresentation.resolve(
+            isEnabled: true,
+            isHovered: true,
+            isFocused: false,
+            reduceMotion: false
+        )
+        XCTAssertGreaterThan(hovered.neutralFillOpacity, dirty.neutralFillOpacity)
+        XCTAssertEqual(hovered.fillOpacity, 0)
+        XCTAssertEqual(hovered.strokeOpacity, 0)
 
         let focusedReduceMotion = SettingsActionPresentation.resolve(
             isEnabled: true,
@@ -157,14 +168,16 @@ final class SettingsWindowTests: XCTestCase {
             reduceMotion: true
         )
         XCTAssertGreaterThan(focusedReduceMotion.strokeOpacity, dirty.strokeOpacity)
+        XCTAssertGreaterThan(focusedReduceMotion.accentOpacity, clean.accentOpacity)
         XCTAssertEqual(focusedReduceMotion.animationDuration, 0)
     }
 
     func testSharedActionButtonMetricsMatchSettingsActionGeometry() {
-        XCTAssertEqual(SharedActionButtonMetrics.controlHeight, 28)
-        XCTAssertEqual(SharedActionButtonMetrics.cornerRadius, SettingsLayout.sidebarCornerRadius)
-        XCTAssertEqual(SharedActionButtonMetrics.cornerRadius, 6)
-        XCTAssertEqual(SharedActionButtonMetrics.horizontalPadding, 11)
+        // Graphical "RR" kit: button radius s (16), padding m (16); sidebar rows radius xs (8).
+        XCTAssertEqual(SharedActionButtonMetrics.controlHeight, 32)
+        XCTAssertEqual(SharedActionButtonMetrics.cornerRadius, GraphicalTheme.radiusS)
+        XCTAssertEqual(SettingsLayout.sidebarCornerRadius, GraphicalTheme.radiusXS)
+        XCTAssertEqual(SharedActionButtonMetrics.horizontalPadding, 16)
         XCTAssertEqual(SharedActionButtonMetrics.iconSpacing, 6)
     }
 

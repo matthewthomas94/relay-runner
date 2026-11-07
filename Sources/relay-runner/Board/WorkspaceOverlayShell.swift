@@ -109,14 +109,14 @@ enum WorkspaceNavigationStyle {
     static let controlHeight: CGFloat = BoardSurfaceLayout.navigationHeight
     static let horizontalPadding: CGFloat = 8
     static let verticalPadding: CGFloat = 4
-    static let cornerRadius: CGFloat = 6
+    static let cornerRadius: CGFloat = GraphicalTheme.radiusS
     static let iconTextSpacing: CGFloat = 6
     static let iconSize: CGFloat = 10
     static let systemFocusEffectDisabled = true
     static let activeTextOpacity: Double = 0.98
     static let selectedFillOpacity: Double = 0.08
     static let focusedFillOpacity: Double = 0.12
-    static let textColor = Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: activeTextOpacity)
+    static let textColor = GraphicalTheme.neutral10.opacity(activeTextOpacity)
 }
 
 /// The day, date and time at the strip's far end, where the menu bar's

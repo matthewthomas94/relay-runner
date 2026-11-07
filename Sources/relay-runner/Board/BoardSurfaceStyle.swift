@@ -12,12 +12,14 @@ enum BoardSurfaceLayout {
 }
 
 enum BoardDarkSurfaceStyle {
-    static let panelFillNSColor = NSColor(srgbRed: 9 / 255, green: 11 / 255, blue: 15 / 255, alpha: 1)
-    static let contentFillNSColor = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
-    static let hoverFillNSColor = NSColor(srgbRed: 18 / 255, green: 22 / 255, blue: 30 / 255, alpha: 1)
-    static let cardFillNSColor = NSColor(srgbRed: 11 / 255, green: 14 / 255, blue: 19 / 255, alpha: 1)
-    static let cardActiveFillNSColor = NSColor(srgbRed: 17 / 255, green: 22 / 255, blue: 31 / 255, alpha: 1)
-    static let borderNSColor = NSColor(srgbRed: 17 / 255, green: 22 / 255, blue: 29 / 255, alpha: 1)
+    // Graphical "RR" theme: page neutral-1, panels neutral-2, raised cards and
+    // hovered controls neutral-3, active cards neutral-4. Borders are zero width.
+    static let panelFillNSColor = GraphicalTheme.neutral2NSColor
+    static let contentFillNSColor = GraphicalTheme.neutral1NSColor
+    static let hoverFillNSColor = GraphicalTheme.neutral3NSColor
+    static let cardFillNSColor = GraphicalTheme.neutral3NSColor
+    static let cardActiveFillNSColor = GraphicalTheme.neutral4NSColor
+    static let borderNSColor = NSColor.clear
 
     static let panelFill = Color(nsColor: panelFillNSColor)
     static let contentFill = Color(nsColor: contentFillNSColor)
@@ -25,14 +27,14 @@ enum BoardDarkSurfaceStyle {
     static let cardFill = Color(nsColor: cardFillNSColor)
     static let cardActiveFill = Color(nsColor: cardActiveFillNSColor)
     static let border = Color(nsColor: borderNSColor)
-    static let placeholderTextNSColor = NSColor(srgbRed: 29 / 255, green: 34 / 255, blue: 40 / 255, alpha: 1)
+    static let placeholderTextNSColor = GraphicalTheme.neutral6NSColor
     static let placeholderText = Color(nsColor: placeholderTextNSColor)
 
-    static let workspaceCornerRadius: CGFloat = 16
-    static let columnCornerRadius: CGFloat = 16
-    static let nestedCardCornerRadius: CGFloat = 14
-    static let floatingPanelCornerRadius: CGFloat = 16
-    static let shadowOpacity: Double = 0.08
+    static let workspaceCornerRadius: CGFloat = GraphicalTheme.radiusL
+    static let columnCornerRadius: CGFloat = GraphicalTheme.radiusM
+    static let nestedCardCornerRadius: CGFloat = GraphicalTheme.radiusS
+    static let floatingPanelCornerRadius: CGFloat = GraphicalTheme.radiusM
+    static let shadowOpacity: Double = 0
     static let shadowRadius: CGFloat = 4
     static let shadowYOffset: CGFloat = 2
 }

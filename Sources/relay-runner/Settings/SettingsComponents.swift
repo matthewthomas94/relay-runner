@@ -192,16 +192,24 @@ struct SettingsMenuPicker<Value: Hashable>: View {
                     .accessibilityHidden(true)
             }
             .foregroundStyle(isEnabled ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.disabledText)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, GraphicalTheme.spaceS)
             .frame(maxWidth: .infinity)
             .frame(height: 34)
-            .background(BoardDarkSurfaceBackground(
-                cornerRadius: SettingsLayout.sidebarCornerRadius,
-                fill: isEnabled && (isHovered || isFocused || isPresented)
-                    ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.contentFill
-            ))
+            // Kit select: a black control on the panel, neutral-3 when disabled,
+            // with the accent focus ring while open or focused.
+            .background(
+                RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous)
+                    .fill(isEnabled ? BoardDarkSurfaceStyle.contentFill : GraphicalTheme.neutral3)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous)
+                            .strokeBorder(
+                                SettingsSurfaceColor.focusRing.opacity(isEnabled && (isFocused || isPresented) ? 1 : 0),
+                                lineWidth: 2
+                            )
+                    )
+            )
             .contentShape(
-                RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous)
             )
         }
         .buttonStyle(.plain)
@@ -310,7 +318,7 @@ private struct SettingsSegmentButton: View {
                             cornerRadius: SharedActionButtonMetrics.cornerRadius - selectionInset,
                             style: .continuous
                         )
-                        .fill(SettingsSlider.fillColor(contrast: contrast))
+                        .fill(GraphicalTheme.neutral1.opacity(GraphicalTheme.fillThroughDotsOpacity))
                         .background(FluxDotsBackground(
                             cornerRadius: SharedActionButtonMetrics.cornerRadius - selectionInset,
                             style: .standard,
@@ -341,7 +349,7 @@ enum SettingsLayout {
     static let controlMaxWidth: CGFloat = 280
     static let detailMaxWidth: CGFloat = .infinity
     static let sidebarRowHeight: CGFloat = 32
-    static let sidebarCornerRadius: CGFloat = 6
+    static let sidebarCornerRadius: CGFloat = GraphicalTheme.radiusXS
     static let systemFocusEffectDisabled = true
 }
 
@@ -352,9 +360,9 @@ enum SharedActionButtonProminence {
 }
 
 enum SharedActionButtonMetrics {
-    static let controlHeight: CGFloat = 28
-    static let cornerRadius: CGFloat = SettingsLayout.sidebarCornerRadius
-    static let horizontalPadding: CGFloat = 11
+    static let controlHeight: CGFloat = 32
+    static let cornerRadius: CGFloat = GraphicalTheme.radiusS
+    static let horizontalPadding: CGFloat = GraphicalTheme.spaceM
     static let iconSpacing: CGFloat = 6
 }
 
@@ -365,9 +373,17 @@ struct SharedActionButtonPalette {
 }
 
 extension SharedActionButtonPalette {
+    /// Kit secondary button: neutral-3 fill, white label, no border.
     static let settingsSecondary = SharedActionButtonPalette(
         foreground: SettingsSurfaceColor.primaryText,
-        fill: Color.white,
+        fill: GraphicalTheme.neutral3,
+        stroke: SettingsSurfaceColor.focusRing
+    )
+
+    /// Kit primary button: white fill, black label.
+    static let settingsPrimary = SharedActionButtonPalette(
+        foreground: GraphicalTheme.neutral1,
+        fill: GraphicalTheme.neutral10,
         stroke: SettingsSurfaceColor.focusRing
     )
 }
@@ -383,12 +399,15 @@ struct SharedActionButtonSurface: View {
             style: .continuous
         )
 
+        // Solid kit fills; a disabled button drops to neutral-3. Hover lays the
+        // kit's translucent neutral-4 over the fill. Focus draws the accent ring.
         shape
-            .fill(palette.fill.opacity(presentation.sharedFillOpacity(for: prominence)))
+            .fill(presentation.isEnabled ? palette.fill : GraphicalTheme.neutral3)
+            .overlay(shape.fill(GraphicalTheme.neutral4.opacity(presentation.sharedFillOpacity(for: prominence))))
             .overlay(
                 shape.stroke(
                     palette.stroke.opacity(presentation.sharedStrokeOpacity(for: prominence)),
-                    lineWidth: 1
+                    lineWidth: 2
                 )
             )
     }
@@ -508,25 +527,8 @@ struct SettingsActionButton: View {
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: title)
     }
 
-    private var fillColor: Color {
-        prominence == .primary ? SettingsSurfaceColor.neutralAccent : Color.white
-    }
-
-    private var strokeColor: Color {
-        prominence == .primary ? SettingsSurfaceColor.neutralAccent : SettingsSurfaceColor.focusRing
-    }
-
-    private var foregroundColor: Color {
-        prominence == .primary ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.primaryText
-    }
-
     private var palette: SharedActionButtonPalette {
-        guard prominence == .primary else { return .settingsSecondary }
-        return SharedActionButtonPalette(
-            foreground: foregroundColor,
-            fill: fillColor,
-            stroke: strokeColor
-        )
+        prominence == .primary ? .settingsPrimary : .settingsSecondary
     }
 
     private var sharedProminence: SharedActionButtonProminence {
@@ -600,6 +602,7 @@ enum SettingsNavigationPresentation {
 }
 
 struct SettingsActionPresentation: Equatable {
+    let isEnabled: Bool
     let fillOpacity: Double
     let strokeOpacity: Double
     let neutralFillOpacity: Double
@@ -625,23 +628,27 @@ struct SettingsActionPresentation: Equatable {
 
         guard isEnabled else {
             return SettingsActionPresentation(
-                fillOpacity: 0.02,
-                strokeOpacity: 0.10,
-                neutralFillOpacity: 0.02,
-                neutralStrokeOpacity: 0.10,
+                isEnabled: false,
+                fillOpacity: 0,
+                strokeOpacity: 0,
+                neutralFillOpacity: 0,
+                neutralStrokeOpacity: 0,
                 foregroundOpacity: boardPresentation.foregroundOpacity,
                 accentOpacity: 0,
                 animationDuration: boardPresentation.animationDuration
             )
         }
 
+        // Kit states: primary has no hover tint; secondary hovers with neutral-4
+        // at 20%; focus is the accent ring and nothing else.
         return SettingsActionPresentation(
-            fillOpacity: isHovered ? 0.10 : 0.07,
-            strokeOpacity: isFocused ? 0.34 : 0.22,
-            neutralFillOpacity: isFocused ? 0.08 : (isHovered ? 0.06 : 0.035),
-            neutralStrokeOpacity: isFocused ? 0.30 : (isHovered ? 0.18 : 0.12),
+            isEnabled: true,
+            fillOpacity: 0,
+            strokeOpacity: isFocused ? 1 : 0,
+            neutralFillOpacity: isHovered ? 0.2 : 0,
+            neutralStrokeOpacity: isFocused ? 1 : 0,
             foregroundOpacity: boardPresentation.foregroundOpacity,
-            accentOpacity: isFocused ? 0.34 : 0.22,
+            accentOpacity: isFocused ? 1 : 0,
             animationDuration: boardPresentation.animationDuration
         )
     }
@@ -668,12 +675,12 @@ extension SettingsActionPresentation {
 }
 
 enum SettingsSurfaceColor {
-    static let primaryTextNSColor = NSColor(srgbRed: 226 / 255, green: 232 / 255, blue: 240 / 255, alpha: 0.98)
-    static let neutralAccentNSColor = primaryTextNSColor.withAlphaComponent(1)
-    static let secondaryTextNSColor = NSColor(srgbRed: 203 / 255, green: 213 / 255, blue: 225 / 255, alpha: 0.82)
-    static let mutedTextNSColor = NSColor(srgbRed: 148 / 255, green: 163 / 255, blue: 184 / 255, alpha: 0.68)
-    static let disabledTextNSColor = NSColor(srgbRed: 148 / 255, green: 163 / 255, blue: 184 / 255, alpha: 0.45)
-    static let errorNSColor = NSColor(srgbRed: 251 / 255, green: 113 / 255, blue: 133 / 255, alpha: 1)
+    static let primaryTextNSColor = GraphicalTheme.neutral10NSColor
+    static let neutralAccentNSColor = GraphicalTheme.neutral10NSColor
+    static let secondaryTextNSColor = GraphicalTheme.neutral8NSColor
+    static let mutedTextNSColor = GraphicalTheme.neutral7NSColor
+    static let disabledTextNSColor = GraphicalTheme.neutral6NSColor
+    static let errorNSColor = GraphicalTheme.errorNSColor
     static let successNSColor = NSColor(srgbRed: 52 / 255, green: 211 / 255, blue: 153 / 255, alpha: 1)
 
     static let primaryText = Color(nsColor: primaryTextNSColor)
@@ -684,10 +691,12 @@ enum SettingsSurfaceColor {
     static let dirtyAccent = neutralAccent
     static let success = Color(nsColor: successNSColor)
     static let error = Color(nsColor: errorNSColor)
-    static let rowFill = Color.white.opacity(0.035)
-    static let rowFillHovered = Color.white.opacity(0.055)
-    static let rowFillSelected = Color.white.opacity(WorkspaceNavigationStyle.selectedFillOpacity)
-    static let rowFillFocused = Color.white.opacity(WorkspaceNavigationStyle.focusedFillOpacity)
-    static let divider = BoardDarkSurfaceStyle.border
-    static let focusRing = neutralAccent.opacity(0.78)
+    static let rowFill = GraphicalTheme.neutral3.opacity(GraphicalTheme.fillThroughDotsOpacity)
+    static let rowFillHovered = GraphicalTheme.neutral4.opacity(GraphicalTheme.fillThroughDotsOpacity)
+    static let rowFillSelected = GraphicalTheme.neutral3
+    static let rowFillFocused = GraphicalTheme.neutral4
+    /// The kit separator: a one-pixel neutral-4 line.
+    static let divider = GraphicalTheme.neutral4
+    /// The kit focus ring, color-1.
+    static let focusRing = GraphicalTheme.accent
 }

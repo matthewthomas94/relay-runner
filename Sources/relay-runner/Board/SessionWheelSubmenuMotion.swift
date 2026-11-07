@@ -95,7 +95,7 @@ struct SessionWheelLiquidBackdrop: View {
                         let frame = frames[slot]
                         let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
                                                        outerRadius: geometry.actionOuterRadius,
-                                                       cornerRadius: SharedActionButtonMetrics.cornerRadius,
+                                                       cornerRadius: SessionWheelGeometry.actionCornerRadius,
                                                        padding: geometry.segmentGap)
                         let transform = CGAffineTransform(translationX: rect.midX, y: rect.midY)
                             .scaledBy(x: frame.scale, y: frame.scale)

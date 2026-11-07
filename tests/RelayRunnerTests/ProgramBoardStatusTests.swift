@@ -39,16 +39,15 @@ final class ProgramBoardStatusTests: XCTestCase {
         let border = BoardDarkSurfaceStyle.borderNSColor.usingColorSpace(.sRGB)
 
         XCTAssertEqual(ProgramBoardBackdropStyle.backdropOpacity, 1, accuracy: 0.001)
-        XCTAssertEqual(panelFill?.redComponent ?? 0, 9 / 255, accuracy: 0.001)
-        XCTAssertEqual(panelFill?.greenComponent ?? 0, 11 / 255, accuracy: 0.001)
-        XCTAssertEqual(panelFill?.blueComponent ?? 0, 15 / 255, accuracy: 0.001)
-        XCTAssertEqual(border?.redComponent ?? 0, 17 / 255, accuracy: 0.001)
-        XCTAssertEqual(border?.greenComponent ?? 0, 22 / 255, accuracy: 0.001)
-        XCTAssertEqual(border?.blueComponent ?? 0, 29 / 255, accuracy: 0.001)
-        XCTAssertEqual(BoardDarkSurfaceStyle.workspaceCornerRadius, 16)
-        XCTAssertEqual(BoardDarkSurfaceStyle.columnCornerRadius, 16)
-        XCTAssertEqual(BoardDarkSurfaceStyle.nestedCardCornerRadius, 14)
-        XCTAssertEqual(BoardDarkSurfaceStyle.floatingPanelCornerRadius, 16)
+        // Graphical "RR" theme: panels neutral-2 (#1c2026), no border, radii l/m/s/m.
+        XCTAssertEqual(panelFill?.redComponent ?? 0, 0x1c / 255, accuracy: 0.001)
+        XCTAssertEqual(panelFill?.greenComponent ?? 0, 0x20 / 255, accuracy: 0.001)
+        XCTAssertEqual(panelFill?.blueComponent ?? 0, 0x26 / 255, accuracy: 0.001)
+        XCTAssertEqual(border?.alphaComponent ?? 1, 0, accuracy: 0.001)
+        XCTAssertEqual(BoardDarkSurfaceStyle.workspaceCornerRadius, GraphicalTheme.radiusL)
+        XCTAssertEqual(BoardDarkSurfaceStyle.columnCornerRadius, GraphicalTheme.radiusM)
+        XCTAssertEqual(BoardDarkSurfaceStyle.nestedCardCornerRadius, GraphicalTheme.radiusS)
+        XCTAssertEqual(BoardDarkSurfaceStyle.floatingPanelCornerRadius, GraphicalTheme.radiusM)
         XCTAssertEqual(BoardSurfaceLayout.horizontalPadding, 8)
         XCTAssertEqual(BoardSurfaceLayout.columnSpacing, 12)
         XCTAssertEqual(BoardSurfaceLayout.navigationTopPadding, 7)
@@ -57,7 +56,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(BoardSurfaceLayout.columnTopPadding, 47)
         XCTAssertEqual(BoardSurfaceLayout.columnHeight, 667)
         XCTAssertEqual(ProgramBoardBackdropStyle.bottomPadding, 22)
-        XCTAssertEqual(ProgramBoardBackdropStyle.bottomCornerRadius, 16)
+        XCTAssertEqual(ProgramBoardBackdropStyle.bottomCornerRadius, GraphicalTheme.radiusL)
         XCTAssertEqual(
             ProgramBoardBackdropStyle.bottomCornerRadius,
             BoardDarkSurfaceStyle.workspaceCornerRadius
@@ -74,7 +73,7 @@ final class ProgramBoardStatusTests: XCTestCase {
             BoardDarkSurfaceStyle.floatingPanelCornerRadius,
             BoardDarkSurfaceStyle.workspaceCornerRadius
         )
-        XCTAssertEqual(BoardDarkSurfaceStyle.shadowOpacity, 0.08, accuracy: 0.001)
+        XCTAssertEqual(BoardDarkSurfaceStyle.shadowOpacity, 0, accuracy: 0.001)
         XCTAssertEqual(
             ProgramBoardBackdropStyle.backdropHeight,
             BoardSurfaceLayout.columnTopPadding
@@ -100,7 +99,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(ProgramBoardLayout.headerLeadingInset, 24)
         XCTAssertEqual(ProgramBoardLayout.projectsHeaderHeight, ProgramBoardLayout.workHeaderHeight)
         XCTAssertEqual(ProgramBoardLayout.projectActionButtonHeight, SharedActionButtonMetrics.controlHeight)
-        XCTAssertEqual(ProgramBoardLayout.projectActionButtonHeight, 28)
+        XCTAssertEqual(ProgramBoardLayout.projectActionButtonHeight, 32)
         XCTAssertEqual(ProgramBoardLayout.compactControlHeight, 24)
         XCTAssertEqual(
             ProgramBoardLayout.newTicketButtonSize,
@@ -126,9 +125,10 @@ final class ProgramBoardStatusTests: XCTestCase {
     func testProgramBoardEmptyLanePresentationMatchesFigmaBody() {
         let disabled = ProgramBoardStyle.disabledTextNSColor.usingColorSpace(.sRGB)
 
-        XCTAssertEqual(disabled?.redComponent ?? 0, 100 / 255, accuracy: 0.001)
-        XCTAssertEqual(disabled?.greenComponent ?? 0, 116 / 255, accuracy: 0.001)
-        XCTAssertEqual(disabled?.blueComponent ?? 0, 139 / 255, accuracy: 0.001)
+        // Kit disabled label: neutral-6 (#73787e).
+        XCTAssertEqual(disabled?.redComponent ?? 0, 0x73 / 255, accuracy: 0.001)
+        XCTAssertEqual(disabled?.greenComponent ?? 0, 0x78 / 255, accuracy: 0.001)
+        XCTAssertEqual(disabled?.blueComponent ?? 0, 0x7e / 255, accuracy: 0.001)
     }
 
     func testProgramBoardSessionToolbarMatchesWorkspaceNavigation() {
@@ -138,7 +138,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
         XCTAssertEqual(WorkspaceNavigationStyle.horizontalPadding, 8)
         XCTAssertEqual(WorkspaceNavigationStyle.verticalPadding, 4)
-        XCTAssertEqual(WorkspaceNavigationStyle.cornerRadius, 6)
+        XCTAssertEqual(WorkspaceNavigationStyle.cornerRadius, GraphicalTheme.radiusS)
         XCTAssertEqual(WorkspaceNavigationStyle.iconTextSpacing, 6)
         XCTAssertEqual(WorkspaceNavigationStyle.iconSize, 10)
         XCTAssertTrue(WorkspaceNavigationStyle.systemFocusEffectDisabled)
@@ -169,9 +169,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(legacyAllProjects.actionProminence, .secondary)
 
         let activeText = ProgramBoardStyle.neutralTextNSColor.usingColorSpace(.sRGB)
-        XCTAssertEqual(activeText?.redComponent ?? 0, 248 / 255, accuracy: 0.001)
-        XCTAssertEqual(activeText?.greenComponent ?? 0, 250 / 255, accuracy: 0.001)
-        XCTAssertEqual(activeText?.blueComponent ?? 0, 252 / 255, accuracy: 0.001)
+        XCTAssertEqual(activeText?.redComponent ?? 0, 1, accuracy: 0.001)
+        XCTAssertEqual(activeText?.greenComponent ?? 0, 1, accuracy: 0.001)
+        XCTAssertEqual(activeText?.blueComponent ?? 0, 1, accuracy: 0.001)
     }
 
     func testProgramEditButtonPresentationKeepsEnablementHelpAndAccessibilityLabel() {
@@ -454,9 +454,10 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(hover.accent, .neutral)
         XCTAssertTrue(hover.usesHoverFill)
         XCTAssertEqual(hover.fillOverlayOpacity, 0)
-        XCTAssertEqual(hoverFill?.redComponent ?? 0, 18 / 255, accuracy: 0.001)
-        XCTAssertEqual(hoverFill?.greenComponent ?? 0, 22 / 255, accuracy: 0.001)
-        XCTAssertEqual(hoverFill?.blueComponent ?? 0, 30 / 255, accuracy: 0.001)
+        // Kit hover fill: neutral-3 (#272b31).
+        XCTAssertEqual(hoverFill?.redComponent ?? 0, 0x27 / 255, accuracy: 0.001)
+        XCTAssertEqual(hoverFill?.greenComponent ?? 0, 0x2b / 255, accuracy: 0.001)
+        XCTAssertEqual(hoverFill?.blueComponent ?? 0, 0x31 / 255, accuracy: 0.001)
         XCTAssertEqual(selected.accent, .selected)
         XCTAssertTrue(selected.usesHoverFill)
         XCTAssertEqual(selected.fillOverlayOpacity, 0)

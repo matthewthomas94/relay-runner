@@ -555,8 +555,8 @@ struct SessionWheelSector: Shape {
         let start = CGFloat(slot) * step - .pi / 2 - step / 2 + CGFloat(subdivision ?? 0) * subdivisionWidth
         let end = start + width
         let center = CGPoint(x: rect.midX, y: rect.midY)
-        let corner = min((cornerRadius ?? (subdivision == nil ? BoardDarkSurfaceStyle.nestedCardCornerRadius
-                                                             : SharedActionButtonMetrics.cornerRadius)) + padding,
+        let corner = min((cornerRadius ?? (subdivision == nil ? SessionWheelGeometry.segmentCornerRadius
+                                                             : SessionWheelGeometry.actionCornerRadius)) + padding,
                          (outerRadius - innerRadius) / 2)
         // Offset each straight edge by half the gap so spacing stays constant at every radius.
         // Corner circles still meet those parallel edges and concentric arcs tangentially.

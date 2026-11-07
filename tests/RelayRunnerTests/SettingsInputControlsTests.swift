@@ -18,16 +18,16 @@ final class SettingsInputControlsTests: XCTestCase {
         try click(NSPoint(x: 100, y: 17), in: window)
         let popup = try XCTUnwrap(window.childWindows?.first { $0.isVisible })
         XCTAssertEqual(popup.frame.minX, window.frame.minX, accuracy: 0.5)
-        XCTAssertEqual(popup.frame.maxX, window.frame.maxX - 36, accuracy: 0.5)
-        XCTAssertEqual(popup.frame.height, 146, accuracy: 0.5)
+        XCTAssertEqual(popup.frame.maxX, window.frame.maxX - (SharedActionButtonMetrics.controlHeight + 8), accuracy: 0.5)
+        XCTAssertEqual(popup.frame.height, 142, accuracy: 0.5)
         XCTAssertEqual(window.frame.minY - popup.frame.maxY, 8, accuracy: 0.5)
 
         window.setContentSize(NSSize(width: 360, height: 34))
         window.contentView?.layoutSubtreeIfNeeded()
         settle()
         XCTAssertEqual(popup.frame.minX, window.frame.minX, accuracy: 0.5)
-        XCTAssertEqual(popup.frame.maxX, window.frame.maxX - 36, accuracy: 0.5)
-        XCTAssertEqual(popup.frame.height, 146, accuracy: 0.5)
+        XCTAssertEqual(popup.frame.maxX, window.frame.maxX - (SharedActionButtonMetrics.controlHeight + 8), accuracy: 0.5)
+        XCTAssertEqual(popup.frame.height, 142, accuracy: 0.5)
     }
 
     func testPickerOpensAndCommitsSelection() throws {

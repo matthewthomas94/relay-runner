@@ -205,6 +205,9 @@ enum SessionWheelGeometry {
     static let hubRadius: CGFloat = 52
     static let wheelRadius: CGFloat = 180
     static let segmentGap: CGFloat = 8
+    /// Sector corners are sized to the thin arcs, independent of the button radius.
+    static let segmentCornerRadius: CGFloat = 14
+    static let actionCornerRadius: CGFloat = 6
     static let segmentInnerRadius = hubRadius + segmentGap
     static let segmentOuterRadius = wheelRadius - segmentGap
     // Leave a gap outside the wheel, then padding inside the detached backing.

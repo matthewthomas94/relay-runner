@@ -4896,15 +4896,15 @@ private extension ProgramBoardLane {
 }
 
 enum ProgramBoardStyle {
-    static let disabledTextNSColor = NSColor(srgbRed: 100 / 255, green: 116 / 255, blue: 139 / 255, alpha: 1)
-    static let neutralTextNSColor = NSColor(srgbRed: 248 / 255, green: 250 / 255, blue: 252 / 255, alpha: 1)
+    static let disabledTextNSColor = GraphicalTheme.neutral6NSColor
+    static let neutralTextNSColor = GraphicalTheme.neutral10NSColor
 
-    static let primaryText = Color(.sRGB, red: 226 / 255, green: 232 / 255, blue: 240 / 255, opacity: 1.0)
-    static let secondaryText = Color(.sRGB, red: 203 / 255, green: 213 / 255, blue: 225 / 255, opacity: 0.78)
-    static let mutedText = Color(.sRGB, red: 148 / 255, green: 163 / 255, blue: 184 / 255, opacity: 0.82)
+    static let primaryText = GraphicalTheme.neutral10
+    static let secondaryText = GraphicalTheme.neutral8
+    static let mutedText = GraphicalTheme.neutral7
     static let disabledText = Color(nsColor: disabledTextNSColor)
     static let neutralText = Color(nsColor: neutralTextNSColor)
-    static let red = Color(.sRGB, red: 244 / 255, green: 60 / 255, blue: 9 / 255, opacity: 1.0)
+    static let red = GraphicalTheme.error
     static let green = Color(.sRGB, red: 52 / 255, green: 211 / 255, blue: 153 / 255, opacity: 1.0)
     /// The solid fill of the TrayIconActive asset, #FF9502.
     static let activeTrayOrange = Color(.sRGB, red: 255 / 255, green: 149 / 255, blue: 2 / 255, opacity: 1.0)
