@@ -253,6 +253,10 @@ final class AppState {
     var embeddedTerminal: EmbeddedTerminalSession { sessionRegistry.focused }
     let permissions = PermissionsManager()
     private(set) var activeContext = AssistantSessionContext.general
+    /// RR-445: the project the board shows after navigation moved it off the
+    /// session's context. Navigation never selects, starts or focuses a session.
+    @ObservationIgnored private var boardContext: AssistantSessionContext?
+    private var shownContext: AssistantSessionContext { boardContext ?? activeContext }
     private(set) var conversationHistory: [AssistantConversationEntry] = []
     private(set) var conversationID = ""
     private(set) var contextSwitchMessage: String?
@@ -916,25 +920,16 @@ final class AppState {
         if let binding = assistantSessionStore.binding(for: activeContext), binding.lifecycle == .interrupted {
             contextSwitchMessage = "Conversation restored. Start Session to reconnect \(activeContext.displayName); saved actions are not replayed."
         }
-        programBoardOverlay.setGeneralContextProvider { [weak self] in self?.activeContext.isGeneral ?? true }
-        programBoardOverlay.setContextPathProvider { [weak self] in self?.activeContext.repositoryPath }
+        programBoardOverlay.setGeneralContextProvider { [weak self] in self?.shownContext.isGeneral ?? true }
+        programBoardOverlay.setContextPathProvider { [weak self] in self?.shownContext.repositoryPath }
         programBoardOverlay.setWorkerSizingDefaultsProvider { [weak self] in
             guard let self else { return nil }
             return TicketWriter.WorkerSizingDefaults.from(self.config.general)
         }
-        programBoardOverlay.setStartSessionHandler { [weak self] projectPath in
-            self?.newSession(workingDirectory: projectPath)
-        }
-        programBoardOverlay.setEndSessionHandler { [weak self] projectPath in
-            guard let self else { return }
-            guard let projectPath else { return self.endSession(context: self.activeContext) }
-            // A project card ends only that project's live session.
-            if let context = self.sessionRegistry.liveContextIDs.lazy
-                .compactMap({ self.assistantSessionStore.document.bindings[$0]?.context })
-                .first(where: { $0.repositoryPath.map { AssistantSessionStore.samePath($0, projectPath) } ?? false }) {
-                self.endSession(context: context)
-            }
-        }
+        // RR-445: the Workspace's one Start/End control runs the general session.
+        // No working directory resolves to the general session.
+        programBoardOverlay.setStartSessionHandler { [weak self] in self?.newSession() }
+        programBoardOverlay.setEndSessionHandler { [weak self] in self?.endSession() }
         programBoardOverlay.setNoteTakerHandlers(
             start: { [weak self] projectPath in
                 self?.startNoteTaker(workingDirectory: projectPath) ?? false
@@ -959,7 +954,7 @@ final class AppState {
             }
         )
         programBoardOverlay.setSessionActiveProvider { [weak self] in
-            self?.shownContextHasSession ?? false
+            self?.hasActiveSession ?? false
         }
         programBoardOverlay.setRunningSessionPathsProvider { [weak self] in
             self?.runningSessionProjectPaths ?? []
@@ -983,10 +978,10 @@ final class AppState {
         }
         programBoardOverlay.setBoardRouteResolver { [weak self] in
             guard let self else { return .unavailable }
-            if let path = self.activeContext.repositoryPath {
+            if let path = self.shownContext.repositoryPath {
                 return .project(ProjectResolver.LinkedProject(
                     repoPath: URL(fileURLWithPath: path, isDirectory: true),
-                    projectID: self.activeContext.projectID
+                    projectID: self.shownContext.projectID
                 ))
             }
             return self.workspaceActivitySnapshot.route
@@ -999,11 +994,9 @@ final class AppState {
             create: { [weak self] in self?.createProject() }
         )
         programBoardOverlay.setProjectSelectionHandler { [weak self] repoPath in
-            guard let self else { return }
-            // RR-396: a card focuses its project's running session, or only
-            // browses its tickets; Start session is the one way to launch.
-            let runs = self.runningSessionProjectPaths.contains { AssistantSessionStore.samePath($0, repoPath) }
-            _ = self.selectProjectContext(repositoryPath: repoPath, startsSession: runs)
+            // RR-445: picking a project only browses its board; the Workspace's
+            // Start control is the one way to launch.
+            _ = self?.selectProjectContext(repositoryPath: repoPath, startsSession: false)
         }
         programBoardOverlay.setRequiresConfirmedProjectProvider { [weak self] in
             self?.projectRegistryV2 != nil
@@ -1023,9 +1016,7 @@ final class AppState {
         notchStatusController.setGlyphClickHandler { [weak self] in
             self?.toggleBoard()
         }
-        sessionWheel.refresh = { [weak self] model, includesProjects in
-            self?.refreshSessionWheel(model, includesProjects: includesProjects)
-        }
+        sessionWheel.refresh = { [weak self] model in self?.refreshSessionWheel(model) }
         sessionWheel.haptics.isEnabled = { [weak self] in self?.config.general.wheel_haptics ?? false }
         sessionWheel.openShortcut = { [weak self] shortcut in
             guard let self, self.allowsAppShellAccess else { return }
@@ -1060,9 +1051,7 @@ final class AppState {
         }
         keepAwake.onStateChange = { [weak self] previous, next in self?.keepAwakeStateChanged(from: previous, to: next) }
         sessionWheel.focusSession = { [weak self] in self?.switchSessionFromWheel(contextID: $0) }
-        sessionWheel.startProject = { [weak self] path in
-            self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false
-        }
+        sessionWheel.startSession = { [weak self] in self?.newSession(showsWorkspaceOnLaunch: false) ?? false }
         sessionWheel.sessionAction = { [weak self] id, action in
             self?.performSessionWheelAction(contextID: id, action: action) ?? false
         }
@@ -1368,14 +1357,8 @@ final class AppState {
         sessionRegistry.liveContextIDs.compactMap { assistantSessionStore.document.bindings[$0]?.context.repositoryPath }
     }
 
-    /// RR-396: whether the context the board shows has its own session. With
-    /// no embedded session live, an external bridge session still counts.
-    var shownContextHasSession: Bool {
-        sessionRegistry.hasLiveSessions ? sessionRegistry.isLive(activeContext.id) : hasActiveSession
-    }
-
-    /// RR-395: one Workspace terminal tab per live session, labelled with its context.
-    var workspaceSessionTabs: [(id: String, name: String)] {
+    /// The live sessions the wheel lists, labelled with their context.
+    private var liveSessions: [(id: String, name: String)] {
         sessionRegistry.liveContextIDs.map { id in
             (id, assistantSessionStore.document.bindings[id]?.context.displayName ?? id)
         }
@@ -1402,23 +1385,8 @@ final class AppState {
         if badges != sessionReplyBadges { sessionReplyBadges = badges }
     }
 
-    /// RR-401: speak a session's latest stored reply on request. Replies are
-    /// never replayed automatically.
-    func readOutSessionReply(contextID: String) {
-        guard let key = sessionRegistry.spool(for: contextID)?.key,
-              let message = Self.voiceReplayMessage(sessionKey: key) else { return }
-        _ = SocketClient.bridgeSend(message)
-    }
-
-    static func voiceReplayMessage(sessionKey: String) -> String? {
-        guard let data = try? JSONSerialization.data(withJSONObject: ["session_key": sessionKey]),
-              let json = String(data: data, encoding: .utf8) else { return nil }
-        return "__REPLAY__:" + json
-    }
-
-    /// RR-395: a Workspace terminal tab was selected; focus that context's
-    /// live session (which also routes voice there).
-    func focusSessionTab(contextID: String, showsTerminal: Bool = true) {
+    /// Focus that context's live session, which also routes voice there.
+    private func focusLiveSession(contextID: String, showsTerminal: Bool) {
         guard contextID != activeContext.id,
               let context = assistantSessionStore.document.bindings[contextID]?.context else { return }
         if context.isGeneral {
@@ -1431,13 +1399,13 @@ final class AppState {
     /// Selecting the focused session opens its terminal. Switching sessions
     /// retargets voice without raising Workspace; the notch reports the result.
     private func switchSessionFromWheel(contextID: String) {
-        guard let name = workspaceSessionTabs.first(where: { $0.id == contextID })?.name else { return }
+        guard let name = liveSessions.first(where: { $0.id == contextID })?.name else { return }
         if contextID == activeContext.id {
             programBoardOverlay.showTerminal()
             return
         }
         let recording = sttEngine?.isRecording == true
-        focusSessionTab(contextID: contextID, showsTerminal: false)
+        focusLiveSession(contextID: contextID, showsTerminal: false)
         showSessionSwitchNotice(SessionSwitchNotice(
             switchingTo: name,
             focused: activeContext.id == contextID,
@@ -1457,12 +1425,6 @@ final class AppState {
         }
         sessionSwitchNoticeExpiry = expiry
         DispatchQueue.main.asyncAfter(deadline: .now() + SessionSwitchNotice.displayDuration, execute: expiry)
-    }
-
-    /// RR-395: closing a tab stops only that context's session, like Stop.
-    func closeSessionTab(contextID: String) {
-        guard let context = assistantSessionStore.document.bindings[contextID]?.context else { return }
-        endSession(context: context)
     }
 
     /// RR-394: end only `context`'s session, PTY and spool. Other contexts keep
@@ -2451,8 +2413,8 @@ final class AppState {
         }
     }
 
-    /// `startsSession: false` browses: a context with a live session is
-    /// focused, any other context is selected without launching a process.
+    /// `startsSession: false` only browses: the board shows that context and
+    /// the session, voice and terminal stay where they are (RR-445).
     @discardableResult
     func selectProjectContext(repositoryPath: String, startsSession: Bool = true, showsTerminal: Bool = true) -> Bool {
         do {
@@ -2467,10 +2429,8 @@ final class AppState {
                 let path = WorkspaceFolder.url(from: repositoryPath).resolvingSymlinksInPath().path
                 context = AssistantSessionContext(kind: .project, projectID: path, repositoryPath: path)
             }
-            guard startsSession || sessionRegistry.isLive(context.id) else {
-                try assistantSessionStore.select(context, provider: config.general.provider.rawValue, model: config.general.model)
-                sessionRegistry.focus(contextID: context.id)
-                publishConversationState()
+            guard startsSession else {
+                boardContext = context == activeContext ? nil : context
                 return true
             }
             return requestContextSelection(context, showsTerminal: showsTerminal)
@@ -3246,7 +3206,7 @@ final class AppState {
         sessionWheel.toggle()
     }
 
-    private func refreshSessionWheel(_ model: SessionWheelModel, includesProjects: Bool) {
+    private func refreshSessionWheel(_ model: SessionWheelModel) {
         model.notePhase = meetingNoteSnapshot.phase
         model.keepAwake = keepAwake.state
         model.autoPlay = config.tts.auto_play
@@ -3256,24 +3216,14 @@ final class AppState {
         let recordingKey = sttEngine?.recordingVoiceTargetSessionKey
         let ready = sttEngine != nil && sttSetupSucceeded && permissions.microphone == .granted
             && !meetingNoteSnapshot.phase.ownsForeground
-        if includesProjects {
-            let running = runningSessionProjectPaths
-            model.projects = registeredProjectsV2()
-                .filter { project in !running.contains { AssistantSessionStore.samePath($0, project.lastResolvedPath) } }
-                .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
-                .map { .init(id: $0.projectID, name: $0.displayName, path: $0.lastResolvedPath,
-                             isAvailable: $0.availability == .available) }
-        }
-        if sessionRegistry.liveContextIDs.count >= EmbeddedSessionRegistry.maxConcurrentSessions {
-            model.startUnavailableReason = "Session limit reached"
-        } else if pendingSessionLaunchID != nil {
+        if pendingSessionLaunchID != nil {
             model.startUnavailableReason = "Session starting"
         } else if meetingNoteSnapshot.phase.ownsForeground {
             model.startUnavailableReason = "Finish taking notes first"
         } else {
             model.startUnavailableReason = nil
         }
-        model.refresh(sessions: workspaceSessionTabs.map { tab in
+        model.refresh(sessions: liveSessions.map { tab in
             let spool = sessionRegistry.spool(for: tab.id)
             let key = spool?.key
             let playback = sessionWheelPlayback(spool: spool)
@@ -3334,7 +3284,7 @@ final class AppState {
                sttEngine?.recordingVoiceTargetSessionKey == key {
                 sttEngine?.cancelRecording()
             }
-            closeSessionTab(contextID: contextID)
+            endSession(context: context)
             return true
         }
     }
@@ -3617,40 +3567,26 @@ final class AppState {
             }
         }.value
         if case .activated(let repoPath, _) = reply {
-            let selected: Bool
-            do {
-                if let continuation {
-                    guard let registry = projectRegistryV2 else { throw CocoaError(.fileNoSuchFile) }
-                    let token = try registry.scopeToken(matching: repoPath)
-                    guard registry.validateScopeToken(token).isValid else { throw ProjectRegistryV2Service.ServiceError.staleScope(token.projectID) }
-                    let destination = AssistantSessionContext.project(token)
-                    let id = try reserveContextContinuation(continuation, destination: destination)
-                    selected = requestContextSelection(destination, continuationID: id)
-                } else {
-                    // RR-397: focus a running session or browse the board;
-                    // never start a process or stop the source session.
-                    selected = selectProjectContext(repositoryPath: repoPath, startsSession: false)
-                }
-            } catch { return .failed(message: error.localizedDescription) }
-            guard selected else {
+            // RR-445: navigation and filtering only. No per-project session is
+            // started or focused, and a continuation is not forwarded: the one
+            // session already reaches every registered project.
+            guard selectProjectContext(repositoryPath: repoPath, startsSession: false) else {
                 return .failed(message: contextSwitchMessage ?? "Project context could not be selected.")
             }
             refreshWorkspaceActivity(invalidateRoute: true)
-            if pendingContextSelection != nil {
-                return .queued(repoPath: repoPath, message: "\(contextSwitchMessage ?? "Project switch queued.") Finish the current reply.\(continuation == nil ? "" : " The request is then delivered once to that project's session.")")
+            var message = browseMessage(name: shownContext.displayName)
+            if continuation != nil {
+                message += " Nothing was forwarded: this session reaches every registered project, so continue the request here."
             }
-            return .activated(repoPath: repoPath, message: browseOrFocusMessage(name: activeContext.displayName))
+            return .activated(repoPath: repoPath, message: message)
         }
         return reply
     }
 
-    /// Reply for a focus-or-browse activation of the now-active context.
-    private func browseOrFocusMessage(name: String) -> String {
-        if sessionRegistry.isLive(activeContext.id) {
-            return "Focused the running \(name) session; other sessions keep running."
-        }
+    /// Reply for a board-only activation of the context the board now shows.
+    private func browseMessage(name: String) -> String {
         programBoardOverlay.showWork()
-        return "Opened the \(name) board without starting a session; other sessions keep running. Pass continuation to forward an unfinished request into \(name)'s session."
+        return "Opened the \(name) board without starting or switching a session."
     }
 
     @MainActor
@@ -3675,7 +3611,7 @@ final class AppState {
         refreshWorkspaceActivity(invalidateRoute: true)
         let message = pendingContextSelection != nil
             ? "\(contextSwitchMessage ?? "general selection queued.") Finish the current reply.\(continuation == nil ? "" : " The request is then delivered once to the general session.")"
-            : browseOrFocusMessage(name: activeContext.displayName)
+            : browseMessage(name: shownContext.displayName)
         return .selected(message: message)
     }
 

@@ -3915,7 +3915,6 @@ struct EmbeddedTerminalTab: View {
     @State private var confirmsRecovery = false
     @State private var confirmedInboxBlocker: InboxRecoveryBlocker?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.workspaceTerminalSessionAction) private var sessionAction
 
     var body: some View {
         VStack(spacing: 0) {
@@ -4026,32 +4025,24 @@ struct EmbeddedTerminalTab: View {
         .environment(\.colorScheme, .dark)
     }
 
+    /// RR-445: the Workspace's top row holds the one Start/End control.
     private var emptyState: some View {
-        VStack(spacing: 20) {
-            VStack(spacing: 10) {
-                Image(systemName: "terminal")
-                    .font(AppTypography.symbolFont(size: 28, weight: .regular))
+        VStack(spacing: 10) {
+            Image(systemName: "terminal")
+                .font(AppTypography.symbolFont(size: 28, weight: .regular))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
+            Text("Run the Relay session here")
+                .font(AppTypography.font(.sectionHeading))
+                .foregroundStyle(ProgramBoardStyle.secondaryText)
+            RelaySwap(emptyStateDetail, style: .text, alignment: .top) { emptyStateDetail in
+                Text(emptyStateDetail)
+                    .font(AppTypography.font(.supporting))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
-                Text("Run the Relay session here")
-                    .font(AppTypography.font(.sectionHeading))
-                    .foregroundStyle(ProgramBoardStyle.secondaryText)
-                RelaySwap(emptyStateDetail, style: .text, alignment: .top) { emptyStateDetail in
-                    Text(emptyStateDetail)
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 390)
-                }
-            }
-            .accessibilityElement(children: .combine)
-            if let sessionAction {
-                ProgramSessionPrimaryButton(
-                    presentation: sessionAction.presentation,
-                    isEnabled: sessionAction.isEnabled,
-                    action: sessionAction.action
-                )
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 390)
             }
         }
+        .accessibilityElement(children: .combine)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -4074,7 +4065,7 @@ struct EmbeddedTerminalTab: View {
         case .failed(let message):
             return message
         default:
-            return "Starts the configured agent with Relay voice mode in this workspace. Closing Workspace leaves the session running."
+            return "Start, at the top right, launches the configured agent with Relay voice mode. Closing Workspace leaves the session running."
         }
     }
 }
@@ -4082,17 +4073,8 @@ struct EmbeddedTerminalTab: View {
 struct WorkspaceTerminalPanel: View {
     @Bindable var appState: AppState
 
-    private var tabs: [(id: String, name: String)] { appState.workspaceSessionTabs }
-
     var body: some View {
-        WorkspaceTerminalSurface(
-            tabs: tabs,
-            selectedID: appState.activeContext.id,
-            badges: appState.sessionReplyBadges,
-            select: { appState.focusSessionTab(contextID: $0) },
-            readOut: { appState.readOutSessionReply(contextID: $0) },
-            close: { appState.closeSessionTab(contextID: $0) }
-        ) {
+        WorkspaceTerminalSurface {
             EmbeddedTerminalTab(
                 session: appState.embeddedTerminal,
                 recoverDelivery: { appState.recoverBlockedVoiceDelivery() }

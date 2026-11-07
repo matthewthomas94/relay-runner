@@ -3,15 +3,13 @@ import Foundation
 struct ActivateProjectTool: MCPTool {
     let name = "activate_project"
     let description = """
-        Focus or browse a Relay Runner project by absolute repo path or known alias. \
+        Browse a Relay Runner project's board by absolute repo path or known alias. \
         Existing git repos get their local .orchestrator board config initialized if needed; \
         non-git folders are refused instead of running git init. Codex and Claude callers use \
-        the same tool and may pass their provider label when known. A project with a running \
-        session is focused; otherwise its board opens and no session starts. The current \
-        session is never stopped. Pass continuation only when explicitly forwarding the \
-        unfinished user request: after this turn finishes the app focuses the destination's \
-        session, starting it if needed, and submits the request there once with its original \
-        authority. Omit it for navigation. Use the general-tasks alias for the built-in project.
+        the same tool and may pass their provider label when known. Only the board changes: \
+        no session is started, focused or switched. The current session is never stopped. It \
+        already reaches every registered project, so continue unfinished work in it; \
+        continuation is not forwarded. Use the general-tasks alias for the built-in project.
         """
     var notify: () -> Bool = { ConfirmationClient.notifyToolFiredAndWait(toolName: "activate_project") }
     var activate: (String, String?, String?) -> ProjectActivationOutcome = ConfirmationClient.requestProjectActivation
@@ -20,7 +18,7 @@ struct ActivateProjectTool: MCPTool {
         [
             "type": "object",
             "properties": [
-                "continuation": ["type": "string", "description": "Optional unfinished public user request to submit once to the destination project's session (started if needed) after this turn finishes. Explicit opt-in only; omit for navigation. Do not include private reasoning or unrelated history."],
+                "continuation": ["type": "string", "description": "Accepted for compatibility and not forwarded: the current session reaches every registered project, so continue the request there. Omit it."],
                 "project": [
                     "type": "string",
                     "description": "Absolute repo path or registered project alias.",
@@ -61,7 +59,7 @@ struct ActivateProjectTool: MCPTool {
 
 struct ActivateGeneralTool: MCPTool {
     let name = "activate_general"
-    let description = "Compatibility alias for activate_project with Relay Runner's preinstalled general-tasks project in Application Support. A running general-tasks session is focused; otherwise its board opens and no session starts. The current session is never stopped. Pass continuation to forward an unfinished request once to the general-tasks session after this turn finishes, starting it if needed."
+    let description = "Compatibility alias for activate_project with Relay Runner's preinstalled general-tasks project in Application Support. Its board opens; no session is started, focused or switched. The current session is never stopped. Pass continuation to forward an unfinished request once to the general-tasks session after this turn finishes, starting it if needed."
     var notify: () -> Bool = { ConfirmationClient.notifyToolFiredAndWait(toolName: "activate_general") }
     var activate: (String?) -> GeneralActivationOutcome = ConfirmationClient.requestGeneralActivation
 

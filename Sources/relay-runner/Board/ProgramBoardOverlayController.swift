@@ -107,8 +107,8 @@ final class ProgramBoardOverlayController {
     private var addExistingProjectHandler: (() -> Void)?
     private var createProjectHandler: (() -> Void)?
     private var projectSelectionHandler: ((String) -> Void)?
-    private var startSessionHandler: ((String?) -> Void)?
-    private var endSessionHandler: ((String?) -> Void)?
+    private var startSessionHandler: (() -> Void)?
+    private var endSessionHandler: (() -> Void)?
     private var startNoteTakerHandler: ((String) -> Bool)?
     private var stopNoteTakerHandler: (() -> Void)?
     private var interruptedNoteProvider: () async -> [MeetingNoteRecoveryOffer] = { [] }
@@ -196,11 +196,11 @@ final class ProgramBoardOverlayController {
         projectSelectionHandler = handler
     }
 
-    func setStartSessionHandler(_ handler: @escaping (String?) -> Void) {
+    func setStartSessionHandler(_ handler: @escaping () -> Void) {
         self.startSessionHandler = handler
     }
 
-    func setEndSessionHandler(_ handler: @escaping (String?) -> Void) {
+    func setEndSessionHandler(_ handler: @escaping () -> Void) {
         self.endSessionHandler = handler
     }
 
@@ -707,8 +707,6 @@ final class ProgramBoardOverlayController {
                 onSelectProject: { [weak self] repoPath in self?.selectProject(repoPath) },
                 onStartSession: { [weak self] in self?.startSession() },
                 onEndSession: { [weak self] in self?.endSession() },
-                onStartProjectSession: { [weak self] path in self?.startSession(projectPath: path) },
-                onEndProjectSession: { [weak self] path in self?.endSession(projectPath: path) },
                 onStartNoteTaker: { [weak self] in self?.startNoteTaker() },
                 onStopNoteTaker: { [weak self] in self?.stopNoteTaker() },
                 onNotesRefresh: { [weak self] in await self?.refreshNotes() },
@@ -1172,29 +1170,17 @@ final class ProgramBoardOverlayController {
         workspace.contextPath = contextPathProvider()
     }
 
+    /// RR-445: the Workspace's one Start/End control, for the general session.
     private func startSession() {
         guard !model.hasActiveSession else { return }
-        startSessionHandler?(workspace.isGeneralContext ? nil : workspace.contextPath)
+        startSessionHandler?()
         model.hasActiveSession = sessionActiveProvider()
         model.runningSessionPaths = runningSessionPathsProvider()
     }
 
     private func endSession() {
         guard model.hasActiveSession else { return }
-        endSessionHandler?(nil)
-        model.hasActiveSession = sessionActiveProvider()
-        model.runningSessionPaths = runningSessionPathsProvider()
-    }
-
-    /// A project card starts or ends that project's own session.
-    private func startSession(projectPath: String) {
-        startSessionHandler?(projectPath)
-        model.hasActiveSession = sessionActiveProvider()
-        model.runningSessionPaths = runningSessionPathsProvider()
-    }
-
-    private func endSession(projectPath: String) {
-        endSessionHandler?(projectPath)
+        endSessionHandler?()
         model.hasActiveSession = sessionActiveProvider()
         model.runningSessionPaths = runningSessionPathsProvider()
     }

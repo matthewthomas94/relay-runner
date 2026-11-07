@@ -104,36 +104,20 @@ final class SessionWheelMotion {
     }
 }
 
-/// Freeze the outgoing menu until it has contracted completely.
+/// The slots the wheel draws, captured so live session changes update in place.
 struct SessionWheelMenu: Equatable {
-    let pickingProject: Bool
-    let showingAllSessions: Bool
-    let page: Int
     let sessions: [SessionWheelSession?]
-    let projects: [SessionWheelProject]
-    let hasMoreProjects: Bool
-    let hasMoreSessions: Bool
     let canStartSession: Bool
 
     init(_ model: SessionWheelModel) {
-        pickingProject = model.pickingProject
-        showingAllSessions = model.showingAllSessions
-        page = model.pageID
         sessions = model.slots
-        projects = model.visibleProjects
-        hasMoreProjects = model.hasMoreProjects
-        hasMoreSessions = model.hasMoreSessions
         canStartSession = model.canStartSession
     }
 
-    var identity: [String?] {
-        [String(page)] + (pickingProject ? projects.map(\.id) : sessions.map { $0?.id })
-            + [pickingProject && hasMoreProjects ? "more" : nil,
-               !pickingProject && !showingAllSessions && hasMoreSessions ? "more-sessions" : nil]
-    }
+    var identity: [String?] { sessions.map { $0?.id } }
 
     func shortcut(at index: Int) -> SessionWheelShortcut? {
-        pickingProject || showingAllSessions ? nil : SessionWheelShortcut(rawValue: index)
+        SessionWheelShortcut(rawValue: index)
     }
 }
 
@@ -143,7 +127,8 @@ final class SessionWheelMenuMotion {
     let motion = SessionWheelMotion(visible: true)
 
     /// SwiftUI cancels the previous task when the requested menu changes.
-    /// A reversal continues from the current frame, without leaving old pages behind.
+    /// Live session changes update their slots in place; a reversal continues
+    /// from the current frame.
     @MainActor
     func update(to menu: SessionWheelMenu, reduceMotion: Bool) async {
         if displayed == nil {
@@ -151,13 +136,6 @@ final class SessionWheelMenuMotion {
             return
         }
         do {
-            // Only navigation replaces the wheel. Live session changes update their slots in place.
-            if displayed?.page != menu.page {
-                let duration = motion.setVisible(false, reduceMotion: reduceMotion,
-                                                 at: ProcessInfo.processInfo.systemUptime)
-                try await Task.sleep(for: .seconds(duration))
-                try Task.checkCancellation()
-            }
             displayed = menu
             let duration = motion.setVisible(true, reduceMotion: reduceMotion,
                                              at: ProcessInfo.processInfo.systemUptime)

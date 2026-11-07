@@ -24,7 +24,7 @@ struct RelayAppCommandHost {
     var config: () -> AppConfig
     /// `AppState.saveConfig`, the Settings Save path.
     var saveConfig: (AppConfig) -> Void
-    /// Focuses or browses a registered project as `activate_project` does; never starts a session.
+    /// Browses a registered project's board as `activate_project` does; never starts or focuses a session.
     var selectProject: @MainActor (_ projectID: String) async -> Result<String, RelayAppCommandError>
     var keepAwakeState: () -> KeepAwakeState
     /// `KeepAwakeController.toggle()`; false when a pending change ignores it.

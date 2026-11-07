@@ -133,7 +133,7 @@ enum AppTools {
             ),
             AppTool(
                 name: "select_project",
-                description: "Focus a registered project as activate_project does: a running session for it is focused, otherwise its board opens. Never starts or stops a session.",
+                description: "Open a registered project's board as activate_project does. Never starts, focuses or stops a session.",
                 properties: ["project_id": ["type": "string", "description": "An id from list_projects."]],
                 required: ["project_id"],
                 client: client

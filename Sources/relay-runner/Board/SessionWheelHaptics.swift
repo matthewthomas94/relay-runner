@@ -87,13 +87,8 @@ final class SessionWheelHaptics {
                                            outerRadius: geometry.actionOuterRadius, subdivision: index)
             return enabled && shape.path(in: bounds).contains(point) ? .action(slot: slot, index: index) : nil
         }
-        let enabled: Bool
-        if model.pickingProject {
-            enabled = model.isMoreProjectsSlot(slot) || (model.canStartSession
-                && model.visibleProjects.indices.contains(slot) && model.visibleProjects[slot].isAvailable)
-        } else {
-            enabled = !model.showingAllSessions || model.slots[slot] != nil
-        }
+        let enabled = model.slots[slot] != nil || model.shortcut(at: slot) != nil
+            || (model.isStartSlot(slot) && model.canStartSession)
         let shape = SessionWheelSector(slot: slot, innerRadius: geometry.segmentInnerRadius,
                                        outerRadius: geometry.segmentOuterRadius)
         return enabled && shape.path(in: bounds).contains(point) ? .slot(slot) : nil

@@ -216,8 +216,6 @@ struct ProgramBoardOverlayView: View {
     var onSelectProject: (String) -> Void = { _ in }
     let onStartSession: () -> Void
     let onEndSession: () -> Void
-    var onStartProjectSession: (String) -> Void = { _ in }
-    var onEndProjectSession: (String) -> Void = { _ in }
     var onStartNoteTaker: () -> Void = {}
     var onStopNoteTaker: () -> Void = {}
     var onNotesRefresh: () async -> Void = {}
@@ -500,13 +498,31 @@ struct ProgramBoardOverlayView: View {
             .allowsHitTesting(!dotMatrixPresentation.isVisible)
             .zIndex(2)
 
-            WorkspaceMenuBarClock()
-                .padding(.top, BoardSurfaceLayout.navigationTopPadding)
-                .padding(.trailing, 20)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .blur(radius: backgroundBlurRadius)
-                .allowsHitTesting(false)
-                .zIndex(2)
+            // RR-445: the Workspace's one Start/End control sits at the far
+            // right of the top row, opposite the tabs.
+            HStack(spacing: GraphicalTheme.spaceS) {
+                WorkspaceMenuBarClock()
+                    .allowsHitTesting(false)
+                ProgramSessionPrimaryButton(
+                    presentation: ProgramSessionToolbarPresentation.resolve(
+                        hasActiveSession: model.hasActiveSession,
+                        provider: model.sessionProvider
+                    ),
+                    isEnabled: ProgramSessionControlPolicy.canStart(
+                        hasActiveSession: model.hasActiveSession,
+                        selectedProjectPath: workspace.contextPath,
+                        requiresConfirmedProject: ProjectRegistryV2Rollout.isEnabled()
+                    ),
+                    action: model.hasActiveSession ? onEndSession : onStartSession
+                )
+                .allowsHitTesting(!dotMatrixPresentation.isVisible)
+            }
+            .frame(height: BoardSurfaceLayout.navigationHeight)
+            .padding(.top, BoardSurfaceLayout.navigationTopPadding)
+            .padding(.trailing, 20)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .blur(radius: backgroundBlurRadius)
+            .zIndex(2)
 
             // Tabs, and the Workspace states within the work tab, swap as pages.
             ZStack(alignment: .topLeading) {
@@ -515,18 +531,6 @@ struct ProgramBoardOverlayView: View {
                     VStack(spacing: 0) {
                         terminalContent
                             .padding(.top, BoardSurfaceLayout.columnTopPadding)
-                            .environment(\.workspaceTerminalSessionAction, WorkspaceTerminalSessionAction(
-                                presentation: ProgramSessionToolbarPresentation.resolve(
-                                    hasActiveSession: model.hasActiveSession,
-                                    provider: model.sessionProvider
-                                ),
-                                isEnabled: ProgramSessionControlPolicy.canStart(
-                                    hasActiveSession: model.hasActiveSession,
-                                    selectedProjectPath: workspace.contextPath,
-                                    requiresConfirmedProject: ProjectRegistryV2Rollout.isEnabled()
-                                ),
-                                action: model.hasActiveSession ? onEndSession : onStartSession
-                            ))
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
@@ -570,8 +574,6 @@ struct ProgramBoardOverlayView: View {
                             onAddExistingProject: onAddExistingProject,
                             onCreateProject: onCreateProject,
                             onCreateStart: onCreateStart,
-                            onStartProjectSession: onStartProjectSession,
-                            onEndProjectSession: onEndProjectSession,
                             onNoteOpen: onNoteOpen,
                             onDrop: onDrop
                         )
@@ -1255,8 +1257,6 @@ private struct ProgramBoardContent: View {
     let onAddExistingProject: () -> Void
     let onCreateProject: () -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
-    let onStartProjectSession: (String) -> Void
-    let onEndProjectSession: (String) -> Void
     var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
@@ -1275,7 +1275,6 @@ private struct ProgramBoardContent: View {
                         selectedProjectPaths: model.selectedProjectPaths,
                         runningSessionPaths: model.runningSessionPaths,
                         sessionReplyBadges: model.sessionReplyBadges,
-                        sessionProvider: model.sessionProvider,
                         errorMessage: model.errorMessage,
                         isDiagnosticsExporting: model.isDiagnosticsExporting,
                         theme: model.theme,
@@ -1284,8 +1283,6 @@ private struct ProgramBoardContent: View {
                         onAddExistingProject: onAddExistingProject,
                         onCreateProject: onCreateProject,
                         onToggleProject: model.toggleProject(path:),
-                        onStartProjectSession: onStartProjectSession,
-                        onEndProjectSession: onEndProjectSession,
                         onRetry: onRefresh,
                         onCreateDiagnostics: onCreateDiagnostics,
                         onDismiss: onDismiss
@@ -1355,7 +1352,6 @@ private struct ProgramOverviewColumn: View {
     let selectedProjectPaths: [String]
     let runningSessionPaths: [String]
     let sessionReplyBadges: [String: Int]
-    let sessionProvider: GeneralConfig.AgentProvider
     let errorMessage: String?
     let isDiagnosticsExporting: Bool
     let theme: ParticleFieldRenderer.Theme?
@@ -1364,8 +1360,6 @@ private struct ProgramOverviewColumn: View {
     let onAddExistingProject: () -> Void
     let onCreateProject: () -> Void
     let onToggleProject: (String) -> Void
-    let onStartProjectSession: (String) -> Void
-    let onEndProjectSession: (String) -> Void
     let onRetry: () -> Void
     let onCreateDiagnostics: () -> Void
     let onDismiss: () -> Void
@@ -1455,15 +1449,12 @@ private struct ProgramOverviewColumn: View {
                                     ProgramBoardProjectPath.matches(entry.key, path) ? total + entry.value : total
                                 }
                             } ?? 0,
-                            sessionProvider: sessionProvider,
                             onSelect: {
                                 if let path = scopedPath {
                                     onToggleProject(path)
                                 }
                             },
-                            onOpenInFinder: onDismiss,
-                            onStartSession: { scopedPath.map(onStartProjectSession) },
-                            onEndSession: { scopedPath.map(onEndProjectSession) }
+                            onOpenInFinder: onDismiss
                         )
                         .transition(.relayElement)
                     }
@@ -1673,16 +1664,11 @@ private struct ProgramAddProjectMenu: View {
     }
 }
 
-/// Start (or end) the session, or pick how it routes change requests: Auto,
-/// Direct or Orchestrated. Same split-button look as Add project. Before a
-/// session, picking a style starts it; during one, it only changes the style,
-/// which applies from the next request.
-private struct ProgramStartSessionMenu: View {
-    let title: String
-    let help: String
+/// Pick how the session routes this project's change requests: Auto, Direct
+/// or Orchestrated. Same look as Add project; a change applies from the next
+/// request. RR-445: rows have no Start control; the Workspace's top row does.
+private struct ProgramWorkStyleMenu: View {
     let workStyle: ProjectWorkStyle
-    var startsOnSelect = true
-    let onStart: () -> Void
     let onSelectWorkStyle: (ProjectWorkStyle) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
@@ -1700,34 +1686,21 @@ private struct ProgramStartSessionMenu: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 0) {
-            Button(action: onStart) {
-                Text(title)
+        Button { isPresented.toggle() } label: {
+            HStack(spacing: 6) {
+                Text(workStyle.title)
                     .font(AppTypography.font(.programAction))
                     .lineLimit(1)
-                    .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
-                    .frame(height: SharedActionButtonMetrics.controlHeight)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.graphicalPress)
-            .graphicalTooltip("\(help) (\(workStyle.title): \(workStyle.detail.lowercased()))")
-            .accessibilityLabel(title)
-
-            Rectangle()
-                .fill(palette.stroke.opacity(presentation.sharedStrokeOpacity(for: .secondary)))
-                .frame(width: ProgramAddProjectMenuMetrics.dividerWidth, height: SharedActionButtonMetrics.controlHeight)
-
-            Button { isPresented.toggle() } label: {
                 Image(systemName: "chevron.down")
                     .font(AppTypography.symbolFont(size: 9, weight: .semibold))
-                    .frame(width: ProgramAddProjectMenuMetrics.disclosureWidth, height: SharedActionButtonMetrics.controlHeight)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.graphicalPress)
-            .graphicalTooltip(startsOnSelect ? "Start with a work style (now \(workStyle.title))"
-                  : "Change the work style (now \(workStyle.title))")
-            .accessibilityLabel("Work style, now \(workStyle.title)")
+            .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
+            .frame(height: SharedActionButtonMetrics.controlHeight)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.graphicalPress)
+        .graphicalTooltip("Change the work style (now \(workStyle.title): \(workStyle.detail.lowercased()))")
+        .accessibilityLabel("Work style, now \(workStyle.title)")
         .foregroundStyle(palette.foreground.opacity(presentation.foregroundOpacity))
         .frame(height: SharedActionButtonMetrics.controlHeight)
         .background(
@@ -1742,18 +1715,13 @@ private struct ProgramStartSessionMenu: View {
         .background {
             SettingsDropdownPresenter(isPresented: $isPresented, alignsTrailing: true) {
                 SettingsMenuOptions(
-                    title: "Start with a work style",
+                    title: "Work style",
                     selection: Binding(
                         get: { workStyle },
-                        // Before a session, picking a style starts it with that style.
-                        set: { style in
-                            onSelectWorkStyle(style)
-                            if startsOnSelect { onStart() }
-                        }
+                        set: { onSelectWorkStyle($0) }
                     ),
                     options: ProjectWorkStyle.allCases.map { ($0.title, $0) },
-                    // Mid-session the menu only switches style, so names suffice.
-                    subtitle: startsOnSelect ? { $0.detail } : nil
+                    subtitle: { $0.detail }
                 ) { isPresented = false }
                 .environment(\.colorScheme, .dark)
             }
@@ -1766,11 +1734,8 @@ private struct ProgramProjectCard: View {
     let isSelected: Bool
     let hasSession: Bool
     let replyBadgeCount: Int
-    let sessionProvider: GeneralConfig.AgentProvider
     let onSelect: () -> Void
     let onOpenInFinder: () -> Void
-    let onStartSession: () -> Void
-    let onEndSession: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isFocused: Bool
     @State private var isHovered = false
@@ -1861,7 +1826,7 @@ private struct ProgramProjectCard: View {
         workStyle = ProjectWorkStyleStore.style(for: path)
     }
 
-    /// Finder, then this project's session at the far right.
+    /// Finder, then this project's work style at the far right.
     private var actions: some View {
         HStack(spacing: 8) {
             if let path = item.project?.path {
@@ -1873,13 +1838,8 @@ private struct ProgramProjectCard: View {
                     // The Workspace sits above Finder, so close it to reveal the window.
                     onOpenInFinder()
                 }
-                let session = ProgramSessionToolbarPresentation.resolve(hasActiveSession: hasSession, provider: sessionProvider)
-                ProgramStartSessionMenu(
-                    title: session.title,
-                    help: session.help,
+                ProgramWorkStyleMenu(
                     workStyle: workStyle,
-                    startsOnSelect: !hasSession,
-                    onStart: hasSession ? onEndSession : onStartSession,
                     onSelectWorkStyle: { style in
                         workStyle = style
                         ProjectWorkStyleStore.setStyle(style, for: path)
@@ -4625,25 +4585,6 @@ enum ProgramNoteStartFailurePresentation {
               !detail.isEmpty
         else { return nil }
         return "Notetaker could not start: " + (detail.hasSuffix(".") ? detail : detail + ".")
-    }
-}
-
-/// Session start/end control the Workspace hands to the embedded terminal's
-/// empty state, so it can offer the same primary action as the board.
-struct WorkspaceTerminalSessionAction {
-    let presentation: ProgramSessionToolbarPresentation
-    let isEnabled: Bool
-    let action: () -> Void
-}
-
-private struct WorkspaceTerminalSessionActionKey: EnvironmentKey {
-    static let defaultValue: WorkspaceTerminalSessionAction? = nil
-}
-
-extension EnvironmentValues {
-    var workspaceTerminalSessionAction: WorkspaceTerminalSessionAction? {
-        get { self[WorkspaceTerminalSessionActionKey.self] }
-        set { self[WorkspaceTerminalSessionActionKey.self] = newValue }
     }
 }
 

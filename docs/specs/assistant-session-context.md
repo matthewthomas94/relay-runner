@@ -18,6 +18,9 @@ known alias, including the `general-tasks` alias. The compatibility `activate_ge
 selects the same built-in project. A request during the calling provider's turn returns a queued
 message; it must finish that reply before the app switches. A queued response
 does not authorize project work from the old General process.
+Since RR-445 the Workspace runs one general session that reaches every registered
+project: `activate_project` only moves the board to that project. It never starts,
+focuses or switches a session and does not forward a `continuation`.
 
 After 30 minutes of safe inactivity, the foreground provider is saved and
 terminated. Start Session reconnects it using normal provider resume support.
