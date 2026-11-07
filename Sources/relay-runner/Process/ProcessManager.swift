@@ -2253,7 +2253,13 @@ final class ProcessManager {
             let values = variables.map(tomlBasicStringLiteral).joined(separator: ",")
             return "-c \(shellQuoted("mcp_servers.\(name).env_vars=[\(values)]")) "
         }.joined()
+            // RR-443: register_project waits on the user's folder picker; Codex's
+            // default 60s MCP tool timeout would cut it off. Claude has no such cap.
+            + "-c \(shellQuoted("mcp_servers.relay-actions.tool_timeout_sec=\(appOwnedActionsToolTimeoutSeconds)")) "
     }
+
+    /// Matches relay-actions-mcp's `ConfirmationClient.registrationTimeoutSeconds`.
+    static let appOwnedActionsToolTimeoutSeconds = 600
 
     private static func appOwnedAutomaticCompactionFlag(
         target: AgentTarget,

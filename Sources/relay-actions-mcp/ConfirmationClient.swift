@@ -50,6 +50,13 @@ enum ProjectScopeTokenOutcome: Equatable {
     case menuBarUnavailable
 }
 
+enum ProjectAppReplyOutcome {
+    case ok([String: Any])
+    case cancelled(message: String)
+    case failed(message: String)
+    case menuBarUnavailable
+}
+
 enum HostedToolOutcome {
     case succeeded(content: [[String: Any]])
     case failed(message: String)
@@ -107,6 +114,14 @@ enum ConfirmationClient {
     /// The model supplies only public text. Transport/native ownership comes
     /// from this MCP process's inherited app launch, never tool arguments.
     static func continuationSource(text: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String]? {
+        guard var source = nativeTurnSource(environment: environment) else { return nil }
+        source["text"] = text
+        return source
+    }
+
+    /// RR-443: the launch-inherited identity of this session's native user
+    /// turn, without request text. The app checks it against the turn ledger.
+    static func nativeTurnSource(environment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String]? {
         guard let path = environment["RELAY_SESSION_BINDING_PATH"],
               let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let binding = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -114,7 +129,7 @@ enum ConfirmationClient {
         let mapping = ["provider": "RELAY_RUNNER_PROVIDER", "provider_session_id": "RELAY_PROVIDER_SESSION_ID",
                        "app_session_id": "RELAY_APP_SESSION_ID", "recovery_generation": "RELAY_RECOVERY_GENERATION",
                        "foreground_gate_handle": "RELAY_FOREGROUND_GATE_HANDLE", "source_context_id": "RELAY_CONTEXT_ID"]
-        var source = ["text": text, "native_session_id": native]
+        var source = ["native_session_id": native]
         for (key, variable) in mapping {
             guard let value = environment[variable], !value.isEmpty else { return nil }
             source[key] = value
@@ -204,6 +219,51 @@ enum ConfirmationClient {
             return .failed(message: json["message"] as? String ?? "Project scope token request failed.")
         }
         return .menuBarUnavailable
+    }
+
+    /// RR-443: read-only registry match for a spoken project name.
+    static func requestProjectLookup(name: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> ProjectAppReplyOutcome {
+        var payload: [String: Any] = ["type": "find_project", "name": name]
+        if let source = nativeTurnSource(environment: environment) { payload["source"] = source }
+        return requestAppReply(payload: payload, timeoutSeconds: 15)
+    }
+
+    /// RR-443: register a project through the app's shared folder picker. The
+    /// reply waits for the user to choose a folder, so the timeout is long.
+    static func requestProjectRegistration(kind: String, name: String?, userAnswer: String,
+                                           environment: [String: String] = ProcessInfo.processInfo.environment) -> ProjectAppReplyOutcome {
+        guard let source = nativeTurnSource(environment: environment) else {
+            return .failed(message: "register_project requires an app-managed session's native user turn. In other sessions, use Add project in the Workspace.")
+        }
+        var payload: [String: Any] = ["type": "register_project", "kind": kind, "user_answer": userAnswer, "source": source]
+        if let name { payload["name"] = name }
+        return requestAppReply(payload: payload, timeoutSeconds: registrationTimeoutSeconds)
+    }
+
+    /// Matches Codex's relay-actions `tool_timeout_sec` set at launch.
+    static let registrationTimeoutSeconds = 600
+
+    private static func requestAppReply(payload: [String: Any], timeoutSeconds: Int) -> ProjectAppReplyOutcome {
+        guard let fd = openSocket() else { return .menuBarUnavailable }
+        defer { close(fd) }
+        guard sendJSONLine(fd: fd, payload: payload) else { return .menuBarUnavailable }
+        var tv = timeval(tv_sec: timeoutSeconds, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        guard let line = readLine(fd: fd),
+              let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let result = json["result"] as? String else { return .menuBarUnavailable }
+        switch result {
+        case "ok":
+            var body = json
+            body.removeValue(forKey: "result")
+            return .ok(body)
+        case "cancelled":
+            return .cancelled(message: json["message"] as? String ?? "Nothing was registered.")
+        case "error":
+            return .failed(message: json["message"] as? String ?? "The Relay Runner request failed.")
+        default:
+            return .menuBarUnavailable
+        }
     }
 
     static func requestHostedTool(name: String, arguments: [String: Any]) -> HostedToolOutcome {

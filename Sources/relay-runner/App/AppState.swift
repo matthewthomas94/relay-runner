@@ -3594,6 +3594,118 @@ final class AppState {
         }.value
     }
 
+    /// RR-443: canonical turn ids in which `find_project` found no confident
+    /// match. `register_project` refuses in those turns: the user's answer to
+    /// "existing or new?" arrives in a later turn.
+    @ObservationIgnored private var unresolvedProjectLookupTurns: [String] = []
+    @ObservationIgnored private var voiceProjectRegistrationInFlight = false
+
+    /// RR-443: read-only match of a spoken name against the project registry.
+    @MainActor
+    func findProjectByName(_ name: String, source: [String: String]?) async -> ProjectLookupReply {
+        guard let registry = projectRegistryV2 else {
+            return .failed(message: "The Relay Runner project registry is unavailable.")
+        }
+        let lookup = await Task.detached(priority: .utility) { () -> Result<(ProjectNameMatcher.Result, String?), Error> in
+            Result {
+                let result = ProjectNameMatcher.match(name, in: try registry.projects().map(ProjectNameMatcher.Candidate.init))
+                guard result.status != .exact, result.status != .folder, let source else { return (result, nil) }
+                return (result, Self.activeCanonicalTurnID(source: source))
+            }
+        }.value
+        switch lookup {
+        case .success(let (result, unresolvedTurn)):
+            if let unresolvedTurn, !unresolvedProjectLookupTurns.contains(unresolvedTurn) {
+                unresolvedProjectLookupTurns = Array((unresolvedProjectLookupTurns + [unresolvedTurn]).suffix(16))
+            }
+            return .found(result)
+        case .failure(let error):
+            return .failed(message: String(describing: error))
+        }
+    }
+
+    /// RR-443: register a project the user named, after they answered
+    /// existing or new. Runs only inside the caller's active native user turn,
+    /// never in the turn that asked the question, and takes every location
+    /// from the shared folder picker. The registry operations are the ones
+    /// Add existing project and Create new project use.
+    @MainActor
+    func registerProjectByVoice(_ request: VoiceProjectRegistration.Request, userAnswer: String,
+                                source: [String: String]) async -> ProjectRegistrationReply {
+        guard let registry = projectRegistryV2 else {
+            return .failed(message: "The Relay Runner project registry is unavailable.")
+        }
+        guard !voiceProjectRegistrationInFlight else {
+            return .failed(message: "A project folder picker is already open. Wait for the user to finish it.")
+        }
+        guard !userAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              source["source_context_id"] == activeContext.id,
+              let binding = assistantSessionStore.binding(for: activeContext),
+              binding.transportSessionID == source["provider_session_id"],
+              binding.nativeSessionID == source["native_session_id"] else {
+            return .failed(message: "register_project requires the current session's active user turn.")
+        }
+        guard let turnID = await Task.detached(priority: .utility, operation: { Self.activeCanonicalTurnID(source: source) }).value else {
+            return .failed(message: "register_project requires the user's active answering turn; it was not found or was cancelled.")
+        }
+        guard !unresolvedProjectLookupTurns.contains(turnID) else {
+            return .failed(message: VoiceProjectRegistration.RequestError.missingUserAnswer.description)
+        }
+
+        voiceProjectRegistrationInFlight = true
+        defer { voiceProjectRegistrationInFlight = false }
+        let message = VoiceProjectRegistration.pickerMessage(for: request)
+        let picked: URL? = await withCheckedContinuation { continuation in
+            WorkspaceDirectoryPicker.present(
+                hideWorkspace: { [weak self] ready in
+                    guard let self else { return ready() }
+                    self.suspendWorkspaceForProjectPicker(ready)
+                },
+                presentPanel: { WorkspaceDirectoryPicker.runAppKitDirectoryPanel(message: message) },
+                restoreWorkspace: { continuation.resume(returning: $0) }
+            )
+        }
+        defer {
+            if programBoardOverlay.isSuspendedForExternalWindow { programBoardOverlay.showWork() }
+        }
+        guard let picked else {
+            return .cancelled(message: "The user closed the folder picker. Nothing was registered.")
+        }
+        // The picker can stay open a while; a cancelled or superseded turn
+        // must not register anything.
+        guard await Task.detached(priority: .utility, operation: { Self.activeCanonicalTurnID(source: source) }).value == turnID else {
+            return .cancelled(message: "The user's turn ended before a folder was chosen. Nothing was registered.")
+        }
+
+        let contextID = source["source_context_id"]
+        let result = await Self.performProjectRegistrationWork { () -> (RegisteredProjectV2, ConfirmedProjectScopeToken?) in
+            let project = try VoiceProjectRegistration.register(request, pickedFolder: picked, registry: registry)
+            let token = try? GeneralSessionAccess.issueToken(
+                for: project.lastResolvedPath, requestingContextID: contextID, registry: registry
+            )
+            return (project, token)
+        }
+        switch result {
+        case .success(let (project, token)):
+            invalidateConfirmedProjectScopeIfNeeded()
+            syncGeneralSessionProjectAccess()
+            refreshWorkspaceActivity(invalidateRoute: true)
+            return .registered(project, token: token)
+        case .failure(let error):
+            surfaceProjectManagementFailure(error)
+            return .failed(message: String(describing: error))
+        }
+    }
+
+    /// The canonical turn id when `source` names the active foreground turn.
+    /// Reads the turn ledger without creating a lease (blocks up to 2s).
+    private static func activeCanonicalTurnID(source: [String: String]) -> String? {
+        guard let reply = try? ProcessManager.contextContinuationAuthority(operation: "capture", source: source),
+              reply["status"] as? String == "active",
+              let canonical = reply["source"] as? [String: String] else { return nil }
+        return canonical["canonical_turn_id"]
+    }
+
     private func surfaceProjectManagementFailure(_ error: Error) {
         statusText = "Project update failed"
         stateMachine.showProgramStatus(
@@ -4350,6 +4462,14 @@ final class AppState {
             onProjectScopeToken: { [weak self] project, contextID in
                 guard let self else { return .failed(message: "Relay Runner app state is unavailable.") }
                 return await self.issueGeneralSessionScopeToken(project: project, contextID: contextID)
+            },
+            onFindProject: { [weak self] name, source in
+                guard let self else { return .failed(message: "Relay Runner app state is unavailable.") }
+                return await self.findProjectByName(name, source: source)
+            },
+            onRegisterProject: { [weak self] request, answer, source in
+                guard let self else { return .failed(message: "Relay Runner app state is unavailable.") }
+                return await self.registerProjectByVoice(request, userAnswer: answer, source: source)
             },
             onHostedToolPermissionMissing: { [weak self] kind, purpose in
                 guard let appState = self else { return }
