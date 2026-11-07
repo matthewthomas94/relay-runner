@@ -127,9 +127,14 @@ struct GraphicalTooltipLabel: View {
             .padding(.vertical, GraphicalTheme.spaceXXS)
             .padding(.horizontal, GraphicalTheme.spaceXS)
             .background(GraphicalTheme.neutral10, in: RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous))
+            .graphicalShadow(.s)
             .frame(maxWidth: Self.maxWidth)
             .fixedSize()
+            // Transparent room so the panel does not clip the shadow.
+            .padding(Self.shadowMargin)
     }
+
+    static let shadowMargin: CGFloat = 8
 }
 
 private struct GraphicalTooltipPresenter: NSViewRepresentable {
@@ -185,7 +190,7 @@ final class GraphicalTooltipAnchorView: NSView {
         panel.collectionBehavior = [.fullScreenAuxiliary]
         panel.contentView = hosting
         let anchor = window.convertToScreen(convert(bounds, to: nil))
-        let gap: CGFloat = 6
+        let gap: CGFloat = 6 - GraphicalTooltipLabel.shadowMargin
         var origin = NSPoint(x: anchor.midX - size.width / 2, y: anchor.minY - gap - size.height)
         if let visible = window.screen?.visibleFrame {
             origin.x = min(max(origin.x, visible.minX + 4), visible.maxX - size.width - 4)
@@ -212,5 +217,56 @@ extension View {
     /// The kit's tooltip in place of the system `.help` tooltip.
     func graphicalTooltip(_ text: String) -> some View {
         modifier(GraphicalTooltipModifier(text: text))
+    }
+}
+
+/// The kit's elevation (revision akv11dy4w50z). Each level is two black
+/// layers as the kit's CSS renders them: a tight key shadow at #00000016 and
+/// the token itself at #00000020. SwiftUI shadows have no spread, so each
+/// layer's spread is folded into its blur radius.
+enum GraphicalShadow {
+    case s, m, l
+
+    struct Layer {
+        let y: CGFloat
+        let blur: CGFloat
+        let spread: CGFloat
+        let alpha: Double
+    }
+
+    static let keyAlpha = Double(0x16) / 255
+    static let ambientAlpha = Double(0x20) / 255
+
+    var layers: [Layer] {
+        let (y, blur, spread): (CGFloat, CGFloat, CGFloat) = switch self {
+        case .s: (2, 4, 2)
+        case .m: (4, 8, 4)
+        case .l: (8, 16, 8)
+        }
+        return [
+            Layer(y: y / 4, blur: blur / 4, spread: spread / 4, alpha: Self.keyAlpha),
+            Layer(y: y, blur: blur, spread: spread, alpha: Self.ambientAlpha),
+        ]
+    }
+}
+
+private struct GraphicalShadowModifier: ViewModifier {
+    let shadow: GraphicalShadow
+    let isVisible: Bool
+
+    func body(content: Content) -> some View {
+        let layers = shadow.layers
+        content
+            .shadow(color: GraphicalTheme.neutral1.opacity(isVisible ? layers[0].alpha : 0),
+                    radius: (layers[0].blur + layers[0].spread) / 2, x: 0, y: layers[0].y)
+            .shadow(color: GraphicalTheme.neutral1.opacity(isVisible ? layers[1].alpha : 0),
+                    radius: (layers[1].blur + layers[1].spread) / 2, x: 0, y: layers[1].y)
+    }
+}
+
+extension View {
+    /// The kit's s, m or l elevation; `isVisible` lets a state fade it in.
+    func graphicalShadow(_ shadow: GraphicalShadow, isVisible: Bool = true) -> some View {
+        modifier(GraphicalShadowModifier(shadow: shadow, isVisible: isVisible))
     }
 }

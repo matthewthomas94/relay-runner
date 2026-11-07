@@ -189,6 +189,7 @@ struct WorkspaceMenuBarStrip: View {
                             // gives each tab its own id so it only crossfades.
                             RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
                                 .fill(WorkspaceNavigationStyle.selectedFill)
+                                .graphicalShadow(.s)
                                 .matchedGeometryEffect(
                                     id: reduceMotion ? AnyHashable(tab.id) : AnyHashable("selection"),
                                     in: selectionHighlight

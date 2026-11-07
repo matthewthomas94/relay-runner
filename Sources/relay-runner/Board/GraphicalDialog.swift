@@ -69,6 +69,7 @@ struct GraphicalDialogView: View {
             .background(
                 RoundedRectangle(cornerRadius: GraphicalTheme.radiusM, style: .continuous)
                     .fill(GraphicalTheme.neutral2)
+                    .graphicalShadow(.l)
             )
             .accessibilityElement(children: .contain)
             .accessibilityLabel(title)

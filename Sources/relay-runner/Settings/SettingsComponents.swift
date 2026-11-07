@@ -317,6 +317,7 @@ private struct SettingsSegmentButton: View {
                             style: .continuous
                         )
                         .fill(GraphicalTheme.neutral1.opacity(GraphicalTheme.fillThroughDotsOpacity))
+                        .graphicalShadow(.s)
                         .background(FluxDotsBackground(
                             cornerRadius: GraphicalTheme.radiusS,
                             style: .standard,
@@ -410,6 +411,8 @@ struct SharedActionButtonSurface: View {
         // kit's translucent neutral-4 over the fill. Focus draws the accent ring.
         shape
             .fill(presentation.isEnabled ? palette.fill : GraphicalTheme.neutral3)
+            // Kit primary and danger buttons lift with the small shadow on hover.
+            .graphicalShadow(.s, isVisible: presentation.isHovered && (prominence == .primary || prominence == .danger))
             .overlay(shape.fill(GraphicalTheme.neutral4.opacity(presentation.sharedFillOpacity(for: prominence))))
             .overlay(
                 shape.stroke(
@@ -617,6 +620,7 @@ enum SettingsNavigationPresentation {
 
 struct SettingsActionPresentation: Equatable {
     let isEnabled: Bool
+    var isHovered = false
     let fillOpacity: Double
     let strokeOpacity: Double
     let neutralFillOpacity: Double
@@ -657,6 +661,7 @@ struct SettingsActionPresentation: Equatable {
         // at 20%; focus is the accent ring and nothing else.
         return SettingsActionPresentation(
             isEnabled: true,
+            isHovered: isHovered,
             fillOpacity: 0,
             strokeOpacity: isFocused ? 1 : 0,
             neutralFillOpacity: isHovered ? 0.2 : 0,

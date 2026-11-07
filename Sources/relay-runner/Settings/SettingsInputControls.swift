@@ -160,6 +160,7 @@ private struct SettingsSwitch: View {
                     .overlay(alignment: .leading) {
                         Circle()
                             .fill(knobFill)
+                            .graphicalShadow(.s)
                             .frame(width: SettingsSwitchMetrics.knobDiameter, height: SettingsSwitchMetrics.knobDiameter)
                             .offset(x: SettingsSwitchMetrics.inset + (configuration.isOn ? SettingsSwitchMetrics.knobTravel : 0))
                     }
@@ -293,6 +294,7 @@ struct SettingsSlider: View {
                     }
                 Capsule()
                     .fill(foreground)
+                    .graphicalShadow(.s)
                     .frame(width: 2.5, height: height - 14)
                     .position(x: thumb, y: height / 2)
                 // Kit value text: neutral-7 beside the fill, dark on it.

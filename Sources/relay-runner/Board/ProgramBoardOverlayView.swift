@@ -3376,12 +3376,8 @@ private struct ProgramTicketPanelChrome: ViewModifier {
                 ProgramBoardDarkSurfaceBackground(
                     cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius
                 )
-            )
-            .shadow(
-                color: ProgramBoardColumnChrome.shadowColor(for: theme),
-                radius: BoardDarkSurfaceStyle.shadowRadius,
-                x: 0,
-                y: BoardDarkSurfaceStyle.shadowYOffset
+                // The ticket panels are the kit's dialog: the large shadow.
+                .graphicalShadow(.l)
             )
             .overlay {
                 ProgramTicketPanelBoundsMarker()
