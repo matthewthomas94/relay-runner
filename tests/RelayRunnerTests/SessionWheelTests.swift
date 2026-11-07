@@ -8,9 +8,6 @@ final class SessionWheelTests: XCTestCase {
         SessionWheelController(haptics: .init(perform: { _ in }))
     }
     private func session(_ id: String) -> SessionWheelSession { .init(id: id, name: id) }
-    private func projects(_ count: Int) -> [SessionWheelProject] {
-        (0..<count).map { .init(id: "\($0)", name: "Project \($0)", path: "/projects/\($0)") }
-    }
 
     func testSessionPositionsSurviveRefreshAndAnEmptySlotIsReused() {
         let model = SessionWheelModel()
@@ -28,10 +25,9 @@ final class SessionWheelTests: XCTestCase {
     }
 
     func testEverySessionHasReachableOuterActionsAcrossTheRadialGap() {
-        for slot in 0..<geometry.slotCount {
+        for slot in geometry.sessionSlots {
             let model = SessionWheelModel()
-            model.refresh(sessions: (0..<6).map { session("\($0)") })
-            model.showAllSessions(at: geometry.center)
+            model.refresh(sessions: geometry.sessionSlots.map { session("\($0)") })
             model.hover(at: geometry.position(slot: slot, radius: 119))
             XCTAssertEqual(model.hoveredSlot, slot)
             model.hover(at: geometry.position(slot: slot, radius: (geometry.wheelRadius + geometry.actionInnerRadius) / 2))
@@ -80,25 +76,20 @@ final class SessionWheelTests: XCTestCase {
         model.refresh(sessions: [session("a"), session("b"), session("c")])
         XCTAssertEqual([0, 1, 5].compactMap { model.slots[$0]?.id }, ["a", "b", "c"])
         XCTAssertTrue([2, 3, 4].allSatisfy { model.slots[$0] == nil })
-        model.showProjects(at: geometry.center)
-        XCTAssertTrue((0..<6).allSatisfy { model.shortcut(at: $0) == nil })
     }
 
-    func testOverflowSessionsRemainReachableAndReturnToFreeTopSlots() {
+    /// RR-445: no more-sessions slot or all-sessions page. With no session the
+    /// first session slot starts the general session; other empty slots are blank.
+    func testOnlyTheFirstSlotStartsASessionAndOnlyWhileNoneRuns() {
         let model = SessionWheelModel()
+        XCTAssertEqual((0..<6).filter(model.isStartSlot), [0])
         model.refresh(sessions: ["a", "b", "c", "d"].map(session))
-        XCTAssertTrue(model.isMoreSessionsSlot(5))
-        XCTAssertNil(model.slots[5])
-        model.showAllSessions(at: geometry.center)
-        XCTAssertEqual(model.slots.compactMap { $0?.id }, ["a", "b", "c", "d"])
-        XCTAssertTrue(model.isNested)
-        model.hover(at: geometry.position(slot: 3, radius: 119))
-        XCTAssertEqual(model.hoveredSession?.id, "d")
-        XCTAssertFalse(model.isHoveringNoteTaker)
-        XCTAssertTrue(model.back(at: geometry.center))
+        XCTAssertEqual([0, 1, 5].compactMap { model.slots[$0]?.id }, ["a", "b", "c"])
+        XCTAssertTrue((0..<6).allSatisfy { !model.isStartSlot($0) })
         model.refresh(sessions: ["a", "b", "d"].map(session))
-        XCTAssertFalse(model.hasMoreSessions)
         XCTAssertEqual(model.slots[5]?.id, "d")
+        model.refresh(sessions: [])
+        XCTAssertEqual((0..<6).filter(model.isStartSlot), [0])
     }
 
     func testNoteControlsRetainHoverAcrossGapAndSessionRefresh() {
@@ -116,10 +107,6 @@ final class SessionWheelTests: XCTestCase {
             XCTAssertNil(model.hoveredAction)
             XCTAssertEqual(model.submenuSlot, slot)
         }
-        model.showProjects(at: geometry.center)
-        model.hover(at: geometry.position(slot: slot, radius: 119))
-        XCTAssertNil(model.submenuSlot)
-        XCTAssertNil(model.hoveredNoteAction)
     }
 
     func testNoteControlsFollowCaptureLifecycle() {
@@ -160,7 +147,7 @@ final class SessionWheelTests: XCTestCase {
         let controller = makeController()
         defer { controller.dismiss() }
         var phase = MeetingNoteCoordinatorPhase.idle
-        controller.refresh = { model, _ in model.notePhase = phase }
+        controller.refresh = { model in model.notePhase = phase }
         var shortcuts: [SessionWheelShortcut] = []
         controller.openShortcut = { shortcuts.append($0) }
         var actions: [SessionWheelNoteAction] = []
@@ -177,7 +164,6 @@ final class SessionWheelTests: XCTestCase {
         for slot in [4, 3, 2] {
             controller.selectSlot(slot, fromPointer: false)
             XCTAssertTrue(controller.isVisible)
-            XCTAssertFalse(controller.model.pickingProject)
         }
         XCTAssertEqual(shortcuts, [.workspace, .noteTaker, .settings])
         controller.performNoteAction(.pause)
@@ -233,26 +219,6 @@ final class SessionWheelTests: XCTestCase {
             XCTAssertTrue(controller.isVisible)
             XCTAssertTrue(workspace.keyEligible)
         }
-    }
-
-    @MainActor
-    func testOverflowNavigationPreservesSessionsAndWheelVisibility() {
-        _ = NSApplication.shared
-        let controller = makeController()
-        defer { controller.dismiss() }
-        controller.refresh = { model, _ in model.refresh(sessions: ["a", "b", "c", "d"].map(self.session)) }
-        var focused: String?
-        controller.focusSession = { focused = $0 }
-        controller.openShortcut = { _ in XCTFail("The nested session slot must not open a shortcut") }
-        controller.toggle()
-        controller.selectSlot(5, fromPointer: false)
-        XCTAssertTrue(controller.model.showingAllSessions)
-        controller.selectSlot(3, fromPointer: false)
-        XCTAssertEqual(focused, "d")
-        XCTAssertTrue(controller.isVisible)
-        controller.back()
-        XCTAssertFalse(controller.model.isNested)
-        XCTAssertTrue(controller.isVisible)
     }
 
     func testContourLabelsStayUprightAndFitInsideEveryThinActionSegment() {
@@ -315,85 +281,14 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertNil(model.hoveredAction)
     }
 
-    func testProjectPickerRequiresFreshMovementAndBackDoesNotCloseTheWheel() {
-        let model = SessionWheelModel()
-        model.projects = projects(2)
-        let entry = geometry.position(slot: 0, radius: 119)
-        model.hover(at: entry)
-        model.showProjects(at: entry)
-        model.hover(at: entry)
-        XCTAssertTrue(model.pickingProject)
-        XCTAssertNil(model.hoveredSlot)
-        model.hover(at: CGPoint(x: entry.x + 10, y: entry.y))
-        XCTAssertEqual(model.hoveredSlot, 0)
-        XCTAssertNil(model.hoveredSession)
-        XCTAssertTrue(model.back(at: entry))
-        XCTAssertFalse(model.pickingProject)
-        XCTAssertNil(model.hoveredSlot)
-        XCTAssertFalse(model.back(at: entry))
-    }
-
-    func testProjectPaginationReachesEveryProjectAndClampsWhenListShrinks() {
-        let model = SessionWheelModel()
-        model.projects = projects(13)
-        model.showProjects(at: geometry.center)
-        XCTAssertEqual(model.pageCount, 3)
-        XCTAssertEqual(model.visibleProjects.map(\.id), (0..<5).map(String.init))
-        XCTAssertTrue(model.isMoreProjectsSlot(5))
-        model.turnPage(1, at: geometry.center)
-        XCTAssertEqual(model.visibleProjects.map(\.id), (5..<10).map(String.init))
-        model.turnPage(1, at: geometry.center)
-        XCTAssertEqual(model.visibleProjects.map(\.id), ["10", "11", "12"])
-        XCTAssertFalse(model.isMoreProjectsSlot(5))
-        model.turnPage(1, at: geometry.center)
-        XCTAssertEqual(model.projectPage, 2)
-        XCTAssertTrue(model.back(at: geometry.center))
-        XCTAssertEqual(model.projectPage, 1)
-        XCTAssertTrue(model.pickingProject)
-        model.projects = projects(2)
-        model.refresh(sessions: [])
-        XCTAssertEqual(model.projectPage, 0)
-        model.projects = []
-        model.turnPage(1, at: geometry.center)
-        XCTAssertEqual(model.projectPage, 0)
-        XCTAssertTrue(model.visibleProjects.isEmpty)
-    }
-
-    func testProjectWheelsReserveMoreOnlyWhenNeededAndReachEveryProject() {
-        for count in 0...31 {
-            let model = SessionWheelModel()
-            model.projects = projects(count)
-            model.showProjects(at: geometry.center)
-            var visited: [String] = []
-            for page in 0..<model.pageCount {
-                visited += model.visibleProjects.map(\.id)
-                XCTAssertEqual(model.visibleProjects.count + (model.hasMoreProjects ? 1 : 0),
-                               min(geometry.slotCount, count - page * 5))
-                model.turnPage(1, at: geometry.center)
-            }
-            XCTAssertEqual(visited, (0..<count).map(String.init))
-            for _ in 0..<model.pageCount { XCTAssertTrue(model.back(at: geometry.center)) }
-            XCTAssertFalse(model.pickingProject)
-        }
-    }
-
     @MainActor
-    func testCenterClosesTheWheelOrStepsBackFromANestedWheel() {
+    func testCenterClosesTheWheel() {
         _ = NSApplication.shared
         let controller = makeController()
         defer { controller.dismiss() }
-        controller.refresh = { model, _ in model.projects = self.projects(7) }
+        controller.startSession = { XCTFail("The centre never starts a session"); return false }
 
         controller.toggle()
-        controller.selectCenter()
-        XCTAssertFalse(controller.isVisible)
-
-        controller.toggle()
-        controller.selectSlot(0, fromPointer: false) // Open the project picker.
-        XCTAssertTrue(controller.model.pickingProject)
-        controller.selectCenter()
-        XCTAssertTrue(controller.isVisible, "Inside a nested wheel the centre steps back")
-        XCTAssertFalse(controller.model.pickingProject)
         controller.selectCenter()
         XCTAssertFalse(controller.isVisible)
     }
@@ -406,7 +301,7 @@ final class SessionWheelTests: XCTestCase {
                 let controller = makeController()
                 defer { controller.dismiss() }
                 var focused = isFocused
-                controller.refresh = { model, _ in
+                controller.refresh = { model in
                     model.refresh(sessions: [.init(id: "a", name: "Project A", isFocused: focused)])
                 }
                 var selections: [String] = []
@@ -431,116 +326,49 @@ final class SessionWheelTests: XCTestCase {
         }
     }
 
+    /// RR-445: the empty first slot starts the general session directly; there
+    /// is no project picker, and the wheel stays open on the new session.
     @MainActor
-    func testEscapeNavigatesBackButOnlyTheToggleClosesTheRootWheel() {
+    func testStartSlotStartsTheGeneralSessionAndKeepsWheelOpen() {
         _ = NSApplication.shared
         let controller = makeController()
         defer { controller.dismiss() }
-        controller.refresh = { model, _ in model.projects = self.projects(7) }
-        controller.toggle()
-        controller.selectSlot(0, fromPointer: false)
-        controller.selectSlot(5, fromPointer: false)
-        controller.back()
-        XCTAssertEqual(controller.model.projectPage, 0)
-        XCTAssertTrue(controller.model.pickingProject)
-        controller.back()
-        XCTAssertFalse(controller.model.pickingProject)
-        controller.back()
-        XCTAssertTrue(controller.isVisible)
-        controller.toggle()
-        XCTAssertFalse(controller.isVisible)
-    }
-
-    @MainActor
-    func testMoreSegmentNavigatesAtSessionLimitAndStartingAProjectKeepsWheelOpen() {
-        _ = NSApplication.shared
-        let controller = makeController()
-        defer { controller.dismiss() }
-        controller.refresh = { model, _ in model.projects = self.projects(7) }
-        var started: String?
-        controller.startProject = { started = $0; return true }
-        controller.toggle()
-        controller.selectSlot(0, fromPointer: false)
-        controller.model.startUnavailableReason = "Session limit reached"
-        controller.selectSlot(5, fromPointer: false)
-        XCTAssertEqual(controller.model.projectPage, 1)
-        XCTAssertNil(started)
-        controller.model.startUnavailableReason = nil
-        controller.selectSlot(1, fromPointer: false)
-        XCTAssertEqual(started, projects(7)[6].path)
-        XCTAssertTrue(controller.isVisible)
-        XCTAssertFalse(controller.model.pickingProject)
-    }
-
-    @MainActor
-    func testNewSessionUsesTheChosenEmptySlotAfterProjectPagination() {
-        _ = NSApplication.shared
-        for slot in geometry.sessionSlots {
-            for delayed in [false, true] {
-                let controller = makeController()
-                defer { controller.dismiss() }
-                let project = projects(7)[6]
-                let context = AssistantSessionContext(kind: .project, projectID: project.id, repositoryPath: project.path)
-                let startedSession = session(context.id)
-                var live: [SessionWheelSession] = []
-                controller.refresh = { model, _ in
-                    model.projects = self.projects(7)
-                    model.refresh(sessions: live)
-                }
-                controller.startProject = { path in
-                    XCTAssertEqual(path, project.path)
-                    if !delayed { live = [startedSession] }
-                    return true
-                }
-                controller.toggle()
-                controller.selectSlot(slot, fromPointer: false)
-                controller.selectSlot(5, fromPointer: false)
-                controller.selectSlot(1, fromPointer: false)
-                XCTAssertFalse(controller.model.pickingProject)
-                XCTAssertTrue(controller.isVisible)
-                if delayed {
-                    controller.model.refresh(sessions: [])
-                    controller.model.refresh(sessions: [])
-                    live = [startedSession]
-                    controller.model.refresh(sessions: live)
-                }
-                XCTAssertEqual(controller.model.slots[slot]?.id, context.id,
-                               "The root slot, not the project page or first free slot, owns the new session")
-                XCTAssertEqual(controller.model.slots.compactMap { $0?.id }, [context.id])
-                controller.model.refresh(sessions: live)
-                XCTAssertEqual(controller.model.slots[slot]?.id, context.id)
-            }
-        }
-    }
-
-    @MainActor
-    func testFailedStartDoesNotReuseTheAbandonedSlotAndExistingSessionsStayPut() {
-        _ = NSApplication.shared
-        let controller = makeController()
-        defer { controller.dismiss() }
-        let project = projects(1)[0]
-        let context = AssistantSessionContext(kind: .project, projectID: project.id, repositoryPath: project.path)
-        var live = [session("existing")]
-        controller.refresh = { model, _ in
-            model.projects = [project]
-            model.refresh(sessions: live)
-        }
-        controller.startProject = { _ in false }
-        controller.toggle()
-        controller.selectSlot(5, fromPointer: false)
-        controller.selectSlot(0, fromPointer: false)
-        XCTAssertTrue(controller.model.pickingProject)
-        XCTAssertEqual(controller.model.notice, "Couldn't start session")
-        controller.back()
-        controller.selectSlot(1, fromPointer: false)
-        controller.startProject = { _ in
-            live.append(self.session(context.id))
+        var live: [SessionWheelSession] = []
+        controller.refresh = { model in model.refresh(sessions: live) }
+        var starts = 0
+        controller.startSession = {
+            starts += 1
+            live = [self.session("general")]
             return true
         }
+        controller.toggle()
+        for blank in [1, 5] { controller.selectSlot(blank, fromPointer: false) }
+        XCTAssertEqual(starts, 0, "Only the first slot starts a session")
+        controller.model.startUnavailableReason = "Finish taking notes first"
         controller.selectSlot(0, fromPointer: false)
-        XCTAssertEqual(controller.model.slots[0]?.id, "existing")
-        XCTAssertEqual(controller.model.slots[1]?.id, context.id)
-        XCTAssertNil(controller.model.slots[5])
+        XCTAssertEqual(starts, 0)
+        controller.model.startUnavailableReason = nil
+        controller.selectSlot(0, fromPointer: false)
+        XCTAssertEqual(starts, 1)
+        XCTAssertTrue(controller.isVisible)
+        XCTAssertEqual(controller.model.slots[0]?.id, "general")
+        XCTAssertTrue((0..<6).allSatisfy { !controller.model.isStartSlot($0) })
+        controller.selectSlot(0, fromPointer: false)
+        XCTAssertEqual(starts, 1, "Selecting the running session focuses it")
+    }
+
+    @MainActor
+    func testFailedStartShowsANoticeAndLeavesTheStartSlot() {
+        _ = NSApplication.shared
+        let controller = makeController()
+        defer { controller.dismiss() }
+        controller.refresh = { model in model.refresh(sessions: []) }
+        controller.startSession = { false }
+        controller.toggle()
+        controller.selectSlot(0, fromPointer: false)
+        XCTAssertEqual(controller.model.notice, "Couldn't start session")
+        XCTAssertTrue(controller.model.isStartSlot(0))
+        XCTAssertTrue(controller.isVisible)
     }
 
     func testWheelStartsAtCursorAndKeepsOuterControlsInsideEveryDisplayEdge() {
@@ -575,7 +403,7 @@ final class SessionWheelTests: XCTestCase {
         defer { controller.dismiss() }
         var recording = false
         var targets: [String] = []
-        controller.refresh = { model, _ in
+        controller.refresh = { model in
             model.refresh(sessions: [.init(id: "a", name: "Project A", isRecording: recording)])
         }
         controller.sessionAction = { id, action in
@@ -609,7 +437,7 @@ final class SessionWheelTests: XCTestCase {
         let controller = makeController()
         defer { controller.dismiss() }
         var sessions = [session("a")]
-        controller.refresh = { model, _ in model.refresh(sessions: sessions) }
+        controller.refresh = { model in model.refresh(sessions: sessions) }
         controller.sessionAction = { _, action in
             if action == .stop { sessions = [] }
             else { sessions[0].playback = .stop }
@@ -633,7 +461,7 @@ final class SessionWheelTests: XCTestCase {
         item.playback = .stop
         var acceptsAction = false
         var attempts = 0
-        controller.refresh = { model, _ in model.refresh(sessions: [item]) }
+        controller.refresh = { model in model.refresh(sessions: [item]) }
         controller.sessionAction = { id, action in
             XCTAssertEqual(id, "a")
             XCTAssertEqual(action, .message)
@@ -822,11 +650,6 @@ final class SessionWheelTests: XCTestCase {
         model.hover(at: geometry.position(slot: 0, radius: 119))
         XCTAssertEqual(model.hoveredSession?.id, "a")
         XCTAssertNil(model.hoveredSettingsControl)
-
-        model.showProjects(at: geometry.center)
-        model.hover(at: geometry.position(slot: slot, radius: 119))
-        XCTAssertFalse(model.isHoveringSettings)
-        XCTAssertNil(model.submenuSlot)
     }
 
     func testHoveredSubmenuControlIsNamedUnderItsParent() {
@@ -897,7 +720,7 @@ final class SessionWheelTests: XCTestCase {
         var previews: [Double] = []
         var commits: [Double] = []
         var shortcuts: [SessionWheelShortcut] = []
-        controller.refresh = { model, _ in
+        controller.refresh = { model in
             if !model.isAdjustingIntensity { model.particleIntensity = saved }
         }
         controller.previewIntensity = { previews.append($0) }
@@ -908,7 +731,7 @@ final class SessionWheelTests: XCTestCase {
         controller.model.hover(at: geometry.position(slot: 2, radius: 119))
         for step in 0...40 {
             controller.adjustIntensity(to: arcPoint(intensity.minAngle + 0.2 - CGFloat(step) * 0.02))
-            controller.refresh?(controller.model, false)
+            controller.refresh?(controller.model)
         }
         XCTAssertEqual(previews.last, 1.0)
         XCTAssertEqual(previews, previews.sorted(), "Preview follows the drag")
@@ -1013,7 +836,7 @@ final class SessionWheelTests: XCTestCase {
         defer { controller.dismiss() }
         var state = KeepAwakeState.off
         var calls = 0
-        controller.refresh = { model, _ in model.keepAwake = state }
+        controller.refresh = { model in model.keepAwake = state }
         controller.keepAwakeAction = {
             calls += 1
             state = state.isOn ? .off : .enabling
@@ -1029,7 +852,7 @@ final class SessionWheelTests: XCTestCase {
         controller.performKeepAwake()
         XCTAssertEqual(calls, 1, "Pending approval ignores repeat clicks")
         state = .on(ownsSleepSetting: true)
-        controller.refresh?(controller.model, false)
+        controller.refresh?(controller.model)
         controller.performKeepAwake()
         XCTAssertEqual(calls, 2)
         XCTAssertEqual(controller.model.keepAwake, .off)
@@ -1048,7 +871,7 @@ final class SessionWheelTests: XCTestCase {
         defer { controller.dismiss() }
         var autoPlay = false
         var calls = 0
-        controller.refresh = { model, _ in model.autoPlay = autoPlay }
+        controller.refresh = { model in model.autoPlay = autoPlay }
         controller.autoPlayAction = {
             calls += 1
             autoPlay.toggle()
@@ -1069,12 +892,8 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(calls, 2)
         XCTAssertEqual(pulses, [.generic, .generic])
         autoPlay = true // The main Settings page can change the same value.
-        controller.refresh?(controller.model, false)
+        controller.refresh?(controller.model)
         XCTAssertTrue(controller.model.autoPlay)
-        controller.model.showProjects(at: geometry.center)
-        controller.performAutoPlay()
-        XCTAssertEqual(calls, 2, "A project picker cannot activate hidden settings")
-        controller.model.reset(at: geometry.center)
         controller.autoPlayAction = { false }
         controller.performAutoPlay()
         XCTAssertEqual(controller.model.notice, "Voice auto-play unavailable")
@@ -1131,20 +950,18 @@ final class SessionWheelTests: XCTestCase {
             .init(id: "hidpress", name: "hidpress", isRecording: true),
             .init(id: "general", name: "general", canPlay: false)
         ])
-        model.projects = ["Vial QMK", "Hidpress Web", "ESP32 Bridge", "Website", "Voice Notes", "Research", "Playground"]
-            .enumerated().map { .init(id: "\($0.offset)", name: $0.element, path: "/\($0.offset)") }
         let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
-                                    selectCenter: {}, back: {}, dismiss: {}, recordingLevel: { _ in 1 })
-        for state in ["sessions", "session-notice", "controls", "play-hover", "recording-controls", "projects", "last-page", "limit",
+                                    selectCenter: {}, dismiss: {}, recordingLevel: { _ in 1 })
+        for state in ["sessions", "session-notice", "controls", "play-hover", "recording-controls",
                       "design-recording", "design-idle", "design-play", "design-playback",
-                      "shortcuts-empty", "notes-idle", "notes-recording", "notes-paused", "notes-saving",
-                      "more-sessions", "all-sessions",
+                      "shortcuts-empty", "start-unavailable", "notes-idle", "notes-recording", "notes-paused", "notes-saving",
+                      "overflow-sessions",
                       "settings-min", "settings-max", "settings-keep-awake-off", "settings-keep-awake-on",
                       "settings-keep-awake-off-idle", "settings-keep-awake-on-idle",
                       "settings-auto-play-off", "settings-auto-play-on", "settings-auto-play-on-idle",
                       "settings-keep-awake-pending", "settings-keep-awake-approval", "settings-keep-awake-failed",
                       "settings-restore", "settings-particles-off", "settings-dragging"]
-            + (0..<geometry.slotCount).map({ "contour-\($0)" }) {
+            + geometry.sessionSlots.map({ "contour-\($0)" }) {
             switch state {
             case "session-notice": model.notice = "Session could not start"
             case "controls":
@@ -1155,13 +972,11 @@ final class SessionWheelTests: XCTestCase {
             case "recording-controls":
                 model.hover(at: geometry.position(slot: 1, radius: 119))
                 model.hover(at: geometry.position(slot: 1, radius: geometry.actionRadius))
-            case "projects": model.showProjects(at: geometry.center)
-            case "last-page": model.turnPage(1, at: geometry.center)
-            case "limit": model.startUnavailableReason = "Session limit reached"
             case "shortcuts-empty":
                 model.reset(at: geometry.center)
                 model.refresh(sessions: [])
                 model.startUnavailableReason = nil
+            case "start-unavailable": model.startUnavailableReason = "Finish taking notes first"
             case "notes-idle", "notes-recording", "notes-paused", "notes-saving":
                 model.notePhase = state == "notes-recording" ? .recording
                     : state == "notes-paused" ? .paused
@@ -1194,11 +1009,11 @@ final class SessionWheelTests: XCTestCase {
                                                                 offset: -geometry.sliceAngle / 6))
                     model.endAdjustingIntensity()
                 }
-            case "more-sessions", "all-sessions":
+            case "overflow-sessions":
                 model.reset(at: geometry.center)
                 model.notePhase = .idle
+                model.startUnavailableReason = nil
                 model.refresh(sessions: (0..<4).map { .init(id: "\($0)", name: "Project \($0 + 1)") })
-                if state == "all-sessions" { model.showAllSessions(at: geometry.center) }
             case "design-recording", "design-idle", "design-play", "design-playback":
                 model.reset(at: geometry.center)
                 model.startUnavailableReason = nil
@@ -1219,10 +1034,9 @@ final class SessionWheelTests: XCTestCase {
                 if state.hasPrefix("contour-"), let slot = Int(state.suffix(1)) {
                     model.reset(at: geometry.center)
                     model.startUnavailableReason = nil
-                    model.refresh(sessions: (0..<geometry.slotCount).map {
+                    model.refresh(sessions: (0..<geometry.sessionSlots.count).map {
                         .init(id: "\($0)", name: "Project \($0 + 1)", isRecording: $0 == 1, canPlay: $0 != 2)
                     })
-                    model.showAllSessions(at: geometry.center)
                     model.hover(at: geometry.position(slot: slot, radius: 119))
                 }
             }

@@ -12,13 +12,6 @@ struct SessionWheelSession: Identifiable, Equatable {
     var playback: SessionVoicePlayback = .replay
 }
 
-struct SessionWheelProject: Identifiable, Equatable {
-    let id: String
-    let name: String
-    let path: String
-    var isAvailable = true
-}
-
 enum SessionWheelAction: Int, CaseIterable {
     case message, recording, stop
 
@@ -272,18 +265,13 @@ enum SessionWheelGeometry {
 
 @Observable
 final class SessionWheelModel {
-    private var sessions: [SessionWheelSession?] = Array(repeating: nil, count: SessionWheelGeometry.slotCount)
-    private var projectSlot: Int?
-    private var pendingSessionPlacement: (id: String, index: Int)?
+    /// RR-445: one entry per `SessionWheelGeometry.sessionSlots` position.
+    private var sessions: [SessionWheelSession?] = Array(repeating: nil, count: SessionWheelGeometry.sessionSlots.count)
     var slots: [SessionWheelSession?] {
-        if showingAllSessions { return sessions }
         var slots = Array<SessionWheelSession?>(repeating: nil, count: SessionWheelGeometry.slotCount)
-        for (index, slot) in SessionWheelGeometry.sessionSlots.enumerated() {
-            if !isMoreSessionsSlot(slot) { slots[slot] = sessions[index] }
-        }
+        for (index, slot) in SessionWheelGeometry.sessionSlots.enumerated() { slots[slot] = sessions[index] }
         return slots
     }
-    var projects: [SessionWheelProject] = []
     var notePhase: MeetingNoteCoordinatorPhase = .idle
     var particleIntensity = 0.6
     var particleFieldEnabled = true
@@ -296,9 +284,6 @@ final class SessionWheelModel {
     var startUnavailableReason: String?
     var canStartSession: Bool { startUnavailableReason == nil }
     var notice: String?
-    private(set) var pickingProject = false
-    private(set) var showingAllSessions = false
-    private(set) var projectPage = 0
     private(set) var hoveredSlot: Int?
     private var hoveredControl: Int?
     var hoveredAction: SessionWheelAction? {
@@ -307,11 +292,8 @@ final class SessionWheelModel {
     var hoveredNoteAction: SessionWheelNoteAction? {
         isHoveringNoteTaker ? hoveredControl.flatMap(SessionWheelNoteAction.init(rawValue:)) : nil
     }
-    var isNested: Bool { pickingProject || showingAllSessions }
-    var pageID: Int { pickingProject ? projectPage : showingAllSessions ? -2 : -1 }
-    var hasMoreSessions: Bool { sessions.dropFirst(3).contains { $0 != nil } }
-    var isHoveringNoteTaker: Bool { !isNested && hoveredSlot == SessionWheelShortcut.noteTaker.rawValue }
-    var isHoveringSettings: Bool { !isNested && hoveredSlot == SessionWheelShortcut.settings.rawValue }
+    var isHoveringNoteTaker: Bool { hoveredSlot == SessionWheelShortcut.noteTaker.rawValue }
+    var isHoveringSettings: Bool { hoveredSlot == SessionWheelShortcut.settings.rawValue }
     var hoveredSettingsControl: SessionWheelSettingsControl? {
         isHoveringSettings ? hoveredControl.map(SessionWheelSettingsControl.init(subdivision:)) : nil
     }
@@ -327,27 +309,19 @@ final class SessionWheelModel {
     }
 
     func shortcut(at index: Int) -> SessionWheelShortcut? {
-        isNested ? nil : SessionWheelShortcut(rawValue: index)
+        SessionWheelShortcut(rawValue: index)
     }
 
-    func isMoreSessionsSlot(_ index: Int) -> Bool {
-        !isNested && hasMoreSessions && index == SessionWheelGeometry.sessionSlots.last
+    /// RR-445: with no session running, the first session slot starts the
+    /// general session. Other empty session slots stay blank.
+    func isStartSlot(_ index: Int) -> Bool {
+        index == SessionWheelGeometry.sessionSlots.first && sessions.allSatisfy { $0 == nil }
     }
     private var pointerOrigin: CGPoint = SessionWheelGeometry.center
     private var pointerActivated = false
 
-    private var projectsPerPage: Int { SessionWheelGeometry.slotCount - 1 }
-    var pageCount: Int { max(1, (projects.count + projectsPerPage - 2) / projectsPerPage) }
-    var hasMoreProjects: Bool { projectPage < pageCount - 1 }
-    func isMoreProjectsSlot(_ index: Int) -> Bool {
-        pickingProject && hasMoreProjects && index == SessionWheelGeometry.slotCount - 1
-    }
-    var visibleProjects: [SessionWheelProject] {
-        Array(projects.dropFirst(projectPage * projectsPerPage)
-            .prefix(hasMoreProjects ? projectsPerPage : SessionWheelGeometry.slotCount))
-    }
     var hoveredSession: SessionWheelSession? {
-        guard !pickingProject, let hoveredSlot else { return nil }
+        guard let hoveredSlot else { return nil }
         return slots[hoveredSlot]
     }
 
@@ -357,74 +331,14 @@ final class SessionWheelModel {
         for index in self.sessions.indices {
             if let old = self.sessions[index] { self.sessions[index] = sessions.first { $0.id == old.id } }
         }
-        // Startup is asynchronous: match the requested context before filling other empty slots.
-        if let pending = pendingSessionPlacement, let session = sessions.first(where: { $0.id == pending.id }) {
-            if self.sessions[pending.index] == nil,
-               !self.sessions.contains(where: { $0?.id == session.id }) {
-                self.sessions[pending.index] = session
-            }
-            pendingSessionPlacement = nil
-        }
-        // Bring overflow back into a free top slot when another session ends.
-        for index in 3..<self.sessions.count where self.sessions[index] != nil {
-            if let empty = self.sessions.prefix(3).firstIndex(where: { $0 == nil }) {
-                self.sessions[empty] = self.sessions[index]
-                self.sessions[index] = nil
-            }
-        }
         for session in sessions where !self.sessions.contains(where: { $0?.id == session.id }) {
             if let empty = self.sessions.firstIndex(where: { $0 == nil }) { self.sessions[empty] = session }
         }
         if hoveredID != hoveredSession?.id { clearHover() }
         if submenuSlot == nil { hoveredControl = nil }
-        projectPage = min(projectPage, pageCount - 1)
     }
 
     func reset(at pointer: CGPoint) {
-        pickingProject = false
-        showingAllSessions = false
-        projectSlot = nil
-        projectPage = 0
-        notice = nil
-        rearmPointer(at: pointer)
-    }
-
-    func showProjects(from slot: Int? = nil, at pointer: CGPoint) {
-        projectSlot = slot.flatMap { SessionWheelGeometry.sessionSlots.firstIndex(of: $0) }
-        pickingProject = true
-        showingAllSessions = false
-        projectPage = 0
-        notice = nil
-        rearmPointer(at: pointer)
-    }
-
-    func didStartProject(_ project: SessionWheelProject) {
-        guard let projectSlot, sessions[projectSlot] == nil else { return }
-        let context = AssistantSessionContext(kind: .project, projectID: project.id, repositoryPath: project.path)
-        pendingSessionPlacement = (context.id, projectSlot)
-    }
-
-    func showAllSessions(at pointer: CGPoint) {
-        showingAllSessions = true
-        pickingProject = false
-        notice = nil
-        rearmPointer(at: pointer)
-    }
-
-    /// Returns true when Back consumed a project submenu.
-    func back(at pointer: CGPoint) -> Bool {
-        if showingAllSessions {
-            reset(at: pointer)
-            return true
-        }
-        guard pickingProject else { return false }
-        if projectPage > 0 { turnPage(-1, at: pointer) }
-        else { reset(at: pointer) }
-        return true
-    }
-
-    func turnPage(_ direction: Int, at pointer: CGPoint) {
-        projectPage = min(max(0, projectPage + direction), pageCount - 1)
         notice = nil
         rearmPointer(at: pointer)
     }

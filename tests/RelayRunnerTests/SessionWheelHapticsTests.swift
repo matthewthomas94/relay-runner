@@ -69,8 +69,9 @@ final class SessionWheelHapticsTests: XCTestCase {
             model.hover(at: point)
             return SessionWheelHaptics.target(at: point, model: model)
         }
+        // RR-445: the Start slot and the shortcuts; the other session slots are blank.
         for slot in 0..<geometry.slotCount {
-            XCTAssertEqual(target(slot: slot), .slot(slot))
+            XCTAssertEqual(target(slot: slot), [1, 5].contains(slot) ? nil : .slot(slot))
         }
         XCTAssertEqual(SessionWheelHaptics.target(at: geometry.center, model: model), .center)
         XCTAssertNil(target(slot: 0, radius: geometry.segmentInnerRadius - 2))
@@ -107,16 +108,11 @@ final class SessionWheelHapticsTests: XCTestCase {
         model.particleFieldEnabled = false
         XCTAssertNil(target(slot: 2, radius: geometry.actionRadius, offset: geometry.actionOffset(0)))
 
-        model.showAllSessions(at: geometry.center)
         XCTAssertEqual(target(slot: 0), .slot(0))
-        XCTAssertNil(target(slot: 1), "Empty overflow slots are disabled")
-        model.projects = [.init(id: "p", name: "P", path: "/projects/p"),
-                          .init(id: "q", name: "Q", path: "/projects/q", isAvailable: false)]
-        model.showProjects(at: geometry.center)
+        XCTAssertNil(target(slot: 1), "Empty session slots are blank while a session runs")
+        model.refresh(sessions: [])
         XCTAssertEqual(target(slot: 0), .slot(0))
-        XCTAssertNil(target(slot: 1))
-        XCTAssertNil(target(slot: 2))
-        model.startUnavailableReason = "Session limit reached"
+        model.startUnavailableReason = "Session starting"
         XCTAssertNil(target(slot: 0))
     }
 
@@ -127,48 +123,47 @@ final class SessionWheelHapticsTests: XCTestCase {
         let controller = SessionWheelController(haptics: .init(perform: { pulses.append($0) }))
         defer { controller.dismiss() }
         var accepted = false
+        var startAccepted = false
+        var live: [SessionWheelSession] = []
         controller.sessionAction = { _, _ in accepted }
         controller.noteAction = { _ in accepted }
-        controller.startProject = { _ in accepted }
+        controller.startSession = {
+            if startAccepted { live = [.init(id: "a", name: "A", canPlay: false)] }
+            return startAccepted
+        }
         controller.openShortcut = { _ in }
         controller.focusSession = { _ in }
-        controller.refresh = { model, _ in
-            model.refresh(sessions: [.init(id: "a", name: "A", canPlay: false)])
-            model.projects = [.init(id: "p", name: "P", path: "/projects/p")]
-        }
+        controller.refresh = { model in model.refresh(sessions: live) }
         controller.toggle()
         XCTAssertTrue(pulses.isEmpty)
-        controller.refresh?(controller.model, true)
+        controller.refresh?(controller.model)
+        controller.selectSlot(0, fromPointer: false) // Rejected launch.
+        controller.selectSlot(1, fromPointer: false) // Blank slot.
+        XCTAssertTrue(pulses.isEmpty)
+        startAccepted = true
+        controller.selectSlot(0, fromPointer: false) // Accepted launch.
+        XCTAssertEqual(pulses, [.generic])
         controller.performAction("a", .message) // Disabled.
         controller.performAction("a", .recording) // Rejected.
         controller.performNoteAction(.pause) // Disabled.
         controller.performNoteAction(.recording) // Rejected.
-        XCTAssertTrue(pulses.isEmpty)
-
-        controller.selectSlot(1, fromPointer: false) // Open the project picker.
-        XCTAssertEqual(pulses, [.generic])
-        controller.selectSlot(0, fromPointer: false) // Rejected launch.
         XCTAssertEqual(pulses.count, 1)
         accepted = true
-        controller.selectSlot(0, fromPointer: false) // Accepted launch.
         controller.performAction("a", .recording)
         controller.performNoteAction(.recording)
         controller.selectSlot(0, fromPointer: false) // Session selection.
         controller.selectSlot(3, fromPointer: false) // Notetaker shortcut.
-        controller.selectSlot(1, fromPointer: false)
-        controller.back()
-        XCTAssertEqual(pulses, Array(repeating: .generic, count: 8))
+        XCTAssertEqual(pulses, Array(repeating: .generic, count: 5))
         XCTAssertTrue(controller.isVisible)
-        controller.refresh?(controller.model, false)
+        controller.refresh?(controller.model)
         controller.selectCenter() // Closes the wheel.
         XCTAssertFalse(controller.isVisible)
-        XCTAssertEqual(pulses, Array(repeating: .generic, count: 9))
+        XCTAssertEqual(pulses, Array(repeating: .generic, count: 6))
         controller.hoverFeedback(at: geometry.center, target: .center)
         controller.performNoteAction(.recording)
         controller.selectCenter()
-        controller.back()
-        XCTAssertEqual(pulses.count, 9)
+        XCTAssertEqual(pulses.count, 6)
         controller.toggle()
-        XCTAssertEqual(pulses.count, 9, "Reopening a closing wheel does not pulse")
+        XCTAssertEqual(pulses.count, 6, "Reopening a closing wheel does not pulse")
     }
 }

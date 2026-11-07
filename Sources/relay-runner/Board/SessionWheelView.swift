@@ -5,7 +5,6 @@ struct SessionWheelView: View {
     let selectSlot: (Int, Bool) -> Void
     let performAction: (String, SessionWheelAction) -> Void
     let selectCenter: () -> Void
-    let back: () -> Void
     let dismiss: () -> Void
     var performNoteAction: (SessionWheelNoteAction) -> Void = { _ in }
     var recordingLevel: (String) -> Float = { _ in 0 }
@@ -23,7 +22,6 @@ struct SessionWheelView: View {
 
     private let geometry = SessionWheelGeometry.self
     static let coordinateSpace = "session-wheel"
-    private var pageID: Int { model.pageID }
     private var submenuSlot: Int? { model.submenuSlot }
 
     var body: some View {
@@ -155,41 +153,31 @@ struct SessionWheelView: View {
                 hoverFeedback(nil, nil)
             }
         }
-        .onExitCommand(perform: back)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(model.pickingProject ? "Start a project session" : "Session wheel")
+        .accessibilityLabel("Session wheel")
     }
 
     private func slot(_ index: Int, menu: SessionWheelMenu) -> some View {
-        let pickingProject = menu.pickingProject
-        let page = menu.page
         let session = menu.sessions[index]
         let shortcut = menu.shortcut(at: index)
-        let project = menu.projects.indices.contains(index) ? menu.projects[index] : nil
-        let moreProjects = pickingProject && menu.hasMoreProjects && index == geometry.slotCount - 1
-        let moreSessions = !pickingProject && !menu.showingAllSessions && menu.hasMoreSessions
-            && index == geometry.sessionSlots.last
-        let more = moreProjects || moreSessions
-        let empty = pickingProject ? project == nil && !more : session == nil && shortcut == nil && !more
-        let title = moreProjects ? "More projects" : moreSessions ? "More sessions"
-            : pickingProject ? (project?.name ?? "") : shortcut?.title ?? session?.name ?? "Start session"
+        let startSlot = model.isStartSlot(index)
+        let empty = session == nil && shortcut == nil
+        // RR-445: an empty slot other than the one Start slot is blank.
+        let title = shortcut?.title ?? session?.name ?? (startSlot ? "Start session" : "")
         let caption = model.hoveredSlot == index ? model.hoveredControlCaption : nil
         let sessionHint = session?.isFocused == true
             ? "Open this session's terminal in Workspace."
             : "Switch session. Move outward for session controls."
-        let enabled = pickingProject
-            ? more || (project?.isAvailable == true && menu.canStartSession)
-            : !menu.showingAllSessions || session != nil
+        let enabled = !empty || (startSlot && menu.canStartSession)
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .projectCard, isEnabled: enabled,
-            isSelected: !pickingProject && (session?.isFocused == true
+            isSelected: (session?.isFocused == true
                 || (shortcut == .noteTaker && model.notePhase.ownsForeground)),
             isHovered: !menuMotion.motion.isAnimating && model.hoveredSlot == index, reduceMotion: reduceMotion
         )
         let shape = SessionWheelSector(slot: index, innerRadius: geometry.segmentInnerRadius,
                                        outerRadius: geometry.segmentOuterRadius)
         return Button {
-            guard pageID == page else { return }
             selectSlot(index, true)
         } label: {
             ZStack {
@@ -199,9 +187,7 @@ struct SessionWheelView: View {
                         controlBackground(Circle(), presentation: presentation)
                             .frame(width: 42, height: 42)
                             .overlay {
-                                if more {
-                                    Image(systemName: "ellipsis").font(AppTypography.symbolFont(size: 17, weight: .medium))
-                                } else if let shortcut {
+                                if let shortcut {
                                     Image(systemName: shortcut.symbol).font(AppTypography.symbolFont(size: 17, weight: .regular))
                                 } else if empty {
                                     Image(systemName: "plus").font(AppTypography.symbolFont(size: 17, weight: .medium))
@@ -209,7 +195,7 @@ struct SessionWheelView: View {
                                     Text(initials(title)).font(AppTypography.font(.projectTitle, size: 15))
                                 }
                             }
-                        if !pickingProject, let session {
+                        if let session {
                             if session.unreadCount > 0 {
                                 Text("\(session.unreadCount)")
                                     .font(AppTypography.font(.smallCaption))
@@ -237,7 +223,7 @@ struct SessionWheelView: View {
                     .frame(width: 90, height: 30, alignment: .top)
                 }
                 .position(geometry.position(slot: index, radius: 119))
-                .opacity((pickingProject || menu.showingAllSessions) && empty ? 0 : 1)
+                .opacity(empty && !startSlot ? 0 : 1)
             }
             .contentShape(shape)
         }
@@ -246,13 +232,11 @@ struct SessionWheelView: View {
         .opacity(enabled ? 1 : 0.55)
         .animation(presentation.animation, value: presentation)
         .accessibilityLabel(title.isEmpty ? "Empty slot" : title)
-        .accessibilityHint(moreProjects ? "Next project wheel" : moreSessions ? "Show all active sessions"
-            : pickingProject ? "Start session" : shortcut == .noteTaker
+        .accessibilityHint(shortcut == .noteTaker
             ? "Open Notetaker. Move outward for recording controls."
             : shortcut == .settings ? "Open Settings. Move outward for particle intensity, Keep Awake and voice auto-play."
-            : shortcut != nil ? "Open \(title)" : session == nil ? "Choose a project" : sessionHint)
+            : shortcut != nil ? "Open \(title)" : session == nil ? "Start the general session" : sessionHint)
         .accessibilityAction {
-            guard pageID == page else { return }
             selectSlot(index, false)
         }
         .accessibilityActions {
@@ -269,7 +253,7 @@ struct SessionWheelView: View {
                 }
                 Button(model.autoPlayActionTitle) { performAutoPlay() }
             }
-            if !pickingProject, let session {
+            if let session {
                 ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
                     if action.isEnabled(for: session) {
                         Button(action.title(for: session)) { performAction(session.id, action) }
@@ -277,7 +261,7 @@ struct SessionWheelView: View {
                 }
             }
         }
-        .graphicalTooltip(!enabled && !empty ? "Project unavailable or session limit reached" : title)
+        .graphicalTooltip(!enabled && startSlot ? model.startUnavailableReason ?? title : title)
     }
 
     private func actionButton(_ action: SessionWheelAction, session: SessionWheelSession, slot: Int) -> some View {
@@ -458,11 +442,10 @@ struct SessionWheelView: View {
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .control, isHovered: hubHovered, reduceMotion: reduceMotion
         )
-        let title = model.isNested ? (model.projectPage > 0 ? "Previous projects" : "Back to sessions") : "Close"
-        let detail = model.notice ?? model.startUnavailableReason
-            ?? (model.pickingProject && model.projects.isEmpty ? "No projects to start" : "")
+        let title = "Close"
+        let detail = model.notice ?? model.startUnavailableReason ?? ""
         return Button(action: selectCenter) {
-            RelaySwap(model.isNested) { isBack in SessionWheelCloseGlyph(isBack: isBack) }
+            SessionWheelCloseGlyph()
                 .frame(width: geometry.hubRadius * 2, height: geometry.hubRadius * 2)
                 .background(controlBackground(Circle(), presentation: presentation))
                 .contentShape(Circle())

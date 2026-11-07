@@ -54,15 +54,6 @@ final class VoiceReplyBadgeTests: XCTestCase {
         XCTAssertEqual(VoiceReplyBadge.load(path: spool.replyBadge).count, 3)
     }
 
-    func testReadOutSendsAReplayControlForTheSession() throws {
-        let message = try XCTUnwrap(AppState.voiceReplayMessage(sessionKey: "context-a"))
-        XCTAssertTrue(message.hasPrefix("__REPLAY__:"))
-        let payload = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(message.dropFirst("__REPLAY__:".count).utf8)) as? [String: String]
-        )
-        XCTAssertEqual(payload, ["session_key": "context-a"])
-    }
-
     func testWheelPlaybackAvailabilityRequiresALatestStoredMessage() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: url) }

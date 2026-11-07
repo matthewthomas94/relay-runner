@@ -139,52 +139,6 @@ final class SessionWheelMotionTests: XCTestCase {
     }
 
     @MainActor
-    func testMenuKeepsOutgoingContentUntilCollapsedThenExpandsOnlyTheNewPage() async throws {
-        let model = SessionWheelModel()
-        model.projects = (0..<13).map {
-            .init(id: "\($0)", name: "Project \($0)", path: "/projects/\($0)")
-        }
-        let menus = SessionWheelMenuMotion()
-        let sessions = SessionWheelMenu(model)
-        await menus.update(to: sessions, reduceMotion: false)
-        model.showProjects(at: SessionWheelGeometry.center)
-        let firstPage = SessionWheelMenu(model)
-        let change = Task { await menus.update(to: firstPage, reduceMotion: false) }
-        try await Task.sleep(for: .milliseconds(125))
-        XCTAssertEqual(menus.displayed, sessions, "Live model changes must not replace outgoing tiles")
-        XCTAssertFalse(menus.motion.isPresented)
-        let progress = menus.motion.progress(at: ProcessInfo.processInfo.systemUptime)
-        XCTAssertGreaterThan(progress, 0)
-        XCTAssertLessThan(progress, 1)
-        try await Task.sleep(for: .milliseconds(125))
-        XCTAssertEqual(menus.displayed, firstPage)
-        XCTAssertTrue(menus.motion.isPresented)
-        XCTAssertLessThan(menus.motion.progress(at: ProcessInfo.processInfo.systemUptime), 0.5)
-        await change.value
-        XCTAssertFalse(menus.motion.isAnimating)
-        XCTAssertEqual(menus.motion.progress(at: ProcessInfo.processInfo.systemUptime), 1)
-
-        model.turnPage(1, at: SessionWheelGeometry.center)
-        let secondPage = SessionWheelMenu(model)
-        let next = Task { await menus.update(to: secondPage, reduceMotion: false) }
-        try await Task.sleep(for: .milliseconds(80))
-        XCTAssertEqual(menus.displayed, firstPage)
-        next.cancel()
-        await next.value
-        // Back during contraction reverses the same page, without a stale later swap.
-        let before = menus.motion.progress(at: ProcessInfo.processInfo.systemUptime)
-        let back = Task { await menus.update(to: firstPage, reduceMotion: false) }
-        await Task.yield()
-        XCTAssertEqual(menus.displayed, firstPage)
-        XCTAssertEqual(menus.motion.progress(at: ProcessInfo.processInfo.systemUptime), before, accuracy: 0.05)
-        await back.value
-        try await Task.sleep(for: .seconds(SessionWheelPresentation.duration))
-        XCTAssertEqual(menus.displayed, firstPage)
-        XCTAssertEqual(menus.motion.progress(at: ProcessInfo.processInfo.systemUptime), 1)
-        XCTAssertFalse(menus.motion.isAnimating)
-    }
-
-    @MainActor
     func testStartingAndStoppingSessionsUpdatesTilesWithoutCollapsingTheWheel() async throws {
         for reduceMotion in [false, true] {
             let model = SessionWheelModel()
@@ -208,10 +162,9 @@ final class SessionWheelMotionTests: XCTestCase {
     }
 
     @MainActor
-    func testMenuRefreshDuringExpansionDoesNotRestartOrContractTheNewPage() async throws {
+    func testMenuRefreshDoesNotRestartOrContractTheWheel() async throws {
         let model = SessionWheelModel()
         let menus = SessionWheelMenuMotion()
-        model.showProjects(at: SessionWheelGeometry.center)
         await menus.update(to: SessionWheelMenu(model), reduceMotion: true)
         model.reset(at: SessionWheelGeometry.center)
         model.refresh(sessions: [.init(id: "a", name: "First")])
@@ -235,60 +188,18 @@ final class SessionWheelMotionTests: XCTestCase {
     }
 
     @MainActor
-    func testHostedMenuChangesDriveOneTimelineAndCancelWhenGoingBack() async throws {
-        _ = NSApplication.shared
-        let model = SessionWheelModel()
-        model.projects = [.init(id: "p", name: "Project", path: "/projects/p")]
-        let menus = SessionWheelMenuMotion()
-        let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
-                                    selectCenter: {}, back: {}, dismiss: {}, menuMotion: menus)
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 528, height: 528),
-                              styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: view)
-        window.orderFront(nil)
-        defer { window.close() }
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(menus.displayed?.pickingProject, false)
-        model.showProjects(at: SessionWheelGeometry.center)
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(menus.displayed?.pickingProject, false)
-        XCTAssertTrue(menus.motion.isAnimating)
-        XCTAssertFalse(menus.motion.isPresented)
-        XCTAssertTrue(model.back(at: SessionWheelGeometry.center))
-        try await Task.sleep(for: .milliseconds(450))
-        XCTAssertEqual(menus.displayed?.pickingProject, false)
-        XCTAssertFalse(menus.motion.isAnimating)
-        XCTAssertEqual(menus.motion.progress(at: ProcessInfo.processInfo.systemUptime), 1)
-        model.showProjects(at: SessionWheelGeometry.center)
-        try await Task.sleep(for: .seconds(SessionWheelPresentation.duration + 0.05))
-        XCTAssertEqual(menus.displayed?.pickingProject, true)
-        XCTAssertTrue(menus.motion.isPresented)
-        XCTAssertTrue(menus.motion.isAnimating)
-        try await Task.sleep(for: .milliseconds(400))
-        XCTAssertFalse(menus.motion.isAnimating)
-        XCTAssertEqual(menus.displayed?.projects.first?.id, "p")
-    }
-
-    @MainActor
     func testRealMenuFramesKeepTheBlackDiscAndCentreWhileTilesContractAndExpand() throws {
         let model = SessionWheelModel()
-        model.refresh(sessions: (0..<6).map { .init(id: "\($0)", name: "Session \($0)") })
-        model.projects = (0..<6).map {
-            .init(id: "p\($0)", name: "Project \($0)", path: "/projects/\($0)")
-        }
+        model.refresh(sessions: (0..<3).map { .init(id: "\($0)", name: "Session \($0)") })
         let sessions = SessionWheelMenu(model)
-        model.showProjects(at: SessionWheelGeometry.center)
-        let projects = SessionWheelMenu(model)
         let wheel = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
-                                     selectCenter: {}, back: {}, dismiss: {})
+                                     selectCenter: {}, dismiss: {})
         var reference: NSBitmapImageRep?
         let legMilliseconds = Int((SessionWheelPresentation.duration * 1000).rounded())
         for milliseconds in stride(from: 0, through: 2 * legMilliseconds, by: 25) {
-            let outgoing = milliseconds < legMilliseconds
             let progress = abs(Double(milliseconds - legMilliseconds)) / Double(legMilliseconds)
             let frame = SessionWheelPresentation(progress: progress)
-            let view = wheel.wheel(menu: outgoing ? sessions : projects, tiles: frame)
+            let view = wheel.wheel(menu: sessions, tiles: frame)
                 .transaction { $0.animation = nil; $0.disablesAnimations = true }
             let bitmap = try renderBitmap(view)
             if reference == nil { reference = bitmap }
@@ -300,7 +211,7 @@ final class SessionWheelMotionTests: XCTestCase {
                 XCTAssertEqual(color.alphaComponent, expected.alphaComponent, accuracy: 0.01)
             }
             if milliseconds == legMilliseconds {
-                // The menu swaps with only its permanent background and centre visible.
+                // Fully contracted, only the permanent background and centre are visible.
                 for slot in 0..<6 {
                     let point = SessionWheelGeometry.position(slot: slot, radius: 119)
                     let color = try XCTUnwrap(bitmap.colorAt(x: Int(point.x), y: Int(point.y))?.usingColorSpace(.deviceRGB))
@@ -321,10 +232,9 @@ final class SessionWheelMotionTests: XCTestCase {
     func testLiquidSubmenusGrowFromTheWheelAndSettleWithTheExistingGap() throws {
         let geometry = SessionWheelGeometry.self
         let model = SessionWheelModel()
-        model.refresh(sessions: (0..<6).map { .init(id: "\($0)", name: "Project \($0 + 1)", canPlay: true) })
-        model.showAllSessions(at: geometry.center)
+        model.refresh(sessions: (0..<3).map { .init(id: "\($0)", name: "Project \($0 + 1)", canPlay: true) })
         let wheel = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
-                                    selectCenter: {}, back: {}, dismiss: {})
+                                    selectCenter: {}, dismiss: {})
         for slot in 0..<6 {
             model.hover(at: geometry.position(slot: slot, radius: 119))
             for progress in [0.0, 0.3, 0.5, 0.7, 0.9, 0.95, 1.0] {
@@ -449,7 +359,7 @@ final class SessionWheelMotionTests: XCTestCase {
             preview.refresh(sessions: [.init(id: "a", name: "General Tasks", canPlay: true),
                                        .init(id: "b", name: "Relay Runner", canPlay: true)])
             let wheel = SessionWheelView(model: preview, selectSlot: { _, _ in }, performAction: { _, _ in },
-                                        selectCenter: {}, back: {}, dismiss: {})
+                                        selectCenter: {}, dismiss: {})
             for index in frames.indices {
                 if let slot = slots[index] { preview.hover(at: SessionWheelGeometry.position(slot: slot, radius: 119)) }
                 else { preview.clearHover() }
@@ -476,7 +386,7 @@ final class SessionWheelMotionTests: XCTestCase {
         for elapsed in [0.0, 0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175, duration] {
             let presentation = SessionWheelPresentation(progress: 1 - elapsed / duration)
             let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
-                selectCenter: {}, back: {}, dismiss: {},
+                selectCenter: {}, dismiss: {},
                 presentation: presentation)
                 .transaction { $0.animation = nil; $0.disablesAnimations = true }
             let bitmap = try renderBitmap(view)

@@ -4,9 +4,10 @@ import SwiftUI
 final class SessionWheelController {
     let model = SessionWheelModel()
     let haptics: SessionWheelHaptics
-    var refresh: ((SessionWheelModel, Bool) -> Void)?
+    var refresh: ((SessionWheelModel) -> Void)?
     var focusSession: ((String) -> Void)?
-    var startProject: ((String) -> Bool)?
+    /// RR-445: starts the one general session.
+    var startSession: (() -> Bool)?
     var sessionAction: ((String, SessionWheelAction) -> Bool)?
     var recordingLevel: ((String) -> Float)?
     var openShortcut: ((SessionWheelShortcut) -> Void)?
@@ -53,7 +54,6 @@ final class SessionWheelController {
                 selectSlot: { [weak self] index, fromPointer in self?.selectSlot(index, fromPointer: fromPointer) },
                 performAction: { [weak self] id, action in self?.performAction(id, action) },
                 selectCenter: { [weak self] in self?.selectCenter() },
-                back: { [weak self] in self?.back() },
                 dismiss: { [weak self] in self?.dismiss() },
                 performNoteAction: { [weak self] in self?.performNoteAction($0) },
                 recordingLevel: { [weak self] id in self?.recordingLevel?(id) ?? 0 },
@@ -67,7 +67,7 @@ final class SessionWheelController {
             )
         }.scaleEffect(size / SessionWheelGeometry.diameter).frame(width: size, height: size)
         panel.contentView = SessionWheelHostingView(rootView: view)
-        refresh?(model, true)
+        refresh?(model)
         model.reset(at: pointerLocation)
         present(panel)
     }
@@ -79,7 +79,7 @@ final class SessionWheelController {
         installMonitors()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
             guard let self else { return }
-            self.refresh?(self.model, false)
+            self.refresh?(self.model)
             self.syncParticlePreview()
         }
         animate(visible: true, panel: panel)
@@ -141,23 +141,15 @@ final class SessionWheelController {
         return CGPoint(x: (cursor.x - panel.frame.minX) * scale, y: (panel.frame.maxY - cursor.y) * scale)
     }
 
-    func back() {
-        if isVisible, model.back(at: pointerLocation) { haptics.activate() }
-    }
-
     func hoverFeedback(at point: CGPoint?, target: SessionWheelHaptics.Target?) {
         syncParticlePreview()
         guard isVisible else { return }
         haptics.hover(target, at: point)
     }
 
-    /// The centre closes the wheel, or steps back from a nested wheel like Escape.
+    /// The centre closes the wheel.
     func selectCenter() {
         guard isVisible else { return }
-        if model.isNested {
-            back()
-            return
-        }
         haptics.activate()
         dismiss()
     }
@@ -169,48 +161,24 @@ final class SessionWheelController {
                 openShortcut(shortcut)
                 haptics.activate()
             }
-            refresh?(model, false)
+            refresh?(model)
             panel?.orderFrontRegardless()
             return
         }
-        if model.isMoreSessionsSlot(index) {
-            model.showAllSessions(at: pointerLocation)
-            haptics.activate()
-            return
-        }
-        if model.isNested {
-            // Fresh movement keeps a double-click from activating an inherited slot.
-            let isMouseEvent = NSApp.currentEvent.map { [.leftMouseDown, .leftMouseUp].contains($0.type) } ?? false
-            guard !fromPointer || !isMouseEvent || model.hoveredSlot == index else { return }
-        }
-        if model.pickingProject {
-            if model.isMoreProjectsSlot(index) {
-                model.turnPage(1, at: pointerLocation)
-                haptics.activate()
-                return
-            }
-            guard model.visibleProjects.indices.contains(index),
-                  model.canStartSession else { return }
-            let project = model.visibleProjects[index]
-            guard project.isAvailable else { return }
-            if startProject?(project.path) == true {
-                haptics.activate()
-                model.didStartProject(project)
-                model.reset(at: pointerLocation)
-                refresh?(model, true)
-            }
-            else { model.notice = "Couldn't start session" }
-        } else if let session = model.slots[index] {
+        if let session = model.slots[index] {
             if let focusSession {
                 focusSession(session.id)
                 haptics.activate()
             }
-            refresh?(model, true)
+            refresh?(model)
             panel?.orderFrontRegardless()
-        } else if !model.showingAllSessions {
-            refresh?(model, true)
-            model.showProjects(from: index, at: pointerLocation)
-            haptics.activate()
+        } else if model.isStartSlot(index), model.canStartSession {
+            if startSession?() == true {
+                haptics.activate()
+                model.reset(at: pointerLocation)
+                refresh?(model)
+            }
+            else { model.notice = "Couldn't start session" }
         }
     }
 
@@ -223,23 +191,23 @@ final class SessionWheelController {
         }
         model.notice = nil
         haptics.activate()
-        refresh?(model, true)
+        refresh?(model)
     }
 
     func performNoteAction(_ action: SessionWheelNoteAction) {
-        guard isVisible, !model.isNested, action.isEnabled(for: model.notePhase) else { return }
+        guard isVisible, action.isEnabled(for: model.notePhase) else { return }
         guard noteAction?(action) == true else {
             model.notice = "Notetaker action unavailable"
             return
         }
         model.notice = nil
         haptics.activate()
-        refresh?(model, true)
+        refresh?(model)
         panel?.orderFrontRegardless()
     }
 
     func adjustIntensity(to point: CGPoint) {
-        guard isVisible, !model.isNested, model.particleFieldEnabled else { return }
+        guard isVisible, model.particleFieldEnabled else { return }
         let previous = model.particleIntensity
         let value = model.adjustIntensity(to: point)
         if value != previous { previewIntensity?(value) }
@@ -266,7 +234,7 @@ final class SessionWheelController {
     }
 
     func stepIntensity(_ direction: Int) {
-        guard isVisible, !model.isNested, model.particleFieldEnabled else { return }
+        guard isVisible, model.particleFieldEnabled else { return }
         let value = SessionWheelIntensity.quantized(model.particleIntensity + Double(direction) * SessionWheelIntensity.step)
         guard value != model.particleIntensity else { return }
         model.particleIntensity = value
@@ -276,26 +244,26 @@ final class SessionWheelController {
     }
 
     func performKeepAwake() {
-        guard isVisible, !model.isNested, !model.keepAwake.isPending else { return }
+        guard isVisible, !model.keepAwake.isPending else { return }
         guard keepAwakeAction?() == true else {
             model.notice = "Keep Awake unavailable"
             return
         }
         model.notice = nil
         haptics.activate()
-        refresh?(model, false)
+        refresh?(model)
         panel?.orderFrontRegardless()
     }
 
     func performAutoPlay() {
-        guard isVisible, !model.isNested else { return }
+        guard isVisible else { return }
         guard autoPlayAction?() == true else {
             model.notice = "Voice auto-play unavailable"
             return
         }
         model.notice = nil
         haptics.activate()
-        refresh?(model, false)
+        refresh?(model)
         panel?.orderFrontRegardless()
     }
 
@@ -306,10 +274,8 @@ final class SessionWheelController {
         }
         if let monitor = NSEvent.addLocalMonitorForEvents(matching: clicks.union(.keyDown), handler: { [weak self] event in
             guard let self, self.isVisible else { return event }
-            if event.type == .keyDown, event.keyCode == 53 {
-                self.back()
-                return nil
-            }
+            // Escape is consumed; only the toggle or the centre closes the wheel.
+            if event.type == .keyDown, event.keyCode == 53 { return nil }
             if event.type != .keyDown, event.window !== self.panel { self.dismiss() }
             return event
         }) { monitors.append(monitor) }

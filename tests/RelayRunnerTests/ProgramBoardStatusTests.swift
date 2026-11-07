@@ -226,7 +226,7 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         let menuStart = try XCTUnwrap(contents.range(of: "private struct ProgramAddProjectMenu: View"))
         let menuEnd = try XCTUnwrap(
-            contents.range(of: "private struct ProgramStartSessionMenu: View", range: menuStart.upperBound..<contents.endIndex)
+            contents.range(of: "private struct ProgramWorkStyleMenu: View", range: menuStart.upperBound..<contents.endIndex)
         )
         let menu = String(contents[menuStart.lowerBound..<menuEnd.lowerBound])
         XCTAssertTrue(menu.contains("SettingsActionPresentation.resolve("))
@@ -247,25 +247,43 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(contents.contains("prominence: .primary"))
     }
 
-    func testSessionButtonSitsOnEachProjectCardInsteadOfTheDoneColumn() throws {
+    func testWorkspaceTopRowHoldsTheOneSessionControlAndCardsHaveNone() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let source = root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayView.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
+        let terminal = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Terminal/EmbeddedTerminal.swift"),
+            encoding: .utf8
+        )
         let cardStart = try XCTUnwrap(contents.range(of: "private struct ProgramProjectCard: View"))
         let cardEnd = try XCTUnwrap(
             contents.range(of: "struct ProgramWorkColumnPanel: View", range: cardStart.upperBound..<contents.endIndex)
         )
         let card = String(contents[cardStart.lowerBound..<cardEnd.lowerBound])
 
-        XCTAssertTrue(card.contains("ProgramSessionToolbarPresentation.resolve(hasActiveSession: hasSession, provider: sessionProvider)"))
+        // RR-445: exactly one Start/End control, at the far right of the top
+        // row after the clock; neither project rows nor the terminal have one.
+        XCTAssertEqual(contents.components(separatedBy: "ProgramSessionPrimaryButton(").count - 1, 1)
+        XCTAssertFalse(terminal.contains("ProgramSessionPrimaryButton("))
+        XCTAssertFalse(contents.contains("workspaceTerminalSessionAction"))
+        let clock = try XCTUnwrap(contents.range(of: "WorkspaceMenuBarClock()"))
+        let control = try XCTUnwrap(contents.range(of: "ProgramSessionPrimaryButton("))
+        XCTAssertLessThan(clock.lowerBound, control.lowerBound)
+        let row = String(contents[clock.lowerBound...]).components(separatedBy: ".zIndex(2)")[0]
+        XCTAssertTrue(row.contains("action: model.hasActiveSession ? onEndSession : onStartSession"))
+        XCTAssertTrue(row.contains(".frame(maxWidth: .infinity, alignment: .trailing)"))
+        XCTAssertFalse(card.contains("ProgramSessionToolbarPresentation"))
+        XCTAssertFalse(card.contains("onStartSession"))
+        XCTAssertFalse(contents.contains("onStartProjectSession"))
+        XCTAssertFalse(contents.contains("ProgramStartSessionMenu"))
         XCTAssertTrue(contents.contains("SharedActionButtonSurface(prominence: .secondary, presentation: presentation, palette: palette)"))
-        // Finder comes first, so the session button sits at the far right.
+        // Finder comes first, then the project's work style.
         let finder = try XCTUnwrap(card.range(of: "systemName: \"folder\""))
-        let session = try XCTUnwrap(card.range(of: "ProgramStartSessionMenu("))
-        XCTAssertLessThan(finder.lowerBound, session.lowerBound)
+        let workStyle = try XCTUnwrap(card.range(of: "ProgramWorkStyleMenu("))
+        XCTAssertLessThan(finder.lowerBound, workStyle.lowerBound)
         XCTAssertTrue(contents.contains("if lane != .done, canCreate {"))
         // Rows are compact: no per-project board counts, a running-session dot, a selected trait.
         XCTAssertFalse(contents.contains("ProjectBoardOverview"))
@@ -286,7 +304,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         let contents = try String(contentsOf: source, encoding: .utf8)
         let menuStart = try XCTUnwrap(contents.range(of: "private struct ProgramAddProjectMenu: View"))
         let menuEnd = try XCTUnwrap(
-            contents.range(of: "private struct ProgramStartSessionMenu: View", range: menuStart.upperBound..<contents.endIndex)
+            contents.range(of: "private struct ProgramWorkStyleMenu: View", range: menuStart.upperBound..<contents.endIndex)
         )
         let menu = String(contents[menuStart.lowerBound..<menuEnd.lowerBound])
         let styleStart = try XCTUnwrap(menu.range(of: "\n        .buttonStyle(.graphicalPress)"))

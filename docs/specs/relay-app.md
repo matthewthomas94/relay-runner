@@ -15,7 +15,7 @@ The `relay-app-mcp` server exposes these tools (namespace `mcp__relay-app__*`). 
 | `get_settings` | — | The effective `AppConfig` (`stt`, `tts`, `general`, `awareness`) and the keys Relay Runner records itself. |
 | `set_settings` | `settings` (sections mapping setting names to values) | Applies a partial update through `AppState.saveConfig`, the Settings Save path, which writes `config.toml` and hot-reloads running services. |
 | `list_projects` | — | Registered projects (id, name, availability) and the session state. |
-| `select_project` | `project_id` | Focuses or browses the project as `activate_project` does; never starts or stops a session. |
+| `select_project` | `project_id` | Opens the project's board as `activate_project` does; never starts, focuses or stops a session. |
 | `start_session` | `project_id` | `AppState.newSession(workingDirectory:)`, the Workspace Start path, through the RR-456 session handlers. |
 | `end_session` | `confirm: true` | `AppState.endSession()`, through the RR-456 handlers. |
 | `relay_remote_devices` | — | Paired phones (id, name, key fingerprint, network restriction) and Remote Login. |
