@@ -42,13 +42,14 @@ enum GraphicalTheme {
     static let accent4 = Color(nsColor: accent4NSColor)
     static let error = Color(nsColor: errorNSColor)
 
-    // Radii: xs 8, s 16, m 24, l 32, xl 64. Buttons and inputs use s; popovers,
-    // dialogs and tab lists use m; options inside a popover use xs.
+    // Radii (kit revision rb2u57i23dk0): xs 8, s 12, m 16, l 24, xl 48. Buttons
+    // and inputs use s; popovers, dialogs and tab lists use m; options inside a
+    // popover use xs.
     static let radiusXS: CGFloat = 8
-    static let radiusS: CGFloat = 16
-    static let radiusM: CGFloat = 24
-    static let radiusL: CGFloat = 32
-    static let radiusXL: CGFloat = 64
+    static let radiusS: CGFloat = 12
+    static let radiusM: CGFloat = 16
+    static let radiusL: CGFloat = 24
+    static let radiusXL: CGFloat = 48
 
     // Type scale sizes (xxs to xxl) and their line heights. Faces stay the app's own.
     static let textXXS: CGFloat = 8
