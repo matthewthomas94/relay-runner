@@ -60,6 +60,7 @@ enum ProgramBoardLayout {
         EdgeInsets(top: workScrollTopPadding, leading: 0, bottom: 28, trailing: 0)
     }
     static let projectCardHeight: CGFloat = 136
+    static let projectRowHeight: CGFloat = 48
     static let projectCardSpacing: CGFloat = 8
     static let statePanelHeight: CGFloat = BoardSurfaceLayout.columnHeight
     static let statePanelHorizontalPadding: CGFloat = BoardSurfaceLayout.horizontalPadding
@@ -568,7 +569,6 @@ struct ProgramBoardOverlayView: View {
                             onDismiss: onDismiss,
                             onAddExistingProject: onAddExistingProject,
                             onCreateProject: onCreateProject,
-                            onSelectProject: onSelectProject,
                             onCreateStart: onCreateStart,
                             onStartProjectSession: onStartProjectSession,
                             onEndProjectSession: onEndProjectSession,
@@ -1254,7 +1254,6 @@ private struct ProgramBoardContent: View {
     let onDismiss: () -> Void
     let onAddExistingProject: () -> Void
     let onCreateProject: () -> Void
-    let onSelectProject: (String) -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
     let onStartProjectSession: (String) -> Void
     let onEndProjectSession: (String) -> Void
@@ -1273,7 +1272,7 @@ private struct ProgramBoardContent: View {
                     ProgramOverviewColumn(
                         snapshot: snapshot,
                         projectTargets: model.projectTargets,
-                        selectedProjectPath: model.selectedProjectPath,
+                        selectedProjectPaths: model.selectedProjectPaths,
                         runningSessionPaths: model.runningSessionPaths,
                         sessionReplyBadges: model.sessionReplyBadges,
                         sessionProvider: model.sessionProvider,
@@ -1284,7 +1283,7 @@ private struct ProgramBoardContent: View {
                         onSelectAll: model.selectAllProjects,
                         onAddExistingProject: onAddExistingProject,
                         onCreateProject: onCreateProject,
-                        onSelectProject: onSelectProject,
+                        onToggleProject: model.toggleProject(path:),
                         onStartProjectSession: onStartProjectSession,
                         onEndProjectSession: onEndProjectSession,
                         onRetry: onRefresh,
@@ -1295,7 +1294,7 @@ private struct ProgramBoardContent: View {
                         ProgramWorkColumnPanel(
                             model: model,
                             lane: lane,
-                            showsProjectContext: model.isAllSelected,
+                            showsProjectContext: model.showsProjectContext,
                             theme: model.theme,
                             canCreate: !model.projectTargets.isEmpty,
                             onCreate: { onCreateStart(lane) },
@@ -1353,7 +1352,7 @@ private struct ProgramBoardContent: View {
 private struct ProgramOverviewColumn: View {
     let snapshot: ProgramDashboardSnapshot
     let projectTargets: [ProgramBoardProjectTarget]
-    let selectedProjectPath: String?
+    let selectedProjectPaths: [String]
     let runningSessionPaths: [String]
     let sessionReplyBadges: [String: Int]
     let sessionProvider: GeneralConfig.AgentProvider
@@ -1364,18 +1363,59 @@ private struct ProgramOverviewColumn: View {
     let onSelectAll: () -> Void
     let onAddExistingProject: () -> Void
     let onCreateProject: () -> Void
-    let onSelectProject: (String) -> Void
+    let onToggleProject: (String) -> Void
     let onStartProjectSession: (String) -> Void
     let onEndProjectSession: (String) -> Void
     let onRetry: () -> Void
     let onCreateDiagnostics: () -> Void
     let onDismiss: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var query = ""
+    @FocusState private var searchFocused: Bool
+
+    private var visibleProjects: [ProgramStatusItem] {
+        ProgramProjectRowFilter.visibleProjects(snapshot.projects, query: query)
+    }
+
+    private var searchRow: some View {
+        HStack(spacing: 8) {
+            TextField("Search projects", text: $query, prompt: Text(""))
+                .appPlaceholder("Search projects", when: query.isEmpty)
+                .textFieldStyle(.plain)
+                .font(AppTypography.font(.field))
+                .foregroundStyle(ProgramBoardStyle.primaryText)
+                .lineLimit(1)
+                .padding(.horizontal, GraphicalTheme.spaceS)
+                .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
+                .background(ProgramTicketFieldBackground(isFocused: searchFocused))
+                .focused($searchFocused)
+                .onSubmit { searchFocused = false }
+                .accessibilityLabel("Search projects")
+            if !selectedProjectPaths.isEmpty {
+                ProgramWorkspaceActionButton(
+                    title: "Clear",
+                    systemName: nil,
+                    accessibilityLabel: "Clear project selection",
+                    help: "Show tickets from all projects",
+                    action: onSelectAll
+                )
+                .transition(.relayElement)
+            }
+        }
+        .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: ProgramBoardLayout.projectHeaderToListSpacing,
+            maxHeight: ProgramBoardLayout.projectHeaderToListSpacing,
+            alignment: .center
+        )
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selectedProjectPaths.isEmpty)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ProgramProjectsHeader(
-                isAllSelected: selectedProjectPath == nil,
+                isAllSelected: selectedProjectPaths.isEmpty,
                 usesProjectRegistryV2: usesProjectRegistryV2,
                 onSelectAll: onSelectAll,
                 onAddExistingProject: onAddExistingProject,
@@ -1393,9 +1433,11 @@ private struct ProgramOverviewColumn: View {
                     .transition(.relayElement)
             }
 
+            searchRow
+
             BoardOverlayScrollView(contentInsets: ProgramBoardLayout.projectScrollContentInsets) {
                 VStack(alignment: .leading, spacing: ProgramBoardLayout.projectCardSpacing) {
-                    ForEach(snapshot.projects) { item in
+                    ForEach(visibleProjects) { item in
                         let itemPath = item.project?.path
                         let scopedPath = itemPath.flatMap { path in
                             projectTargets.first {
@@ -1404,9 +1446,7 @@ private struct ProgramOverviewColumn: View {
                         }
                         ProgramProjectCard(
                             item: item,
-                            isSelected: scopedPath.map {
-                                ProgramBoardProjectPath.matches(selectedProjectPath, $0)
-                            } ?? false,
+                            isSelected: ProgramBoardProjectPath.contains(selectedProjectPaths, scopedPath),
                             hasSession: scopedPath.map { path in
                                 runningSessionPaths.contains { ProgramBoardProjectPath.matches($0, path) }
                             } ?? false,
@@ -1418,7 +1458,7 @@ private struct ProgramOverviewColumn: View {
                             sessionProvider: sessionProvider,
                             onSelect: {
                                 if let path = scopedPath {
-                                    onSelectProject(path)
+                                    onToggleProject(path)
                                 }
                             },
                             onOpenInFinder: onDismiss,
@@ -1427,10 +1467,17 @@ private struct ProgramOverviewColumn: View {
                         )
                         .transition(.relayElement)
                     }
+                    if visibleProjects.isEmpty, !query.isEmpty {
+                        Text("No matching projects.")
+                            .font(AppTypography.font(.supporting))
+                            .foregroundStyle(ProgramBoardStyle.mutedText)
+                            .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
+                            .padding(.top, 12)
+                            .transition(.relayElement)
+                    }
                 }
-                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: snapshot.projects)
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: visibleProjects)
             }
-            .padding(.top, ProgramBoardLayout.projectHeaderToListSpacing)
 
             Spacer(minLength: 0)
         }
@@ -1746,50 +1793,34 @@ private struct ProgramProjectCard: View {
 
     var body: some View {
         Button(action: onSelect) {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .center, spacing: 8) {
-                    // Long repository names keep both ends; the full name is in the tooltip.
-                    Text(item.project?.name ?? "Unknown project")
-                        .font(AppTypography.font(.projectTitle))
-                        .foregroundStyle(ProgramBoardStyle.primaryText)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .graphicalTooltip(item.project?.name ?? "")
-                    if replyBadgeCount > 0 {
-                        SessionReplyBadge(count: replyBadgeCount)
-                            .transition(.relayElement)
-                    }
-                    Spacer(minLength: 0)
-                    // Reserves room for the actions overlaid outside the card button.
-                    // Fixed size: if this copy could shrink, a long name would run
-                    // under the real actions drawn on top.
-                    actions.fixedSize().hidden().accessibilityHidden(true)
+            HStack(alignment: .center, spacing: 8) {
+                // Long repository names keep both ends; the full name is in the tooltip.
+                Text(item.project?.name ?? "Unknown project")
+                    .font(AppTypography.font(.projectTitle))
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .graphicalTooltip(item.project?.name ?? "")
+                if hasSession {
+                    Circle()
+                        .fill(ProgramBoardStyle.green)
+                        .frame(width: 8, height: 8)
+                        .graphicalTooltip("Session running")
+                        .accessibilityLabel("Session running")
+                        .transition(.relayElement)
                 }
-
-                ProjectBoardOverview(item: item)
-
-                if let stale = item.staleRuns, stale > 0 {
-                    RelaySwap(stale, style: .text, alignment: .leading) { stale in
-                        Text("\(stale) stale")
-                            .font(AppTypography.font(.supporting))
-                            .foregroundStyle(ProgramBoardStyle.red)
-                            .lineLimit(1)
-                    }
-                    .transition(.relayText)
+                if replyBadgeCount > 0 {
+                    SessionReplyBadge(count: replyBadgeCount)
+                        .transition(.relayElement)
                 }
-
-                if !item.providerHealth.isEmpty {
-                    RelaySwap(item.providerHealth, style: .text, alignment: .leading) { providerHealth in
-                        Text(providerHealth.joined(separator: "  "))
-                            .font(AppTypography.font(.supporting))
-                            .foregroundStyle(ProgramBoardStyle.red)
-                            .lineLimit(2)
-                    }
-                    .transition(.relayText)
-                }
+                Spacer(minLength: 0)
+                // Reserves room for the actions overlaid outside the row button.
+                // Fixed size: if this copy could shrink, a long name would run
+                // under the real actions drawn on top.
+                actions.fixedSize().hidden().accessibilityHidden(true)
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, minHeight: ProgramBoardLayout.projectCardHeight, alignment: .topLeading)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, minHeight: ProgramBoardLayout.projectRowHeight, alignment: .leading)
             .background(
                 ProgramBoardInteractiveBackground(
                     shape: .rounded(BoardDarkSurfaceStyle.nestedCardCornerRadius),
@@ -1812,9 +1843,14 @@ private struct ProgramProjectCard: View {
             if hovering { refreshWorkStyle() }
         }
         .programButtonCursor(enabled: isEnabled)
-        .graphicalTooltip("Show tickets for \(item.project?.name ?? "this project")")
-        .overlay(alignment: .topTrailing) {
-            actions.fixedSize().padding(16)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .graphicalTooltip(
+            isSelected
+                ? "Stop filtering to \(item.project?.name ?? "this project")"
+                : "Show tickets for \(item.project?.name ?? "this project")"
+        )
+        .overlay(alignment: .trailing) {
+            actions.fixedSize().padding(.trailing, 8)
         }
         .onAppear { refreshWorkStyle() }
         .onChange(of: item.project?.path) { _, _ in refreshWorkStyle() }
@@ -1851,49 +1887,6 @@ private struct ProgramProjectCard: View {
                 )
             }
         }
-    }
-}
-
-private struct ProjectBoardOverview: View {
-    let item: ProgramStatusItem
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 24),
-        GridItem(.flexible(), spacing: 24),
-    ]
-
-    var body: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-            ProjectCount(label: "Backlog", value: item.backlogTickets ?? item.openTickets)
-            ProjectCount(label: "Queued", value: item.readyTickets)
-            ProjectCount(label: "Done", value: item.doneTickets)
-            ProjectCount(label: "In progress", value: item.inProgressTickets ?? item.activeRuns)
-        }
-        .graphicalTooltip("Project board overview")
-    }
-}
-
-private struct ProjectCount: View {
-    let label: String
-    let value: Int?
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
-            Text(label)
-                .font(AppTypography.font(.caption))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            RelaySwap(value ?? 0, style: .text, alignment: .trailing) { count in
-                Text("\(count)")
-                    .font(AppTypography.font(.count))
-                    .foregroundStyle(ProgramBoardStyle.secondaryText)
-                    .monospacedDigit()
-                    .lineLimit(1)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .minimumScaleFactor(0.8)
     }
 }
 
@@ -1940,7 +1933,7 @@ struct ProgramWorkColumnPanel: View {
     }
 
     private var scrollResetID: String {
-        let scopeID = model.selectedProjectPath ?? "all"
+        let scopeID = model.selectionScopeID
         return "\(lane.id)-\(scopeID)-tickets"
     }
 
@@ -2169,7 +2162,7 @@ private struct DraggableProgramWorkCard: View {
             .contentShape(Rectangle())
             .overlay(
                 ProgramWorkCardDragEventLayer(
-                    interactionID: "\(model.selectedProjectPath ?? "all")|\(lane.id)|\(item.id)",
+                    interactionID: "\(model.selectionScopeID)|\(lane.id)|\(item.id)",
                     workItemID: item.id,
                     canDrag: canDrag,
                     scrollBoundary: scrollBoundary,
