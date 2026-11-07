@@ -258,6 +258,48 @@ struct ProgramBoardOverlayView: View {
         ProgramNoteStartFailurePresentation.message(for: model.noteCaptureSnapshot)
     }
 
+    /// The History tab: the selected project's archived tickets, with a
+    /// project dropdown in place of the old modal's close button.
+    private var historyTab: some View {
+        let picker = SettingsMenuPicker(
+            "History project",
+            selection: Binding(
+                get: { model.selectedProjectPath },
+                set: { if let path = $0 { onSelectProject(path) } }
+            ),
+            options: (model.selectedProjectPath == nil ? [("Select project", nil)] : [])
+                + model.projectTargets.map { ($0.name, Optional($0.path)) }
+        )
+        .frame(width: SettingsLayout.controlMaxWidth)
+        return ZStack {
+            if let history = model.history {
+                WorkspaceHistoryView(
+                    model: history,
+                    onClose: onHistoryClose,
+                    onWorkspaceChanged: onHistoryChanged,
+                    isEmbedded: true,
+                    accessory: AnyView(picker)
+                )
+                .id(history.repoPath)
+                .transition(.relayReplacing(.surface))
+            } else {
+                VStack(spacing: GraphicalTheme.spaceS) {
+                    Text("Choose a project to see its archived tickets.")
+                        .font(AppTypography.font(.programEmptyState))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                    picker
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+                .transition(.relayReplacing(.surface))
+            }
+        }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.history?.repoPath)
+        .onAppear(perform: onHistoryStart)
+        .onChange(of: model.selectedProjectPath) { _, _ in onHistoryStart() }
+        .onDisappear(perform: onHistoryClose)
+    }
+
     private var notesLibrary: some View {
         ZStack {
             if model.notesLoaded {
@@ -420,7 +462,6 @@ struct ProgramBoardOverlayView: View {
             showsCreateTicket: model.creating != nil,
             showsEditTicket: model.editing != nil,
             showsSpikeFollowup: model.spikeFollowupBatch != nil,
-            showsHistory: model.history != nil,
             viewportHeight: viewportSize.height
         )
         let backgroundBlurRadius = dotMatrixPresentation.isVisible
@@ -503,6 +544,13 @@ struct ProgramBoardOverlayView: View {
                     .blur(radius: backgroundBlurRadius)
                     .allowsHitTesting(!dotMatrixPresentation.isVisible)
                     .transition(.programBoardLeaving(.surface, replacing: true))
+                } else if workspace.selectedTab == .history {
+                    historyTab
+                        .padding(.top, BoardSurfaceLayout.columnTopPadding)
+                        .padding(.horizontal, BoardSurfaceLayout.horizontalPadding)
+                        .padding(.bottom, 20)
+                        .frame(height: min(viewportSize.height, ProgramBoardBackdropStyle.backdropHeight))
+                        .transition(.programBoardLeaving(.surface, replacing: true))
                 } else if workspace.selectedTab == .notes {
                     notesLibrary
                         .padding(.top, BoardSurfaceLayout.columnTopPadding)
@@ -517,7 +565,6 @@ struct ProgramBoardOverlayView: View {
                             model: model,
                             onRefresh: onRefresh,
                             onCreateDiagnostics: onCreateDiagnostics,
-                            onHistoryStart: onHistoryStart,
                             onDismiss: onDismiss,
                             onAddExistingProject: onAddExistingProject,
                             onCreateProject: onCreateProject,
@@ -558,19 +605,7 @@ struct ProgramBoardOverlayView: View {
                     .transition(ProgramWorkspaceModalMotion.backdropTransition)
             }
 
-            if let history = model.history {
-                ProgramBoardModalLayer(onDismiss: onHistoryClose) {
-                    WorkspaceHistoryView(
-                        model: history,
-                        onClose: onHistoryClose,
-                        onWorkspaceChanged: onHistoryChanged
-                    )
-                }
-                .transition(modalTransition)
-            }
-
             if let detail = model.selectedTicketDetail,
-               model.history == nil,
                model.creating == nil,
                model.editing == nil,
                model.spikeFollowupBatch == nil {
@@ -680,8 +715,6 @@ struct ProgramBoardOverlayView: View {
             onCreateCancel()
         } else if model.spikeFollowupBatch != nil {
             onSpikeFollowupClose()
-        } else if model.history != nil {
-            onHistoryClose()
         } else if model.selectedNoteDetail != nil {
             onNoteClose()
         } else if model.selectedTicketDetail != nil {
@@ -1218,7 +1251,6 @@ private struct ProgramBoardContent: View {
     @Bindable var model: ProgramBoardViewModel
     let onRefresh: () -> Void
     let onCreateDiagnostics: () -> Void
-    let onHistoryStart: () -> Void
     let onDismiss: () -> Void
     let onAddExistingProject: () -> Void
     let onCreateProject: () -> Void
@@ -1257,7 +1289,6 @@ private struct ProgramBoardContent: View {
                         onEndProjectSession: onEndProjectSession,
                         onRetry: onRefresh,
                         onCreateDiagnostics: onCreateDiagnostics,
-                        onHistoryStart: onHistoryStart,
                         onDismiss: onDismiss
                     )
                     ForEach(ProgramBoardLane.allCases) { lane in
@@ -1338,7 +1369,6 @@ private struct ProgramOverviewColumn: View {
     let onEndProjectSession: (String) -> Void
     let onRetry: () -> Void
     let onCreateDiagnostics: () -> Void
-    let onHistoryStart: () -> Void
     let onDismiss: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1349,8 +1379,7 @@ private struct ProgramOverviewColumn: View {
                 usesProjectRegistryV2: usesProjectRegistryV2,
                 onSelectAll: onSelectAll,
                 onAddExistingProject: onAddExistingProject,
-                onCreateProject: onCreateProject,
-                onHistory: onHistoryStart
+                onCreateProject: onCreateProject
             )
 
             if let errorMessage {
@@ -1460,7 +1489,6 @@ private struct ProgramProjectsHeader: View {
     let onSelectAll: () -> Void
     let onAddExistingProject: () -> Void
     let onCreateProject: () -> Void
-    let onHistory: () -> Void
 
     private var presentation: ProgramProjectsHeaderPresentation {
         ProgramProjectsHeaderPresentation(
@@ -1476,13 +1504,6 @@ private struct ProgramProjectsHeader: View {
                 .foregroundStyle(ProgramBoardStyle.primaryText)
                 .lineLimit(1)
             Spacer(minLength: 0)
-            ProgramIconButton(
-                systemName: "arrow.counterclockwise",
-                help: isAllSelected ? "Select one project to open its history" : "Open Workspace history",
-                isEnabled: !isAllSelected,
-                action: onHistory
-            )
-            .padding(.trailing, 8)
             if presentation.usesProjectRegistryV2 {
                 ProgramAddProjectMenu(
                     title: presentation.actionTitle,

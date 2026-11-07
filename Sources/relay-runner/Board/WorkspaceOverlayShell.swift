@@ -4,6 +4,7 @@ enum WorkspaceTab: String, CaseIterable, Identifiable, Equatable {
     case work
     case notes
     case terminal
+    case history
     case systemSettings
 
     var id: String { rawValue }
@@ -13,12 +14,13 @@ enum WorkspaceTab: String, CaseIterable, Identifiable, Equatable {
         case .work: return "Workspace"
         case .notes: return "Notetaker"
         case .terminal: return "Terminal"
+        case .history: return "History"
         case .systemSettings: return "Settings"
         }
     }
 
     var requiresKeyWindow: Bool {
-        self == .notes || self == .terminal || self == .systemSettings
+        self == .notes || self == .terminal || self == .history || self == .systemSettings
     }
 
     func allowsEscapeDismissal(terminalHasFocus: Bool) -> Bool {
@@ -79,6 +81,8 @@ final class WorkspaceViewModel {
         if showsWorkTab { tabs.append(.work) }
         tabs.append(.notes)
         if showsTerminalTab { tabs.append(.terminal) }
+        // History lists a project's archived tickets, so it follows the Workspace tab.
+        if showsWorkTab { tabs.append(.history) }
         if showsSettingsTab { tabs.append(.systemSettings) }
         return tabs
     }

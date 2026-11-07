@@ -4,6 +4,10 @@ struct WorkspaceHistoryView: View {
     @Bindable var model: WorkspaceHistoryViewModel
     let onClose: () -> Void
     var onWorkspaceChanged: () -> Void = {}
+    /// Shown as a Workspace tab: it fills the page, and the trailing control
+    /// is `accessory` instead of a close button.
+    var isEmbedded = false
+    var accessory: AnyView?
     @State private var hoveredCardID: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -41,7 +45,8 @@ struct WorkspaceHistoryView: View {
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.errorMessage)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.notice)
-        .frame(width: 940, height: 640)
+        .frame(width: isEmbedded ? nil : 940, height: isEmbedded ? nil : 640)
+        .frame(maxWidth: isEmbedded ? .infinity : nil, maxHeight: isEmbedded ? .infinity : nil)
         .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
         .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius, style: .continuous))
         .task { await model.refresh() }
@@ -59,8 +64,12 @@ struct WorkspaceHistoryView: View {
                     .lineLimit(1)
             }
             Spacer()
-            ProgramIconButton(systemName: "xmark", help: "Close history", action: onClose)
-                .keyboardShortcut(.cancelAction)
+            if isEmbedded {
+                accessory
+            } else {
+                ProgramIconButton(systemName: "xmark", help: "Close history", action: onClose)
+                    .keyboardShortcut(.cancelAction)
+            }
         }
         .padding(.horizontal, 22)
         .frame(height: 70)

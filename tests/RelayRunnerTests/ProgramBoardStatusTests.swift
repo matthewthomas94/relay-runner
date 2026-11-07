@@ -307,7 +307,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(contents.contains("ProgramBoardBackdropStyle.backdropHeight"))
         XCTAssertTrue(contents.contains("ProgramBoardBackdropShape("))
         let modalLayerReferences = contents.components(separatedBy: "ProgramBoardModalLayer").count - 1
-        XCTAssertEqual(modalLayerReferences - 1, 5) // Exclude the generic type declaration.
+        XCTAssertEqual(modalLayerReferences - 1, 4) // Exclude the generic type declaration; History is a tab.
         XCTAssertTrue(contents.contains("ProgramTicketPanelStyle.width"))
         XCTAssertTrue(contents.contains("ProgramTicketPanelStyle.height"))
 

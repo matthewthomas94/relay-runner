@@ -1315,11 +1315,15 @@ final class ProgramBoardOverlayController {
         }
     }
 
+    /// Shows the selected project's history on the History tab, or its
+    /// project prompt when no single project is selected.
     private func beginHistory() {
         guard let repoPath = model.selectedProjectPath,
               let target = model.projectTargets.first(where: { $0.path == repoPath }) else {
+            closeHistory()
             return
         }
+        guard model.history?.repoPath != repoPath else { return }
         model.presentHistory(
             repoPath: repoPath,
             projectName: target.name,
