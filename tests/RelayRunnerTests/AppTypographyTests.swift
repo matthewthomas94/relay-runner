@@ -15,7 +15,7 @@ final class AppTypographyTests: XCTestCase {
 
     func testAppTypographyFollowsTheGraphicalTypeScale() {
         let scale: Set<CGFloat> = [8, 12, 16, 20, 24, 32, 40]
-        let overlayRoles: [AppTypography.Role] = [.pillTitle, .pillBody, .notchStatus]
+        let overlayRoles: [AppTypography.Role] = [.pillTitle, .pillBody, .notchStatus, .menuTab]
         for role in AppTypography.Role.allCases where !overlayRoles.contains(role) {
             XCTAssertTrue(scale.contains(AppTypography.definition(for: role).size), "\(role) is off the kit scale")
         }
@@ -28,7 +28,9 @@ final class AppTypographyTests: XCTestCase {
             AppTypography.definition(for: .programProjectsHeading).size,
             AppTypography.definition(for: .sectionHeading).size
         )
-        // The listening and speaking pills and the notch keep their own sizes.
+        // The listening and speaking pills and the notch keep their own sizes; the
+        // Workspace strip matches the macOS menu bar.
+        XCTAssertEqual(AppTypography.definition(for: .menuTab).size, 13)
         XCTAssertEqual(AppTypography.definition(for: .pillTitle).size, 13)
         XCTAssertEqual(AppTypography.definition(for: .pillBody).size, 14)
         XCTAssertEqual(AppTypography.definition(for: .notchStatus).size, 12)

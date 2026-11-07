@@ -145,11 +145,12 @@ enum AppTypography {
     }
 
     /// Sizes follow the Graphical "RR" type scale; faces and weights are unchanged.
-    /// The listening and speaking pills and the notch status keep their own sizes.
+    /// The listening and speaking pills and the notch status keep their own sizes,
+    /// and the Workspace strip keeps the macOS menu bar's 13 points.
     static func definition(for role: Role) -> Definition {
         switch role {
         case .menuTab:
-            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textS, fallbackWeight: .regular)
+            return Definition(face: .baiJamjureeRegular, size: 13, fallbackWeight: .regular)
         case .appTitle:
             return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textL, fallbackWeight: .semibold)
         case .onboardingHero:

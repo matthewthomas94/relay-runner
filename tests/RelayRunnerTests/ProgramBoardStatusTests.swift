@@ -39,10 +39,10 @@ final class ProgramBoardStatusTests: XCTestCase {
         let border = BoardDarkSurfaceStyle.borderNSColor.usingColorSpace(.sRGB)
 
         XCTAssertEqual(ProgramBoardBackdropStyle.backdropOpacity, 1, accuracy: 0.001)
-        // Graphical "RR" theme: panels neutral-2 (#1c2026), no border, radii l/m/s/m.
-        XCTAssertEqual(panelFill?.redComponent ?? 0, 0x1c / 255, accuracy: 0.001)
-        XCTAssertEqual(panelFill?.greenComponent ?? 0, 0x20 / 255, accuracy: 0.001)
-        XCTAssertEqual(panelFill?.blueComponent ?? 0, 0x26 / 255, accuracy: 0.001)
+        // Graphical "RR" theme: panels neutral-2 (#0c0f13), no border, radii l/m/s/m.
+        XCTAssertEqual(panelFill?.redComponent ?? 0, 0x0c / 255, accuracy: 0.001)
+        XCTAssertEqual(panelFill?.greenComponent ?? 0, 0x0f / 255, accuracy: 0.001)
+        XCTAssertEqual(panelFill?.blueComponent ?? 0, 0x13 / 255, accuracy: 0.001)
         XCTAssertEqual(border?.alphaComponent ?? 1, 0, accuracy: 0.001)
         XCTAssertEqual(BoardDarkSurfaceStyle.workspaceCornerRadius, GraphicalTheme.radiusL)
         XCTAssertEqual(BoardDarkSurfaceStyle.columnCornerRadius, GraphicalTheme.radiusM)
@@ -125,10 +125,10 @@ final class ProgramBoardStatusTests: XCTestCase {
     func testProgramBoardEmptyLanePresentationMatchesFigmaBody() {
         let disabled = ProgramBoardStyle.disabledTextNSColor.usingColorSpace(.sRGB)
 
-        // Kit disabled label: neutral-6 (#73787e).
-        XCTAssertEqual(disabled?.redComponent ?? 0, 0x73 / 255, accuracy: 0.001)
-        XCTAssertEqual(disabled?.greenComponent ?? 0, 0x78 / 255, accuracy: 0.001)
-        XCTAssertEqual(disabled?.blueComponent ?? 0, 0x7e / 255, accuracy: 0.001)
+        // Kit disabled label: neutral-6 (#596069).
+        XCTAssertEqual(disabled?.redComponent ?? 0, 0x59 / 255, accuracy: 0.001)
+        XCTAssertEqual(disabled?.greenComponent ?? 0, 0x60 / 255, accuracy: 0.001)
+        XCTAssertEqual(disabled?.blueComponent ?? 0, 0x69 / 255, accuracy: 0.001)
     }
 
     func testProgramBoardSessionToolbarMatchesWorkspaceNavigation() {
@@ -455,10 +455,10 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(hover.accent, .neutral)
         XCTAssertTrue(hover.usesHoverFill)
         XCTAssertEqual(hover.fillOverlayOpacity, 0)
-        // Kit hover fill: neutral-3 (#272b31).
-        XCTAssertEqual(hoverFill?.redComponent ?? 0, 0x27 / 255, accuracy: 0.001)
-        XCTAssertEqual(hoverFill?.greenComponent ?? 0, 0x2b / 255, accuracy: 0.001)
-        XCTAssertEqual(hoverFill?.blueComponent ?? 0, 0x31 / 255, accuracy: 0.001)
+        // Kit hover fill: neutral-3 (#171a1e).
+        XCTAssertEqual(hoverFill?.redComponent ?? 0, 0x17 / 255, accuracy: 0.001)
+        XCTAssertEqual(hoverFill?.greenComponent ?? 0, 0x1a / 255, accuracy: 0.001)
+        XCTAssertEqual(hoverFill?.blueComponent ?? 0, 0x1e / 255, accuracy: 0.001)
         XCTAssertEqual(selected.accent, .selected)
         XCTAssertTrue(selected.usesHoverFill)
         XCTAssertEqual(selected.fillOverlayOpacity, 0)

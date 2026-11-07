@@ -6,24 +6,24 @@ import SwiftUI
 /// here: surfaces, text, accents, radii and spacing. Typography faces and the
 /// particle, skeleton and glyph-loader systems are deliberately untouched.
 enum GraphicalTheme {
-    // Dark-mode neutrals, 1 (page) to 10 (strongest text).
+    // Dark-mode neutrals, 1 (page) to 10 (strongest text), from kit revision 1fooxs04xnek.
     static let neutral1NSColor = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
-    static let neutral2NSColor = NSColor(srgbRed: 0x1c / 255, green: 0x20 / 255, blue: 0x26 / 255, alpha: 1)
-    static let neutral3NSColor = NSColor(srgbRed: 0x27 / 255, green: 0x2b / 255, blue: 0x31 / 255, alpha: 1)
-    static let neutral4NSColor = NSColor(srgbRed: 0x34 / 255, green: 0x39 / 255, blue: 0x3e / 255, alpha: 1)
-    static let neutral5NSColor = NSColor(srgbRed: 0x4c / 255, green: 0x51 / 255, blue: 0x57 / 255, alpha: 1)
-    static let neutral6NSColor = NSColor(srgbRed: 0x73 / 255, green: 0x78 / 255, blue: 0x7e / 255, alpha: 1)
-    static let neutral7NSColor = NSColor(srgbRed: 0x9e / 255, green: 0xa4 / 255, blue: 0xab / 255, alpha: 1)
-    static let neutral8NSColor = NSColor(srgbRed: 0xc1 / 255, green: 0xc7 / 255, blue: 0xce / 255, alpha: 1)
-    static let neutral9NSColor = NSColor(srgbRed: 0xde / 255, green: 0xe1 / 255, blue: 0xe6 / 255, alpha: 1)
+    static let neutral2NSColor = NSColor(srgbRed: 0x0c / 255, green: 0x0f / 255, blue: 0x13 / 255, alpha: 1)
+    static let neutral3NSColor = NSColor(srgbRed: 0x17 / 255, green: 0x1a / 255, blue: 0x1e / 255, alpha: 1)
+    static let neutral4NSColor = NSColor(srgbRed: 0x21 / 255, green: 0x25 / 255, blue: 0x29 / 255, alpha: 1)
+    static let neutral5NSColor = NSColor(srgbRed: 0x38 / 255, green: 0x3e / 255, blue: 0x46 / 255, alpha: 1)
+    static let neutral6NSColor = NSColor(srgbRed: 0x59 / 255, green: 0x60 / 255, blue: 0x69 / 255, alpha: 1)
+    static let neutral7NSColor = NSColor(srgbRed: 0x88 / 255, green: 0x90 / 255, blue: 0x99 / 255, alpha: 1)
+    static let neutral8NSColor = NSColor(srgbRed: 0xa7 / 255, green: 0xb0 / 255, blue: 0xba / 255, alpha: 1)
+    static let neutral9NSColor = NSColor(srgbRed: 0xc5 / 255, green: 0xca / 255, blue: 0xd3 / 255, alpha: 1)
     static let neutral10NSColor = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
 
     /// color-1, the kit's accent.
     static let accentNSColor = NSColor(srgbRed: 0x2b / 255, green: 0x11 / 255, blue: 0xe8 / 255, alpha: 1)
     /// color-2 to color-4, the kit's supporting palette.
-    static let accent2NSColor = NSColor(srgbRed: 0xff / 255, green: 0xc5 / 255, blue: 0xce / 255, alpha: 1)
-    static let accent3NSColor = NSColor(srgbRed: 0x15 / 255, green: 0x3d / 255, blue: 0x85 / 255, alpha: 1)
-    static let accent4NSColor = NSColor(srgbRed: 0xff / 255, green: 0xd7 / 255, blue: 0xad / 255, alpha: 1)
+    static let accent2NSColor = NSColor(srgbRed: 0x80 / 255, green: 0x70 / 255, blue: 0xf1 / 255, alpha: 1)
+    static let accent3NSColor = NSColor(srgbRed: 0xbf / 255, green: 0xb8 / 255, blue: 0xf8 / 255, alpha: 1)
+    static let accent4NSColor = NSColor(srgbRed: 0xea / 255, green: 0xe7 / 255, blue: 0xfd / 255, alpha: 1)
     static let errorNSColor = NSColor(srgbRed: 0xf4 / 255, green: 0x15 / 255, blue: 0x09 / 255, alpha: 1)
 
     static let neutral1 = Color(nsColor: neutral1NSColor)

@@ -46,7 +46,7 @@ final class ParticleFieldRenderer {
             case .idle: return (1, 1, 1)
             case .stt: return (1.000, 0.965, 0.900)
             case .tts: return (0.992, 0.918, 0.859)
-            case .workspace: return (0x1c / 255.0, 0x20 / 255.0, 0x26 / 255.0)
+            case .workspace: return (0x0c / 255.0, 0x0f / 255.0, 0x13 / 255.0)
             }
         }
     }
