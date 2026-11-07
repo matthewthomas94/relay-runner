@@ -35,7 +35,11 @@ enum ProgramBoardLayout {
     static let newTicketButtonSize: CGFloat = compactControlHeight
     static let workHeaderHeight: CGFloat = 36
     static let overviewSectionSpacing: CGFloat = 12
-    static let projectHeaderToListSpacing: CGFloat = 44
+    /// Search field with the row gap above and below it, so header, field and
+    /// rows share one 8-point rhythm.
+    static var projectHeaderToListSpacing: CGFloat {
+        ProgramTicketPanelStyle.compactFieldHeight + projectCardSpacing * 2
+    }
     static let workSectionSpacing: CGFloat = 16
     static let dropIndicatorHeight: CGFloat = 3
     static let dropIndicatorBottomPadding: CGFloat = 4
@@ -61,6 +65,7 @@ enum ProgramBoardLayout {
     }
     static let projectCardHeight: CGFloat = 136
     static let projectRowHeight: CGFloat = 48
+    static let projectRowHorizontalInset: CGFloat = 12
     static let projectCardSpacing: CGFloat = 8
     static let statePanelHeight: CGFloat = BoardSurfaceLayout.columnHeight
     static let statePanelHorizontalPadding: CGFloat = BoardSurfaceLayout.horizontalPadding
@@ -375,7 +380,7 @@ struct ProgramBoardOverlayView: View {
                             notesSearchFocused = true
                         }
                     }
-                    ScrollView {
+                    RelayFadingScrollView {
                         LazyVStack(spacing: 8) {
                             if model.visibleNotes.isEmpty {
                                 RelaySwap(model.noteQuery.isEmpty, style: .text, alignment: .leading) { isEmpty in
@@ -498,31 +503,14 @@ struct ProgramBoardOverlayView: View {
             .allowsHitTesting(!dotMatrixPresentation.isVisible)
             .zIndex(2)
 
-            // RR-445: the Workspace's one Start/End control sits at the far
-            // right of the top row, opposite the tabs.
-            HStack(spacing: GraphicalTheme.spaceS) {
-                WorkspaceMenuBarClock()
-                    .allowsHitTesting(false)
-                ProgramSessionPrimaryButton(
-                    presentation: ProgramSessionToolbarPresentation.resolve(
-                        hasActiveSession: model.hasActiveSession,
-                        provider: model.sessionProvider
-                    ),
-                    isEnabled: ProgramSessionControlPolicy.canStart(
-                        hasActiveSession: model.hasActiveSession,
-                        selectedProjectPath: workspace.contextPath,
-                        requiresConfirmedProject: ProjectRegistryV2Rollout.isEnabled()
-                    ),
-                    action: model.hasActiveSession ? onEndSession : onStartSession
-                )
-                .allowsHitTesting(!dotMatrixPresentation.isVisible)
-            }
-            .frame(height: BoardSurfaceLayout.navigationHeight)
-            .padding(.top, BoardSurfaceLayout.navigationTopPadding)
-            .padding(.trailing, 20)
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .blur(radius: backgroundBlurRadius)
-            .zIndex(2)
+            WorkspaceMenuBarClock()
+                .frame(height: BoardSurfaceLayout.navigationHeight)
+                .padding(.top, BoardSurfaceLayout.navigationTopPadding)
+                .padding(.trailing, 20)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .blur(radius: backgroundBlurRadius)
+                .allowsHitTesting(false)
+                .zIndex(2)
 
             // Tabs, and the Workspace states within the work tab, swap as pages.
             ZStack(alignment: .topLeading) {
@@ -575,6 +563,18 @@ struct ProgramBoardOverlayView: View {
                             onCreateProject: onCreateProject,
                             onCreateStart: onCreateStart,
                             onNoteOpen: onNoteOpen,
+                            sessionControl: ProgramSessionControl(
+                                presentation: ProgramSessionToolbarPresentation.resolve(
+                                    hasActiveSession: model.hasActiveSession,
+                                    provider: model.sessionProvider
+                                ),
+                                isEnabled: ProgramSessionControlPolicy.canStart(
+                                    hasActiveSession: model.hasActiveSession,
+                                    selectedProjectPath: workspace.contextPath,
+                                    requiresConfirmedProject: ProjectRegistryV2Rollout.isEnabled()
+                                ),
+                                action: model.hasActiveSession ? onEndSession : onStartSession
+                            ),
                             onDrop: onDrop
                         )
                         .padding(.top, contentPresentation.workspaceTopPadding)
@@ -1258,6 +1258,7 @@ private struct ProgramBoardContent: View {
     let onCreateProject: () -> Void
     let onCreateStart: (ProgramBoardLane) -> Void
     var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
+    var sessionControl: ProgramSessionControl? = nil
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
 
     var body: some View {
@@ -1296,6 +1297,7 @@ private struct ProgramBoardContent: View {
                             canCreate: !model.projectTargets.isEmpty,
                             onCreate: { onCreateStart(lane) },
                             onNoteOpen: onNoteOpen,
+                            sessionControl: lane == .done ? sessionControl : nil,
                             onDrop: onDrop
                         )
                     }
@@ -1694,7 +1696,7 @@ private struct ProgramWorkStyleMenu: View {
                 Image(systemName: "chevron.down")
                     .font(AppTypography.symbolFont(size: 9, weight: .semibold))
             }
-            .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
+            .padding(.horizontal, 10)
             .frame(height: SharedActionButtonMetrics.controlHeight)
             .contentShape(Rectangle())
         }
@@ -1759,12 +1761,14 @@ private struct ProgramProjectCard: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(alignment: .center, spacing: 8) {
-                // Long repository names keep both ends; the full name is in the tooltip.
+                // A long name tightens a little, like the column headings; one
+                // that still overflows loses its tail, and the tooltip has it all.
                 Text(item.project?.name ?? "Unknown project")
                     .font(AppTypography.font(.projectTitle))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .minimumScaleFactor(0.85)
+                    .truncationMode(.tail)
                     .graphicalTooltip(item.project?.name ?? "")
                 if hasSession {
                     Circle()
@@ -1784,7 +1788,7 @@ private struct ProgramProjectCard: View {
                 // under the real actions drawn on top.
                 actions.fixedSize().hidden().accessibilityHidden(true)
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, ProgramBoardLayout.projectRowHorizontalInset)
             .frame(maxWidth: .infinity, minHeight: ProgramBoardLayout.projectRowHeight, alignment: .leading)
             .background(
                 ProgramBoardInteractiveBackground(
@@ -1815,7 +1819,7 @@ private struct ProgramProjectCard: View {
                 : "Show tickets for \(item.project?.name ?? "this project")"
         )
         .overlay(alignment: .trailing) {
-            actions.fixedSize().padding(.trailing, 8)
+            actions.fixedSize().padding(.trailing, ProgramBoardLayout.projectRowHorizontalInset)
         }
         .onAppear { refreshWorkStyle() }
         .onChange(of: item.project?.path) { _, _ in refreshWorkStyle() }
@@ -1828,7 +1832,7 @@ private struct ProgramProjectCard: View {
 
     /// Finder, then this project's work style at the far right.
     private var actions: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             if let path = item.project?.path {
                 ProgramIconButton(
                     systemName: "folder",
@@ -1858,6 +1862,8 @@ struct ProgramWorkColumnPanel: View {
     let canCreate: Bool
     let onCreate: () -> Void
     var onNoteOpen: (ProgramBoardNoteItem) -> Void = { _ in }
+    /// The Workspace's one Start/End control, shown in the Done column header.
+    var sessionControl: ProgramSessionControl? = nil
     let onDrop: (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1869,6 +1875,7 @@ struct ProgramWorkColumnPanel: View {
         canCreate: Bool,
         onCreate: @escaping () -> Void,
         onNoteOpen: @escaping (ProgramBoardNoteItem) -> Void = { _ in },
+        sessionControl: ProgramSessionControl? = nil,
         onDrop: @escaping (_ item: ProgramStatusItem, _ sourceLane: ProgramBoardLane, _ targetLane: ProgramBoardLane) -> Void
     ) {
         self.model = model
@@ -1878,6 +1885,7 @@ struct ProgramWorkColumnPanel: View {
         self.canCreate = canCreate
         self.onCreate = onCreate
         self.onNoteOpen = onNoteOpen
+        self.sessionControl = sessionControl
         self.onDrop = onDrop
     }
 
@@ -1915,6 +1923,13 @@ struct ProgramWorkColumnPanel: View {
                         action: onCreate
                     )
                     .transition(.relayElement)
+                }
+                if lane == .done, let sessionControl {
+                    ProgramSessionPrimaryButton(
+                        presentation: sessionControl.presentation,
+                        isEnabled: sessionControl.isEnabled,
+                        action: sessionControl.action
+                    )
                 }
             }
             .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
@@ -4248,7 +4263,7 @@ private struct ProgramTicketImageSelector: View {
             )
 
             if !existingPaths.isEmpty || !selectedURLs.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
+                RelayFadingScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(existingPaths, id: \.self) { path in
                             ProgramTicketImageChip(
@@ -4535,6 +4550,13 @@ struct ProgramSessionToolbarPresentation: Equatable {
                 help: "Start a \(name) voice session"
             )
     }
+}
+
+/// What the Done column's Start/End button shows and does.
+struct ProgramSessionControl {
+    let presentation: ProgramSessionToolbarPresentation
+    let isEnabled: Bool
+    let action: () -> Void
 }
 
 enum ProgramSessionControlPolicy {

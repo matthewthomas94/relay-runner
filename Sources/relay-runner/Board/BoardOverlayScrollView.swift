@@ -64,6 +64,8 @@ final class BoardOverlayScrollContainer: NSView {
     private let contentView = BoardOverlayScrollContentView()
     private let hostingView: BoardOverlayScrollHostingView
     private let thumbView = NSView()
+    /// Content scrolled under either edge fades out instead of being cut off.
+    private let edgeFadeMask = CAGradientLayer()
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
     private var hideWorkItem: DispatchWorkItem?
@@ -100,6 +102,7 @@ final class BoardOverlayScrollContainer: NSView {
         scrollView.frame = bounds
         layoutDocument()
         updateThumbFrame()
+        updateEdgeFade()
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -154,6 +157,7 @@ final class BoardOverlayScrollContainer: NSView {
             scrollToTop()
         }
         updateThumbFrame()
+        updateEdgeFade()
     }
 
     private func setup() {
@@ -162,6 +166,7 @@ final class BoardOverlayScrollContainer: NSView {
             guard let self, !self.isPerformingLayout else { return }
             self.layoutDocument()
             self.updateThumbFrame()
+            self.updateEdgeFade()
         }
 
         scrollView.contentView = BoardOverlayScrollClipView()
@@ -173,6 +178,11 @@ final class BoardOverlayScrollContainer: NSView {
         scrollView.scrollerStyle = .overlay
         scrollView.contentView.postsBoundsChangedNotifications = true
         scrollView.documentView = documentView
+        scrollView.wantsLayer = true
+        edgeFadeMask.startPoint = CGPoint(x: 0.5, y: 0)
+        edgeFadeMask.endPoint = CGPoint(x: 0.5, y: 1)
+        edgeFadeMask.colors = Self.edgeFadeColors
+        edgeFadeMask.locations = [0, 0, 1, 1]
         addSubview(scrollView)
 
         documentView.addSubview(contentView)
@@ -294,6 +304,7 @@ final class BoardOverlayScrollContainer: NSView {
 
     @objc private func contentBoundsDidChange() {
         updateThumbFrame()
+        updateEdgeFade()
         schedulePointerReconciliation()
         guard isScrollable else {
             hideThumb(immediate: true)
@@ -335,6 +346,49 @@ final class BoardOverlayScrollContainer: NSView {
             width: width,
             height: height
         )
+    }
+
+    private static let edgeFadeColors: [CGColor] = [
+        NSColor.clear.cgColor,
+        NSColor.black.cgColor,
+        NSColor.black.cgColor,
+        NSColor.clear.cgColor,
+    ]
+
+    /// Each edge fades over `RelayScrollEdgeFade.length` points, but only as
+    /// far as there is content beyond it, so the first and last rows stay
+    /// solid at rest. The layer exists only once the view is in a window, so
+    /// the mask attaches here rather than in setup.
+    private func updateEdgeFade() {
+        guard let layer = scrollView.layer else { return }
+        if layer.mask !== edgeFadeMask {
+            layer.mask = edgeFadeMask
+        }
+        let height = scrollView.bounds.height
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        edgeFadeMask.frame = scrollView.bounds
+        let fades = RelayScrollEdgeFade.lengths(
+            offset: scrollOffset,
+            contentLength: contentHeight,
+            viewportLength: viewportHeight
+        )
+        guard height > 0, fades.leading > 0 || fades.trailing > 0 else {
+            edgeFadeMask.locations = [0, 0, 1, 1]
+            return
+        }
+        let topFade = fades.leading / height
+        let bottomFade = fades.trailing / height
+        // The gradient runs along the layer's y axis, which a flipped view
+        // starts at the top.
+        let (startFade, endFade) = scrollView.isFlipped ? (topFade, bottomFade) : (bottomFade, topFade)
+        edgeFadeMask.locations = [
+            0,
+            NSNumber(value: Double(startFade)),
+            NSNumber(value: Double(1 - endFade)),
+            1,
+        ]
     }
 
     private func revealThumb() {

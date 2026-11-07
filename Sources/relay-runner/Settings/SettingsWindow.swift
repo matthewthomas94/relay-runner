@@ -243,7 +243,7 @@ private struct SettingsContent: View {
                     // Each category is its own page: the outgoing page sinks away
                     // at its own scroll position, then the next one rises in.
                     ZStack(alignment: .topLeading) {
-                        ScrollView(.vertical, showsIndicators: false) {
+                        RelayFadingScrollView(showsIndicators: false) {
                             VStack(spacing: 0) {
                                 Color.clear
                                     .frame(height: 0)

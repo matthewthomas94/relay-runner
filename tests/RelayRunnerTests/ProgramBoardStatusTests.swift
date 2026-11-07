@@ -107,8 +107,8 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
         XCTAssertEqual(ProgramBoardLayout.workHeaderHeight, 36)
         XCTAssertEqual(ProgramBoardLayout.workCardTopOffset, 100)
-        XCTAssertEqual(ProgramBoardLayout.projectHeaderToListSpacing, 44)
-        XCTAssertEqual(ProgramBoardLayout.projectListTopOffset, 96)
+        XCTAssertEqual(ProgramBoardLayout.projectHeaderToListSpacing, 52)
+        XCTAssertEqual(ProgramBoardLayout.projectListTopOffset, 104)
         XCTAssertEqual(ProgramBoardLayout.projectCardHeight, 136)
         XCTAssertEqual(ProgramBoardLayout.projectCardSpacing, 8)
         XCTAssertEqual(ProgramBoardLayout.statePanelHeight, BoardSurfaceLayout.columnHeight)
@@ -247,7 +247,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(contents.contains("prominence: .primary"))
     }
 
-    func testWorkspaceTopRowHoldsTheOneSessionControlAndCardsHaveNone() throws {
+    func testDoneColumnHoldsTheOneSessionControlAndCardsHaveNone() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -264,17 +264,22 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
         let card = String(contents[cardStart.lowerBound..<cardEnd.lowerBound])
 
-        // RR-445: exactly one Start/End control, at the far right of the top
-        // row after the clock; neither project rows nor the terminal have one.
+        // Exactly one Start/End control, in the Done column header; the top
+        // row keeps only the clock, and neither project rows nor the terminal
+        // have one.
         XCTAssertEqual(contents.components(separatedBy: "ProgramSessionPrimaryButton(").count - 1, 1)
         XCTAssertFalse(terminal.contains("ProgramSessionPrimaryButton("))
         XCTAssertFalse(contents.contains("workspaceTerminalSessionAction"))
         let clock = try XCTUnwrap(contents.range(of: "WorkspaceMenuBarClock()"))
-        let control = try XCTUnwrap(contents.range(of: "ProgramSessionPrimaryButton("))
-        XCTAssertLessThan(clock.lowerBound, control.lowerBound)
         let row = String(contents[clock.lowerBound...]).components(separatedBy: ".zIndex(2)")[0]
-        XCTAssertTrue(row.contains("action: model.hasActiveSession ? onEndSession : onStartSession"))
-        XCTAssertTrue(row.contains(".frame(maxWidth: .infinity, alignment: .trailing)"))
+        XCTAssertFalse(row.contains("ProgramSessionPrimaryButton("))
+        XCTAssertTrue(row.contains(".allowsHitTesting(false)"))
+        let control = try XCTUnwrap(contents.range(of: "ProgramSessionPrimaryButton("))
+        XCTAssertLessThan(cardEnd.lowerBound, control.lowerBound)
+        let header = String(contents[cardEnd.lowerBound..<control.lowerBound])
+        XCTAssertTrue(header.contains("if lane == .done, let sessionControl {"))
+        XCTAssertTrue(contents.contains("sessionControl: lane == .done ? sessionControl : nil"))
+        XCTAssertTrue(contents.contains("action: model.hasActiveSession ? onEndSession : onStartSession"))
         XCTAssertFalse(card.contains("ProgramSessionToolbarPresentation"))
         XCTAssertFalse(card.contains("onStartSession"))
         XCTAssertFalse(contents.contains("onStartProjectSession"))

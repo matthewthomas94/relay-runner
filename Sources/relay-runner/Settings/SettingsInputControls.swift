@@ -24,7 +24,7 @@ struct SettingsMenuOptions<Value: Hashable>: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView(.vertical) {
+            RelayFadingScrollView {
                 VStack(spacing: Self.rowSpacing) {
                     ForEach(options.indices, id: \.self) { index in
                         let option = options[index]

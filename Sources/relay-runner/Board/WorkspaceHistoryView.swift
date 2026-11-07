@@ -92,7 +92,7 @@ struct WorkspaceHistoryView: View {
                     .font(AppTypography.font(.metadata))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                ScrollView {
+                RelayFadingScrollView {
                     LazyVStack(spacing: 8) {
                         if model.cards.isEmpty && !model.isLoading {
                             Text("No archived tickets match this search.")
@@ -238,7 +238,7 @@ struct WorkspaceHistoryView: View {
                     .transition(.relayReplacing(.element))
                 } else {
                     VStack(alignment: .leading, spacing: 14) {
-                        ScrollView {
+                        RelayFadingScrollView {
                             VStack(alignment: .leading, spacing: 16) {
                                 if let markdown = model.detail?.markdown {
                                     Text(markdown)
