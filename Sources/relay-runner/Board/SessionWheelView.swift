@@ -329,9 +329,14 @@ struct SessionWheelView: View {
             : (contrast == .increased ? ProgramBoardStyle.disabledText : ProgramBoardStyle.mutedText.opacity(0.5))
         return ZStack {
             controlBackground(shape, presentation: presentation)
-            shape.fill(contrast == .increased
-                       ? Color.white.opacity(enabled ? 0.22 : 0.04)
-                       : ProgramBoardStyle.mutedText.opacity(enabled ? 0.06 : 0.02))
+            // The Settings slider's value fill: hovering or dragging shimmers
+            // the filled part with the Settings sidebar's dots.
+            shape.fill(SettingsSlider.fillColor(contrast: contrast, isEnabled: enabled))
+                .background(FluxDotsBackground(
+                    cornerRadius: 0,
+                    style: .standard,
+                    isVisible: enabled && (model.hoveredSettingsControl == .intensity || model.isAdjustingIntensity)
+                ).clipShape(shape))
                 .mask(SessionWheelWedge(from: value >= SessionWheelIntensity.range.upperBound ? highEnd : thumb,
                                        to: lowEnd))
             SessionWheelThumb(angle: thumb)

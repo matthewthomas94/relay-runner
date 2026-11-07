@@ -458,32 +458,4 @@ final class SkeletonLoaderTests: XCTestCase {
             XCTAssertEqual(fade.toValue as? Float, 0)
         }
     }
-
-    func testColumnSnakeOpacityHelperFollowsTheHeadAndLoops() {
-        typealias Snake = DotColumnSnakeAnimation
-        XCTAssertEqual(Snake.opacity(forPhase: 0, at: 0), Snake.levels[0], accuracy: 1e-5)
-        for phase in 1..<Snake.phases {
-            // Each position lags the previous by a fifth of a cycle.
-            let lagged = Snake.opacity(forPhase: phase, at: Snake.delay(forPhase: phase))
-            XCTAssertEqual(lagged, Snake.levels[0], accuracy: 1e-5)
-        }
-        for phase in 0..<Snake.phases {
-            XCTAssertEqual(
-                Snake.opacity(forPhase: phase, at: Snake.cycle),
-                Snake.opacity(forPhase: phase, at: 0), accuracy: 1e-5)
-        }
-    }
-
-    func testListeningAndSpeakingFieldsAloneCarryTheSnakeShimmer() throws {
-        for theme in [ParticleFieldRenderer.Theme.stt, .tts] {
-            let factors = try XCTUnwrap(ParticleFieldRenderer.snakeFactors(
-                theme: theme, coverage: .lowerScreen, elapsed: 0, reduceMotion: false))
-            XCTAssertEqual(factors.max() ?? 0, 1, accuracy: 1e-5)
-            let ratio = (factors.max() ?? 0) / (factors.min() ?? 1)
-            XCTAssertEqual(Float(ratio), DotColumnSnakeAnimation.levels[0] / DotColumnSnakeAnimation.levels[4], accuracy: 1e-3)
-        }
-        XCTAssertNil(ParticleFieldRenderer.snakeFactors(theme: .workspace, coverage: .lowerScreen, elapsed: 0, reduceMotion: false))
-        XCTAssertNil(ParticleFieldRenderer.snakeFactors(theme: .idle, coverage: .agentOrb, elapsed: 0, reduceMotion: false))
-        XCTAssertNil(ParticleFieldRenderer.snakeFactors(theme: .stt, coverage: .agentOrb, elapsed: 0, reduceMotion: false))
-    }
 }

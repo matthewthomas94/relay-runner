@@ -209,9 +209,12 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(contents.contains("ProgramAddProjectMenuMetrics.disclosureWidth"))
         XCTAssertTrue(contents.contains("ProgramAddProjectMenuMetrics.dividerWidth"))
         XCTAssertTrue(contents.contains(".frame(height: SharedActionButtonMetrics.controlHeight)"))
-        XCTAssertTrue(contents.contains(".menuStyle(.button)"))
+        // Every board dropdown, the ticket panel's project picker included,
+        // is the Settings dropdown; none is a native menu.
+        XCTAssertFalse(contents.contains(".menuStyle(.button)"))
         XCTAssertTrue(contents.contains(".buttonStyle(.plain)"))
-        XCTAssertTrue(contents.contains(".menuIndicator(.hidden)"))
+        XCTAssertFalse(contents.contains(".menuIndicator(.hidden)"))
+        XCTAssertTrue(contents.contains("SettingsMenuPicker(\n            \"Project\","))
         XCTAssertFalse(contents.contains("ProgramAddProjectMenuPresenter"))
         XCTAssertTrue(contents.contains("ProgramWorkspaceActionButton("))
         XCTAssertTrue(contents.contains("ProgramEditCapsuleButton("))

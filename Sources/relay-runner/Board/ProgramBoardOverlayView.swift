@@ -757,32 +757,62 @@ private struct ProgramWorkspaceDotMatrixView: NSViewRepresentable {
     }
 }
 
+/// The modal backdrop's dot matrix. The particle renderer lays out the
+/// dots and their colour; they shimmer as the skeleton loaders do, one shape
+/// layer per snake position animated by Core Animation, with each snake's
+/// head at the dots' full colour.
 final class WorkspaceDotMatrixHostView: NSView {
-    private let renderer = ParticleFieldRenderer(coverage: .fullBounds)
+    private let grid = ParticleFieldRenderer(coverage: .fullBounds)
+    private let phaseLayers = (0..<DotColumnSnakeAnimation.phases).map { _ in CAShapeLayer() }
+    private var laidOutSize: CGSize = .zero
+    private var reduceMotion: Bool
+    private var isStopped = false
+
+    /// Lifts the snake's head to opacity 1, so lit dots keep the design colour.
+    static let shimmerScale: Float = 1 / DotColumnSnakeAnimation.levels[0]
 
     override var isFlipped: Bool { true }
 
     init(reduceMotion: Bool) {
+        self.reduceMotion = reduceMotion
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
         layer?.masksToBounds = true
-        renderer.attach(to: self)
-        renderer.setIntensity(ProgramWorkspaceDotMatrixStyle.intensity)
-        update(reduceMotion: reduceMotion)
+        let color = ParticleFieldRenderer.Theme.workspace.baseHighlight
+        let fill = CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: [color.r, color.g, color.b, 1])
+        for phaseLayer in phaseLayers {
+            phaseLayer.fillColor = fill
+            phaseLayer.actions = ["path": NSNull(), "bounds": NSNull(), "position": NSNull()]
+            layer?.addSublayer(phaseLayer)
+        }
     }
 
     required init?(coder: NSCoder) {
         nil
     }
 
-    deinit {
-        stop()
-    }
-
     override func layout() {
         super.layout()
-        renderer.layoutInBounds(bounds, backingScale: window?.screen?.backingScaleFactor)
+        guard bounds.size != laidOutSize else { return }
+        laidOutSize = bounds.size
+        let paths = phaseLayers.map { _ in CGMutablePath() }
+        let height = bounds.height
+        for dot in grid.restingDots(for: .workspace, size: bounds.size) {
+            // The renderer's grid is y-up; this view is flipped.
+            let center = CGPoint(x: dot.center.x, y: height - dot.center.y)
+            let phase = DotColumnSnakeAnimation.position(column: dot.column, row: dot.row)
+            paths[phase].addEllipse(in: CGRect(x: center.x - dot.radius, y: center.y - dot.radius,
+                                               width: dot.radius * 2, height: dot.radius * 2))
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (phaseLayer, path) in zip(phaseLayers, paths) {
+            phaseLayer.frame = bounds
+            phaseLayer.path = path
+        }
+        CATransaction.commit()
+        applyShimmer()
     }
 
     override func viewDidMoveToWindow() {
@@ -795,20 +825,39 @@ final class WorkspaceDotMatrixHostView: NSView {
     }
 
     func update(reduceMotion: Bool) {
-        renderer.transition(to: .workspace, reduceMotion: reduceMotion)
+        self.reduceMotion = reduceMotion
+        isStopped = false
+        applyShimmer()
     }
 
     func stop() {
-        renderer.transition(to: nil)
+        isStopped = true
+        for phaseLayer in phaseLayers {
+            phaseLayer.removeAnimation(forKey: SkeletonLoaderView.shimmerKey)
+        }
+    }
+
+    private func applyShimmer() {
+        guard !isStopped else { return }
+        if reduceMotion {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            for (phase, phaseLayer) in phaseLayers.enumerated() {
+                phaseLayer.removeAnimation(forKey: SkeletonLoaderView.shimmerKey)
+                phaseLayer.opacity = min(1, DotColumnSnakeAnimation.restingOpacity(forPhase: phase) * Self.shimmerScale)
+            }
+            CATransaction.commit()
+        } else {
+            DotColumnSnakeAnimation.run(on: phaseLayers, scale: Self.shimmerScale)
+        }
     }
 
     var isAnimationRunning: Bool {
-        renderer.isAnimationRunning
+        phaseLayers.contains { $0.animation(forKey: SkeletonLoaderView.shimmerKey) != nil }
     }
 
-    var renderedParticleImage: CGImage? {
-        renderer.renderedParticleImage
-    }
+    /// The dots each snake position draws, for tests.
+    var shimmerLayers: [CAShapeLayer] { phaseLayers }
 }
 
 private struct ProgramBoardModalLayer<Content: View>: View {
@@ -4023,62 +4072,15 @@ private struct ProgramTicketProjectPicker: View {
     let projects: [ProgramBoardProjectTarget]
     @Binding var selection: String?
 
-    private func project(at path: String?) -> ProgramBoardProjectTarget? {
-        projects.first { $0.path == path }
-    }
-
+    /// The Settings dropdown, so the panel matches every other menu in the app.
     var body: some View {
-        Menu {
-            Button {
-                selection = nil
-            } label: {
-                if selection == nil {
-                    Label("Select project", systemImage: "checkmark")
-                } else {
-                    Text("Select project")
-                }
-            }
-            Divider()
-            ForEach(projects) { project in
-                Button {
-                    selection = project.path
-                } label: {
-                    if selection == project.path {
-                        Label(project.name, systemImage: "checkmark")
-                    } else {
-                        Text(project.name)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 8) {
-                RelaySwap(selection, style: .text, alignment: .leading) { selection in
-                    Text(project(at: selection)?.name ?? "Select project")
-                        .font(AppTypography.font(.field))
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 12)
-                Image(systemName: "chevron.down")
-                    .font(AppTypography.symbolFont(size: 9, weight: .semibold))
-                    .accessibilityHidden(true)
-            }
-            .foregroundStyle(ProgramBoardStyle.primaryText)
-            .padding(.horizontal, 10)
-            .frame(width: SettingsLayout.controlMaxWidth, height: 34)
-            .background(ProgramTicketFieldBackground())
-            .contentShape(
-                RoundedRectangle(
-                    cornerRadius: SettingsLayout.sidebarCornerRadius,
-                    style: .continuous
-                )
-            )
-        }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        SettingsMenuPicker(
+            "Project",
+            selection: $selection,
+            options: [("Select project", nil)] + projects.map { ($0.name, Optional($0.path)) }
+        )
+        .frame(width: SettingsLayout.controlMaxWidth)
         .programButtonCursor()
-        .accessibilityLabel("Project")
         .help("Choose the project that will own this ticket")
     }
 }

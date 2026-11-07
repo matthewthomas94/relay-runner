@@ -361,21 +361,6 @@ final class ParticleFieldRenderer {
         return half == half.rounded() && step == step.rounded()
     }
 
-    /// Per-position alpha multipliers for the column-snake shimmer, or nil
-    /// for the fields that keep their plain look.
-    static func snakeFactors(
-        theme: Theme, coverage: Coverage, elapsed: Double, reduceMotion: Bool
-    ) -> [CGFloat]? {
-        guard coverage == .lowerScreen, theme == .stt || theme == .tts else { return nil }
-        let peak = DotColumnSnakeAnimation.levels[0]
-        return (0..<DotColumnSnakeAnimation.phases).map { phase in
-            let level = reduceMotion
-                ? DotColumnSnakeAnimation.restingOpacity(forPhase: phase)
-                : DotColumnSnakeAnimation.opacity(forPhase: phase, at: elapsed)
-            return CGFloat(min(1, level / peak))
-        }
-    }
-
     private func drawDots(
         _ grid: [Dot],
         theme: Theme,
@@ -390,23 +375,10 @@ final class ParticleFieldRenderer {
         // within a few 8-bit levels at antialiased edges.
         let pixels = dotsAlignToPixels && !drawsDotsWithCoreGraphics
             ? ctx.data?.assumingMemoryBound(to: UInt8.self) : nil
-        // Listening and speaking screen fields carry the column-snake
-        // shimmer on top of the waves, normalised so the head keeps the
-        // wave alpha and the tail dims behind it.
-        let snake = Self.snakeFactors(theme: theme, coverage: coverage, elapsed: elapsed, reduceMotion: reduceMotion)
         for dot in grid {
             // The card's silhouette changes through the density field. Keep
             // its dot centres fixed so the halftone grid stays crisp.
-            let wave: CGFloat
-            if coverage == .agentOrb {
-                wave = 0
-            } else {
-                // Diagonal waves at different angles and speeds.
-                let wave1 = sin(Double(dot.x) * 0.012 - Double(dot.y) * 0.008 - elapsed * 4.2)
-                let wave2 = sin(Double(dot.x) * 0.007 + Double(dot.y) * 0.011 - elapsed * 2.7) * 0.4
-                let wave3 = sin(Double(dot.x) * 0.004 - elapsed * 1.1) * 0.3
-                wave = CGFloat(wave1 + wave2 + wave3) / 1.7
-            }
+            let wave = coverage == .agentOrb ? 0 : Self.wave(x: dot.x, y: dot.y, elapsed: elapsed)
             let radiusScale: CGFloat = 1.0 + wave * 0.2
             let radius = dot.baseRadius * radiusScale
             guard radius > 0.1 else { continue }
@@ -415,12 +387,7 @@ final class ParticleFieldRenderer {
             let baseAlpha = theme == .workspace
                 ? dot.baseAlpha
                 : dot.baseAlpha * (1.0 + wave * 0.1)
-            var alpha = baseAlpha * alphaScale
-            if let snake {
-                let column = Int(((dot.x - spacing / 2) / spacing).rounded())
-                let row = Int(((dot.y - spacing / 2) / spacing).rounded())
-                alpha *= snake[DotColumnSnakeAnimation.position(column: column, row: row)]
-            }
+            let alpha = baseAlpha * alphaScale
             guard baseAlpha > 0.02, alpha > 0.002 else { continue }
 
             if let pixels {
@@ -569,6 +536,29 @@ final class ParticleFieldRenderer {
             }
         }
         return result
+    }
+
+    /// Diagonal waves at different angles and speeds.
+    static func wave(x: CGFloat, y: CGFloat, elapsed: Double) -> CGFloat {
+        let wave1 = sin(Double(x) * 0.012 - Double(y) * 0.008 - elapsed * 4.2)
+        let wave2 = sin(Double(x) * 0.007 + Double(y) * 0.011 - elapsed * 2.7) * 0.4
+        let wave3 = sin(Double(x) * 0.004 - elapsed * 1.1) * 0.3
+        return CGFloat(wave1 + wave2 + wave3) / 1.7
+    }
+
+    /// A still field's dots as drawn at rest, for layers that animate them
+    /// on the GPU instead: centres in the bitmap's y-up space, the grid
+    /// column and row, and the radius after the resting wave.
+    func restingDots(for theme: Theme, size: CGSize)
+        -> [(center: CGPoint, column: Int, row: Int, radius: CGFloat)] {
+        buildDotGrid(theme: theme, size: size).compactMap { dot in
+            let radius = dot.baseRadius * (1.0 + Self.wave(x: dot.x, y: dot.y, elapsed: 0) * 0.2)
+            guard radius > 0.1, dot.baseAlpha > 0.02 else { return nil }
+            return (CGPoint(x: dot.x, y: dot.y),
+                    Int((dot.x - spacing / 2) / spacing),
+                    Int((dot.y - spacing / 2) / spacing),
+                    radius)
+        }
     }
 
     private func buildDotGrid(theme: Theme, size: CGSize) -> [Dot] {

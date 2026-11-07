@@ -72,40 +72,36 @@ final class WorkspaceDotMatrixTests: XCTestCase {
         XCTAssertFalse(host.isAnimationRunning)
 
         host.update(reduceMotion: false)
-        XCTAssertFalse(host.isAnimationRunning)
+        XCTAssertTrue(host.isAnimationRunning)
         host.stop()
         XCTAssertFalse(host.isAnimationRunning)
     }
 
-    func testStaticWorkspaceMatrixRendersOpaqueDesignPixelsAfterFirstLayout() throws {
+    func testBackdropDotsShimmerLikeTheSkeletonsInTheDesignColour() throws {
         let host = WorkspaceDotMatrixHostView(reduceMotion: false)
         host.frame = CGRect(x: 0, y: 0, width: 160, height: 120)
         host.layoutSubtreeIfNeeded()
 
-        let image = try XCTUnwrap(host.renderedParticleImage)
-        let bytesPerRow = image.width * 4
-        var pixels = [UInt8](repeating: 0, count: bytesPerRow * image.height)
-        let context = try XCTUnwrap(CGContext(
-            data: &pixels,
-            width: image.width,
-            height: image.height,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ))
-        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        XCTAssertEqual(host.shimmerLayers.count, DotColumnSnakeAnimation.phases)
+        XCTAssertTrue(host.isAnimationRunning)
+        for layer in host.shimmerLayers {
+            // Every snake position draws dots, in the design navy.
+            XCTAssertFalse(try XCTUnwrap(layer.path).isEmpty)
+            let rgb = try XCTUnwrap(layer.fillColor?.components)
+            XCTAssertEqual(rgb[0], 10.0 / 255.0, accuracy: 0.001)
+            XCTAssertEqual(rgb[1], 15.0 / 255.0, accuracy: 0.001)
+            XCTAssertEqual(rgb[2], 25.0 / 255.0, accuracy: 0.001)
 
-        var designPixelCount = 0
-        for offset in stride(from: 0, to: pixels.count, by: 4) {
-            if pixels[offset] == 10,
-               pixels[offset + 1] == 15,
-               pixels[offset + 2] == 25,
-               pixels[offset + 3] == 255 {
-                designPixelCount += 1
-            }
+            // The skeleton's snake, with its head lifted to the full colour.
+            let snake = try XCTUnwrap(layer.animation(forKey: SkeletonLoaderView.shimmerKey) as? CAKeyframeAnimation)
+            XCTAssertEqual(snake.duration, DotColumnSnakeAnimation.cycle, accuracy: 0.0001)
+            XCTAssertEqual(snake.calculationMode, .linear)
+            let values = try XCTUnwrap(snake.values as? [Float])
+            XCTAssertEqual(values.max() ?? 0, 1, accuracy: 0.0001)
+            XCTAssertEqual(values.count, DotColumnSnakeAnimation.loopValues.count)
         }
-        XCTAssertGreaterThan(designPixelCount, 100)
+
+        host.update(reduceMotion: true)
         XCTAssertFalse(host.isAnimationRunning)
     }
 
