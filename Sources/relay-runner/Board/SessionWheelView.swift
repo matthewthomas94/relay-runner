@@ -438,7 +438,7 @@ struct SessionWheelView: View {
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: symbol)
                 .frame(width: geometry.actionLabelSize.width, height: geometry.actionLabelSize.height)
                 .foregroundStyle(!enabled
-                                 ? (contrast == .increased ? ProgramBoardStyle.disabledText : Color(.sRGB, red: 24 / 255, green: 27 / 255, blue: 33 / 255, opacity: 1))
+                                 ? (contrast == .increased ? GraphicalTheme.neutral7 : GraphicalTheme.neutral6) // Kit disabled label
                                  : destructive ? ProgramBoardStyle.red
                                  : isOn.map { $0 ? ProgramBoardStyle.activeTrayOrange : .white } ?? ProgramBoardStyle.primaryText)
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isOn)
