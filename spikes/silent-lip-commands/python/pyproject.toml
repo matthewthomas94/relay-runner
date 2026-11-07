@@ -1,0 +1,20 @@
+[project]
+name = "lipspike"
+version = "0.0.1"
+description = "Silent lip-command spike: camera lip geometry -> DTW template classifier"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+video = ["mediapipe", "opencv-python-headless"]
+test = ["pytest"]
+
+[project.scripts]
+lipspike = "lipspike.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["lipspike*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
