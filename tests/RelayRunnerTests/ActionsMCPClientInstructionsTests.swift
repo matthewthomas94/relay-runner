@@ -22,7 +22,7 @@ final class ActionsMCPClientInstructionsTests: XCTestCase {
             let result = try await initialize(server, client: client)
             XCTAssertEqual(result["instructions"] as? String, Instructions.payload, client)
             let byName = try await tools(server)
-            XCTAssertEqual(Set(byName.keys), Set(["click", "type", "key", "scroll", "activate_project", "activate_general", "project_scope_token", "toggle_board", "frontmost_app", "list_windows", "propose_action"]), client)
+            XCTAssertEqual(Set(byName.keys), Set(["click", "type", "key", "scroll", "activate_project", "activate_general", "project_scope_token", "find_project", "register_project", "toggle_board", "frontmost_app", "list_windows", "propose_action"]), client)
             XCTAssertEqual(byName["activate_general"]?["inputSchema"] as? NSDictionary, ActivateGeneralTool().inputSchema as NSDictionary)
             XCTAssertEqual(byName["activate_project"]?["description"] as? String, ActivateProjectTool().description)
         }

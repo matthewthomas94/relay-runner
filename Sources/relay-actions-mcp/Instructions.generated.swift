@@ -91,6 +91,7 @@ This is a summary. For the full screen-control rules, call `mcp__relay-actions__
 - Prefer a direct shell or OS command (launch an app, open or reveal a known path, find a file) before visual navigation.
 - "Look at my screen", "what's on my screen", "can you see X": call `mcp__relay-vision__screenshot` immediately, without exploring code or asking which display.
 - "Bring up / show the Workspace": call `mcp__relay-actions__toggle_board`.
+- A project the user names: `find_project` (read-only) first. On `none`, ask existing or new and end the turn; call `register_project` only with their answer. The picker chooses every folder.
 - Never call `propose_action`: its confirmation gesture is retired and it times out. Voice control is already authorized, so just act. For irreversible, sending, spending, or deleting actions you're unsure about, ask in chat and wait for an explicit yes.
 - ActionGlow, the screen-edge glow, pulses automatically on Relay tool calls. It is a visual signal, not a confirmation.
 """#

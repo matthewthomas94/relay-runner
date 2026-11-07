@@ -27,7 +27,14 @@ import Foundation
 ///    — RR-442 request/reply command that issues the general session a
 ///    confirmed scope token for one registered project.
 ///
-/// 6. `{"type":"perform_tool","tool":"click|type|key|scroll|screenshot","arguments":{...}}`
+/// 6. `{"type":"find_project","name":"<spoken name>","source":{...}}` — RR-443
+///    read-only request/reply that matches a spoken name against the registry.
+///
+/// 7. `{"type":"register_project","kind":"existing|new","name":"<new name>","user_answer":"...","source":{...}}`
+///    — RR-443 request/reply that registers a project the user named, through
+///    the shared folder picker, only inside the user's current answering turn.
+///
+/// 8. `{"type":"perform_tool","tool":"click|type|key|scroll|screenshot","arguments":{...}}`
 ///    — request/reply command that runs permission-gated Relay Actions/Vision
 ///    work in the Relay Runner app process. MCP helpers stay protocol adapters
 ///    while the app owns Accessibility and Screen Recording attribution.
@@ -57,6 +64,8 @@ actor ActionsConfirmBus {
     private let onActivateProject: (@MainActor (String, String?, [String: String]?) async -> ProjectActivationReply)?
     private let onActivateGeneral: (@MainActor ([String: String]?) async -> GeneralActivationReply)?
     private let onProjectScopeToken: (@MainActor (String, String?) async -> ProjectScopeTokenReply)?
+    private let onFindProject: (@MainActor (String, [String: String]?) async -> ProjectLookupReply)?
+    private let onRegisterProject: (@MainActor (VoiceProjectRegistration.Request, String, [String: String]) async -> ProjectRegistrationReply)?
     private let onHostedToolPermissionMissing: ((PermissionKind, String) async -> Void)?
 
     /// Outstanding `propose_action` requests, keyed by request id. Value is
@@ -87,6 +96,8 @@ actor ActionsConfirmBus {
          onActivateProject: (@MainActor (String, String?, [String: String]?) async -> ProjectActivationReply)? = nil,
          onActivateGeneral: (@MainActor ([String: String]?) async -> GeneralActivationReply)? = nil,
          onProjectScopeToken: (@MainActor (String, String?) async -> ProjectScopeTokenReply)? = nil,
+         onFindProject: (@MainActor (String, [String: String]?) async -> ProjectLookupReply)? = nil,
+         onRegisterProject: (@MainActor (VoiceProjectRegistration.Request, String, [String: String]) async -> ProjectRegistrationReply)? = nil,
          onHostedToolPermissionMissing: ((PermissionKind, String) async -> Void)? = nil) {
         self.stateMachine = stateMachine
         self.onParentPermissionRevoked = onParentPermissionRevoked
@@ -94,6 +105,8 @@ actor ActionsConfirmBus {
         self.onActivateProject = onActivateProject
         self.onActivateGeneral = onActivateGeneral
         self.onProjectScopeToken = onProjectScopeToken
+        self.onFindProject = onFindProject
+        self.onRegisterProject = onRegisterProject
         self.onHostedToolPermissionMissing = onHostedToolPermissionMissing
     }
 
@@ -312,6 +325,62 @@ actor ActionsConfirmBus {
             }
             close(fd)
 
+        case "find_project":
+            guard let name = json["name"] as? String,
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  json["source"] == nil || json["source"] is [String: String] else {
+                writePayload(fd: fd, payload: ["result": "error", "message": "find_project requires a spoken project name."])
+                close(fd)
+                return
+            }
+            let reply = await onFindProject?(name, json["source"] as? [String: String])
+                ?? .failed(message: "Relay Runner cannot read the project registry right now.")
+            switch reply {
+            case .found(let result):
+                writePayload(fd: fd, payload: ["result": "ok", "match": Self.lookupPayload(result)])
+            case .failed(let message):
+                writePayload(fd: fd, payload: ["result": "error", "message": message])
+            }
+            close(fd)
+
+        case "register_project":
+            let request: VoiceProjectRegistration.Request
+            do {
+                request = try VoiceProjectRegistration.request(
+                    kind: json["kind"] as? String, name: json["name"] as? String,
+                    userAnswer: json["user_answer"] as? String
+                )
+            } catch {
+                writePayload(fd: fd, payload: ["result": "error", "message": String(describing: error)])
+                close(fd)
+                return
+            }
+            guard let source = json["source"] as? [String: String],
+                  let answer = json["user_answer"] as? String else {
+                writePayload(fd: fd, payload: ["result": "error", "message": "register_project requires an app-managed native user turn."])
+                close(fd)
+                return
+            }
+            let reply = await onRegisterProject?(request, answer, source)
+                ?? .failed(message: "Relay Runner cannot register projects right now.")
+            switch reply {
+            case .registered(let project, let token):
+                var payload: [String: Any] = [
+                    "result": "ok",
+                    "kind": request.kind.rawValue,
+                    "project_id": project.projectID,
+                    "display_name": project.displayName,
+                    "repo_path": project.lastResolvedPath,
+                ]
+                if let encoded = token?.encodedValue { payload["project_scope_token"] = encoded }
+                writePayload(fd: fd, payload: payload)
+            case .cancelled(let message):
+                writePayload(fd: fd, payload: ["result": "cancelled", "message": message])
+            case .failed(let message):
+                writePayload(fd: fd, payload: ["result": "error", "message": message])
+            }
+            close(fd)
+
         case "perform_tool":
             guard let tool = json["tool"] as? String else {
                 writePayload(fd: fd, payload: [
@@ -509,4 +578,35 @@ enum GeneralActivationReply {
 enum ProjectScopeTokenReply {
     case issued(ConfirmedProjectScopeToken, displayName: String)
     case failed(message: String)
+}
+
+enum ProjectLookupReply {
+    case found(ProjectNameMatcher.Result)
+    case failed(message: String)
+}
+
+enum ProjectRegistrationReply {
+    case registered(RegisteredProjectV2, token: ConfirmedProjectScopeToken?)
+    case cancelled(message: String)
+    case failed(message: String)
+}
+
+extension ActionsConfirmBus {
+    /// The `find_project` reply body. Paths and names only; nothing private
+    /// beyond what the registry already shows in the Projects list.
+    static func lookupPayload(_ result: ProjectNameMatcher.Result) -> [String: Any] {
+        [
+            "status": result.status.rawValue,
+            "matches": result.matches.map { match -> [String: Any] in
+                [
+                    "project_id": match.candidate.projectID,
+                    "display_name": match.candidate.displayName,
+                    "folder_name": URL(fileURLWithPath: match.candidate.repoPath).lastPathComponent,
+                    "repo_path": match.candidate.repoPath,
+                    "match": match.tier.rawValue,
+                    "score": (match.score * 100).rounded() / 100,
+                ]
+            },
+        ]
+    }
 }

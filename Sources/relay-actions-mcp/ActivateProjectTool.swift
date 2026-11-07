@@ -139,6 +139,108 @@ struct ProjectScopeTokenTool: MCPTool {
     }
 }
 
+/// RR-443: read-only match of a spoken project name against the registry.
+struct FindProjectTool: MCPTool {
+    let name = "find_project"
+    let description = """
+        Match a project name the user said against the Relay Runner project registry. Read-only:         it never registers, opens, or changes anything. Case, spaces and punctuation are ignored,         so "relay runner" finds relay-runner. Returns status exact (display name), folder (folder         name), fuzzy (one close name to confirm), ambiguous (name the candidates and ask which) or         none (ask one question: an existing folder to add or a new project to create), with the         matching projects' IDs, names, folder names and paths. Codex and Claude use the same tool.
+        """
+    var notify: () -> Bool = { ConfirmationClient.notifyToolFiredAndWait(toolName: "find_project") }
+    var lookup: (String) -> ProjectAppReplyOutcome = { ConfirmationClient.requestProjectLookup(name: $0) }
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "name": ["type": "string", "description": "The project name or path as the user said it."],
+            ],
+            "required": ["name"],
+            "additionalProperties": false,
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        guard let name = arguments["name"] as? String,
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.utf8.count <= 1_000 else {
+            throw MCPToolError(message: "find_project requires the spoken project name.")
+        }
+        guard notify() else {
+            throw MCPToolError(message: "Relay Runner menu-bar app is not running or /tmp/relay_actions.sock is unavailable.")
+        }
+        switch lookup(name) {
+        case .ok(let body):
+            return [["type": "text", "text": try jsonText(body["match"] ?? [:])]]
+        case .cancelled(let message), .failed(let message):
+            throw MCPToolError(message: message)
+        case .menuBarUnavailable:
+            throw MCPToolError(message: "Relay Runner menu-bar app did not answer the project lookup.")
+        }
+    }
+}
+
+/// RR-443: register a project the user named, once they answered whether it
+/// is an existing folder or a new project. The app opens its shared folder
+/// picker; the user chooses every location.
+struct RegisterProjectTool: MCPTool {
+    let name = "register_project"
+    let description = """
+        Add a project to the Relay Runner registry after find_project found none and the user         answered, in their current turn, whether it is an existing folder or a new project. Never         call it in the turn that asks. kind=existing opens the folder picker and registers the         chosen folder exactly as Add existing project does. kind=new needs the name the user gave;         the picker asks for the parent folder and the project is created and registered exactly as         Create new project does. There is no default location. Pass the user's answer as         user_answer. The general session gets the new project's project_scope_token. Codex and         Claude use the same tool; it needs a Relay Runner-managed session.
+        """
+    var notify: () -> Bool = { ConfirmationClient.notifyToolFiredAndWait(toolName: "register_project") }
+    var register: (String, String?, String) -> ProjectAppReplyOutcome = {
+        ConfirmationClient.requestProjectRegistration(kind: $0, name: $1, userAnswer: $2)
+    }
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "kind": [
+                    "type": "string",
+                    "enum": ["existing", "new"],
+                    "description": "existing: add a folder that already exists. new: create a new project folder.",
+                ],
+                "name": ["type": "string", "description": "kind=new only: the project name the user gave, used as the new folder name."],
+                "user_answer": ["type": "string", "description": "The user's own words from the current turn answering existing or new."],
+            ],
+            "required": ["kind", "user_answer"],
+            "additionalProperties": false,
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        guard let kind = arguments["kind"] as? String, ["existing", "new"].contains(kind) else {
+            throw MCPToolError(message: "register_project requires kind existing or new.")
+        }
+        guard let answer = arguments["user_answer"] as? String,
+              !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, answer.utf8.count <= 4_000 else {
+            throw MCPToolError(message: "register_project needs the user's answer from the current turn. Ask whether it is an existing folder or a new project, end your turn, and call it once they answer.")
+        }
+        let projectName = arguments["name"] as? String
+        guard arguments["name"] == nil || projectName != nil else {
+            throw MCPToolError(message: "name must be a string.")
+        }
+        guard notify() else {
+            throw MCPToolError(message: "Relay Runner menu-bar app is not running or /tmp/relay_actions.sock is unavailable.")
+        }
+        switch register(kind, projectName, answer) {
+        case .ok(let body):
+            return [["type": "text", "text": try jsonText(body)]]
+        case .cancelled(let message):
+            return [["type": "text", "text": message]]
+        case .failed(let message):
+            throw MCPToolError(message: message)
+        case .menuBarUnavailable:
+            throw MCPToolError(message: "Relay Runner menu-bar app did not answer the project registration request.")
+        }
+    }
+}
+
+private func jsonText(_ object: Any) throws -> String {
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+    return String(decoding: data, as: UTF8.self)
+}
+
 private func continuationText(_ arguments: [String: Any]) throws -> String? {
     guard let value = arguments["continuation"] else { return nil }
     guard let text = value as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

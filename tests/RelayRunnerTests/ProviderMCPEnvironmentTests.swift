@@ -17,7 +17,7 @@ final class ProviderMCPEnvironmentTests: XCTestCase {
         import json,os,subprocess,sys
         allowed={}
         for index,arg in enumerate(sys.argv[2:],2):
-            if arg=='-c':
+            if arg=='-c' and sys.argv[index+1].split('=',1)[0].endswith('.env_vars'):
                 key,value=sys.argv[index+1].split('=',1)
                 allowed[key.split('.')[1]]=json.loads(value)
         result={}

@@ -38,6 +38,8 @@ final class MCPServer {
             ActivateProjectTool(),
             ActivateGeneralTool(),
             ProjectScopeTokenTool(),
+            FindProjectTool(),
+            RegisterProjectTool(),
             ToggleBoardTool(),
             FrontmostAppTool(),
             ListWindowsTool(),
