@@ -3368,21 +3368,20 @@ final class AppState {
         completion: ((Result<RegisteredProjectV2, Error>) -> Void)? = nil
     ) {
         guard let projectRegistryV2 else { return }
-        WorkspaceDirectoryPicker.pick(
-            message: "Choose an existing project folder",
-            onPrepareExternalWindow: { [weak self] ready in
+        WorkspaceDirectoryPicker.present(
+            hideWorkspace: { [weak self] ready in
                 guard let self else {
                     ready()
                     return
                 }
                 self.suspendWorkspaceForProjectPicker(ready)
             },
-            chooseDirectory: {
+            presentPanel: {
                 WorkspaceDirectoryPicker.runAppKitDirectoryPanel(
                     message: "Choose an existing project folder"
-                )
+                )?.path
             },
-            completion: { [weak self] path in
+            restoreWorkspace: { [weak self] path in
                 guard let self else { return }
                 guard let path else {
                     self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings)
@@ -3404,15 +3403,25 @@ final class AppState {
         completion: ((Result<RegisteredProjectV2, Error>) -> Void)? = nil
     ) {
         guard let projectRegistryV2 else { return }
-        suspendWorkspaceForProjectPicker { [weak self] in
+        WorkspaceDirectoryPicker.present(
+            hideWorkspace: { [weak self] ready in
+                guard let self else {
+                    ready()
+                    return
+                }
+                self.suspendWorkspaceForProjectPicker(ready)
+            },
+            presentPanel: {
+                let panel = NSSavePanel()
+                panel.title = "Create Project"
+                panel.message = "Choose a new folder for the Git repository."
+                panel.nameFieldLabel = "Project name:"
+                panel.nameFieldStringValue = "New Project"
+                panel.canCreateDirectories = true
+                return WorkspaceDirectoryPicker.runAppKitPanel(panel)
+            }
+        ) { [weak self] selectedURL in
             guard let self else { return }
-            let panel = NSSavePanel()
-            panel.title = "Create Project"
-            panel.message = "Choose a new folder for the Git repository."
-            panel.nameFieldLabel = "Project name:"
-            panel.nameFieldStringValue = "New Project"
-            panel.canCreateDirectories = true
-            let selectedURL = WorkspaceDirectoryPicker.runAppKitPanel(panel)
             guard let selectedURL else {
                 self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings)
                 return
@@ -3463,21 +3472,20 @@ final class AppState {
         completion: ((Result<RegisteredProjectV2, Error>) -> Void)? = nil
     ) {
         guard let projectRegistryV2 else { return }
-        WorkspaceDirectoryPicker.pick(
-            message: "Locate the registered Git repository",
-            onPrepareExternalWindow: { [weak self] ready in
+        WorkspaceDirectoryPicker.present(
+            hideWorkspace: { [weak self] ready in
                 guard let self else {
                     ready()
                     return
                 }
                 self.suspendWorkspaceForProjectPicker(ready)
             },
-            chooseDirectory: {
+            presentPanel: {
                 WorkspaceDirectoryPicker.runAppKitDirectoryPanel(
                     message: "Locate the registered Git repository"
-                )
+                )?.path
             },
-            completion: { [weak self] path in
+            restoreWorkspace: { [weak self] path in
                 guard let self else { return }
                 defer { self.resumeWorkspace(afterProjectManagementInSettings: resumeInSettings) }
                 guard let path else { return }
