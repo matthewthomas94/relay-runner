@@ -9,19 +9,20 @@ final class SessionWheelTests: XCTestCase {
     }
     private func session(_ id: String) -> SessionWheelSession { .init(id: id, name: id) }
 
-    func testSessionPositionsSurviveRefreshAndAnEmptySlotIsReused() {
+    func testTheOneSessionSlotSurvivesRefreshAndIsReusedOnceEmpty() {
         let model = SessionWheelModel()
-        model.refresh(sessions: [session("a"), session("b"), session("c")])
-        model.hover(at: geometry.position(slot: 5, radius: 119))
-        model.refresh(sessions: [session("c"), session("b")])
+        model.refresh(sessions: [session("a"), session("b")])
+        model.hover(at: geometry.position(slot: 0, radius: 119))
+        model.refresh(sessions: [session("a")])
+        XCTAssertEqual(model.slots[0]?.id, "a")
+        XCTAssertEqual(model.hoveredSession?.id, "a")
+        model.refresh(sessions: [])
         XCTAssertNil(model.slots[0])
-        XCTAssertEqual(model.slots[1]?.id, "b")
-        XCTAssertEqual(model.slots[5]?.id, "c")
-        XCTAssertEqual(model.hoveredSession?.id, "c")
-        model.refresh(sessions: [session("d"), session("c"), session("b")])
-        XCTAssertEqual(model.slots[0]?.id, "d")
-        XCTAssertEqual(model.slots[5]?.id, "c")
-        XCTAssertEqual(model.slots.count, 6)
+        XCTAssertNil(model.hoveredSession)
+        model.refresh(sessions: [session("c")])
+        XCTAssertEqual(model.slots[0]?.id, "c")
+        XCTAssertEqual(model.slots.count, 5)
+        XCTAssertEqual(model.slots.compactMap { $0 }.count, 1, "Only one session slot")
     }
 
     func testEverySessionHasReachableOuterActionsAcrossTheRadialGap() {
@@ -65,31 +66,40 @@ final class SessionWheelTests: XCTestCase {
         }
     }
 
-    func testRootReservesTopThreeSlotsForSessionsAndBottomThreeForShortcuts() {
+    func testRootHasFiveSegmentsWithTheSessionOnTopAndFourShortcutsAround() {
         let model = SessionWheelModel()
-        XCTAssertEqual((0..<6).filter { model.shortcut(at: $0) == nil }, [0, 1, 5])
-        XCTAssertEqual([4, 3, 2].compactMap { model.shortcut(at: $0) }, [.workspace, .noteTaker, .settings])
-        let positions = [4, 3, 2].map { geometry.position(slot: $0, radius: 119) }
-        XCTAssertTrue(positions.allSatisfy { $0.y > geometry.center.y })
-        XCTAssertLessThan(positions[0].x, positions[1].x)
-        XCTAssertLessThan(positions[1].x, positions[2].x)
-        model.refresh(sessions: [session("a"), session("b"), session("c")])
-        XCTAssertEqual([0, 1, 5].compactMap { model.slots[$0]?.id }, ["a", "b", "c"])
-        XCTAssertTrue([2, 3, 4].allSatisfy { model.slots[$0] == nil })
+        XCTAssertEqual(geometry.slotCount, 5)
+        XCTAssertEqual((0..<5).filter { model.shortcut(at: $0) == nil }, [0])
+        XCTAssertEqual([1, 2, 3, 4].compactMap { model.shortcut(at: $0) }, [.history, .settings, .noteTaker, .workspace])
+        let top = geometry.position(slot: 0, radius: 119)
+        XCTAssertEqual(top.x, geometry.center.x, accuracy: 0.0001)
+        XCTAssertLessThan(top.y, geometry.center.y)
+        let positions = [1, 2, 3, 4].map { geometry.position(slot: $0, radius: 119) }
+        // History and Settings on the right, Notetaker and Workspace on the left.
+        XCTAssertTrue(positions[0].x > geometry.center.x && positions[1].x > geometry.center.x)
+        XCTAssertTrue(positions[2].x < geometry.center.x && positions[3].x < geometry.center.x)
+        // Settings and Notetaker sit on the lower half; History and Workspace on the upper.
+        XCTAssertTrue(positions[1].y > geometry.center.y && positions[2].y > geometry.center.y)
+        XCTAssertTrue(positions[0].y < geometry.center.y && positions[3].y < geometry.center.y)
+        XCTAssertEqual(SessionWheelShortcut.history.title, "History")
+        XCTAssertEqual(SessionWheelShortcut.history.symbol, "clock.arrow.circlepath")
+        XCTAssertEqual(SessionWheelSessionSlot.title, "Terminal")
+        XCTAssertEqual(SessionWheelSessionSlot.symbol, "apple.terminal")
+        model.refresh(sessions: [session("a")])
+        XCTAssertEqual(model.slots[0]?.id, "a")
+        XCTAssertTrue([1, 2, 3, 4].allSatisfy { model.slots[$0] == nil })
     }
 
     /// RR-445: no more-sessions slot or all-sessions page. With no session the
-    /// first session slot starts the general session; other empty slots are blank.
-    func testOnlyTheFirstSlotStartsASessionAndOnlyWhileNoneRuns() {
+    /// session slot starts the general session.
+    func testOnlyTheSessionSlotStartsASessionAndOnlyWhileNoneRuns() {
         let model = SessionWheelModel()
-        XCTAssertEqual((0..<6).filter(model.isStartSlot), [0])
-        model.refresh(sessions: ["a", "b", "c", "d"].map(session))
-        XCTAssertEqual([0, 1, 5].compactMap { model.slots[$0]?.id }, ["a", "b", "c"])
-        XCTAssertTrue((0..<6).allSatisfy { !model.isStartSlot($0) })
-        model.refresh(sessions: ["a", "b", "d"].map(session))
-        XCTAssertEqual(model.slots[5]?.id, "d")
+        XCTAssertEqual((0..<5).filter(model.isStartSlot), [0])
+        model.refresh(sessions: ["a", "b"].map(session))
+        XCTAssertEqual(model.slots[0]?.id, "a")
+        XCTAssertTrue((0..<5).allSatisfy { !model.isStartSlot($0) })
         model.refresh(sessions: [])
-        XCTAssertEqual((0..<6).filter(model.isStartSlot), [0])
+        XCTAssertEqual((0..<5).filter(model.isStartSlot), [0])
     }
 
     func testNoteControlsRetainHoverAcrossGapAndSessionRefresh() {
@@ -161,11 +171,11 @@ final class SessionWheelTests: XCTestCase {
             return true
         }
         controller.toggle()
-        for slot in [4, 3, 2] {
+        for slot in [4, 3, 2, 1] {
             controller.selectSlot(slot, fromPointer: false)
             XCTAssertTrue(controller.isVisible)
         }
-        XCTAssertEqual(shortcuts, [.workspace, .noteTaker, .settings])
+        XCTAssertEqual(shortcuts, [.workspace, .noteTaker, .settings, .history])
         controller.performNoteAction(.pause)
         controller.performNoteAction(.cancel)
         XCTAssertTrue(actions.isEmpty)
@@ -182,7 +192,7 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(actions.count, 6, "Cannot stop or cancel while transcribing")
         controller.dismiss()
         controller.selectSlot(3, fromPointer: false)
-        XCTAssertEqual(shortcuts.count, 3)
+        XCTAssertEqual(shortcuts.count, 4)
     }
 
     @MainActor
@@ -201,7 +211,7 @@ final class SessionWheelTests: XCTestCase {
             String(describing: type(of: $0)) == "SessionWheelPanel" && $0.isVisible
         })
 
-        for shortcut in [SessionWheelShortcut.noteTaker, .settings] {
+        for shortcut in [SessionWheelShortcut.noteTaker, .settings, .history] {
             controller.selectSlot(shortcut.rawValue, fromPointer: false)
             // SwiftUI's tab change re-applies keyboard focus after the shortcut
             // has already brought the wheel forward.
@@ -342,8 +352,8 @@ final class SessionWheelTests: XCTestCase {
             return true
         }
         controller.toggle()
-        for blank in [1, 5] { controller.selectSlot(blank, fromPointer: false) }
-        XCTAssertEqual(starts, 0, "Only the first slot starts a session")
+        for shortcut in [1, 2, 3, 4] { controller.selectSlot(shortcut, fromPointer: false) }
+        XCTAssertEqual(starts, 0, "Only the session slot starts a session")
         controller.model.startUnavailableReason = "Finish taking notes first"
         controller.selectSlot(0, fromPointer: false)
         XCTAssertEqual(starts, 0)
@@ -352,7 +362,7 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(starts, 1)
         XCTAssertTrue(controller.isVisible)
         XCTAssertEqual(controller.model.slots[0]?.id, "general")
-        XCTAssertTrue((0..<6).allSatisfy { !controller.model.isStartSlot($0) })
+        XCTAssertTrue((0..<5).allSatisfy { !controller.model.isStartSlot($0) })
         controller.selectSlot(0, fromPointer: false)
         XCTAssertEqual(starts, 1, "Selecting the running session focuses it")
     }
@@ -970,8 +980,9 @@ final class SessionWheelTests: XCTestCase {
             case "play-hover":
                 model.hover(at: geometry.position(slot: 0, radius: geometry.actionRadius, offset: geometry.actionOffset(.message)))
             case "recording-controls":
-                model.hover(at: geometry.position(slot: 1, radius: 119))
-                model.hover(at: geometry.position(slot: 1, radius: geometry.actionRadius))
+                model.refresh(sessions: [.init(id: "hidpress", name: "hidpress", isRecording: true)])
+                model.hover(at: geometry.position(slot: 0, radius: 119))
+                model.hover(at: geometry.position(slot: 0, radius: geometry.actionRadius))
             case "shortcuts-empty":
                 model.reset(at: geometry.center)
                 model.refresh(sessions: [])

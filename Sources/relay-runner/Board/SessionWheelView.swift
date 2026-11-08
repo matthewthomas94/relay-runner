@@ -162,8 +162,8 @@ struct SessionWheelView: View {
         let shortcut = menu.shortcut(at: index)
         let startSlot = model.isStartSlot(index)
         let empty = session == nil && shortcut == nil
-        // RR-445: an empty slot other than the one Start slot is blank.
-        let title = shortcut?.title ?? session?.name ?? (startSlot ? "Start session" : "")
+        // The session slot reads Terminal while a session runs and Start session otherwise.
+        let title = shortcut?.title ?? (session != nil ? SessionWheelSessionSlot.title : startSlot ? "Start session" : "")
         let caption = model.hoveredSlot == index ? model.hoveredControlCaption : nil
         let sessionHint = session?.isFocused == true
             ? "Open this session's terminal in Workspace."
@@ -192,7 +192,8 @@ struct SessionWheelView: View {
                                 } else if empty {
                                     Image(systemName: "plus").font(AppTypography.symbolFont(size: 17, weight: .medium))
                                 } else {
-                                    Text(initials(title)).font(AppTypography.font(.projectTitle, size: 15))
+                                    Image(systemName: SessionWheelSessionSlot.symbol)
+                                        .font(AppTypography.symbolFont(size: 17, weight: .regular))
                                 }
                             }
                         if let session {
@@ -231,7 +232,7 @@ struct SessionWheelView: View {
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.55)
         .animation(presentation.animation, value: presentation)
-        .accessibilityLabel(title.isEmpty ? "Empty slot" : title)
+        .accessibilityLabel(session.map { "\(title), \($0.name)" } ?? (title.isEmpty ? "Empty slot" : title))
         .accessibilityHint(shortcut == .noteTaker
             ? "Open Notetaker. Move outward for recording controls."
             : shortcut == .settings ? "Open Settings. Move outward for particle intensity, Keep Awake and voice auto-play."
@@ -261,7 +262,8 @@ struct SessionWheelView: View {
                 }
             }
         }
-        .graphicalTooltip(!enabled && startSlot ? model.startUnavailableReason ?? title : title)
+        .graphicalTooltip(!enabled && startSlot ? model.startUnavailableReason ?? title
+                          : session.map { "\(title): \($0.name)" } ?? title)
     }
 
     private func actionButton(_ action: SessionWheelAction, session: SessionWheelSession, slot: Int) -> some View {
@@ -470,11 +472,6 @@ struct SessionWheelView: View {
             if contrast == .increased { shape.stroke(.white.opacity(0.55), lineWidth: 1) }
         }
         .animation(presentation.animation, value: presentation)
-    }
-
-    private func initials(_ name: String) -> String {
-        let words = name.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-        return words.prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
     }
 }
 

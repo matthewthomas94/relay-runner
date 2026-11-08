@@ -64,14 +64,16 @@ enum SessionWheelAction: Int, CaseIterable {
     }
 }
 
+/// Clockwise from the top session slot: History, Settings, Notetaker, Workspace.
 enum SessionWheelShortcut: Int, CaseIterable {
-    case workspace = 4, noteTaker = 3, settings = 2
+    case workspace = 4, noteTaker = 3, settings = 2, history = 1
 
     var title: String {
         switch self {
         case .workspace: return "Workspace"
         case .noteTaker: return "Notetaker"
         case .settings: return "Settings"
+        case .history: return "History"
         }
     }
 
@@ -80,8 +82,15 @@ enum SessionWheelShortcut: Int, CaseIterable {
         case .workspace: return "rectangle.split.3x1"
         case .noteTaker: return "note.text"
         case .settings: return "gearshape"
+        case .history: return "clock.arrow.circlepath"
         }
     }
+}
+
+/// The one session slot reads Terminal while a session runs.
+enum SessionWheelSessionSlot {
+    static let title = "Terminal"
+    static let symbol = "apple.terminal"
 }
 
 enum SessionWheelNoteAction: Int, CaseIterable {
@@ -192,8 +201,9 @@ enum SessionWheelIntensity {
 }
 
 enum SessionWheelGeometry {
-    static let slotCount = 6
-    static let sessionSlots = [0, 1, 5]
+    /// Five segments: the session at the top, then the four shortcuts.
+    static let slotCount = 5
+    static let sessionSlots = [0]
     static let diameter: CGFloat = 528
     static let hubRadius: CGFloat = 52
     static let wheelRadius: CGFloat = 180

@@ -1025,6 +1025,7 @@ final class AppState {
             case .workspace: self.programBoardOverlay.showWork()
             case .noteTaker: self.programBoardOverlay.showNotes()
             case .settings: self.programBoardOverlay.showSettings()
+            case .history: self.programBoardOverlay.showHistory()
             }
         }
         sessionWheel.noteAction = { [weak self] in self?.performNoteWheelAction($0) ?? false }

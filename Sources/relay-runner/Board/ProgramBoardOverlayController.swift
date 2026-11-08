@@ -860,6 +860,14 @@ final class ProgramBoardOverlayController {
         }
     }
 
+    func showHistory() {
+        if isVisible {
+            selectWorkspaceTab(.history)
+        } else {
+            show(initialTab: .history)
+        }
+    }
+
     func suspendForExternalWindow() {
         suspendForExternalWindow(animated: false, completion: {})
     }

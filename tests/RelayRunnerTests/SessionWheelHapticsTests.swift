@@ -69,9 +69,9 @@ final class SessionWheelHapticsTests: XCTestCase {
             model.hover(at: point)
             return SessionWheelHaptics.target(at: point, model: model)
         }
-        // RR-445: the Start slot and the shortcuts; the other session slots are blank.
+        // The Start slot and the four shortcuts are all targets.
         for slot in 0..<geometry.slotCount {
-            XCTAssertEqual(target(slot: slot), [1, 5].contains(slot) ? nil : .slot(slot))
+            XCTAssertEqual(target(slot: slot), .slot(slot))
         }
         XCTAssertEqual(SessionWheelHaptics.target(at: geometry.center, model: model), .center)
         XCTAssertNil(target(slot: 0, radius: geometry.segmentInnerRadius - 2))
@@ -109,7 +109,7 @@ final class SessionWheelHapticsTests: XCTestCase {
         XCTAssertNil(target(slot: 2, radius: geometry.actionRadius, offset: geometry.actionOffset(0)))
 
         XCTAssertEqual(target(slot: 0), .slot(0))
-        XCTAssertNil(target(slot: 1), "Empty session slots are blank while a session runs")
+        XCTAssertEqual(target(slot: 1), .slot(1), "History stays a target while a session runs")
         model.refresh(sessions: [])
         XCTAssertEqual(target(slot: 0), .slot(0))
         model.startUnavailableReason = "Session starting"
@@ -138,7 +138,6 @@ final class SessionWheelHapticsTests: XCTestCase {
         XCTAssertTrue(pulses.isEmpty)
         controller.refresh?(controller.model)
         controller.selectSlot(0, fromPointer: false) // Rejected launch.
-        controller.selectSlot(1, fromPointer: false) // Blank slot.
         XCTAssertTrue(pulses.isEmpty)
         startAccepted = true
         controller.selectSlot(0, fromPointer: false) // Accepted launch.
