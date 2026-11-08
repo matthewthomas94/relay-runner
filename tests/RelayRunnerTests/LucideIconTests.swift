@@ -11,6 +11,18 @@ final class LucideIconTests: XCTestCase {
         }
     }
 
+    /// Strokes are 1.5 points at every size, not 1.5 units of the 24-unit box.
+    func testIconsStrokeAtOneAndAHalfPoints() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Sources/relay-runner/Board/LucideIcon.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("strokeWidth: CGFloat = 1.5"))
+        XCTAssertTrue(source.contains("StrokeStyle(lineWidth: strokeWidth,"))
+    }
+
     /// The Graphical handoff specs Lucide icons, so SF Symbols must not creep back in.
     func testTheAppDrawsLucideIconsInsteadOfSFSymbols() throws {
         let sources = URL(fileURLWithPath: #filePath)

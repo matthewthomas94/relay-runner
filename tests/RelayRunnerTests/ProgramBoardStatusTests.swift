@@ -394,8 +394,11 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
         let createModal = String(contents[createStart.lowerBound..<createEnd.lowerBound])
         XCTAssertFalse(createModal.contains("BoardOverlayScrollView"))
-        XCTAssertTrue(createModal.contains("minHeight: ProgramTicketPanelStyle.createDescriptionHeight"))
-        XCTAssertTrue(createModal.contains("maxHeight: ProgramTicketPanelStyle.createDescriptionHeight"))
+        // The description takes the panel's spare height, so the form never spills past the footer.
+        XCTAssertTrue(createModal.contains("minHeight: ProgramTicketPanelStyle.createDescriptionMinHeight"))
+        XCTAssertTrue(createModal.contains("maxHeight: .infinity"))
+        XCTAssertFalse(createModal.contains("SettingsLayout.sectionSpacing"))
+        XCTAssertFalse(createModal.contains("Spacer(minLength: 0)\n\n            HStack"))
         XCTAssertTrue(createModal.contains("ProgramTicketImageSelector("))
 
         let executionStart = createEnd
@@ -438,9 +441,13 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(imageSelector.contains("Attach designs for the implementation worker."))
         XCTAssertFalse(imageSelector.contains("Spacer(minLength: 0)"))
         XCTAssertTrue(imageSelector.contains("chooseImages { urls in"))
-        XCTAssertTrue(imageSelector.contains("allowsMultipleSelection = true"))
-        XCTAssertTrue(imageSelector.contains("allowedContentTypes = [.image]"))
-        XCTAssertTrue(imageSelector.contains("NSApplication.shared.activate(ignoringOtherApps: true)"))
+        let picker = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Config/WorkspaceDirectoryPicker.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(picker.contains("allowsMultipleSelection = true"))
+        XCTAssertTrue(picker.contains("allowedContentTypes = [.image]"))
+        XCTAssertTrue(picker.contains("NSApplication.shared.activate(ignoringOtherApps: true)"))
 
         let iconStart = try XCTUnwrap(contents.range(of: "struct ProgramIconButton: View"))
         let iconEnd = try XCTUnwrap(

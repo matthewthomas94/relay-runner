@@ -203,7 +203,10 @@ enum ProgramTicketPanelStyle {
     static let horizontalPadding: CGFloat = GraphicalTheme.spaceL
     static let verticalPadding: CGFloat = GraphicalTheme.spaceL
     static let compactFieldHeight: CGFloat = GraphicalTheme.controlHeight
-    static let createDescriptionHeight: CGFloat = 132
+    /// The gap between the new-ticket form's groups.
+    static let sectionSpacing: CGFloat = GraphicalTheme.spaceM
+    /// The new-ticket description takes the panel's spare height, down to this.
+    static let createDescriptionMinHeight: CGFloat = 72
     static let executionModeDescriptionHeight: CGFloat = 24
     static func detailSize(fitting availableSize: CGSize) -> CGSize {
         CGSize(
@@ -3870,9 +3873,21 @@ private struct ProgramEditTextArea: View {
                 .font(AppTypography.font(.field))
                 .foregroundStyle(ProgramBoardStyle.secondaryText)
                 .scrollContentBackground(.hidden)
+                .modifier(ProgramWritingToolsDisabled())
                 .frame(minHeight: minHeight, maxHeight: maxHeight)
                 .padding(GraphicalTheme.spaceS)
                 .background(ProgramTicketFieldBackground())
+        }
+    }
+}
+
+/// The system's Writing Tools button would sit over the field's corner.
+private struct ProgramWritingToolsDisabled: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.writingToolsBehavior(.disabled)
+        } else {
+            content
         }
     }
 }
@@ -3976,9 +3991,11 @@ private struct ProgramTicketCreateModal: View {
         self._description = State(initialValue: "")
     }
 
+    /// The form always fits the fixed panel: only the description flexes,
+    /// shrinking as image chips appear, and it scrolls its own text.
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: SettingsLayout.sectionSpacing) {
+        VStack(alignment: .leading, spacing: ProgramTicketPanelStyle.sectionSpacing) {
+            VStack(alignment: .leading, spacing: ProgramTicketPanelStyle.sectionSpacing) {
                 HStack(alignment: .center, spacing: 8) {
                     Text(draft.lane.title)
                         .font(AppTypography.font(.sectionHeading))
@@ -4014,8 +4031,8 @@ private struct ProgramTicketCreateModal: View {
                     ProgramEditTextArea(
                         title: "Description",
                         text: $description,
-                        minHeight: ProgramTicketPanelStyle.createDescriptionHeight,
-                        maxHeight: ProgramTicketPanelStyle.createDescriptionHeight
+                        minHeight: ProgramTicketPanelStyle.createDescriptionMinHeight,
+                        maxHeight: .infinity
                     )
 
                     ProgramTicketImageSelector(
@@ -4025,8 +4042,6 @@ private struct ProgramTicketCreateModal: View {
                     )
                 }
             }
-
-            Spacer(minLength: 0)
 
             HStack(spacing: 8) {
                 Spacer(minLength: 0)

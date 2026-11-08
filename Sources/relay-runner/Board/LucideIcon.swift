@@ -2,8 +2,7 @@ import SwiftUI
 
 // Renders the Lucide icons in LucideIcons.generated.swift (made by
 // scripts/generate-lucide-icons.py) in the Graphical kit's outlined style:
-// stroke width 1.5 on Lucide's 24-unit viewBox, scaled with the icon, round
-// caps and joins, no fill.
+// a 1.5-point stroke at every icon size, round caps and joins, no fill.
 
 /// One SVG child element of a Lucide icon, in the 24×24 viewBox.
 enum LucideElement {
@@ -120,7 +119,7 @@ struct LucideImage: View {
     let size: CGFloat
     let strokeWidth: CGFloat
 
-    /// `strokeWidth` is in viewBox units, so it scales with `size`.
+    /// `strokeWidth` is in points and stays the same at every `size`.
     init(_ icon: LucideIcon, size: CGFloat, strokeWidth: CGFloat = 1.5) {
         self.icon = icon
         self.size = size
@@ -133,7 +132,7 @@ struct LucideImage: View {
                 LucideShape(icon: icon, filledElementsOnly: true).fill()
             }
             LucideShape(icon: icon)
-                .stroke(style: StrokeStyle(lineWidth: strokeWidth * size / 24,
+                .stroke(style: StrokeStyle(lineWidth: strokeWidth,
                                            lineCap: .round, lineJoin: .round))
         }
         .frame(width: size, height: size)
