@@ -214,11 +214,11 @@ struct ProgramBoardOverlayView: View {
     let onRefresh: () -> Void
     var onCreateDiagnostics: () -> Void = {}
     var onHistoryStart: () -> Void = {}
+    var onSelectHistoryProject: (String) -> Void = { _ in }
     var onHistoryClose: () -> Void = {}
     var onHistoryChanged: () -> Void = {}
     var onAddExistingProject: () -> Void = {}
     var onCreateProject: () -> Void = {}
-    var onSelectProject: (String) -> Void = { _ in }
     let onStartSession: () -> Void
     let onEndSession: () -> Void
     var onStartNoteTaker: () -> Void = {}
@@ -262,17 +262,17 @@ struct ProgramBoardOverlayView: View {
         ProgramNoteStartFailurePresentation.message(for: model.noteCaptureSnapshot)
     }
 
-    /// The History tab: the selected project's archived tickets, with a
-    /// project dropdown in place of the old modal's close button.
+    /// The History tab opens straight onto a project's archived tickets. Its
+    /// dropdown only switches History's project: it never changes the board's
+    /// selection, the session context, or the tab.
     private var historyTab: some View {
         let picker = SettingsMenuPicker(
             "History project",
             selection: Binding(
-                get: { model.selectedProjectPath },
-                set: { if let path = $0 { onSelectProject(path) } }
+                get: { model.history?.repoPath },
+                set: { if let path = $0 { onSelectHistoryProject(path) } }
             ),
-            options: (model.selectedProjectPath == nil ? [("Select project", nil)] : [])
-                + model.projectTargets.map { ($0.name, Optional($0.path)) }
+            options: model.historyProjects.map { ($0.name, Optional($0.path)) }
         )
         .frame(width: SettingsLayout.controlMaxWidth)
         return ZStack {
@@ -287,13 +287,11 @@ struct ProgramBoardOverlayView: View {
                 .id(history.repoPath)
                 .transition(.relayReplacing(.surface))
             } else {
-                VStack(spacing: GraphicalTheme.spaceS) {
-                    Text("Choose a project to see its archived tickets.")
-                        .font(AppTypography.font(.programEmptyState))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                    picker
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Only when no project is registered at all.
+                Text("No projects yet")
+                    .font(AppTypography.font(.programEmptyState))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
                 .transition(.relayReplacing(.surface))
             }

@@ -102,11 +102,11 @@ final class ProgramBoardOverlayController {
     private var projectScopeProvider: () -> [String] = { [] }
     private var generalContextProvider: () -> Bool = { true }
     private var contextPathProvider: () -> String? = { nil }
+    private var historyProjectsProvider: () -> [ProgramBoardProjectTarget] = { [] }
     private var noSessionHandler: (() -> Void)?
     private var loadingStateHandler: ((ProgramBoardLoadingState) -> Void)?
     private var addExistingProjectHandler: (() -> Void)?
     private var createProjectHandler: (() -> Void)?
-    private var projectSelectionHandler: ((String) -> Void)?
     private var startSessionHandler: (() -> Void)?
     private var endSessionHandler: (() -> Void)?
     private var startNoteTakerHandler: ((String) -> Bool)?
@@ -171,6 +171,9 @@ final class ProgramBoardOverlayController {
 
     func setGeneralContextProvider(_ provider: @escaping () -> Bool) { generalContextProvider = provider }
     func setContextPathProvider(_ provider: @escaping () -> String?) { contextPathProvider = provider }
+    func setHistoryProjectsProvider(_ provider: @escaping () -> [ProgramBoardProjectTarget]) {
+        historyProjectsProvider = provider
+    }
 
     func setBoardRouteResolver(_ resolver: @escaping () -> ProjectResolver.BoardRoute) {
         boardRouteResolver = resolver
@@ -190,10 +193,6 @@ final class ProgramBoardOverlayController {
     ) {
         addExistingProjectHandler = addExisting
         createProjectHandler = create
-    }
-
-    func setProjectSelectionHandler(_ handler: @escaping (String) -> Void) {
-        projectSelectionHandler = handler
     }
 
     func setStartSessionHandler(_ handler: @escaping () -> Void) {
@@ -700,11 +699,11 @@ final class ProgramBoardOverlayController {
                 onRefresh: { [weak self] in self?.checkForUpdates(inBackground: false) },
                 onCreateDiagnostics: { [weak self] in self?.exportSupportBundle() },
                 onHistoryStart: { [weak self] in self?.beginHistory() },
+                onSelectHistoryProject: { [weak self] repoPath in self?.beginHistory(repoPath: repoPath) },
                 onHistoryClose: { [weak self] in self?.closeHistory() },
                 onHistoryChanged: { [weak self] in self?.checkForUpdates(inBackground: true) },
                 onAddExistingProject: { [weak self] in self?.addExistingProjectHandler?() },
                 onCreateProject: { [weak self] in self?.createProjectHandler?() },
-                onSelectProject: { [weak self] repoPath in self?.selectProject(repoPath) },
                 onStartSession: { [weak self] in self?.startSession() },
                 onEndSession: { [weak self] in self?.endSession() },
                 onStartNoteTaker: { [weak self] in self?.startNoteTaker() },
@@ -1165,14 +1164,6 @@ final class ProgramBoardOverlayController {
         }
     }
 
-    private func selectProject(_ repoPath: String) {
-        projectSelectionHandler?(repoPath)
-        refreshContextPresentation()
-        if let path = workspace.contextPath { model.selectProject(path: path) }
-        selectWorkspaceTab(.work)
-        checkForUpdates(inBackground: model.snapshot != nil)
-    }
-
     private func refreshContextPresentation() {
         workspace.isGeneralContext = generalContextProvider()
         workspace.contextPath = contextPathProvider()
@@ -1331,21 +1322,37 @@ final class ProgramBoardOverlayController {
         }
     }
 
-    /// Shows the selected project's history on the History tab, or its
-    /// project prompt when no single project is selected.
-    private func beginHistory() {
-        guard let repoPath = model.selectedProjectPath,
-              let target = model.projectTargets.first(where: { $0.path == repoPath }) else {
+    /// Shows a project's history on the History tab straight away: the one
+    /// chosen in History's own dropdown, else the board's selected project,
+    /// else the current session's project, else the first registered one.
+    private func beginHistory(repoPath requested: String? = nil) {
+        let registered = historyProjectsProvider()
+        let projects = registered.isEmpty ? model.projectTargets : registered
+        model.historyProjects = projects
+        guard let target = Self.historyTarget(
+            in: projects,
+            preferring: [requested, model.selectedProjectPath, model.history?.repoPath, workspace.contextPath]
+        ) else {
             closeHistory()
             return
         }
-        guard model.history?.repoPath != repoPath else { return }
+        guard model.history?.repoPath != target.path else { return }
         model.presentHistory(
-            repoPath: repoPath,
+            repoPath: target.path,
             projectName: target.name,
-            projectScopeToken: projectScopeTokenProvider(repoPath)
+            projectScopeToken: projectScopeTokenProvider(target.path)
         )
         updatePanelKeyEligibility()
+    }
+
+    /// The first preferred path that names a known project, else the first project.
+    static func historyTarget(
+        in projects: [ProgramBoardProjectTarget],
+        preferring paths: [String?]
+    ) -> ProgramBoardProjectTarget? {
+        paths.lazy.compactMap { path in
+            projects.first { ProgramBoardProjectPath.matches(path, $0.path) }
+        }.first ?? projects.first
     }
 
     private func closeHistory() {

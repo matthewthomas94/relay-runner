@@ -155,10 +155,6 @@ struct WorkspaceHistoryBadge: Equatable {
 
 @Observable
 final class WorkspaceHistoryViewModel {
-    static let policySummary = (
-        "All unfinished tickets stay local without a cap. The newest 25 Done and Canceled "
-        + "tickets stay local; older tickets are archived automatically."
-    )
     let repoPath: String
     let projectName: String
     let projectScopeToken: String?
@@ -190,7 +186,6 @@ final class WorkspaceHistoryViewModel {
                 projectScopeToken: projectScopeToken
             )
             cards = response.history
-            notice = response.recovery
         } catch {
             errorMessage = Self.message(for: error)
         }

@@ -118,11 +118,39 @@ final class WorkspaceHistoryTests: XCTestCase {
         XCTAssertNil(model.history)
     }
 
-    func testPolicyCopyDescribesAutomaticRetentionAndKeepsUnfinishedUncapped() {
-        XCTAssertTrue(WorkspaceHistoryViewModel.policySummary.contains("without a cap"))
-        XCTAssertTrue(WorkspaceHistoryViewModel.policySummary.contains("Done and Canceled"))
-        XCTAssertTrue(WorkspaceHistoryViewModel.policySummary.contains("25"))
-        XCTAssertTrue(WorkspaceHistoryViewModel.policySummary.contains("archived automatically"))
+    /// History opens straight onto a project: the one asked for, else the
+    /// board's selection, else the session's project, else the first one.
+    func testHistoryOpensOnTheBestKnownProjectWithoutAPrompt() {
+        let general = ProgramBoardProjectTarget(name: "general", path: "/tmp/general-tasks")
+        let cad = ProgramBoardProjectTarget(name: "cad-engine", path: "/tmp/cad-engine")
+        let projects = [general, cad]
+        typealias C = ProgramBoardOverlayController
+        XCTAssertEqual(C.historyTarget(in: projects, preferring: ["/tmp/cad-engine", "/tmp/general-tasks"]), cad)
+        XCTAssertEqual(C.historyTarget(in: projects, preferring: [nil, "/tmp/missing", "/tmp/general-tasks"]), general)
+        XCTAssertEqual(C.historyTarget(in: projects, preferring: [nil, nil]), general, "No preference opens the first project")
+        XCTAssertNil(C.historyTarget(in: [], preferring: ["/tmp/cad-engine"]))
+    }
+
+    /// The History screen is the heading, the dropdown and the archive. Its
+    /// dropdown switches History's project only: it never selects a board
+    /// project, which would change context and jump to the Work tab.
+    func testHistoryScreenHasNoExplainersAndItsPickerStaysOnHistory() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/relay-runner/Board")
+        let view = try String(contentsOf: root.appendingPathComponent("WorkspaceHistoryView.swift"), encoding: .utf8)
+        let model = try String(contentsOf: root.appendingPathComponent("WorkspaceHistory.swift"), encoding: .utf8)
+        let board = try String(contentsOf: root.appendingPathComponent("ProgramBoardOverlayView.swift"), encoding: .utf8)
+        XCTAssertFalse(view.contains("Text(model.projectName)"), "No project-name subtitle")
+        XCTAssertFalse(view.contains("policySummary"), "No retention paragraph")
+        XCTAssertFalse(model.contains("notice = response.recovery"), "No GitHub-backup banner")
+        let start = try XCTUnwrap(board.range(of: "private var historyTab: some View {"))
+        let end = try XCTUnwrap(board.range(of: "private var notesLibrary: some View {"))
+        let tab = String(board[start.upperBound..<end.lowerBound])
+        XCTAssertTrue(tab.contains("onSelectHistoryProject(path)"))
+        XCTAssertFalse(tab.contains("onSelectProject("), "Picking a History project must not select a board project")
+        XCTAssertFalse(tab.contains("Choose a project"), "History never stops on a project prompt")
+        XCTAssertTrue(tab.contains("model.historyProjects"))
     }
 
 }

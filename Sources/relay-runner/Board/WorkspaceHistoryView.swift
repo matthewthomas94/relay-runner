@@ -54,15 +54,9 @@ struct WorkspaceHistoryView: View {
 
     private var header: some View {
         HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Workspace History")
-                    .font(AppTypography.font(.sectionHeading))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                Text(model.projectName)
-                    .font(AppTypography.font(.metadata))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .lineLimit(1)
-            }
+            Text("Workspace History")
+                .font(AppTypography.font(.sectionHeading))
+                .foregroundStyle(ProgramBoardStyle.primaryText)
             Spacer()
             if isEmbedded {
                 accessory
@@ -88,10 +82,6 @@ struct WorkspaceHistoryView: View {
                         Task { await model.search() }
                     }
                 }
-                Text(WorkspaceHistoryViewModel.policySummary)
-                    .font(AppTypography.font(.metadata))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 RelayFadingScrollView {
                     LazyVStack(spacing: 8) {
                         if model.cards.isEmpty && !model.isLoading {

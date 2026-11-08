@@ -258,11 +258,11 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertTrue(controller.contains("func setProjectSelectionHandler("))
-        XCTAssertTrue(controller.contains("projectSelectionHandler?(repoPath)"))
-        XCTAssertTrue(overlayView.contains("onSelectProject(path)"))
-        XCTAssertTrue(appState.contains("programBoardOverlay.setProjectSelectionHandler"))
-        XCTAssertTrue(appState.contains("selectProjectContext(repositoryPath: repoPath, startsSession: false)"))
+        // No Workspace control switches the board's context and jumps to Work:
+        // project rows filter in place and History picks its own project.
+        XCTAssertFalse(controller.contains("projectSelectionHandler"))
+        XCTAssertFalse(overlayView.contains("onSelectProject"))
+        XCTAssertFalse(appState.contains("programBoardOverlay.setProjectSelectionHandler"))
         let launch = try XCTUnwrap(appState.range(of: "    func newSession("))
         let resolution = try XCTUnwrap(appState.range(of: "Self.prepareSessionContext(workingDirectory: workingDirectory, registry: projectRegistryV2)", range: launch.upperBound..<appState.endIndex))
         let commit = try XCTUnwrap(appState.range(of: "try assistantSessionStore.select(", range: resolution.upperBound..<appState.endIndex))
@@ -483,7 +483,7 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             ProgramSessionToolbarPresentation(
                 title: "Start Codex",
                 systemName: "terminal",
-                help: "Start a Codex voice session"
+                help: "Start session"
             )
         )
         XCTAssertEqual(
@@ -491,7 +491,7 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             ProgramSessionToolbarPresentation(
                 title: "End Codex",
                 systemName: "terminal",
-                help: "End the active Codex voice session"
+                help: "End session"
             )
         )
         XCTAssertEqual(
@@ -512,14 +512,14 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             ProgramNoteToolbarPresentation.resolve(phase: .idle),
             ProgramNoteToolbarPresentation(
                 title: "Start Notetaker",
-                help: "Record a note in your library"
+                help: "Record note"
             )
         )
         XCTAssertEqual(
             ProgramNoteToolbarPresentation.resolve(phase: .recording),
             ProgramNoteToolbarPresentation(
                 title: "Stop",
-                help: "Double-tap Option to pause or resume; Stop saves the note"
+                help: "Stop and save"
             )
         )
         XCTAssertEqual(ProgramNoteToolbarPresentation.resolve(phase: .paused).title, "Stop")

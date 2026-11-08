@@ -922,6 +922,11 @@ final class AppState {
         }
         programBoardOverlay.setGeneralContextProvider { [weak self] in self?.shownContext.isGeneral ?? true }
         programBoardOverlay.setContextPathProvider { [weak self] in self?.shownContext.repositoryPath }
+        programBoardOverlay.setHistoryProjectsProvider { [weak self] in
+            (self?.registeredProjectsV2() ?? [])
+                .filter { $0.availability == .available }
+                .map { ProgramBoardProjectTarget(name: $0.displayName, path: $0.lastResolvedPath) }
+        }
         programBoardOverlay.setWorkerSizingDefaultsProvider { [weak self] in
             guard let self else { return nil }
             return TicketWriter.WorkerSizingDefaults.from(self.config.general)
@@ -993,11 +998,6 @@ final class AppState {
             addExisting: { [weak self] in self?.addExistingProject() },
             create: { [weak self] in self?.createProject() }
         )
-        programBoardOverlay.setProjectSelectionHandler { [weak self] repoPath in
-            // RR-445: picking a project only browses its board; the Workspace's
-            // Start control is the one way to launch.
-            _ = self?.selectProjectContext(repositoryPath: repoPath, startsSession: false)
-        }
         programBoardOverlay.setRequiresConfirmedProjectProvider { [weak self] in
             self?.projectRegistryV2 != nil
         }
