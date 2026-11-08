@@ -200,7 +200,8 @@ enum AppTypography {
         case .button:
             return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textS, fallbackWeight: .regular)
         case .primaryButton:
-            return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textS, fallbackWeight: .semibold)
+            // Kit buttons, primary included, set their label at regular weight.
+            return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textS, fallbackWeight: .regular)
         case .status:
             return Definition(face: .baiJamjureeSemibold, size: GraphicalTheme.textXS, fallbackWeight: .semibold)
         case .count:
@@ -210,10 +211,6 @@ enum AppTypography {
         case .smallCaption:
             return Definition(face: .baiJamjureeRegular, size: GraphicalTheme.textXXS, fallbackWeight: .regular)
         }
-    }
-
-    static func symbolFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight)
     }
 
     static func monospacedFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {

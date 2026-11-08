@@ -42,16 +42,16 @@ enum SessionWheelAction: Int, CaseIterable {
         }
     }
 
-    func symbol(for session: SessionWheelSession) -> String {
+    func symbol(for session: SessionWheelSession) -> LucideIcon {
         switch self {
         case .message:
             switch session.playback {
-            case .play: return "play.fill"
-            case .stop: return "stop.fill"
-            case .replay: return "play.fill"
+            case .play: return .play
+            case .stop: return .square
+            case .replay: return .play
             }
-        case .recording: return session.isRecording ? "waveform" : "mic.fill"
-        case .stop: return "power"
+        case .recording: return session.isRecording ? .audioWaveform : .mic
+        case .stop: return .power
         }
     }
 
@@ -75,11 +75,11 @@ enum SessionWheelShortcut: Int, CaseIterable {
         }
     }
 
-    var symbol: String {
+    var symbol: LucideIcon {
         switch self {
-        case .workspace: return "rectangle.split.3x1"
-        case .noteTaker: return "note.text"
-        case .settings: return "gearshape"
+        case .workspace: return .columns3
+        case .noteTaker: return .notebookText
+        case .settings: return .settings
         }
     }
 }
@@ -105,11 +105,11 @@ enum SessionWheelNoteAction: Int, CaseIterable {
         }
     }
 
-    func symbol(for phase: MeetingNoteCoordinatorPhase) -> String {
+    func symbol(for phase: MeetingNoteCoordinatorPhase) -> LucideIcon {
         switch self {
-        case .recording: return phase.ownsForeground ? "checkmark" : "mic.fill"
-        case .pause: return phase == .paused ? "play.fill" : "pause.fill"
-        case .cancel: return "xmark"
+        case .recording: return phase.ownsForeground ? .check : .mic
+        case .pause: return phase == .paused ? .play : .pause
+        case .cancel: return .x
         }
     }
 

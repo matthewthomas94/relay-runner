@@ -19,7 +19,7 @@ struct OnboardingFooterAction {
     }
 
     let title: String
-    let systemImage: String?
+    let icon: LucideIcon?
     let prominence: SettingsActionButton.Prominence
     let isEnabled: Bool
     let accessibilityLabel: String?

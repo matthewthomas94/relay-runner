@@ -32,14 +32,8 @@ struct SettingsMenuOptions<Value: Hashable>: View {
                             selection = option.value
                             dismiss()
                         } label: {
-                            HStack(spacing: 8) {
-                                if showsCheckmarks {
-                                    Image(systemName: "checkmark")
-                                        .font(AppTypography.symbolFont(size: 10, weight: .semibold))
-                                        .opacity(option.value == selection ? 1 : 0)
-                                        .frame(width: 12)
-                                        .accessibilityHidden(true)
-                                }
+                            // The label leads; the selected option's check sits at the trailing edge.
+                            HStack(spacing: GraphicalTheme.spaceS) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(option.label)
                                         .font(AppTypography.font(.action))
@@ -52,9 +46,15 @@ struct SettingsMenuOptions<Value: Hashable>: View {
                                     }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                                if showsCheckmarks {
+                                    LucideImage(.check, size: 14)
+                                        .opacity(option.value == selection ? 1 : 0)
+                                        .frame(width: 16)
+                                        .accessibilityHidden(true)
+                                }
                             }
                             .foregroundStyle(SettingsSurfaceColor.primaryText)
-                            .padding(.horizontal, GraphicalTheme.spaceXS)
+                            .padding(.horizontal, GraphicalTheme.spaceS)
                             .frame(height: rowHeight)
                             // Kit option: radius xs, neutral-3 when highlighted.
                             .background(
@@ -200,7 +200,7 @@ struct SettingsStepper: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            SettingsActionButton(title: "Decrease \(title)", systemImage: "minus", prominence: .icon,
+            SettingsActionButton(title: "Decrease \(title)", icon: .minus, prominence: .icon,
                                  isEnabled: isEnabled && value > range.lowerBound) {
                 boundedValue.wrappedValue = value - 1
             }
@@ -218,7 +218,7 @@ struct SettingsStepper: View {
             .padding(.horizontal, GraphicalTheme.spaceS)
             .frame(width: 112, height: GraphicalTheme.controlHeight)
             .background(GraphicalInputSurface(isEnabled: isEnabled))
-            SettingsActionButton(title: "Increase \(title)", systemImage: "plus", prominence: .icon,
+            SettingsActionButton(title: "Increase \(title)", icon: .plus, prominence: .icon,
                                  isEnabled: isEnabled && value < range.upperBound) {
                 boundedValue.wrappedValue = value + 1
             }

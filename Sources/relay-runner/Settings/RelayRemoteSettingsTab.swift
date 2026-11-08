@@ -80,10 +80,10 @@ struct RelayRemoteSettingsTab: View {
                 SettingsRowLabel(presentation.title, description: presentation.description)
                 if presentation.showsSettingsLink {
                     HStack(spacing: 8) {
-                        SettingsActionButton(title: "Open Sharing Settings", systemImage: "arrow.up.forward.app") {
+                        SettingsActionButton(title: "Open Sharing Settings", icon: .squareArrowOutUpRight) {
                             NSWorkspace.shared.open(RemoteLoginProbe.systemSettingsURL)
                         }
-                        SettingsActionButton(title: "Check Again", systemImage: "arrow.clockwise") {
+                        SettingsActionButton(title: "Check Again", icon: .refreshCw) {
                             Task { await controller.refresh() }
                         }
                     }
@@ -99,7 +99,7 @@ struct RelayRemoteSettingsTab: View {
             SettingsControlRow("Pair an iPhone", description: "Shows a one-time code to scan with Relay Remote. It expires after ten minutes.") {
                 SettingsActionButton(
                     title: "Pair a Device",
-                    systemImage: "qrcode",
+                    icon: .qrCode,
                     prominence: .primary,
                     isEnabled: controller.remoteLogin == .available
                 ) {
@@ -116,7 +116,7 @@ struct RelayRemoteSettingsTab: View {
             confirmationCard(request)
         case .finished(let outcome):
             SettingsControlRow(Self.outcomeTitle(outcome)) {
-                SettingsActionButton(title: "Done", systemImage: "checkmark") {
+                SettingsActionButton(title: "Done", icon: .check) {
                     controller.dismissOutcome()
                 }
             }
@@ -145,7 +145,7 @@ struct RelayRemoteSettingsTab: View {
                             .foregroundStyle(SettingsSurfaceColor.secondaryText)
                             .monospacedDigit()
                     }
-                    SettingsActionButton(title: "Cancel", systemImage: "xmark") {
+                    SettingsActionButton(title: "Cancel", icon: .x) {
                         controller.cancelPairing()
                     }
                 }
@@ -171,10 +171,10 @@ struct RelayRemoteSettingsTab: View {
                 Toggle("Only from my home network and Tailscale", isOn: $controller.restrictToNetwork)
                     .font(AppTypography.font(.settingsDescription))
                 HStack(spacing: 8) {
-                    SettingsActionButton(title: "Deny", systemImage: "xmark") {
+                    SettingsActionButton(title: "Deny", icon: .x) {
                         controller.decide(allow: false)
                     }
-                    SettingsActionButton(title: "Allow", systemImage: "checkmark", prominence: .primary) {
+                    SettingsActionButton(title: "Allow", icon: .check, prominence: .primary) {
                         controller.decide(allow: true)
                     }
                 }
@@ -189,7 +189,7 @@ struct RelayRemoteSettingsTab: View {
                 ? "\(device.fingerprint) · home network and Tailscale only"
                 : device.fingerprint
         ) {
-            SettingsActionButton(title: "Unpair", systemImage: "minus.circle") {
+            SettingsActionButton(title: "Unpair", icon: .circleMinus) {
                 controller.unpair(device)
             }
         }

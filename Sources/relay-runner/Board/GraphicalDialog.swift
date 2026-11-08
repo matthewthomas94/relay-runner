@@ -50,13 +50,13 @@ struct GraphicalDialogView: View {
                 }
                 HStack(spacing: GraphicalTheme.spaceXS) {
                     Spacer(minLength: 0)
-                    SettingsActionButton(title: cancel?.title ?? "Cancel", systemImage: nil) { perform(cancel) }
+                    SettingsActionButton(title: cancel?.title ?? "Cancel", icon: nil) { perform(cancel) }
                         .keyboardShortcut(.cancelAction)
                     ForEach(confirming.indices, id: \.self) { index in
                         let action = confirming[index]
                         SettingsActionButton(
                             title: action.title,
-                            systemImage: nil,
+                            icon: nil,
                             prominence: action.role == .destructive ? .danger : .primary
                         ) { perform(action) }
                         .keyboardShortcut(index == confirming.count - 1 ? .defaultAction : nil)

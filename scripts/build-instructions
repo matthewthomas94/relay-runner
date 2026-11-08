@@ -97,12 +97,12 @@ COMMANDS = {
 CLAUDE_DESCRIPTIONS = {
     "relay-workflow": "Use on the first turn of any session where relay-orchestrator MCP tools are registered, and whenever the user discusses concrete work, mentions tickets/backlog/board, or asks to dispatch/delegate/check an agent run. Primes Relay Runner orchestrator mode.",
     "relay-dispatch": "Use when the user says to work on, hand off, delegate, dispatch, or check an RR-style ticket. Dispatches a ticket from the current repo's local Relay Runner kanban board to a sub-agent.",
-    "work-style": "Use when the user runs /work-style or asks to show or change the project's Relay work style (auto, direct or orchestrated) during a session.",
+    "work-style": "Use when the user runs /work-style or asks to show or change the session's Relay work style (auto, direct or orchestrated).",
 }
 CODEX_DESCRIPTIONS = {
     "relay-workflow": "Prime Relay Runner orchestrator mode in Codex. Use when relay-orchestrator MCP tools are present, when the user discusses concrete work, mentions tickets/backlog/board, or asks to dispatch/delegate/check an agent run.",
     "relay-dispatch": "Dispatch a ticket from the current repo's local Relay Runner kanban board to a sub-agent. Use when the user says to work on, hand off, delegate, dispatch, or check an RR-style ticket.",
-    "work-style": "Show or change the project's Relay work style (auto, direct or orchestrated) during a session. Use when the user asks for /work-style or to switch mode.",
+    "work-style": "Show or change the session's Relay work style (auto, direct or orchestrated). Use when the user asks for /work-style or to switch mode.",
 }
 COMMAND_HEREDOCS = {
     "WORKFLOW_MD_EOF": ("relay-workflow", "claude"),

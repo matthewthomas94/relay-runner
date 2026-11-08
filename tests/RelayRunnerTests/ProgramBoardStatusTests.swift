@@ -107,10 +107,16 @@ final class ProgramBoardStatusTests: XCTestCase {
         )
         XCTAssertEqual(ProgramBoardLayout.workHeaderHeight, 36)
         XCTAssertEqual(ProgramBoardLayout.workCardTopOffset, 100)
-        XCTAssertEqual(ProgramBoardLayout.projectHeaderToListSpacing, 52)
-        XCTAssertEqual(ProgramBoardLayout.projectListTopOffset, 104)
+        XCTAssertEqual(ProgramBoardLayout.projectHeaderToListSpacing, 48)
+        XCTAssertEqual(
+            ProgramBoardLayout.projectListTopOffset,
+            ProgramBoardLayout.workCardTopOffset,
+            "the first project and the first ticket share a top edge"
+        )
         XCTAssertEqual(ProgramBoardLayout.projectCardHeight, 136)
-        XCTAssertEqual(ProgramBoardLayout.projectCardSpacing, 8)
+        XCTAssertEqual(ProgramBoardLayout.cardSpacing, 8)
+        XCTAssertEqual(ProgramBoardLayout.projectCardSpacing, ProgramBoardLayout.cardSpacing)
+        XCTAssertEqual(ProgramBoardLayout.projectRowHorizontalInset, 16, "rows inset their text like ticket cards")
         XCTAssertEqual(ProgramBoardLayout.statePanelHeight, BoardSurfaceLayout.columnHeight)
         XCTAssertEqual(ProgramBoardLayout.statePanelHorizontalPadding, BoardSurfaceLayout.horizontalPadding)
     }
@@ -141,9 +147,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(WorkspaceNavigationStyle.verticalPadding, 4)
         XCTAssertEqual(WorkspaceNavigationStyle.cornerRadius, GraphicalTheme.radiusS)
         XCTAssertEqual(WorkspaceNavigationStyle.iconTextSpacing, 6)
-        XCTAssertEqual(WorkspaceNavigationStyle.iconSize, 10)
         XCTAssertTrue(WorkspaceNavigationStyle.systemFocusEffectDisabled)
-        XCTAssertLessThan(
+        // Kit icons are 1em of their label.
+        XCTAssertEqual(
             WorkspaceNavigationStyle.iconSize,
             AppTypography.definition(for: .menuTab).size
         )
@@ -205,7 +211,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(contents.contains("title: presentation.actionTitle"))
         XCTAssertTrue(contents.contains("SettingsDropdownPresenter(isPresented: $isPresented, alignsTrailing: true)"))
         XCTAssertTrue(contents.contains("(\"Add existing project\", .existing), (\"Create new project\", .create)"))
-        XCTAssertTrue(contents.contains("Image(systemName: \"chevron.down\")"))
+        XCTAssertTrue(contents.contains("LucideImage(.chevronDown"))
         XCTAssertTrue(contents.contains("spacing: 0"))
         XCTAssertTrue(contents.contains("ProgramAddProjectMenuMetrics.disclosureWidth"))
         XCTAssertTrue(contents.contains("ProgramAddProjectMenuMetrics.dividerWidth"))
@@ -226,7 +232,7 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         let menuStart = try XCTUnwrap(contents.range(of: "private struct ProgramAddProjectMenu: View"))
         let menuEnd = try XCTUnwrap(
-            contents.range(of: "private struct ProgramWorkStyleMenu: View", range: menuStart.upperBound..<contents.endIndex)
+            contents.range(of: "private struct ProgramProjectPill: View", range: menuStart.upperBound..<contents.endIndex)
         )
         let menu = String(contents[menuStart.lowerBound..<menuEnd.lowerBound])
         XCTAssertTrue(menu.contains("SettingsActionPresentation.resolve("))
@@ -236,7 +242,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(menu.contains(".programControlChrome("))
     }
 
-    func testWorkspaceButtonsNeverUsePrimaryProminence() throws {
+    func testOnlyStartNotetakerAndTheSessionButtonArePrimaryInTheWorkspace() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -245,6 +251,8 @@ final class ProgramBoardStatusTests: XCTestCase {
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         XCTAssertFalse(contents.contains("prominence: .primary"))
+        XCTAssertTrue(contents.contains("prominence: ownsNote ? .secondary : .primary"))
+        XCTAssertTrue(contents.contains(".background(shape.fill(GraphicalTheme.primaryAction))"))
     }
 
     func testDoneColumnHoldsTheOneSessionControlAndCardsHaveNone() throws {
@@ -268,7 +276,8 @@ final class ProgramBoardStatusTests: XCTestCase {
         // row keeps only the clock, and neither project rows nor the terminal
         // have one.
         XCTAssertEqual(contents.components(separatedBy: "ProgramSessionPrimaryButton(").count - 1, 1)
-        XCTAssertFalse(terminal.contains("ProgramSessionPrimaryButton("))
+        // The terminal's empty state repeats the same control under its copy.
+        XCTAssertEqual(terminal.components(separatedBy: "ProgramSessionPrimaryButton(").count - 1, 1)
         XCTAssertFalse(contents.contains("workspaceTerminalSessionAction"))
         let clock = try XCTUnwrap(contents.range(of: "WorkspaceMenuBarClock()"))
         let row = String(contents[clock.lowerBound...]).components(separatedBy: ".zIndex(2)")[0]
@@ -284,11 +293,10 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(card.contains("onStartSession"))
         XCTAssertFalse(contents.contains("onStartProjectSession"))
         XCTAssertFalse(contents.contains("ProgramStartSessionMenu"))
-        XCTAssertTrue(contents.contains("SharedActionButtonSurface(prominence: .secondary, presentation: presentation, palette: palette)"))
-        // Finder comes first, then the project's work style.
-        let finder = try XCTUnwrap(card.range(of: "systemName: \"folder\""))
-        let workStyle = try XCTUnwrap(card.range(of: "ProgramWorkStyleMenu("))
-        XCTAssertLessThan(finder.lowerBound, workStyle.lowerBound)
+        // Rows keep only Finder; the session's work style is on the Start button.
+        XCTAssertNotNil(card.range(of: "icon: .folder"))
+        XCTAssertFalse(contents.contains("ProgramWorkStyleMenu"))
+        XCTAssertTrue(contents.contains("SessionWorkStyleStore"))
         XCTAssertTrue(contents.contains("if lane != .done, canCreate {"))
         // Rows are compact: no per-project board counts, a running-session dot, a selected trait.
         XCTAssertFalse(contents.contains("ProjectBoardOverview"))
@@ -296,7 +304,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(card.contains(".accessibilityAddTraits(isSelected ? .isSelected : [])"))
         XCTAssertTrue(card.contains(".graphicalTooltip("))
         XCTAssertFalse(card.contains(".help("))
-        XCTAssertTrue(contents.contains("TextField(\"Search projects\""))
+        // Selected projects show as removable pills where the search field was.
+        XCTAssertFalse(contents.contains("Search projects"))
+        XCTAssertTrue(contents.contains("ProgramProjectPill("))
         XCTAssertTrue(contents.contains("onToggleProject: model.toggleProject(path:)"))
     }
 
@@ -309,7 +319,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         let contents = try String(contentsOf: source, encoding: .utf8)
         let menuStart = try XCTUnwrap(contents.range(of: "private struct ProgramAddProjectMenu: View"))
         let menuEnd = try XCTUnwrap(
-            contents.range(of: "private struct ProgramWorkStyleMenu: View", range: menuStart.upperBound..<contents.endIndex)
+            contents.range(of: "private struct ProgramProjectPill: View", range: menuStart.upperBound..<contents.endIndex)
         )
         let menu = String(contents[menuStart.lowerBound..<menuEnd.lowerBound])
         let styleStart = try XCTUnwrap(menu.range(of: "\n        .buttonStyle(.graphicalPress)"))
@@ -999,6 +1009,30 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.selectedProjectPaths, [clientPath, toolsPath])
         model.setProjectScope([clientPath], selectedProjectPaths: [clientPath, toolsPath])
         XCTAssertEqual(model.selectedProjectPaths, [clientPath])
+    }
+
+    func testTicketCardsNameTheirOneIssue() throws {
+        func item(_ extra: [String: Any]) throws -> ProgramStatusItem {
+            try decodeItem([
+                "project": ["name": "Relay", "path": "/repo/relay"],
+                "ticket_id": "RR-1",
+                "title": "Ship it",
+                "status": "in_progress",
+            ].merging(extra) { $1 })
+        }
+
+        XCTAssertNil(try item([:]).programCardIssue)
+        XCTAssertEqual(
+            try item(["status": "verification_blocked", "last_error": "verification blocked: needs a device"]).programCardIssue,
+            ProgramCardIssue(title: "Verification", detail: "verification blocked: needs a device")
+        )
+        XCTAssertEqual(try item(["run_state": "integration_blocked"]).programCardIssue?.title, "Integration")
+        XCTAssertEqual(
+            try item(["blocked_by": ["RR-7", "RR-9"], "last_error": "boom"]).programCardIssue,
+            ProgramCardIssue(title: "Dependency", detail: "Waiting on RR-7, RR-9")
+        )
+        XCTAssertEqual(try item(["last_error": "worker crashed"]).programCardIssue?.title, "Error")
+        XCTAssertNil(try item(["status": "done", "last_error": "old failure"]).programCardIssue)
     }
 
     func testProjectRowFilterMatchesNameOrPathAndLeadsWithGeneralTasks() throws {

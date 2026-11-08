@@ -76,7 +76,7 @@ struct ParentOnboardingView: View {
 
     private var relaunchHint: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "arrow.clockwise.circle.fill")
+            LucideImage(.refreshCw, size: 16)
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 4) {
                 Text("After granting Screen Recording, relaunch Relay Runner if macOS asks")
@@ -116,7 +116,7 @@ struct ParentOnboardingView: View {
             bundleURL: Bundle.main.bundleURL
         )
         return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "folder.badge.plus")
+            LucideImage(.folderPlus, size: 16)
                 .foregroundStyle(.secondary)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 5) {

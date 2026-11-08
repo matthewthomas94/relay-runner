@@ -22,6 +22,8 @@ struct SessionWheelView: View {
 
     private let geometry = SessionWheelGeometry.self
     static let coordinateSpace = "session-wheel"
+    /// The submenu arc's Lucide icons, sized to read inside its narrow sectors.
+    static let submenuIconSize: CGFloat = 12
     private var submenuSlot: Int? { model.submenuSlot }
 
     var body: some View {
@@ -188,9 +190,9 @@ struct SessionWheelView: View {
                             .frame(width: 42, height: 42)
                             .overlay {
                                 if let shortcut {
-                                    Image(systemName: shortcut.symbol).font(AppTypography.symbolFont(size: 17, weight: .regular))
+                                    LucideImage(shortcut.symbol, size: 20)
                                 } else if empty {
-                                    Image(systemName: "plus").font(AppTypography.symbolFont(size: 17, weight: .medium))
+                                    LucideImage(.plus, size: 20)
                                 } else {
                                     Text(initials(title)).font(AppTypography.font(.projectTitle, size: 15))
                                 }
@@ -374,7 +376,7 @@ struct SessionWheelView: View {
         submenuButton(index: SessionWheelSettingsControl.autoPlay.rawValue, slot: SessionWheelIntensity.slot,
                       title: model.autoPlayActionTitle,
                       help: model.autoPlay ? "Voice auto-play: On" : "Voice auto-play: Off — double-tap Option to play",
-                      symbol: "forward.fill", enabled: true,
+                      symbol: .fastForward, enabled: true,
                       hovered: model.hoveredSettingsControl == .autoPlay,
                       destructive: false, isOn: model.autoPlay,
                       subdivisions: SessionWheelSettingsControl.subdivisionCount) {
@@ -384,12 +386,11 @@ struct SessionWheelView: View {
         .accessibilityValue(model.autoPlay ? "On" : "Off")
     }
 
-    private func submenuButton(index: Int, slot: Int, title: String, help: String, symbol: String,
+    private func submenuButton(index: Int, slot: Int, title: String, help: String, symbol: LucideIcon,
                                enabled: Bool, hovered: Bool, destructive: Bool,
                                keepAwake: KeepAwakeState? = nil,
                                isOn: Bool? = nil, subdivisions: Int = 3,
                                level: @escaping () -> Float = { 0 }, perform: @escaping () -> Void) -> some View {
-        let isNoteMark = symbol == "checkmark" || symbol == "xmark"
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .control, isEnabled: enabled,
             isHovered: hovered,
@@ -403,19 +404,11 @@ struct SessionWheelView: View {
                 controlBackground(shape, presentation: presentation)
                 Group {
                     if let keepAwake {
-                        SessionWheelKeepAwakeGlyph(state: keepAwake)
-                            .font(AppTypography.symbolFont(size: 9, weight: .medium))
-                    } else if symbol == "waveform" {
+                        SessionWheelKeepAwakeGlyph(state: keepAwake, size: Self.submenuIconSize)
+                    } else if symbol == .audioWaveform {
                         SessionWheelRecordingWaveform(level: level)
-                    } else if symbol == "power" {
-                        Image(systemName: symbol)
-                            .resizable().scaledToFit()
-                            .frame(width: 10, height: 10)
                     } else {
-                        Image(systemName: symbol)
-                            // Two filled triangles need a smaller size to balance the slender bolt.
-                            .font(AppTypography.symbolFont(size: isNoteMark ? 11 : symbol == "forward.fill" ? 7 : 9,
-                                                           weight: isNoteMark ? .bold : .medium))
+                        LucideImage(symbol, size: Self.submenuIconSize)
                     }
                 }
                 .contentTransition(.opacity)

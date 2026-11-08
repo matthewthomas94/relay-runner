@@ -11,7 +11,7 @@ final class SettingsInputControlsTests: XCTestCase {
                 ("Puck (American Male)", 0), ("George (British Male)", 1),
                 ("Isabella (British Female)", 2), ("Sky (American Female)", 3),
             ])
-            SettingsActionButton(title: "Preview", systemImage: "play.fill", prominence: .icon) {}
+            SettingsActionButton(title: "Preview", icon: .play, prominence: .icon) {}
         }, size: NSSize(width: 280, height: 34))
         defer { window.close() }
 
@@ -172,22 +172,19 @@ final class SettingsInputControlsTests: XCTestCase {
             SettingsSection("Personal files") {
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
-                    SettingsActionButton(title: "Open local files", systemImage: "folder") {}
-                    SettingsActionButton(title: "Refresh", systemImage: "arrow.clockwise") {}
+                    SettingsActionButton(title: "Open local files", icon: .folder) {}
+                    SettingsActionButton(title: "Refresh", icon: .refreshCw) {}
                 }
                 SettingsControlRow("Local cache budget", description: "Unsynced, pinned and active files are preserved.") {
                     SettingsStepper(title: "Local cache budget", value: .constant(256), range: 1...100_000, unit: "MB")
                 }
-                SettingsDivider()
                 SettingsControlRow("Keep recently used files") {
                     SettingsStepper(title: "Keep recently used files", value: .constant(30), range: 0...3650, unit: "days")
                 }
             }
             SettingsSection("Options") {
                 SettingsControlRow("Enabled") { Toggle("Enabled", isOn: .constant(true)) }
-                SettingsDivider()
                 SettingsControlRow("Unchecked") { Toggle("Unchecked", isOn: .constant(false)) }
-                SettingsDivider()
                 SettingsControlRow("Unavailable") { Toggle("Unavailable", isOn: .constant(false)).disabled(true) }
             }
             SettingsSection("Playback") {
@@ -197,11 +194,9 @@ final class SettingsInputControlsTests: XCTestCase {
                         (label: "Queue", value: false),
                     ])
                 }
-                SettingsDivider()
                 SettingsControlRow("Speech Speed") {
                     SettingsSlider(value: .constant(1.3), in: 0.5...2.0, step: 0.1, label: "1.3x")
                 }
-                SettingsDivider()
                 SettingsControlRow("Intensity") {
                     SettingsSlider(value: .constant(0.25), in: 0.1...1.0, step: 0.05, label: "25%").disabled(true)
                 }
@@ -215,7 +210,7 @@ final class SettingsInputControlsTests: XCTestCase {
         }
         .padding(24)
         .frame(width: 760)
-        .background(BoardDarkSurfaceStyle.panelFill)
+        .background(GraphicalTheme.neutral1)
         .environment(\.colorScheme, .dark)
         let window = host(fixture, size: NSSize(width: 760, height: 900))
         defer { window.close() }

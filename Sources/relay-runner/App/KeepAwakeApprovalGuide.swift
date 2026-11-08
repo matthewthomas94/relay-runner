@@ -130,8 +130,7 @@ struct KeepAwakeApprovalTile: View {
         RelaySwap(isAllowed) { isAllowed in
             if isAllowed {
                 VStack(spacing: 7) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(AppTypography.symbolFont(size: 46, weight: .semibold))
+                    LucideImage(.circleCheck, size: 53)
                         .foregroundStyle(.green)
                     Text("Allowed")
                         .font(AppTypography.font(.cardHeading))

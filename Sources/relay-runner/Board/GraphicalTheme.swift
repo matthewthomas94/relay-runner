@@ -89,6 +89,11 @@ enum GraphicalTheme {
     static let primaryAction = neutral10
     static let onPrimaryAction = neutral1
 
+    /// The danger treatment: a dark red tint with red text and icons, for
+    /// destructive buttons and the ticket cards' issue pills.
+    static let dangerFill = Color(nsColor: NSColor(srgbRed: 0x37 / 255, green: 0x17 / 255, blue: 0x16 / 255, alpha: 1))
+    static let dangerForeground = Color(nsColor: NSColor(srgbRed: 0xe0 / 255, green: 0x36 / 255, blue: 0x25 / 255, alpha: 1))
+
     /// Translucent fills keep the hover and skeleton dots readable through
     /// filled controls, which the kit's solid fills would otherwise hide.
     static let fillThroughDotsOpacity: Double = 0.72

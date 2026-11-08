@@ -3912,6 +3912,8 @@ private struct EmbeddedTerminalRepresentable: NSViewRepresentable {
 struct EmbeddedTerminalTab: View {
     @Bindable var session: EmbeddedTerminalSession
     let recoverDelivery: () -> Void
+    /// The same Start/End control as the Done column, under the empty state.
+    var sessionControl: ProgramSessionControl? = nil
     @State private var confirmsRecovery = false
     @State private var confirmedInboxBlocker: InboxRecoveryBlocker?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -4025,24 +4027,33 @@ struct EmbeddedTerminalTab: View {
         .environment(\.colorScheme, .dark)
     }
 
-    /// RR-445: the Workspace's top row holds the one Start/End control.
+    /// The Start/End control sits under the copy, as in the Done column.
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: "terminal")
-                .font(AppTypography.symbolFont(size: 28, weight: .regular))
-                .foregroundStyle(ProgramBoardStyle.mutedText)
-            Text("Run the Relay session here")
-                .font(AppTypography.font(.sectionHeading))
-                .foregroundStyle(ProgramBoardStyle.secondaryText)
-            RelaySwap(emptyStateDetail, style: .text, alignment: .top) { emptyStateDetail in
-                Text(emptyStateDetail)
-                    .font(AppTypography.font(.supporting))
+            VStack(spacing: 10) {
+                LucideImage(.squareTerminal, size: 32)
                     .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 390)
+                Text("Run the Relay session here")
+                    .font(AppTypography.font(.sectionHeading))
+                    .foregroundStyle(ProgramBoardStyle.secondaryText)
+                RelaySwap(emptyStateDetail, style: .text, alignment: .top) { emptyStateDetail in
+                    Text(emptyStateDetail)
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 390)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            if let sessionControl {
+                ProgramSessionPrimaryButton(
+                    presentation: sessionControl.presentation,
+                    isEnabled: sessionControl.isEnabled,
+                    action: sessionControl.action
+                )
+                .padding(.top, GraphicalTheme.spaceXS)
             }
         }
-        .accessibilityElement(children: .combine)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -4059,13 +4070,13 @@ struct EmbeddedTerminalTab: View {
     private var emptyStateDetail: String {
         switch session.phase {
         case .external:
-            return "This Relay session is running in Terminal.app. Use the Workspace session control to end it before starting an embedded session."
+            return "This session is running in Terminal.app; end it to run one here."
         case .ended, .exited:
-            return "The previous session has ended. Start again when you're ready."
+            return "The last session ended."
         case .failed(let message):
             return message
         default:
-            return "Start, at the top right, launches the configured agent with Relay voice mode. Closing Workspace leaves the session running."
+            return "Your voice session runs here, even with Workspace closed."
         }
     }
 }
@@ -4077,7 +4088,17 @@ struct WorkspaceTerminalPanel: View {
         WorkspaceTerminalSurface {
             EmbeddedTerminalTab(
                 session: appState.embeddedTerminal,
-                recoverDelivery: { appState.recoverBlockedVoiceDelivery() }
+                recoverDelivery: { appState.recoverBlockedVoiceDelivery() },
+                sessionControl: ProgramSessionControl(
+                    presentation: ProgramSessionToolbarPresentation.resolve(
+                        hasActiveSession: appState.hasActiveSession,
+                        provider: appState.config.general.provider
+                    ),
+                    isEnabled: true,
+                    action: appState.hasActiveSession
+                        ? { appState.endSession() }
+                        : { _ = appState.newSession() }
+                )
             )
         }
         .frame(maxWidth: WorkspaceSurfaceSizing.terminalMaxWidth)

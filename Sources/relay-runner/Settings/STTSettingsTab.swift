@@ -25,17 +25,14 @@ struct STTSettingsTab: View {
                 }
 
                 if let migrationState, let message = Self.migrationMessage(migrationState) {
-                    SettingsDivider()
                     SettingsControlRow("Phonon 2 Setup", description: message) {
                         if case .failed = migrationState {
-                            SettingsActionButton(title: "Retry", systemImage: "arrow.clockwise") {
+                            SettingsActionButton(title: "Retry", icon: .refreshCw) {
                                 onRetryMigration()
                             }
                         }
                     }
                 }
-
-                SettingsDivider()
 
                 SettingsControlRow(
                     "Input Device",

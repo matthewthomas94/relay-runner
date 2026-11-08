@@ -200,25 +200,24 @@ struct PersonalFileStorageSettingsView: View {
                     HStack(spacing: 8) {
                         Spacer(minLength: 0)
                         if model.busy { ProgressView().controlSize(.small) }
-                        SettingsActionButton(title: "Open local files", systemImage: "folder", isEnabled: !model.busy, action: model.revealFolder)
-                        SettingsActionButton(title: "Refresh", systemImage: "arrow.clockwise", isEnabled: !model.busy) { Task { await model.refresh() } }
+                        SettingsActionButton(title: "Open local files", icon: .folder, isEnabled: !model.busy, action: model.revealFolder)
+                        SettingsActionButton(title: "Refresh", icon: .refreshCw, isEnabled: !model.busy) { Task { await model.refresh() } }
                     }
                 }
             }
-            SettingsDivider()
             if model.status?.connected != true {
                 SettingsRow {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 8) {
                             Spacer(minLength: 0)
-                            SettingsActionButton(title: "Sign in to GitHub", systemImage: "person.crop.circle", isEnabled: !model.busy) { Task { await model.signIn() } }
-                            SettingsActionButton(title: "Check signed-in account", systemImage: "arrow.clockwise", isEnabled: !model.busy) { Task { await model.checkAccount() } }
+                            SettingsActionButton(title: "Sign in to GitHub", icon: .circleUser, isEnabled: !model.busy) { Task { await model.signIn() } }
+                            SettingsActionButton(title: "Check signed-in account", icon: .refreshCw, isEnabled: !model.busy) { Task { await model.checkAccount() } }
                         }
                         if let login = model.accountLogin {
                             Text("Signed in as \(login)").foregroundStyle(SettingsSurfaceColor.secondaryText)
                             TextField("Private repository name", text: $model.repositoryName)
                                 .graphicalInput()
-                            SettingsActionButton(title: "Connect private repository…", systemImage: "link",
+                            SettingsActionButton(title: "Connect private repository…", icon: .link,
                                                  isEnabled: !model.busy && !model.repositoryName.isEmpty) { confirmConnect = true }
                                 .frame(maxWidth: .infinity, alignment: .trailing)
                         }
@@ -228,13 +227,12 @@ struct PersonalFileStorageSettingsView: View {
                 SettingsRow {
                     HStack(spacing: 8) {
                         Spacer(minLength: 0)
-                        SettingsActionButton(title: "Approve and sync personal files…", systemImage: "arrow.triangle.2.circlepath", isEnabled: !model.busy) { confirmUpload = true }
-                        SettingsActionButton(title: "Retry approved files", systemImage: "arrow.clockwise", isEnabled: !model.busy) { Task { await model.mutate("sync") } }
-                        SettingsActionButton(title: "Disconnect", systemImage: "xmark", isEnabled: !model.busy) { Task { await model.mutate("disconnect") } }
+                        SettingsActionButton(title: "Approve and sync personal files…", icon: .refreshCw, isEnabled: !model.busy) { confirmUpload = true }
+                        SettingsActionButton(title: "Retry approved files", icon: .refreshCw, isEnabled: !model.busy) { Task { await model.mutate("sync") } }
+                        SettingsActionButton(title: "Disconnect", icon: .x, isEnabled: !model.busy) { Task { await model.mutate("disconnect") } }
                     }
                 }
             }
-            SettingsDivider()
             SettingsControlRow("Local cache budget", description: "Default 256 MB. Unsynced, pinned and active files are preserved if the cache exceeds this amount.") {
                 SettingsStepper(title: "Local cache budget", value: $model.budgetMB, range: 1...100_000, unit: "MB")
             }
@@ -256,7 +254,7 @@ struct PersonalFileStorageSettingsView: View {
                         }
                         ForEach(status.overageReasons, id: \.self) { Text($0).foregroundStyle(SettingsSurfaceColor.secondaryText) }
                     }
-                    SettingsActionButton(title: "Apply storage policy", systemImage: "checkmark", isEnabled: !model.busy) { Task { await model.savePolicy() } }
+                    SettingsActionButton(title: "Apply storage policy", icon: .check, isEnabled: !model.busy) { Task { await model.savePolicy() } }
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }

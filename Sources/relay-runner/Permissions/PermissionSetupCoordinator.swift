@@ -1404,8 +1404,7 @@ private struct PermissionCompanionCard: View {
     private func content(isGranted: Bool) -> some View {
         if isGranted {
             VStack(spacing: 7) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(AppTypography.symbolFont(size: 46, weight: .semibold))
+                LucideImage(.circleCheck, size: 53)
                     .foregroundStyle(.green)
                 Text("Granted")
                     .font(AppTypography.font(.cardHeading))

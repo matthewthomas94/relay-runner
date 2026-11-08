@@ -196,7 +196,7 @@ struct TrueWhisperSettingsSection: View {
                         .foregroundStyle(SettingsSurfaceColor.error)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: SettingsLayout.labelControlSpacing)
-                    SettingsActionButton(title: "Open System Settings", systemImage: "gear") {
+                    SettingsActionButton(title: "Open System Settings", icon: .settings) {
                         model.permission.openSettings(for: .camera)
                     }
                 }
@@ -204,7 +204,6 @@ struct TrueWhisperSettingsSection: View {
             }
 
             ForEach(TrueWhisperEnrollment.vocabulary, id: \.self) { word in
-                SettingsDivider()
                 let isThis = enrollment.word == word
                 SettingsControlRow(
                     word.capitalized,
@@ -213,7 +212,7 @@ struct TrueWhisperSettingsSection: View {
                 ) {
                     SettingsActionButton(
                         title: isThis ? "Stop" : "Record",
-                        systemImage: isThis ? "stop.fill" : "video",
+                        icon: isThis ? .square : .video,
                         isEnabled: isThis || !enrollment.isRecording,
                         accessibilityLabel: isThis ? "Stop recording \(word)" : "Record \(word)"
                     ) {
@@ -221,8 +220,6 @@ struct TrueWhisperSettingsSection: View {
                     }
                 }
             }
-
-            SettingsDivider()
 
             SettingsControlRow("Recognition test", description: model.readout.description) {
                 SettingsInlineStatus(
@@ -232,12 +229,10 @@ struct TrueWhisperSettingsSection: View {
                 )
             }
 
-            SettingsDivider()
-
             SettingsRow {
                 Spacer(minLength: 0)
                 SettingsActionButton(
-                    title: "Clear All Takes", systemImage: "trash",
+                    title: "Clear All Takes", icon: .trash,
                     isEnabled: !enrollment.isRecording && !enrollment.counts.isEmpty
                 ) {
                     confirmClear = true

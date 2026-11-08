@@ -1,28 +1,29 @@
 import SwiftUI
 
-/// The wheel's Keep Awake icon. A filled bolt is white when off and the active tray
+/// The wheel's Keep Awake icon. A bolt is white when off and the active tray
 /// orange when on, so switching between them only retints it. Pending, approval, and
 /// failure states swap to their own symbols: the outgoing symbol contracts and fades,
 /// then the new one expands in, within one change duration. A change mid-swap retargets
 /// from wherever the icon is, and nothing animates while the state rests.
 struct SessionWheelKeepAwakeGlyph: View {
     let state: KeepAwakeState
+    var size: CGFloat = 12
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     struct Look: Equatable {
         enum Tint: Equatable { case off, on, neutral, alert }
 
-        let symbol: String
+        let symbol: LucideIcon
         let tint: Tint
 
         init(_ state: KeepAwakeState) {
             switch state {
-            case .off: (symbol, tint) = ("bolt.fill", .off)
-            case .on: (symbol, tint) = ("bolt.fill", .on)
-            case .enabling, .disabling: (symbol, tint) = ("hourglass", .neutral)
-            case .awaitingApproval: (symbol, tint) = ("hand.raised.fill", .neutral)
-            case .failed: (symbol, tint) = ("exclamationmark.triangle", .neutral)
-            case .restoreNeeded: (symbol, tint) = ("exclamationmark.triangle.fill", .alert)
+            case .off: (symbol, tint) = (.zap, .off)
+            case .on: (symbol, tint) = (.zap, .on)
+            case .enabling, .disabling: (symbol, tint) = (.hourglass, .neutral)
+            case .awaitingApproval: (symbol, tint) = (.hand, .neutral)
+            case .failed: (symbol, tint) = (.circleExclamationPoint, .neutral)
+            case .restoreNeeded: (symbol, tint) = (.triangleExclamationPoint, .alert)
             }
         }
 
@@ -62,7 +63,7 @@ struct SessionWheelKeepAwakeGlyph: View {
     var body: some View {
         let look = Look(state)
         ZStack {
-            Image(systemName: look.symbol)
+            LucideImage(look.symbol, size: size)
                 .foregroundStyle(look.color)
                 .id(look.symbol)
                 .transition(Self.swap(reduceMotion: reduceMotion))

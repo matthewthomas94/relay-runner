@@ -121,7 +121,8 @@ enum WorkspaceNavigationStyle {
     static let verticalPadding: CGFloat = 4
     static let cornerRadius: CGFloat = GraphicalTheme.radiusS
     static let iconTextSpacing: CGFloat = 6
-    static let iconSize: CGFloat = 10
+    /// Lucide icons sit at 1em of the tab label.
+    static let iconSize: CGFloat = AppTypography.definition(for: .menuTab).size
     static let systemFocusEffectDisabled = true
     static let activeTextOpacity: Double = 0.98
     static let selectedFillOpacity: Double = 0.08
@@ -207,7 +208,7 @@ struct WorkspaceMenuBarStrip: View {
             if let updater = workspace.updater, let version = updater.availableVersion {
                 WorkspaceNavigationButton(
                     title: "Update available",
-                    systemName: "arrow.down.to.line",
+                    icon: .arrowDownToLine,
                     accessibilityLabel: "Update available tab, version \(version)",
                     help: "Download Relay Runner \(version)",
                     action: { updater.checkForUpdates() }
@@ -241,7 +242,7 @@ private struct WorkspaceTabButton: View {
 
 struct WorkspaceNavigationButton: View {
     let title: String
-    let systemName: String?
+    let icon: LucideIcon?
     let selected: Bool
     let accessibilityLabel: String
     let help: String
@@ -252,14 +253,14 @@ struct WorkspaceNavigationButton: View {
 
     init(
         title: String,
-        systemName: String? = nil,
+        icon: LucideIcon? = nil,
         selected: Bool = false,
         accessibilityLabel: String? = nil,
         help: String? = nil,
         action: @escaping () -> Void
     ) {
         self.title = title
-        self.systemName = systemName
+        self.icon = icon
         self.selected = selected
         self.accessibilityLabel = accessibilityLabel ?? title
         self.help = help ?? title
@@ -269,17 +270,9 @@ struct WorkspaceNavigationButton: View {
     var body: some View {
         Button(action: action) {
             HStack(alignment: .center, spacing: WorkspaceNavigationStyle.iconTextSpacing) {
-                if let systemName {
-                    RelaySwap(systemName) { systemName in
-                        Image(systemName: systemName)
-                            .font(AppTypography.symbolFont(
-                                size: WorkspaceNavigationStyle.iconSize,
-                                weight: .bold
-                            ))
-                            .frame(
-                                width: WorkspaceNavigationStyle.iconSize,
-                                height: WorkspaceNavigationStyle.iconSize
-                            )
+                if let icon {
+                    RelaySwap(icon) { icon in
+                        LucideImage(icon, size: WorkspaceNavigationStyle.iconSize)
                     }
                 }
                 // Start ↔ End session and note-taker titles swap in place.

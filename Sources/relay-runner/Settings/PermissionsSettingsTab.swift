@@ -41,7 +41,7 @@ struct PermissionsSettingsTab: View {
                 ) {
                     SettingsActionButton(
                         title: Self.onboardingActionTitle,
-                        systemImage: "arrow.clockwise"
+                        icon: .refreshCw
                     ) {
                         appState.onboarding.showManualRedo()
                     }
@@ -58,19 +58,14 @@ struct PermissionsSettingsTab: View {
             }
 
             SettingsSection("Privacy Permissions") {
-                ForEach(Array(Self.privacyPermissionOrder.enumerated()), id: \.element) { index, kind in
-                    if index > 0 {
-                        SettingsDivider()
-                    }
+                ForEach(Self.privacyPermissionOrder, id: \.self) { kind in
                     permissionRow(kind)
                 }
             }
 
             SettingsSection("Runtime") {
                 pythonEnvRow
-                SettingsDivider()
                 sttModelRow
-                SettingsDivider()
                 voiceBridgeRow
             }
         }
@@ -93,9 +88,8 @@ struct PermissionsSettingsTab: View {
             .map(\.displayName)
             .joined(separator: ", ")
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "arrow.counterclockwise.circle.fill")
+            LucideImage(.rotateCcw, size: 20)
                 .foregroundStyle(SettingsSurfaceColor.neutralAccent)
-                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
             VStack(alignment: .leading, spacing: 4) {
                 Text("Permissions were reset")
                     .font(AppTypography.font(.cardHeading))
@@ -109,7 +103,7 @@ struct PermissionsSettingsTab: View {
             Spacer()
             SettingsActionButton(
                 title: "Dismiss",
-                systemImage: "xmark",
+                icon: .x,
                 prominence: .secondary
             ) {
                 for kind in appState.permissions.resetSinceLastRun {
@@ -155,7 +149,7 @@ struct PermissionsSettingsTab: View {
             state: Self.sttRowState(for: readiness),
             detail: readiness.statusDetail,
             action: readiness.canRetry ?
-                RowAction(title: "Retry Setup", systemImage: "arrow.clockwise") { appState.retrySTTSetup() }
+                RowAction(title: "Retry Setup", icon: .refreshCw) { appState.retrySTTSetup() }
                 : nil
         )
     }
@@ -192,7 +186,7 @@ struct PermissionsSettingsTab: View {
 
     private struct RowAction {
         let title: String
-        let systemImage: String?
+        let icon: LucideIcon?
         let perform: () -> Void
     }
 
@@ -218,7 +212,7 @@ struct PermissionsSettingsTab: View {
             if let action {
                 SettingsActionButton(
                     title: action.title,
-                    systemImage: action.systemImage,
+                    icon: action.icon,
                     prominence: .secondary,
                     action: action.perform
                 )
@@ -232,15 +226,15 @@ struct PermissionsSettingsTab: View {
     private func stateIcon(_ state: RowState) -> some View {
         switch state {
         case .ok:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(SettingsSurfaceColor.mutedText)
+            LucideImage(.circleCheck, size: 16).foregroundStyle(SettingsSurfaceColor.mutedText)
         case .error:
-            Image(systemName: "xmark.octagon.fill").foregroundStyle(SettingsSurfaceColor.error)
+            LucideImage(.octagonX, size: 16).foregroundStyle(SettingsSurfaceColor.error)
         case .loading:
             ProgressView().controlSize(.small)
         case .idle:
-            Image(systemName: "circle").foregroundStyle(SettingsSurfaceColor.mutedText)
+            LucideImage(.circle, size: 16).foregroundStyle(SettingsSurfaceColor.mutedText)
         case .locked:
-            Image(systemName: "lock.fill").foregroundStyle(SettingsSurfaceColor.error)
+            LucideImage(.lock, size: 16).foregroundStyle(SettingsSurfaceColor.error)
         }
     }
 
@@ -284,7 +278,7 @@ struct PermissionsSettingsTab: View {
                                   status: PermissionStatus) -> RowAction? {
         guard let title = Self.permissionActionTitle(kind: kind, status: status) else { return nil }
         if kind == .microphone {
-            return RowAction(title: title, systemImage: "mic.badge.plus") {
+            return RowAction(title: title, icon: .mic) {
                 appState.requestPermissionSetup(
                     kind,
                     source: .settingsPermissions,
@@ -292,7 +286,7 @@ struct PermissionsSettingsTab: View {
                 )
             }
         }
-        return RowAction(title: title, systemImage: "gearshape") {
+        return RowAction(title: title, icon: .settings) {
             appState.requestPermissionSetup(
                 kind,
                 source: .settingsPermissions,

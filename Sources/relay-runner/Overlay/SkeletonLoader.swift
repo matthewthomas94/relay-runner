@@ -290,7 +290,7 @@ final class SkeletonLoaderView: NSView {
             let heights = overview
                 ? Array(repeating: ProgramBoardLayout.projectCardHeight, count: 4)
                 : laneCardHeights[(index - 1) % laneCardHeights.count]
-            let spacing: CGFloat = overview ? ProgramBoardLayout.projectCardSpacing : 6
+            let spacing = ProgramBoardLayout.cardSpacing
             var y = overview
                 ? headerMidY + ProgramBoardLayout.workHeaderHeight / 2 + ProgramBoardLayout.projectHeaderToListSpacing
                 : panel.minY + ProgramBoardLayout.workCardTopOffset

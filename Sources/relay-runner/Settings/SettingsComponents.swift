@@ -24,6 +24,8 @@ struct SettingsSection<Content: View>: View {
         self.content = content()
     }
 
+    /// Each section is a card: its title and rows on the kit's neutral-2
+    /// surface, separated from the next section by space rather than lines.
     var body: some View {
         VStack(alignment: .leading, spacing: SettingsLayout.sectionTitleSpacing) {
             if let title {
@@ -40,12 +42,20 @@ struct SettingsSection<Content: View>: View {
                             .background(SettingsSurfaceColor.rowFill, in: Capsule())
                     }
                 }
+                .padding(.top, SettingsLayout.cardPadding - SettingsLayout.rowVerticalPadding)
             }
 
             VStack(spacing: 0) {
                 content
             }
         }
+        .padding(.horizontal, SettingsLayout.cardPadding)
+        .padding(.vertical, SettingsLayout.cardPadding - SettingsLayout.rowVerticalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            SettingsSurfaceColor.cardFill,
+            in: RoundedRectangle(cornerRadius: SettingsLayout.cardCornerRadius, style: .continuous)
+        )
     }
 }
 
@@ -149,14 +159,6 @@ struct SettingsRowLabel: View {
     }
 }
 
-struct SettingsDivider: View {
-    var body: some View {
-        Rectangle()
-            .fill(SettingsSurfaceColor.divider)
-            .frame(height: 1)
-    }
-}
-
 /// A dropdown drawn like the Workspace ticket panel's project picker.
 struct SettingsMenuPicker<Value: Hashable>: View {
     let title: String
@@ -187,8 +189,7 @@ struct SettingsMenuPicker<Value: Hashable>: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 12)
-                Image(systemName: "chevron.down")
-                    .font(AppTypography.symbolFont(size: 9, weight: .semibold))
+                LucideImage(.chevronDown, size: 12)
                     .accessibilityHidden(true)
             }
             .foregroundStyle(isEnabled ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.disabledText)
@@ -341,8 +342,11 @@ private struct SettingsSegmentButton: View {
 }
 
 enum SettingsLayout {
-    static let sectionSpacing: CGFloat = 24
-    static let sectionTitleSpacing: CGFloat = 10
+    /// The gap between section cards, like the gap between Workspace columns.
+    static let sectionSpacing: CGFloat = GraphicalTheme.spaceXS
+    static let sectionTitleSpacing: CGFloat = GraphicalTheme.spaceXXS
+    static let cardPadding: CGFloat = GraphicalTheme.spaceM
+    static let cardCornerRadius: CGFloat = GraphicalTheme.radiusM
     static let rowVerticalPadding: CGFloat = 11
     static let labelControlSpacing: CGFloat = 20
     static let controlMaxWidth: CGFloat = 280
@@ -356,7 +360,7 @@ enum SharedActionButtonProminence {
     case primary
     case secondary
     case icon
-    /// The kit's danger button: error red with a black label.
+    /// The danger button: a dark red tint with a red label.
     case danger
 }
 
@@ -381,10 +385,10 @@ extension SharedActionButtonPalette {
         stroke: SettingsSurfaceColor.focusRing
     )
 
-    /// Kit danger button: error red, black label.
+    /// Danger button: a dark red tint with a red label and icon.
     static let settingsDanger = SharedActionButtonPalette(
-        foreground: GraphicalTheme.neutral1,
-        fill: GraphicalTheme.error,
+        foreground: GraphicalTheme.dangerForeground,
+        fill: GraphicalTheme.dangerFill,
         stroke: SettingsSurfaceColor.focusRing
     )
 
@@ -408,12 +412,16 @@ struct SharedActionButtonSurface: View {
         )
 
         // Solid kit fills; a disabled button drops to neutral-3. Hover lays the
-        // kit's translucent neutral-4 over the fill. Focus draws the accent ring.
+        // kit's translucent neutral-4 over the fill, or warms a danger tint.
+        // Focus draws the accent ring.
         shape
             .fill(presentation.isEnabled ? palette.fill : GraphicalTheme.neutral3)
             // Kit primary and danger buttons lift with the small shadow on hover.
             .graphicalShadow(.s, isVisible: presentation.isHovered && (prominence == .primary || prominence == .danger))
             .overlay(shape.fill(GraphicalTheme.neutral4.opacity(presentation.sharedFillOpacity(for: prominence))))
+            .overlay(shape.fill(GraphicalTheme.dangerForeground.opacity(
+                prominence == .danger && presentation.isEnabled && presentation.isHovered ? 0.12 : 0
+            )))
             .overlay(
                 shape.stroke(
                     palette.stroke.opacity(presentation.sharedStrokeOpacity(for: prominence)),
@@ -501,7 +509,7 @@ struct SettingsActionButton: View {
     }
 
     let title: String
-    let systemImage: String?
+    let icon: LucideIcon?
     var prominence: Prominence = .secondary
     var isEnabled = true
     var accessibilityLabel: String?
@@ -518,12 +526,11 @@ struct SettingsActionButton: View {
             palette: palette,
             action: action,
             label: {
-            HStack(spacing: systemImage == nil || prominence == .icon ? 0 : SharedActionButtonMetrics.iconSpacing) {
-                if let systemImage {
-                    RelaySwap(systemImage) { systemImage in
-                        Image(systemName: systemImage)
-                            .font(AppTypography.symbolFont(size: prominence == .icon ? 12 : 10, weight: .bold))
-                            .accessibilityHidden(true)
+            HStack(spacing: icon == nil || prominence == .icon ? 0 : SharedActionButtonMetrics.iconSpacing) {
+                if let icon {
+                    // Lucide icons sit at 1em of the label.
+                    RelaySwap(icon) { icon in
+                        LucideImage(icon, size: GraphicalTheme.textS)
                     }
                 }
                 if prominence != .icon {
@@ -571,8 +578,7 @@ struct SettingsInlineStatus: View {
             if let text {
                 RelaySwap(text, style: .text, alignment: .trailing) { text in
                     HStack(spacing: 5) {
-                        Image(systemName: iconName)
-                            .font(AppTypography.symbolFont(size: 10, weight: .semibold))
+                        statusIcon
                             .foregroundStyle(semanticColor.color)
                             .accessibilityHidden(true)
                         Text(text)
@@ -591,12 +597,13 @@ struct SettingsInlineStatus: View {
         .accessibilityHidden(text == nil)
     }
 
-    private var iconName: String {
+    @ViewBuilder
+    private var statusIcon: some View {
         switch semanticColor {
-        case .neutralAccent: return "circle.fill"
-        case .success: return "checkmark.circle.fill"
-        case .error: return "xmark.octagon.fill"
-        case .idle: return "circle"
+        case .neutralAccent: Circle().frame(width: 6, height: 6).frame(width: 12, height: 12)
+        case .success: LucideImage(.circleCheck, size: 12)
+        case .error: LucideImage(.octagonX, size: 12)
+        case .idle: LucideImage(.circle, size: 12)
         }
     }
 }
@@ -714,6 +721,8 @@ enum SettingsSurfaceColor {
     static let rowFillHovered = GraphicalTheme.neutral4.opacity(GraphicalTheme.fillThroughDotsOpacity)
     static let rowFillSelected = GraphicalTheme.neutral3
     static let rowFillFocused = GraphicalTheme.neutral4
+    /// Settings cards and the sidebar: the kit's neutral-2 surface on the black page.
+    static let cardFill = GraphicalTheme.neutral2
     /// The kit separator: a one-pixel neutral-4 line.
     static let divider = GraphicalTheme.neutral4
     /// The kit focus ring: neutral-10 at 20%.

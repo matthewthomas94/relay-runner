@@ -35,11 +35,13 @@ enum ProgramBoardLayout {
     static let newTicketButtonSize: CGFloat = compactControlHeight
     static let workHeaderHeight: CGFloat = 36
     static let overviewSectionSpacing: CGFloat = 12
-    /// Search field with the row gap above and below it, so header, field and
-    /// rows share one 8-point rhythm.
+    /// The band of selected-project pills under the Projects header. It is as
+    /// tall as the gap above the ticket columns' first card, so the first
+    /// project and the first ticket share a top edge.
     static var projectHeaderToListSpacing: CGFloat {
-        ProgramTicketPanelStyle.compactFieldHeight + projectCardSpacing * 2
+        workCardTopOffset - panelVerticalPadding - projectsHeaderHeight
     }
+    static let projectPillHeight: CGFloat = 28
     static let workSectionSpacing: CGFloat = 16
     static let dropIndicatorHeight: CGFloat = 3
     static let dropIndicatorBottomPadding: CGFloat = 4
@@ -65,8 +67,15 @@ enum ProgramBoardLayout {
     }
     static let projectCardHeight: CGFloat = 136
     static let projectRowHeight: CGFloat = 48
-    static let projectRowHorizontalInset: CGFloat = 12
-    static let projectCardSpacing: CGFloat = 8
+    /// Matches the ticket cards' text inset and the column headers.
+    static let projectRowHorizontalInset: CGFloat = 16
+    /// Insets the Finder button as far from the row's end as from its top.
+    static var projectRowActionInset: CGFloat {
+        (projectRowHeight - SharedActionButtonMetrics.controlHeight) / 2
+    }
+    /// One gap between cards in every column, projects and tickets alike.
+    static let cardSpacing: CGFloat = GraphicalTheme.spaceXS
+    static let projectCardSpacing: CGFloat = cardSpacing
     static let statePanelHeight: CGFloat = BoardSurfaceLayout.columnHeight
     static let statePanelHorizontalPadding: CGFloat = BoardSurfaceLayout.horizontalPadding
     static var workspaceContentHeight: CGFloat {
@@ -333,11 +342,11 @@ struct ProgramBoardOverlayView: View {
                 Spacer()
                 let ownsNote = model.noteCaptureSnapshot.phase.ownsForeground
                 let note = ProgramNoteToolbarPresentation.resolve(phase: model.noteCaptureSnapshot.phase)
-                // A secondary action, like the project cards' Start session buttons.
+                // Starting is the page's primary action; Stop steps back to secondary.
                 SettingsActionButton(
                     title: note.title,
-                    systemImage: nil,
-                    prominence: .secondary,
+                    icon: nil,
+                    prominence: ownsNote ? .secondary : .primary,
                     isEnabled: ownsNote || ProgramNoteControlPolicy.canStart(
                         selectedProjectPath: model.selectedSessionProjectPath
                     ),
@@ -376,7 +385,7 @@ struct ProgramBoardOverlayView: View {
                             .focused($notesSearchFocused)
                             .onSubmit { notesSearchFocused = false }
                             .accessibilityLabel("Search notes")
-                        ProgramIconButton(systemName: "magnifyingglass", help: "Search notes") {
+                        ProgramIconButton(icon: .search, help: "Search notes") {
                             notesSearchFocused = true
                         }
                     }
@@ -430,8 +439,7 @@ struct ProgramBoardOverlayView: View {
                         .transition(.programBoardLeaving(.surface, replacing: true))
                     } else {
                         VStack(spacing: 10) {
-                            Image(systemName: "note.text")
-                                .font(AppTypography.symbolFont(size: 28, weight: .regular))
+                            LucideImage(.notebookText, size: 32)
                                 .foregroundStyle(ProgramBoardStyle.mutedText)
                             Text("Select a note")
                                 .font(AppTypography.font(.sectionHeading))
@@ -1366,46 +1374,31 @@ private struct ProgramOverviewColumn: View {
     let onCreateDiagnostics: () -> Void
     let onDismiss: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var query = ""
-    @FocusState private var searchFocused: Bool
 
     private var visibleProjects: [ProgramStatusItem] {
-        ProgramProjectRowFilter.visibleProjects(snapshot.projects, query: query)
+        ProgramProjectRowFilter.visibleProjects(snapshot.projects, query: "")
     }
 
-    private var searchRow: some View {
-        HStack(spacing: 8) {
-            TextField("Search projects", text: $query, prompt: Text(""))
-                .appPlaceholder("Search projects", when: query.isEmpty)
-                .textFieldStyle(.plain)
-                .font(AppTypography.font(.field))
-                .foregroundStyle(ProgramBoardStyle.primaryText)
-                .lineLimit(1)
-                .padding(.horizontal, GraphicalTheme.spaceS)
-                .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
-                .background(ProgramTicketFieldBackground(isFocused: searchFocused))
-                .focused($searchFocused)
-                .onSubmit { searchFocused = false }
-                .accessibilityLabel("Search projects")
-            if !selectedProjectPaths.isEmpty {
-                ProgramWorkspaceActionButton(
-                    title: "Clear",
-                    systemName: nil,
-                    accessibilityLabel: "Clear project selection",
-                    help: "Show tickets from all projects",
-                    action: onSelectAll
-                )
-                .transition(.relayElement)
+    /// The selected projects as removable pills, in the band the cards line
+    /// up under. They scroll sideways and fade where they are cut off.
+    private var selectionRow: some View {
+        RelayFadingScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: GraphicalTheme.spaceXS) {
+                ForEach(selectedProjectPaths, id: \.self) { path in
+                    ProgramProjectPill(
+                        name: snapshot.projectName(for: path) ?? URL(fileURLWithPath: path).lastPathComponent,
+                        onRemove: { onToggleProject(path) }
+                    )
+                    .transition(.relayElement)
+                }
             }
+            .frame(height: ProgramBoardLayout.projectHeaderToListSpacing)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selectedProjectPaths)
         }
-        .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
-        .frame(
-            maxWidth: .infinity,
-            minHeight: ProgramBoardLayout.projectHeaderToListSpacing,
-            maxHeight: ProgramBoardLayout.projectHeaderToListSpacing,
-            alignment: .center
-        )
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selectedProjectPaths.isEmpty)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: ProgramBoardLayout.projectHeaderToListSpacing)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Selected projects")
     }
 
     var body: some View {
@@ -1429,7 +1422,7 @@ private struct ProgramOverviewColumn: View {
                     .transition(.relayElement)
             }
 
-            searchRow
+            selectionRow
 
             BoardOverlayScrollView(contentInsets: ProgramBoardLayout.projectScrollContentInsets) {
                 VStack(alignment: .leading, spacing: ProgramBoardLayout.projectCardSpacing) {
@@ -1459,14 +1452,6 @@ private struct ProgramOverviewColumn: View {
                             onOpenInFinder: onDismiss
                         )
                         .transition(.relayElement)
-                    }
-                    if visibleProjects.isEmpty, !query.isEmpty {
-                        Text("No matching projects.")
-                            .font(AppTypography.font(.supporting))
-                            .foregroundStyle(ProgramBoardStyle.mutedText)
-                            .padding(.horizontal, ProgramBoardLayout.headerHorizontalInset)
-                            .padding(.top, 12)
-                            .transition(.relayElement)
                     }
                 }
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: visibleProjects)
@@ -1553,7 +1538,7 @@ private struct ProgramProjectsHeader: View {
             } else {
                 ProgramWorkspaceActionButton(
                     title: presentation.actionTitle,
-                    systemName: nil,
+                    icon: nil,
                     prominence: presentation.actionProminence,
                     accessibilityLabel: "Show tickets from all projects",
                     help: "Show tickets from all projects",
@@ -1611,8 +1596,7 @@ private struct ProgramAddProjectMenu: View {
                         width: ProgramAddProjectMenuMetrics.dividerWidth,
                         height: SharedActionButtonMetrics.controlHeight
                     )
-                Image(systemName: "chevron.down")
-                    .font(AppTypography.symbolFont(size: 9, weight: .semibold))
+                LucideImage(.chevronDown, size: 12)
                     .frame(
                         width: ProgramAddProjectMenuMetrics.disclosureWidth,
                         height: SharedActionButtonMetrics.controlHeight
@@ -1666,68 +1650,38 @@ private struct ProgramAddProjectMenu: View {
     }
 }
 
-/// Pick how the session routes this project's change requests: Auto, Direct
-/// or Orchestrated. Same look as Add project; a change applies from the next
-/// request. RR-445: rows have no Start control; the Workspace's top row does.
-private struct ProgramWorkStyleMenu: View {
-    let workStyle: ProjectWorkStyle
-    let onSelectWorkStyle: (ProjectWorkStyle) -> Void
+/// A selected project in the Projects column's filter band; its x removes it.
+private struct ProgramProjectPill: View {
+    let name: String
+    let onRemove: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
-    @State private var isPresented = false
-
-    private var palette: SharedActionButtonPalette { .settingsSecondary }
-
-    private var presentation: SettingsActionPresentation {
-        SettingsActionPresentation.resolve(
-            isEnabled: true,
-            isHovered: isHovered,
-            isFocused: false,
-            reduceMotion: reduceMotion
-        )
-    }
 
     var body: some View {
-        Button { isPresented.toggle() } label: {
-            HStack(spacing: 6) {
-                Text(workStyle.title)
-                    .font(AppTypography.font(.programAction))
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(AppTypography.symbolFont(size: 9, weight: .semibold))
+        HStack(spacing: GraphicalTheme.spaceXXS) {
+            Text(name)
+                .font(AppTypography.font(.programAction))
+                .foregroundStyle(ProgramBoardStyle.primaryText)
+                .lineLimit(1)
+            Button(action: onRemove) {
+                LucideImage(.x, size: 12)
+                    .foregroundStyle(isHovered ? ProgramBoardStyle.primaryText : ProgramBoardStyle.secondaryText)
+                    .frame(width: 20, height: 20)
+                    .background(Circle().fill(isHovered ? BoardDarkSurfaceStyle.cardActiveFill : .clear))
+                    .contentShape(Circle())
             }
-            .padding(.horizontal, 10)
-            .frame(height: SharedActionButtonMetrics.controlHeight)
-            .contentShape(Rectangle())
+            .buttonStyle(.graphicalPress)
+            .onHover { isHovered = $0 }
+            .animation(reduceMotion ? nil : RelayMotion.hover, value: isHovered)
+            .programButtonCursor()
+            .accessibilityLabel("Remove \(name) from the filter")
+            .graphicalTooltip("Stop filtering to \(name)")
         }
-        .buttonStyle(.graphicalPress)
-        .graphicalTooltip("Change the work style (now \(workStyle.title): \(workStyle.detail.lowercased()))")
-        .accessibilityLabel("Work style, now \(workStyle.title)")
-        .foregroundStyle(palette.foreground.opacity(presentation.foregroundOpacity))
-        .frame(height: SharedActionButtonMetrics.controlHeight)
-        .background(
-            SharedActionButtonSurface(prominence: .secondary, presentation: presentation, palette: palette)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius, style: .continuous))
+        .padding(.leading, GraphicalTheme.spaceS)
+        .padding(.trailing, GraphicalTheme.spaceXXS)
+        .frame(height: ProgramBoardLayout.projectPillHeight)
+        .background(Capsule().fill(BoardDarkSurfaceStyle.cardFill))
         .fixedSize()
-        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
-        .onHover { isHovered = $0 }
-        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
-        .programButtonCursor(enabled: true)
-        .background {
-            SettingsDropdownPresenter(isPresented: $isPresented, alignsTrailing: true) {
-                SettingsMenuOptions(
-                    title: "Work style",
-                    selection: Binding(
-                        get: { workStyle },
-                        set: { onSelectWorkStyle($0) }
-                    ),
-                    options: ProjectWorkStyle.allCases.map { ($0.title, $0) },
-                    subtitle: { $0.detail }
-                ) { isPresented = false }
-                .environment(\.colorScheme, .dark)
-            }
-        }
     }
 }
 
@@ -1741,7 +1695,6 @@ private struct ProgramProjectCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isFocused: Bool
     @State private var isHovered = false
-    @State private var workStyle: ProjectWorkStyle = .auto
 
     private var isEnabled: Bool {
         item.project?.path != nil
@@ -1806,11 +1759,7 @@ private struct ProgramProjectCard: View {
         .focusable(isEnabled)
         .focusEffectDisabled(true)
         .focused($isFocused)
-        .onHover { hovering in
-            isHovered = isEnabled && hovering
-            // /work-style and voice can change the style mid-session.
-            if hovering { refreshWorkStyle() }
-        }
+        .onHover { isHovered = isEnabled && $0 }
         .programButtonCursor(enabled: isEnabled)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .graphicalTooltip(
@@ -1819,36 +1768,22 @@ private struct ProgramProjectCard: View {
                 : "Show tickets for \(item.project?.name ?? "this project")"
         )
         .overlay(alignment: .trailing) {
-            actions.fixedSize().padding(.trailing, ProgramBoardLayout.projectRowHorizontalInset)
+            actions.fixedSize().padding(.trailing, ProgramBoardLayout.projectRowActionInset)
         }
-        .onAppear { refreshWorkStyle() }
-        .onChange(of: item.project?.path) { _, _ in refreshWorkStyle() }
     }
 
-    private func refreshWorkStyle() {
-        guard let path = item.project?.path else { return }
-        workStyle = ProjectWorkStyleStore.style(for: path)
-    }
-
-    /// Finder, then this project's work style at the far right.
+    /// Finder, centred in the row's trailing square. The session's work style
+    /// lives on the Start button, not on each row.
+    @ViewBuilder
     private var actions: some View {
-        HStack(spacing: 6) {
-            if let path = item.project?.path {
-                ProgramIconButton(
-                    systemName: "folder",
-                    help: "Open \(item.project?.name ?? "project") in Finder"
-                ) {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
-                    // The Workspace sits above Finder, so close it to reveal the window.
-                    onOpenInFinder()
-                }
-                ProgramWorkStyleMenu(
-                    workStyle: workStyle,
-                    onSelectWorkStyle: { style in
-                        workStyle = style
-                        ProjectWorkStyleStore.setStyle(style, for: path)
-                    }
-                )
+        if let path = item.project?.path {
+            ProgramIconButton(
+                icon: .folder,
+                help: "Open \(item.project?.name ?? "project") in Finder"
+            ) {
+                NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+                // The Workspace sits above Finder, so close it to reveal the window.
+                onOpenInFinder()
             }
         }
     }
@@ -1917,7 +1852,7 @@ struct ProgramWorkColumnPanel: View {
                 Spacer(minLength: 0)
                 if lane != .done, canCreate {
                     ProgramIconButton(
-                        systemName: "plus",
+                        icon: .plus,
                         help: "New \(lane.title.lowercased()) ticket",
                         size: ProgramBoardLayout.newTicketButtonSize,
                         action: onCreate
@@ -1943,7 +1878,7 @@ struct ProgramWorkColumnPanel: View {
                         ProgramColumnEmpty(text: lane.emptyText)
                             .transition(.relayReplacing(.text))
                     } else {
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: ProgramBoardLayout.cardSpacing) {
                             ForEach(laneItems) { item in
                                 switch item {
                                 case .ticket(let ticket):
@@ -2658,7 +2593,7 @@ private struct ProgramWorkCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
+            HStack(alignment: .center, spacing: 7) {
                 Text(metadataLine)
                     .font(AppTypography.font(.metadata))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
@@ -2666,7 +2601,13 @@ private struct ProgramWorkCard: View {
                     .truncationMode(.tail)
 
                 Spacer(minLength: 0)
+
+                if let issue = item.programCardIssue {
+                    ProgramIssuePill(issue: issue)
+                        .transition(.relayElement)
+                }
             }
+            .frame(minHeight: ProgramIssuePill.height)
 
             Text(title)
                 .font(AppTypography.font(.ticketTitle))
@@ -2674,39 +2615,6 @@ private struct ProgramWorkCard: View {
                 .lineLimit(3)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
-
-            let badges = stateBadges
-            if !badges.isEmpty {
-                HStack(alignment: .center, spacing: 6) {
-                    ForEach(badges, id: \.self) { label in
-                        ProgramInlineBadge(label: label)
-                            .transition(.relayElement)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .transition(.relayElement)
-            }
-
-            if let dependencyText {
-                RelaySwap(dependencyText, style: .text, alignment: .leading) { dependencyText in
-                    Text(dependencyText)
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(item.blockedBy.isEmpty ? ProgramBoardStyle.secondaryText : ProgramBoardStyle.red)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                }
-                .transition(.relayText)
-            }
-
-            if let lastError = item.visibleLastError {
-                RelaySwap(lastError, style: .text, alignment: .leading) { lastError in
-                    Text(lastError)
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(ProgramBoardStyle.red)
-                        .lineLimit(2)
-                }
-                .transition(.relayText)
-            }
 
             if let activityLine {
                 RelaySwap(activityLine, style: .text, alignment: .leading) { activityLine in
@@ -2765,34 +2673,6 @@ private struct ProgramWorkCard: View {
 
     private var title: String {
         cleaned(item.title) ?? "Untitled work"
-    }
-
-    private var stateBadges: [String] {
-        var labels: [String] = []
-        if item.isAwaitingMerge {
-            labels.append("Awaiting review")
-        }
-        if item.isIntegrationBlocked {
-            labels.append("Integration blocked")
-        }
-        if item.isVerificationBlocked {
-            labels.append("Verification blocked")
-        }
-        if !item.blockedBy.isEmpty {
-            labels.append("Waiting")
-        }
-        return labels
-    }
-
-    private var dependencyText: String? {
-        var parts: [String] = []
-        if !item.blockedBy.isEmpty {
-            parts.append("waiting on \(item.blockedBy.joined(separator: ", "))")
-        }
-        if !item.dependsOn.isEmpty {
-            parts.append("depends on \(item.dependsOn.joined(separator: ", "))")
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ")
     }
 
     private var activityLine: String? {
@@ -2865,12 +2745,12 @@ private struct ProgramNoteDetailPanel: View {
                     }
                 }
                 Spacer(minLength: 0)
-                ProgramIconButton(systemName: "xmark", help: "Close note", action: onClose)
+                ProgramIconButton(icon: .x, help: "Close note", action: onClose)
             }
 
             HStack(alignment: .center, spacing: 8) {
                 ProgramDetailActionButton(
-                    systemName: "trash", title: "Delete",
+                    icon: .trash, title: "Delete",
                     disabled: detail.isLoading || detail.item.card.recordingState != .completed || showsStop || recoveryInFlight,
                     help: detail.item.card.recordingState == .completed ? "Delete this saved note" : "Stop and save this note before deleting it",
                     destructive: true
@@ -2878,14 +2758,14 @@ private struct ProgramNoteDetailPanel: View {
                     confirmsDelete = true
                 }
                 ProgramDetailActionButton(
-                    systemName: "doc.on.doc", title: "Copy note",
+                    icon: .copy, title: "Copy note",
                     disabled: !detail.canCopyNote,
                     help: "Copy the complete note.md as Markdown"
                 ) {
                     detail.copyNote()
                 }
                 ProgramDetailActionButton(
-                    systemName: "folder", title: "Reveal",
+                    icon: .folder, title: "Reveal",
                     disabled: noteFileURL == nil,
                     help: noteFileURL == nil ? "This note has no local file to reveal" : "Reveal transcript in Finder"
                 ) {
@@ -2894,7 +2774,7 @@ private struct ProgramNoteDetailPanel: View {
                 }
                 if detail.item.card.metadata?.statusLabel != nil, !detail.item.isArchived {
                     ProgramDetailActionButton(
-                        systemName: "arrow.clockwise",
+                        icon: .refreshCw,
                         title: "Retry summary",
                         disabled: false,
                         help: "Generate this note's title and summary again"
@@ -2905,7 +2785,7 @@ private struct ProgramNoteDetailPanel: View {
                 }
                 if showsStop {
                     ProgramDetailActionButton(
-                        systemName: "stop.fill",
+                        icon: .square,
                         title: "Stop",
                         disabled: false,
                         help: "Stop and save this note"
@@ -2918,7 +2798,7 @@ private struct ProgramNoteDetailPanel: View {
                    isCurrentCapture,
                    captureSnapshot.phase == .paused {
                     ProgramDetailActionButton(
-                        systemName: "play.fill",
+                        icon: .play,
                         title: "Resume",
                         disabled: recoveryInFlight,
                         help: "Resume microphone capture for this recovered note"
@@ -2929,7 +2809,7 @@ private struct ProgramNoteDetailPanel: View {
                 }
                 if let recoveryOffer, !isCurrentCapture, recoveryOffer.phase == .cancelling {
                     ProgramDetailActionButton(
-                        systemName: "xmark.circle", title: "Retry cancellation",
+                        icon: .circleX, title: "Retry cancellation",
                         disabled: recoveryInFlight,
                         help: "Discard this note and recording without transcription",
                         destructive: true
@@ -2952,7 +2832,7 @@ private struct ProgramNoteDetailPanel: View {
                         .transition(.relayReplacing(.element))
                     }
                     ProgramDetailActionButton(
-                        systemName: "pause.fill",
+                        icon: .pause,
                         title: "Recover paused",
                         disabled: recoveryInFlight || awaitsTranscriptionModel,
                         help: "Replay the saved local tail and keep capture paused"
@@ -2961,7 +2841,7 @@ private struct ProgramNoteDetailPanel: View {
                     }
                     .transition(.relayReplacing(.element))
                     ProgramDetailActionButton(
-                        systemName: "checkmark",
+                        icon: .check,
                         title: "Finalize",
                         disabled: recoveryInFlight || awaitsTranscriptionModel,
                         help: "Replay the saved local tail and finish this note"
@@ -2970,7 +2850,7 @@ private struct ProgramNoteDetailPanel: View {
                     }
                     .transition(.relayReplacing(.element))
                     ProgramDetailActionButton(
-                        systemName: "trash",
+                        icon: .trash,
                         title: "Discard tail",
                         disabled: recoveryInFlight,
                         help: "Finish the note without replaying its incomplete local audio tail"
@@ -2981,7 +2861,7 @@ private struct ProgramNoteDetailPanel: View {
                 }
                 if detail.errorMessage != nil {
                     ProgramDetailActionButton(
-                        systemName: "arrow.clockwise",
+                        icon: .refreshCw,
                         title: "Retry",
                         disabled: false,
                         help: "Try opening this note again"
@@ -3149,7 +3029,7 @@ struct ProgramTicketDetailPanel: View {
                     }
                 }
                 Spacer(minLength: 0)
-                ProgramIconButton(systemName: "xmark", help: "Close ticket details", action: onClose)
+                ProgramIconButton(icon: .x, help: "Close ticket details", action: onClose)
             }
 
             HStack(alignment: .center, spacing: 8) {
@@ -3165,7 +3045,7 @@ struct ProgramTicketDetailPanel: View {
                     .transition(.relayElement)
                 }
                 ProgramDetailActionButton(
-                    systemName: "trash",
+                    icon: .trash,
                     title: "Delete",
                     disabled: deleteRequest == nil,
                     help: deleteRequest == nil ? "Ticket file is unavailable" : "Delete child ticket",
@@ -3176,7 +3056,7 @@ struct ProgramTicketDetailPanel: View {
                     }
                 }
                 ProgramDetailActionButton(
-                    systemName: "rectangle.stack",
+                    icon: .layers,
                     title: "Copy ID",
                     disabled: detail.identity == nil,
                     help: "Copy child ticket id"
@@ -3184,7 +3064,7 @@ struct ProgramTicketDetailPanel: View {
                     copyToPasteboard(detail.identity?.ticketID)
                 }
                 ProgramDetailActionButton(
-                    systemName: "doc.on.doc",
+                    icon: .copy,
                     title: "Copy Path",
                     disabled: detail.ticketPath == nil,
                     help: "Copy child ticket path"
@@ -3192,7 +3072,7 @@ struct ProgramTicketDetailPanel: View {
                     copyToPasteboard(detail.ticketPath)
                 }
                 ProgramDetailActionButton(
-                    systemName: "folder",
+                    icon: .folder,
                     title: "Reveal",
                     disabled: detail.ticket == nil,
                     help: detail.ticket == nil ? "Ticket file is unavailable" : "Reveal child ticket file"
@@ -3201,7 +3081,7 @@ struct ProgramTicketDetailPanel: View {
                 }
                 if canProposeSpikeFollowups {
                     ProgramDetailActionButton(
-                        systemName: "arrow.triangle.branch",
+                        icon: .gitBranch,
                         title: "Follow-ups",
                         disabled: false,
                         help: "Propose implementation tickets from this spike"
@@ -3422,7 +3302,7 @@ private struct ProgramSpikeFollowupReviewModal: View {
                         .foregroundStyle(ProgramBoardStyle.secondaryText)
                 }
                 Spacer(minLength: 0)
-                ProgramIconButton(systemName: "xmark", help: "Close follow-up proposals", action: onClose)
+                ProgramIconButton(icon: .x, help: "Close follow-up proposals", action: onClose)
             }
 
             Text("\(batch.originTicketID) · spike run \(batch.originRunID)")
@@ -3648,8 +3528,7 @@ private struct ProgramTicketImageFailure: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "photo")
-                .font(.system(size: 13, weight: .semibold))
+            LucideImage(.image, size: 16)
                 .foregroundStyle(ProgramBoardStyle.secondaryText)
             VStack(alignment: .leading, spacing: 2) {
                 Text(attachment.filename)
@@ -3797,7 +3676,7 @@ private struct ProgramDetailNotice: View {
 }
 
 private struct ProgramDetailActionButton: View {
-    let systemName: String
+    let icon: LucideIcon
     let title: String
     let disabled: Bool
     let help: String
@@ -3807,13 +3686,12 @@ private struct ProgramDetailActionButton: View {
     var body: some View {
         ProgramWorkspaceActionButton(
             title: title,
-            systemName: systemName,
+            icon: icon,
             isEnabled: !disabled,
             accessibilityLabel: title,
             help: help,
             action: action,
             labelFont: .action,
-            symbolSize: 11,
             destructive: destructive
         )
     }
@@ -3885,13 +3763,13 @@ private struct ProgramTicketEditModal: View {
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 ProgramIconButton(
-                    systemName: "trash",
+                    icon: .trash,
                     help: "Delete ticket",
                     iconColor: ProgramBoardStyle.red
                 ) {
                     onDelete(deleteRequest)
                 }
-                ProgramIconButton(systemName: "xmark", help: "Cancel edit", action: onCancel)
+                ProgramIconButton(icon: .x, help: "Cancel edit", action: onCancel)
             }
 
             Text(draft.identity.projectPath)
@@ -3966,7 +3844,7 @@ private struct ProgramTicketEditModal: View {
                 Spacer(minLength: 0)
                 ProgramWorkspaceActionButton(
                     title: "Cancel",
-                    systemName: "xmark",
+                    icon: .x,
                     accessibilityLabel: "Cancel ticket changes",
                     help: "Discard ticket changes",
                     action: onCancel,
@@ -3975,7 +3853,7 @@ private struct ProgramTicketEditModal: View {
                 .keyboardShortcut(.cancelAction)
                 ProgramWorkspaceActionButton(
                     title: "Save",
-                    systemName: "checkmark",
+                    icon: .check,
                     isEnabled: currentRequest != nil,
                     accessibilityLabel: "Save ticket changes",
                     help: currentRequest == nil ? "Complete the required fields" : "Save ticket changes",
@@ -4135,7 +4013,7 @@ private struct ProgramTicketCreateModal: View {
                         .foregroundStyle(ProgramBoardStyle.primaryText)
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    ProgramIconButton(systemName: "xmark", help: "Cancel new ticket", action: onCancel)
+                    ProgramIconButton(icon: .x, help: "Cancel new ticket", action: onCancel)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -4182,7 +4060,7 @@ private struct ProgramTicketCreateModal: View {
                 Spacer(minLength: 0)
                 ProgramWorkspaceActionButton(
                     title: "Cancel",
-                    systemName: "xmark",
+                    icon: .x,
                     accessibilityLabel: "Cancel new ticket",
                     help: "Discard the new ticket",
                     action: onCancel,
@@ -4191,7 +4069,7 @@ private struct ProgramTicketCreateModal: View {
                 .keyboardShortcut(.cancelAction)
                 ProgramWorkspaceActionButton(
                     title: "Save",
-                    systemName: "checkmark",
+                    icon: .check,
                     isEnabled: canSave,
                     accessibilityLabel: "Save new ticket",
                     help: canSave ? "Save new ticket" : "Complete the required fields",
@@ -4255,7 +4133,7 @@ private struct ProgramTicketImageSelector: View {
         VStack(alignment: .leading, spacing: 8) {
             ProgramWorkspaceActionButton(
                 title: "Add images",
-                systemName: "photo.badge.plus",
+                icon: .imagePlus,
                 accessibilityLabel: "Add ticket images",
                 help: "Attach design images to this ticket",
                 action: addImages,
@@ -4310,15 +4188,13 @@ private struct ProgramTicketImageChip: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "photo")
-                .font(AppTypography.symbolFont(size: 11, weight: .medium))
+            LucideImage(.image, size: 14)
             Text(name)
                 .font(AppTypography.font(.label))
                 .lineLimit(1)
             if let onRemove {
                 Button(action: onRemove) {
-                    Image(systemName: "xmark")
-                        .font(AppTypography.symbolFont(size: 9, weight: .semibold))
+                    LucideImage(.x, size: 12)
                 }
                 .buttonStyle(.graphicalPress)
                 .graphicalTooltip("Remove image")
@@ -4377,7 +4253,7 @@ private struct ProgramStatePanel: View {
                     .font(AppTypography.font(.workspaceHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                 Spacer(minLength: 0)
-                ProgramIconButton(systemName: "xmark", help: "Close Workspace", action: onDismiss)
+                ProgramIconButton(icon: .x, help: "Close Workspace", action: onDismiss)
             }
             Spacer(minLength: 0)
             VStack(spacing: 8) {
@@ -4399,7 +4275,7 @@ private struct ProgramStatePanel: View {
                     HStack(spacing: 8) {
                         ProgramWorkspaceActionButton(
                             title: primaryActionTitle,
-                            systemName: "folder.badge.plus",
+                            icon: .folderPlus,
                             accessibilityLabel: primaryActionTitle,
                             help: "Register an existing Git repository",
                             action: primaryAction
@@ -4407,7 +4283,7 @@ private struct ProgramStatePanel: View {
                         if let secondaryActionTitle, let secondaryAction {
                             ProgramWorkspaceActionButton(
                                 title: secondaryActionTitle,
-                                systemName: "plus",
+                                icon: .plus,
                                 accessibilityLabel: secondaryActionTitle,
                                 help: "Create and register a new Git repository",
                                 action: secondaryAction
@@ -4530,7 +4406,7 @@ private struct ProgramErrorStrip: View {
 
 struct ProgramSessionToolbarPresentation: Equatable {
     let title: String
-    let systemName: String
+    let icon: LucideIcon
     let help: String
 
     static func resolve(
@@ -4541,12 +4417,12 @@ struct ProgramSessionToolbarPresentation: Equatable {
         return hasActiveSession
             ? ProgramSessionToolbarPresentation(
                 title: "End \(name)",
-                systemName: "terminal",
+                icon: .squareTerminal,
                 help: "End the active \(name) voice session"
             )
             : ProgramSessionToolbarPresentation(
                 title: "Start \(name)",
-                systemName: "terminal",
+                icon: .squareTerminal,
                 help: "Start a \(name) voice session"
             )
     }
@@ -4610,46 +4486,96 @@ enum ProgramNoteStartFailurePresentation {
     }
 }
 
-/// Solid white primary action, shaped like the Add project control.
+/// The Start/End session action: a solid white primary button with a chevron
+/// segment that picks the session's work style. A change applies from the
+/// session's next request, so the menu stays available while it runs.
 struct ProgramSessionPrimaryButton: View {
     let presentation: ProgramSessionToolbarPresentation
     let isEnabled: Bool
     let action: () -> Void
-    @State private var isHovered = false
-    @FocusState private var isFocused: Bool
+    private var workStyles: SessionWorkStyleStore { .shared }
+    @State private var hovered: Segment?
+    @State private var isMenuPresented = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private enum Segment { case action, menu }
+
+    static let menuSegmentWidth: CGFloat = 32
+    static let menuMinWidth: CGFloat = 300
+
     var body: some View {
-        let shape = RoundedRectangle(
-            cornerRadius: SharedActionButtonMetrics.cornerRadius,
-            style: .continuous
-        )
-        Button(action: action) {
-            RelaySwap(presentation.title, style: .text, alignment: .center) { title in
-                Text(title)
-                    .font(AppTypography.font(.primaryButton))
-                    .lineLimit(1)
+        let shape = RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius, style: .continuous)
+        let style = workStyles.style
+        HStack(spacing: 0) {
+            Button(action: action) {
+                RelaySwap(presentation.title, style: .text, alignment: .center) { title in
+                    Text(title)
+                        .font(AppTypography.font(.primaryButton))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
+                .frame(height: SharedActionButtonMetrics.controlHeight)
+                .background(hoverFill(.action))
+                .contentShape(Rectangle())
             }
-            .foregroundStyle(Color.black)
-            .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
-            .frame(height: SharedActionButtonMetrics.controlHeight)
-            .background(shape.fill(Color.white.opacity(isHovered || isFocused ? 0.88 : 1)))
-            .contentShape(shape)
-            .animation(RelayMotion.hover, value: isHovered)
-            .animation(RelayMotion.hover, value: isFocused)
+            .buttonStyle(.graphicalPress)
+            .disabled(!isEnabled)
+            .opacity(isEnabled ? 1 : 0.45)
+            .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+            .onHover { hover(.action, $0) }
+            .programButtonCursor(enabled: isEnabled)
+            .accessibilityLabel(presentation.title)
+            .graphicalTooltip(presentation.help)
+
+            Rectangle()
+                .fill(GraphicalTheme.onPrimaryAction.opacity(0.12))
+                .frame(width: 1, height: SharedActionButtonMetrics.controlHeight - GraphicalTheme.spaceM)
+                .accessibilityHidden(true)
+
+            Button { isMenuPresented.toggle() } label: {
+                LucideImage(.chevronDown, size: 12)
+                    .frame(width: Self.menuSegmentWidth, height: SharedActionButtonMetrics.controlHeight)
+                    .background(hoverFill(.menu))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.graphicalPress)
+            .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+            .onHover { hover(.menu, $0) }
+            .programButtonCursor(enabled: true)
+            .accessibilityLabel("Work style, now \(style.title)")
+            .graphicalTooltip("Work style: \(style.title). \(style.detail)")
         }
-        .buttonStyle(.graphicalPress)
+        .foregroundStyle(GraphicalTheme.onPrimaryAction)
+        .background(shape.fill(GraphicalTheme.primaryAction))
+        .clipShape(shape)
         .fixedSize()
-        .focusable(isEnabled)
-        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
-        .focused($isFocused)
-        .onHover { isHovered = $0 }
-        .disabled(!isEnabled)
-        .opacity(isEnabled ? 1 : 0.45)
+        .animation(reduceMotion ? nil : RelayMotion.hover, value: hovered)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isEnabled)
-        .programButtonCursor(enabled: isEnabled)
-        .accessibilityLabel(presentation.title)
-        .graphicalTooltip(presentation.help)
+        .onAppear { workStyles.reload() }
+        .background {
+            SettingsDropdownPresenter(isPresented: $isMenuPresented, minWidth: Self.menuMinWidth, alignsTrailing: true) {
+                SettingsMenuOptions(
+                    title: "Work style",
+                    selection: Binding(get: { workStyles.style }, set: { workStyles.select($0) }),
+                    options: ProjectWorkStyle.allCases.map { ($0.title, $0) },
+                    subtitle: { $0.detail }
+                ) { isMenuPresented = false }
+                .environment(\.colorScheme, .dark)
+            }
+        }
+    }
+
+    /// Each segment darkens a little under the pointer.
+    private func hoverFill(_ segment: Segment) -> Color {
+        GraphicalTheme.onPrimaryAction.opacity(hovered == segment ? 0.08 : 0)
+    }
+
+    private func hover(_ segment: Segment, _ isHovering: Bool) {
+        if isHovering {
+            hovered = segment
+        } else if hovered == segment {
+            hovered = nil
+        }
     }
 }
 
@@ -4660,32 +4586,30 @@ private struct ProgramEditCapsuleButton: View {
     var body: some View {
         ProgramWorkspaceActionButton(
             title: "Edit",
-            systemName: "pencil",
+            icon: .pencil,
             isEnabled: presentation.isEnabled,
             accessibilityLabel: presentation.accessibilityLabel,
             help: presentation.help,
             action: action,
-            labelFont: .action,
-            symbolSize: 10
+            labelFont: .action
         )
     }
 }
 
 struct ProgramWorkspaceActionButton: View {
     let title: String
-    let systemName: String?
+    let icon: LucideIcon?
     var prominence: SharedActionButtonProminence = .secondary
     var isEnabled = true
     let accessibilityLabel: String
     let help: String
     let action: () -> Void
     var labelFont: AppTypography.Role = .programAction
-    var symbolSize: CGFloat = 11
     var destructive = false
 
     var body: some View {
         SharedActionButtonChrome(
-            prominence: prominence,
+            prominence: destructive ? .danger : prominence,
             isEnabled: isEnabled,
             accessibilityLabel: accessibilityLabel,
             helpText: help,
@@ -4693,19 +4617,20 @@ struct ProgramWorkspaceActionButton: View {
             action: action,
             label: {
             HStack(alignment: .center, spacing: 6) {
-                if let systemName {
-                    Image(systemName: systemName)
-                        .font(AppTypography.symbolFont(size: symbolSize, weight: .semibold))
-                        .accessibilityHidden(true)
+                // Lucide icons sit at 1em of the label.
+                if let icon {
+                    LucideImage(icon, size: AppTypography.definition(for: labelRole).size)
                 }
                 Text(title)
-                    .font(AppTypography.font(prominence == .primary ? .primaryButton : labelFont))
+                    .font(AppTypography.font(labelRole))
                     .lineLimit(1)
             }
             }
         )
         .programButtonCursor(enabled: isEnabled)
     }
+
+    private var labelRole: AppTypography.Role { prominence == .primary ? .primaryButton : labelFont }
 
     /// Kit buttons: destructive actions use the danger button.
     private var palette: SharedActionButtonPalette {
@@ -4715,7 +4640,7 @@ struct ProgramWorkspaceActionButton: View {
 }
 
 struct ProgramIconButton: View {
-    let systemName: String
+    let icon: LucideIcon
     let help: String
     let iconColor: Color
     let size: CGFloat
@@ -4723,14 +4648,14 @@ struct ProgramIconButton: View {
     let action: () -> Void
 
     init(
-        systemName: String,
+        icon: LucideIcon,
         help: String,
         iconColor: Color = ProgramBoardStyle.primaryText,
         size: CGFloat = 22,
         isEnabled: Bool = true,
         action: @escaping () -> Void
     ) {
-        self.systemName = systemName
+        self.icon = icon
         self.help = help
         self.iconColor = iconColor
         self.size = size
@@ -4751,8 +4676,7 @@ struct ProgramIconButton: View {
             ),
             action: action,
             label: {
-                Image(systemName: systemName)
-                    .font(AppTypography.symbolFont(size: 12, weight: .semibold))
+                LucideImage(icon, size: 16)
                     .frame(width: size, height: size)
                     .accessibilityHidden(true)
             }
@@ -4802,6 +4726,26 @@ private struct ProgramInlineBadge: View {
                     )
             )
             .fixedSize()
+    }
+}
+
+/// A ticket card's one-word danger pill naming what is wrong; the tooltip
+/// carries the full reason.
+private struct ProgramIssuePill: View {
+    static let height: CGFloat = 20
+    let issue: ProgramCardIssue
+
+    var body: some View {
+        Text(issue.title)
+            .font(AppTypography.font(.caption))
+            .foregroundStyle(GraphicalTheme.dangerForeground)
+            .lineLimit(1)
+            .padding(.horizontal, GraphicalTheme.spaceXS)
+            .frame(height: Self.height)
+            .background(Capsule().fill(GraphicalTheme.dangerFill))
+            .fixedSize()
+            .graphicalTooltip(issue.detail)
+            .accessibilityLabel(issue.detail)
     }
 }
 

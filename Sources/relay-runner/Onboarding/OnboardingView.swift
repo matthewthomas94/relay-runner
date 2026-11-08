@@ -504,9 +504,8 @@ struct OnboardingView: View {
                 .font(AppTypography.font(.cardHeading))
             ForEach(plan.items) { item in
                 HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "checkmark.circle")
+                    LucideImage(.circleCheck, size: 14)
                         .foregroundStyle(.secondary)
-                        .font(AppTypography.symbolFont(size: 12))
                         .frame(width: 18)
                     VStack(alignment: .leading, spacing: 2) {
                         RelaySwap(item.title, style: .text, alignment: .leading) { title in
@@ -588,9 +587,8 @@ struct OnboardingView: View {
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 RelaySwap(selectedAgentProvider == provider) { isSelected in
-                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    LucideImage(isSelected ? .circleCheck : .circle, size: 20)
                         .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                        .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                 }
                 .frame(width: 24)
                 VStack(alignment: .leading, spacing: 3) {
@@ -660,9 +658,8 @@ struct OnboardingView: View {
             bundleURL: Bundle.main.bundleURL
         )
         return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "folder.badge.plus")
+            LucideImage(.folderPlus, size: 20)
                 .foregroundStyle(.secondary)
-                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 5) {
                 Text("Keyboard alternative")
@@ -673,7 +670,7 @@ struct OnboardingView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 SettingsActionButton(
                     title: "Reveal in Finder",
-                    systemImage: "folder",
+                    icon: .folder,
                     prominence: .secondary
                 ) {
                     NSWorkspace.shared.activateFileViewerSelecting([plan.revealURL])
@@ -691,9 +688,8 @@ struct OnboardingView: View {
     /// communicates what the user should do next and what still works.
     private func mdmRestrictionBox(for kind: PermissionKind) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "lock.shield")
+            LucideImage(.shield, size: 20)
                 .foregroundStyle(.orange)
-                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
             VStack(alignment: .leading, spacing: 6) {
                 Text("This Mac may be blocking \(kind.displayName).")
                     .font(AppTypography.font(.cardHeading))
@@ -733,9 +729,8 @@ struct OnboardingView: View {
         let actionTitle = "Open \(title) Settings"
         return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                Image(systemName: parentPermissionStepIcon(for: kind))
+                LucideImage(parentPermissionStepIcon(for: kind), size: 20)
                     .foregroundStyle(.tint)
-                    .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                 Text(title)
                     .font(AppTypography.font(.screenTitle))
             }
@@ -746,7 +741,7 @@ struct OnboardingView: View {
 
             SettingsActionButton(
                 title: actionTitle,
-                systemImage: "gearshape",
+                icon: .settings,
                 prominence: .secondary
             ) {
                 startPermissionSetup(kind, purpose: parentPermissionStepExplanation(for: kind))
@@ -761,9 +756,8 @@ struct OnboardingView: View {
 
     private func parentPermissionVerificationNote(for kind: PermissionKind) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: kind == .screenRecording ? "arrow.clockwise.circle.fill" : "checkmark.seal")
+            LucideImage(kind == .screenRecording ? .refreshCw : .badgeCheck, size: 20)
                 .foregroundStyle(kind == .screenRecording ? .orange : .secondary)
-                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 4) {
                 Text(parentPermissionVerificationTitle(for: kind))
@@ -783,8 +777,8 @@ struct OnboardingView: View {
         kind == .screenRecording ? "Screen Recording" : "Accessibility"
     }
 
-    private func parentPermissionStepIcon(for kind: PermissionKind) -> String {
-        kind == .screenRecording ? "rectangle.dashed" : "hand.tap"
+    private func parentPermissionStepIcon(for kind: PermissionKind) -> LucideIcon {
+        kind == .screenRecording ? .squareDashed : .pointer
     }
 
     private func parentPermissionStepExplanation(for kind: PermissionKind) -> String {
@@ -850,14 +844,12 @@ struct OnboardingView: View {
     private var pythonStatusBadge: some View {
         switch venvInstaller.status {
         case .succeeded:
-            Image(systemName: "checkmark.circle.fill")
+            LucideImage(.circleCheck, size: 20)
                 .foregroundStyle(.green)
-                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                 .transition(.relayReplacing(.element))
         case .failed:
-            Image(systemName: "exclamationmark.triangle.fill")
+            LucideImage(.triangleExclamationPoint, size: 20)
                 .foregroundStyle(.orange)
-                .font(AppTypography.font(.screenTitle))
                 .transition(.relayReplacing(.element))
         case .idle, .running:
             ProgressView().controlSize(.small)
@@ -938,14 +930,12 @@ struct OnboardingView: View {
             HStack(spacing: 10) {
                 ZStack {
                     if agentSignedIn {
-                        Image(systemName: "checkmark.circle.fill")
+                        LucideImage(.circleCheck, size: 20)
                             .foregroundStyle(.green)
-                            .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                             .transition(.relayReplacing(.element))
                     } else {
-                        Image(systemName: "circle")
+                        LucideImage(.circle, size: 20)
                             .foregroundStyle(.secondary)
-                            .font(AppTypography.font(.screenTitle))
                             .transition(.relayReplacing(.element))
                     }
                 }
@@ -984,10 +974,10 @@ struct OnboardingView: View {
         let voiceReady = readiness.voiceReady
         let detailPhase = Self.readyDetailPhase(setupStatus: runtimeReadiness, voiceReady: voiceReady)
         let title = readyTitle(runtimeReadiness: runtimeReadiness, readiness: readiness)
-        let statusSymbol: String? = runtimeReadiness.isPreparing
+        let statusSymbol: LucideIcon? = runtimeReadiness.isPreparing
             ? nil
             : runtimeReadiness.needsSetupAction
-                ? "exclamationmark.triangle.fill"
+                ? .triangleExclamationPoint
                 : readinessIcon(for: readiness.mode)
         return VStack(spacing: 16) {
             Spacer(minLength: 4)
@@ -995,9 +985,8 @@ struct OnboardingView: View {
             // orange triangle when setup needs attention, otherwise green.
             RelaySwap(statusSymbol) { statusSymbol in
                 if let statusSymbol {
-                    Image(systemName: statusSymbol)
-                        .font(AppTypography.symbolFont(size: 44))
-                        .foregroundStyle(statusSymbol == "exclamationmark.triangle.fill" ? Color.orange : Color.green)
+                    LucideImage(statusSymbol, size: 51)
+                        .foregroundStyle(statusSymbol == .triangleExclamationPoint ? Color.orange : Color.green)
                 } else {
                     ProgressView()
                         .controlSize(.large)
@@ -1042,12 +1031,12 @@ struct OnboardingView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         VStack(spacing: 8) {
                             sessionMethodRow(
-                                icon: "menubar.rectangle",
+                                icon: .panelTop,
                                 title: "From the menu bar",
                                 detail: "Click the Relay Runner icon, then choose \u{201C}Start Session\u{2026}\u{201D}. Workspace opens to an embedded terminal with the configured agent already listening."
                             )
                             sessionMethodRow(
-                                icon: "terminal",
+                                icon: .squareTerminal,
                                 title: "From an Agent",
                                 detail: "Run Codex or Claude in any terminal and start the relay-bridge skill or command. Install Relay Skills from Settings \u{2192} General if needed."
                             )
@@ -1105,7 +1094,7 @@ struct OnboardingView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
-                Image(systemName: "folder")
+                LucideImage(.folder, size: 16)
                     .foregroundStyle(.secondary)
                 RelaySwap(workingDirectoryDisplay, style: .text, alignment: .leading) { display in
                     Text(display)
@@ -1128,11 +1117,11 @@ struct OnboardingView: View {
             HStack(spacing: 8) {
                 SettingsActionButton(
                     title: "Browse\u{2026}",
-                    systemImage: "folder"
+                    icon: .folder
                 ) { pickWorkingDirectory() }
                 SettingsActionButton(
                     title: "Use Home Folder",
-                    systemImage: "house"
+                    icon: .house
                 ) { useHomeWorkingDirectory() }
             }
         }
@@ -1186,11 +1175,10 @@ struct OnboardingView: View {
     /// One row in the "how to start a session" summary on the Ready step.
     /// Icon + title + an explanatory line, laid out so the title aligns
     /// with the top of the icon for scannability.
-    private func sessionMethodRow(icon: String, title: String, detail: String) -> some View {
+    private func sessionMethodRow(icon: LucideIcon, title: String, detail: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
+            LucideImage(icon, size: 20)
                 .foregroundStyle(.tint)
-                .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -1298,14 +1286,14 @@ struct OnboardingView: View {
         case .welcome:
             return footerAction(
                 title: "Get Started",
-                systemImage: "arrow.right",
+                icon: .arrowRight,
                 prominence: .primary,
                 shortcut: .default
             ) { advance() }
         case .agentChoice:
             return footerAction(
                 title: GuidedSetupPlan(provider: selectedAgentProvider).primaryActionTitle,
-                systemImage: "checkmark",
+                icon: .check,
                 prominence: .primary,
                 isEnabled: hasConfirmedWorkingDirectory || !showsWorkingDirectoryPicker,
                 shortcut: .default
@@ -1325,7 +1313,7 @@ struct OnboardingView: View {
             case .startSession(let isEnabled):
                 return footerAction(
                     title: "Start Session",
-                    systemImage: "play.fill",
+                    icon: .play,
                     prominence: .primary,
                     isEnabled: isEnabled,
                     shortcut: .default
@@ -1337,14 +1325,14 @@ struct OnboardingView: View {
             case .retrySetup:
                 return footerAction(
                     title: "Retry Setup",
-                    systemImage: "arrow.clockwise",
+                    icon: .refreshCw,
                     prominence: .primary,
                     shortcut: .default
                 ) { onRetrySetup() }
             case .waiting:
                 return footerAction(
                     title: "Waiting",
-                    systemImage: "clock",
+                    icon: .clock,
                     prominence: .primary,
                     isEnabled: false,
                     shortcut: .default
@@ -1352,7 +1340,7 @@ struct OnboardingView: View {
             case .done:
                 return footerAction(
                     title: "Done",
-                    systemImage: "checkmark",
+                    icon: .check,
                     prominence: .primary,
                     shortcut: .default
                 ) { onFinish() }
@@ -1367,7 +1355,7 @@ struct OnboardingView: View {
         ) {
             return footerAction(
                 title: "Dismiss",
-                systemImage: "xmark",
+                icon: .x,
                 prominence: .secondary,
                 shortcut: .cancel
             ) {
@@ -1378,7 +1366,7 @@ struct OnboardingView: View {
         if step == .welcome || step == .agentChoice {
             return footerAction(
                 title: "Cancel",
-                systemImage: "xmark",
+                icon: .x,
                 prominence: .secondary,
                 shortcut: .cancel
             ) { onHostDismissed() }
@@ -1389,7 +1377,7 @@ struct OnboardingView: View {
         if step != .ready {
             return footerAction(
                 title: "Skip",
-                systemImage: "forward",
+                icon: .forward,
                 prominence: .secondary
             ) {
                 cancelPermissionSetup(.onboarding)
@@ -1404,14 +1392,14 @@ struct OnboardingView: View {
         case .granted:
             return footerAction(
                 title: "Continue",
-                systemImage: "arrow.right",
+                icon: .arrowRight,
                 prominence: .primary,
                 shortcut: .default
             ) { advance() }
         case .notDetermined:
             return footerAction(
                 title: "Grant Microphone Access",
-                systemImage: "mic.badge.plus",
+                icon: .mic,
                 prominence: .primary,
                 shortcut: .default
             ) {
@@ -1420,7 +1408,7 @@ struct OnboardingView: View {
         case .denied:
             return footerAction(
                 title: "Ask Again",
-                systemImage: "mic.badge.plus",
+                icon: .mic,
                 prominence: .primary,
                 shortcut: .default
             ) {
@@ -1429,7 +1417,7 @@ struct OnboardingView: View {
         case .restricted:
             return footerAction(
                 title: "Open System Settings",
-                systemImage: "gearshape",
+                icon: .settings,
                 prominence: .primary,
                 shortcut: .default
             ) {
@@ -1453,21 +1441,21 @@ struct OnboardingView: View {
         case .succeeded:
             return footerAction(
                 title: "Continue",
-                systemImage: "arrow.right",
+                icon: .arrowRight,
                 prominence: .primary,
                 shortcut: .default
             ) { advance() }
         case .failed:
             return footerAction(
                 title: "Retry",
-                systemImage: "arrow.clockwise",
+                icon: .refreshCw,
                 prominence: .primary,
                 shortcut: .default
             ) { venvInstaller.install() }
         case .idle, .running:
             return footerAction(
                 title: "Continue",
-                systemImage: "arrow.right",
+                icon: .arrowRight,
                 prominence: .primary,
                 isEnabled: false,
                 shortcut: .default
@@ -1479,14 +1467,14 @@ struct OnboardingView: View {
         if agentSignedIn {
             return footerAction(
                 title: "Continue",
-                systemImage: "arrow.right",
+                icon: .arrowRight,
                 prominence: .primary,
                 shortcut: .default
             ) { advance() }
         }
         return footerAction(
             title: "Sign in",
-            systemImage: "terminal",
+            icon: .squareTerminal,
             prominence: .primary,
             shortcut: .default
         ) {
@@ -1500,14 +1488,14 @@ struct OnboardingView: View {
         case .granted:
             return footerAction(
                 title: "Continue",
-                systemImage: "arrow.right",
+                icon: .arrowRight,
                 prominence: .primary,
                 shortcut: .default
             ) { advance() }
         case .notDetermined, .denied:
             return footerAction(
                 title: "Open \(kind.displayName) Settings",
-                systemImage: "gearshape",
+                icon: .settings,
                 prominence: .primary,
                 shortcut: .default
             ) {
@@ -1516,7 +1504,7 @@ struct OnboardingView: View {
         case .restricted:
             return footerAction(
                 title: "Open System Settings",
-                systemImage: "gearshape",
+                icon: .settings,
                 prominence: .primary,
                 shortcut: .default
             ) {
@@ -1527,7 +1515,7 @@ struct OnboardingView: View {
 
     private func footerAction(
         title: String,
-        systemImage: String?,
+        icon: LucideIcon?,
         prominence: SettingsActionButton.Prominence,
         isEnabled: Bool = true,
         shortcut: OnboardingFooterAction.Shortcut? = nil,
@@ -1535,7 +1523,7 @@ struct OnboardingView: View {
     ) -> OnboardingFooterAction {
         OnboardingFooterAction(
             title: title,
-            systemImage: systemImage,
+            icon: icon,
             prominence: prominence,
             isEnabled: isEnabled,
             accessibilityLabel: title,
@@ -1853,19 +1841,16 @@ struct OnboardingView: View {
         ZStack {
             switch status {
             case .granted:
-                Image(systemName: "checkmark.circle.fill")
+                LucideImage(.circleCheck, size: 20)
                     .foregroundStyle(.green)
-                    .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                     .transition(.relayReplacing(.element))
             case .denied, .notDetermined:
-                Image(systemName: "circle")
+                LucideImage(.circle, size: 20)
                     .foregroundStyle(.secondary)
-                    .font(AppTypography.font(.screenTitle))
                     .transition(.relayReplacing(.element))
             case .restricted:
-                Image(systemName: "lock.fill")
+                LucideImage(.lock, size: 20)
                     .foregroundStyle(.orange)
-                    .font(AppTypography.symbolFont(size: 17, weight: .semibold))
                     .transition(.relayReplacing(.element))
             }
         }
@@ -1953,11 +1938,11 @@ struct OnboardingView: View {
         PermissionAppTarget(displayName: "Relay Runner.app", bundleURL: Bundle.main.bundleURL)
     }
 
-    private func readinessIcon(for mode: GuidedSetupReadiness.Mode) -> String {
+    private func readinessIcon(for mode: GuidedSetupReadiness.Mode) -> LucideIcon {
         switch mode {
-        case .blocked: return "exclamationmark.triangle.fill"
-        case .voiceOnly: return "mic.circle.fill"
-        case .fullyArmed: return "checkmark.seal.fill"
+        case .blocked: return .triangleExclamationPoint
+        case .voiceOnly: return .mic
+        case .fullyArmed: return .badgeCheck
         }
     }
 

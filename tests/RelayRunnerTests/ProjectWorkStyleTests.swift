@@ -1,23 +1,29 @@
 @testable import relay_runner
 import XCTest
 
+@MainActor
 final class ProjectWorkStyleTests: XCTestCase {
-    func testWorkspaceChoiceBeatsTheProjectFileWhichBeatsAuto() throws {
+    func testSessionStyleDefaultsToAutoAndPersistsTheStartMenuChoice() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let project = root.appendingPathComponent("project", isDirectory: true)
-        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let styles = root.appendingPathComponent("work-styles.json")
+        let file = root.appendingPathComponent("session-work-style.json")
 
-        XCTAssertEqual(ProjectWorkStyleStore.style(for: project.path, fileURL: styles), .auto)
-        try "work_style = \"orchestrated\"\n".write(
-            to: project.appendingPathComponent(".relay-runner.toml"), atomically: true, encoding: .utf8)
-        XCTAssertEqual(ProjectWorkStyleStore.style(for: project.path, fileURL: styles), .orchestrated)
+        let store = SessionWorkStyleStore(fileURL: file)
+        XCTAssertEqual(store.style, .auto)
 
-        ProjectWorkStyleStore.setStyle(.direct, for: project.path, fileURL: styles)
-        XCTAssertEqual(ProjectWorkStyleStore.style(for: project.path, fileURL: styles), .direct)
-        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: styles)) as? [String: String]
-        XCTAssertEqual(saved?[ProjectWorkStyleStore.key(for: project.path)], "direct")
+        store.select(.direct)
+        XCTAssertEqual(store.style, .direct)
+        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: String]
+        XCTAssertEqual(saved, ["work_style": "direct"])
+        XCTAssertEqual(SessionWorkStyleStore(fileURL: file).style, .direct)
+
+        // Voice or relay-work-style can change it while the Workspace is open.
+        SessionWorkStyleStore.save(.orchestrated, to: file)
+        store.reload()
+        XCTAssertEqual(store.style, .orchestrated)
+
+        try Data("{\"work_style\": \"sometimes\"}".utf8).write(to: file)
+        XCTAssertEqual(SessionWorkStyleStore.load(from: file), .auto)
     }
 
     func testTheThreeStylesMatchThePythonClassifier() {

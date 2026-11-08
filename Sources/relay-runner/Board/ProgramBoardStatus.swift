@@ -1093,6 +1093,12 @@ enum ProgramBoardDate {
     }
 }
 
+/// The one-word problem a ticket card shows, with the full reason for its tooltip.
+struct ProgramCardIssue: Equatable {
+    let title: String
+    let detail: String
+}
+
 struct ProgramStatusItem: Decodable, Equatable, Identifiable {
     let project: ProgramStatusProject?
     let ticketID: String?
@@ -2387,6 +2393,25 @@ extension ProgramStatusItem {
             cleanedProgramValue(ticketID) ?? "No ticket",
             ticketCreatedAt.map(ProgramBoardDate.label),
         ].compactMap { $0 }
+    }
+
+    /// What a ticket card's danger pill names, or nil when nothing is wrong.
+    /// A blocked verification or integration outranks waiting on another
+    /// ticket, which outranks a failed run's error.
+    var programCardIssue: ProgramCardIssue? {
+        if isVerificationBlocked {
+            return ProgramCardIssue(title: "Verification", detail: visibleLastError ?? "Verification blocked")
+        }
+        if isIntegrationBlocked {
+            return ProgramCardIssue(title: "Integration", detail: visibleLastError ?? "Integration blocked")
+        }
+        if !blockedBy.isEmpty {
+            return ProgramCardIssue(title: "Dependency", detail: "Waiting on \(blockedBy.joined(separator: ", "))")
+        }
+        if let error = visibleLastError {
+            return ProgramCardIssue(title: "Error", detail: error)
+        }
+        return nil
     }
 
     var programAgentActivityLine: String? {

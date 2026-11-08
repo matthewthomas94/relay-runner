@@ -51,7 +51,7 @@ struct PermissionAppDragGuide: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: "arrow.up.forward.app")
+                LucideImage(.squareArrowOutUpRight, size: 16)
                     .foregroundStyle(.tint)
                 RelaySwap(title, style: .text, alignment: .leading) { title in
                     Text(title)
@@ -68,9 +68,8 @@ struct PermissionAppDragGuide: View {
                     }
                 }
 
-                Image(systemName: "arrow.right")
+                LucideImage(.arrowRight, size: 20)
                     .foregroundStyle(.secondary)
-                    .font(AppTypography.symbolFont(size: 17, weight: .semibold))
 
                 permissionListMock
                     .frame(width: 168)
@@ -199,11 +198,9 @@ struct PermissionAppDragGuide: View {
             }
 
             HStack(spacing: 4) {
-                Image(systemName: "plus")
-                    .font(AppTypography.symbolFont(size: 9))
+                LucideImage(.plus, size: 12)
                     .foregroundStyle(.secondary)
-                Image(systemName: "minus")
-                    .font(AppTypography.symbolFont(size: 9))
+                LucideImage(.minus, size: 12)
                     .foregroundStyle(.secondary.opacity(0.5))
                 Spacer()
                 Text("Drop app here")

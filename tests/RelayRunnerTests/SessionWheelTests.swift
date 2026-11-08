@@ -112,13 +112,13 @@ final class SessionWheelTests: XCTestCase {
     func testNoteControlsFollowCaptureLifecycle() {
         for phase in [MeetingNoteCoordinatorPhase.idle, .saved] {
             XCTAssertTrue(SessionWheelNoteAction.recording.isEnabled(for: phase))
-            XCTAssertEqual(SessionWheelNoteAction.recording.symbol(for: phase), "mic.fill")
+            XCTAssertEqual(SessionWheelNoteAction.recording.symbol(for: phase), .mic)
             XCTAssertFalse(SessionWheelNoteAction.cancel.isEnabled(for: phase))
             XCTAssertFalse(SessionWheelNoteAction.pause.isEnabled(for: phase))
         }
         for phase in [MeetingNoteCoordinatorPhase.recording, .paused] {
             XCTAssertTrue(SessionWheelNoteAction.recording.isEnabled(for: phase))
-            XCTAssertEqual(SessionWheelNoteAction.recording.symbol(for: phase), "checkmark")
+            XCTAssertEqual(SessionWheelNoteAction.recording.symbol(for: phase), .check)
             XCTAssertTrue(SessionWheelNoteAction.cancel.isEnabled(for: phase))
             XCTAssertTrue(SessionWheelNoteAction.pause.isEnabled(for: phase))
         }
@@ -130,15 +130,15 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertFalse(SessionWheelNoteAction.recording.isEnabled(for: .cancelling))
         XCTAssertFalse(SessionWheelNoteAction.pause.isEnabled(for: .cancelling))
         XCTAssertTrue(SessionWheelNoteAction.cancel.isEnabled(for: .cancelling), "Can retry cancellation")
-        XCTAssertEqual(SessionWheelNoteAction.cancel.symbol(for: .recording), "xmark")
+        XCTAssertEqual(SessionWheelNoteAction.cancel.symbol(for: .recording), .x)
         XCTAssertEqual(SessionWheelNoteAction.recording.title(for: .recording), "Save note")
         let positions = [SessionWheelNoteAction.pause, .recording, .cancel].map {
             geometry.position(slot: 3, radius: geometry.actionRadius, offset: geometry.actionOffset($0.rawValue)).x
         }
         XCTAssertEqual(positions, positions.sorted(), "Pause/Resume, Start/Save, Cancel read left to right")
         XCTAssertEqual(SessionWheelNoteAction.pause.title(for: .paused), "Resume Notetaker")
-        XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .paused), "play.fill")
-        XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .recording), "pause.fill")
+        XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .paused), .play)
+        XCTAssertEqual(SessionWheelNoteAction.pause.symbol(for: .recording), .pause)
     }
 
     @MainActor
@@ -493,20 +493,20 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertTrue(SessionWheelAction.stop.isEnabled(for: item))
         item.playback = .play
         XCTAssertEqual(SessionWheelAction.message.title(for: item), "Play message")
-        XCTAssertEqual(SessionWheelAction.message.symbol(for: item), "play.fill")
+        XCTAssertEqual(SessionWheelAction.message.symbol(for: item), .play)
         item.playback = .stop
         XCTAssertEqual(SessionWheelAction.message.title(for: item), "Stop playback")
-        XCTAssertEqual(SessionWheelAction.message.symbol(for: item), "stop.fill")
+        XCTAssertEqual(SessionWheelAction.message.symbol(for: item), .square)
         item.playback = .replay
         XCTAssertEqual(SessionWheelAction.message.title(for: item), "Replay message")
-        XCTAssertEqual(SessionWheelAction.message.symbol(for: item), "play.fill")
-        XCTAssertEqual(SessionWheelAction.recording.symbol(for: item), "mic.fill")
+        XCTAssertEqual(SessionWheelAction.message.symbol(for: item), .play)
+        XCTAssertEqual(SessionWheelAction.recording.symbol(for: item), .mic)
         item.isRecording = true
         XCTAssertEqual(SessionWheelAction.recording.title(for: item), "Stop recording and send message")
-        XCTAssertEqual(SessionWheelAction.recording.symbol(for: item), "waveform")
+        XCTAssertEqual(SessionWheelAction.recording.symbol(for: item), .audioWaveform)
         item.playback = .stop
-        XCTAssertEqual(SessionWheelAction.message.symbol(for: item), "stop.fill", "Stopping playback must stay separate from sending the recording")
-        XCTAssertEqual(SessionWheelAction.stop.symbol(for: item), "power")
+        XCTAssertEqual(SessionWheelAction.message.symbol(for: item), .square, "Stopping playback must stay separate from sending the recording")
+        XCTAssertEqual(SessionWheelAction.stop.symbol(for: item), .power)
     }
 
     func testWorkspaceGlyphUsesNotchColoursAndMotionForEveryStatus() {
@@ -900,12 +900,12 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(pulses.count, 2, "Rejected actions do not confirm with a haptic")
     }
 
-    func testKeepAwakeGlyphUsesAFilledBoltAndSwapsOnlyForPendingApprovalAndFailures() {
+    func testKeepAwakeGlyphUsesABoltAndSwapsOnlyForPendingApprovalAndFailures() {
         typealias Look = SessionWheelKeepAwakeGlyph.Look
         let off = Look(.off)
         let on = Look(.on(ownsSleepSetting: true))
-        XCTAssertEqual(off.symbol, "bolt.fill")
-        XCTAssertEqual(on.symbol, "bolt.fill")
+        XCTAssertEqual(off.symbol, .zap)
+        XCTAssertEqual(on.symbol, .zap)
         XCTAssertEqual(Look(.on(ownsSleepSetting: false)), on)
         XCTAssertEqual(off.tint, .off)
         XCTAssertEqual(on.tint, .on)
@@ -923,7 +923,7 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(Look(.restoreNeeded("x")).tint, .alert)
         XCTAssertNotEqual(Look(.failed("x")).symbol, Look(.restoreNeeded("x")).symbol)
         for state in [KeepAwakeState.off, .enabling, .awaitingApproval, .on(ownsSleepSetting: true), .failed("x"), .restoreNeeded("x")] {
-            XCTAssertNotNil(NSImage(systemSymbolName: Look(state).symbol, accessibilityDescription: nil), "\(state)")
+            XCTAssertFalse(Look(state).symbol.geometry.stroke.isEmpty, "\(state)")
         }
 
         // A swap runs its exit, then its entrance, within one change duration (≈225 ms).

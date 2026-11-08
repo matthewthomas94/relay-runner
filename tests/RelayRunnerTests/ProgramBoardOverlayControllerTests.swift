@@ -73,6 +73,25 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(opening?.selectedProjectPath, "/repo/active")
     }
 
+    func testReopeningTheWorkspaceRestoresTheSelectionItClosedWith() {
+        typealias Remembered = ProgramBoardOverlayController.RememberedProjectSelection
+        let general = Remembered(paths: ["/repo/a", "/repo/b"], contextPath: nil, isGeneralContext: true)
+
+        XCTAssertNil(ProgramBoardOverlayController.reopenedProjectSelection(
+            remembered: nil, contextPath: nil, isGeneralContext: true
+        ), "the first open uses the route's own selection")
+        XCTAssertEqual(ProgramBoardOverlayController.reopenedProjectSelection(
+            remembered: general, contextPath: nil, isGeneralContext: true
+        ), ["/repo/a", "/repo/b"])
+        XCTAssertEqual(ProgramBoardOverlayController.reopenedProjectSelection(
+            remembered: Remembered(paths: [], contextPath: nil, isGeneralContext: true),
+            contextPath: nil, isGeneralContext: true
+        ), [], "closing on All projects reopens on All projects")
+        XCTAssertNil(ProgramBoardOverlayController.reopenedProjectSelection(
+            remembered: general, contextPath: "/repo/c", isGeneralContext: false
+        ), "a context change while closed picks the new project instead")
+    }
+
     func testRegistryV2RefreshPreservesAVisibleExplicitProjectSelection() {
         let active = ProjectResolver.LinkedProject(repoPath: URL(fileURLWithPath: "/repo/active"))
 
@@ -482,7 +501,7 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             ProgramSessionToolbarPresentation.resolve(hasActiveSession: false, provider: .codex),
             ProgramSessionToolbarPresentation(
                 title: "Start Codex",
-                systemName: "terminal",
+                icon: .squareTerminal,
                 help: "Start a Codex voice session"
             )
         )
@@ -490,7 +509,7 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             ProgramSessionToolbarPresentation.resolve(hasActiveSession: true, provider: .codex),
             ProgramSessionToolbarPresentation(
                 title: "End Codex",
-                systemName: "terminal",
+                icon: .squareTerminal,
                 help: "End the active Codex voice session"
             )
         )

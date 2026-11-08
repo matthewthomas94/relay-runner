@@ -1,5 +1,5 @@
 #!/bin/bash
-# Show or set the current project's Relay work style; shared by Codex and Claude.
+# Show or set the session's Relay work style; shared by Codex and Claude.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

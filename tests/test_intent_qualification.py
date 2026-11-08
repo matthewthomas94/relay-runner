@@ -17,7 +17,8 @@ except ModuleNotFoundError:
     sys.modules.setdefault("numpy", types.SimpleNamespace(asarray=lambda samples: samples, int16=object()))
 
 from command_actions import (
-    classify_command, format_command_for_agent, project_work_style, resolve_command_action, set_project_work_style,
+    classify_command, format_command_for_agent, project_work_style, resolve_command_action, session_work_style,
+    set_session_work_style, work_style_and_source,
 )
 from intent_arbitration import ActiveWork, resolve_intent_disposition
 from intent_qualification import qualify_intent
@@ -108,9 +109,11 @@ class IntentQualificationTests(unittest.TestCase):
 
 class WorkStyleRoutingTests(unittest.TestCase):
     def setUp(self):
-        self._saved = {key: os.environ.pop(key, None) for key in ("RELAY_WORK_STYLE", "RELAY_WORK_STYLES_FILE")}
+        self._saved = {key: os.environ.pop(key, None) for key in (
+            "RELAY_WORK_STYLE", "RELAY_SESSION_WORK_STYLE_FILE", "RELAY_SESSION_SCOPE", "RELAY_GENERAL_FILES_ROOT")}
         self._styles_dir = tempfile.TemporaryDirectory()
-        os.environ["RELAY_WORK_STYLES_FILE"] = str(Path(self._styles_dir.name) / "work-styles.json")
+        self.session_file = Path(self._styles_dir.name) / "session-work-style.json"
+        os.environ["RELAY_SESSION_WORK_STYLE_FILE"] = str(self.session_file)
 
     def tearDown(self):
         for key, value in self._saved.items():
@@ -135,37 +138,67 @@ class WorkStyleRoutingTests(unittest.TestCase):
                 self.assertIn("Do not create a ticket", prompt)
         self.assertNotEqual(classify_command("What does direct mode do?").reason, "set_work_style")
 
-    def test_setter_and_cli_write_the_file_the_workspace_reads(self):
+    def test_setter_and_cli_write_the_file_the_start_menu_reads(self):
         import subprocess
-        with tempfile.TemporaryDirectory() as repo:
-            set_project_work_style(repo, "orchestrated")
-            self.assertEqual(project_work_style(repo), "orchestrated")
-            out = subprocess.run(
-                [str(ROOT / "scripts/relay-work-style"), "set", "direct", "--repo", repo],
-                capture_output=True, text=True, check=True, env=dict(os.environ),
-            ).stdout
-            self.assertIn("direct (makes changes now", out)
-            styles = json.loads(Path(os.environ["RELAY_WORK_STYLES_FILE"]).read_text())
-            self.assertEqual(styles, {str(Path(repo).resolve()): "direct"})
-            with self.assertRaises(ValueError):
-                set_project_work_style(repo, "sometimes")
 
-    def test_workspace_choice_beats_the_project_file_and_the_env_beats_both(self):
+        def cli(*args):
+            return subprocess.run([str(ROOT / "scripts/relay-work-style"), *args],
+                                  capture_output=True, text=True, check=True, env=dict(os.environ)).stdout
+
+        with tempfile.TemporaryDirectory() as repo:
+            self.assertEqual(session_work_style(), "")
+            set_session_work_style("orchestrated")
+            self.assertEqual(session_work_style(), "orchestrated")
+            self.assertEqual(project_work_style(repo), "orchestrated")
+            out = cli("set", "direct", "--repo", repo)
+            self.assertIn("direct (makes changes now", out)
+            self.assertIn("from the session's choice", out)
+            self.assertEqual(json.loads(self.session_file.read_text()), {"work_style": "direct"})
+            with self.assertRaises(ValueError):
+                set_session_work_style("sometimes")
+            self.session_file.unlink()
+            self.assertIn("auto (decides per request", cli("show", "--repo", repo))
+            self.assertIn("from the default", cli("show", "--repo", repo))
+            (Path(repo) / ".relay-runner.toml").write_text('work_style = "orchestrated"\n')
+            out = cli("--repo", repo)
+            self.assertIn("orchestrated (turns changes into tickets", out)
+            self.assertIn("from the project's .relay-runner.toml", out)
+            os.environ["RELAY_WORK_STYLE"] = "direct"
+            self.assertIn("direct (makes changes now, without tickets), from RELAY_WORK_STYLE", cli("--repo", repo))
+
+    def test_session_choice_beats_the_project_file_and_the_env_beats_both(self):
         with tempfile.TemporaryDirectory() as repo:
             (Path(repo) / ".relay-runner.toml").write_text('work_style = "orchestrated"\n')
-            self.assertEqual(project_work_style(repo), "orchestrated")
-            Path(os.environ["RELAY_WORK_STYLES_FILE"]).write_text(json.dumps({repo: "direct"}))
-            self.assertEqual(project_work_style(repo), "direct")
+            self.assertEqual(work_style_and_source(repo), ("orchestrated", "project"))
+            self.session_file.write_text(json.dumps({"work_style": "direct"}))
+            self.assertEqual(work_style_and_source(repo), ("direct", "session"))
+            self.assertEqual(resolve_command_action("Make the title fade in slower", repo_path=repo).kind, "inline_work")
             os.environ["RELAY_WORK_STYLE"] = "auto"
-            self.assertEqual(project_work_style(repo), "auto")
+            self.assertEqual(work_style_and_source(repo), ("auto", "env"))
+
+    def test_invalid_session_choice_is_ignored(self):
+        with tempfile.TemporaryDirectory() as repo:
+            (Path(repo) / ".relay-runner.toml").write_text('work_style = "orchestrated"\n')
+            for saved in ('{"work_style": "sometimes"}', '{"work_style": 1}', '["direct"]', "not json", ""):
+                with self.subTest(saved=saved):
+                    self.session_file.write_text(saved)
+                    self.assertEqual(session_work_style(), "")
+                    self.assertEqual(work_style_and_source(repo), ("orchestrated", "project"))
+            self.session_file.write_text('{"work_style": "Direct"}')
+            self.assertEqual(session_work_style(), "direct")
 
     def test_labelled_routes_for_every_work_style(self):
         corpus = json.loads((ROOT / "tests/fixtures/work_style_routing.json").read_text())
         with tempfile.TemporaryDirectory() as repo:
-            for style in ("auto", "direct", "orchestrated"):
-                os.environ["RELAY_WORK_STYLE"] = style
+            for source, style in ((source, style) for source in ("env", "session")
+                                  for style in ("auto", "direct", "orchestrated")):
+                if source == "env":
+                    os.environ["RELAY_WORK_STYLE"] = style
+                else:
+                    os.environ.pop("RELAY_WORK_STYLE", None)
+                    set_session_work_style(style)
                 for case in corpus["cases"]:
-                    with self.subTest(style=style, case=case["id"]):
+                    with self.subTest(source=source, style=style, case=case["id"]):
                         action = resolve_command_action(case["text"], repo_path=repo)
                         hint = qualify_intent(case["text"], action_kind=action.kind, action_reason=action.reason)
                         self.assertEqual([hint.bucket, action.kind], case[style])
@@ -189,6 +222,35 @@ class WorkStyleRoutingTests(unittest.TestCase):
     def test_without_a_confirmed_project_change_requests_still_need_a_target(self):
         os.environ["RELAY_WORK_STYLE"] = "direct"
         self.assertEqual(resolve_command_action("Fix the login retry bug in the repo").kind, "needs_project")
+
+    def test_general_session_routes_changes_inline_only_when_the_session_chose_direct(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.environ.update({"RELAY_SESSION_SCOPE": "general", "RELAY_GENERAL_FILES_ROOT": root})
+            text = "Make the title fade in slower"
+            # No choice, auto, orchestrated and a project file all keep General's own routing.
+            (Path(root) / ".relay-runner.toml").write_text('work_style = "direct"\n')
+            for style in (None, "auto", "orchestrated"):
+                if style:
+                    set_session_work_style(style)
+                with self.subTest(style=style):
+                    action = resolve_command_action(text, repo_path=root)
+                    self.assertEqual((action.kind, action.scope), ("create_ticket", "general"))
+            for source in ("session", "env"):
+                with self.subTest(source=source):
+                    if source == "session":
+                        set_session_work_style("direct")
+                    else:
+                        set_session_work_style("auto")
+                        os.environ["RELAY_WORK_STYLE"] = "direct"
+                    action = resolve_command_action(text, repo_path=root)
+                    self.assertEqual((action.kind, action.reason), ("inline_work", "work_style_direct"))
+                    self.assertIsNone(action.repo_path)
+                    self.assertIn("This session's work style is direct", format_command_for_agent(action))
+                    # Project work still needs a confirmed repository, and tracking wording still wins.
+                    self.assertEqual(resolve_command_action("Fix the login retry bug in the repo",
+                                                            repo_path=root).kind, "needs_project")
+                    self.assertEqual(resolve_command_action("Create a ticket to make the title fade in slower",
+                                                            repo_path=root).kind, "create_ticket")
 
     def test_inline_work_continues_now_unless_other_work_is_active(self):
         free = resolve_intent_disposition(intent_id="a", action_kind="inline_work", action_reason="",

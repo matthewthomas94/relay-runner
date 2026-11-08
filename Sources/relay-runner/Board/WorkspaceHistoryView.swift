@@ -67,7 +67,7 @@ struct WorkspaceHistoryView: View {
             if isEmbedded {
                 accessory
             } else {
-                ProgramIconButton(systemName: "xmark", help: "Close history", action: onClose)
+                ProgramIconButton(icon: .x, help: "Close history", action: onClose)
                     .keyboardShortcut(.cancelAction)
             }
         }
@@ -84,7 +84,7 @@ struct WorkspaceHistoryView: View {
                         .graphicalInput()
                         .onSubmit { Task { await model.search() } }
                         .accessibilityLabel("Search Workspace history")
-                    ProgramIconButton(systemName: "magnifyingglass", help: "Search history") {
+                    ProgramIconButton(icon: .search, help: "Search history") {
                         Task { await model.search() }
                     }
                 }
@@ -123,8 +123,7 @@ struct WorkspaceHistoryView: View {
                         .transition(.relayReplacing(.surface))
                 } else {
                     VStack(spacing: 10) {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 28))
+                        LucideImage(.rotateCcwClock, size: 32)
                             .foregroundStyle(ProgramBoardStyle.mutedText)
                         Text("Select a historical ticket")
                             .foregroundStyle(ProgramBoardStyle.secondaryText)
@@ -226,7 +225,7 @@ struct WorkspaceHistoryView: View {
                         }
                         if detail.availability == "needs_network" {
                             ProgramWorkspaceActionButton(
-                                title: "Fetch verified detail", systemName: "arrow.down",
+                                title: "Fetch verified detail", icon: .arrowDown,
                                 prominence: .primary, accessibilityLabel: "Fetch verified detail",
                                 help: "Download verified historical detail"
                             ) {
@@ -254,7 +253,7 @@ struct WorkspaceHistoryView: View {
                         }
                         HStack {
                             ProgramWorkspaceActionButton(
-                                title: "Restore detail", systemName: nil,
+                                title: "Restore detail", icon: nil,
                                 isEnabled: model.detail?.availability == "available",
                                 accessibilityLabel: "Restore detail",
                                 help: "Explicitly rematerialize this terminal ticket and its verified attachments"
@@ -265,7 +264,7 @@ struct WorkspaceHistoryView: View {
                                 }
                             }
                             ProgramWorkspaceActionButton(
-                                title: "Reopen in Backlog", systemName: nil, prominence: .primary,
+                                title: "Reopen in Backlog", icon: nil, prominence: .primary,
                                 isEnabled: model.detail?.availability == "available",
                                 accessibilityLabel: "Reopen in Backlog",
                                 help: "Move this ticket into the uncapped unfinished working set"
@@ -304,7 +303,7 @@ struct WorkspaceHistoryView: View {
                 }
                 ForEach(dependencies.dependencies) { dependency in
                     HStack(alignment: .firstTextBaseline) {
-                        Image(systemName: dependency.satisfied ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        LucideImage(dependency.satisfied ? .circleCheck : .triangleExclamationPoint, size: 12)
                             .foregroundStyle(dependency.satisfied ? ProgramBoardStyle.green : ProgramBoardStyle.red)
                         Text(dependency.ticketID)
                         Text(dependency.availability.replacingOccurrences(of: "_", with: " ").capitalized)
@@ -328,7 +327,7 @@ struct WorkspaceHistoryView: View {
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                 ForEach(attachments) { attachment in
                     HStack {
-                        Image(systemName: "paperclip")
+                        LucideImage(.paperclip, size: 12)
                         Text(attachment.displayName)
                         Spacer()
                         if let size = attachment.size { Text(formatBytes(size)) }

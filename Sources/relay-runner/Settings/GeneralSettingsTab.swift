@@ -37,8 +37,6 @@ struct GeneralSettingsTab: View {
                     )
                 }
 
-                SettingsDivider()
-
                 SettingsControlRow(
                     Self.orchestratorModelLabel,
                     description: GeneralConfig.accessNote(
@@ -53,8 +51,6 @@ struct GeneralSettingsTab: View {
                         options: GeneralConfig.modelOptions(for: config.provider).map { (label: $0.label, value: $0.value) }
                     )
                 }
-
-                SettingsDivider()
 
                 SettingsControlRow(Self.orchestratorEffortLabel) {
                     SettingsMenuPicker(
@@ -92,7 +88,7 @@ struct GeneralSettingsTab: View {
                                 .graphicalInput()
                             SettingsActionButton(
                                 title: "Browse\u{2026}",
-                                systemImage: "folder"
+                                icon: .folder
                             ) {
                                 pickDirectory()
                             }
@@ -118,8 +114,6 @@ struct GeneralSettingsTab: View {
                 }
 
                 if let keepAwake {
-                    SettingsDivider()
-
                     SettingsControlRow(
                         KeepAwakeState.label,
                         description: Self.keepAwakeDescription(keepAwake.state)
@@ -127,8 +121,6 @@ struct GeneralSettingsTab: View {
                         keepAwakeControl(keepAwake)
                     }
                 }
-
-                SettingsDivider()
 
                 SettingsControlRow(
                     "Bypass agent permission prompts",
@@ -152,7 +144,7 @@ struct GeneralSettingsTab: View {
                     )
                     SettingsActionButton(
                         title: skillInstalled ? "Reinstall" : "Install",
-                        systemImage: skillInstalled ? "arrow.clockwise" : "square.and.arrow.down"
+                        icon: skillInstalled ? .refreshCw : .download
                     ) {
                         if skillInstalled {
                             showOverwriteAlert = true
@@ -188,11 +180,11 @@ struct GeneralSettingsTab: View {
     private func keepAwakeControl(_ keepAwake: KeepAwakeController) -> some View {
         let state = keepAwake.state
         if case .restoreNeeded = state {
-            SettingsActionButton(title: state.actionTitle, systemImage: "moon.zzz", helpText: state.status) {
+            SettingsActionButton(title: state.actionTitle, icon: .moon, helpText: state.status) {
                 keepAwake.toggle()
             }
         } else if state == .awaitingApproval {
-            SettingsActionButton(title: state.actionTitle, systemImage: "xmark", helpText: state.status) {
+            SettingsActionButton(title: state.actionTitle, icon: .x, helpText: state.status) {
                 keepAwake.toggle()
             }
         } else {
@@ -340,7 +332,7 @@ private struct RegisteredProjectsSettingsView: View {
                 HStack(spacing: 8) {
                     SettingsActionButton(
                         title: "Add Existing",
-                        systemImage: "folder.badge.plus"
+                        icon: .folderPlus
                     ) {
                         appState.addExistingProject(resumeInSettings: true) { result in
                             handle(result)
@@ -348,7 +340,7 @@ private struct RegisteredProjectsSettingsView: View {
                     }
                     SettingsActionButton(
                         title: "Create",
-                        systemImage: "plus"
+                        icon: .plus
                     ) {
                         appState.createProject(resumeInSettings: true) { result in
                             handle(result)
@@ -359,7 +351,6 @@ private struct RegisteredProjectsSettingsView: View {
 
             if projects.isEmpty {
                 VStack(spacing: 0) {
-                    SettingsDivider()
                     SettingsRow {
                         Text("No projects registered. Workspace can remain empty until you add or create one.")
                             .font(AppTypography.font(.settingsDescription))
@@ -370,7 +361,6 @@ private struct RegisteredProjectsSettingsView: View {
             } else {
                 ForEach(Array(projects.enumerated()), id: \.element.projectID) { index, project in
                     VStack(spacing: 0) {
-                        SettingsDivider()
                         projectRow(project)
                     }
                     .transition(.relayElement)
@@ -379,7 +369,6 @@ private struct RegisteredProjectsSettingsView: View {
 
             if let statusText {
                 VStack(spacing: 0) {
-                    SettingsDivider()
                     SettingsRow {
                         RelaySwap(statusText, style: .text, alignment: .leading) { statusText in
                             Text(statusText)
@@ -441,7 +430,7 @@ private struct RegisteredProjectsSettingsView: View {
             HStack(spacing: 6) {
                 SettingsActionButton(
                     title: "Refresh",
-                    systemImage: "arrow.clockwise"
+                    icon: .refreshCw
                 ) {
                     animated {
                         do {
@@ -455,7 +444,7 @@ private struct RegisteredProjectsSettingsView: View {
                 }
                 SettingsActionButton(
                     title: project.availability == .accessRequiresRegrant ? "Regrant" : "Locate",
-                    systemImage: "location.magnifyingglass"
+                    icon: .locate
                 ) {
                     appState.locateRegisteredProject(project.projectID) { result in
                         handle(result)
@@ -463,7 +452,7 @@ private struct RegisteredProjectsSettingsView: View {
                 }
                 SettingsActionButton(
                     title: "Remove",
-                    systemImage: "minus.circle"
+                    icon: .circleMinus
                 ) {
                     projectPendingRemoval = project
                 }

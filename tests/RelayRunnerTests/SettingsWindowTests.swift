@@ -14,7 +14,7 @@ final class SettingsWindowTests: XCTestCase {
     func testSettingsCategorySelectionIncludesNavigationLabelAndIcon() {
         for category in SettingsCategory.allCases {
             XCTAssertEqual(category.navigationLabel, category.title)
-            XCTAssertFalse(category.systemImage.isEmpty)
+            XCTAssertFalse(category.icon.geometry.stroke.isEmpty)
         }
     }
 
@@ -45,12 +45,23 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(SettingsLayout.detailMaxWidth, .infinity)
     }
 
-    func testWorkspaceSettingsDoesNotAddStandaloneChrome() {
-        XCTAssertTrue(SettingsContentStyle.window.usesStandaloneChrome)
-        XCTAssertFalse(SettingsContentStyle.workspace.usesStandaloneChrome)
-        XCTAssertFalse(SettingsContentStyle.window.showsEmbeddedHairline)
-        XCTAssertTrue(SettingsContentStyle.workspace.showsEmbeddedHairline)
-        XCTAssertEqual(SettingsContentStyle.workspace.embeddedCornerRadius, GraphicalTheme.radiusM)
+    func testSettingsCompartmentalisesWithCardsInsteadOfLines() throws {
+        XCTAssertEqual(SettingsLayout.cardCornerRadius, GraphicalTheme.radiusM)
+        XCTAssertEqual(SettingsSurfaceColor.cardFill, GraphicalTheme.neutral2)
+        XCTAssertEqual(SettingsLayout.sectionSpacing, SettingsAgentCardLayout.spacing)
+        XCTAssertEqual(SettingsAgentCardLayout.cornerRadius, SettingsLayout.cardCornerRadius)
+
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let settings = root.appendingPathComponent("Sources/relay-runner/Settings")
+        for file in try FileManager.default.contentsOfDirectory(atPath: settings.path) where file.hasSuffix(".swift") {
+            let contents = try String(contentsOf: settings.appendingPathComponent(file), encoding: .utf8)
+            XCTAssertFalse(contents.contains("SettingsDivider"), file)
+            XCTAssertFalse(contents.contains(".strokeBorder(BoardDarkSurfaceStyle.border"), file)
+        }
+        let window = try String(contentsOf: settings.appendingPathComponent("SettingsWindow.swift"), encoding: .utf8)
+        XCTAssertFalse(window.contains("Settings are up to date"))
+        XCTAssertTrue(window.contains("prominence: isEnabled ? .primary : .secondary"))
     }
 
     func testSettingsDescriptionTypographyIsReadable() {
@@ -60,9 +71,6 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testSettingsSemanticColorsUseWorkspaceNeutralForDirtyAndFocusStates() {
-        XCTAssertEqual(SettingsFooterPresentation(hasChanges: true).iconSemanticColor, .neutralAccent)
-        XCTAssertEqual(SettingsFooterPresentation(hasChanges: false).iconSemanticColor, .idle)
-
         let accent = SettingsSurfaceColor.neutralAccentNSColor.usingColorSpace(.sRGB)!
         let workspaceText = SettingsSurfaceColor.primaryTextNSColor.usingColorSpace(.sRGB)!
         XCTAssertEqual(accent.redComponent, workspaceText.redComponent, accuracy: 0.001)

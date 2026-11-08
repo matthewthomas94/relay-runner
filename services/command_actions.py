@@ -85,73 +85,68 @@ NEGATED_TICKET_RE = re.compile(
 )
 
 
-def work_styles_file() -> Path:
-    override = os.environ.get("RELAY_WORK_STYLES_FILE")
+def session_work_style_file() -> Path:
+    override = os.environ.get("RELAY_SESSION_WORK_STYLE_FILE")
     if override:
         return Path(override).expanduser()
-    return Path.home() / "Library/Application Support/relay-runner/work-styles.json"
+    return Path.home() / "Library/Application Support/relay-runner/session-work-style.json"
 
 
-def _workspace_work_style(repo_path: str | Path) -> str:
+def session_work_style() -> str:
+    """The session-wide choice from the Start button's menu, or "" when none is saved."""
     try:
         import json
-        styles = json.loads(work_styles_file().read_text())
-        key = str(Path(repo_path).expanduser().resolve())
+        saved = json.loads(session_work_style_file().read_text())
     except (OSError, ValueError):
         return ""
-    if not isinstance(styles, dict):
-        return ""
-    for path, style in styles.items():
-        try:
-            if str(Path(path).expanduser().resolve()) == key:
-                return str(style).strip().lower()
-        except OSError:
-            continue
-    return ""
+    style = saved.get("work_style") if isinstance(saved, dict) else None
+    style = style.lower() if isinstance(style, str) else ""
+    return style if style in WORK_STYLES else ""
 
 
-def set_project_work_style(repo_path: str | Path, style: str) -> str:
-    """Save the project's work style where the Workspace picker keeps it."""
+def set_session_work_style(style: str) -> str:
+    """Save the session's work style where the Start button's menu keeps it."""
     style = (style or "").strip().lower()
     if style not in WORK_STYLES:
         raise ValueError(f"work style must be one of {', '.join(WORK_STYLES)}")
     import json
     import tempfile
-    path = work_styles_file()
-    try:
-        styles = json.loads(path.read_text())
-        if not isinstance(styles, dict):
-            styles = {}
-    except (OSError, ValueError):
-        styles = {}
-    key = str(Path(repo_path).expanduser().resolve())
-    styles = {k: v for k, v in styles.items() if str(Path(k).expanduser().resolve()) != key}
-    styles[key] = style
+    path = session_work_style_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, suffix=".tmp") as handle:
-        json.dump(styles, handle, indent=2, sort_keys=True)
+        json.dump({"work_style": style}, handle)
         temp = handle.name
     os.replace(temp, path)
     return style
 
 
-def project_work_style(repo_path: str | Path | None = None) -> str:
-    """Return the project's work style: auto (default), direct or orchestrated.
+def work_style_and_source(repo_path: str | Path | None = None) -> tuple[str, str]:
+    """Return the effective work style and where it came from.
 
-    Precedence: RELAY_WORK_STYLE, then the Workspace choice in Relay Runner's
-    `work-styles.json` (keyed by resolved project path), then `work_style` in
-    the project's `.relay-runner.toml`. Unknown values fall back to auto.
+    Precedence: RELAY_WORK_STYLE ("env"), then the session-wide choice in
+    `session-work-style.json` ("session"), then `work_style` in the project's
+    `.relay-runner.toml` ("project"), then auto ("default"). An unknown
+    RELAY_WORK_STYLE means auto; other unknown values are ignored.
     """
     style = (os.environ.get("RELAY_WORK_STYLE") or "").strip().lower()
-    if not style and repo_path:
-        style = _workspace_work_style(repo_path)
-    if not style and repo_path:
+    if style:
+        return (style if style in WORK_STYLES else "auto"), "env"
+    style = session_work_style()
+    if style:
+        return style, "session"
+    if repo_path:
         try:
             match = _WORK_STYLE_RE.search((Path(repo_path).expanduser() / WORK_STYLE_FILE).read_text())
         except OSError:
             match = None
-        style = match.group(1).lower() if match else ""
-    return style if style in WORK_STYLES else "auto"
+        if match and match.group(1).lower() in WORK_STYLES:
+            return match.group(1).lower(), "project"
+    return "auto", "default"
+
+
+def project_work_style(repo_path: str | Path | None = None) -> str:
+    """Return the work style for a project: auto (default), direct or orchestrated."""
+    return work_style_and_source(repo_path)[0]
 
 
 # "Switch to direct mode", "set the work style to orchestrated", "use auto mode".
@@ -411,7 +406,7 @@ class CommandAction:
         if self.kind == "inspect_ticket" and self.ticket_id:
             return f"inspect ticket {self.ticket_id}"
         if self.kind == "inline_work" and self.reason == "work_style_direct":
-            return "done now in this session (project work style: direct)"
+            return "done now in this session (work style: direct)"
         if self.kind == "inline_work":
             return "inline work explicitly requested"
         if self.kind == "direct_action":
@@ -653,21 +648,26 @@ def resolve_command_action(
         repo_path is None or (root and Path(repo_path).expanduser().resolve() == Path(root).expanduser().resolve()))
     if action.ticket_id and action.ticket_id.startswith("GEN-"):
         return CommandAction(**{**action.__dict__, "scope": "general", **_relay_fields(relay_command)})
+    project_request = re.search(r"\b(?:repo(?:sitory)?|codebase|source[- ]code|pull request|bug|unit tests?|test suite|compiler)\b"
+                                r"|\b[A-Za-z0-9_-]+\.(?:swift|py|js|ts|tsx|rs|go)\b", text, re.IGNORECASE)
     if (action.kind == "create_ticket" and action.implicit_route
             and repo_path is not None and not managed_general):
         # A change verb alone doesn't say whether the user wants it now or
-        # tracked; the project's work style decides, and auto defers to the PM.
+        # tracked; the work style decides, and auto defers to the PM.
         style = project_work_style(repo_path)
         if style == "direct":
             action = CommandAction(kind="inline_work", source_text=action.source_text, reason="work_style_direct")
         elif style == "auto":
             action = CommandAction(kind="conversation", source_text=action.source_text, reason="route_undecided")
+    elif (action.kind == "create_ticket" and action.implicit_route and managed_general
+            and not project_request and project_work_style() == "direct"):
+        # General keeps its own routing; only a session-wide direct choice
+        # (RELAY_WORK_STYLE or the Start menu) makes its changes inline.
+        action = CommandAction(kind="inline_work", source_text=action.source_text, reason="work_style_direct")
     if action.kind != "create_ticket":
         return _with_relay(_with_repo(action, None if managed_general else repo_path), relay_command)
     if repo_path is None or managed_general:
         # A General cwd is storage, never implicit project-mutation authority.
-        project_request = re.search(r"\b(?:repo(?:sitory)?|codebase|source[- ]code|pull request|bug|unit tests?|test suite|compiler)\b"
-                                    r"|\b[A-Za-z0-9_-]+\.(?:swift|py|js|ts|tsx|rs|go)\b", text, re.IGNORECASE)
         if project_request or (action.ticket_id and not action.ticket_id.startswith("GEN-")):
             return CommandAction(kind="needs_project", source_text=action.source_text, requires_ticket=True,
                                  reason="Project implementation needs a confirmed target repository",
@@ -812,9 +812,9 @@ def format_command_for_agent(action: CommandAction, disposition: dict | None = N
             style = requested_work_style(action.source_text)
             lines.extend([
                 f"- work_style_requested: {style}",
-                f"- Set it now with `relay-work-style set {style}` (installed at /Applications/Relay Runner.app/"
-                "Contents/SharedSupport/scripts/relay-work-style) for this session's project, then confirm in one "
-                "sentence what the style now does. It applies from the next request; no ticket.",
+                f"- Set the session's work style now with `relay-work-style set {style}` (installed at "
+                "/Applications/Relay Runner.app/Contents/SharedSupport/scripts/relay-work-style), then confirm in one "
+                "sentence what the style now does. It applies to every project from the next request; no ticket.",
             ])
         lines.extend([
             "",
@@ -839,7 +839,7 @@ def format_command_for_agent(action: CommandAction, disposition: dict | None = N
             "- work_style: direct\n"
             "- outcome_to_report: done now in this session\n"
             f"{_relay_prompt_lines(action)}"
-            "- This project's work style is direct: make the change yourself now, verify it, and say it is done. "
+            "- This session's work style is direct: make the change yourself now, verify it, and say it is done. "
             "Create a ticket only if the user asks for tracking, a worker, or background work, or if the change is "
             "clearly too large to finish here; then ask before writing one.\n"
         )

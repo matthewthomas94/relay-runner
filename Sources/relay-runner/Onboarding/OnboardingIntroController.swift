@@ -1755,8 +1755,7 @@ struct OnboardingRuntimeProgressView: View {
     @ViewBuilder
     private var ongoingActivityIndicator: some View {
         if reduceMotion {
-            Image(systemName: "ellipsis")
-                .font(AppTypography.symbolFont(size: 13, weight: .semibold))
+            LucideImage(.ellipsis, size: 16)
                 .foregroundStyle(.white.opacity(0.72))
                 .accessibilityHidden(true)
         } else {
@@ -1806,8 +1805,7 @@ private struct OnboardingIntroRuntimePromptView: View {
                 OnboardingRuntimeProgressView(progress: runningProgress, reduceMotion: reduceMotion)
                     .transition(.relayReplacing(.element))
             case .succeeded:
-                Image(systemName: "checkmark.circle.fill")
-                    .font(AppTypography.symbolFont(size: 20, weight: .semibold))
+                LucideImage(.circleCheck, size: 23)
                     .foregroundStyle(.white.opacity(0.82))
                     .transition(.relayReplacing(.element))
                     .accessibilityLabel("Setup complete")

@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
@@ -23,6 +24,16 @@ from command_actions import (  # noqa: E402
 
 
 class CommandActionsTests(unittest.TestCase):
+    def setUp(self):
+        # A session work style saved on this Mac would override the
+        # .relay-runner.toml these tests write, so point at an empty one.
+        empty = tempfile.TemporaryDirectory()
+        self.addCleanup(empty.cleanup)
+        patcher = mock.patch.dict(os.environ, {
+            "RELAY_SESSION_WORK_STYLE_FILE": os.path.join(empty.name, "session-work-style.json")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_internal_controls_are_no_ticket_actions(self):
         for command, reason in CONTROL_COMMANDS.items():
             with self.subTest(command=command):

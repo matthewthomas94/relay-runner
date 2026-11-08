@@ -70,8 +70,8 @@ final class AppTypographyTests: XCTestCase {
         )
         XCTAssertEqual(
             AppTypography.resolved(.primaryButton, availablePostScriptNames: available),
-            .init(postScriptName: "BaiJamjuree-SemiBold", size: AppTypography.definition(for: .primaryButton).size, fallbackWeight: .semibold),
-            "Primary buttons label in semibold"
+            .init(postScriptName: "BaiJamjuree-Regular", size: AppTypography.definition(for: .primaryButton).size, fallbackWeight: .regular),
+            "Primary buttons label at regular weight, like the kit's buttons"
         )
         XCTAssertEqual(
             AppTypography.resolved(.metadata, availablePostScriptNames: available),

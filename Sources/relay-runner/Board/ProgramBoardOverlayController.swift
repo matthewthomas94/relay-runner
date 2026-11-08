@@ -98,6 +98,9 @@ final class ProgramBoardOverlayController {
     private let diagnostics: RelayDiagnostics
     private let model: ProgramBoardViewModel
     private let workspace = WorkspaceViewModel()
+    /// The board's project filter when the Workspace last closed, kept so the
+    /// next open shows the same selection.
+    private var rememberedSelection: RememberedProjectSelection?
     private var themeResolver: (() -> ParticleFieldRenderer.Theme?)?
     private var projectScopeProvider: () -> [String] = { [] }
     private var generalContextProvider: () -> Bool = { true }
@@ -354,6 +357,27 @@ final class ProgramBoardOverlayController {
         selectedProjectPath: String?
     ) -> SessionControlAction {
         hasActiveSession ? .end : .start(selectedProjectPath)
+    }
+
+    struct RememberedProjectSelection: Equatable {
+        let paths: [String]
+        let contextPath: String?
+        let isGeneralContext: Bool
+    }
+
+    /// The selection to restore on reopening: the one the Workspace closed
+    /// with, "all projects" included, unless the session moved to another
+    /// context meanwhile, which picks its own project as before.
+    static func reopenedProjectSelection(
+        remembered: RememberedProjectSelection?,
+        contextPath: String?,
+        isGeneralContext: Bool
+    ) -> [String]? {
+        guard let remembered,
+              remembered.isGeneralContext == isGeneralContext,
+              remembered.contextPath == contextPath
+        else { return nil }
+        return remembered.paths
     }
 
     static func workspaceOpening(
@@ -667,9 +691,17 @@ final class ProgramBoardOverlayController {
             p.reframe(to: screen)
         }
 
-        model.setProjectScope(opening.projectScope, selectedProjectPath: opening.selectedProjectPath)
         refreshContextPresentation()
-        if !workspace.isGeneralContext, let path = workspace.contextPath { model.selectProject(path: path) }
+        if let remembered = Self.reopenedProjectSelection(
+            remembered: rememberedSelection,
+            contextPath: workspace.contextPath,
+            isGeneralContext: workspace.isGeneralContext
+        ) {
+            model.setProjectScope(opening.projectScope, selectedProjectPaths: remembered)
+        } else {
+            model.setProjectScope(opening.projectScope, selectedProjectPath: opening.selectedProjectPath)
+            if !workspace.isGeneralContext, let path = workspace.contextPath { model.selectProject(path: path) }
+        }
         contentLoadBlocked = opening.contentLoadBlocked
         model.prepareForOpening()
         model.theme = themeResolver?()
@@ -979,6 +1011,11 @@ final class ProgramBoardOverlayController {
         model.endDrag()
         model.cancelCreate()
         model.cancelEdit()
+        rememberedSelection = RememberedProjectSelection(
+            paths: model.selectedProjectPaths,
+            contextPath: workspace.contextPath,
+            isGeneralContext: workspace.isGeneralContext
+        )
         setPanelKeyEligible(false)
         stopThemePoll()
         stopStatusPoll()

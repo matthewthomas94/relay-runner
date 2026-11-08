@@ -26,7 +26,7 @@ struct KeyCaptureView: View {
                     dimensions[VerticalAlignment.center] + AppTypography.appKitFont(.field).capHeight / 2
                 }
             if showsReset {
-                SettingsActionButton(title: "Reset \(label) to Caps Lock", systemImage: "arrow.counterclockwise", prominence: .icon) {
+                SettingsActionButton(title: "Reset \(label) to Caps Lock", icon: .rotateCcw, prominence: .icon) {
                     value = "Caps Lock"
                 }
                 .accessibilityLabel("Reset \(label) to Caps Lock")

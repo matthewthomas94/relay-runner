@@ -1,7 +1,8 @@
 import Foundation
+import Observation
 
-/// How a project's sessions route change requests. Mirrors `WORK_STYLES` in
-/// services/command_actions.py, which reads the choice from `work-styles.json`.
+/// How the session routes change requests. Mirrors `WORK_STYLES` in
+/// services/command_actions.py, which reads the choice from `session-work-style.json`.
 enum ProjectWorkStyle: String, CaseIterable, Identifiable, Codable {
     case auto
     case direct
@@ -26,59 +27,62 @@ enum ProjectWorkStyle: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-/// Per-project work style chosen in the Workspace, keyed by the resolved
-/// project path. The Python classifier reads the same file.
-enum ProjectWorkStyleStore {
-    static var fileURL: URL {
-        if let override = ProcessInfo.processInfo.environment["RELAY_WORK_STYLES_FILE"], !override.isEmpty {
+/// The session-wide work style picked from the Start button's menu. The
+/// Python router reads the same file on every request, so a change applies
+/// from the next request and wins over a project's `.relay-runner.toml`.
+/// No file means no choice yet: the menu shows Auto.
+@MainActor
+@Observable
+final class SessionWorkStyleStore {
+    static let shared = SessionWorkStyleStore()
+
+    private let fileURL: URL
+    private(set) var style: ProjectWorkStyle
+
+    init(fileURL: URL = SessionWorkStyleStore.defaultFileURL) {
+        self.fileURL = fileURL
+        style = Self.load(from: fileURL)
+    }
+
+    nonisolated static var defaultFileURL: URL {
+        if let override = ProcessInfo.processInfo.environment["RELAY_SESSION_WORK_STYLE_FILE"], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("relay-runner", isDirectory: true)
-            .appendingPathComponent("work-styles.json")
+            .appendingPathComponent("session-work-style.json")
     }
 
-    static func key(for path: String) -> String {
-        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    func select(_ style: ProjectWorkStyle) {
+        self.style = style
+        Self.save(style, to: fileURL)
     }
 
-    /// The Workspace choice, else the project's `.relay-runner.toml`, else auto.
-    static func style(for path: String, fileURL: URL = fileURL) -> ProjectWorkStyle {
-        if let chosen = load(fileURL)[key(for: path)].flatMap(ProjectWorkStyle.init(rawValue:)) {
-            return chosen
-        }
-        return projectFileStyle(at: path) ?? .auto
+    /// Picks up a change made by voice or `relay-work-style` since the last read.
+    func reload() {
+        let saved = Self.load(from: fileURL)
+        if saved != style { style = saved }
     }
 
-    static func projectFileStyle(at path: String) -> ProjectWorkStyle? {
-        let url = URL(fileURLWithPath: path).appendingPathComponent(".relay-runner.toml")
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        for line in text.split(whereSeparator: \.isNewline) {
-            let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-            guard parts.count == 2, parts[0] == "work_style" else { continue }
-            return ProjectWorkStyle(rawValue: parts[1].trimmingCharacters(in: CharacterSet(charactersIn: "\"'")).lowercased())
-        }
-        return nil
+    nonisolated static func load(from fileURL: URL) -> ProjectWorkStyle {
+        guard let data = try? Data(contentsOf: fileURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = object["work_style"] as? String,
+              let style = ProjectWorkStyle(rawValue: raw.lowercased())
+        else { return .auto }
+        return style
     }
 
-    static func setStyle(_ style: ProjectWorkStyle, for path: String, fileURL: URL = fileURL) {
-        var styles = load(fileURL)
-        styles[key(for: path)] = style.rawValue
+    nonisolated static func save(_ style: ProjectWorkStyle, to fileURL: URL) {
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            let data = try JSONSerialization.data(withJSONObject: styles, options: [.prettyPrinted, .sortedKeys])
+            let data = try JSONSerialization.data(withJSONObject: ["work_style": style.rawValue], options: [.sortedKeys])
             try data.write(to: fileURL, options: .atomic)
         } catch {
             NSLog("[relay-runner] Could not save work style: \(error.localizedDescription)")
         }
-    }
-
-    private static func load(_ fileURL: URL) -> [String: String] {
-        guard let data = try? Data(contentsOf: fileURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return [:] }
-        return object
     }
 }
