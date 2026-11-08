@@ -58,14 +58,19 @@ struct PermissionsSettingsTab: View {
             }
 
             SettingsSection("Privacy Permissions") {
-                ForEach(Self.privacyPermissionOrder, id: \.self) { kind in
+                ForEach(Array(Self.privacyPermissionOrder.enumerated()), id: \.element) { index, kind in
+                    if index > 0 {
+                        SettingsDivider()
+                    }
                     permissionRow(kind)
                 }
             }
 
             SettingsSection("Runtime") {
                 pythonEnvRow
+                SettingsDivider()
                 sttModelRow
+                SettingsDivider()
                 voiceBridgeRow
             }
         }

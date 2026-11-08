@@ -45,21 +45,21 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(SettingsLayout.detailMaxWidth, .infinity)
     }
 
-    func testSettingsCompartmentalisesWithCardsInsteadOfLines() throws {
-        XCTAssertEqual(SettingsLayout.cardCornerRadius, GraphicalTheme.radiusM)
-        XCTAssertEqual(SettingsSurfaceColor.cardFill, GraphicalTheme.neutral2)
-        XCTAssertEqual(SettingsLayout.sectionSpacing, SettingsAgentCardLayout.spacing)
-        XCTAssertEqual(SettingsAgentCardLayout.cornerRadius, SettingsLayout.cardCornerRadius)
+    func testWorkspaceSettingsDoesNotAddStandaloneChrome() {
+        XCTAssertTrue(SettingsContentStyle.window.usesStandaloneChrome)
+        XCTAssertFalse(SettingsContentStyle.workspace.usesStandaloneChrome)
+        XCTAssertFalse(SettingsContentStyle.window.showsEmbeddedHairline)
+        XCTAssertTrue(SettingsContentStyle.workspace.showsEmbeddedHairline)
+        XCTAssertEqual(SettingsContentStyle.workspace.embeddedCornerRadius, GraphicalTheme.radiusM)
+    }
 
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let settings = root.appendingPathComponent("Sources/relay-runner/Settings")
-        for file in try FileManager.default.contentsOfDirectory(atPath: settings.path) where file.hasSuffix(".swift") {
-            let contents = try String(contentsOf: settings.appendingPathComponent(file), encoding: .utf8)
-            XCTAssertFalse(contents.contains("SettingsDivider"), file)
-            XCTAssertFalse(contents.contains(".strokeBorder(BoardDarkSurfaceStyle.border"), file)
-        }
-        let window = try String(contentsOf: settings.appendingPathComponent("SettingsWindow.swift"), encoding: .utf8)
+    func testSettingsFooterDropsTheIdleStatusAndSavesAsPrimary() throws {
+        let window = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Sources/relay-runner/Settings/SettingsWindow.swift"),
+            encoding: .utf8
+        )
         XCTAssertFalse(window.contains("Settings are up to date"))
         XCTAssertTrue(window.contains("prominence: isEnabled ? .primary : .secondary"))
     }

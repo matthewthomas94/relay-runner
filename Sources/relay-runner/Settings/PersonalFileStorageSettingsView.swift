@@ -205,6 +205,7 @@ struct PersonalFileStorageSettingsView: View {
                     }
                 }
             }
+            SettingsDivider()
             if model.status?.connected != true {
                 SettingsRow {
                     VStack(alignment: .leading, spacing: 8) {
@@ -233,6 +234,7 @@ struct PersonalFileStorageSettingsView: View {
                     }
                 }
             }
+            SettingsDivider()
             SettingsControlRow("Local cache budget", description: "Default 256 MB. Unsynced, pinned and active files are preserved if the cache exceeds this amount.") {
                 SettingsStepper(title: "Local cache budget", value: $model.budgetMB, range: 1...100_000, unit: "MB")
             }

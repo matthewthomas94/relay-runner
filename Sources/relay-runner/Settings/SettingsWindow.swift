@@ -93,6 +93,17 @@ enum SettingsContentStyle {
         SettingsLayout.detailMaxWidth
     }
 
+    var usesStandaloneChrome: Bool {
+        self == .window
+    }
+
+    var embeddedCornerRadius: CGFloat {
+        usesStandaloneChrome ? 0 : BoardDarkSurfaceStyle.columnCornerRadius
+    }
+
+    var showsEmbeddedHairline: Bool {
+        !usesStandaloneChrome
+    }
 }
 
 enum SettingsCategory: String, CaseIterable, Identifiable {
@@ -205,9 +216,6 @@ private struct SettingsContent: View {
                 .frame(width: style == .window ? 280 : SettingsAgentCardLayout.width(availableWidth: geometry.size.width))
             }
         }
-        // The window is its own black page; in the Workspace the backdrop is.
-        .padding(style == .window ? SettingsAgentCardLayout.spacing : 0)
-        .background(style == .window ? GraphicalTheme.neutral1 : Color.clear)
         .foregroundStyle(SettingsSurfaceColor.primaryText)
         .tint(SettingsSurfaceColor.focusRing)
         .environment(\.colorScheme, .dark)
@@ -230,22 +238,19 @@ private struct SettingsContent: View {
         selectedCategory = requested
     }
 
-    /// Cards on the black page, like the Workspace's columns: the category
-    /// sidebar, one card per settings section, and the save bar. No lines.
     private var settingsPane: some View {
-        HStack(spacing: SettingsAgentCardLayout.spacing) {
+        HStack(spacing: 0) {
             SettingsCategorySidebar(
                 selection: $selectedCategory,
                 style: style
             )
             .frame(width: style.sidebarWidth)
-            .frame(maxHeight: .infinity, alignment: .top)
-            .background(
-                SettingsSurfaceColor.cardFill,
-                in: RoundedRectangle(cornerRadius: SettingsLayout.cardCornerRadius, style: .continuous)
-            )
 
-            VStack(spacing: SettingsLayout.sectionSpacing) {
+            Rectangle()
+                .fill(SettingsSurfaceColor.divider)
+                .frame(width: 1)
+
+            VStack(spacing: 0) {
                 ScrollViewReader { proxy in
                     // Each category is its own page: the outgoing page sinks away
                     // at its own scroll position, then the next one rises in.
@@ -256,8 +261,10 @@ private struct SettingsContent: View {
                                     .frame(height: 0)
                                     .id(selectedCategory)
                                 selectedDetail
+                                    .padding(style.detailPadding)
                                     .frame(maxWidth: style.detailMaxWidth, alignment: .topLeading)
                                     .frame(maxWidth: .infinity, alignment: .topLeading)
+                                    .padding(.bottom, 4)
                             }
                         }
                         .id(selectedCategory)
@@ -270,7 +277,16 @@ private struct SettingsContent: View {
                         proxy.scrollTo(target, anchor: .top)
                     }
                 }
+                SettingsDivider()
                 footer
+            }
+        }
+        .background(BoardDarkSurfaceStyle.panelFill)
+        .clipShape(RoundedRectangle(cornerRadius: style.embeddedCornerRadius, style: .continuous))
+        .overlay {
+            if style.showsEmbeddedHairline {
+                RoundedRectangle(cornerRadius: style.embeddedCornerRadius, style: .continuous)
+                    .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
             }
         }
     }
@@ -308,8 +324,8 @@ private struct SettingsContent: View {
         return AnyView(settingsFooter)
     }
 
-    /// The save bar: a card whose status line appears only for unsaved
-    /// changes, with Save as the primary action once there is something to save.
+    /// The save bar: its status line appears only for unsaved changes, with
+    /// Save as the primary action once there is something to save.
     private var settingsFooter: some View {
         HStack(spacing: 12) {
             if hasChanges {
@@ -347,10 +363,6 @@ private struct SettingsContent: View {
         .padding(style.footerPadding)
         .frame(maxWidth: style.detailMaxWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            SettingsSurfaceColor.cardFill,
-            in: RoundedRectangle(cornerRadius: SettingsLayout.cardCornerRadius, style: .continuous)
-        )
     }
 
 }
@@ -420,6 +432,7 @@ private struct SettingsCategorySidebar: View {
                             // gives each row its own id so it only crossfades.
                             shape
                                 .fill(BoardDarkSurfaceStyle.cardActiveFill)
+                                .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1))
                                 .matchedGeometryEffect(
                                     id: reduceMotion ? category.id : "selection",
                                     in: selectionHighlight
@@ -495,6 +508,10 @@ private struct SettingsCategoryButton: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+                    .strokeBorder(Color.white.opacity(selected || isHovered ? 0 : presentation.strokeOpacity), lineWidth: 1)
+            )
             .contentShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
         }
         .buttonStyle(.graphicalPress)

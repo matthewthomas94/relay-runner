@@ -37,6 +37,8 @@ struct GeneralSettingsTab: View {
                     )
                 }
 
+                SettingsDivider()
+
                 SettingsControlRow(
                     Self.orchestratorModelLabel,
                     description: GeneralConfig.accessNote(
@@ -51,6 +53,8 @@ struct GeneralSettingsTab: View {
                         options: GeneralConfig.modelOptions(for: config.provider).map { (label: $0.label, value: $0.value) }
                     )
                 }
+
+                SettingsDivider()
 
                 SettingsControlRow(Self.orchestratorEffortLabel) {
                     SettingsMenuPicker(
@@ -114,6 +118,8 @@ struct GeneralSettingsTab: View {
                 }
 
                 if let keepAwake {
+                    SettingsDivider()
+
                     SettingsControlRow(
                         KeepAwakeState.label,
                         description: Self.keepAwakeDescription(keepAwake.state)
@@ -121,6 +127,8 @@ struct GeneralSettingsTab: View {
                         keepAwakeControl(keepAwake)
                     }
                 }
+
+                SettingsDivider()
 
                 SettingsControlRow(
                     "Bypass agent permission prompts",
@@ -351,6 +359,7 @@ private struct RegisteredProjectsSettingsView: View {
 
             if projects.isEmpty {
                 VStack(spacing: 0) {
+                    SettingsDivider()
                     SettingsRow {
                         Text("No projects registered. Workspace can remain empty until you add or create one.")
                             .font(AppTypography.font(.settingsDescription))
@@ -361,6 +370,7 @@ private struct RegisteredProjectsSettingsView: View {
             } else {
                 ForEach(Array(projects.enumerated()), id: \.element.projectID) { index, project in
                     VStack(spacing: 0) {
+                        SettingsDivider()
                         projectRow(project)
                     }
                     .transition(.relayElement)
@@ -369,6 +379,7 @@ private struct RegisteredProjectsSettingsView: View {
 
             if let statusText {
                 VStack(spacing: 0) {
+                    SettingsDivider()
                     SettingsRow {
                         RelaySwap(statusText, style: .text, alignment: .leading) { statusText in
                             Text(statusText)

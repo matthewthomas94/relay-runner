@@ -10,9 +10,11 @@ struct AwarenessSettingsTab: View {
                 SettingsControlRow("Particle field") {
                     Toggle("Particle field", isOn: $config.screen_glow)
                 }
+                SettingsDivider()
                 SettingsControlRow("Live transcription") {
                     Toggle("Live transcription", isOn: $config.live_transcription)
                 }
+                SettingsDivider()
                 SettingsControlRow("Live captions during playback") {
                     Toggle("Live captions during playback", isOn: $config.live_captions)
                 }

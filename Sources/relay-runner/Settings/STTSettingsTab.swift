@@ -25,6 +25,7 @@ struct STTSettingsTab: View {
                 }
 
                 if let migrationState, let message = Self.migrationMessage(migrationState) {
+                    SettingsDivider()
                     SettingsControlRow("Phonon 2 Setup", description: message) {
                         if case .failed = migrationState {
                             SettingsActionButton(title: "Retry", icon: .refreshCw) {
@@ -33,6 +34,8 @@ struct STTSettingsTab: View {
                         }
                     }
                 }
+
+                SettingsDivider()
 
                 SettingsControlRow(
                     "Input Device",

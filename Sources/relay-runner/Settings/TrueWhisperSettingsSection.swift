@@ -204,6 +204,7 @@ struct TrueWhisperSettingsSection: View {
             }
 
             ForEach(TrueWhisperEnrollment.vocabulary, id: \.self) { word in
+                SettingsDivider()
                 let isThis = enrollment.word == word
                 SettingsControlRow(
                     word.capitalized,
@@ -221,6 +222,8 @@ struct TrueWhisperSettingsSection: View {
                 }
             }
 
+            SettingsDivider()
+
             SettingsControlRow("Recognition test", description: model.readout.description) {
                 SettingsInlineStatus(
                     text: model.readout.status,
@@ -228,6 +231,8 @@ struct TrueWhisperSettingsSection: View {
                     reservedWidth: 130
                 )
             }
+
+            SettingsDivider()
 
             SettingsRow {
                 Spacer(minLength: 0)

@@ -24,8 +24,6 @@ struct SettingsSection<Content: View>: View {
         self.content = content()
     }
 
-    /// Each section is a card: its title and rows on the kit's neutral-2
-    /// surface, separated from the next section by space rather than lines.
     var body: some View {
         VStack(alignment: .leading, spacing: SettingsLayout.sectionTitleSpacing) {
             if let title {
@@ -42,20 +40,12 @@ struct SettingsSection<Content: View>: View {
                             .background(SettingsSurfaceColor.rowFill, in: Capsule())
                     }
                 }
-                .padding(.top, SettingsLayout.cardPadding - SettingsLayout.rowVerticalPadding)
             }
 
             VStack(spacing: 0) {
                 content
             }
         }
-        .padding(.horizontal, SettingsLayout.cardPadding)
-        .padding(.vertical, SettingsLayout.cardPadding - SettingsLayout.rowVerticalPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            SettingsSurfaceColor.cardFill,
-            in: RoundedRectangle(cornerRadius: SettingsLayout.cardCornerRadius, style: .continuous)
-        )
     }
 }
 
@@ -156,6 +146,14 @@ struct SettingsRowLabel: View {
             }
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: description)
+    }
+}
+
+struct SettingsDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(SettingsSurfaceColor.divider)
+            .frame(height: 1)
     }
 }
 
@@ -342,11 +340,8 @@ private struct SettingsSegmentButton: View {
 }
 
 enum SettingsLayout {
-    /// The gap between section cards, like the gap between Workspace columns.
-    static let sectionSpacing: CGFloat = GraphicalTheme.spaceXS
-    static let sectionTitleSpacing: CGFloat = GraphicalTheme.spaceXXS
-    static let cardPadding: CGFloat = GraphicalTheme.spaceM
-    static let cardCornerRadius: CGFloat = GraphicalTheme.radiusM
+    static let sectionSpacing: CGFloat = 24
+    static let sectionTitleSpacing: CGFloat = 10
     static let rowVerticalPadding: CGFloat = 11
     static let labelControlSpacing: CGFloat = 20
     static let controlMaxWidth: CGFloat = 280
@@ -722,8 +717,6 @@ enum SettingsSurfaceColor {
     static let rowFillHovered = GraphicalTheme.neutral4.opacity(GraphicalTheme.fillThroughDotsOpacity)
     static let rowFillSelected = GraphicalTheme.neutral3
     static let rowFillFocused = GraphicalTheme.neutral4
-    /// Settings cards and the sidebar: the kit's neutral-2 surface on the black page.
-    static let cardFill = GraphicalTheme.neutral2
     /// The kit separator: a one-pixel neutral-4 line.
     static let divider = GraphicalTheme.neutral4
     /// The kit focus ring: neutral-10 at 20%.

@@ -34,6 +34,7 @@ struct TTSSettingsTab: View {
 
                 if preview.isBusy || preview.error != nil {
                     VStack(spacing: 0) {
+                        SettingsDivider()
                         SettingsRow {
                             SettingsInlineStatus(
                                 text: previewStatusText,
@@ -60,6 +61,8 @@ struct TTSSettingsTab: View {
                     ])
                 }
 
+                SettingsDivider()
+
                 SettingsControlRow("Speech Speed") {
                     SettingsSlider(value: $config.rate, in: 0.5...2.0, step: 0.1,
                                    label: "\(String(format: "%.1f", config.rate))x")
@@ -76,6 +79,8 @@ struct TTSSettingsTab: View {
                         options: chimes.map { (label: $0, value: $0) }
                     )
                 }
+
+                SettingsDivider()
 
                 SettingsControlRow("Show macOS notification on new message") {
                     Toggle("Show macOS notification on new message", isOn: $config.show_notification)
