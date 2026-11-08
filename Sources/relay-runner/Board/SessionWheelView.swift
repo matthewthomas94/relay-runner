@@ -175,7 +175,8 @@ struct SessionWheelView: View {
         let shortcut = menu.shortcut(at: index)
         let startSlot = model.isStartSlot(index)
         let empty = session == nil && shortcut == nil
-        // The session slot reads Terminal while a session runs and Start session otherwise.
+        // Tiles show only their icon; the title names the tile to VoiceOver and
+        // the notch names the action a click takes.
         let title = shortcut?.title ?? (session != nil ? SessionWheelSessionSlot.title : startSlot ? "Start session" : "")
         let sessionHint = session?.isFocused == true
             ? "Open this session's terminal in Workspace."
@@ -194,36 +195,23 @@ struct SessionWheelView: View {
         } label: {
             ZStack {
                 controlBackground(shape, presentation: presentation, disabled: !enabled)
-                VStack(spacing: 7) {
-                    ZStack(alignment: .topTrailing) {
-                        controlBackground(Circle(), presentation: presentation)
-                            .frame(width: 42, height: 42)
-                            .overlay {
-                                if let shortcut {
-                                    Image(systemName: shortcut.symbol).font(AppTypography.symbolFont(size: 17, weight: .regular))
-                                } else if empty {
-                                    Image(systemName: "plus").font(AppTypography.symbolFont(size: 17, weight: .medium))
-                                } else {
-                                    Image(systemName: SessionWheelSessionSlot.symbol)
-                                        .font(AppTypography.symbolFont(size: 17, weight: .regular))
-                                }
-                            }
-                        if let session {
-                            if session.unreadCount > 0 {
-                                Text("\(session.unreadCount)")
-                                    .font(AppTypography.font(.smallCaption))
-                                    .padding(.horizontal, 4).padding(.vertical, 2)
-                                    .background(.blue, in: Capsule())
-                                    .offset(x: 7, y: 31)
-                            }
+                ZStack(alignment: .topTrailing) {
+                    controlBackground(Circle(), presentation: presentation)
+                        .frame(width: 42, height: 42)
+                        .overlay {
+                            // The start tile and a running session share the terminal glyph.
+                            Image(systemName: shortcut?.symbol ?? SessionWheelSessionSlot.symbol)
+                                .font(AppTypography.symbolFont(size: 17, weight: .regular))
+                        }
+                    if let session {
+                        if session.unreadCount > 0 {
+                            Text("\(session.unreadCount)")
+                                .font(AppTypography.font(.smallCaption))
+                                .padding(.horizontal, 4).padding(.vertical, 2)
+                                .background(.blue, in: Capsule())
+                                .offset(x: 7, y: 31)
                         }
                     }
-                    // Hovered submenu controls name themselves in the notch, not under the title.
-                    Text(title)
-                        .font(AppTypography.font(.action, size: 11))
-                        .lineLimit(2).multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(width: 90, height: 30, alignment: .top)
                 }
                 .position(geometry.position(slot: index, radius: 119))
                 .opacity(empty && !startSlot ? 0 : 1)
@@ -271,7 +259,7 @@ struct SessionWheelView: View {
         let enabled = action.isEnabled(for: session)
         return submenuButton(index: action.rawValue, slot: slot,
                              title: "\(action.title(for: session)) for \(session.name)",
-                             help: enabled ? action.caption(for: session) : (action == .message ? "No message" : "Recording unavailable"),
+                             help: enabled ? action.caption(for: session) : (action == .message ? "Nothing to play" : "Recording unavailable"),
                              symbol: action.symbol(for: session), enabled: enabled,
                              hovered: model.hoveredAction == action && model.hoveredSession?.id == session.id,
                              destructive: action == .stop, level: { recordingLevel(session.id) }) {
@@ -364,7 +352,7 @@ struct SessionWheelView: View {
         let state = model.keepAwake
         return submenuButton(index: SessionWheelSettingsControl.keepAwake.rawValue, slot: SessionWheelIntensity.slot,
                              title: state.isPending ? state.status : state.actionTitle,
-                             help: state.shortStatus,
+                             help: state.hoverAction,
                              symbol: SessionWheelKeepAwakeGlyph.Look(state).symbol,
                              // Pending stays legible; the controller ignores clicks until it settles.
                              enabled: true, hovered: model.hoveredSettingsControl == .keepAwake && !state.isPending,
@@ -378,7 +366,7 @@ struct SessionWheelView: View {
     private var autoPlayButton: some View {
         submenuButton(index: SessionWheelSettingsControl.autoPlay.rawValue, slot: SessionWheelIntensity.slot,
                       title: model.autoPlayActionTitle,
-                      help: model.autoPlay ? "Autoplay on" : "Autoplay off",
+                      help: model.autoPlay ? "Turn off autoplay" : "Turn on autoplay",
                       symbol: "forward.fill", enabled: true,
                       hovered: model.hoveredSettingsControl == .autoPlay,
                       destructive: false, isOn: model.autoPlay,

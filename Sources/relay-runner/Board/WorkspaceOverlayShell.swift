@@ -233,6 +233,7 @@ private struct WorkspaceTabButton: View {
             title: tab.title,
             selected: selected,
             accessibilityLabel: "\(tab.title) tab",
+            help: selected ? "" : "Open \(tab.title.lowercased()) tab",
             action: action
         )
     }

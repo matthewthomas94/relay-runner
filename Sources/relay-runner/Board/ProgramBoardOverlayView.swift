@@ -1390,7 +1390,7 @@ private struct ProgramOverviewColumn: View {
                     title: "Clear",
                     systemName: nil,
                     accessibilityLabel: "Clear project selection",
-                    help: "All projects",
+                    help: "Show all projects",
                     action: onSelectAll
                 )
                 .transition(.relayElement)
@@ -1554,7 +1554,7 @@ private struct ProgramProjectsHeader: View {
                     systemName: nil,
                     prominence: presentation.actionProminence,
                     accessibilityLabel: "Show tickets from all projects",
-                    help: "All projects",
+                    help: "Show all projects",
                     action: onSelectAll
                 )
             }
@@ -1699,7 +1699,7 @@ private struct ProgramWorkStyleMenu: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.graphicalPress)
-        .notchHint("Work style")
+        .notchHint("Change work style")
         .accessibilityLabel("Work style, now \(workStyle.title)")
         .foregroundStyle(palette.foreground.opacity(presentation.foregroundOpacity))
         .frame(height: SharedActionButtonMetrics.controlHeight)
@@ -1771,7 +1771,6 @@ private struct ProgramProjectCard: View {
                     Circle()
                         .fill(ProgramBoardStyle.green)
                         .frame(width: 8, height: 8)
-                        .notchHint("Session running")
                         .accessibilityLabel("Session running")
                         .transition(.relayElement)
                 }
@@ -1810,7 +1809,7 @@ private struct ProgramProjectCard: View {
         }
         .programButtonCursor(enabled: isEnabled)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .notchHint(isSelected ? "Stop filtering" : "Show tickets")
+        .notchHint(isSelected ? "Stop filtering" : "Show project tickets")
         .overlay(alignment: .trailing) {
             actions.fixedSize().padding(.trailing, ProgramBoardLayout.projectRowHorizontalInset)
         }
@@ -1911,7 +1910,7 @@ struct ProgramWorkColumnPanel: View {
                 if lane != .done, canCreate {
                     ProgramIconButton(
                         systemName: "plus",
-                        help: "New ticket",
+                        help: "Create new ticket",
                         size: ProgramBoardLayout.newTicketButtonSize,
                         action: onCreate
                     )
@@ -2149,7 +2148,7 @@ private struct DraggableProgramWorkCard: View {
                     onCancelled: cancelDrag
                 )
             )
-            .notchHint("Open ticket")
+            .notchHint("Open ticket details")
     }
 
     private var scrollBoundary: BoardOverlayScrollBoundary? {
@@ -2704,7 +2703,6 @@ private struct ProgramWorkCard: View {
                         .foregroundStyle(ProgramBoardStyle.mutedText)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .notchHint("Agent activity")
                         .accessibilityLabel("Agent activity: \(activityLine)")
                 }
                 .transition(.relayText)
@@ -2922,7 +2920,7 @@ private struct ProgramNoteDetailPanel: View {
                         )
                         .frame(width: 200)
                         .disabled(recoveryInFlight)
-                        .notchHint("Transcription model")
+                        .notchHint("Choose transcription model")
                         .transition(.relayReplacing(.element))
                     }
                     ProgramDetailActionButton(
@@ -2958,7 +2956,7 @@ private struct ProgramNoteDetailPanel: View {
                         systemName: "arrow.clockwise",
                         title: "Retry",
                         disabled: false,
-                        help: "Retry"
+                        help: "Reload note"
                     ) {
                         onRetry()
                     }
@@ -4043,7 +4041,7 @@ private struct ProgramTicketProjectPicker: View {
         )
         .frame(width: SettingsLayout.controlMaxWidth)
         .programButtonCursor()
-        .notchHint("Owning project")
+        .notchHint("Choose owning project")
     }
 }
 
@@ -4417,7 +4415,7 @@ private struct ProgramStatePanel: View {
                             .disabled(isDiagnosticsExporting)
                             .programControlChrome(disabled: isDiagnosticsExporting)
                             .programButtonCursor(enabled: !isDiagnosticsExporting)
-                            .notchHint("Support bundle")
+                            .notchHint("Export support bundle")
                         }
                     }
                 }
@@ -4566,7 +4564,7 @@ struct ProgramNoteToolbarPresentation: Equatable {
             )
             : ProgramNoteToolbarPresentation(
                 title: "Start Notetaker",
-                help: "Record note"
+                help: "Record new note"
             )
     }
 }

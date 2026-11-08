@@ -1869,7 +1869,7 @@ struct OnboardingIntroAgentLoginPromptView: View {
                                     .buttonStyle(.graphicalPress)
                                     .font(AppTypography.font(.body))
                                     .foregroundStyle(.white.opacity(0.72))
-                                    .notchHint("Sign in later")
+                                    .notchHint("Skip sign-in")
                                     .accessibilityHint(Self.continueWithoutSignInNote)
                             }
                         }

@@ -3,14 +3,16 @@
 A short, stationary **four-finger trackpad tap** toggles the wheel at the pointer.
 The menu bar also has **Show Session Wheel**. The wheel remains open after the
 fingers lift; selection requires a click. Tap again or click outside to dismiss.
-Wheel actions and clicks in its gaps keep it open. Hovering a segment or an outer
-control names it in the notch with one to three words (Keep awake, Autoplay off,
-Particles 60%); nothing is drawn under the segment titles or beside the pointer. Near a display edge, the complete wheel and
-its outer controls move inside the usable screen area.
+Wheel actions and clicks in its gaps keep it open. Segments show only their icon.
+Hovering a segment or an outer control names, in the notch, the action a click takes,
+in one to three words (Open history tab, Turn on autoplay, Keep Mac awake); a control
+that cannot act names why (Finish notes first). Nothing is drawn beside the pointer.
+Near a display edge, the complete wheel and its outer controls move inside the usable
+screen area.
 
-The wheel has five segments. The top segment is the session: while a session runs it
-reads **Terminal** with a terminal icon, and when none is running it reads **Start
-session** and starts the general session. Clockwise from the top, the other four are
+The wheel has five segments. The top segment is the session, drawn with the terminal
+icon: while a session runs it opens the session's terminal, and when none is running it
+starts the general session. Clockwise from the top, the other four are
 **History**, **Settings**, **Notetaker** and **Workspace**, so Workspace and Notetaker
 sit on the left and History and Settings on the right. There is no project picker,
 project page, or **More sessions** slot: the one general session reaches every

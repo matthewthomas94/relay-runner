@@ -78,7 +78,7 @@ struct WorkspaceHistoryView: View {
                         .graphicalInput()
                         .onSubmit { Task { await model.search() } }
                         .accessibilityLabel("Search Workspace history")
-                    ProgramIconButton(systemName: "magnifyingglass", help: "Search history") {
+                    ProgramIconButton(systemName: "magnifyingglass", help: "Search archived tickets") {
                         Task { await model.search() }
                     }
                 }
@@ -218,7 +218,7 @@ struct WorkspaceHistoryView: View {
                             ProgramWorkspaceActionButton(
                                 title: "Fetch verified detail", systemName: "arrow.down",
                                 prominence: .primary, accessibilityLabel: "Fetch verified detail",
-                                help: "Download detail"
+                                help: "Download ticket detail"
                             ) {
                                 Task { await model.select(card, online: true) }
                             }
@@ -247,7 +247,7 @@ struct WorkspaceHistoryView: View {
                                 title: "Restore detail", systemName: nil,
                                 isEnabled: model.detail?.availability == "available",
                                 accessibilityLabel: "Restore detail",
-                                help: "Rematerialize ticket"
+                                help: "Restore ticket file"
                             ) {
                                 Task {
                                     await model.restore(reopen: false)
@@ -258,7 +258,7 @@ struct WorkspaceHistoryView: View {
                                 title: "Reopen in Backlog", systemName: nil, prominence: .primary,
                                 isEnabled: model.detail?.availability == "available",
                                 accessibilityLabel: "Reopen in Backlog",
-                                help: "Reopen ticket"
+                                help: "Reopen in backlog"
                             ) {
                                 Task {
                                     await model.restore(reopen: true)

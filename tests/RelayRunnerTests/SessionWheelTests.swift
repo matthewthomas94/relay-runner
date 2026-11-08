@@ -677,9 +677,9 @@ final class SessionWheelTests: XCTestCase {
         for caption in captions {
             XCTAssertTrue(NotchHoverDescriptor.isValid(caption), caption)
         }
-        XCTAssertEqual(SessionWheelAction.recording.caption(for: recording), "Send")
+        XCTAssertEqual(SessionWheelAction.recording.caption(for: recording), "Send voice message")
         XCTAssertEqual(SessionWheelAction.stop.caption(for: recording), "End session")
-        XCTAssertEqual(SessionWheelNoteAction.pause.caption(for: .recording), "Pause")
+        XCTAssertEqual(SessionWheelNoteAction.pause.caption(for: .recording), "Pause note")
         XCTAssertEqual(SessionWheelSettingsControl.keepAwake.caption, "Keep awake")
 
         let source = try String(contentsOfFile: #filePath
@@ -700,50 +700,50 @@ final class SessionWheelTests: XCTestCase {
             model.hover(at: point)
             return model.hoverDescriptor(at: point)
         }
-        XCTAssertEqual(hint(slot: 0), "Start session")
-        XCTAssertEqual(hint(slot: SessionWheelShortcut.history.rawValue), "History")
-        XCTAssertEqual(hint(slot: SessionWheelShortcut.workspace.rawValue), "Workspace")
-        XCTAssertEqual(hint(slot: SessionWheelShortcut.noteTaker.rawValue), "Notetaker")
+        XCTAssertEqual(hint(slot: 0), "Start new session")
+        XCTAssertEqual(hint(slot: SessionWheelShortcut.history.rawValue), "Open history tab")
+        XCTAssertEqual(hint(slot: SessionWheelShortcut.workspace.rawValue), "Open workspace tab")
+        XCTAssertEqual(hint(slot: SessionWheelShortcut.noteTaker.rawValue), "Open notetaker tab")
         let settings = SessionWheelShortcut.settings.rawValue
-        XCTAssertEqual(hint(slot: settings), "Settings", "The parent alone, not its Autoplay control")
-        XCTAssertEqual(hint(slot: settings, radius: geometry.wheelRadius + 4), "Settings", "The gap keeps the parent")
+        XCTAssertEqual(hint(slot: settings), "Open settings tab", "The parent alone, not its Autoplay control")
+        XCTAssertEqual(hint(slot: settings, radius: geometry.wheelRadius + 4), "Open settings tab", "The gap keeps the parent")
         XCTAssertEqual(hint(slot: settings, radius: geometry.actionRadius,
-                            offset: geometry.actionOffset(5, subdivisions: 6)), "Autoplay off")
+                            offset: geometry.actionOffset(5, subdivisions: 6)), "Turn on autoplay")
         model.autoPlay = true
         XCTAssertEqual(model.hoverDescriptor(at: geometry.position(slot: settings, radius: geometry.actionRadius,
                                                                    offset: geometry.actionOffset(5, subdivisions: 6))),
-                       "Autoplay on")
+                       "Turn off autoplay")
         XCTAssertEqual(hint(slot: settings, radius: geometry.actionRadius,
-                            offset: geometry.actionOffset(4, subdivisions: 6)), "Keep awake off")
+                            offset: geometry.actionOffset(4, subdivisions: 6)), "Keep Mac awake")
         XCTAssertEqual(hint(slot: settings, radius: geometry.actionRadius,
-                            offset: geometry.actionOffset(0, subdivisions: 6)), "Particles 60%")
+                            offset: geometry.actionOffset(0, subdivisions: 6)), "Adjust particle intensity")
         model.particleFieldEnabled = false
         XCTAssertEqual(model.hoverDescriptor(at: geometry.position(slot: settings, radius: geometry.actionRadius)),
-                       "Particles off")
+                       "Particles turned off")
 
         let noteTaker = SessionWheelShortcut.noteTaker.rawValue
         _ = hint(slot: noteTaker)
         XCTAssertEqual(hint(slot: noteTaker, radius: geometry.actionRadius,
-                            offset: geometry.actionOffset(SessionWheelNoteAction.cancel.rawValue)), "Discard")
+                            offset: geometry.actionOffset(SessionWheelNoteAction.cancel.rawValue)), "Discard note")
         XCTAssertEqual(hint(slot: noteTaker, radius: geometry.actionRadius,
-                            offset: geometry.actionOffset(SessionWheelNoteAction.recording.rawValue)), "Start note")
+                            offset: geometry.actionOffset(SessionWheelNoteAction.recording.rawValue)), "Start new note")
 
         model.startUnavailableReason = "Finish notes first"
         XCTAssertEqual(hint(slot: 0), "Finish notes first")
         model.startUnavailableReason = nil
         model.refresh(sessions: [.init(id: "a", name: "general", canPlay: false)])
-        XCTAssertEqual(hint(slot: 0), "Terminal")
-        XCTAssertEqual(hint(slot: 0, radius: geometry.actionRadius, offset: geometry.actionOffset(.message)), "No message")
+        XCTAssertEqual(hint(slot: 0), "Open terminal tab")
+        XCTAssertEqual(hint(slot: 0, radius: geometry.actionRadius, offset: geometry.actionOffset(.message)), "Nothing to play")
         XCTAssertEqual(hint(slot: 0, radius: geometry.actionRadius, offset: geometry.actionOffset(.stop)), "End session")
 
         model.hover(at: geometry.center)
-        XCTAssertEqual(model.hoverDescriptor(at: geometry.center), "Close")
+        XCTAssertEqual(model.hoverDescriptor(at: geometry.center), "Close session wheel")
         model.notice = "Couldn't start session"
         XCTAssertEqual(model.hoverDescriptor(at: geometry.center), "Couldn't start session")
         let outside = CGPoint(x: -30, y: -30)
         model.hover(at: outside)
         XCTAssertNil(model.hoverDescriptor(at: outside))
-        for hint in ["Start session", "Finish notes first", "Autoplay off", "Keep awake off", "Particles 60%"] {
+        for hint in ["Start new session", "Finish notes first", "Turn on autoplay", "Keep Mac awake", "Adjust particle intensity"] {
             XCTAssertTrue(NotchHoverDescriptor.isValid(hint), hint)
         }
     }

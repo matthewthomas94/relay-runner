@@ -21,7 +21,7 @@ struct STTSettingsTab: View {
                         selection: $config.model,
                         options: Self.modelOptions(operatingSystem: operatingSystem)
                     )
-                    .notchHint("Transcription model")
+                    .notchHint("Choose transcription model")
                 }
 
                 if let migrationState, let message = Self.migrationMessage(migrationState) {

@@ -129,6 +129,18 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
 
     var navigationLabel: String { title }
 
+    /// The notch hover descriptor for this category's sidebar row.
+    var hoverAction: String {
+        switch self {
+        case .permissions: return "Open permission settings"
+        case .speechToText: return "Open speech settings"
+        case .textToSpeech: return "Open voice settings"
+        case .general: return "Open general settings"
+        case .awareness: return "Open awareness settings"
+        case .relayRemote: return "Open remote settings"
+        }
+    }
+
     var systemImage: String {
         switch self {
         case .permissions: return "checkmark.shield"
@@ -535,5 +547,6 @@ private struct SettingsCategoryButton: View {
         .animation(presentation.animationDuration > 0 ? RelayMotion.hover : nil, value: presentation)
         .accessibilityLabel(category.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
+        .notchHint(selected ? "" : category.hoverAction)
     }
 }

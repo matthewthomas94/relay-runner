@@ -139,7 +139,7 @@ final class NotchHoverDescriptorTests: XCTestCase {
         XCTAssertFalse(board.contains(".notchHint(item.project?.name"), "A project row says what it does, not its name")
         XCTAssertFalse(board.contains("toolTip"), "Ticket cards carry no native tooltip")
         XCTAssertFalse(board.contains("Drop here"), "Hover never fires during a drag")
-        XCTAssertTrue(board.contains(".notchHint(\"Open ticket\")"))
+        XCTAssertTrue(board.contains(".notchHint(\"Open ticket details\")"))
         for path in ["Board", "Settings", "Onboarding", "Overlay", "Terminal"] {
             let files = try XCTUnwrap(FileManager.default.enumerator(at: root.appendingPathComponent(path), includingPropertiesForKeys: nil))
                 .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }

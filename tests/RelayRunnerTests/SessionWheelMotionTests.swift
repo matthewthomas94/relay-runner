@@ -24,6 +24,16 @@ final class SessionWheelMotionTests: XCTestCase {
             XCTAssertLessThan(hypot(point.x + offset.width - center.x,
                                     point.y + offset.height - center.y), 119,
                               "Every tile moves toward the centre")
+            // Straight at the hub, not merely closer: a table tuned for six
+            // tiles sent the five-tile wheel's left tiles sideways.
+            let inward = CGVector(dx: center.x - point.x, dy: center.y - point.y)
+            let length = hypot(offset.width, offset.height)
+            let sine = (inward.dx * offset.height - inward.dy * offset.width)
+                / (hypot(inward.dx, inward.dy) * length)
+            XCTAssertEqual(sine, 0, accuracy: 0.001, "Tile \(index) heads straight for the hub")
+            let first = convergence.segmentOffset(0)
+            XCTAssertEqual(length, hypot(first.width, first.height), accuracy: 0.001,
+                           "Every tile travels the same distance")
         }
 
         let collapse = SessionWheelPresentation(progress: 1 - 0.15 / duration)

@@ -28,16 +28,16 @@ enum SessionWheelAction: Int, CaseIterable {
         }
     }
 
-    /// One or two short words that fit under the session's title.
+    /// The notch hover descriptor: what a click does, three words at most.
     func caption(for session: SessionWheelSession) -> String {
         switch self {
         case .message:
             switch session.playback {
-            case .play: return "Play"
-            case .stop: return "Stop audio"
-            case .replay: return "Replay"
+            case .play: return "Play message"
+            case .stop: return "Stop playback"
+            case .replay: return "Replay message"
             }
-        case .recording: return session.isRecording ? "Send" : "Record"
+        case .recording: return session.isRecording ? "Send voice message" : "Record voice message"
         case .stop: return "End session"
         }
     }
@@ -77,6 +77,16 @@ enum SessionWheelShortcut: Int, CaseIterable {
         }
     }
 
+    /// The notch hover descriptor: the tab a click opens.
+    var hoverAction: String {
+        switch self {
+        case .workspace: return "Open workspace tab"
+        case .noteTaker: return "Open notetaker tab"
+        case .settings: return "Open settings tab"
+        case .history: return "Open history tab"
+        }
+    }
+
     var symbol: String {
         switch self {
         case .workspace: return "rectangle.split.3x1"
@@ -105,12 +115,12 @@ enum SessionWheelNoteAction: Int, CaseIterable {
         }
     }
 
-    /// One or two short words: the notch hover descriptor.
+    /// The notch hover descriptor: what a click does, three words at most.
     func caption(for phase: MeetingNoteCoordinatorPhase) -> String {
         switch self {
-        case .recording: return phase.ownsForeground ? "Save note" : "Start note"
-        case .pause: return phase == .paused ? "Resume" : "Pause"
-        case .cancel: return "Discard"
+        case .recording: return phase.ownsForeground ? "Save note" : "Start new note"
+        case .pause: return phase == .paused ? "Resume note" : "Pause note"
+        case .cancel: return "Discard note"
         }
     }
 
@@ -315,11 +325,11 @@ final class SessionWheelModel {
     func hoverDescriptor(at point: CGPoint) -> String? {
         let geometry = SessionWheelGeometry.self
         if hypot(point.x - geometry.center.x, point.y - geometry.center.y) <= geometry.hubRadius {
-            return notice ?? "Close"
+            return notice ?? "Close session wheel"
         }
         if let session = hoveredSession, let action = hoveredAction {
             guard action.isEnabled(for: session) else {
-                return action == .message ? "No message" : "Recording unavailable"
+                return action == .message ? "Nothing to play" : "Recording unavailable"
             }
             return action.caption(for: session)
         }
@@ -327,15 +337,15 @@ final class SessionWheelModel {
         if let control = hoveredSettingsControl {
             switch control {
             case .intensity:
-                return particleFieldEnabled ? "Particles \(SessionWheelIntensity.percent(particleIntensity))" : "Particles off"
-            case .keepAwake: return keepAwake.shortStatus
-            case .autoPlay: return autoPlay ? "Autoplay on" : "Autoplay off"
+                return particleFieldEnabled ? "Adjust particle intensity" : "Particles turned off"
+            case .keepAwake: return keepAwake.hoverAction
+            case .autoPlay: return autoPlay ? "Turn off autoplay" : "Turn on autoplay"
             }
         }
         guard let hoveredSlot else { return nil }
-        if let shortcut = shortcut(at: hoveredSlot) { return shortcut.title }
-        if slots[hoveredSlot] != nil { return SessionWheelSessionSlot.title }
-        if isStartSlot(hoveredSlot) { return startUnavailableReason ?? "Start session" }
+        if let shortcut = shortcut(at: hoveredSlot) { return shortcut.hoverAction }
+        if slots[hoveredSlot] != nil { return "Open terminal tab" }
+        if isStartSlot(hoveredSlot) { return startUnavailableReason ?? "Start new session" }
         return nil
     }
 

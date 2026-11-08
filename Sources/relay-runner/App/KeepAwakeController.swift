@@ -44,16 +44,17 @@ enum KeepAwakeState: Equatable {
         }
     }
 
-    /// The notch hover descriptor: three words at most.
-    var shortStatus: String {
+    /// The notch hover descriptor: what toggling does now, three words at
+    /// most. Pending states do nothing on a click, so they say why.
+    var hoverAction: String {
         switch self {
-        case .off: return "Keep awake off"
-        case .enabling: return "Turning on"
-        case .awaitingApproval: return "Awaiting approval"
-        case .on: return "Keep awake on"
-        case .disabling: return "Restoring sleep"
-        case .failed: return "Keep awake failed"
-        case .restoreNeeded: return "Restore sleep"
+        case .off: return "Keep Mac awake"
+        case .enabling: return "Still turning on"
+        case .awaitingApproval: return "Cancel keep awake"
+        case .on: return "Let Mac sleep"
+        case .disabling: return "Still restoring sleep"
+        case .failed: return "Retry keep awake"
+        case .restoreNeeded: return "Restore sleep setting"
         }
     }
 

@@ -512,7 +512,7 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             ProgramNoteToolbarPresentation.resolve(phase: .idle),
             ProgramNoteToolbarPresentation(
                 title: "Start Notetaker",
-                help: "Record note"
+                help: "Record new note"
             )
         )
         XCTAssertEqual(
