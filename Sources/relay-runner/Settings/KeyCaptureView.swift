@@ -30,7 +30,7 @@ struct KeyCaptureView: View {
                     value = "Caps Lock"
                 }
                 .accessibilityLabel("Reset \(label) to Caps Lock")
-                .graphicalTooltip("Reset \(label) to Caps Lock")
+                .notchHint("Reset shortcut")
                 .transition(.relayElement)
             }
         }

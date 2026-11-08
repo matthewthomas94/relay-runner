@@ -118,6 +118,18 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
 
     var navigationLabel: String { title }
 
+    /// The notch hover descriptor for this category's sidebar row.
+    var hoverAction: String {
+        switch self {
+        case .permissions: return "Open permission settings"
+        case .speechToText: return "Open speech settings"
+        case .textToSpeech: return "Open voice settings"
+        case .general: return "Open general settings"
+        case .awareness: return "Open awareness settings"
+        case .relayRemote: return "Open remote settings"
+        }
+    }
+
     var icon: LucideIcon {
         switch self {
         case .permissions: return .shieldCheck
@@ -320,7 +332,7 @@ private struct SettingsContent: View {
                 prominence: .secondary,
                 isEnabled: hasChanges && !saving,
                 accessibilityLabel: "Revert settings",
-                helpText: hasChanges ? "Discard unsaved settings changes" : "No settings changes to revert"
+                helpText: hasChanges ? "Discard changes" : "Nothing to revert"
             ) {
                 draft = appState.config
             }
@@ -354,7 +366,7 @@ private struct SettingsFooterSaveButton: View {
             prominence: isEnabled ? .primary : .secondary,
             isEnabled: isEnabled,
             accessibilityLabel: "Save settings",
-            helpText: isEnabled ? "Save settings" : "No settings changes to save",
+            helpText: isEnabled ? "Save settings" : "Nothing to save",
             action: action
         )
         .keyboardShortcut(.defaultAction)
@@ -493,6 +505,6 @@ private struct SettingsCategoryButton: View {
         .animation(presentation.animationDuration > 0 ? RelayMotion.hover : nil, value: presentation)
         .accessibilityLabel(category.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .graphicalTooltip(category.title)
+        .notchHint(selected ? "" : category.hoverAction)
     }
 }

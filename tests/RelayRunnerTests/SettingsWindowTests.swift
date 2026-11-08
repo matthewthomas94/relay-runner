@@ -197,7 +197,7 @@ final class SettingsWindowTests: XCTestCase {
         let source = root.appendingPathComponent("Sources/relay-runner/Settings/SettingsWindow.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        XCTAssertTrue(contents.contains("ScrollView(.vertical, showsIndicators: false)"))
+        XCTAssertTrue(contents.contains("RelayFadingScrollView(showsIndicators: false)"))
         XCTAssertTrue(contents.contains("ScrollViewReader"))
         XCTAssertTrue(contents.contains("proxy.scrollTo(target, anchor: .top)"))
         XCTAssertFalse(contents.contains("ScrollView(.vertical, showsIndicators: true)"))

@@ -69,6 +69,8 @@ Freshness identifiers prevent a superseded voice command from speaking or mutati
 
 The bridge publishes the queue depth as a `speech_queue` state event whenever it changes. The notch stacks one card for each reply queued behind the current one, added to other sessions' unread badge replies. It shows at most three cards; `TranscriptionPill.queuedReplyCount` keeps the full count. The per-session badge counts that the Workspace and the session wheel use do not change.
 
+The notch is also the app's one hover descriptor. Resting the pointer on a control in the Workspace, the Settings window, the session wheel or the terminal strip names that control in the notch's label slot with one to three words (`notchHint`); longer copy is never shown, so a hint can only ever be a name, not a sentence. There are no tooltips beside the pointer. A hover descriptor takes the label slot over any state label while the pointer rests there, and the state's own label returns when it leaves; the glyph keeps showing the state throughout, so nothing is hidden for longer than a hover.
+
 ## Screen capabilities
 
 `relay-desktop-mcp` exposes accessibility-tree observation and headless semantic actions through the bundled agent-desktop CLI, which Relay Runner.app runs as its own child. `relay-actions-mcp` exposes physical manipulation and window-introspection operations. `relay-vision-mcp` exposes screenshot observation separately. The helpers forward privileged work to Relay Runner.app so macOS attributes Accessibility and Screen Recording to the app. Successful calls pulse ActionGlow.

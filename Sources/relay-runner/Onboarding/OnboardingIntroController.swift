@@ -1867,7 +1867,7 @@ struct OnboardingIntroAgentLoginPromptView: View {
                                     .buttonStyle(.graphicalPress)
                                     .font(AppTypography.font(.body))
                                     .foregroundStyle(.white.opacity(0.72))
-                                    .graphicalTooltip(Self.continueWithoutSignInNote)
+                                    .notchHint("Skip sign-in")
                                     .accessibilityHint(Self.continueWithoutSignInNote)
                             }
                         }
@@ -2086,7 +2086,6 @@ struct OnboardingIntroWhiteActionButton: View {
         .animation(Self.hoverAnimation, value: showsHover)
         .onHover { isHovering = $0 }
         .accessibilityLabel(accessibilityLabel ?? title)
-        .graphicalTooltip(accessibilityLabel ?? title)
     }
 }
 

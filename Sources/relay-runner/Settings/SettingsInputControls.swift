@@ -69,7 +69,6 @@ struct SettingsMenuOptions<Value: Hashable>: View {
                         .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
                         .onHover { if $0 { focusedIndex = index } }
                         .accessibilityAddTraits(option.value == selection ? .isSelected : [])
-                        .help(option.label)
                         .id(index)
                     }
                 }

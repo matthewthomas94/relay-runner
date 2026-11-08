@@ -210,7 +210,7 @@ struct WorkspaceMenuBarStrip: View {
                     title: "Update available",
                     icon: .arrowDownToLine,
                     accessibilityLabel: "Update available tab, version \(version)",
-                    help: "Download Relay Runner \(version)",
+                    help: "Download update",
                     action: { updater.checkForUpdates() }
                 )
                 .transition(.relayElement)
@@ -234,7 +234,7 @@ private struct WorkspaceTabButton: View {
             title: tab.title,
             selected: selected,
             accessibilityLabel: "\(tab.title) tab",
-            help: "\(tab.title) tab",
+            help: selected ? "" : "Open \(tab.title.lowercased()) tab",
             action: action
         )
     }
@@ -263,7 +263,7 @@ struct WorkspaceNavigationButton: View {
         self.icon = icon
         self.selected = selected
         self.accessibilityLabel = accessibilityLabel ?? title
-        self.help = help ?? title
+        self.help = help ?? ""
         self.action = action
     }
 
@@ -310,7 +310,7 @@ struct WorkspaceNavigationButton: View {
         .focused($isFocused)
         .onHover { isHovered = $0 }
         .accessibilityLabel(accessibilityLabel)
-        .graphicalTooltip(help)
+        .notchHint(help)
     }
 
     private var foregroundColor: Color {

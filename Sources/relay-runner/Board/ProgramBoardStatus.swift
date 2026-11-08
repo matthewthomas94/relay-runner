@@ -1614,6 +1614,9 @@ final class ProgramBoardViewModel {
         errorMessage: nil
     )
     var history: WorkspaceHistoryViewModel?
+    /// Projects History can show. Read from the project registry, so History
+    /// opens before the Work board has loaded its snapshot.
+    var historyProjects: [ProgramBoardProjectTarget] = []
     var spikeFollowupBatch: SpikeFollowupBatch?
     var creating: ProgramBoardCreateDraft?
     var editing: ProgramBoardEditDraft?

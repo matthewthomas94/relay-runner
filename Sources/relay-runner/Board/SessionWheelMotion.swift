@@ -9,12 +9,10 @@ struct SessionWheelPresentation: Equatable {
     static let blurDuration: TimeInterval = min(0.3, duration)
     static let reducedDuration: TimeInterval = 0.12
 
-    // Tile translations toward the centre, retaining each tile's size.
-    private static let convergedOffsets: [CGSize] = [
-        .init(width: 0, height: 20.1), .init(width: -13.4, height: 13.4),
-        .init(width: -14.74, height: -9.38), .init(width: 0, height: -19.43),
-        .init(width: 13.4, height: -13.4), .init(width: 13.4, height: 13.4),
-    ]
+    /// How far each tile travels toward the hub, keeping its size. The average
+    /// of the original six-tile tuning; the direction comes from each tile's
+    /// own angle, so the wheel converges evenly at any segment count.
+    static let convergenceDistance: CGFloat = 19
 
     var discScale: CGFloat = 1
     var hubVisibility: Double = 1
@@ -57,10 +55,12 @@ struct SessionWheelPresentation: Equatable {
         .linear(duration: reduceMotion ? reducedDuration : duration)
     }
 
+    /// Straight toward the hub from the tile's centre: slot 0 sits at the top
+    /// and the slots run clockwise.
     func segmentOffset(_ index: Int) -> CGSize {
-        let offset = Self.convergedOffsets[index]
-        return CGSize(width: offset.width * segmentConvergence,
-                      height: offset.height * segmentConvergence)
+        let angle = CGFloat(index) * SessionWheelGeometry.sliceAngle - .pi / 2
+        let distance = Self.convergenceDistance * segmentConvergence
+        return CGSize(width: -cos(angle) * distance, height: -sin(angle) * distance)
     }
 }
 

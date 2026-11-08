@@ -54,15 +54,9 @@ struct WorkspaceHistoryView: View {
 
     private var header: some View {
         HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Workspace History")
-                    .font(AppTypography.font(.sectionHeading))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
-                Text(model.projectName)
-                    .font(AppTypography.font(.metadata))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .lineLimit(1)
-            }
+            Text("Workspace History")
+                .font(AppTypography.font(.sectionHeading))
+                .foregroundStyle(ProgramBoardStyle.primaryText)
             Spacer()
             if isEmbedded {
                 accessory
@@ -84,14 +78,10 @@ struct WorkspaceHistoryView: View {
                         .graphicalInput()
                         .onSubmit { Task { await model.search() } }
                         .accessibilityLabel("Search Workspace history")
-                    ProgramIconButton(icon: .search, help: "Search history") {
+                    ProgramIconButton(icon: .search, help: "Search archived tickets") {
                         Task { await model.search() }
                     }
                 }
-                Text(WorkspaceHistoryViewModel.policySummary)
-                    .font(AppTypography.font(.metadata))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 RelayFadingScrollView {
                     LazyVStack(spacing: 8) {
                         if model.cards.isEmpty && !model.isLoading {
@@ -227,7 +217,7 @@ struct WorkspaceHistoryView: View {
                             ProgramWorkspaceActionButton(
                                 title: "Fetch verified detail", icon: .arrowDown,
                                 prominence: .primary, accessibilityLabel: "Fetch verified detail",
-                                help: "Download verified historical detail"
+                                help: "Download ticket detail"
                             ) {
                                 Task { await model.select(card, online: true) }
                             }
@@ -256,7 +246,7 @@ struct WorkspaceHistoryView: View {
                                 title: "Restore detail", icon: nil,
                                 isEnabled: model.detail?.availability == "available",
                                 accessibilityLabel: "Restore detail",
-                                help: "Explicitly rematerialize this terminal ticket and its verified attachments"
+                                help: "Restore ticket file"
                             ) {
                                 Task {
                                     await model.restore(reopen: false)
@@ -267,7 +257,7 @@ struct WorkspaceHistoryView: View {
                                 title: "Reopen in Backlog", icon: nil, prominence: .primary,
                                 isEnabled: model.detail?.availability == "available",
                                 accessibilityLabel: "Reopen in Backlog",
-                                help: "Move this ticket into the uncapped unfinished working set"
+                                help: "Reopen in backlog"
                             ) {
                                 Task {
                                     await model.restore(reopen: true)

@@ -3,19 +3,24 @@
 A short, stationary **four-finger trackpad tap** toggles the wheel at the pointer.
 The menu bar also has **Show Session Wheel**. The wheel remains open after the
 fingers lift; selection requires a click. Tap again or click outside to dismiss.
-Wheel actions and clicks in its gaps keep it open. Near a display edge, the complete wheel and
-its outer controls move inside the usable screen area.
+Wheel actions and clicks in its gaps keep it open. Segments show only their icon.
+Hovering a segment or an outer control names, in the notch, the action a click takes,
+in one to three words (Open history tab, Turn on autoplay, Keep Mac awake); a control
+that cannot act names why (Finish notes first). Nothing is drawn beside the pointer.
+Near a display edge, the complete wheel and its outer controls move inside the usable
+screen area.
 
-The top three slots show the live session at each position. When no session is
-running, the first top slot reads **Start session** and starts the general session;
-the other empty top slots are blank. The bottom three are **Workspace**, **Note Taker**,
-and **Settings**, from left to right. Sessions keep their positions as sessions
-start or stop. There is no project picker, project page, or **More sessions** slot:
-the one general session reaches every registered project.
+The wheel has five segments. The top segment is the session, drawn with the terminal
+icon: while a session runs it opens the session's terminal, and when none is running it
+starts the general session. Clockwise from the top, the other four are
+**History**, **Settings**, **Notetaker** and **Workspace**, so Workspace and Notetaker
+sit on the left and History and Settings on the right. There is no project picker,
+project page, or **More sessions** slot: the one general session reaches every
+registered project.
 
 - Click the wheel's centre to close the wheel. Escape is consumed and does not
   close it.
-- Click Workspace, Note Taker, or Settings to open that Workspace tab, including
+- Click Workspace, Notetaker, History, or Settings to open that Workspace tab, including
   when the Workspace is already open. The wheel stays open and above Workspace,
   even when a tab takes keyboard focus.
 - Hover Note Taker to reveal **Pause / Resume**, **Start / Save**, and **Cancel**,
@@ -54,7 +59,7 @@ the one general session reaches every registered project.
   helper once; later toggles and relaunches need no prompt. Its filled lightning bolt
   is white when off and the active tray icon's orange (#FF9502) when on. An hourglass
   means a change is pending, a raised hand means the helper is waiting for your
-  approval (click to cancel), and a warning icon explains a failure in its tooltip.
+  approval (click to cancel), and a warning icon marks a failure.
   See [Keep Awake](#keep-awake).
 - Hover a session to reveal three controls on the arc just outside its slot:
   an icon-only **Play / Stop playback / Replay message**, **Record / Stop recording
@@ -66,13 +71,12 @@ the one general session reaches every registered project.
   available to play later. All submenu actions keep the wheel open. Click the
   active waveform to send the message to that session; its controls stay available
   afterward. Ending a session frees its slot without closing the wheel.
-- Click an unselected session to switch voice to it without
-  opening Workspace; the notch briefly reports the switch. Click the currently
-  selected session to open Workspace directly to its terminal. Both keep the wheel open.
-- With no session running, click **Start session** in the first top slot to start
-  the general session without opening Workspace. The other empty session slots are
-  blank. Session changes update tiles in place without replaying the whole wheel's transition;
-  navigating between menus retains that transition.
+- Click **Terminal** to open Workspace directly to the session's terminal. Its
+  VoiceOver label names the session. The wheel stays open.
+- With no session running, click **Start session** in the top slot to start
+  the general session without opening Workspace. Session changes update the tile in
+  place without replaying the whole wheel's transition; navigating between menus
+  retains that transition.
 - Playback shows **Play message** for queued speech, **Stop playback** while
   preparing or playing, and **Replay message** when only replay history remains.
   State comes from the shared speech coordinator independently of notch recording

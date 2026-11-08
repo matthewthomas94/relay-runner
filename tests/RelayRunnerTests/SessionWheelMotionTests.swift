@@ -24,6 +24,16 @@ final class SessionWheelMotionTests: XCTestCase {
             XCTAssertLessThan(hypot(point.x + offset.width - center.x,
                                     point.y + offset.height - center.y), 119,
                               "Every tile moves toward the centre")
+            // Straight at the hub, not merely closer: a table tuned for six
+            // tiles sent the five-tile wheel's left tiles sideways.
+            let inward = CGVector(dx: center.x - point.x, dy: center.y - point.y)
+            let length = hypot(offset.width, offset.height)
+            let sine = (inward.dx * offset.height - inward.dy * offset.width)
+                / (hypot(inward.dx, inward.dy) * length)
+            XCTAssertEqual(sine, 0, accuracy: 0.001, "Tile \(index) heads straight for the hub")
+            let first = convergence.segmentOffset(0)
+            XCTAssertEqual(length, hypot(first.width, first.height), accuracy: 0.001,
+                           "Every tile travels the same distance")
         }
 
         let collapse = SessionWheelPresentation(progress: 1 - 0.15 / duration)
@@ -98,7 +108,7 @@ final class SessionWheelMotionTests: XCTestCase {
         XCTAssertEqual(SessionWheelPresentation(progress: 1).hubBlur, 0)
         XCTAssertEqual(SessionWheelPresentation(progress: 1).segmentVisibility, 1)
         XCTAssertEqual(SessionWheelPresentation(progress: 1).segmentBlur, 0)
-        for index in 0..<6 {
+        for index in 0..<SessionWheelGeometry.slotCount {
             XCTAssertEqual(SessionWheelPresentation(progress: 1).segmentOffset(index), .zero)
         }
     }
@@ -112,7 +122,7 @@ final class SessionWheelMotionTests: XCTestCase {
             XCTAssertEqual(frame.hubBlur, 0)
             XCTAssertEqual(frame.segmentVisibility, 1)
             XCTAssertEqual(frame.segmentBlur, 0)
-            for index in 0..<6 { XCTAssertEqual(frame.segmentOffset(index), .zero) }
+            for index in 0..<SessionWheelGeometry.slotCount { XCTAssertEqual(frame.segmentOffset(index), .zero) }
         }
         let motion = SessionWheelMotion()
         XCTAssertEqual(motion.setVisible(true, reduceMotion: true, at: 0), 0.12)
@@ -174,11 +184,10 @@ final class SessionWheelMotionTests: XCTestCase {
         XCTAssertTrue(menus.motion.isPresented)
         change.cancel()
         await change.value
-        model.refresh(sessions: [.init(id: "a", name: "Updated", unreadCount: 2), .init(id: "b", name: "Second")])
+        model.refresh(sessions: [.init(id: "a", name: "Updated", unreadCount: 2)])
         await menus.update(to: SessionWheelMenu(model), reduceMotion: true)
         XCTAssertEqual(menus.displayed?.sessions[0]?.name, "Updated")
         XCTAssertEqual(menus.displayed?.sessions[0]?.unreadCount, 2)
-        XCTAssertEqual(menus.displayed?.sessions[1]?.id, "b")
         XCTAssertFalse(menus.motion.isAnimating)
         let frame = SessionWheelPresentation(progress: menus.motion.progress(at: ProcessInfo.processInfo.systemUptime),
                                              reduceMotion: true)
@@ -212,7 +221,7 @@ final class SessionWheelMotionTests: XCTestCase {
             }
             if milliseconds == legMilliseconds {
                 // Fully contracted, only the permanent background and centre are visible.
-                for slot in 0..<6 {
+                for slot in 0..<SessionWheelGeometry.slotCount {
                     let point = SessionWheelGeometry.position(slot: slot, radius: 119)
                     let color = try XCTUnwrap(bitmap.colorAt(x: Int(point.x), y: Int(point.y))?.usingColorSpace(.deviceRGB))
                     XCTAssertEqual(color.redComponent, 0, accuracy: 0.01)
@@ -235,7 +244,7 @@ final class SessionWheelMotionTests: XCTestCase {
         model.refresh(sessions: (0..<3).map { .init(id: "\($0)", name: "Project \($0 + 1)", canPlay: true) })
         let wheel = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
                                     selectCenter: {}, dismiss: {})
-        for slot in 0..<6 {
+        for slot in 0..<SessionWheelGeometry.slotCount {
             model.hover(at: geometry.position(slot: slot, radius: 119))
             for progress in [0.0, 0.3, 0.5, 0.7, 0.9, 0.95, 1.0] {
                 let submenus = SessionWheelSubmenuProgress(slot: slot, progress: progress)
@@ -303,7 +312,8 @@ final class SessionWheelMotionTests: XCTestCase {
         var times: [TimeInterval] = []
         var slots: [Int?] = []
         let view = TimelineView(.animation(paused: true)) { _ in
-            let slot = model.hoveredSession == nil ? nil : model.hoveredSlot
+            // The session slot, then the Notetaker shortcut, both open a submenu.
+            let slot = model.submenuSlot
             SessionWheelSubmenuAnimation(progress: .init(slot: slot)) { progress in
                 let _ = frames.append(progress)
                 let _ = times.append(ProcessInfo.processInfo.systemUptime)
@@ -332,17 +342,18 @@ final class SessionWheelMotionTests: XCTestCase {
         XCTAssertGreaterThan(closing, 0, "Removal keeps its outgoing surface alive")
         XCTAssertLessThan(closing, 1)
         XCTAssertEqual(try XCTUnwrap(frames.dropFirst(reversal).first)[0], opening, accuracy: 0.2)
-        model.hover(at: SessionWheelGeometry.position(slot: 1, radius: 119))
+        let noteTaker = SessionWheelShortcut.noteTaker.rawValue
+        model.hover(at: SessionWheelGeometry.position(slot: noteTaker, radius: 119))
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertTrue(frames.contains { $0[0] > 0.01 && $0[1] > 0.01 },
+        XCTAssertTrue(frames.contains { $0[0] > 0.01 && $0[noteTaker] > 0.01 },
                       "Old and new slots share the liquid layer during handoff")
         try await Task.sleep(for: .milliseconds(650))
         XCTAssertEqual(try XCTUnwrap(frames.last)[0], 0, accuracy: 0.001)
-        XCTAssertEqual(try XCTUnwrap(frames.last)[1], 1, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(frames.last)[noteTaker], 1, accuracy: 0.001)
         let settled = frames.count
-        model.refresh(sessions: [.init(id: "a", name: "First"), .init(id: "b", name: "Second", isRecording: true)])
+        model.refresh(sessions: [.init(id: "a", name: "First", isRecording: true)])
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertTrue(frames.dropFirst(settled).allSatisfy { abs($0[1] - 1) < 0.001 },
+        XCTAssertTrue(frames.dropFirst(settled).allSatisfy { abs($0[noteTaker] - 1) < 0.001 },
                       "Playback and recording changes must not restart the submenu entrance")
         model.clearHover()
         try await Task.sleep(for: .milliseconds(650))

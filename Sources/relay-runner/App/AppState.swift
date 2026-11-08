@@ -922,6 +922,11 @@ final class AppState {
         }
         programBoardOverlay.setGeneralContextProvider { [weak self] in self?.shownContext.isGeneral ?? true }
         programBoardOverlay.setContextPathProvider { [weak self] in self?.shownContext.repositoryPath }
+        programBoardOverlay.setHistoryProjectsProvider { [weak self] in
+            (self?.registeredProjectsV2() ?? [])
+                .filter { $0.availability == .available }
+                .map { ProgramBoardProjectTarget(name: $0.displayName, path: $0.lastResolvedPath) }
+        }
         programBoardOverlay.setWorkerSizingDefaultsProvider { [weak self] in
             guard let self else { return nil }
             return TicketWriter.WorkerSizingDefaults.from(self.config.general)
@@ -993,11 +998,6 @@ final class AppState {
             addExisting: { [weak self] in self?.addExistingProject() },
             create: { [weak self] in self?.createProject() }
         )
-        programBoardOverlay.setProjectSelectionHandler { [weak self] repoPath in
-            // RR-445: picking a project only browses its board; the Workspace's
-            // Start control is the one way to launch.
-            _ = self?.selectProjectContext(repositoryPath: repoPath, startsSession: false)
-        }
         programBoardOverlay.setRequiresConfirmedProjectProvider { [weak self] in
             self?.projectRegistryV2 != nil
         }
@@ -1016,6 +1016,9 @@ final class AppState {
         notchStatusController.setGlyphClickHandler { [weak self] in
             self?.toggleBoard()
         }
+        NotchHoverDescriptor.presenter = { [weak self] descriptor in
+            self?.notchStatusController.setHoverDescriptor(descriptor)
+        }
         sessionWheel.refresh = { [weak self] model in self?.refreshSessionWheel(model) }
         sessionWheel.haptics.isEnabled = { [weak self] in self?.config.general.wheel_haptics ?? false }
         sessionWheel.openShortcut = { [weak self] shortcut in
@@ -1025,6 +1028,7 @@ final class AppState {
             case .workspace: self.programBoardOverlay.showWork()
             case .noteTaker: self.programBoardOverlay.showNotes()
             case .settings: self.programBoardOverlay.showSettings()
+            case .history: self.programBoardOverlay.showHistory()
             }
         }
         sessionWheel.noteAction = { [weak self] in self?.performNoteWheelAction($0) ?? false }
@@ -3219,7 +3223,7 @@ final class AppState {
         if pendingSessionLaunchID != nil {
             model.startUnavailableReason = "Session starting"
         } else if meetingNoteSnapshot.phase.ownsForeground {
-            model.startUnavailableReason = "Finish taking notes first"
+            model.startUnavailableReason = "Finish notes first"
         } else {
             model.startUnavailableReason = nil
         }

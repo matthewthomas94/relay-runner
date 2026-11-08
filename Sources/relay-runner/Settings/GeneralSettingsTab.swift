@@ -180,18 +180,18 @@ struct GeneralSettingsTab: View {
     private func keepAwakeControl(_ keepAwake: KeepAwakeController) -> some View {
         let state = keepAwake.state
         if case .restoreNeeded = state {
-            SettingsActionButton(title: state.actionTitle, icon: .moon, helpText: state.status) {
+            SettingsActionButton(title: state.actionTitle, icon: .moon) {
                 keepAwake.toggle()
             }
         } else if state == .awaitingApproval {
-            SettingsActionButton(title: state.actionTitle, icon: .x, helpText: state.status) {
+            SettingsActionButton(title: state.actionTitle, icon: .x) {
                 keepAwake.toggle()
             }
         } else {
             // Reflects only confirmed state; pending changes disable the switch.
             Toggle(KeepAwakeState.label, isOn: Binding(get: { state.isOn }, set: { _ in keepAwake.toggle() }))
                 .disabled(state.isPending)
-                .graphicalTooltip(state.status)
+                .notchHint(state.hoverAction)
         }
     }
 

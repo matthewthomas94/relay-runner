@@ -496,7 +496,7 @@ struct SharedActionButtonChrome<Label: View>: View {
         .onHover { isHovered = $0 }
         .animation(presentation.animationDuration > 0 ? RelayMotion.hover : nil, value: presentation)
         .accessibilityLabel(accessibilityLabel)
-        .graphicalTooltip(helpText)
+        .notchHint(helpText)
     }
 }
 
@@ -522,7 +522,8 @@ struct SettingsActionButton: View {
             prominence: sharedProminence,
             isEnabled: isEnabled,
             accessibilityLabel: accessibilityLabel ?? title,
-            helpText: helpText ?? title,
+            // A visible title is its own descriptor; an icon-only button needs one.
+            helpText: helpText ?? (prominence == .icon ? title : ""),
             palette: palette,
             action: action,
             label: {

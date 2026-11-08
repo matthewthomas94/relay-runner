@@ -302,7 +302,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(contents.contains("ProjectBoardOverview"))
         XCTAssertTrue(card.contains("Circle()"))
         XCTAssertTrue(card.contains(".accessibilityAddTraits(isSelected ? .isSelected : [])"))
-        XCTAssertTrue(card.contains(".graphicalTooltip("))
+        XCTAssertTrue(card.contains(".notchHint("))
         XCTAssertFalse(card.contains(".help("))
         // Selected projects show as removable pills where the search field was.
         XCTAssertFalse(contents.contains("Search projects"))

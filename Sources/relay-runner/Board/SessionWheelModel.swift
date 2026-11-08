@@ -28,16 +28,16 @@ enum SessionWheelAction: Int, CaseIterable {
         }
     }
 
-    /// One or two short words that fit under the session's title.
+    /// The notch hover descriptor: what a click does, three words at most.
     func caption(for session: SessionWheelSession) -> String {
         switch self {
         case .message:
             switch session.playback {
-            case .play: return "Play"
-            case .stop: return "Stop audio"
-            case .replay: return "Replay"
+            case .play: return "Play message"
+            case .stop: return "Stop playback"
+            case .replay: return "Replay message"
             }
-        case .recording: return session.isRecording ? "Send" : "Record"
+        case .recording: return session.isRecording ? "Send voice message" : "Record voice message"
         case .stop: return "End session"
         }
     }
@@ -64,14 +64,26 @@ enum SessionWheelAction: Int, CaseIterable {
     }
 }
 
+/// Clockwise from the top session slot: History, Settings, Notetaker, Workspace.
 enum SessionWheelShortcut: Int, CaseIterable {
-    case workspace = 4, noteTaker = 3, settings = 2
+    case workspace = 4, noteTaker = 3, settings = 2, history = 1
 
     var title: String {
         switch self {
         case .workspace: return "Workspace"
         case .noteTaker: return "Notetaker"
         case .settings: return "Settings"
+        case .history: return "History"
+        }
+    }
+
+    /// The notch hover descriptor: the tab a click opens.
+    var hoverAction: String {
+        switch self {
+        case .workspace: return "Open workspace tab"
+        case .noteTaker: return "Open notetaker tab"
+        case .settings: return "Open settings tab"
+        case .history: return "Open history tab"
         }
     }
 
@@ -80,8 +92,15 @@ enum SessionWheelShortcut: Int, CaseIterable {
         case .workspace: return .columns3
         case .noteTaker: return .notebookText
         case .settings: return .settings
+        case .history: return .rotateCcwClock
         }
     }
+}
+
+/// The one session slot reads Terminal while a session runs.
+enum SessionWheelSessionSlot {
+    static let title = "Terminal"
+    static let symbol: LucideIcon = .squareTerminal
 }
 
 enum SessionWheelNoteAction: Int, CaseIterable {
@@ -96,12 +115,12 @@ enum SessionWheelNoteAction: Int, CaseIterable {
         }
     }
 
-    /// One or two short words that fit under Notetaker.
+    /// The notch hover descriptor: what a click does, three words at most.
     func caption(for phase: MeetingNoteCoordinatorPhase) -> String {
         switch self {
-        case .recording: return phase.ownsForeground ? "Save note" : "Start note"
-        case .pause: return phase == .paused ? "Resume" : "Pause"
-        case .cancel: return "Discard"
+        case .recording: return phase.ownsForeground ? "Save note" : "Start new note"
+        case .pause: return phase == .paused ? "Resume note" : "Pause note"
+        case .cancel: return "Discard note"
         }
     }
 
@@ -118,14 +137,6 @@ enum SessionWheelNoteAction: Int, CaseIterable {
         case .recording: return !phase.ownsForeground || phase == .recording || phase == .paused
         case .pause: return phase == .recording || phase == .paused
         case .cancel: return phase == .recording || phase == .paused || phase == .cancelling
-        }
-    }
-
-    func help(for phase: MeetingNoteCoordinatorPhase) -> String {
-        switch self {
-        case .recording where phase.ownsForeground: return "Stop, save and transcribe this note"
-        case .cancel: return "Discard this note and its recording without saving or transcribing"
-        default: return title(for: phase)
         }
     }
 }
@@ -192,8 +203,9 @@ enum SessionWheelIntensity {
 }
 
 enum SessionWheelGeometry {
-    static let slotCount = 6
-    static let sessionSlots = [0, 1, 5]
+    /// Five segments: the session at the top, then the four shortcuts.
+    static let slotCount = 5
+    static let sessionSlots = [0]
     static let diameter: CGFloat = 528
     static let hubRadius: CGFloat = 52
     static let wheelRadius: CGFloat = 180
@@ -297,11 +309,6 @@ final class SessionWheelModel {
     var hoveredSettingsControl: SessionWheelSettingsControl? {
         isHoveringSettings ? hoveredControl.map(SessionWheelSettingsControl.init(subdivision:)) : nil
     }
-    /// Names the hovered submenu control under its parent's title.
-    var hoveredControlCaption: String? {
-        if let session = hoveredSession, let action = hoveredAction { return action.caption(for: session) }
-        return hoveredNoteAction?.caption(for: notePhase) ?? hoveredSettingsControl?.caption
-    }
     var submenuSlot: Int? { hoveredSession != nil || isHoveringNoteTaker || isHoveringSettings ? hoveredSlot : nil }
     /// Hovering or dragging the enabled slider previews the particle field.
     var isPreviewingIntensity: Bool {
@@ -310,6 +317,36 @@ final class SessionWheelModel {
 
     func shortcut(at index: Int) -> SessionWheelShortcut? {
         SessionWheelShortcut(rawValue: index)
+    }
+
+    /// The notch hover descriptor for the pointer's target, from the same
+    /// hover state that drives the submenus. Every control view spans the whole
+    /// wheel, so per-view hover would name whichever view is on top instead.
+    func hoverDescriptor(at point: CGPoint) -> String? {
+        let geometry = SessionWheelGeometry.self
+        if hypot(point.x - geometry.center.x, point.y - geometry.center.y) <= geometry.hubRadius {
+            return notice ?? "Close session wheel"
+        }
+        if let session = hoveredSession, let action = hoveredAction {
+            guard action.isEnabled(for: session) else {
+                return action == .message ? "Nothing to play" : "Recording unavailable"
+            }
+            return action.caption(for: session)
+        }
+        if let action = hoveredNoteAction { return action.caption(for: notePhase) }
+        if let control = hoveredSettingsControl {
+            switch control {
+            case .intensity:
+                return particleFieldEnabled ? "Adjust particle intensity" : "Particles turned off"
+            case .keepAwake: return keepAwake.hoverAction
+            case .autoPlay: return autoPlay ? "Turn off autoplay" : "Turn on autoplay"
+            }
+        }
+        guard let hoveredSlot else { return nil }
+        if let shortcut = shortcut(at: hoveredSlot) { return shortcut.hoverAction }
+        if slots[hoveredSlot] != nil { return "Open terminal tab" }
+        if isStartSlot(hoveredSlot) { return startUnavailableReason ?? "Start new session" }
+        return nil
     }
 
     /// RR-445: with no session running, the first session slot starts the
