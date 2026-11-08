@@ -1762,14 +1762,13 @@ private struct ProgramProjectCard: View {
         Button(action: onSelect) {
             HStack(alignment: .center, spacing: 8) {
                 // A long name tightens a little, like the column headings; one
-                // that still overflows loses its tail, and the tooltip has it all.
+                // that still overflows loses its tail.
                 Text(item.project?.name ?? "Unknown project")
                     .font(AppTypography.font(.projectTitle))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                     .truncationMode(.tail)
-                    .notchHint(item.project?.name ?? "")
                 if hasSession {
                     Circle()
                         .fill(ProgramBoardStyle.green)
@@ -2091,7 +2090,6 @@ private struct ProgramDropIndicator: View {
             .padding(.horizontal, 4)
             .padding(.bottom, ProgramBoardLayout.dropIndicatorBottomPadding)
             .animation(.easeOut(duration: 0.10 * RelayMotion.durationScale), value: target)
-            .notchHint(target?.isValid == false ? "Cannot drop" : "Drop here")
     }
 
     private var indicatorColor: Color {
@@ -2137,7 +2135,6 @@ private struct DraggableProgramWorkCard: View {
                     workItemID: item.id,
                     canDrag: canDrag,
                     scrollBoundary: scrollBoundary,
-                    toolTip: ProgramWorkCard.toolTip(for: item),
                     onHoverChange: { isHovered = $0 },
                     onSelect: onSelect,
                     windowLocationToBoardLocation: { location in
@@ -2154,7 +2151,7 @@ private struct DraggableProgramWorkCard: View {
                     onCancelled: cancelDrag
                 )
             )
-            .notchHint(canDrag ? "Drag ticket" : "Worker owns ticket")
+            .notchHint("Open ticket")
     }
 
     private var scrollBoundary: BoardOverlayScrollBoundary? {
@@ -2225,7 +2222,6 @@ private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
     let workItemID: String
     let canDrag: Bool
     let scrollBoundary: BoardOverlayScrollBoundary?
-    let toolTip: String
     let onHoverChange: (Bool) -> Void
     let onSelect: () -> Void
     let windowLocationToBoardLocation: (CGPoint) -> CGPoint?
@@ -2244,7 +2240,6 @@ private struct ProgramWorkCardDragEventLayer: NSViewRepresentable {
     func updateNSView(_ nsView: ProgramWorkCardDragEventView, context: Context) {
         nsView.interactionID = interactionID
         nsView.boardOverlayScrollBoundary = scrollBoundary
-        nsView.toolTip = toolTip
         nsView.onHoverChange = onHoverChange
         nsView.onSelect = onSelect
         nsView.windowLocationToBoardLocation = windowLocationToBoardLocation
@@ -2730,21 +2725,6 @@ private struct ProgramWorkCard: View {
         .animation(presentation.animation, value: presentation)
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
-    }
-
-    static func toolTip(for item: ProgramStatusItem) -> String {
-        let cleaned: (String?) -> String? = { value in
-            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return trimmed.isEmpty ? nil : trimmed
-        }
-        let projectName = cleaned(item.project?.name) ?? "Unknown project"
-        let ticketID = cleaned(item.ticketID) ?? "No ticket"
-        let title = cleaned(item.title) ?? "Untitled work"
-        var parts = [projectName, ticketID, title]
-        if let path = cleaned(item.project?.path) {
-            parts.append(path)
-        }
-        return parts.joined(separator: " - ")
     }
 
     private var projectName: String {
@@ -4424,7 +4404,6 @@ private struct ProgramStatePanel: View {
                         .disabled(reloadState.isLoading)
                         .programControlChrome(disabled: reloadState.isLoading)
                         .programButtonCursor(enabled: !reloadState.isLoading)
-                        .notchHint("Retry")
 
                         if onCreateDiagnostics != nil {
                             Button(action: { onCreateDiagnostics?() }) {

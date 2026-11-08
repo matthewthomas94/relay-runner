@@ -233,7 +233,6 @@ private struct WorkspaceTabButton: View {
             title: tab.title,
             selected: selected,
             accessibilityLabel: "\(tab.title) tab",
-            help: tab.title,
             action: action
         )
     }
@@ -262,7 +261,7 @@ struct WorkspaceNavigationButton: View {
         self.systemName = systemName
         self.selected = selected
         self.accessibilityLabel = accessibilityLabel ?? title
-        self.help = help ?? title
+        self.help = help ?? ""
         self.action = action
     }
 

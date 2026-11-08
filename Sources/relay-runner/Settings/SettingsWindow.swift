@@ -535,6 +535,5 @@ private struct SettingsCategoryButton: View {
         .animation(presentation.animationDuration > 0 ? RelayMotion.hover : nil, value: presentation)
         .accessibilityLabel(category.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .notchHint(category.title)
     }
 }

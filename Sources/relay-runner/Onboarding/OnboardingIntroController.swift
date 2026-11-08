@@ -2088,7 +2088,6 @@ struct OnboardingIntroWhiteActionButton: View {
         .animation(Self.hoverAnimation, value: showsHover)
         .onHover { isHovering = $0 }
         .accessibilityLabel(accessibilityLabel ?? title)
-        .notchHint(accessibilityLabel ?? title)
     }
 }
 

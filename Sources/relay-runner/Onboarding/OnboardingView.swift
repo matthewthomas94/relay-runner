@@ -1539,7 +1539,7 @@ struct OnboardingView: View {
             prominence: prominence,
             isEnabled: isEnabled,
             accessibilityLabel: title,
-            helpText: title,
+            helpText: nil,
             shortcut: shortcut,
             perform: perform
         )

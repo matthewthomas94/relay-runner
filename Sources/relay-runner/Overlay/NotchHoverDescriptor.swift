@@ -9,7 +9,8 @@ enum NotchHoverDescriptor {
 
     /// Installed by the app once the notch controller exists.
     @MainActor static var presenter: ((String?) -> Void)?
-    @MainActor private static var ownerID: UUID?
+    /// Hovered controls, outermost first: a row, then a button inside it.
+    @MainActor private static var shown: [(owner: UUID, label: String)] = []
 
     /// Collapses whitespace. Returns nil for empty copy or more than three words.
     static func normalized(_ text: String) -> String? {
@@ -27,16 +28,21 @@ enum NotchHoverDescriptor {
             hide(owner: owner)
             return
         }
-        ownerID = owner
-        presenter?(label)
+        if let index = shown.firstIndex(where: { $0.owner == owner }) {
+            // Copy changing in place (a toggle) keeps its depth.
+            shown[index].label = label
+        } else {
+            shown.append((owner, label))
+        }
+        presenter?(shown.last?.label)
     }
 
-    /// Only the control that showed the current descriptor can clear it, so
-    /// leaving one control never blanks the descriptor another just set.
+    /// Leaving a control reveals the one it sat inside, if any, so a row's
+    /// descriptor returns after the pointer leaves a button on that row.
     @MainActor static func hide(owner: UUID) {
-        guard ownerID == owner else { return }
-        ownerID = nil
-        presenter?(nil)
+        guard let index = shown.firstIndex(where: { $0.owner == owner }) else { return }
+        shown.remove(at: index)
+        presenter?(shown.last?.label)
     }
 }
 

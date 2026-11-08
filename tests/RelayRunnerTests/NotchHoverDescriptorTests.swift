@@ -98,4 +98,55 @@ final class NotchHoverDescriptorTests: XCTestCase {
         XCTAssertTrue(files.allSatisfy { !((try? String(contentsOf: $0, encoding: .utf8))?.contains("graphicalTooltip") ?? false) },
                       "The kit tooltip is gone; hover copy lives in the notch")
     }
+
+    /// A row's descriptor comes back when the pointer leaves a button on that
+    /// row, and a toggle changing its copy keeps its depth.
+    @MainActor func testLeavingAnInnerControlRestoresTheOuterDescriptor() {
+        var presented: [String?] = []
+        let previous = NotchHoverDescriptor.presenter
+        NotchHoverDescriptor.presenter = { presented.append($0) }
+        defer { NotchHoverDescriptor.presenter = previous }
+        let row = UUID(), button = UUID()
+
+        NotchHoverDescriptor.show("Show tickets", owner: row)
+        NotchHoverDescriptor.show("Open in Finder", owner: button)
+        NotchHoverDescriptor.show("Stop filtering", owner: row)
+        NotchHoverDescriptor.hide(owner: button)
+        NotchHoverDescriptor.hide(owner: button)
+        NotchHoverDescriptor.hide(owner: row)
+
+        XCTAssertEqual(presented, ["Show tickets", "Open in Finder", "Open in Finder", "Stop filtering", nil])
+    }
+
+    /// Hovering a control whose title is already on screen shows nothing: the
+    /// notch adds what the control does not say, never an echo of its label.
+    func testVisibleTitlesAreNotEchoedAndNoNativeTooltipRemains() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/relay-runner")
+        func source(_ path: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+        let components = try source("Settings/SettingsComponents.swift")
+        XCTAssertTrue(components.contains("helpText: helpText ?? (prominence == .icon ? title : \"\")"))
+        XCTAssertFalse(components.contains("helpText: helpText ?? title,"))
+        let shell = try source("Board/WorkspaceOverlayShell.swift")
+        XCTAssertTrue(shell.contains("self.help = help ?? \"\""))
+        XCTAssertFalse(shell.contains("help: tab.title"))
+        XCTAssertFalse(try source("Settings/SettingsWindow.swift").contains(".notchHint(category.title)"))
+        XCTAssertFalse(try source("Onboarding/OnboardingIntroController.swift").contains(".notchHint(accessibilityLabel ?? title)"))
+        let board = try source("Board/ProgramBoardOverlayView.swift")
+        XCTAssertFalse(board.contains(".notchHint(item.project?.name"), "A project row says what it does, not its name")
+        XCTAssertFalse(board.contains("toolTip"), "Ticket cards carry no native tooltip")
+        XCTAssertFalse(board.contains("Drop here"), "Hover never fires during a drag")
+        XCTAssertTrue(board.contains(".notchHint(\"Open ticket\")"))
+        for path in ["Board", "Settings", "Onboarding", "Overlay", "Terminal"] {
+            let files = try XCTUnwrap(FileManager.default.enumerator(at: root.appendingPathComponent(path), includingPropertiesForKeys: nil))
+                .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+            for file in files {
+                let text = try String(contentsOf: file, encoding: .utf8)
+                XCTAssertFalse(text.contains(".help("), "\(file.lastPathComponent) uses a native tooltip")
+            }
+        }
+    }
 }

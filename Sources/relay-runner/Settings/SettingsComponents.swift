@@ -514,7 +514,8 @@ struct SettingsActionButton: View {
             prominence: sharedProminence,
             isEnabled: isEnabled,
             accessibilityLabel: accessibilityLabel ?? title,
-            helpText: helpText ?? title,
+            // A visible title is its own descriptor; an icon-only button needs one.
+            helpText: helpText ?? (prominence == .icon ? title : ""),
             palette: palette,
             action: action,
             label: {
