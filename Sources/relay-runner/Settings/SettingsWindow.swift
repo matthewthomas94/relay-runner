@@ -338,7 +338,7 @@ private struct SettingsContent: View {
                 prominence: .secondary,
                 isEnabled: hasChanges && !saving,
                 accessibilityLabel: "Revert settings",
-                helpText: hasChanges ? "Discard unsaved settings changes" : "No settings changes to revert"
+                helpText: hasChanges ? "Discard changes" : "Nothing to revert"
             ) {
                 draft = appState.config
             }
@@ -366,7 +366,7 @@ private struct SettingsFooterSaveButton: View {
             systemImage: "checkmark",
             isEnabled: isEnabled,
             accessibilityLabel: "Save settings",
-            helpText: isEnabled ? "Save settings" : "No settings changes to save",
+            helpText: isEnabled ? "Save settings" : "Nothing to save",
             action: action
         )
         .keyboardShortcut(.defaultAction)
@@ -535,6 +535,6 @@ private struct SettingsCategoryButton: View {
         .animation(presentation.animationDuration > 0 ? RelayMotion.hover : nil, value: presentation)
         .accessibilityLabel(category.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .graphicalTooltip(category.title)
+        .notchHint(category.title)
     }
 }

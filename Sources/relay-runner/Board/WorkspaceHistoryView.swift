@@ -228,7 +228,7 @@ struct WorkspaceHistoryView: View {
                             ProgramWorkspaceActionButton(
                                 title: "Fetch verified detail", systemName: "arrow.down",
                                 prominence: .primary, accessibilityLabel: "Fetch verified detail",
-                                help: "Download verified historical detail"
+                                help: "Download detail"
                             ) {
                                 Task { await model.select(card, online: true) }
                             }
@@ -257,7 +257,7 @@ struct WorkspaceHistoryView: View {
                                 title: "Restore detail", systemName: nil,
                                 isEnabled: model.detail?.availability == "available",
                                 accessibilityLabel: "Restore detail",
-                                help: "Explicitly rematerialize this terminal ticket and its verified attachments"
+                                help: "Rematerialize ticket"
                             ) {
                                 Task {
                                     await model.restore(reopen: false)
@@ -268,7 +268,7 @@ struct WorkspaceHistoryView: View {
                                 title: "Reopen in Backlog", systemName: nil, prominence: .primary,
                                 isEnabled: model.detail?.availability == "available",
                                 accessibilityLabel: "Reopen in Backlog",
-                                help: "Move this ticket into the uncapped unfinished working set"
+                                help: "Reopen ticket"
                             ) {
                                 Task {
                                     await model.restore(reopen: true)

@@ -1184,6 +1184,10 @@ final class NotchStatusController {
     /// A working label that should stay up for as long as its state lasts
     /// (bridge startup, saving notes) instead of retracting after its reveal.
     private var workingLabelPinned = false
+    /// A hovered control's one-to-three-word name. It takes the label slot
+    /// while the pointer rests on the control; the state's own label returns
+    /// when the pointer leaves. The glyph keeps showing the state throughout.
+    private var hoverDescriptor: String?
     private var activityIndex = 0
     private var carouselTimer: Timer?
     private var workingStatusRevealTimer: Timer?
@@ -1301,6 +1305,23 @@ final class NotchStatusController {
             updatePlacement(
                 animated: plan.shouldAnimatePlacement && shouldAnimateContentPlacementUpdate
             )
+        } else {
+            updateStatusContent()
+        }
+    }
+
+    func setHoverDescriptor(_ text: String?) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.setHoverDescriptor(text)
+            }
+            return
+        }
+        let descriptor = text.flatMap(NotchHoverDescriptor.normalized)
+        guard hoverDescriptor != descriptor else { return }
+        hoverDescriptor = descriptor
+        if active {
+            updatePlacement(animated: true)
         } else {
             updateStatusContent()
         }
@@ -1466,7 +1487,8 @@ final class NotchStatusController {
             workingProgressLabel: workingProgressLabel,
             workingGlyphHovered: workingGlyphHovered,
             workingStatusRevealActive: workingStatusRevealActive,
-            workingLabelPinned: workingLabelPinned
+            workingLabelPinned: workingLabelPinned,
+            hoverDescriptor: hoverDescriptor
         )
         return NotchStatusPlacementPlanner.placement(
             for: NotchStatusDisplayGeometry(screen: screen),
@@ -1481,18 +1503,23 @@ final class NotchStatusController {
             workingProgressLabel: workingProgressLabel,
             workingGlyphHovered: workingGlyphHovered,
             workingStatusRevealActive: workingStatusRevealActive,
-            workingLabelPinned: workingLabelPinned
+            workingLabelPinned: workingLabelPinned,
+            hoverDescriptor: hoverDescriptor
         )
     }
 
+    /// A hover descriptor wins the label slot over every state label while it
+    /// lasts; the state's label resumes when it clears.
     static func displayedActivityLabel(
         status: NotchSessionStatus,
         compactLabel: String?,
         workingProgressLabel: String?,
         workingGlyphHovered: Bool,
         workingStatusRevealActive: Bool,
-        workingLabelPinned: Bool = false
+        workingLabelPinned: Bool = false,
+        hoverDescriptor: String? = nil
     ) -> String? {
+        if let hoverDescriptor { return hoverDescriptor }
         if status == .working {
             if workingGlyphHovered,
                let workingProgressLabel,
@@ -1511,7 +1538,8 @@ final class NotchStatusController {
         workingProgressLabel: String?,
         workingGlyphHovered: Bool,
         workingStatusRevealActive: Bool,
-        workingLabelPinned: Bool = false
+        workingLabelPinned: Bool = false,
+        hoverDescriptor: String? = nil
     ) -> CGFloat {
         let label = displayedActivityLabel(
             status: status,
@@ -1519,9 +1547,13 @@ final class NotchStatusController {
             workingProgressLabel: workingProgressLabel,
             workingGlyphHovered: workingGlyphHovered,
             workingStatusRevealActive: workingStatusRevealActive,
-            workingLabelPinned: workingLabelPinned
+            workingLabelPinned: workingLabelPinned,
+            hoverDescriptor: hoverDescriptor
         )
         let measuredWidth = NotchStatusPlacementPlanner.activityLabelWidth(for: label)
+        if hoverDescriptor != nil {
+            return min(measuredWidth, NotchStatusPlacementPlanner.maximumRestingLabelWidth)
+        }
         let hoverReveal = status == .working && workingGlyphHovered
             && workingProgressLabel?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         guard !hoverReveal else {

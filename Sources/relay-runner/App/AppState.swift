@@ -1016,6 +1016,9 @@ final class AppState {
         notchStatusController.setGlyphClickHandler { [weak self] in
             self?.toggleBoard()
         }
+        NotchHoverDescriptor.presenter = { [weak self] descriptor in
+            self?.notchStatusController.setHoverDescriptor(descriptor)
+        }
         sessionWheel.refresh = { [weak self] model in self?.refreshSessionWheel(model) }
         sessionWheel.haptics.isEnabled = { [weak self] in self?.config.general.wheel_haptics ?? false }
         sessionWheel.openShortcut = { [weak self] shortcut in
@@ -3220,7 +3223,7 @@ final class AppState {
         if pendingSessionLaunchID != nil {
             model.startUnavailableReason = "Session starting"
         } else if meetingNoteSnapshot.phase.ownsForeground {
-            model.startUnavailableReason = "Finish taking notes first"
+            model.startUnavailableReason = "Finish notes first"
         } else {
             model.startUnavailableReason = nil
         }

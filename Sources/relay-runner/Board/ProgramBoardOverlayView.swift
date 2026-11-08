@@ -1392,7 +1392,7 @@ private struct ProgramOverviewColumn: View {
                     title: "Clear",
                     systemName: nil,
                     accessibilityLabel: "Clear project selection",
-                    help: "Show tickets from all projects",
+                    help: "All projects",
                     action: onSelectAll
                 )
                 .transition(.relayElement)
@@ -1556,7 +1556,7 @@ private struct ProgramProjectsHeader: View {
                     systemName: nil,
                     prominence: presentation.actionProminence,
                     accessibilityLabel: "Show tickets from all projects",
-                    help: "Show tickets from all projects",
+                    help: "All projects",
                     action: onSelectAll
                 )
             }
@@ -1642,7 +1642,7 @@ private struct ProgramAddProjectMenu: View {
         .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
         .programButtonCursor(enabled: true)
         .accessibilityLabel("Add project")
-        .graphicalTooltip("Add an existing project or create a new project")
+        .notchHint("Add project")
         .background {
             SettingsDropdownPresenter(isPresented: $isPresented, alignsTrailing: true) {
                 SettingsMenuOptions(
@@ -1701,7 +1701,7 @@ private struct ProgramWorkStyleMenu: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.graphicalPress)
-        .graphicalTooltip("Change the work style (now \(workStyle.title): \(workStyle.detail.lowercased()))")
+        .notchHint("Work style")
         .accessibilityLabel("Work style, now \(workStyle.title)")
         .foregroundStyle(palette.foreground.opacity(presentation.foregroundOpacity))
         .frame(height: SharedActionButtonMetrics.controlHeight)
@@ -1769,12 +1769,12 @@ private struct ProgramProjectCard: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                     .truncationMode(.tail)
-                    .graphicalTooltip(item.project?.name ?? "")
+                    .notchHint(item.project?.name ?? "")
                 if hasSession {
                     Circle()
                         .fill(ProgramBoardStyle.green)
                         .frame(width: 8, height: 8)
-                        .graphicalTooltip("Session running")
+                        .notchHint("Session running")
                         .accessibilityLabel("Session running")
                         .transition(.relayElement)
                 }
@@ -1813,11 +1813,7 @@ private struct ProgramProjectCard: View {
         }
         .programButtonCursor(enabled: isEnabled)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .graphicalTooltip(
-            isSelected
-                ? "Stop filtering to \(item.project?.name ?? "this project")"
-                : "Show tickets for \(item.project?.name ?? "this project")"
-        )
+        .notchHint(isSelected ? "Stop filtering" : "Show tickets")
         .overlay(alignment: .trailing) {
             actions.fixedSize().padding(.trailing, ProgramBoardLayout.projectRowHorizontalInset)
         }
@@ -1836,7 +1832,7 @@ private struct ProgramProjectCard: View {
             if let path = item.project?.path {
                 ProgramIconButton(
                     systemName: "folder",
-                    help: "Open \(item.project?.name ?? "project") in Finder"
+                    help: "Open in Finder"
                 ) {
                     NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
                     // The Workspace sits above Finder, so close it to reveal the window.
@@ -1918,7 +1914,7 @@ struct ProgramWorkColumnPanel: View {
                 if lane != .done, canCreate {
                     ProgramIconButton(
                         systemName: "plus",
-                        help: "New \(lane.title.lowercased()) ticket",
+                        help: "New ticket",
                         size: ProgramBoardLayout.newTicketButtonSize,
                         action: onCreate
                     )
@@ -2050,7 +2046,7 @@ private struct ProgramNoteCard: View {
         .focused($isFocused)
         .onHover { isHovered = $0 }
         .programButtonCursor(enabled: true)
-        .graphicalTooltip("Open transcript for \(item.title)")
+        .notchHint("Open transcript")
         .accessibilityLabel("\(item.code), \(ProgramBoardDate.label(iso8601: item.card.createdAt) ?? ""), \(item.title)")
     }
 
@@ -2095,7 +2091,7 @@ private struct ProgramDropIndicator: View {
             .padding(.horizontal, 4)
             .padding(.bottom, ProgramBoardLayout.dropIndicatorBottomPadding)
             .animation(.easeOut(duration: 0.10 * RelayMotion.durationScale), value: target)
-            .graphicalTooltip(target?.isValid == false ? "Cannot drop this ticket here" : "Drop ticket here")
+            .notchHint(target?.isValid == false ? "Cannot drop" : "Drop here")
     }
 
     private var indicatorColor: Color {
@@ -2158,7 +2154,7 @@ private struct DraggableProgramWorkCard: View {
                     onCancelled: cancelDrag
                 )
             )
-            .graphicalTooltip(canDrag ? "Drag ticket to another lane" : "This ticket cannot be dragged while a worker owns its state")
+            .notchHint(canDrag ? "Drag ticket" : "Worker owns ticket")
     }
 
     private var scrollBoundary: BoardOverlayScrollBoundary? {
@@ -2715,7 +2711,7 @@ private struct ProgramWorkCard: View {
                         .foregroundStyle(ProgramBoardStyle.mutedText)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .graphicalTooltip(activityLine)
+                        .notchHint("Agent activity")
                         .accessibilityLabel("Agent activity: \(activityLine)")
                 }
                 .transition(.relayText)
@@ -2872,7 +2868,7 @@ private struct ProgramNoteDetailPanel: View {
                 ProgramDetailActionButton(
                     systemName: "trash", title: "Delete",
                     disabled: detail.isLoading || detail.item.card.recordingState != .completed || showsStop || recoveryInFlight,
-                    help: detail.item.card.recordingState == .completed ? "Delete this saved note" : "Stop and save this note before deleting it",
+                    help: detail.item.card.recordingState == .completed ? "Delete note" : "Stop before deleting",
                     destructive: true
                 ) {
                     confirmsDelete = true
@@ -2880,14 +2876,14 @@ private struct ProgramNoteDetailPanel: View {
                 ProgramDetailActionButton(
                     systemName: "doc.on.doc", title: "Copy note",
                     disabled: !detail.canCopyNote,
-                    help: "Copy the complete note.md as Markdown"
+                    help: "Copy Markdown"
                 ) {
                     detail.copyNote()
                 }
                 ProgramDetailActionButton(
                     systemName: "folder", title: "Reveal",
                     disabled: noteFileURL == nil,
-                    help: noteFileURL == nil ? "This note has no local file to reveal" : "Reveal transcript in Finder"
+                    help: noteFileURL == nil ? "No local file" : "Reveal transcript"
                 ) {
                     guard let url = noteFileURL else { return }
                     NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -2897,7 +2893,7 @@ private struct ProgramNoteDetailPanel: View {
                         systemName: "arrow.clockwise",
                         title: "Retry summary",
                         disabled: false,
-                        help: "Generate this note's title and summary again"
+                        help: "Regenerate summary"
                     ) {
                         onMetadataRetry()
                     }
@@ -2908,7 +2904,7 @@ private struct ProgramNoteDetailPanel: View {
                         systemName: "stop.fill",
                         title: "Stop",
                         disabled: false,
-                        help: "Stop and save this note"
+                        help: "Stop and save"
                     ) {
                         onStop()
                     }
@@ -2921,7 +2917,7 @@ private struct ProgramNoteDetailPanel: View {
                         systemName: "play.fill",
                         title: "Resume",
                         disabled: recoveryInFlight,
-                        help: "Resume microphone capture for this recovered note"
+                        help: "Resume capture"
                     ) {
                         onResume()
                     }
@@ -2931,7 +2927,7 @@ private struct ProgramNoteDetailPanel: View {
                     ProgramDetailActionButton(
                         systemName: "xmark.circle", title: "Retry cancellation",
                         disabled: recoveryInFlight,
-                        help: "Discard this note and recording without transcription",
+                        help: "Discard note",
                         destructive: true
                     ) {
                         onRecover(.discardIncompleteTail, nil)
@@ -2948,14 +2944,14 @@ private struct ProgramNoteDetailPanel: View {
                         )
                         .frame(width: 200)
                         .disabled(recoveryInFlight)
-                        .graphicalTooltip("Choose the model that transcribes this recording's unsaved audio")
+                        .notchHint("Transcription model")
                         .transition(.relayReplacing(.element))
                     }
                     ProgramDetailActionButton(
                         systemName: "pause.fill",
                         title: "Recover paused",
                         disabled: recoveryInFlight || awaitsTranscriptionModel,
-                        help: "Replay the saved local tail and keep capture paused"
+                        help: "Replay tail"
                     ) {
                         onRecover(.recoverPaused, chosenTranscriptionModel)
                     }
@@ -2964,7 +2960,7 @@ private struct ProgramNoteDetailPanel: View {
                         systemName: "checkmark",
                         title: "Finalize",
                         disabled: recoveryInFlight || awaitsTranscriptionModel,
-                        help: "Replay the saved local tail and finish this note"
+                        help: "Replay and finish"
                     ) {
                         onRecover(.finalize, chosenTranscriptionModel)
                     }
@@ -2973,7 +2969,7 @@ private struct ProgramNoteDetailPanel: View {
                         systemName: "trash",
                         title: "Discard tail",
                         disabled: recoveryInFlight,
-                        help: "Finish the note without replaying its incomplete local audio tail"
+                        help: "Finish without replay"
                     ) {
                         onRecover(.discardIncompleteTail, nil)
                     }
@@ -2984,7 +2980,7 @@ private struct ProgramNoteDetailPanel: View {
                         systemName: "arrow.clockwise",
                         title: "Retry",
                         disabled: false,
-                        help: "Try opening this note again"
+                        help: "Retry"
                     ) {
                         onRetry()
                     }
@@ -3149,7 +3145,7 @@ struct ProgramTicketDetailPanel: View {
                     }
                 }
                 Spacer(minLength: 0)
-                ProgramIconButton(systemName: "xmark", help: "Close ticket details", action: onClose)
+                ProgramIconButton(systemName: "xmark", help: "Close details", action: onClose)
             }
 
             HStack(alignment: .center, spacing: 8) {
@@ -3157,7 +3153,7 @@ struct ProgramTicketDetailPanel: View {
                     ProgramEditCapsuleButton(
                         presentation: ProgramEditButtonPresentation.resolve(
                             isEnabled: detail.ticket != nil,
-                            help: detail.ticket == nil ? "Ticket file is unavailable" : "Edit child ticket"
+                            help: detail.ticket == nil ? "Ticket unavailable" : "Edit child ticket"
                         )
                     ) {
                         onEdit()
@@ -3168,7 +3164,7 @@ struct ProgramTicketDetailPanel: View {
                     systemName: "trash",
                     title: "Delete",
                     disabled: deleteRequest == nil,
-                    help: deleteRequest == nil ? "Ticket file is unavailable" : "Delete child ticket",
+                    help: deleteRequest == nil ? "Ticket unavailable" : "Delete child ticket",
                     destructive: true
                 ) {
                     if let deleteRequest {
@@ -3179,7 +3175,7 @@ struct ProgramTicketDetailPanel: View {
                     systemName: "rectangle.stack",
                     title: "Copy ID",
                     disabled: detail.identity == nil,
-                    help: "Copy child ticket id"
+                    help: "Copy ticket id"
                 ) {
                     copyToPasteboard(detail.identity?.ticketID)
                 }
@@ -3187,7 +3183,7 @@ struct ProgramTicketDetailPanel: View {
                     systemName: "doc.on.doc",
                     title: "Copy Path",
                     disabled: detail.ticketPath == nil,
-                    help: "Copy child ticket path"
+                    help: "Copy ticket path"
                 ) {
                     copyToPasteboard(detail.ticketPath)
                 }
@@ -3195,7 +3191,7 @@ struct ProgramTicketDetailPanel: View {
                     systemName: "folder",
                     title: "Reveal",
                     disabled: detail.ticket == nil,
-                    help: detail.ticket == nil ? "Ticket file is unavailable" : "Reveal child ticket file"
+                    help: detail.ticket == nil ? "Ticket unavailable" : "Reveal ticket file"
                 ) {
                     revealTicket()
                 }
@@ -3204,7 +3200,7 @@ struct ProgramTicketDetailPanel: View {
                         systemName: "arrow.triangle.branch",
                         title: "Follow-ups",
                         disabled: false,
-                        help: "Propose implementation tickets from this spike"
+                        help: "Propose follow-ups"
                     ) {
                         onSpikeFollowup()
                     }
@@ -3978,7 +3974,7 @@ private struct ProgramTicketEditModal: View {
                     systemName: "checkmark",
                     isEnabled: currentRequest != nil,
                     accessibilityLabel: "Save ticket changes",
-                    help: currentRequest == nil ? "Complete the required fields" : "Save ticket changes",
+                    help: currentRequest == nil ? "Complete required fields" : "Save ticket changes",
                     action: {
                         if let request = currentRequest {
                             onCommit(request)
@@ -4069,7 +4065,7 @@ private struct ProgramTicketProjectPicker: View {
         )
         .frame(width: SettingsLayout.controlMaxWidth)
         .programButtonCursor()
-        .graphicalTooltip("Choose the project that will own this ticket")
+        .notchHint("Owning project")
     }
 }
 
@@ -4184,7 +4180,7 @@ private struct ProgramTicketCreateModal: View {
                     title: "Cancel",
                     systemName: "xmark",
                     accessibilityLabel: "Cancel new ticket",
-                    help: "Discard the new ticket",
+                    help: "Discard new ticket",
                     action: onCancel,
                     labelFont: .action
                 )
@@ -4194,7 +4190,7 @@ private struct ProgramTicketCreateModal: View {
                     systemName: "checkmark",
                     isEnabled: canSave,
                     accessibilityLabel: "Save new ticket",
-                    help: canSave ? "Save new ticket" : "Complete the required fields",
+                    help: canSave ? "Save new ticket" : "Complete required fields",
                     action: {
                         if let request = makeRequest(selectedProjectPath, title, description, executionMode, imageURLs) {
                             onCommit(request)
@@ -4257,7 +4253,7 @@ private struct ProgramTicketImageSelector: View {
                 title: "Add images",
                 systemName: "photo.badge.plus",
                 accessibilityLabel: "Add ticket images",
-                help: "Attach design images to this ticket",
+                help: "Attach images",
                 action: addImages,
                 labelFont: .action
             )
@@ -4321,7 +4317,7 @@ private struct ProgramTicketImageChip: View {
                         .font(AppTypography.symbolFont(size: 9, weight: .semibold))
                 }
                 .buttonStyle(.graphicalPress)
-                .graphicalTooltip("Remove image")
+                .notchHint("Remove image")
             }
         }
         .foregroundStyle(ProgramBoardStyle.secondaryText)
@@ -4401,7 +4397,7 @@ private struct ProgramStatePanel: View {
                             title: primaryActionTitle,
                             systemName: "folder.badge.plus",
                             accessibilityLabel: primaryActionTitle,
-                            help: "Register an existing Git repository",
+                            help: "Add existing repository",
                             action: primaryAction
                         )
                         if let secondaryActionTitle, let secondaryAction {
@@ -4409,7 +4405,7 @@ private struct ProgramStatePanel: View {
                                 title: secondaryActionTitle,
                                 systemName: "plus",
                                 accessibilityLabel: secondaryActionTitle,
-                                help: "Create and register a new Git repository",
+                                help: "Create new repository",
                                 action: secondaryAction
                             )
                         }
@@ -4428,7 +4424,7 @@ private struct ProgramStatePanel: View {
                         .disabled(reloadState.isLoading)
                         .programControlChrome(disabled: reloadState.isLoading)
                         .programButtonCursor(enabled: !reloadState.isLoading)
-                        .graphicalTooltip("Retry Workspace readiness")
+                        .notchHint("Retry")
 
                         if onCreateDiagnostics != nil {
                             Button(action: { onCreateDiagnostics?() }) {
@@ -4444,7 +4440,7 @@ private struct ProgramStatePanel: View {
                             .disabled(isDiagnosticsExporting)
                             .programControlChrome(disabled: isDiagnosticsExporting)
                             .programButtonCursor(enabled: !isDiagnosticsExporting)
-                            .graphicalTooltip("Create a privacy-safe local support bundle")
+                            .notchHint("Support bundle")
                         }
                     }
                 }
@@ -4542,12 +4538,12 @@ struct ProgramSessionToolbarPresentation: Equatable {
             ? ProgramSessionToolbarPresentation(
                 title: "End \(name)",
                 systemName: "terminal",
-                help: "End the active \(name) voice session"
+                help: "End session"
             )
             : ProgramSessionToolbarPresentation(
                 title: "Start \(name)",
                 systemName: "terminal",
-                help: "Start a \(name) voice session"
+                help: "Start session"
             )
     }
 }
@@ -4583,17 +4579,17 @@ struct ProgramNoteToolbarPresentation: Equatable {
         if phase == .cancelling {
             return ProgramNoteToolbarPresentation(
                 title: "Retry cancellation",
-                help: "Discard the note and recording without transcription"
+                help: "Discard note"
             )
         }
         return phase.ownsForeground
             ? ProgramNoteToolbarPresentation(
                 title: "Stop",
-                help: "Double-tap Option to pause or resume; Stop saves the note"
+                help: "Stop and save"
             )
             : ProgramNoteToolbarPresentation(
                 title: "Start Notetaker",
-                help: "Record a note in your library"
+                help: "Record note"
             )
     }
 }
@@ -4649,7 +4645,7 @@ struct ProgramSessionPrimaryButton: View {
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isEnabled)
         .programButtonCursor(enabled: isEnabled)
         .accessibilityLabel(presentation.title)
-        .graphicalTooltip(presentation.help)
+        .notchHint(presentation.help)
     }
 }
 

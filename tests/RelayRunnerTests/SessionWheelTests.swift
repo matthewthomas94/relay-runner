@@ -662,34 +662,31 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertNil(model.hoveredSettingsControl)
     }
 
-    func testHoveredSubmenuControlIsNamedUnderItsParent() {
-        let model = SessionWheelModel()
-        let settings = SessionWheelShortcut.settings.rawValue
-        model.hover(at: geometry.position(slot: settings, radius: 119))
-        XCTAssertNil(model.hoveredControlCaption, "The parent alone shows only its title")
-        for (index, caption) in [(0, "Particles"), (4, "Keep awake"), (5, "Autoplay")] {
-            model.hover(at: geometry.position(slot: settings, radius: geometry.actionRadius,
-                                              offset: geometry.actionOffset(index, subdivisions: 6)))
-            XCTAssertEqual(model.hoveredControlCaption, caption)
+    /// Submenu controls name themselves in the notch, so every caption is a
+    /// valid one-to-three-word hover descriptor and no caption is drawn on the wheel.
+    func testSubmenuControlCaptionsAreShortNotchDescriptors() throws {
+        var captions = SessionWheelSettingsControl.allCases.map(\.caption)
+        for phase in [MeetingNoteCoordinatorPhase.idle, .recording, .paused] {
+            captions += SessionWheelNoteAction.allCases.map { $0.caption(for: phase) }
         }
-
-        let noteTaker = SessionWheelShortcut.noteTaker.rawValue
-        model.hover(at: geometry.position(slot: noteTaker, radius: 119))
-        model.hover(at: geometry.position(slot: noteTaker, radius: geometry.actionRadius,
-                                          offset: geometry.actionOffset(SessionWheelNoteAction.pause.rawValue)))
-        XCTAssertEqual(model.hoveredControlCaption, "Pause")
-
         var recording = session("a")
         recording.isRecording = true
-        model.refresh(sessions: [recording])
-        model.hover(at: geometry.position(slot: 0, radius: 119))
-        model.hover(at: geometry.position(slot: 0, radius: geometry.actionRadius,
-                                          offset: geometry.actionOffset(.recording)))
-        XCTAssertEqual(model.hoveredControlCaption, "Send")
-        model.hover(at: geometry.position(slot: 0, radius: geometry.actionRadius, offset: geometry.actionOffset(.stop)))
-        XCTAssertEqual(model.hoveredControlCaption, "End session")
-        model.hover(at: geometry.center)
-        XCTAssertNil(model.hoveredControlCaption)
+        for state in [session("a"), recording] {
+            captions += SessionWheelAction.allCases.map { $0.caption(for: state) }
+        }
+        for caption in captions {
+            XCTAssertTrue(NotchHoverDescriptor.isValid(caption), caption)
+        }
+        XCTAssertEqual(SessionWheelAction.recording.caption(for: recording), "Send")
+        XCTAssertEqual(SessionWheelAction.stop.caption(for: recording), "End session")
+        XCTAssertEqual(SessionWheelNoteAction.pause.caption(for: .recording), "Pause")
+        XCTAssertEqual(SessionWheelSettingsControl.keepAwake.caption, "Keep awake")
+
+        let source = try String(contentsOfFile: #filePath
+            .replacingOccurrences(of: "tests/RelayRunnerTests/SessionWheelTests.swift",
+                                  with: "Sources/relay-runner/Board/SessionWheelView.swift"), encoding: .utf8)
+        XCTAssertFalse(source.contains("hoveredControlCaption"), "No caption is drawn under a segment title")
+        XCTAssertFalse(source.contains("graphicalTooltip"), "The wheel describes controls through the notch")
     }
 
     func testSettingsControlsHaveSeparateHitTargetsWithinTheSameArc() {

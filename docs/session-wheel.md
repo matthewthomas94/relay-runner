@@ -3,7 +3,9 @@
 A short, stationary **four-finger trackpad tap** toggles the wheel at the pointer.
 The menu bar also has **Show Session Wheel**. The wheel remains open after the
 fingers lift; selection requires a click. Tap again or click outside to dismiss.
-Wheel actions and clicks in its gaps keep it open. Near a display edge, the complete wheel and
+Wheel actions and clicks in its gaps keep it open. Hovering a segment or an outer
+control names it in the notch with one to three words (Keep awake, Autoplay off,
+Particles 60%); nothing is drawn under the segment titles or beside the pointer. Near a display edge, the complete wheel and
 its outer controls move inside the usable screen area.
 
 The wheel has five segments. The top segment is the session: while a session runs it
@@ -55,7 +57,7 @@ registered project.
   helper once; later toggles and relaunches need no prompt. Its filled lightning bolt
   is white when off and the active tray icon's orange (#FF9502) when on. An hourglass
   means a change is pending, a raised hand means the helper is waiting for your
-  approval (click to cancel), and a warning icon explains a failure in its tooltip.
+  approval (click to cancel), and a warning icon marks a failure.
   See [Keep Awake](#keep-awake).
 - Hover a session to reveal three controls on the arc just outside its slot:
   an icon-only **Play / Stop playback / Replay message**, **Record / Stop recording
@@ -68,7 +70,7 @@ registered project.
   active waveform to send the message to that session; its controls stay available
   afterward. Ending a session frees its slot without closing the wheel.
 - Click **Terminal** to open Workspace directly to the session's terminal. Its
-  tooltip and VoiceOver label name the session. The wheel stays open.
+  VoiceOver label names the session. The wheel stays open.
 - With no session running, click **Start session** in the top slot to start
   the general session without opening Workspace. Session changes update the tile in
   place without replaying the whole wheel's transition; navigating between menus

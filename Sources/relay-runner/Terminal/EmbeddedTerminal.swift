@@ -4096,7 +4096,7 @@ struct SessionReplyBadge: View {
             .padding(.horizontal, 5)
             .frame(minWidth: 16, minHeight: 16)
             .background(Capsule().fill(Color.accentColor))
-            .graphicalTooltip("\(count) unheard \(count == 1 ? "update" : "updates")")
+            .notchHint("\(count) unheard")
             .accessibilityLabel("\(count) unheard \(count == 1 ? "update" : "updates")")
     }
 }

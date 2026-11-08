@@ -26,7 +26,7 @@ struct TTSSettingsTab: View {
                             prominence: .icon,
                             isEnabled: preview.isBusy || !appState.settingsAudioBusy,
                             accessibilityLabel: preview.isBusy ? "Stop preview" : "Preview standard voice",
-                            helpText: "Preview this voice",
+                            helpText: "Preview voice",
                             action: previewSelectedVoice
                         )
                     }

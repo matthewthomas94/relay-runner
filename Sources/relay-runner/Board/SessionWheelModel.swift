@@ -105,7 +105,7 @@ enum SessionWheelNoteAction: Int, CaseIterable {
         }
     }
 
-    /// One or two short words that fit under Notetaker.
+    /// One or two short words: the notch hover descriptor.
     func caption(for phase: MeetingNoteCoordinatorPhase) -> String {
         switch self {
         case .recording: return phase.ownsForeground ? "Save note" : "Start note"
@@ -127,14 +127,6 @@ enum SessionWheelNoteAction: Int, CaseIterable {
         case .recording: return !phase.ownsForeground || phase == .recording || phase == .paused
         case .pause: return phase == .recording || phase == .paused
         case .cancel: return phase == .recording || phase == .paused || phase == .cancelling
-        }
-    }
-
-    func help(for phase: MeetingNoteCoordinatorPhase) -> String {
-        switch self {
-        case .recording where phase.ownsForeground: return "Stop, save and transcribe this note"
-        case .cancel: return "Discard this note and its recording without saving or transcribing"
-        default: return title(for: phase)
         }
     }
 }
@@ -306,11 +298,6 @@ final class SessionWheelModel {
     var isHoveringSettings: Bool { hoveredSlot == SessionWheelShortcut.settings.rawValue }
     var hoveredSettingsControl: SessionWheelSettingsControl? {
         isHoveringSettings ? hoveredControl.map(SessionWheelSettingsControl.init(subdivision:)) : nil
-    }
-    /// Names the hovered submenu control under its parent's title.
-    var hoveredControlCaption: String? {
-        if let session = hoveredSession, let action = hoveredAction { return action.caption(for: session) }
-        return hoveredNoteAction?.caption(for: notePhase) ?? hoveredSettingsControl?.caption
     }
     var submenuSlot: Int? { hoveredSession != nil || isHoveringNoteTaker || isHoveringSettings ? hoveredSlot : nil }
     /// Hovering or dragging the enabled slider previews the particle field.

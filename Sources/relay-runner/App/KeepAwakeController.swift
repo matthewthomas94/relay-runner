@@ -44,6 +44,19 @@ enum KeepAwakeState: Equatable {
         }
     }
 
+    /// The notch hover descriptor: three words at most.
+    var shortStatus: String {
+        switch self {
+        case .off: return "Keep awake off"
+        case .enabling: return "Turning on"
+        case .awaitingApproval: return "Awaiting approval"
+        case .on: return "Keep awake on"
+        case .disabling: return "Restoring sleep"
+        case .failed: return "Keep awake failed"
+        case .restoreNeeded: return "Restore sleep"
+        }
+    }
+
     var status: String {
         switch self {
         case .off: return "Keep Awake is off."

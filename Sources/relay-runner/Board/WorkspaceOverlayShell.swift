@@ -209,7 +209,7 @@ struct WorkspaceMenuBarStrip: View {
                     title: "Update available",
                     systemName: "arrow.down.to.line",
                     accessibilityLabel: "Update available tab, version \(version)",
-                    help: "Download Relay Runner \(version)",
+                    help: "Download update",
                     action: { updater.checkForUpdates() }
                 )
                 .transition(.relayElement)
@@ -233,7 +233,7 @@ private struct WorkspaceTabButton: View {
             title: tab.title,
             selected: selected,
             accessibilityLabel: "\(tab.title) tab",
-            help: "\(tab.title) tab",
+            help: tab.title,
             action: action
         )
     }
@@ -317,7 +317,7 @@ struct WorkspaceNavigationButton: View {
         .focused($isFocused)
         .onHover { isHovered = $0 }
         .accessibilityLabel(accessibilityLabel)
-        .graphicalTooltip(help)
+        .notchHint(help)
     }
 
     private var foregroundColor: Color {

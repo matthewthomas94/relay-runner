@@ -294,7 +294,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(contents.contains("ProjectBoardOverview"))
         XCTAssertTrue(card.contains("Circle()"))
         XCTAssertTrue(card.contains(".accessibilityAddTraits(isSelected ? .isSelected : [])"))
-        XCTAssertTrue(card.contains(".graphicalTooltip("))
+        XCTAssertTrue(card.contains(".notchHint("))
         XCTAssertFalse(card.contains(".help("))
         XCTAssertTrue(contents.contains("TextField(\"Search projects\""))
         XCTAssertTrue(contents.contains("onToggleProject: model.toggleProject(path:)"))

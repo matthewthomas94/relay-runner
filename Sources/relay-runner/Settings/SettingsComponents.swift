@@ -488,7 +488,7 @@ struct SharedActionButtonChrome<Label: View>: View {
         .onHover { isHovered = $0 }
         .animation(presentation.animationDuration > 0 ? RelayMotion.hover : nil, value: presentation)
         .accessibilityLabel(accessibilityLabel)
-        .graphicalTooltip(helpText)
+        .notchHint(helpText)
     }
 }
 

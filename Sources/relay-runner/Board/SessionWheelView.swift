@@ -164,7 +164,6 @@ struct SessionWheelView: View {
         let empty = session == nil && shortcut == nil
         // The session slot reads Terminal while a session runs and Start session otherwise.
         let title = shortcut?.title ?? (session != nil ? SessionWheelSessionSlot.title : startSlot ? "Start session" : "")
-        let caption = model.hoveredSlot == index ? model.hoveredControlCaption : nil
         let sessionHint = session?.isFocused == true
             ? "Open this session's terminal in Workspace."
             : "Switch session. Move outward for session controls."
@@ -206,22 +205,12 @@ struct SessionWheelView: View {
                             }
                         }
                     }
-                    VStack(spacing: 1) {
-                        Text(title)
-                            .font(AppTypography.font(.action, size: 11))
-                            .lineLimit(2).multilineTextAlignment(.center)
-                        RelaySwap(caption, style: .text) { caption in
-                            if let caption {
-                                Text(caption)
-                                    .font(AppTypography.font(.caption))
-                                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                    // A caption under a two-line title overflows downward instead of squeezing it.
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(width: 90, height: 30, alignment: .top)
+                    // Hovered submenu controls name themselves in the notch, not under the title.
+                    Text(title)
+                        .font(AppTypography.font(.action, size: 11))
+                        .lineLimit(2).multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: 90, height: 30, alignment: .top)
                 }
                 .position(geometry.position(slot: index, radius: 119))
                 .opacity(empty && !startSlot ? 0 : 1)
@@ -262,15 +251,14 @@ struct SessionWheelView: View {
                 }
             }
         }
-        .graphicalTooltip(!enabled && startSlot ? model.startUnavailableReason ?? title
-                          : session.map { "\(title): \($0.name)" } ?? title)
+        .notchHint(!enabled && startSlot ? model.startUnavailableReason ?? title : title)
     }
 
     private func actionButton(_ action: SessionWheelAction, session: SessionWheelSession, slot: Int) -> some View {
         let enabled = action.isEnabled(for: session)
         return submenuButton(index: action.rawValue, slot: slot,
                              title: "\(action.title(for: session)) for \(session.name)",
-                             help: enabled ? action.title(for: session) : (action == .message ? "No message yet" : "Recording unavailable"),
+                             help: enabled ? action.caption(for: session) : (action == .message ? "No message" : "Recording unavailable"),
                              symbol: action.symbol(for: session), enabled: enabled,
                              hovered: model.hoveredAction == action && model.hoveredSession?.id == session.id,
                              destructive: action == .stop, level: { recordingLevel(session.id) }) {
@@ -281,7 +269,7 @@ struct SessionWheelView: View {
 
     private func noteActionButton(_ action: SessionWheelNoteAction) -> some View {
         submenuButton(index: action.rawValue, slot: SessionWheelShortcut.noteTaker.rawValue,
-                      title: action.title(for: model.notePhase), help: action.help(for: model.notePhase),
+                      title: action.title(for: model.notePhase), help: action.caption(for: model.notePhase),
                       symbol: action.symbol(for: model.notePhase), enabled: action.isEnabled(for: model.notePhase),
                       hovered: model.hoveredNoteAction == action, destructive: action == .cancel) {
             guard model.isHoveringNoteTaker else { return }
@@ -354,14 +342,14 @@ struct SessionWheelView: View {
             @unknown default: break
             }
         }
-        .graphicalTooltip(enabled ? "Particle intensity \(percent)" : "Turn on Particle field in Settings to adjust intensity")
+        .notchHint(enabled ? "Particles \(percent)" : "Particles off")
     }
 
     private var keepAwakeButton: some View {
         let state = model.keepAwake
         return submenuButton(index: SessionWheelSettingsControl.keepAwake.rawValue, slot: SessionWheelIntensity.slot,
                              title: state.isPending ? state.status : state.actionTitle,
-                             help: "\(KeepAwakeState.label): \(state.status)",
+                             help: state.shortStatus,
                              symbol: SessionWheelKeepAwakeGlyph.Look(state).symbol,
                              // Pending stays legible; the controller ignores clicks until it settles.
                              enabled: true, hovered: model.hoveredSettingsControl == .keepAwake && !state.isPending,
@@ -375,7 +363,7 @@ struct SessionWheelView: View {
     private var autoPlayButton: some View {
         submenuButton(index: SessionWheelSettingsControl.autoPlay.rawValue, slot: SessionWheelIntensity.slot,
                       title: model.autoPlayActionTitle,
-                      help: model.autoPlay ? "Voice auto-play: On" : "Voice auto-play: Off — double-tap Option to play",
+                      help: model.autoPlay ? "Autoplay on" : "Autoplay off",
                       symbol: "forward.fill", enabled: true,
                       hovered: model.hoveredSettingsControl == .autoPlay,
                       destructive: false, isOn: model.autoPlay,
@@ -437,7 +425,7 @@ struct SessionWheelView: View {
         .disabled(!enabled)
         .animation(presentation.animation, value: presentation)
         .accessibilityLabel(title)
-        .graphicalTooltip(help)
+        .notchHint(help)
     }
 
     private var hub: some View {
@@ -455,7 +443,7 @@ struct SessionWheelView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(title)
         .accessibilityHint(detail)
-        .graphicalTooltip(detail.isEmpty ? title : "\(title). \(detail)")
+        .notchHint(model.notice ?? title)
         .onHover { hubHovered = $0 }
     }
 
