@@ -309,6 +309,36 @@ final class SessionWheelModel {
         SessionWheelShortcut(rawValue: index)
     }
 
+    /// The notch hover descriptor for the pointer's target, from the same
+    /// hover state that drives the submenus. Every control view spans the whole
+    /// wheel, so per-view hover would name whichever view is on top instead.
+    func hoverDescriptor(at point: CGPoint) -> String? {
+        let geometry = SessionWheelGeometry.self
+        if hypot(point.x - geometry.center.x, point.y - geometry.center.y) <= geometry.hubRadius {
+            return notice ?? "Close"
+        }
+        if let session = hoveredSession, let action = hoveredAction {
+            guard action.isEnabled(for: session) else {
+                return action == .message ? "No message" : "Recording unavailable"
+            }
+            return action.caption(for: session)
+        }
+        if let action = hoveredNoteAction { return action.caption(for: notePhase) }
+        if let control = hoveredSettingsControl {
+            switch control {
+            case .intensity:
+                return particleFieldEnabled ? "Particles \(SessionWheelIntensity.percent(particleIntensity))" : "Particles off"
+            case .keepAwake: return keepAwake.shortStatus
+            case .autoPlay: return autoPlay ? "Autoplay on" : "Autoplay off"
+            }
+        }
+        guard let hoveredSlot else { return nil }
+        if let shortcut = shortcut(at: hoveredSlot) { return shortcut.title }
+        if slots[hoveredSlot] != nil { return SessionWheelSessionSlot.title }
+        if isStartSlot(hoveredSlot) { return startUnavailableReason ?? "Start session" }
+        return nil
+    }
+
     /// RR-445: with no session running, the first session slot starts the
     /// general session. Other empty session slots stay blank.
     func isStartSlot(_ index: Int) -> Bool {

@@ -18,6 +18,7 @@ struct SessionWheelView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
     @State private var hubHovered = false
+    @State private var hintOwner = UUID()
     @State var menuMotion = SessionWheelMenuMotion()
 
     private let geometry = SessionWheelGeometry.self
@@ -138,6 +139,7 @@ struct SessionWheelView: View {
                 // A slider drag owns the pointer: no hover changes or ticks until it ends.
                 guard !model.isAdjustingIntensity else { return }
                 model.hover(at: point)
+                updateHint(at: point)
                 var target = SessionWheelHaptics.target(at: point, model: model)
                 if menuMotion.motion.isAnimating || menu.identity != SessionWheelMenu(model).identity
                     || tiles.progress < 1 || presentation.progress < 1 {
@@ -150,11 +152,22 @@ struct SessionWheelView: View {
             case .ended:
                 guard !model.isAdjustingIntensity else { return }
                 model.clearHover()
+                NotchHoverDescriptor.hide(owner: hintOwner)
                 hoverFeedback(nil, nil)
             }
         }
+        .onDisappear { NotchHoverDescriptor.hide(owner: hintOwner) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Session wheel")
+    }
+
+    /// Names the hovered segment or outer control in the notch.
+    private func updateHint(at point: CGPoint) {
+        if let hint = model.hoverDescriptor(at: point) {
+            NotchHoverDescriptor.show(hint, owner: hintOwner)
+        } else {
+            NotchHoverDescriptor.hide(owner: hintOwner)
+        }
     }
 
     private func slot(_ index: Int, menu: SessionWheelMenu) -> some View {
@@ -226,6 +239,7 @@ struct SessionWheelView: View {
             ? "Open Notetaker. Move outward for recording controls."
             : shortcut == .settings ? "Open Settings. Move outward for particle intensity, Keep Awake and voice auto-play."
             : shortcut != nil ? "Open \(title)" : session == nil ? "Start the general session" : sessionHint)
+        .accessibilityHint(!enabled && startSlot ? model.startUnavailableReason ?? title : title)
         .accessibilityAction {
             selectSlot(index, false)
         }
@@ -251,7 +265,6 @@ struct SessionWheelView: View {
                 }
             }
         }
-        .notchHint(!enabled && startSlot ? model.startUnavailableReason ?? title : title)
     }
 
     private func actionButton(_ action: SessionWheelAction, session: SessionWheelSession, slot: Int) -> some View {
@@ -327,7 +340,10 @@ struct SessionWheelView: View {
         }
         .contentShape(shape)
         .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.coordinateSpace))
-            .onChanged { adjustIntensity($0.location) }
+            .onChanged {
+                adjustIntensity($0.location)
+                updateHint(at: $0.location)
+            }
             .onEnded { finishIntensity($0.location) })
         .allowsHitTesting(enabled)
         .animation(presentation.animation, value: presentation)
@@ -342,7 +358,6 @@ struct SessionWheelView: View {
             @unknown default: break
             }
         }
-        .notchHint(enabled ? "Particles \(percent)" : "Particles off")
     }
 
     private var keepAwakeButton: some View {
@@ -425,7 +440,7 @@ struct SessionWheelView: View {
         .disabled(!enabled)
         .animation(presentation.animation, value: presentation)
         .accessibilityLabel(title)
-        .notchHint(help)
+        .accessibilityHint(help)
     }
 
     private var hub: some View {
@@ -443,7 +458,6 @@ struct SessionWheelView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(title)
         .accessibilityHint(detail)
-        .notchHint(model.notice ?? title)
         .onHover { hubHovered = $0 }
     }
 

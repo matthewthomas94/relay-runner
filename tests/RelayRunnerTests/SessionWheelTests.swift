@@ -687,6 +687,65 @@ final class SessionWheelTests: XCTestCase {
                                   with: "Sources/relay-runner/Board/SessionWheelView.swift"), encoding: .utf8)
         XCTAssertFalse(source.contains("hoveredControlCaption"), "No caption is drawn under a segment title")
         XCTAssertFalse(source.contains("graphicalTooltip"), "The wheel describes controls through the notch")
+        XCTAssertFalse(source.contains(".notchHint("),
+                       "Controls overlap across the whole wheel, so the model names the hovered target")
+    }
+
+    /// The notch names exactly the segment or outer control under the pointer,
+    /// never whichever overlapping control view happens to be on top.
+    func testHoverDescriptorFollowsTheModelsHoverTarget() {
+        let model = SessionWheelModel()
+        func hint(slot: Int, radius: CGFloat = 119, offset: CGFloat = 0) -> String? {
+            let point = geometry.position(slot: slot, radius: radius, offset: offset)
+            model.hover(at: point)
+            return model.hoverDescriptor(at: point)
+        }
+        XCTAssertEqual(hint(slot: 0), "Start session")
+        XCTAssertEqual(hint(slot: SessionWheelShortcut.history.rawValue), "History")
+        XCTAssertEqual(hint(slot: SessionWheelShortcut.workspace.rawValue), "Workspace")
+        XCTAssertEqual(hint(slot: SessionWheelShortcut.noteTaker.rawValue), "Notetaker")
+        let settings = SessionWheelShortcut.settings.rawValue
+        XCTAssertEqual(hint(slot: settings), "Settings", "The parent alone, not its Autoplay control")
+        XCTAssertEqual(hint(slot: settings, radius: geometry.wheelRadius + 4), "Settings", "The gap keeps the parent")
+        XCTAssertEqual(hint(slot: settings, radius: geometry.actionRadius,
+                            offset: geometry.actionOffset(5, subdivisions: 6)), "Autoplay off")
+        model.autoPlay = true
+        XCTAssertEqual(model.hoverDescriptor(at: geometry.position(slot: settings, radius: geometry.actionRadius,
+                                                                   offset: geometry.actionOffset(5, subdivisions: 6))),
+                       "Autoplay on")
+        XCTAssertEqual(hint(slot: settings, radius: geometry.actionRadius,
+                            offset: geometry.actionOffset(4, subdivisions: 6)), "Keep awake off")
+        XCTAssertEqual(hint(slot: settings, radius: geometry.actionRadius,
+                            offset: geometry.actionOffset(0, subdivisions: 6)), "Particles 60%")
+        model.particleFieldEnabled = false
+        XCTAssertEqual(model.hoverDescriptor(at: geometry.position(slot: settings, radius: geometry.actionRadius)),
+                       "Particles off")
+
+        let noteTaker = SessionWheelShortcut.noteTaker.rawValue
+        _ = hint(slot: noteTaker)
+        XCTAssertEqual(hint(slot: noteTaker, radius: geometry.actionRadius,
+                            offset: geometry.actionOffset(SessionWheelNoteAction.cancel.rawValue)), "Discard")
+        XCTAssertEqual(hint(slot: noteTaker, radius: geometry.actionRadius,
+                            offset: geometry.actionOffset(SessionWheelNoteAction.recording.rawValue)), "Start note")
+
+        model.startUnavailableReason = "Finish notes first"
+        XCTAssertEqual(hint(slot: 0), "Finish notes first")
+        model.startUnavailableReason = nil
+        model.refresh(sessions: [.init(id: "a", name: "general", canPlay: false)])
+        XCTAssertEqual(hint(slot: 0), "Terminal")
+        XCTAssertEqual(hint(slot: 0, radius: geometry.actionRadius, offset: geometry.actionOffset(.message)), "No message")
+        XCTAssertEqual(hint(slot: 0, radius: geometry.actionRadius, offset: geometry.actionOffset(.stop)), "End session")
+
+        model.hover(at: geometry.center)
+        XCTAssertEqual(model.hoverDescriptor(at: geometry.center), "Close")
+        model.notice = "Couldn't start session"
+        XCTAssertEqual(model.hoverDescriptor(at: geometry.center), "Couldn't start session")
+        let outside = CGPoint(x: -30, y: -30)
+        model.hover(at: outside)
+        XCTAssertNil(model.hoverDescriptor(at: outside))
+        for hint in ["Start session", "Finish notes first", "Autoplay off", "Keep awake off", "Particles 60%"] {
+            XCTAssertTrue(NotchHoverDescriptor.isValid(hint), hint)
+        }
     }
 
     func testSettingsControlsHaveSeparateHitTargetsWithinTheSameArc() {
