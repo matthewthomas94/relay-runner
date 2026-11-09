@@ -744,7 +744,7 @@ CODEX_WORKER_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 CLAUDE_WORKER_EFFORTS = CODEX_WORKER_EFFORTS | frozenset({"max"})
 GENERAL_MODEL_OPTIONS = {
     "codex": CODEX_FAMILIES,
-    "claude": {"claude-fable-5-1", "fable", "opus", "sonnet", "haiku"},
+    "claude": {"claude-fable-5-2", "claude-fable-5-1", "fable", "opus", "sonnet", "haiku"},
 }
 BASE_GENERAL_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 AUTO_DISPATCH_SOURCES = frozenset({"ready-sweeper", "dependency-progression", "orchestrator-review-retry"})
@@ -1163,7 +1163,7 @@ def _normalized_general_model(general: dict[str, Any], agent_kind: str) -> str:
 def _general_effort_options(agent_kind: str, model: str) -> frozenset[str]:
     if agent_kind == "codex":
         return BASE_GENERAL_EFFORTS | frozenset({"max", "ultra"})
-    if model in {"claude-fable-5-1", "fable", "opus", "sonnet"}:
+    if model in {"claude-fable-5-2", "claude-fable-5-1", "fable", "opus", "sonnet"}:
         return BASE_GENERAL_EFFORTS | frozenset({"max"})
     return frozenset({"low"})
 
@@ -1190,7 +1190,7 @@ def _inherited_worker_sizing(general: dict[str, Any], agent_kind: str) -> dict[s
         "worker_sizing_rationale": "Inherited provider, model, and effort from Relay Runner General Settings.",
         "worker_provider_notes": (
             "Use my defaults preserves explicit stable provider selections; Codex resolves "
-            "Astra/Sol/Luna then uses model_reasoning_effort and Claude uses --effort."
+            "Astra/Sol/Terra/Luna then uses model_reasoning_effort and Claude uses --effort."
         ),
     }
 

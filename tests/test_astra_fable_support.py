@@ -53,7 +53,7 @@ class AstraFableSupportTests(unittest.TestCase):
 
     def test_config_and_messenger_preserve_new_selections(self):
         for provider, model, effort in (("codex", "astra", "ultra"), ("claude", "claude-fable-5-1", "max"),
-                                        ("claude", "sonnet", "xhigh")):
+                                        ("claude", "claude-fable-5-2", "max"), ("claude", "sonnet", "xhigh")):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / "config.toml"
                 path.write_text(f'[general]\nprovider="{provider}"\nmodel="{model}"\n'
@@ -88,7 +88,8 @@ class AstraFableSupportTests(unittest.TestCase):
 
     def test_worker_selection_and_commands_preserve_models(self):
         for provider, model, effort in (("codex", "astra", "high"), ("codex", "astra", "max"),
-                                        ("codex", "astra", "ultra"), ("claude", "claude-fable-5-1", "max")):
+                                        ("codex", "astra", "ultra"), ("claude", "claude-fable-5-1", "max"),
+                                        ("claude", "claude-fable-5-2", "max")):
             with self.subTest(provider=provider):
                 ticket = {"_raw_fields": {
                     "worker_model": f"{provider}:{model}", "worker_effort": effort,
@@ -106,6 +107,23 @@ class AstraFableSupportTests(unittest.TestCase):
                 self.assertEqual((inherited["model_alias"], inherited["worker_effort"]), (model, effort))
                 with self.assertRaisesRegex(ValueError, "scoped"):
                     orchestrator.resolve_worker_sizing(ticket, "claude" if provider == "codex" else "codex")
+
+    def test_terra_worker_resolves_terra_not_sol(self):
+        terra = {**ASTRA, "id": "gpt-6.1-terra",
+                 "supportedReasoningEfforts": ["none", "low", "medium", "high", "xhigh", "max"]}
+        sol = {**ASTRA, "id": "gpt-6.1-sol"}
+        ticket = {"_raw_fields": {
+            "worker_model": "codex:terra", "worker_effort": "high",
+            "worker_sizing_rationale": "Model compatibility test.", "worker_provider_notes": "none",
+        }}
+        sizing = orchestrator.resolve_worker_sizing(ticket, "codex")
+        self.assertEqual(sizing["model_alias"], "terra")
+        with patch.dict(os.environ, {"RELAY_CODEX_MODEL_LIST_JSON": json.dumps([sol, terra])}):
+            command = orchestrator._agent_command(agent_kind="codex", agent_bin="codex", run=sizing)
+        self.assertEqual(command[command.index("--model") + 1], "gpt-6.1-terra")
+        with patch.dict(os.environ, {"RELAY_CODEX_MODEL_LIST_JSON": json.dumps([sol])}):
+            with self.assertRaisesRegex(RuntimeError, "terra"):
+                orchestrator._agent_command(agent_kind="codex", agent_bin="codex", run=sizing)
 
     def test_worker_extended_efforts_remain_catalog_validated(self):
         for effort in ("max", "ultra"):

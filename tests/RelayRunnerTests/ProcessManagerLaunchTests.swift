@@ -550,6 +550,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertFalse(codexScript.contains("/compact\\r"))
 
         let nativeContextWindows = [
+            "claude-fable-5-2": 1_000_000,
             "claude-fable-5-1": 1_000_000,
             "fable": 1_000_000,
             "opus": 1_000_000,

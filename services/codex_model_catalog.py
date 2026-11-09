@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 
-CODEX_FAMILIES = frozenset({"astra", "sol", "luna"})
+CODEX_FAMILIES = frozenset({"astra", "sol", "terra", "luna"})
 CODEX_DEFAULT_FAMILY = "sol"
 CODEX_MESSENGER_DEFAULT_FAMILY = "luna"
 CODEX_WORKER_TIER_FAMILIES = {
@@ -53,15 +53,13 @@ class CodexModel:
 
 def normalize_codex_family(value: object, *, default_family: str = CODEX_DEFAULT_FAMILY) -> str:
     text = str(value or "").strip().lower()
-    if text == "terra":
-        return "sol"
     if text in CODEX_FAMILIES:
         return text
     if text in {"", "default"}:
         return default_family
     match = _CODEX_FAMILY_RE.match(text)
     if match:
-        return "sol" if match.group("family") == "terra" else match.group("family")
+        return match.group("family")
     if _CODEX_GENERIC_VERSION_RE.match(text):
         return default_family
     return default_family

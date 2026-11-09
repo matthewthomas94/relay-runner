@@ -30,13 +30,14 @@ final class GeneralConfigTests: XCTestCase {
             [
                 GeneralConfig.ModelOption(label: "Astra", value: "astra"),
                 GeneralConfig.ModelOption(label: "Sol", value: "sol"),
+                GeneralConfig.ModelOption(label: "Terra", value: "terra"),
                 GeneralConfig.ModelOption(label: "Luna", value: "luna"),
             ]
         )
     }
 
     func testCodexFamiliesAreCodexOnlyPlanGatedOptions() {
-        let models = ["astra", "sol", "luna"]
+        let models = ["astra", "sol", "terra", "luna"]
 
         for model in models {
             XCTAssertTrue(GeneralConfig.isModel(model, validFor: .codex))
@@ -54,6 +55,7 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(
             GeneralConfig.claudeModelOptions,
             [
+                GeneralConfig.ModelOption(label: "Fable 5.2", value: "claude-fable-5-2"),
                 GeneralConfig.ModelOption(label: "Fable 5.1", value: "claude-fable-5-1"),
                 GeneralConfig.ModelOption(label: "Fable", value: "fable"),
                 GeneralConfig.ModelOption(label: "Opus", value: "opus"),
@@ -88,6 +90,10 @@ final class GeneralConfigTests: XCTestCase {
             ["low", "medium", "high", "xhigh", "max", "ultra"]
         )
         XCTAssertEqual(
+            codexMatrix["terra"],
+            ["low", "medium", "high", "xhigh", "max"]
+        )
+        XCTAssertEqual(
             codexMatrix["luna"],
             ["low", "medium", "high", "xhigh", "max"]
         )
@@ -98,6 +104,7 @@ final class GeneralConfigTests: XCTestCase {
                 .map { ($0.model, $0.efforts) }
         )
         XCTAssertNil(claudeMatrix["best"])
+        XCTAssertEqual(claudeMatrix["claude-fable-5-2"], ["low", "medium", "high", "xhigh", "max"])
         XCTAssertEqual(claudeMatrix["fable"], ["low", "medium", "high", "xhigh", "max"])
         XCTAssertEqual(claudeMatrix["opus"], ["low", "medium", "high", "xhigh", "max"])
         XCTAssertEqual(claudeMatrix["sonnet"], ["low", "medium", "high", "xhigh", "max"])
@@ -328,7 +335,7 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(codex.messenger_effort, "high")
         XCTAssertEqual(
             GeneralConfig.normalizedMessengerModel("gpt-5.6-terra", for: .codex),
-            "sol"
+            "terra"
         )
     }
 
