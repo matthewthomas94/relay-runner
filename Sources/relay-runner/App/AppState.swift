@@ -1054,15 +1054,14 @@ final class AppState {
             return true
         }
         keepAwake.onStateChange = { [weak self] previous, next in self?.keepAwakeStateChanged(from: previous, to: next) }
-        sessionWheel.focusSession = { [weak self] in self?.switchSessionFromWheel(contextID: $0) }
+        // RR-469: the session slot opens the active tab's terminal; its
+        // submenu switches, adds, removes and turns off PM tabs.
+        sessionWheel.focusSession = { [weak self] _ in
+            guard let self else { return }
+            self.switchSessionFromWheel(contextID: self.activeContext.id)
+        }
         sessionWheel.startSession = { [weak self] in self?.newSession(showsWorkspaceOnLaunch: false) ?? false }
-        sessionWheel.sessionAction = { [weak self] id, action in
-            self?.performSessionWheelAction(contextID: id, action: action) ?? false
-        }
-        sessionWheel.recordingLevel = { [weak self] id in
-            guard let self, let key = self.sessionRegistry.spool(for: id)?.key else { return 0 }
-            return self.sttEngine?.recordingLevel(forSessionKey: key) ?? 0
-        }
+        sessionWheel.tabAction = { [weak self] in self?.performTabWheelAction($0) ?? false }
         self.updateRelaunchObserver = NotificationCenter.default.addObserver(
             forName: .relayRunnerWillRelaunchForUpdate,
             object: nil,
@@ -1361,11 +1360,138 @@ final class AppState {
         sessionRegistry.liveContextIDs.compactMap { assistantSessionStore.document.bindings[$0]?.context.repositoryPath }
     }
 
-    /// The live sessions the wheel lists, labelled with their context.
+    /// The live sessions, labelled as their PM tabs are.
     private var liveSessions: [(id: String, name: String)] {
-        sessionRegistry.liveContextIDs.map { id in
-            (id, assistantSessionStore.document.bindings[id]?.context.displayName ?? id)
+        sessionRegistry.liveContextIDs.map { id in (id, sessionLabel(contextID: id)) }
+    }
+
+    // MARK: - PM tabs (RR-469)
+
+    /// One PM tab in the Workspace terminal's tab strip and the wheel.
+    struct PMTab: Identifiable, Equatable {
+        let id: String
+        let name: String
+        let isLive: Bool
+        let isActive: Bool
+        let unreadCount: Int
+    }
+
+    /// The PM tabs in the order they opened. A tab stays listed while it is
+    /// turned off or its provider has exited, until it is removed.
+    private(set) var pmTabIDs: [String] = []
+
+    var pmTabs: [PMTab] {
+        pmTabIDs.map { id in
+            let live = sessionRegistry.isLive(id)
+            return PMTab(id: id, name: sessionLabel(contextID: id), isLive: live,
+                         isActive: live && id == activeContext.id, unreadCount: sessionReplyBadges[id] ?? 0)
         }
+    }
+
+    static let pmTabLimitMessage = EmbeddedSessionRegistry.capMessage
+
+    /// Why another tab cannot open now; nil when it can.
+    var pmTabUnavailableReason: String? {
+        if !sessionRegistry.hasLiveSessions { return "No session" }
+        if pmTabIDs.count >= EmbeddedSessionRegistry.maxConcurrentSessions { return "Nine tabs open" }
+        if pendingSessionLaunchID != nil { return "Tab starting" }
+        if meetingNoteSnapshot.phase.ownsForeground { return "Finish notes first" }
+        return nil
+    }
+
+    /// A general tab reads "PM n" by its position; another project keeps its name.
+    func sessionLabel(contextID: String) -> String {
+        let name = assistantSessionStore.document.bindings[contextID]?.context.displayName
+            ?? AssistantSessionContext.baseID(contextID)
+        guard name == "general", let index = pmTabIDs.firstIndex(of: contextID) else { return name }
+        return "PM \(index + 1)"
+    }
+
+    /// Open another general PM tab beside the running ones. It gets the first
+    /// tab's instructions, MCP servers and scope tokens, and its own provider
+    /// session. Refused, changing nothing, at nine tabs.
+    @discardableResult
+    func openPMTab(showsTerminal: Bool = true) -> Bool {
+        guard allowsAppShellAccess, sessionRegistry.hasLiveSessions else { return false }
+        guard pmTabIDs.count < EmbeddedSessionRegistry.maxConcurrentSessions else {
+            refusePMTab()
+            return false
+        }
+        let tab = String(UUID().uuidString.lowercased().prefix(8))
+        return newSession(showsWorkspaceOnLaunch: showsTerminal, tab: tab)
+    }
+
+    private func refusePMTab() {
+        contextSwitchMessage = Self.pmTabLimitMessage
+        stateMachine.showProgramStatus(title: "PM tab limit reached", body: Self.pmTabLimitMessage)
+        syncNotchActivitySurface()
+    }
+
+    /// Make a tab active: voice, replies and the terminal follow it. An off
+    /// tab is turned back on, resuming its conversation.
+    @discardableResult
+    func selectPMTab(_ contextID: String, showsTerminal: Bool = true) -> Bool {
+        guard pmTabIDs.contains(contextID),
+              let context = assistantSessionStore.document.bindings[contextID]?.context else { return false }
+        if contextID == activeContext.id, sessionRegistry.isLive(contextID) {
+            if showsTerminal { programBoardOverlay.showTerminal() }
+            return true
+        }
+        return newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: showsTerminal, tab: context.tab)
+    }
+
+    /// End a tab and drop it. Removing the last live tab ends the session, as End does.
+    func removePMTab(_ contextID: String) {
+        guard pmTabIDs.contains(contextID) else { return }
+        guard sessionRegistry.liveContextIDs.contains(where: { $0 != contextID }) else {
+            endSession()
+            return
+        }
+        let context = assistantSessionStore.document.bindings[contextID]?.context
+        if sessionRegistry.isLive(contextID), let context {
+            cancelRecording(targeting: contextID)
+            endSession(context: context)
+        }
+        pmTabIDs.removeAll { $0 == contextID }
+        if let context { try? assistantSessionStore.removeTab(context: context) }
+        publishConversationState()
+    }
+
+    /// Stop a tab's provider but keep the tab; turning it on resumes it. The
+    /// last live tab cannot be turned off.
+    @discardableResult
+    func turnOffPMTab(_ contextID: String) -> Bool {
+        guard sessionRegistry.isLive(contextID),
+              sessionRegistry.liveContextIDs.contains(where: { $0 != contextID }),
+              let context = assistantSessionStore.document.bindings[contextID]?.context else { return false }
+        cancelRecording(targeting: contextID)
+        endSession(context: context)
+        return true
+    }
+
+    private func cancelRecording(targeting contextID: String) {
+        if let key = sessionRegistry.spool(for: contextID)?.key,
+           sttEngine?.recordingVoiceTargetSessionKey == key {
+            sttEngine?.cancelRecording()
+        }
+    }
+
+    /// The session ended: forget every extra tab. The first tab's binding
+    /// stays for Start Session's resume.
+    private func discardPMTabs() {
+        for id in pmTabIDs {
+            if let context = assistantSessionStore.document.bindings[id]?.context, context.tab != nil {
+                try? assistantSessionStore.removeTab(context: context)
+            }
+        }
+        pmTabIDs = []
+        let active = assistantSessionStore.activeContext
+        if active.tab != nil {
+            let first = active.inTab(nil)
+            try? assistantSessionStore.select(first, provider: config.general.provider.rawValue, model: config.general.model)
+            try? assistantSessionStore.removeTab(context: active)
+        }
+        publishConversationState()
     }
 
     /// RR-401: badge counts keyed by project path, for the board's project cards.
@@ -1393,7 +1519,10 @@ final class AppState {
     private func focusLiveSession(contextID: String, showsTerminal: Bool) {
         guard contextID != activeContext.id,
               let context = assistantSessionStore.document.bindings[contextID]?.context else { return }
-        if context.isGeneral {
+        if context.tab != nil || pmTabIDs.contains(contextID) {
+            // RR-469: a PM tab is focused by its own context id.
+            _ = selectPMTab(contextID, showsTerminal: showsTerminal)
+        } else if context.isGeneral {
             selectGeneralContext(showsTerminal: showsTerminal)
         } else if let path = context.repositoryPath {
             selectProjectContext(repositoryPath: path, showsTerminal: showsTerminal)
@@ -1536,7 +1665,7 @@ final class AppState {
                 spoolDirectory: spool.directory,
                 appSessionID: owner["app_session_id"] ?? "",
                 recoveryGeneration: continuityRecoveryGenerationBySession[sessionID] ?? owner["recovery_generation"] ?? "",
-                projectName: binding.context.displayName,
+                projectName: sessionLabel(contextID: contextID),
                 focus: contextID == focusedID,
                 liveSessionKeys: liveKeys
             )
@@ -1587,7 +1716,7 @@ final class AppState {
             ? sttEngine.recordingVoiceTargetSessionKey
             : sttEngine.voiceTargetSessionKey
         let contextID = live.first { key != nil && sessionRegistry.spool(for: $0)?.key == key } ?? voiceContextID
-        return contextID.flatMap { assistantSessionStore.document.bindings[$0]?.context.displayName }
+        return contextID.map(sessionLabel(contextID:))
     }
 
     /// The project whose reply is playing, shown while several sessions share
@@ -1597,9 +1726,7 @@ final class AppState {
             sessionKey: stateMachine.speechPresentation?.sessionKey,
             liveContextIDs: sessionRegistry.liveContextIDs,
             spoolKey: { [sessionRegistry] in sessionRegistry.spool(for: $0)?.key },
-            displayName: { [assistantSessionStore] in
-                assistantSessionStore.document.bindings[$0]?.context.displayName
-            }
+            displayName: { [weak self] in self?.sessionLabel(contextID: $0) }
         )
     }
 
@@ -2089,7 +2216,8 @@ final class AppState {
                     workingDirectory: launch.general.working_directory,
                     suppressesStartupGreeting: true,
                     recoveryGeneration: context.recoveryGeneration,
-                    preservesVoiceBridge: true
+                    preservesVoiceBridge: true,
+                    tab: exitedContext?.tab
                 )
                 if !started {
                     stateMachine.showProgramStatus(
@@ -2109,7 +2237,7 @@ final class AppState {
         }
         resetActiveSessionState()
         // Retry once with a new conversation; a fresh launch never resumes, so this can't loop.
-        if let refusedResume, newSession(workingDirectory: refusedResume.repositoryPath) { return }
+        if let refusedResume, newSession(workingDirectory: refusedResume.repositoryPath, tab: refusedResume.tab) { return }
         if let earlyFailureMessage {
             statusText = "Session failed before provider readiness"
             stateMachine.showProgramStatus(
@@ -2143,6 +2271,8 @@ final class AppState {
         // Cancel any in-flight recording too, so the mic indicator clears.
         sttEngine?.cancelRecording()
         stateMachine.reset()
+        // RR-469: the session ended, so its extra PM tabs go too.
+        discardPMTabs()
         refreshWorkspaceActivity(invalidateRoute: true)
     }
 
@@ -2496,7 +2626,7 @@ final class AppState {
             return true
         }
         pendingContextSelection = nil
-        return newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: showsTerminal)
+        return newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: showsTerminal, tab: context.tab)
     }
 
     private func reserveContextContinuation(_ request: [String: String], destination: AssistantSessionContext) throws -> String {
@@ -2642,7 +2772,7 @@ final class AppState {
                assistantSessionStore.pendingContinuation == nil || continuationSourceReady {
                 pendingContextSelection = nil
                 _ = newSession(workingDirectory: selection.repositoryPath,
-                               showsWorkspaceOnLaunch: pendingContextSelectionShowsTerminal)
+                               showsWorkspaceOnLaunch: pendingContextSelectionShowsTerminal, tab: selection.tab)
                 return
             }
             if try assistantSessionStore.saveIfIdle(context: activeContext, now: now,
@@ -2666,7 +2796,8 @@ final class AppState {
         suppressesStartupGreeting: Bool = false,
         recoveryGeneration: String? = nil,
         preservesVoiceBridge: Bool = false,
-        bypassesNoteTransition: Bool = false
+        bypassesNoteTransition: Bool = false,
+        tab: String? = nil
     ) -> Bool {
         if !bypassesNoteTransition, meetingNoteSnapshot.phase.ownsForeground {
             return transitionFromNoteToSession(
@@ -2700,7 +2831,8 @@ final class AppState {
         do {
             let preparedContext = try Self.prepareSessionContext(workingDirectory: workingDirectory, registry: projectRegistryV2)
             projectScopeToken = preparedContext.projectScopeToken
-            context = preparedContext.context
+            // RR-469: an extra PM tab is the same project in its own context.
+            context = preparedContext.context.inTab(tab)
             contextWorkingDirectory = preparedContext.workingDirectory
         } catch {
             if requestedProject.isEmpty || AssistantSessionStore.samePath(requestedProject, AssistantSessionStore.filesDirectory.path) {
@@ -2728,6 +2860,11 @@ final class AppState {
             return true
         }
         guard pendingSessionLaunchID == nil else { return false }
+        // RR-469: nine tabs in all, live or off, however the tab is started.
+        if !pmTabIDs.contains(context.id), pmTabIDs.count >= EmbeddedSessionRegistry.maxConcurrentSessions {
+            refusePMTab()
+            return false
+        }
         let previousContext = activeContext
         let session: EmbeddedTerminalSession
         switch sessionRegistry.admit(contextID: context.id) {
@@ -2736,11 +2873,11 @@ final class AppState {
         case .focusedExisting:
             // Recovery relaunches only an exited provider.
             return false
-        case .refused(let message):
-            contextSwitchMessage = message
-            stateMachine.showProgramStatus(title: "Session limit reached", body: message)
+        case .refused:
+            refusePMTab()
             return false
         }
+        if !pmTabIDs.contains(context.id) { pmTabIDs.append(context.id) }
         var previousProcesses: [AssistantManagedProviderProcess] = []
         do {
             try assistantSessionStore.reconcile(context: previousContext, activeRunIDs: assistantRunIDs(for: previousContext),
@@ -3216,10 +3353,6 @@ final class AppState {
         model.autoPlay = config.tts.auto_play
         model.particleFieldEnabled = config.awareness.screen_glow
         if !model.isAdjustingIntensity { model.particleIntensity = config.awareness.glow_intensity }
-        let recording = sttEngine?.isRecording == true
-        let recordingKey = sttEngine?.recordingVoiceTargetSessionKey
-        let ready = sttEngine != nil && sttSetupSucceeded && permissions.microphone == .granted
-            && !meetingNoteSnapshot.phase.ownsForeground
         if pendingSessionLaunchID != nil {
             model.startUnavailableReason = "Session starting"
         } else if meetingNoteSnapshot.phase.ownsForeground {
@@ -3227,69 +3360,43 @@ final class AppState {
         } else {
             model.startUnavailableReason = nil
         }
-        model.refresh(sessions: liveSessions.map { tab in
-            let spool = sessionRegistry.spool(for: tab.id)
-            let key = spool?.key
-            let playback = sessionWheelPlayback(spool: spool)
-            return SessionWheelSession(
-                id: tab.id, name: tab.name, unreadCount: sessionReplyBadges[tab.id] ?? 0,
-                isFocused: tab.id == activeContext.id,
-                isRecording: recording && key != nil && key == recordingKey,
-                canRecord: SessionWheelRecording.canToggle(targetKey: key, recording: recording,
-                                                          recordingKey: recordingKey, ready: ready),
-                canPlay: playback != nil,
-                playback: playback ?? .replay
-            )
-        })
+        // RR-469: one session slot for every tab, so switching tabs keeps the
+        // submenu open; its segments are the tabs.
+        let tabs = pmTabs
+        model.tabs = tabs.map {
+            SessionWheelTab(id: $0.id, name: $0.name, isActive: $0.isActive, isLive: $0.isLive, unreadCount: $0.unreadCount)
+        }
+        model.addTabUnavailableReason = pmTabUnavailableReason
+        let unread = tabs.filter { !$0.isActive }.reduce(0) { $0 + $1.unreadCount }
+        model.refresh(sessions: sessionRegistry.hasLiveSessions
+            ? [SessionWheelSession(id: Self.wheelSessionID, name: sessionLabel(contextID: activeContext.id),
+                                   unreadCount: unread, isFocused: true)]
+            : [])
     }
 
-    private func sessionWheelPlayback(spool: VoiceSessionSpool?) -> SessionVoicePlayback? {
-        guard let spool, let key = spool.key else { return nil }
-        return SessionVoicePlayback.resolve(
-            live: stateMachine.sessionPlayback[key],
-            unreadCount: VoiceReplyBadge.load(path: spool.replyBadge).unreadCount,
-            hasStoredReply: VoiceReplyBadge.hasStoredReply(path: spool.replyBadge)
-        )
-    }
+    static let wheelSessionID = "pm-session"
 
-    static func sessionPlaybackMessage(sessionKey: String, action: SessionVoicePlayback) -> String? {
-        guard let data = try? JSONSerialization.data(withJSONObject: ["session_key": sessionKey, "action": action.rawValue]),
-              let json = String(data: data, encoding: .utf8) else { return nil }
-        return "__SESSION_PLAYBACK__:" + json
-    }
-
-    private func performSessionWheelAction(contextID: String, action: SessionWheelAction) -> Bool {
-        guard sessionRegistry.isLive(contextID),
-              let context = assistantSessionStore.document.bindings[contextID]?.context else { return false }
-        switch action {
-        case .message:
-            guard let spool = sessionRegistry.spool(for: contextID),
-                  let playback = sessionWheelPlayback(spool: spool), let key = spool.key,
-                  let message = Self.sessionPlaybackMessage(sessionKey: key, action: playback),
-                  SocketClient.bridgeSend(message) else { return false }
-            // Stopping a playing reply dismisses it at once, exactly like double-tap Control.
-            if playback == .stop { stateMachine.cancelSpeechFromWheel() }
+    private func performTabWheelAction(_ item: SessionWheelSessionItem) -> Bool {
+        guard allowsAppShellAccess, sessionRegistry.hasLiveSessions else { return false }
+        switch item {
+        case .tab(let tab):
+            guard tab.id != activeContext.id || !tab.isLive else { return true }
+            let name = tab.name
+            let recording = sttEngine?.isRecording == true
+            guard selectPMTab(tab.id, showsTerminal: false) else { return false }
+            showSessionSwitchNotice(SessionSwitchNotice(
+                switchingTo: name, focused: activeContext.id == tab.id,
+                pending: pendingContextSelection?.id == tab.id || pendingSessionLaunchID != nil,
+                recording: recording
+            ))
             return true
-        case .recording:
-            guard let engine = sttEngine,
-                  let key = sessionRegistry.spool(for: contextID)?.key,
-                  SessionWheelRecording.canToggle(targetKey: key, recording: engine.isRecording,
-                                                  recordingKey: engine.recordingVoiceTargetSessionKey,
-                                                  ready: sttSetupSucceeded && permissions.microphone == .granted
-                                                    && !meetingNoteSnapshot.phase.ownsForeground) else { return false }
-            remoteDeviceSession.userTookOver()
-            if !engine.isRecording {
-                guard newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: false),
-                      activeContext.id == contextID, syncVoiceFocus(force: true) else { return false }
-            }
-            return engine.toggleRecording(forSessionKey: key)
-        case .stop:
-            if let key = sessionRegistry.spool(for: contextID)?.key,
-               sttEngine?.recordingVoiceTargetSessionKey == key {
-                sttEngine?.cancelRecording()
-            }
-            endSession(context: context)
+        case .control(.add):
+            return openPMTab(showsTerminal: false)
+        case .control(.remove):
+            removePMTab(activeContext.id)
             return true
+        case .control(.turnOff):
+            return turnOffPMTab(activeContext.id)
         }
     }
 
@@ -4537,7 +4644,7 @@ final class AppState {
                     engine.playDetectedAt = nil
                     self.onboarding.noteTutorialPlaybackRequested()
                     self.stateMachine.dismissSessionPrompt()
-                    self.newSession(workingDirectory: self.activeContext.workingDirectory)
+                    self.newSession(workingDirectory: self.activeContext.workingDirectory, tab: self.activeContext.tab)
                 } else if CapsLockGesture.isCapsLockOn() != self.sessionPromptCapsState {
                     // Any Caps Lock toggle → dismiss prompt immediately
                     if engine.isRecording { engine.cancelRecording() }
@@ -4977,7 +5084,8 @@ final class AppState {
                 workingDirectory: launch.general.working_directory,
                 suppressesStartupGreeting: true,
                 recoveryGeneration: request.recoveryGeneration,
-                preservesVoiceBridge: preservesVoiceBridge
+                preservesVoiceBridge: preservesVoiceBridge,
+                tab: voiceContext.tab
             )
             if applied {
                 releasedContinuityProviderTargets.remove(providerTargetKey)

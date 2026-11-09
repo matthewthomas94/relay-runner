@@ -3,25 +3,6 @@ import XCTest
 
 /// RR-401: background-session replies are badged, then read out on request.
 final class VoiceReplyBadgeTests: XCTestCase {
-    func testSessionPlaybackUsesLiveQueueBeforeSavedReplayAndIgnoresOutcomeBadges() {
-        XCTAssertEqual(SessionVoicePlayback.resolve(live: .play, unreadCount: 0, hasStoredReply: false), .play)
-        XCTAssertEqual(SessionVoicePlayback.resolve(live: .stop, unreadCount: 2, hasStoredReply: true), .stop)
-        XCTAssertEqual(SessionVoicePlayback.resolve(live: .replay, unreadCount: 1, hasStoredReply: true), .play)
-        XCTAssertEqual(SessionVoicePlayback.resolve(live: .replay, unreadCount: 0, hasStoredReply: false), .replay)
-        XCTAssertEqual(SessionVoicePlayback.resolve(live: nil, unreadCount: 0, hasStoredReply: true), .replay)
-        XCTAssertNil(SessionVoicePlayback.resolve(live: nil, unreadCount: 0, hasStoredReply: false))
-    }
-
-    func testPlaybackControlsCarrySessionAndExplicitAction() throws {
-        for action in [SessionVoicePlayback.play, .replay, .stop] {
-            let message = try XCTUnwrap(AppState.sessionPlaybackMessage(sessionKey: "context-a", action: action))
-            XCTAssertTrue(message.hasPrefix("__SESSION_PLAYBACK__:"))
-            let payload = try XCTUnwrap(JSONSerialization.jsonObject(
-                with: Data(message.dropFirst("__SESSION_PLAYBACK__:".count).utf8)) as? [String: String])
-            XCTAssertEqual(payload, ["session_key": "context-a", "action": action.rawValue])
-        }
-    }
-
     @MainActor
     func testPlaybackSnapshotSurvivesRecordingAndDoesNotReplaceTheNotchState() {
         let state = StateMachine()
@@ -52,18 +33,5 @@ final class VoiceReplyBadgeTests: XCTestCase {
             VoiceReplyBadge(unreadCount: 1, outcomeCount: 2)
         )
         XCTAssertEqual(VoiceReplyBadge.load(path: spool.replyBadge).count, 3)
-    }
-
-    func testWheelPlaybackAvailabilityRequiresALatestStoredMessage() throws {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: url) }
-        XCTAssertFalse(VoiceReplyBadge.hasStoredReply(path: url.path))
-        for text in ["invalid", "{}", #"{"replies":[]}"#, #"{"replies":[{"text":"Old"},{"text":" "}]}"#] {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            XCTAssertFalse(VoiceReplyBadge.hasStoredReply(path: url.path))
-        }
-        try #"{"unread_count":0,"replies":[{"text":"Ready to replay"}]}"#
-            .write(to: url, atomically: true, encoding: .utf8)
-        XCTAssertTrue(VoiceReplyBadge.hasStoredReply(path: url.path))
     }
 }

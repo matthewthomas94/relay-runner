@@ -193,7 +193,9 @@ final class AssistantContextLifecycleTests: XCTestCase {
         XCTAssertTrue(switching.contains(".filter { !sessionRegistry.isLive($0.context.id) }"))
         XCTAssertTrue(switching.contains("switch sessionRegistry.admit(contextID: context.id)"))
         XCTAssertFalse(switching.contains("embeddedTerminal.end()"))
-        XCTAssertTrue(switching.contains("case .refused(let message):"))
+        XCTAssertTrue(switching.contains("case .refused:"))
+        // RR-469: nine PM tabs in all, however the tab starts.
+        XCTAssertTrue(switching.contains("pmTabIDs.count >= EmbeddedSessionRegistry.maxConcurrentSessions"))
         let endStart = try XCTUnwrap(source.range(of: "    func endSession(context: AssistantSessionContext) {"))
         let endBody = String(source[endStart.lowerBound...]).components(separatedBy: "\n    }\n")[0]
         XCTAssertTrue(endBody.contains("sessionRegistry.end(contextID: context.id, retainingSpool: bridgeTargetsContext)"))
@@ -214,7 +216,7 @@ final class AssistantContextLifecycleTests: XCTestCase {
         // A resume the provider refused at startup is forgotten, then retried fresh once.
         XCTAssertTrue(exitBody.contains("sessionRegistry.sessions[contextID]?.providerExitedBeforeReadiness == true"))
         XCTAssertTrue(exitBody.contains("try assistantSessionStore.forgetNativeSession(context: exitedContext)"))
-        XCTAssertTrue(exitBody.contains("if let refusedResume, newSession(workingDirectory: refusedResume.repositoryPath) { return }"))
+        XCTAssertTrue(exitBody.contains("if let refusedResume, newSession(workingDirectory: refusedResume.repositoryPath, tab: refusedResume.tab) { return }"))
         XCTAssertTrue(source.contains("if nativeResumeID != nil { resumingContextIDs.insert(context.id) } else { resumingContextIDs.remove(context.id) }"))
         XCTAssertTrue(switching.contains("try assistantSessionStore.select(context,"))
         XCTAssertTrue(switching.contains("for process in previousProcesses"))

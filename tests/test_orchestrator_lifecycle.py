@@ -171,6 +171,64 @@ class OrchestratorLifecycleTests(unittest.TestCase):
             self.assertEqual(len(pending), 1)
             self.assertEqual(pending[0]["kind"], "run-merged")
 
+    def test_messenger_outcomes_reach_only_the_dispatching_pm_tab(self):
+        """RR-469: tabs share a project; a ticket's outcomes follow its dispatcher."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessengerOutcomeStore(Path(tmp) / "outcomes.db")
+            board = Path(tmp) / "board"
+            board.mkdir()
+            pm = str(Path(tmp) / "general-tasks")
+            store.bind_dispatcher(repo_path=str(board), ticket_id="RR-1", session_key="tab-a")
+            store.bind_dispatcher(repo_path=str(board), ticket_id="RR-2", session_key="tab-b")
+
+            def record(ticket_id: str, repo: str) -> None:
+                store.record(repo_path=repo, provider_key="claude", payload={
+                    "text": f"{ticket_id} merged",
+                    "trace_event": {"kind": "run-merged", "message": f"{ticket_id} merged",
+                                    "source": "orchestrator", "ticket_id": ticket_id, "run_id": 1},
+                })
+
+            record("RR-1", str(board))
+            record("RR-2", str(board))
+            record("RR-3", pm)  # dispatched by no tab: per-project routing
+
+            def tickets(key: str, live: list[str]) -> list[str]:
+                return [row["ticket_id"] for row in store.pending(
+                    repo_path=pm, session_key=key, live_session_keys=live)]
+
+            self.assertEqual(tickets("tab-a", ["tab-a", "tab-b"]), ["RR-1", "RR-3"])
+            self.assertEqual(tickets("tab-b", ["tab-a", "tab-b"]), ["RR-2", "RR-3"])
+            # Tab B closed: tab A takes over its outcomes for the shared project.
+            self.assertEqual(tickets("tab-a", ["tab-a"]), ["RR-1", "RR-3"])
+            record("RR-4", pm)
+            store.bind_dispatcher(repo_path=pm, ticket_id="RR-5", session_key="tab-b")
+            record("RR-5", pm)
+            self.assertEqual(tickets("tab-a", ["tab-a"]), ["RR-1", "RR-3", "RR-4", "RR-5"])
+            # A manual bridge without a session key still hears its project.
+            self.assertEqual([row["ticket_id"] for row in store.pending(repo_path=pm)], ["RR-3", "RR-4", "RR-5"])
+
+    def test_messenger_outcome_store_migrates_v1_pending_outcomes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "outcomes.db"
+            with sqlite3.connect(path) as conn:
+                conn.executescript("""
+                CREATE TABLE messenger_outcomes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, event_key TEXT NOT NULL UNIQUE,
+                    repo_path TEXT NOT NULL, provider_key TEXT, kind TEXT NOT NULL, ticket_id TEXT,
+                    run_id INTEGER, message TEXT NOT NULL, payload_json TEXT NOT NULL,
+                    created_at REAL NOT NULL, delivered_at REAL,
+                    delivery_attempts INTEGER NOT NULL DEFAULT 0);
+                PRAGMA user_version = 1;
+                """)
+                conn.execute(
+                    "INSERT INTO messenger_outcomes(event_key, repo_path, kind, message, payload_json, created_at) "
+                    "VALUES ('k', ?, 'run-merged', 'RR-9 merged', '{}', 1)",
+                    (str(Path(tmp).resolve()),),
+                )
+            store = MessengerOutcomeStore(path)
+            pending = store.pending(repo_path=tmp, session_key="tab-a", live_session_keys=["tab-a"])
+            self.assertEqual([row["message"] for row in pending], ["RR-9 merged"])
+
     def test_daemon_lifecycle_emit_updates_state_and_queues_messenger_outcome(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

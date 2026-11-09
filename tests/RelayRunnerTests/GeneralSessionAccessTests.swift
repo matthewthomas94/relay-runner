@@ -111,6 +111,10 @@ final class GeneralSessionAccessTests: XCTestCase {
         XCTAssertTrue(fixture.service.validateScopeToken(byPath).isValid)
         let byName = try GeneralSessionAccess.issueToken(for: "beta", requestingContextID: generalContext, registry: fixture.service)
         XCTAssertEqual(byName.projectID, fixture.beta.projectID)
+        // RR-469: every PM tab of the general session has the same access.
+        let tab = AssistantSessionContext.tabID(generalContext, tab: "a1b2c3d4")
+        XCTAssertEqual(try GeneralSessionAccess.issueToken(for: "beta", requestingContextID: tab, registry: fixture.service).projectID,
+                       fixture.beta.projectID)
 
         let outside = root.appendingPathComponent("outside", isDirectory: true)
         try makeGitRepo(at: outside)
@@ -123,7 +127,7 @@ final class GeneralSessionAccessTests: XCTestCase {
         XCTAssertThrowsError(try GeneralSessionAccess.issueToken(for: "/", requestingContextID: generalContext, registry: fixture.service))
 
         let projectContext = AssistantSessionContext.project(try fixture.service.scopeToken(matching: fixture.alpha.lastResolvedPath)).id
-        for context in [projectContext, "general", nil] as [String?] {
+        for context in [projectContext, "general", nil, AssistantSessionContext.tabID(projectContext, tab: "x")] as [String?] {
             XCTAssertThrowsError(try GeneralSessionAccess.issueToken(for: fixture.beta.lastResolvedPath, requestingContextID: context,
                                                                     registry: fixture.service)) { error in
                 XCTAssertEqual(error as? GeneralSessionAccess.IssueError, .notGeneralSession)

@@ -962,6 +962,56 @@ Saved through the daemon-owned typed writer.
         self.assertTrue(retried["idempotent"])
         self.assertIn(".orchestrator/REP-1.md", self.store.snapshot().files)
 
+    def test_concurrent_create_ticket_from_two_pm_tabs_gets_distinct_ids_on_relay_artifacts(self):
+        """RR-469: two PM tabs authoring on one board at the same moment."""
+        start = __import__("threading").Barrier(2)
+
+        def create(tab: str) -> str:
+            start.wait(timeout=10)
+            claim = self.daemon.artifact_board_claim_next_id(
+                repo_path=str(self.repo),
+                project_scope_token=self.scope_token(),
+                request_id=f"pm-tab-{tab}-claim",
+            )
+            ticket_id = claim["ticket_id"]
+            markdown = f"""---
+id: {ticket_id}
+title: Written by PM tab {tab}
+status: backlog
+priority: medium
+execution_mode: implementation
+depends_on: []
+run_id: null
+canceled: false
+order: 1
+---
+
+## Description
+
+Concurrent authoring from tab {tab}.
+""".encode("utf-8")
+            self.daemon.artifact_board_write_ticket(
+                repo_path=str(self.repo),
+                project_scope_token=self.scope_token(),
+                ticket_id=ticket_id,
+                markdown_base64=base64.b64encode(markdown).decode("ascii"),
+                request_id=f"pm-tab-{tab}-write",
+            )
+            return ticket_id
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            ids = list(pool.map(create, ["a", "b"]))
+
+        self.assertEqual(len(set(ids)), 2, ids)
+        files = self.store.snapshot().files
+        for ticket_id, tab in zip(ids, ["a", "b"]):
+            self.assertIn(f"Written by PM tab {tab}".encode(), files[f".orchestrator/{ticket_id}.md"])
+            on_branch = subprocess.run(
+                ["git", "-C", str(self.repo), "show", f"refs/heads/relay/artifacts:.orchestrator/{ticket_id}.md"],
+                capture_output=True, check=True,
+            ).stdout
+            self.assertIn(f"Written by PM tab {tab}".encode(), on_branch)
+
     def test_global_note_http_contract_needs_no_project_and_preserves_provider_metadata(self):
         from services.global_notes import GlobalNoteLibrary
         self.daemon.global_notes = GlobalNoteLibrary(self.state, "global-test", lambda: [])

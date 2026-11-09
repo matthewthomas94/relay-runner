@@ -137,12 +137,6 @@ struct VoiceSessionSpool: Equatable {
 
 enum SessionVoicePlayback: String, Decodable {
     case play, replay, stop
-
-    static func resolve(live: Self?, unreadCount: Int, hasStoredReply: Bool) -> Self? {
-        if live == .stop { return .stop }
-        if live == .play || (unreadCount > 0 && hasStoredReply) { return .play }
-        return live ?? (hasStoredReply ? .replay : nil)
-    }
 }
 
 /// RR-401: a background session's unheard replies and undelivered worker
@@ -152,14 +146,6 @@ struct VoiceReplyBadge: Equatable {
     var outcomeCount = 0
 
     var count: Int { unreadCount + outcomeCount }
-
-    static func hasStoredReply(path: String) -> Bool {
-        guard let data = FileManager.default.contents(atPath: path),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let replies = object["replies"] as? [[String: Any]],
-              let text = replies.last?["text"] as? String else { return false }
-        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
 
     static func load(path: String) -> VoiceReplyBadge {
         guard let data = FileManager.default.contents(atPath: path),

@@ -8,8 +8,8 @@ final class SessionWheelController {
     var focusSession: ((String) -> Void)?
     /// RR-445: starts the one general session.
     var startSession: (() -> Bool)?
-    var sessionAction: ((String, SessionWheelAction) -> Bool)?
-    var recordingLevel: ((String) -> Float)?
+    /// RR-469: a session submenu segment: a tab to make active, or a tab control.
+    var tabAction: ((SessionWheelSessionItem) -> Bool)?
     var openShortcut: ((SessionWheelShortcut) -> Void)?
     var noteAction: ((SessionWheelNoteAction) -> Bool)?
     /// Live particle preview while dragging; `commitIntensity` persists the final value.
@@ -52,11 +52,10 @@ final class SessionWheelController {
             SessionWheelView(
                 model: model,
                 selectSlot: { [weak self] index, fromPointer in self?.selectSlot(index, fromPointer: fromPointer) },
-                performAction: { [weak self] id, action in self?.performAction(id, action) },
+                performTabItem: { [weak self] in self?.performTabItem($0) },
                 selectCenter: { [weak self] in self?.selectCenter() },
                 dismiss: { [weak self] in self?.dismiss() },
                 performNoteAction: { [weak self] in self?.performNoteAction($0) },
-                recordingLevel: { [weak self] id in self?.recordingLevel?(id) ?? 0 },
                 hoverFeedback: { [weak self] point, target in self?.hoverFeedback(at: point, target: target) },
                 adjustIntensity: { [weak self] in self?.adjustIntensity(to: $0) },
                 finishIntensity: { [weak self] in self?.finishIntensity(at: $0) },
@@ -182,16 +181,17 @@ final class SessionWheelController {
         }
     }
 
-    func performAction(_ id: String, _ action: SessionWheelAction) {
-        guard isVisible, let session = model.slots.compactMap({ $0 }).first(where: { $0.id == id }),
-              action.isEnabled(for: session) else { return }
-        guard sessionAction?(id, action) == true else {
-            model.notice = "Action unavailable"
+    /// The wheel stays open, so several tabs can be added or switched in a row.
+    func performTabItem(_ item: SessionWheelSessionItem) {
+        guard isVisible, model.slots.contains(where: { $0 != nil }), model.isEnabled(item) else { return }
+        guard tabAction?(item) == true else {
+            model.notice = item == .control(.add) ? model.addTabUnavailableReason ?? "Couldn't add a tab" : "Tab action unavailable"
             return
         }
         model.notice = nil
         haptics.activate()
         refresh?(model)
+        panel?.orderFrontRegardless()
     }
 
     func performNoteAction(_ action: SessionWheelNoteAction) {
