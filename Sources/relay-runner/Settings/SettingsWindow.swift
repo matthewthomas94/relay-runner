@@ -240,10 +240,7 @@ private struct SettingsContent: View {
 
     private var settingsPane: some View {
         HStack(spacing: 0) {
-            SettingsCategorySidebar(
-                selection: $selectedCategory,
-                style: style
-            )
+            SettingsCategorySidebar(selection: $selectedCategory)
             .frame(width: style.sidebarWidth)
 
             Rectangle()
@@ -403,20 +400,19 @@ enum SettingsSemanticColor: Equatable {
 
 private struct SettingsCategorySidebar: View {
     @Binding var selection: SettingsCategory
-    let style: SettingsContentStyle
     @Namespace private var selectionHighlight
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // Rows start where the Notes tab's list does: below a 60pt header
-        // and an 18pt inset.
+        // The title sits as the Notes and History titles do: 16pt, 22pt in,
+        // centred in a 60pt header. Rows start where the Notes tab's list
+        // does: below that header and an 18pt inset.
         VStack(alignment: .leading, spacing: 18) {
             Text("Settings")
-                .font(AppTypography.font(.workspaceHeading))
+                .font(AppTypography.font(.sectionHeading))
                 .foregroundStyle(SettingsSurfaceColor.primaryText)
-                .padding(.horizontal, 16)
-                .padding(.top, style == .workspace ? 18 : 16)
-                .frame(height: 60, alignment: .top)
+                .padding(.horizontal, 22)
+                .frame(height: 60)
 
             VStack(spacing: 4) {
                 ForEach(SettingsCategory.allCases) { category in

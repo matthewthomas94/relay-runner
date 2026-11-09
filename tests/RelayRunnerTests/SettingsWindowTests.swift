@@ -64,6 +64,23 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertTrue(window.contains("prominence: isEnabled ? .primary : .secondary"))
     }
 
+    func testSettingsTitleMatchesTheNotesTitle() throws {
+        let window = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Sources/relay-runner/Settings/SettingsWindow.swift"),
+            encoding: .utf8
+        )
+        // Same face, inset and header height as the Notes and History titles.
+        XCTAssertTrue(window.contains("""
+            Text("Settings")
+                            .font(AppTypography.font(.sectionHeading))
+                            .foregroundStyle(SettingsSurfaceColor.primaryText)
+                            .padding(.horizontal, 22)
+                            .frame(height: 60)
+            """))
+    }
+
     func testSettingsDescriptionTypographyIsReadable() {
         let definition = AppTypography.definition(for: .settingsDescription)
         XCTAssertGreaterThanOrEqual(definition.size, 11)

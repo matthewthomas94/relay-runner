@@ -109,12 +109,11 @@ enum TrayIconAsset {
     }
 }
 
-/// The Graphical kit's tabs: a neutral-3 list with 4 points of padding, and
-/// triggers that are neutral-7 at rest, white on hover, and white on a
-/// neutral-1 pill when selected.
+/// The Workspace's page tabs: white triggers on no background, with the
+/// Settings sidebar's neutral-4 pill behind the selected one. `listFill` is
+/// the kit's neutral-3 list, still used by the Settings segmented control.
 enum WorkspaceNavigationStyle {
     static let listPadding: CGFloat = GraphicalTheme.spaceXXS
-    static let listCornerRadius: CGFloat = GraphicalTheme.radiusM
     static let listFill = GraphicalTheme.neutral3
     static let controlHeight: CGFloat = BoardSurfaceLayout.navigationHeight - 2 * listPadding
     static let horizontalPadding: CGFloat = GraphicalTheme.spaceS
@@ -128,8 +127,7 @@ enum WorkspaceNavigationStyle {
     static let selectedFillOpacity: Double = 0.08
     static let focusedFillOpacity: Double = 0.12
     static let textColor = GraphicalTheme.neutral10.opacity(activeTextOpacity)
-    static let inactiveTextColor = GraphicalTheme.neutral7
-    static let selectedFill = GraphicalTheme.neutral1
+    static let selectedFill = BoardDarkSurfaceStyle.cardActiveFill
 }
 
 /// The day, date and time at the strip's far end, where the menu bar's
@@ -190,7 +188,6 @@ struct WorkspaceMenuBarStrip: View {
                             // gives each tab its own id so it only crossfades.
                             RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
                                 .fill(WorkspaceNavigationStyle.selectedFill)
-                                .graphicalShadow(.s)
                                 .matchedGeometryEffect(
                                     id: reduceMotion ? AnyHashable(tab.id) : AnyHashable("selection"),
                                     in: selectionHighlight
@@ -201,10 +198,6 @@ struct WorkspaceMenuBarStrip: View {
                 }
             }
             .padding(WorkspaceNavigationStyle.listPadding)
-            .background(
-                RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.listCornerRadius, style: .continuous)
-                    .fill(WorkspaceNavigationStyle.listFill)
-            )
             if let updater = workspace.updater, let version = updater.availableVersion {
                 WorkspaceNavigationButton(
                     title: "Update available",
@@ -283,7 +276,7 @@ struct WorkspaceNavigationButton: View {
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: title)
-            .foregroundStyle(foregroundColor)
+            .foregroundStyle(WorkspaceNavigationStyle.textColor)
             .frame(height: WorkspaceNavigationStyle.controlHeight - 2 * WorkspaceNavigationStyle.verticalPadding)
             .padding(.horizontal, WorkspaceNavigationStyle.horizontalPadding)
             .padding(.vertical, WorkspaceNavigationStyle.verticalPadding)
@@ -311,10 +304,5 @@ struct WorkspaceNavigationButton: View {
         .onHover { isHovered = $0 }
         .accessibilityLabel(accessibilityLabel)
         .notchHint(help)
-    }
-
-    private var foregroundColor: Color {
-        selected || isHovered || isFocused
-            ? WorkspaceNavigationStyle.textColor : WorkspaceNavigationStyle.inactiveTextColor
     }
 }

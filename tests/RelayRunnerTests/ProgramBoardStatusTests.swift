@@ -148,6 +148,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(WorkspaceNavigationStyle.cornerRadius, GraphicalTheme.radiusS)
         XCTAssertEqual(WorkspaceNavigationStyle.iconTextSpacing, 6)
         XCTAssertTrue(WorkspaceNavigationStyle.systemFocusEffectDisabled)
+        // Page tabs: white text, and the Settings sidebar's selected fill.
+        XCTAssertEqual(WorkspaceNavigationStyle.selectedFill, BoardDarkSurfaceStyle.cardActiveFill)
+        XCTAssertEqual(WorkspaceNavigationStyle.textColor, GraphicalTheme.neutral10.opacity(0.98))
         // Kit icons are 1em of their label.
         XCTAssertEqual(
             WorkspaceNavigationStyle.iconSize,
