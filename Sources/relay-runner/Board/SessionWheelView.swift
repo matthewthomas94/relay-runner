@@ -112,6 +112,12 @@ struct SessionWheelView: View {
                             ForEach(Array(items.enumerated()), id: \.offset) { position, item in
                                 tabItemButton(item, index: position, count: items.count, slot: index)
                             }
+                            // Above the segments, so a click on the x closes the tab instead of selecting it.
+                            ForEach(Array(items.enumerated()), id: \.offset) { position, item in
+                                if let tab = item.tab {
+                                    tabCloseButton(tab, index: position, count: items.count, slot: index)
+                                }
+                            }
                         }
                         .scaleEffect(frame.scale)
                         .opacity(frame.controlsOpacity)
@@ -184,7 +190,7 @@ struct SessionWheelView: View {
         // Tiles show only their icon; the title names the tile to VoiceOver and
         // the notch names the action a click takes.
         let title = shortcut?.title ?? (session != nil ? SessionWheelSessionSlot.title : startSlot ? "Start session" : "")
-        let sessionHint = "Open the active tab's terminal in Workspace. Move outward for the PM tabs and tab controls."
+        let sessionHint = "Open the active tab's terminal in Workspace. Move outward for the PM tabs and Add."
         let enabled = !empty || (startSlot && menu.canStartSession)
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .projectCard, isEnabled: enabled,
@@ -254,27 +260,25 @@ struct SessionWheelView: View {
                         Button(item.title) { performTabItem(item) }
                     }
                 }
+                ForEach(model.tabs) { tab in
+                    Button(tab.closeTitle) { performTabItem(.close(tab)) }
+                }
             }
         }
     }
 
-    /// RR-469: a tab segment shows its number, the active one selected; an
-    /// off tab is dimmed. Controls follow the tabs.
+    /// RR-469: a tab segment shows S1, S2 and so on with its close x, the
+    /// active one selected; an off tab is dimmed. Add follows the tabs.
     private func tabItemButton(_ item: SessionWheelSessionItem, index: Int, count: Int, slot: Int) -> some View {
         let arc = geometry.sessionItemArc(index, items: count)
         let enabled = model.isEnabled(item)
         let hovered = model.hoveredSessionItem == item
-        let help: String
-        switch item {
-        case .tab(let tab): help = tab.caption
-        case .control(let control):
-            help = control == .add ? model.addTabUnavailableReason ?? control.caption
-                : enabled ? control.caption : "Only live tab"
-        }
+        let help = item.tab?.caption ?? model.addTabUnavailableReason ?? item.control?.caption ?? ""
         return submenuButton(index: index, slot: slot, title: item.title, help: help,
                              symbol: item.control?.symbol, enabled: enabled, hovered: hovered,
-                             destructive: item == .control(.remove),
-                             label: item.tab == nil ? nil : "\(index + 1)",
+                             destructive: false,
+                             label: item.tab == nil ? nil : SessionWheelTab.shortLabel(position: index),
+                             labelShift: geometry.tabLabelShift,
                              selected: item.tab?.isActive ?? false,
                              dimmed: item.tab.map { !$0.isLive } ?? false,
                              arc: arc) {
@@ -282,6 +286,28 @@ struct SessionWheelView: View {
             performTabItem(item)
         }
         .accessibilityAddTraits(item.tab?.isActive == true ? .isSelected : [])
+    }
+
+    /// The x inside a tab's segment: closes that tab, as the tab strip's x does.
+    private func tabCloseButton(_ tab: SessionWheelTab, index: Int, count: Int, slot: Int) -> some View {
+        let arc = geometry.sessionItemArc(index, items: count)
+        let hovered = model.hoveredTabClose?.id == tab.id
+        let size = geometry.tabCloseHitRadius * 2
+        return Button {
+            guard model.hoveredSession != nil else { return }
+            performTabItem(.close(tab))
+        } label: {
+            LucideImage(.x, size: Self.submenuIconSize - 2)
+                .foregroundStyle(hovered ? ProgramBoardStyle.red : ProgramBoardStyle.mutedText)
+                .opacity(tab.isLive ? 1 : 0.45)
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: hovered)
+                .frame(width: size, height: size)
+                .contentShape(Circle())
+                .rotationEffect(.radians(geometry.labelRotation(slot: slot, offset: arc.start + arc.width / 2)))
+        }
+        .buttonStyle(SessionWheelActionButtonStyle())
+        .position(geometry.sessionTabClosePoint(index, items: count))
+        .accessibilityLabel(tab.closeTitle)
     }
 
     private func noteActionButton(_ action: SessionWheelNoteAction) -> some View {
@@ -393,12 +419,14 @@ struct SessionWheelView: View {
         .accessibilityValue(model.autoPlay ? "On" : "Off")
     }
 
-    /// A tab segment passes `label` (its number) and no symbol.
+    /// A tab segment passes `label` (S1, S2…) and no symbol; `labelShift`
+    /// moves it along its own axis to leave room for the close x.
     private func submenuButton(index: Int, slot: Int, title: String, help: String, symbol: LucideIcon?,
                                enabled: Bool, hovered: Bool, destructive: Bool,
                                keepAwake: KeepAwakeState? = nil,
                                isOn: Bool? = nil, subdivisions: Int = 3,
-                               label: String? = nil, selected: Bool = false, dimmed: Bool = false,
+                               label: String? = nil, labelShift: CGFloat = 0,
+                               selected: Bool = false, dimmed: Bool = false,
                                arc: (start: CGFloat, width: CGFloat)? = nil,
                                perform: @escaping () -> Void) -> some View {
         let presentation = ProgramBoardInteractionPresentation.resolve(
@@ -429,6 +457,7 @@ struct SessionWheelView: View {
                 .contentTransition(.opacity)
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: symbol)
                 .frame(width: geometry.actionLabelSize.width, height: geometry.actionLabelSize.height)
+                .offset(x: label == nil ? 0 : labelShift)
                 .foregroundStyle(!enabled
                                  ? (contrast == .increased ? GraphicalTheme.neutral7 : GraphicalTheme.neutral6) // Kit disabled label
                                  : destructive ? ProgramBoardStyle.red

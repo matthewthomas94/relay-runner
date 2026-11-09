@@ -72,8 +72,8 @@ CATALOGUE = {
 class CodexModelCatalogTests(unittest.TestCase):
     def test_legacy_values_normalize_to_stable_families(self):
         self.assertEqual(normalize_codex_family("default"), "sol")
-        self.assertEqual(normalize_codex_family("gpt-5.6-terra"), "sol")
-        self.assertEqual(normalize_codex_family("terra"), "sol")
+        self.assertEqual(normalize_codex_family("gpt-5.6-terra"), "terra")
+        self.assertEqual(normalize_codex_family("terra"), "terra")
         self.assertEqual(normalize_codex_family("gpt-5.5"), "sol")
         self.assertEqual(normalize_codex_family("haiku"), "sol")
 
@@ -109,6 +109,28 @@ class CodexModelCatalogTests(unittest.TestCase):
                 self.assertEqual(resolve_codex_effort("default", resolved), "low")
                 for effort in efforts:
                     self.assertEqual(resolve_codex_effort(effort, resolved), effort)
+
+    def test_terra_6_1_resolves_as_its_own_family_without_ultra(self):
+        efforts = ["none", "low", "medium", "high", "xhigh", "max"]
+        terra = {
+            "id": "gpt-6.1-terra",
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": efforts,
+            "inputModalities": ["text", "image"],
+        }
+        models = codex_models_from_model_list({"data": [terra, CATALOGUE["data"][1]]})
+
+        for family in ("terra", "gpt-6.1-terra"):
+            with self.subTest(family=family):
+                resolved = resolve_codex_family(family, models)
+                self.assertEqual(resolved.launch_model, "gpt-6.1-terra")
+                self.assertEqual(resolve_codex_effort("default", resolved), "medium")
+                self.assertEqual(resolve_codex_effort("max", resolved), "max")
+                with self.assertRaisesRegex(CodexModelResolutionError, "ultra"):
+                    resolve_codex_effort("ultra", resolved)
+
+        with self.assertRaisesRegex(CodexModelResolutionError, "terra"):
+            resolve_codex_family("terra", codex_models_from_model_list(CATALOGUE))
 
     def test_hidden_models_do_not_satisfy_family(self):
         models = codex_models_from_model_list(CATALOGUE)

@@ -62,21 +62,21 @@ registered project.
   approval (click to cancel), and a warning icon marks a failure.
   See [Keep Awake](#keep-awake).
 - Hover the session (**Terminal**) to reveal its PM tabs (RR-469). The submenu holds
-  one segment per tab, numbered as in the Workspace terminal's tab strip, then three
-  tab controls: **Add tab** (plus), **Remove tab** (red X) and **Turn off** (power).
+  one segment per tab, **S1**, **S2** and so on for the tab strip's **Session 1**,
+  **Session 2**, each with its own **x**, then **Add tab** (plus).
   There are no Play / Replay, Record or Stop session controls on the wheel.
-  - Click a tab's number to make it the **active tab**: voice turns, replies and
-    TTS go to it, and the notch confirms the switch. The active tab's number is
-    orange and selected; a tab that is off is dimmed, and clicking it turns it back
-    on, resuming its conversation, and makes it active.
+  - Click a tab's label to make it the **active tab**: voice turns, replies and
+    TTS go to it, and the notch confirms the switch. The active tab's label is
+    orange and selected; a tab whose provider has exited is dimmed, and clicking it
+    turns it back on, resuming its conversation, and makes it active.
+  - A tab's **x** closes that tab, as the tab strip's x does: it ends the tab's
+    provider and drops it. Closing the active tab moves activity to another live
+    tab; closing the last live tab ends the session, as End does. The x turns red
+    on hover and the notch reads *Close Session n*.
   - **Add tab** opens another general PM tab, like the tab strip's "+". It is
     disabled at nine tabs, the limit counting the first; the notch then reads
     *Nine tabs open*.
-  - **Remove tab** ends the active tab and drops it; **Turn off** stops its
-    provider but keeps the tab. Either moves the active tab to another live tab.
-    Turn off is disabled when the active tab is the only live one; removing the last
-    live tab ends the session, as End does.
-  - With three tabs or fewer the submenu keeps its standard size over the session's
+  - With five tabs or fewer the submenu keeps its standard size over the session's
     own cell. More tabs grow it evenly along the arc, past its cell and over the
     outer edge of **History** and **Workspace**, up to their far ends at nine tabs, so
     every tab shows at once. Each segment stays at least as wide as a standard one.
@@ -278,7 +278,7 @@ spools; they do not open the microphone or send commands to live sessions.
 Installed-app checks still require a physical trackpad and live sessions: open
 and dismiss across displays, reject swipes and pinches, navigate to every outer
 control, add PM tabs up to nine and check the submenu wraps to History and
-Workspace, switch, turn off and remove tabs with each provider, and repeat after
+Workspace, switch tabs and close them from their x with each provider, and repeat after
 sleep or reconnecting a trackpad. Drag the intensity slider past
 both ends while watching the particle field, then reopen Settings.
 Keep Awake requires its own manual checks on the installed app. Automated tests and

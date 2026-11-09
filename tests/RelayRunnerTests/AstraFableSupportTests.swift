@@ -33,7 +33,7 @@ final class AstraFableSupportTests: XCTestCase {
         XCTAssertEqual(GeneralConfig.defaultMessengerModel, "luna")
         for (provider, model, effort): (GeneralConfig.AgentProvider, String, String) in [
             (.codex, "astra", "ultra"), (.claude, "claude-fable-5-1", "max"),
-            (.claude, "sonnet", "xhigh"),
+            (.claude, "claude-fable-5-2", "max"), (.claude, "sonnet", "xhigh"),
         ] {
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: directory) }
@@ -68,5 +68,28 @@ final class AstraFableSupportTests: XCTestCase {
             XCTAssertEqual(selected, model)
         }
         XCTAssertFalse(GeneralConfig.isEffort("ultra", validFor: .claude, model: "claude-fable-5-1"))
+        XCTAssertFalse(GeneralConfig.isEffort("ultra", validFor: .claude, model: "claude-fable-5-2"))
+        XCTAssertEqual(GeneralConfig.accessNote(for: "claude-fable-5-2", effort: "max", provider: .claude),
+                       GeneralConfig.claudeFableAccessNote)
+    }
+
+    func testTerraIsItsOwnCodexFamilyWithoutUltra() throws {
+        XCTAssertEqual(GeneralConfig.normalizeModel("terra", for: .codex), "terra")
+        XCTAssertEqual(GeneralConfig.normalizeModel("gpt-6.1-terra", for: .codex), "terra")
+        XCTAssertTrue(GeneralConfig.isEffort("max", validFor: .codex, model: "terra"))
+        XCTAssertFalse(GeneralConfig.isEffort("ultra", validFor: .codex, model: "terra"))
+        let terra = astra.merging([
+            "id": "gpt-6.1-terra",
+            "supportedReasoningEfforts": ["none", "low", "medium", "high", "xhigh", "max"],
+        ]) { _, new in new }
+        let sol = astra.merging(["id": "gpt-6.1-sol"]) { _, new in new }
+        let data = try JSONSerialization.data(withJSONObject: [sol, terra])
+        let resolved = try CodexModelResolver.resolve(family: "terra", effort: "max", catalogueData: data)
+        XCTAssertEqual(resolved.selectedFamily, "terra")
+        XCTAssertEqual(resolved.resolvedModel, "gpt-6.1-terra")
+        let solOnly = try JSONSerialization.data(withJSONObject: [sol])
+        XCTAssertThrowsError(try CodexModelResolver.resolve(family: "terra", catalogueData: solOnly)) { error in
+            XCTAssertEqual(error as? CodexModelResolver.Error, .familyUnavailable("terra"))
+        }
     }
 }

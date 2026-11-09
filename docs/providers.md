@@ -48,10 +48,10 @@ Relay Runner stores stable product choices rather than freezing transient concre
 
 ### Codex
 
-- Families: Sol, Terra, and Luna.
+- Families: Astra, Sol, Terra, and Luna. Terra returned with GPT-6.1 Terra in Codex 0.165.0; an older Codex catalog without it stops launch instead of falling back to Sol.
 - Before launch, Relay Runner asks the installed Codex catalog to resolve the newest account-visible concrete model in the selected family.
-- Sol and Terra expose Low, Medium, High, Extra High, Max, and Ultra.
-- Luna exposes Low, Medium, High, Extra High, and Max.
+- Astra and Sol expose Low, Medium, High, Extra High, Max, and Ultra.
+- Terra and Luna expose Low, Medium, High, Extra High, and Max. GPT-6.1 Terra does not offer Ultra; its extra `none` effort is not exposed.
 - The resolved value is passed as Codex `model_reasoning_effort`.
 
 Availability, especially newer families and Ultra effort, depends on the user's Codex plan and installed catalog. A failed family resolution stops launch with an explicit error instead of silently choosing another family.
@@ -59,8 +59,8 @@ Availability, especially newer families and Ultra effort, depends on the user's 
 ### Claude
 
 - Stable choices: Fable, Opus, Sonnet, and Haiku. These are Claude Code aliases that resolve to the newest model in each family that the installed CLI knows, so new releases need a current CLI (`claude update`) rather than a Relay Runner change.
-- Fable 5.1 (`claude-fable-5-1`) remains available as a pinned choice.
-- Fable, Opus, and Sonnet expose Low through Max, including Extra High.
+- Fable 5.2 (`claude-fable-5-2`) and Fable 5.1 (`claude-fable-5-1`) are available as pinned choices.
+- Fable 5.2, Fable 5.1, Fable, Opus, and Sonnet expose Low through Max, including Extra High.
 - Haiku exposes Low.
 - The chosen values are passed with Claude's `--model` and `--effort` flags.
 
