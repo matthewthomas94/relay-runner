@@ -758,6 +758,10 @@ class OrchestratorLifecycleTests(unittest.TestCase):
 
             self.assertIsNone(daemon.orchestrator_commands.get_private("first"))
 
+    # A change request with no route words is authored by the daemon only in
+    # the orchestrated work style; auto leaves it to the PM (route_undecided).
+    # Pinning the style also keeps the user's saved session style out.
+    @patch.dict(os.environ, {"RELAY_WORK_STYLE": "orchestrated"})
     def test_daemon_authors_received_command_without_raw_transcript_leakage(self):
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
@@ -1038,6 +1042,9 @@ class OrchestratorLifecycleTests(unittest.TestCase):
                 self.assertEqual(command["outcome"], "non-work-command")
                 self.assertEqual(command["provider_key"], provider)
 
+    # "Do a clean build." and the like carry no route words, so only the
+    # orchestrated style turns them into tickets; see the note above.
+    @patch.dict(os.environ, {"RELAY_WORK_STYLE": "orchestrated"})
     def test_daemon_preserves_explicit_work_authority_for_both_providers(self):
         mutation_cases = [
             "Track an investigation into RR-325.",
