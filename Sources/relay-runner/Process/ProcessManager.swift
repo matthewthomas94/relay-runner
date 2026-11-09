@@ -711,6 +711,10 @@ final class ProcessManager {
         /// RR-394: the session spool the recovered bridge publishes into;
         /// nil keeps the legacy /tmp files.
         let spoolDirectory: String?
+        /// RR-468: the bridge serves an app-owned session, so recovery refuses
+        /// rather than launch a legacy /tmp bridge without its spool and
+        /// provider session id.
+        let appOwnedSession: Bool
 
         init(
             workingDirectory: String,
@@ -720,7 +724,8 @@ final class ProcessManager {
             sessionScope: String? = nil,
             generalFilesRoot: String? = nil,
             preservesContextAuthorization: Bool = false,
-            spoolDirectory: String? = nil
+            spoolDirectory: String? = nil,
+            appOwnedSession: Bool = false
         ) {
             self.workingDirectory = workingDirectory
             self.provider = provider
@@ -730,6 +735,7 @@ final class ProcessManager {
             self.generalFilesRoot = generalFilesRoot
             self.preservesContextAuthorization = preservesContextAuthorization
             self.spoolDirectory = spoolDirectory
+            self.appOwnedSession = appOwnedSession
         }
     }
 
@@ -819,7 +825,9 @@ final class ProcessManager {
         RELAY_SESSION_SPOOL_DIR=\(shellQuoted(context.spoolDirectory ?? ""))
         SPOOL="${RELAY_SESSION_SPOOL_DIR:-/tmp}"
         RELAY_PROVIDER_SESSION_ID=$(cat "$SPOOL"/voice_provider_session_id 2>/dev/null || true)
+        RELAY_APP_OWNED_SESSION=\(context.appOwnedSession ? "1" : "0")
         VOICE_BRIDGE_LOG=/tmp/voice_bridge.log
+        \(appOwnedSessionGuardScript)
         REPLAY_DIR=$(mktemp -d /tmp/voice_bridge_replay.XXXXXX 2>/dev/null || true)
         REPLAY_READY=0
         cleanup_replay() {
@@ -883,6 +891,7 @@ final class ProcessManager {
         if [ -n "$BRIDGE_PID" ] && ps -p "$BRIDGE_PID" -o command= 2>/dev/null | grep -q '[v]oice_bridge.py'; then
             kill "$BRIDGE_PID" 2>/dev/null || true
         fi
+        \(strayBridgeStopScript())
         [ "$RELAY_PRESERVE_CONTEXT_AUTHORIZATION" = "1" ] || rm -f /tmp/voice_command_authorizations.json
         rm -f /tmp/voice_in.fifo /tmp/voice_bridge.sock "$SPOOL"/voice_cmd_ready "$SPOOL"/voice_cmd_ready.meta "$SPOOL"/voice_provider_session_id /tmp/tts_in.fifo /tmp/tts_control.sock /tmp/voice_bridge_heartbeat /tmp/voice_bridge_heartbeat.pid \(bridgePIDPath) /tmp/voice_bridge.cwd /tmp/voice_bridge.provider /tmp/voice_bridge.spool /tmp/relay_board_now.txt /tmp/relay_board_prev.txt
         # RR-447: an app-owned provider outlives this bridge. Its claim, command
@@ -938,6 +947,32 @@ final class ProcessManager {
         exit 1
         """
     }
+
+    /// RR-468: one voice target per user. Recovery also stops this user's
+    /// bridges from older generations or builds, which the PID file no longer
+    /// names; another user's processes are never listed. The pattern is
+    /// bracketed so neither this script nor its subshells match it.
+    static func strayBridgeStopScript(listing: String = "ps -U \"$(id -u)\" -o pid=,command=") -> String {
+        """
+        for stray_pid in $(\(listing) 2>/dev/null | awk '/[v]oice_bridge[.]py/ {print $1}'); do
+            [ "$stray_pid" = "$$" ] && continue
+            [ "$stray_pid" = "$BRIDGE_PID" ] && continue
+            echo "[relay-runner] app watchdog stopping stray voice bridge pid=$stray_pid" >> "$VOICE_BRIDGE_LOG"
+            kill "$stray_pid" 2>/dev/null || true
+        done
+        """
+    }
+
+    /// RR-468: an app-owned session's bridge needs its spool and provider
+    /// session id. Without them it would start in legacy /tmp mode, take the
+    /// mic, and no command would reach the session, so recovery refuses
+    /// before it touches anything.
+    static let appOwnedSessionGuardScript = """
+        if [ "$RELAY_APP_OWNED_SESSION" = "1" ] && { [ -z "$RELAY_SESSION_SPOOL_DIR" ] || [ -z "$RELAY_PROVIDER_SESSION_ID" ]; }; then
+            echo "[relay-runner] app watchdog recovery refused: app-owned session has no spool dir or provider session id; no legacy bridge launched." >> "$VOICE_BRIDGE_LOG"
+            exit 1
+        fi
+        """
 
     /// Kill any running voice_bridge process (but leave the terminal window open).
     func killBridge(stopRequested: Bool = false) {
