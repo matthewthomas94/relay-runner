@@ -290,9 +290,9 @@ final class ProgramBoardStatusTests: XCTestCase {
         let workStyle = try XCTUnwrap(card.range(of: "ProgramWorkStyleMenu("))
         XCTAssertLessThan(finder.lowerBound, workStyle.lowerBound)
         XCTAssertTrue(contents.contains("if lane != .done, canCreate {"))
-        // Rows are compact: no per-project board counts, a running-session dot, a selected trait.
+        // Rows are compact: no per-project board counts, no session dot, a selected trait.
         XCTAssertFalse(contents.contains("ProjectBoardOverview"))
-        XCTAssertTrue(card.contains("Circle()"))
+        XCTAssertFalse(card.contains("Circle()"))
         XCTAssertTrue(card.contains(".accessibilityAddTraits(isSelected ? .isSelected : [])"))
         XCTAssertTrue(card.contains(".notchHint("))
         XCTAssertFalse(card.contains(".help("))

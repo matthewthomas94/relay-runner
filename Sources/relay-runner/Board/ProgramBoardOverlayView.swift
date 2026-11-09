@@ -1274,7 +1274,6 @@ private struct ProgramBoardContent: View {
                         snapshot: snapshot,
                         projectTargets: model.projectTargets,
                         selectedProjectPaths: model.selectedProjectPaths,
-                        runningSessionPaths: model.runningSessionPaths,
                         sessionReplyBadges: model.sessionReplyBadges,
                         errorMessage: model.errorMessage,
                         isDiagnosticsExporting: model.isDiagnosticsExporting,
@@ -1352,7 +1351,6 @@ private struct ProgramOverviewColumn: View {
     let snapshot: ProgramDashboardSnapshot
     let projectTargets: [ProgramBoardProjectTarget]
     let selectedProjectPaths: [String]
-    let runningSessionPaths: [String]
     let sessionReplyBadges: [String: Int]
     let errorMessage: String?
     let isDiagnosticsExporting: Bool
@@ -1443,9 +1441,6 @@ private struct ProgramOverviewColumn: View {
                         ProgramProjectCard(
                             item: item,
                             isSelected: ProgramBoardProjectPath.contains(selectedProjectPaths, scopedPath),
-                            hasSession: scopedPath.map { path in
-                                runningSessionPaths.contains { ProgramBoardProjectPath.matches($0, path) }
-                            } ?? false,
                             replyBadgeCount: scopedPath.map { path in
                                 sessionReplyBadges.reduce(0) { total, entry in
                                     ProgramBoardProjectPath.matches(entry.key, path) ? total + entry.value : total
@@ -1734,7 +1729,6 @@ private struct ProgramWorkStyleMenu: View {
 private struct ProgramProjectCard: View {
     let item: ProgramStatusItem
     let isSelected: Bool
-    let hasSession: Bool
     let replyBadgeCount: Int
     let onSelect: () -> Void
     let onOpenInFinder: () -> Void
@@ -1769,14 +1763,6 @@ private struct ProgramProjectCard: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                     .truncationMode(.tail)
-                if hasSession {
-                    Circle()
-                        .fill(ProgramBoardStyle.green)
-                        .frame(width: 8, height: 8)
-                        .notchHint("Session running")
-                        .accessibilityLabel("Session running")
-                        .transition(.relayElement)
-                }
                 if replyBadgeCount > 0 {
                     SessionReplyBadge(count: replyBadgeCount)
                         .transition(.relayElement)

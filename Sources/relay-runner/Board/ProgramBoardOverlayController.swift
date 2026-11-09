@@ -380,7 +380,9 @@ final class ProgramBoardOverlayController {
                 activityProjectPaths: activityProjectPaths,
                 showsRegisteredProjectCatalog: showsRegisteredProjectCatalog
             )
-            selectedProjectPath = path
+            // The built-in general-tasks project opens on every project's
+            // tickets; the user narrows it with the Projects filter.
+            selectedProjectPath = ProgramBoardProjectPath.isGeneralTasks(path) ? nil : path
             requestedTab = initialTab
         case .programBoard:
             showsWorkTab = true
@@ -669,7 +671,10 @@ final class ProgramBoardOverlayController {
 
         model.setProjectScope(opening.projectScope, selectedProjectPath: opening.selectedProjectPath)
         refreshContextPresentation()
-        if !workspace.isGeneralContext, let path = workspace.contextPath { model.selectProject(path: path) }
+        if !workspace.isGeneralContext, let path = workspace.contextPath,
+           !ProgramBoardProjectPath.isGeneralTasks(path) {
+            model.selectProject(path: path)
+        }
         contentLoadBlocked = opening.contentLoadBlocked
         model.prepareForOpening()
         model.theme = themeResolver?()
@@ -1025,7 +1030,9 @@ final class ProgramBoardOverlayController {
             let wasGeneral = self.workspace.isGeneralContext
             self.refreshContextPresentation()
             if wasGeneral != self.workspace.isGeneralContext || previousContext != self.workspace.contextPath {
-                if let path = self.workspace.contextPath { self.model.selectProject(path: path) }
+                if let path = self.workspace.contextPath, !ProgramBoardProjectPath.isGeneralTasks(path) {
+                    self.model.selectProject(path: path)
+                }
                 self.checkForUpdates(inBackground: self.model.snapshot != nil)
             }
             let next = self.themeResolver?()

@@ -73,6 +73,24 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         XCTAssertEqual(opening?.selectedProjectPath, "/repo/active")
     }
 
+    func testGeneralTasksRouteOpensOnEveryProjectWithNoFilter() {
+        let general = ProjectResolver.LinkedProject(
+            repoPath: URL(fileURLWithPath: "/support/relay-runner/general-tasks")
+        )
+        let opening = ProgramBoardOverlayController.workspaceOpening(
+            route: .project(general),
+            initialTab: .work,
+            hasTerminalTab: true,
+            hasSettingsTab: true,
+            hasCachedSnapshot: true,
+            activityProjectPaths: ["/support/relay-runner/general-tasks", "/repo/first"],
+            showsRegisteredProjectCatalog: true
+        )
+
+        XCTAssertEqual(opening?.projectScope, ["/support/relay-runner/general-tasks", "/repo/first"])
+        XCTAssertNil(opening?.selectedProjectPath)
+    }
+
     func testRegistryV2RefreshPreservesAVisibleExplicitProjectSelection() {
         let active = ProjectResolver.LinkedProject(repoPath: URL(fileURLWithPath: "/repo/active"))
 
