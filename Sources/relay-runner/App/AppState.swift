@@ -1479,7 +1479,8 @@ final class AppState {
             sessionScope: binding.context.kind.rawValue,
             generalFilesRoot: AssistantSessionStore.filesDirectory.path,
             preservesContextAuthorization: true,
-            spoolDirectory: spool.directory
+            spoolDirectory: spool.directory,
+            appOwnedSession: !spool.isLegacy
         )
         bridgeRecoveryInFlight = true
         NSLog("[AppState] Retargeting voice bridge to \(recoveryContext.workingDirectory)")
@@ -4060,7 +4061,7 @@ final class AppState {
             recovery = .recoverDaemon
         }
         if menuSessionActive {
-            if sessionBridgeSeen || elapsedSinceSessionStart > 90 {
+            if sessionBridgeSeen || elapsedSinceSessionStart > sessionBridgeLaunchGrace {
                 return recovery
             }
             return .waitForLaunch
@@ -4108,6 +4109,28 @@ final class AppState {
         return .allowRecording
     }
 
+    /// How long a session start owns its bridge launch before the watchdog
+    /// may recover a bridge it has not yet seen.
+    static let sessionBridgeLaunchGrace: TimeInterval = 90
+
+    /// RR-468: while a session start is still bringing up its bridge, a
+    /// recovery launch would race it and leave two bridges on the mic.
+    static func bridgeRecoveryDeferredForSessionStart(
+        sessionLaunchPending: Bool,
+        menuSessionActive: Bool,
+        sessionBridgeSeen: Bool,
+        elapsedSinceSessionStart: TimeInterval
+    ) -> Bool {
+        sessionLaunchPending
+            || (menuSessionActive && !sessionBridgeSeen && elapsedSinceSessionStart <= sessionBridgeLaunchGrace)
+    }
+
+    /// RR-468: the spool of the app-owned session the voice bridge serves;
+    /// nil for a manual or external-terminal session on the legacy /tmp files.
+    private var appOwnedVoiceSpool: VoiceSessionSpool? {
+        voiceContextID.flatMap { sessionRegistry.spool(for: $0) }.flatMap { $0.isLegacy ? nil : $0 }
+    }
+
     /// RR-465: which liveness probes failed, for the `bridge_recovery` event.
     static func probeSummary(_ failedProbes: [String]) -> String {
         failedProbes.isEmpty ? "none" : failedProbes.joined(separator: ",")
@@ -4118,6 +4141,15 @@ final class AppState {
         if bridgeRecoverySuppressedForUpdate { return false }
         if processManager.bridgeStopRequested() { return false }
         if bridgeRecoveryInFlight { return true }
+        if Self.bridgeRecoveryDeferredForSessionStart(
+            sessionLaunchPending: pendingSessionLaunchID != nil,
+            menuSessionActive: menuSessionActive,
+            sessionBridgeSeen: sessionBridgeSeen,
+            elapsedSinceSessionStart: Date().timeIntervalSince(sessionStartTime)
+        ) {
+            NSLog("[AppState] Voice bridge recovery deferred reason=\(reason): the session start still owns the bridge launch")
+            return true
+        }
         guard let baseContext = processManager.bridgeRecoveryContext(fallbackConfig: bridgeRecoveryFallbackConfig) else {
             return false
         }
@@ -4125,6 +4157,7 @@ final class AppState {
         let sessionID = ContinuityRecoveryRequest.projectSessionIdentifier(
             repositoryPath: baseContext.workingDirectory
         )
+        let appOwnedSpool = appOwnedVoiceSpool
         let context = ProcessManager.BridgeRecoveryContext(
             workingDirectory: baseContext.workingDirectory,
             provider: baseContext.provider,
@@ -4133,7 +4166,10 @@ final class AppState {
             sessionScope: voiceContext.kind.rawValue,
             generalFilesRoot: AssistantSessionStore.filesDirectory.path,
             preservesContextAuthorization: true,
-            spoolDirectory: baseContext.spoolDirectory
+            // RR-468: the fallback config carries no spool; an app-owned
+            // session's own spool keeps the bridge out of legacy /tmp mode.
+            spoolDirectory: baseContext.spoolDirectory ?? appOwnedSpool?.directory,
+            appOwnedSession: appOwnedSpool != nil
         )
         let now = Date()
         if now.timeIntervalSince(lastBridgeRecoveryAt) < Self.bridgeRecoveryCooldown {
