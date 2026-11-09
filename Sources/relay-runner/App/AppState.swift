@@ -4653,6 +4653,11 @@ final class AppState {
             guard let self else { return nil }
             return AnyView(WorkspaceTerminalPanel(appState: self))
         }
+        programBoardOverlay.pmTabShortcutHandler = { [weak self] shortcut, showing in
+            MainActor.assumeIsolated {
+                self?.performPMTabShortcut(shortcut, terminalTabShowing: showing) ?? false
+            }
+        }
         programBoardOverlay.setTerminalFocusProvider(
             hasFocus: { [weak self] in self?.embeddedTerminal.hasTerminalFocus ?? false },
             focus: { [weak self] in self?.embeddedTerminal.focus() }

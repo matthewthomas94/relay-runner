@@ -442,10 +442,21 @@ final class ProgramBoardOverlayController {
         }
         if localMonitor == nil {
             localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+                if self?.handlePMTabShortcut(event) == true { return nil }
                 self?.handle(event)
                 return event
             }
         }
+    }
+
+    /// RR-472: set by the app; performs a routed Command-T / Command-W.
+    var pmTabShortcutHandler: ((PMTabShortcut, Bool) -> Bool)?
+
+    private func handlePMTabShortcut(_ event: NSEvent) -> Bool {
+        guard isVisible, let panel, event.window === panel,
+              let shortcut = PMTabShortcut(event: event),
+              let handler = pmTabShortcutHandler else { return false }
+        return handler(shortcut, workspace.selectedTab == .terminal)
     }
 
     private func handle(_ event: NSEvent) {
