@@ -1517,6 +1517,7 @@ final class ProcessManager {
         return """
         #!/bin/bash
         \(Self.shellProfileSource())
+        \(Self.inheritedHostSessionScrub)
         \(Self.sessionLifecyclePreamble(eventPath: sessionEventPath))
         \(Self.supportDiagnosticsPreamble())
         # Ensure venv + deps + speech-model + relay skills are installed. In
@@ -1569,6 +1570,30 @@ final class ProcessManager {
         # Replacing this launcher process keeps the PTY child PID aligned with
         # the agent, so End Session terminates the interactive process cleanly.
         exec \(launchLine)
+        """
+    }
+
+    /// RR-473: a dev build launched from a Claude Desktop (or other Claude Code)
+    /// session inherits that host's identity variables, which make the provider
+    /// behave as a child of the host session and skip writing its own transcript.
+    /// Drop them before anything else runs. Auth variables and the ones Relay
+    /// sets on purpose (CLAUDE_CODE_AUTO_COMPACT_WINDOW, exported later) are kept.
+    /// Codex has no known equivalent inherited host variables.
+    static let inheritedHostSessionVariables = [
+        "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_HOST_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_PID",
+    ]
+    static let inheritedHostSessionVariablePrefixes = ["CLAUDE_AGENT_SDK_"]
+
+    static var inheritedHostSessionScrub: String {
+        let prefixPatterns = inheritedHostSessionVariablePrefixes.map { "\($0)*" }.joined(separator: "|")
+        return """
+        unset \(inheritedHostSessionVariables.joined(separator: " "))
+        for relay_host_var in $(compgen -e); do
+            case "$relay_host_var" in \(prefixPatterns)) unset "$relay_host_var" ;; esac
+        done
+        unset relay_host_var
         """
     }
 
