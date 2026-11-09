@@ -931,6 +931,33 @@ final class EmbeddedAgentDiagnosticsTests: XCTestCase {
         XCTAssertTrue(events.contains(#""controlling_pty":"stable""#))
     }
 
+    func testMissingTranscriptIsRecordedOnceAfterGraceWhenActive() throws {
+        let root = try makeRoot()
+        var clock = Date(timeIntervalSince1970: 1_800_000_000)
+        let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.start(
+            provider: "claude", workingDirectory: "/repo", baseDirectory: root,
+            routeKind: "project", projectIdentity: "/repo", now: { clock }))
+        diagnostics.markInteractiveReady()
+        diagnostics.flushForTesting()
+        let path = "/nonexistent/abc.jsonl"
+        func events() throws -> String { diagnostics.flushForTesting(); return try String(contentsOf: diagnostics.eventsURL, encoding: .utf8) }
+
+        // Too early, and no activity: nothing.
+        diagnostics.recordTranscriptMissingIfNeeded(expectedPath: path, exists: false, activityObserved: true)
+        XCTAssertFalse(try events().contains("transcript_missing"))
+        clock.addTimeInterval(EmbeddedAgentDiagnostics.transcriptGraceInterval + 1)
+        // Transcript exists: nothing.
+        diagnostics.recordTranscriptMissingIfNeeded(expectedPath: path, exists: true, activityObserved: true)
+        XCTAssertFalse(try events().contains("transcript_missing"))
+        // Missing after grace with observed activity: recorded once, basename only.
+        diagnostics.recordTranscriptMissingIfNeeded(expectedPath: path, exists: false, activityObserved: true)
+        diagnostics.recordTranscriptMissingIfNeeded(expectedPath: path, exists: false, activityObserved: true)
+        let text = try events()
+        XCTAssertEqual(text.components(separatedBy: "transcript_missing").count - 1, 1)
+        XCTAssertTrue(text.contains(#""expected_transcript_file":"abc.jsonl""#))
+        XCTAssertFalse(text.contains("/nonexistent"))
+    }
+
     func testLaunchdFailureAndBridgeTimeoutRemainDistinctFromProviderExit() throws {
         let root = try makeRoot()
         let diagnostics = try XCTUnwrap(EmbeddedAgentDiagnostics.start(

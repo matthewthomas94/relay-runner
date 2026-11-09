@@ -4,6 +4,65 @@ import XCTest
 @testable import relay_runner
 
 final class AssistantContextLifecycleTests: XCTestCase {
+    func testObservedActivityKeepsTranscriptlessSessionAliveAndIdleStillEnds() throws {
+        let directory = try temporaryDirectory()
+        let store = AssistantSessionStore(directory: directory)
+        let started = Date(timeIntervalSince1970: 1_800_000_000)
+        let transport = UUID().uuidString.lowercased()
+        try store.begin(context: .general, provider: "claude", model: "sonnet",
+                        transportSessionID: transport, now: started)
+        try store.mark(.running, context: .general, now: started)
+        // Transcript path recorded but the file never appears (RR-473).
+        try store.reconcile(context: .general, activeRunIDs: [], pendingIntentIDs: [])
+        XCTAssertNil(store.binding(for: .general)?.transcriptPath)
+
+        // Activity 20 minutes in (PTY input, claimed voice turn or busy provider turn all
+        // reach the store through recordActivity) moves the idle clock.
+        let active = started.addingTimeInterval(20 * 60)
+        try store.recordActivity(context: .general, at: active)
+        XCTAssertEqual(store.binding(for: .general)?.lastActivity, active)
+        // More than 30 minutes after launch, but under 30 since the activity: not idle.
+        let later = started.addingTimeInterval(AssistantSessionStore.idleTimeout + 60)
+        XCTAssertFalse(try store.saveIfIdle(context: .general, now: later, eligible: true, end: { XCTFail() }))
+        // Activity never moves the clock backwards.
+        try store.recordActivity(context: .general, at: started)
+        XCTAssertEqual(store.binding(for: .general)?.lastActivity, active)
+        // Truly idle for 30 minutes after the last activity: saved and ended.
+        var ended = false
+        XCTAssertTrue(try store.saveIfIdle(context: .general,
+            now: active.addingTimeInterval(AssistantSessionStore.idleTimeout), eligible: true, end: { ended = true }))
+        XCTAssertTrue(ended)
+        XCTAssertEqual(store.binding(for: .general)?.lifecycle, .saved)
+    }
+
+    func testRecordActivityIsThrottledToAvoidRewritingEveryPoll() throws {
+        let store = AssistantSessionStore(directory: try temporaryDirectory())
+        let started = Date(timeIntervalSince1970: 1_800_000_000)
+        try store.begin(context: .general, provider: "claude", model: "sonnet",
+                        transportSessionID: UUID().uuidString.lowercased(), now: started)
+        try store.recordActivity(context: .general, at: started.addingTimeInterval(3))
+        XCTAssertEqual(store.binding(for: .general)?.lastActivity, started)
+        try store.recordActivity(context: .general, at: started.addingTimeInterval(AssistantSessionStore.activityRecordingGranularity))
+        XCTAssertEqual(store.binding(for: .general)?.lastActivity,
+                       started.addingTimeInterval(AssistantSessionStore.activityRecordingGranularity))
+    }
+
+    func testAppStateFeedsObservedActivitySourcesIntoIdleClock() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/relay-runner/App/AppState.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "    private func observeAssistantActivity("))
+        let end = try XCTUnwrap(source.range(of: "    /// Reconcile links only;", range: start.upperBound..<source.endIndex))
+        let body = source[start.lowerBound..<end.lowerBound]
+        XCTAssertTrue(body.contains("embeddedTerminal.lastUserInputAt"), "PTY input")
+        XCTAssertTrue(body.contains("assistantPendingIntentIDs()"), "claimed voice turns")
+        XCTAssertTrue(body.contains("ProcessManager.foregroundProviderTurnActive()"), "provider busy turns")
+        let reconcile = try XCTUnwrap(source.range(of: "    private func reconcileAssistantContext("))
+        let observeCall = try XCTUnwrap(source.range(of: "try observeAssistantActivity(now: now)", range: reconcile.upperBound..<source.endIndex))
+        let idleCall = try XCTUnwrap(source.range(of: "assistantSessionStore.saveIfIdle(", range: reconcile.upperBound..<source.endIndex))
+        XCTAssertLessThan(observeCall.lowerBound, idleCall.lowerBound, "activity is recorded before the idle check")
+    }
+
     @MainActor
     func testIdleBoundarySavesBeforeEndingAndResumesExactNativeSessionForBothProviders() throws {
         for target in [ProcessManager.AgentTarget.codex, .claude] {

@@ -19,6 +19,8 @@ protocol EmbeddedTerminalProcess: AnyObject {
     var hasFocus: Bool { get }
     var childPID: Int? { get }
     var hasUnsubmittedInput: Bool { get }
+    /// When the person last typed into the PTY (RR-473 idle clock).
+    var lastUserInputAt: Date? { get }
     var onExit: ((Int32?) -> Void)? { get set }
     var onReady: (() -> Void)? { get set }
     /// The provider's interface has taken the terminal and may need the
@@ -42,6 +44,7 @@ extension EmbeddedTerminalProcess {
     func submitContextContinuation(_ continuation: AssistantSessionStore.Continuation) -> Bool { false }
     func cancelContextContinuation(id: String) {}
     var hasUnsubmittedInput: Bool { false }
+    var lastUserInputAt: Date? { nil }
 }
 
 enum EmbeddedTerminalProcessError: LocalizedError, Equatable {
@@ -115,6 +118,13 @@ final class EmbeddedTerminalSession {
     /// requested termination but before the child actually releases its PTY.
     var hasLiveEmbeddedProcess: Bool { process?.isRunning == true }
     var hasUnsubmittedInput: Bool { process?.hasUnsubmittedInput == true }
+    var lastUserInputAt: Date? { process?.lastUserInputAt }
+    /// RR-473: surfaces a provider that never wrote its transcript.
+    func observeTranscript(expectedPath: String?, activityObserved: Bool) {
+        let exists = expectedPath.map { FileManager.default.fileExists(atPath: $0) } ?? false
+        diagnostics?.recordTranscriptMissingIfNeeded(
+            expectedPath: expectedPath, exists: exists, activityObserved: activityObserved)
+    }
     func submitContextContinuation(_ continuation: AssistantSessionStore.Continuation) -> Bool {
         guard phase == .running, !deliveryBlocked, inboxRecoveryBlocker == nil else { return false }
         return process?.submitContextContinuation(continuation) == true
@@ -3015,6 +3025,11 @@ final class EmbeddedAgentDiagnostics {
     private var failedStage: String?
     private var endedAt: Date?
     private var rawStatus: Int32?
+    private var readyAt: Date?
+    private var transcriptMissingRecorded = false
+    private var activitySeen = false
+    /// How long after readiness an active session may lack its transcript.
+    static let transcriptGraceInterval: TimeInterval = 120
 
     static func diagnosticsDirectoryURL(baseDirectory: URL = defaultBaseDirectory) -> URL {
         baseDirectory.appendingPathComponent(diagnosticsDirectoryName, isDirectory: true)
@@ -3122,6 +3137,7 @@ final class EmbeddedAgentDiagnostics {
     func markInteractiveReady() {
         queue.async { [self] in
             state = "ready"
+            readyAt = now()
             currentStage = "interactive_provider_readiness"
             appendEvent(
                 stage: currentStage,
@@ -3129,6 +3145,26 @@ final class EmbeddedAgentDiagnostics {
                 fields: ["controlling_pty": "stable"]
             )
             try? writeManifest()
+        }
+    }
+
+    /// RR-473: once per attempt, record that an active session has no provider
+    /// transcript. Without the transcript the app cannot import history, so
+    /// this makes the failure visible without digging.
+    func recordTranscriptMissingIfNeeded(expectedPath: String?, exists: Bool, activityObserved: Bool) {
+        queue.async { [self] in
+            if activityObserved { activitySeen = true }
+            guard !transcriptMissingRecorded, !exists, activitySeen, let readyAt,
+                  endedAt == nil, now().timeIntervalSince(readyAt) >= Self.transcriptGraceInterval else { return }
+            transcriptMissingRecorded = true
+            appendEvent(
+                stage: "transcript_missing",
+                outcome: "not_found",
+                fields: [
+                    "seconds_since_readiness": Int(now().timeIntervalSince(readyAt)),
+                    "expected_transcript_file": expectedPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "none",
+                ]
+            )
         }
     }
 
@@ -3379,6 +3415,13 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     func cancelContextContinuation(id: String) { voiceDelivery?.cancelContextContinuation(id: id) }
 
     var hasUnsubmittedInput: Bool { voiceDelivery?.hasUnsubmittedInput == true }
+
+    private let userInputLock = NSLock()
+    private var userInputAt: Date?
+    var lastUserInputAt: Date? {
+        userInputLock.lock(); defer { userInputLock.unlock() }
+        return userInputAt
+    }
 
     func skipUncertainMessage(_ blocker: InboxRecoveryBlocker) -> Bool {
         localProcess.running && voiceDelivery?.skipUncertainMessage(blocker) == true
@@ -3679,6 +3722,9 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if interactiveReady, !terminalView.isSendingTerminalResponse, !data.isEmpty {
+            userInputLock.lock(); userInputAt = Date(); userInputLock.unlock()
+        }
         if interactiveReady,
            !terminalView.isSendingTerminalResponse,
            !terminalView.isSendingNavigationShortcut,

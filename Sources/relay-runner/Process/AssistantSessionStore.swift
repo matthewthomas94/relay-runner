@@ -301,6 +301,18 @@ final class AssistantSessionStore {
         return true
     }
 
+    /// RR-473: app-observed activity (PTY input, claimed voice turns, provider
+    /// busy turns) keeps the idle clock moving even when no provider transcript
+    /// can be read. Throttled so a long busy turn does not rewrite the document
+    /// on every poll; the 30-minute timeout makes the lag irrelevant.
+    func recordActivity(context: AssistantSessionContext, at date: Date) throws {
+        guard let binding = binding(for: context),
+              date.timeIntervalSince(binding.lastActivity) >= Self.activityRecordingGranularity else { return }
+        try update { $0.bindings[context.id]?.lastActivity = date }
+    }
+
+    static let activityRecordingGranularity: TimeInterval = 10
+
     /// The provider refused to resume this context's conversation (Claude's "No conversation
     /// found"), so the next launch starts fresh instead of failing the same way. The provider's
     /// own transcript is left where it is.

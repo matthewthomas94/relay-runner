@@ -2758,6 +2758,22 @@ final class AppState {
         }
     }
 
+    /// RR-473: the idle clock must not depend on a readable provider transcript.
+    /// PTY input, a claimed voice turn, or an active provider turn is activity.
+    private func observeAssistantActivity(now: Date) throws {
+        var observed = embeddedTerminal.lastUserInputAt
+        if ProcessManager.foregroundProviderTurnActive() || !assistantPendingIntentIDs().isEmpty
+            || embeddedTerminal.hasUnsubmittedInput {
+            observed = now
+        }
+        if let observed { try assistantSessionStore.recordActivity(context: activeContext, at: min(observed, now)) }
+        if embeddedTerminal.phase == .running {
+            embeddedTerminal.observeTranscript(
+                expectedPath: assistantSessionStore.binding(for: activeContext)?.transcriptPath,
+                activityObserved: observed != nil)
+        }
+    }
+
     /// Reconcile links only; canonical daemon intent/run state is the recovery
     /// authority. A saved history entry is never submitted as another action.
     private func reconcileAssistantContext(now: Date = Date()) {
@@ -2767,6 +2783,7 @@ final class AppState {
             try assistantSessionStore.reconcile(context: activeContext, activeRunIDs: assistantRunIDs(for: activeContext),
                                                 pendingIntentIDs: assistantPendingIntentIDs())
             try assistantSessionStore.importPublicHistory(context: activeContext)
+            try observeAssistantActivity(now: now)
             publishConversationState()
             reconcileContextContinuation(now: now)
             if let selection = pendingContextSelection, canReplaceContextProvider,

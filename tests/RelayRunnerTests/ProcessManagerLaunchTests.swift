@@ -3,6 +3,38 @@ import XCTest
 
 final class ProcessManagerLaunchTests: XCTestCase {
 
+    func testLaunchScriptScrubsInheritedHostSessionVariablesButKeepsAuthAndRelayValues() throws {
+        let home = FileManager.default.temporaryDirectory
+        let script = ProcessManager.launchScript(
+            relayBridge: "/Relay Runner/scripts/relay-bridge", target: .claude,
+            agentBinary: "/usr/local/bin/claude", config: AppConfig(), voiceDelivery: .appOwned,
+            homeDirectory: home, sessionEventPath: "/private/session.events.jsonl")
+        let scrubIndex = try XCTUnwrap(script.range(of: ProcessManager.inheritedHostSessionScrub)).lowerBound
+        let gateIndex = try XCTUnwrap(script.range(of: "claude_subscription.py")).lowerBound
+        XCTAssertLessThan(scrubIndex, gateIndex, "scrub runs before the provider and its auth gate")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", ProcessManager.inheritedHostSessionScrub
+            + "\nenv | grep -E '^(CLAUDE|ANTHROPIC)' | sort"]
+        var env = ["PATH": "/usr/bin:/bin"]
+        for name in ProcessManager.inheritedHostSessionVariables { env[name] = "host" }
+        env["CLAUDE_AGENT_SDK_VERSION"] = "1"
+        env["CLAUDE_AGENT_SDK_CLIENT_APP"] = "desktop"
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = "auth"
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = "relay"
+        env["ANTHROPIC_UNRELATED"] = "keep"
+        process.environment = env
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        XCTAssertEqual(output.split(separator: "\n").sorted(), [
+            "ANTHROPIC_UNRELATED=keep", "CLAUDE_CODE_AUTO_COMPACT_WINDOW=relay", "CLAUDE_CODE_OAUTH_TOKEN=auth",
+        ])
+    }
+
     func testOnlyManagedCodexLaunchObservesExactNativeStartupIdentityBeforeExec() throws {
         for target in [ProcessManager.AgentTarget.codex, .claude] {
             var config = AppConfig()
