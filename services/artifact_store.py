@@ -972,12 +972,16 @@ class ArtifactStore:
         return content
 
     def _validate_note_catalog_entries(self, entries: Mapping[str, _TreeEntry]) -> None:
-        self._validate_note_catalog_files({
-            path: self._cat_blob(entry.oid)
+        # Every board write validates the resulting note catalog; read it in
+        # one batch rather than a Git fork per note (RR-471).
+        selected = {
+            path: entry.oid
             for path, entry in entries.items()
             if path == ".orchestrator/note-index.jsonl"
             or (path.startswith(".orchestrator/notes/") and path.endswith(".md"))
-        })
+        }
+        blobs = self._cat_blobs(selected.values())
+        self._validate_note_catalog_files({path: blobs[oid] for path, oid in selected.items()})
 
     def _validate_note_catalog_files(self, files: Mapping[str, bytes]) -> None:
         index_content = files.get(".orchestrator/note-index.jsonl")
@@ -1110,6 +1114,9 @@ class ArtifactStore:
                     return
         entries = self._tree_entries(head)
         self._validate_artifact_head(head)
+        # Every board write rematerializes the whole projection; one batch
+        # read replaces a Git fork per file (RR-471).
+        blobs = self._cat_blobs(entry.oid for entry in entries.values())
         temp_root = self.repo_path / f".relay-materialization-{uuid.uuid4().hex}"
         backup_root = self.repo_path / f".relay-materialization-backup-{uuid.uuid4().hex}"
         journal = {
@@ -1127,7 +1134,7 @@ class ArtifactStore:
                 relative = PurePosixPath(entry.path).relative_to(".orchestrator")
                 destination = temp_root.joinpath(*relative.parts)
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(self._cat_blob(entry.oid))
+                destination.write_bytes(blobs[entry.oid])
                 os.chmod(destination, 0o600)
             self._inject("during_materialization")
             if self.materialized_path.is_symlink():

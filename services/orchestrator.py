@@ -161,6 +161,7 @@ from graphify_ingest import (
     graph_file_state,
     ingest_registered_projects,
     registered_projects_input_state,
+    unchanged_project_inputs,
 )
 from followup_tickets import (
     FOLLOWUP_KEY_PREFIX,
@@ -11879,18 +11880,24 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                 runs_db_path=self.runs.path,
             )
             previous = getattr(self, "_program_ingest_state", None)
-            if (
+            graph_unchanged = (
                 inputs is not None
                 and previous is not None
-                and previous[0] == inputs
                 and previous[1] == graph_file_state(self.graphify_path)
-            ):
+            )
+            if graph_unchanged and previous[0] == inputs:
                 return dict(previous[2])
+            # Only this daemon wrote the graph since its last ingest, so a
+            # project whose refs and board files did not move keeps its graph:
+            # a ticket write re-reads its own project, not all of them (RR-471).
+            unchanged = unchanged_project_inputs(previous[0], inputs) if graph_unchanged else None
             counts = ingest_registered_projects(
                 GraphifyCoreStore(self.graphify_path),
                 registry_path=registry_path,
                 runs_db_path=self.runs.path,
                 index_files=False,
+                unchanged_repo_paths=unchanged[0] if unchanged else (),
+                runs_unchanged=bool(unchanged and unchanged[1]),
             )
             self._program_ingest_state = (
                 (inputs, graph_file_state(self.graphify_path), dict(counts))
@@ -11936,6 +11943,7 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         limit: int = 0,
         trigger: str | None = None,
         repo_paths: list[str] | None = None,
+        sweep_ready: bool = True,
     ) -> dict:
         def refresh() -> dict[str, int]:
             self.sweep_program_ready_tickets(
@@ -11944,7 +11952,16 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
             )
             return self._ingest_program_graph()
 
-        self._program_refresh_single_flight("dashboard").run(refresh)
+        if sweep_ready:
+            self._program_refresh_single_flight("dashboard").run(refresh)
+        else:
+            # RR-471: the Workspace asks for this when a board write landed.
+            # The queue-drain monitor already sweeps every project every 5 s,
+            # so this skips the ready sweep and only refreshes the graph.
+            # Joining a refresh that started before the write would return
+            # the board without it; the ingest lock instead re-reads its
+            # inputs once it is free.
+            self._ingest_program_graph()
         store = GraphifyCoreStore(self.graphify_path)
         # The Work tab polls every 10 s. Decoding every graph node again for
         # an unchanged graph was its largest idle cost (RR-449); the file
@@ -12305,11 +12322,13 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int((query.get("limit") or ["0"])[0])
                 trigger = (query.get("trigger") or ["program-board-refresh"])[0]
                 repo_paths = query.get("repo_path")
+                sweep = (query.get("sweep") or ["1"])[0].strip().lower()
                 return 200, self.daemon.program_dashboard(
                     provider=provider,
                     limit=limit,
                     trigger=trigger,
                     repo_paths=repo_paths,
+                    sweep_ready=sweep not in {"0", "false", "no"},
                 )
 
             if method == "GET" and segments == ["v1", "orchestrator-sessions"]:

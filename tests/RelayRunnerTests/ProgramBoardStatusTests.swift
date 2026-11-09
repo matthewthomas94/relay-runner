@@ -1150,6 +1150,62 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertEqual(model.ticketItems(in: .backlog).map(\.ticketID), ["TL-1"])
     }
 
+    func testWarmUpFetchKeepsRunningThroughAnOpeningOfTheSameProjects() async throws {
+        // RR-471: opening the Workspace waits for a running warm-up instead of
+        // cancelling it and fetching the board again.
+        let snapshot = try programBoardSnapshot(clientPath: "/repo/client-dashboard", toolsPath: "/repo/tools")
+        let spy = ProgramDashboardFetchSpy(results: [.success(snapshot)], delayNanoseconds: 20_000_000)
+        let model = ProgramBoardViewModel(fetchDashboard: spy.fetch)
+        model.setProjectScope(["/repo/client-dashboard", "/repo/tools"])
+
+        let warmUp = try XCTUnwrap(model.reloadIfIdle(inBackground: true))
+        model.setProjectScope(["/repo/client-dashboard", "/repo/tools"], selectedProjectPath: "/repo/tools")
+        model.prepareForOpening()
+
+        XCTAssertTrue(model.hasReloadInFlight)
+        XCTAssertNotNil(model.inFlightReloadTask)
+        await warmUp.value
+        XCTAssertEqual(spy.callCount, 1)
+        XCTAssertEqual(model.snapshot, snapshot)
+        XCTAssertEqual(model.reloadState, .succeeded)
+    }
+
+    func testWarmUpFetchForOtherProjectsNeverLandsAsTheBoard() async throws {
+        let snapshot = try programBoardSnapshot(clientPath: "/repo/client-dashboard", toolsPath: "/repo/tools")
+        let spy = ProgramDashboardFetchSpy(results: [.success(snapshot)], delayNanoseconds: 20_000_000)
+        let model = ProgramBoardViewModel(fetchDashboard: spy.fetch)
+        model.setProjectScope(["/repo/client-dashboard", "/repo/tools"])
+
+        let warmUp = try XCTUnwrap(model.reloadIfIdle(inBackground: true))
+        model.setProjectScope(["/repo/other"])
+
+        XCTAssertFalse(model.hasReloadInFlight)
+        await warmUp.value
+        XCTAssertNil(model.snapshot)
+
+        model.prepareForOpening()
+        XCTAssertFalse(model.hasReloadInFlight)
+    }
+
+    func testBoardChangeRefreshSkipsTheReadySweepAndOtherReloadsKeepIt() async throws {
+        let snapshot = try programBoardSnapshot(clientPath: "/repo/client-dashboard", toolsPath: "/repo/tools")
+        let requests = LockedDashboardRequests()
+        let model = ProgramBoardViewModel(fetchDashboardRequest: { request in
+            requests.append(request)
+            return snapshot
+        })
+        model.setProjectScope(["/repo/client-dashboard"])
+
+        await model.reload().value
+        await model.refreshInBackground().value
+        await model.refreshInBackground(sweepsReadyTickets: false).value
+        let changed = try XCTUnwrap(model.reloadIfIdle(inBackground: true, sweepsReadyTickets: false))
+        await changed.value
+
+        XCTAssertEqual(requests.values.map(\.sweepsReadyTickets), [true, true, false, false])
+        XCTAssertEqual(Set(requests.values.map(\.repoPaths)), [["/repo/client-dashboard"]])
+    }
+
     func testProgramBoardViewModelReloadPassesWorkspaceProjectScopeToDashboardFetcher() async throws {
         let snapshot = try programBoardSnapshot(
             clientPath: "/demo/aurora-web",
@@ -3433,6 +3489,23 @@ private final class ProgramDashboardFetchSpy {
         defer { lock.unlock() }
         calls += 1
         return results.count > 1 ? results.removeFirst() : results[0]
+    }
+}
+
+private final class LockedDashboardRequests: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requests: [ProgramBoardDashboardRequest] = []
+
+    var values: [ProgramBoardDashboardRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+
+    func append(_ request: ProgramBoardDashboardRequest) {
+        lock.lock()
+        requests.append(request)
+        lock.unlock()
     }
 }
 

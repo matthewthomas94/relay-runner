@@ -203,6 +203,9 @@ final class AppState {
     @ObservationIgnored private var workspaceActivityTimer: Timer?
     @ObservationIgnored private var workspaceActivityTask: Task<Void, Never>?
     @ObservationIgnored private var workspaceActivityRefreshID = 0
+    /// RR-471: load the board in the background once the activity poll has
+    /// resolved its projects, at launch and again at each session start.
+    @ObservationIgnored private var programBoardWarmUpPending = true
     @ObservationIgnored private var workspaceDiscoveryTask: Task<Void, Never>?
     @ObservationIgnored private var appTerminationObserver: NSObjectProtocol?
     @ObservationIgnored private var meetingNoteCoordinator: MeetingNoteCoordinator?
@@ -723,6 +726,10 @@ final class AppState {
             self.workspaceActivityTask = nil
             guard !Task.isCancelled else { return }
             self.workspaceActivitySnapshot = snapshot
+            self.programBoardOverlay.boardFilesDidChange(snapshot.ticketFileRevisions)
+            if self.programBoardWarmUpPending, self.programBoardOverlay.warmUp() {
+                self.programBoardWarmUpPending = false
+            }
             if self.hasActiveSession {
                 self.notchActivityRunStates = snapshot.runStates
                 self.notchActivityTickets = snapshot.tickets
@@ -2813,6 +2820,7 @@ final class AppState {
         idleSessionSaved = false
         // Bridge is about to launch — assume alive until watchdog says otherwise
         bridgeAliveCache = true
+        programBoardWarmUpPending = true
         refreshWorkspaceActivity(invalidateRoute: true)
 
         // Start STT if not already running

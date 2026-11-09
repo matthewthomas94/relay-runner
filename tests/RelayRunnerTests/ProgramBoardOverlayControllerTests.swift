@@ -21,6 +21,110 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testWarmUpLoadsTheBoardWhileHiddenWithoutTouchingTheNotchOrLoader() async throws {
+        // RR-471: launch and session start load the board in the background,
+        // so the first Workspace open shows content instead of the sketch.
+        let fetched = LockedScopes()
+        let model = ProgramBoardViewModel(fetchDashboardRequest: { request in
+            fetched.append(request.repoPaths)
+            return .empty()
+        })
+        let project = ProjectResolver.LinkedProject(repoPath: URL(fileURLWithPath: "/repo/client-dashboard"))
+        var route = ProjectResolver.BoardRoute.unavailable
+        let controller = ProgramBoardOverlayController(boardRouteResolver: { route }, model: model)
+        var loadingStates: [ProgramBoardLoadingState] = []
+        controller.setLoadingStateHandler { loadingStates.append($0) }
+        controller.setGeneralContextProvider { false }
+        controller.setRequiresConfirmedProjectProvider { true }
+        controller.setProjectScopeProvider { ["/repo/client-dashboard", "/repo/tools"] }
+
+        XCTAssertFalse(controller.warmUp(), "no project route yet; the caller retries")
+        XCTAssertNil(model.snapshot)
+
+        route = .project(project)
+        XCTAssertTrue(controller.warmUp())
+        await model.inFlightReloadTask?.value
+
+        XCTAssertEqual(fetched.values, [["/repo/client-dashboard", "/repo/tools"]])
+        XCTAssertNotNil(model.snapshot)
+        XCTAssertEqual(model.projectPaths, ["/repo/client-dashboard", "/repo/tools"])
+        XCTAssertTrue(loadingStates.isEmpty, "a hidden warm-up must not animate the notch")
+        XCTAssertFalse(controller.isVisible)
+
+        // The opening finds a snapshot of exactly its projects and shows it
+        // at once, as `show` decides.
+        func opening(hasCachedSnapshot: Bool) -> ProgramBoardOverlayController.WorkspaceOpening? {
+            ProgramBoardOverlayController.workspaceOpening(
+                route: route,
+                initialTab: .work,
+                hasTerminalTab: true,
+                hasSettingsTab: true,
+                hasCachedSnapshot: hasCachedSnapshot,
+                activityProjectPaths: ["/repo/client-dashboard", "/repo/tools"],
+                showsRegisteredProjectCatalog: true
+            )
+        }
+        let scope = try XCTUnwrap(opening(hasCachedSnapshot: false)?.projectScope)
+        let warm = opening(hasCachedSnapshot: model.snapshot != nil && model.projectPaths == scope)
+        XCTAssertEqual(warm?.contentLoadBlocked, false)
+        XCTAssertEqual(warm?.startsLoading, false)
+    }
+
+    func testBoardChangeRefreshesOnlyAnOpenWorkTabAfterTheFirstObservation() {
+        let before: [String: WorkspaceActivitySnapshotStore.FileRevision] = [
+            "/repo/.orchestrator/RR-1.md": .init(modifiedAt: Date(timeIntervalSince1970: 1), size: 10),
+        ]
+        var after = before
+        after["/repo/.orchestrator/RR-2.md"] = .init(modifiedAt: Date(timeIntervalSince1970: 2), size: 12)
+
+        func refreshes(
+            previous: [String: WorkspaceActivitySnapshotStore.FileRevision]?,
+            isVisible: Bool = true,
+            tab: WorkspaceTab = .work,
+            isEditing: Bool = false
+        ) -> Bool {
+            ProgramBoardOverlayController.boardChangeRefreshesDashboard(
+                previous: previous,
+                current: after,
+                isVisible: isVisible,
+                selectedTab: tab,
+                isEditing: isEditing
+            )
+        }
+
+        XCTAssertTrue(refreshes(previous: before))
+        XCTAssertFalse(refreshes(previous: nil), "the first observation is not a change")
+        XCTAssertFalse(refreshes(previous: after), "unchanged files")
+        XCTAssertFalse(refreshes(previous: before, isVisible: false), "a hidden board waits for its next open")
+        XCTAssertFalse(refreshes(previous: before, tab: .terminal))
+        XCTAssertFalse(refreshes(previous: before, isEditing: true))
+    }
+
+    func testActivityPollDrivesBoardWarmUpAndChangeRefresh() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let appState = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/App/AppState.swift"),
+            encoding: .utf8
+        )
+        let refresh = try XCTUnwrap(appState.range(of: "private func refreshWorkspaceActivity("))
+        let refreshEnd = try XCTUnwrap(
+            appState.range(of: "private func cancelWorkspaceActivityRefresh(", range: refresh.upperBound..<appState.endIndex)
+        )
+        let refreshBody = String(appState[refresh.lowerBound..<refreshEnd.lowerBound])
+        XCTAssertTrue(refreshBody.contains("programBoardOverlay.boardFilesDidChange(snapshot.ticketFileRevisions)"))
+        XCTAssertTrue(refreshBody.contains("self.programBoardWarmUpPending, self.programBoardOverlay.warmUp()"))
+
+        let launch = try XCTUnwrap(appState.range(of: "func newSession("))
+        let launchEnd = try XCTUnwrap(
+            appState.range(of: "refreshWorkspaceActivity(invalidateRoute: true)", range: launch.upperBound..<appState.endIndex)
+        )
+        XCTAssertTrue(appState[launch.lowerBound..<launchEnd.lowerBound].contains("programBoardWarmUpPending = true"))
+    }
+
     func testSingleRepoColdRouteOpensResponsiveShellAndLoadsWorkInBackground() {
         let project = ProjectResolver.LinkedProject(repoPath: URL(fileURLWithPath: "/repo/client-dashboard"))
         let opening = ProgramBoardOverlayController.workspaceOpening(
@@ -835,5 +939,22 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
             totalCount: totalCount,
             sync: sync
         )
+    }
+}
+
+private final class LockedScopes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var scopes: [[String]] = []
+
+    var values: [[String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return scopes
+    }
+
+    func append(_ scope: [String]) {
+        lock.lock()
+        scopes.append(scope)
+        lock.unlock()
     }
 }

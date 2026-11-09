@@ -46,11 +46,18 @@ def ingest_registered_projects(
     registry_path: str | Path,
     runs_db_path: str | Path | None = None,
     index_files: bool = True,
+    unchanged_repo_paths: Iterable[str] = (),
+    runs_unchanged: bool = False,
 ) -> dict[str, int]:
     """Build the Graphify Core program graph from registered project sources.
 
     The registry, project ticket files, run logs, and run-history database are
     read-only inputs. All writes go through the provided GraphifyCoreStore.
+
+    `unchanged_repo_paths` names projects whose inputs have not moved since
+    this store's previous ingest (see `unchanged_project_inputs`). Their graph
+    is reused instead of re-read, so one board write re-ingests only its own
+    project (RR-471). Their runs are reused too when `runs_unchanged`.
     """
     with store.transaction():
         return _ingest_registered_projects(
@@ -58,7 +65,28 @@ def ingest_registered_projects(
             registry_path=registry_path,
             runs_db_path=runs_db_path,
             index_files=index_files,
+            unchanged_repo_paths=frozenset(unchanged_repo_paths) if not index_files else frozenset(),
+            runs_unchanged=runs_unchanged,
         )
+
+
+def unchanged_project_inputs(
+    previous: tuple[Any, ...] | None,
+    current: tuple[Any, ...] | None,
+) -> tuple[frozenset[str], bool] | None:
+    """Compare two `registered_projects_input_state` values.
+
+    Returns the projects whose refs and board entries are identical, and
+    whether the runs database is, or None when the registry itself changed
+    and every project must be re-read.
+    """
+    if previous is None or current is None or previous[0] != current[0]:
+        return None
+    before = {project[0]: project for project in previous[1]}
+    unchanged = frozenset(
+        project[0] for project in current[1] if before.get(project[0]) == project
+    )
+    return unchanged, previous[2] == current[2]
 
 
 def registered_projects_input_state(
@@ -152,6 +180,8 @@ def _ingest_registered_projects(
     registry_path: str | Path,
     runs_db_path: str | Path | None,
     index_files: bool,
+    unchanged_repo_paths: frozenset[str] = frozenset(),
+    runs_unchanged: bool = False,
 ) -> dict[str, int]:
     registry = _load_registry(Path(registry_path))
     registry_v2 = registry.get("schema_version") == 2
@@ -186,6 +216,7 @@ def _ingest_registered_projects(
     }
     projects_by_repo: dict[str, dict[str, Any]] = {}
     tickets_by_repo: dict[str, dict[str, dict[str, Any]]] = {}
+    reused_repo_paths: set[str] = set()
 
     for repo_path in workspace_roots_to_filter:
         _delete_existing_project_graph(store, repo_path)
@@ -200,6 +231,21 @@ def _ingest_registered_projects(
             continue
         if repo_path in workspace_roots_to_filter:
             continue
+
+        if repo_path in unchanged_repo_paths:
+            reused = store.find_node(kind=NODE_PROJECT, stable_key=_project_key(repo_path))
+            if reused is not None:
+                # Same registry record, refs and board files as last time.
+                ticket_nodes = {
+                    str(node["body"].get("ticket_id")): node
+                    for node in store.nodes(kind=NODE_TICKET, project_id=reused["id"])
+                }
+                counts["projects"] += 1
+                counts["tickets"] += len(ticket_nodes)
+                projects_by_repo[repo_path] = reused
+                tickets_by_repo[repo_path] = ticket_nodes
+                reused_repo_paths.add(repo_path)
+                continue
 
         record_project_id = record.get("project_id") if registry_v2 else record.get("id")
         display_name = (
@@ -322,6 +368,11 @@ def _ingest_registered_projects(
         project = projects_by_repo.get(repo_path)
         if project is None:
             continue
+        if runs_unchanged and repo_path in reused_repo_paths:
+            # Neither the run nor the tickets its program state reads moved.
+            seen_run_stable_keys.add(_run_key(run.get("id")))
+            counts["runs"] += 1
+            continue
 
         ticket_id = str(run.get("ticket_id") or "").strip()
         ticket_node = tickets_by_repo.get(repo_path, {}).get(ticket_id)
@@ -384,6 +435,8 @@ def _ingest_registered_projects(
         )
 
     for repo_path, project in projects_by_repo.items():
+        if repo_path in reused_repo_paths:
+            continue
         counts["program_events"] += ingest_project_program_events(
             store,
             project=project,
@@ -769,6 +822,11 @@ def _archive_catalog_tickets_at_head(
     bit preserves the existing unavailable-ref failure semantics if a local
     projection appears without a corresponding catalog in the confirmed ref.
     Callers receive a deep copy so ingestion cannot mutate the cached proof.
+
+    Every ticket write publishes a new head, so this runs after each board
+    change. Identities are resolved with a fixed handful of Git processes
+    instead of several per catalog line, which took tens of seconds for a few
+    hundred archived tickets (RR-471). Checks and errors are unchanged.
     """
     repo_path = Path(repo_path_text)
     catalog = _git(repo_path, "show", f"{confirmed_head}:.orchestrator/archive-index.jsonl")
@@ -780,102 +838,50 @@ def _archive_catalog_tickets_at_head(
         lines = catalog.stdout.encode("utf-8", "surrogateescape").decode("utf-8").splitlines()
     except UnicodeDecodeError as error:
         raise ValueError(f"archive catalog is unavailable: {error}") from error
+    # Structural checks first, in catalog order. A structural failure is
+    # raised only after every earlier line passed its identity checks, so
+    # the first failing line is still the one reported.
+    entries: list[tuple[int, str, dict[str, Any]]] = []
+    structural_error: ValueError | None = None
+    for line_number, line in enumerate(lines, 1):
+        try:
+            entry = _archive_catalog_entry(line, line_number)
+        except ValueError as error:
+            structural_error = error
+            break
+        if entry is not None:
+            entries.append((line_number, line, entry))
+    # A line proven at an ancestor head stays proven: its source commit is
+    # still reachable and its tree and blob are immutable. A ticket write
+    # rarely touches the catalog, so usually nothing is re-checked.
+    proven = _archive_lines_proven_before(repo_path, repo_path_text, confirmed_head)
+    identities = _ArchiveIdentities(
+        repo_path,
+        confirmed_head,
+        [entry for _, line, entry in entries if line not in proven],
+    )
     tickets: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    source_trees: dict[str, dict[str, tuple[str, str]]] = {}
-    for line_number, line in enumerate(lines, 1):
-        if not line.strip():
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise ValueError(f"archive catalog line {line_number} is invalid JSON") from error
-        if not isinstance(entry, dict):
-            raise ValueError(f"archive catalog line {line_number} is not an object")
-        required = ("artifact_id", "ticket_id", "title", "status", "activity_at", "state")
-        missing = [key for key in required if not str(entry.get(key) or "").strip()]
-        if missing:
-            raise ValueError(
-                f"archive catalog line {line_number} is missing: {', '.join(missing)}"
-            )
-        if entry["state"] not in {"archived", "deleted_tombstone"}:
-            continue
+    proven_now: set[str] = set()
+    for line_number, line, entry in entries:
         ticket_id = str(entry["ticket_id"])
-        activity_at = str(entry["activity_at"])
-        if not re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z",
-            activity_at,
-        ):
-            raise ValueError(
-                f"archive catalog line {line_number} has invalid activity_at"
-            )
-        try:
-            datetime.fromisoformat(activity_at[:-1] + "+00:00")
-        except ValueError as error:
-            raise ValueError(
-                f"archive catalog line {line_number} has invalid activity_at"
-            ) from error
-        oid = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
-        if (
-            entry.get("ticket_path") != f".orchestrator/{ticket_id}.md"
-            or not oid.fullmatch(str(entry.get("ticket_blob") or ""))
-            or not oid.fullmatch(str(entry.get("source_commit") or ""))
-        ):
-            raise ValueError(
-                f"archive catalog line {line_number} has invalid historical identity"
-            )
-        source_commit = str(entry["source_commit"])
-        ticket_blob = str(entry["ticket_blob"])
-        source_tree = source_trees.get(source_commit)
-        if source_tree is None:
-            if (
-                _git(repo_path, "cat-file", "-e", f"{source_commit}^{{commit}}").returncode
-                != 0
-                or _git(
-                    repo_path,
-                    "merge-base",
-                    "--is-ancestor",
-                    source_commit,
-                    confirmed_head,
-                ).returncode
-                != 0
-            ):
+        if line not in proven:
+            failure, historical = identities.ticket_bytes(entry)
+            if failure is not None:
                 raise ValueError(
-                    f"archive catalog line {line_number} has unreachable historical identity"
+                    f"archive catalog line {line_number} has {failure} historical identity"
                 )
-            tree = _git(repo_path, "ls-tree", "-r", source_commit, "--", ".orchestrator")
-            if tree.returncode != 0:
+            try:
+                validate_catalog_ticket_metadata(
+                    entry,
+                    historical,
+                    activity_fields=DEFAULT_ACTIVITY_FIELDS,
+                )
+            except CatalogSemanticError as error:
                 raise ValueError(
-                    f"archive catalog line {line_number} has unreachable historical identity"
-                )
-            source_tree = {}
-            for tree_line in tree.stdout.splitlines():
-                metadata, separator, tree_path = tree_line.partition("\t")
-                parts = metadata.split()
-                if not separator or len(parts) != 3:
-                    continue
-                _, object_type, object_id = parts
-                source_tree[tree_path] = (object_type, object_id)
-            source_trees[source_commit] = source_tree
-        if source_tree.get(str(entry["ticket_path"])) != ("blob", ticket_blob):
-            raise ValueError(
-                f"archive catalog line {line_number} has mismatched historical identity"
-            )
-        historical = _git(repo_path, "cat-file", "blob", ticket_blob)
-        if historical.returncode != 0:
-            raise ValueError(
-                f"archive catalog line {line_number} has unreachable historical identity"
-            )
-        try:
-            validate_catalog_ticket_metadata(
-                entry,
-                historical.stdout.encode("utf-8", "surrogateescape"),
-                activity_fields=DEFAULT_ACTIVITY_FIELDS,
-            )
-        except CatalogSemanticError as error:
-            raise ValueError(
-                f"archive catalog line {line_number} has mismatched historical metadata: {error}"
-            ) from error
+                    f"archive catalog line {line_number} has mismatched historical metadata: {error}"
+                ) from error
+        proven_now.add(line)
         if str(entry["status"]).lower() not in {"done", "canceled", "cancelled"}:
             if entry["state"] == "deleted_tombstone":
                 # Delete accepts unfinished work. Its verified tombstone is
@@ -910,7 +916,243 @@ def _archive_catalog_tickets_at_head(
             "_archived_catalog": True,
             "_raw_fields": {},
         })
+    if structural_error is not None:
+        raise structural_error
+    _ARCHIVE_PROVEN_LINES[repo_path_text] = (confirmed_head, frozenset(proven_now))
     return tickets
+
+
+# Repo path -> (artifact head, catalog lines whose identity and historical
+# metadata were proven at that head).
+_ARCHIVE_PROVEN_LINES: dict[str, tuple[str, frozenset[str]]] = {}
+
+
+def _archive_lines_proven_before(
+    repo_path: Path,
+    repo_path_text: str,
+    confirmed_head: str,
+) -> frozenset[str]:
+    previous = _ARCHIVE_PROVEN_LINES.get(repo_path_text)
+    if previous is None:
+        return frozenset()
+    previous_head, lines = previous
+    if previous_head == confirmed_head:
+        return lines
+    ancestor = _git(repo_path, "merge-base", "--is-ancestor", previous_head, confirmed_head)
+    return lines if ancestor.returncode == 0 else frozenset()
+
+
+_ARCHIVE_OID = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+# Ticket IDs whose path Git resolves exactly as `ls-tree` prints it. Anything
+# else (slashes, spaces, non-ASCII) takes the per-commit path below.
+_ARCHIVE_PLAIN_TICKET_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _archive_catalog_entry(line: str, line_number: int) -> dict[str, Any] | None:
+    """Return a structurally valid catalog entry, or None for a skipped line."""
+    if not line.strip():
+        return None
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"archive catalog line {line_number} is invalid JSON") from error
+    if not isinstance(entry, dict):
+        raise ValueError(f"archive catalog line {line_number} is not an object")
+    required = ("artifact_id", "ticket_id", "title", "status", "activity_at", "state")
+    missing = [key for key in required if not str(entry.get(key) or "").strip()]
+    if missing:
+        raise ValueError(
+            f"archive catalog line {line_number} is missing: {', '.join(missing)}"
+        )
+    if entry["state"] not in {"archived", "deleted_tombstone"}:
+        return None
+    ticket_id = str(entry["ticket_id"])
+    activity_at = str(entry["activity_at"])
+    if not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z",
+        activity_at,
+    ):
+        raise ValueError(
+            f"archive catalog line {line_number} has invalid activity_at"
+        )
+    try:
+        datetime.fromisoformat(activity_at[:-1] + "+00:00")
+    except ValueError as error:
+        raise ValueError(
+            f"archive catalog line {line_number} has invalid activity_at"
+        ) from error
+    if (
+        entry.get("ticket_path") != f".orchestrator/{ticket_id}.md"
+        or not _ARCHIVE_OID.fullmatch(str(entry.get("ticket_blob") or ""))
+        or not _ARCHIVE_OID.fullmatch(str(entry.get("source_commit") or ""))
+    ):
+        raise ValueError(
+            f"archive catalog line {line_number} has invalid historical identity"
+        )
+    return entry
+
+
+class _ArchiveIdentities:
+    """Resolve catalog identities against one confirmed head in a few batches.
+
+    The confirmed artifact ref is orphan-rooted, so listing its commits is
+    cheap and answers "exists, is a commit, and is reachable" for every source
+    commit at once. One `cat-file --batch-check` resolves each ticket path at
+    its source commit and one `cat-file --batch` reads the historical blobs.
+    Anything the batches cannot prove falls back to the original per-commit
+    checks, so an unusual identity fails or passes exactly as before.
+    """
+
+    def __init__(self, repo_path: Path, confirmed_head: str, entries: list[dict[str, Any]]):
+        self._repo_path = repo_path
+        self._confirmed_head = confirmed_head
+        self._source_trees: dict[str, dict[str, tuple[str, str]] | None] = {}
+        self._paths: dict[tuple[str, str], tuple[str, str]] = {}
+        self._blobs: dict[str, bytes] = {}
+        if not entries:
+            return
+        ancestors = _git_output_lines(repo_path, "rev-list", confirmed_head)
+        lookups = sorted({
+            (str(entry["source_commit"]), str(entry["ticket_path"]))
+            for entry in entries
+            if str(entry["source_commit"]) in ancestors
+            and _ARCHIVE_PLAIN_TICKET_ID.fullmatch(str(entry["ticket_id"]))
+        })
+        resolved = _git_batch_check(repo_path, [f"{commit}:{path}" for commit, path in lookups])
+        if resolved is not None:
+            for lookup, (object_id, object_type) in zip(lookups, resolved):
+                # A reachable commit whose tree lacks the path is a mismatch,
+                # exactly as when `ls-tree` does not list it.
+                self._paths[lookup] = (object_type or "missing", object_id)
+        blob_ids = sorted({
+            str(entry["ticket_blob"])
+            for entry in entries
+            if self._paths.get((str(entry["source_commit"]), str(entry["ticket_path"])))
+            == ("blob", str(entry["ticket_blob"]))
+        })
+        self._blobs = _git_batch_blobs(repo_path, blob_ids)
+
+    def ticket_bytes(self, entry: dict[str, Any]) -> tuple[str | None, bytes]:
+        """Return (failure, historical ticket bytes); failure names the error."""
+        source_commit = str(entry["source_commit"])
+        ticket_path = str(entry["ticket_path"])
+        ticket_blob = str(entry["ticket_blob"])
+        tree_entry = self._paths.get((source_commit, ticket_path))
+        if tree_entry is None:
+            if source_commit not in self._source_trees:
+                self._source_trees[source_commit] = self._source_tree(source_commit)
+            source_tree = self._source_trees[source_commit]
+            if source_tree is None:
+                return "unreachable", b""
+            tree_entry = source_tree.get(ticket_path)
+        if tree_entry != ("blob", ticket_blob):
+            return "mismatched", b""
+        historical = self._blobs.get(ticket_blob)
+        if historical is None:
+            result = _git(self._repo_path, "cat-file", "blob", ticket_blob)
+            if result.returncode != 0:
+                return "unreachable", b""
+            historical = result.stdout.encode("utf-8", "surrogateescape")
+            self._blobs[ticket_blob] = historical
+        return None, historical
+
+    def _source_tree(self, source_commit: str) -> dict[str, tuple[str, str]] | None:
+        if (
+            _git(self._repo_path, "cat-file", "-e", f"{source_commit}^{{commit}}").returncode != 0
+            or _git(
+                self._repo_path,
+                "merge-base",
+                "--is-ancestor",
+                source_commit,
+                self._confirmed_head,
+            ).returncode
+            != 0
+        ):
+            return None
+        tree = _git(self._repo_path, "ls-tree", "-r", source_commit, "--", ".orchestrator")
+        if tree.returncode != 0:
+            return None
+        source_tree: dict[str, tuple[str, str]] = {}
+        for tree_line in tree.stdout.splitlines():
+            metadata, separator, tree_path = tree_line.partition("\t")
+            parts = metadata.split()
+            if not separator or len(parts) != 3:
+                continue
+            _, object_type, object_id = parts
+            source_tree[tree_path] = (object_type, object_id)
+        return source_tree
+
+
+def _git_output_lines(repo_path: Path, *arguments: str) -> set[str]:
+    result = _git(repo_path, *arguments)
+    return set(result.stdout.split()) if result.returncode == 0 else set()
+
+
+def _git_batch(repo_path: Path, arguments: list[str], requests: list[str]) -> bytes | None:
+    if not requests:
+        return b""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), *arguments],
+            input="".join(f"{request}\n" for request in requests).encode("utf-8"),
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _git_batch_check(
+    repo_path: Path,
+    requests: list[str],
+) -> list[tuple[str, str | None]] | None:
+    """Return (object id, type) per request, with a None type when missing."""
+    output = _git_batch(
+        repo_path,
+        ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        requests,
+    )
+    if output is None:
+        return None
+    lines = output.decode("utf-8", "surrogateescape").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if len(lines) != len(requests):
+        return None
+    resolved: list[tuple[str, str | None]] = []
+    for line in lines:
+        object_id, _, object_type = line.partition(" ")
+        if _ARCHIVE_OID.fullmatch(object_id) and object_type and " " not in object_type:
+            resolved.append((object_id, object_type))
+        else:
+            resolved.append(("", None))
+    return resolved
+
+
+def _git_batch_blobs(repo_path: Path, object_ids: list[str]) -> dict[str, bytes]:
+    """Read blobs in one process; absent or unreadable ones are left out."""
+    output = _git_batch(repo_path, ["cat-file", "--batch"], object_ids)
+    if not output:
+        return {}
+    blobs: dict[str, bytes] = {}
+    offset = 0
+    for object_id in object_ids:
+        header_end = output.find(b"\n", offset)
+        if header_end < 0:
+            break
+        header = output[offset:header_end].decode("utf-8", "surrogateescape").split(" ")
+        offset = header_end + 1
+        if len(header) != 3 or not header[2].isdigit():
+            continue
+        size = int(header[2])
+        content = output[offset:offset + size]
+        offset += size + 1
+        if header[0] == object_id and header[1] == "blob" and len(content) == size:
+            # The per-blob read decoded text and normalized line endings;
+            # validate exactly the same bytes.
+            blobs[object_id] = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return blobs
 
 
 def _ticket_creation_dates(repo_path: Path, *, artifact_ref: str = ARTIFACT_REF) -> dict[str, float]:
@@ -921,7 +1163,15 @@ def _ticket_creation_dates(repo_path: Path, *, artifact_ref: str = ARTIFACT_REF)
         for ref in ("HEAD", artifact_ref)
         if (result := _git(repo_path, "rev-parse", "--verify", ref)).returncode == 0
     )
-    return _ticket_creation_dates_at_heads(str(repo_path), heads) if heads else {}
+    # Read and cache each head on its own. A ticket write publishes only a new
+    # artifact head, so it rereads the short orphan artifact history instead
+    # of the whole source history as well (RR-471). A log of several heads
+    # lists exactly what the logs of each head list, and the earliest wins.
+    dates: dict[str, float] = {}
+    for head in dict.fromkeys(heads):
+        for ticket_id, timestamp in _ticket_creation_dates_at_heads(str(repo_path), (head,)).items():
+            dates[ticket_id] = min(dates.get(ticket_id, timestamp), timestamp)
+    return dates
 
 
 @lru_cache(maxsize=32)

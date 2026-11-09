@@ -142,15 +142,19 @@ final class ProgramBoardOverlayController {
     private var terminalFocusHandler: (() -> Void)?
     private var themePollTimer: Timer?
     private var statusPollTimer: Timer?
+    /// The scoped ticket files last seen by the activity poll (RR-471).
+    private var boardFileRevisions: [String: WorkspaceActivitySnapshotStore.FileRevision]?
+    private var boardChangeRefreshTask: Task<Void, Never>?
     private var boardRouteResolver: () -> ProjectResolver.BoardRoute
 
     init(
         boardRouteResolver: @escaping () -> ProjectResolver.BoardRoute = ProjectResolver.resolveBoardRoute,
-        diagnostics: RelayDiagnostics = .shared
+        diagnostics: RelayDiagnostics = .shared,
+        model: ProgramBoardViewModel? = nil
     ) {
         self.boardRouteResolver = boardRouteResolver
         self.diagnostics = diagnostics
-        model = ProgramBoardViewModel(diagnostics: diagnostics)
+        self.model = model ?? ProgramBoardViewModel(diagnostics: diagnostics)
     }
 
     func setThemeResolver(_ resolver: @escaping () -> ParticleFieldRenderer.Theme?) {
@@ -479,6 +483,7 @@ final class ProgramBoardOverlayController {
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor { NSEvent.removeMonitor(m) }
         updateCheckTask?.cancel()
+        boardChangeRefreshTask?.cancel()
         model.cancelReload()
         themePollTimer?.invalidate()
         statusPollTimer?.invalidate()
@@ -540,6 +545,74 @@ final class ProgramBoardOverlayController {
         }
         present(opening: opening, settingsContent: settingsContent, probe: probe)
         return true
+    }
+
+    /// RR-471: loads the board while the Workspace is hidden, at launch and at
+    /// session start, so the first open shows content instead of the loading
+    /// sketch. It never reports to the notch or the reveal loader. Returns
+    /// false while there is no project route to load yet, so the caller can
+    /// retry once the activity poll resolves one.
+    @discardableResult
+    func warmUp() -> Bool {
+        // An open or suspended Workspace loads through its own update check.
+        guard !isVisible, !isSuspendedForExternalWindow else { return true }
+        let route = boardRouteResolver()
+        if case .unavailable = route { return false }
+        // The general context has no Work board to load.
+        guard !generalContextProvider() else { return true }
+        model.setProjectScope(
+            Self.projectScope(
+                for: route,
+                activityProjectPaths: projectScopeProvider(),
+                showsRegisteredProjectCatalog: requiresConfirmedProjectProvider()
+            ),
+            selectedProjectPaths: model.selectedProjectPaths
+        )
+        model.reloadIfIdle(inBackground: true)
+        return true
+    }
+
+    /// RR-471: the activity poll's view of every scoped ticket file. A change
+    /// means a board write landed, so an open Work tab refreshes now rather
+    /// than on its next 10 s poll. The first observation is not a change.
+    func boardFilesDidChange(_ revisions: [String: WorkspaceActivitySnapshotStore.FileRevision]) {
+        let previous = boardFileRevisions
+        boardFileRevisions = revisions
+        guard Self.boardChangeRefreshesDashboard(
+            previous: previous,
+            current: revisions,
+            isVisible: isVisible,
+            selectedTab: workspace.selectedTab,
+            isEditing: model.editing != nil
+        ) else { return }
+        refreshAfterBoardChange()
+    }
+
+    static func boardChangeRefreshesDashboard(
+        previous: [String: WorkspaceActivitySnapshotStore.FileRevision]?,
+        current: [String: WorkspaceActivitySnapshotStore.FileRevision],
+        isVisible: Bool,
+        selectedTab: WorkspaceTab,
+        isEditing: Bool
+    ) -> Bool {
+        guard let previous, previous != current, isVisible else { return false }
+        return statusPollRefreshesDashboard(selectedTab: selectedTab, isEditing: isEditing)
+    }
+
+    private func refreshAfterBoardChange() {
+        guard let inFlight = model.inFlightReloadTask else {
+            boardChangeRefreshTask = nil
+            checkForUpdates(inBackground: model.snapshot != nil, sweepsReadyTickets: false)
+            return
+        }
+        // That fetch may have read the board before this write landed, so
+        // refresh once more when it finishes.
+        boardChangeRefreshTask?.cancel()
+        boardChangeRefreshTask = Task { @MainActor [weak self] in
+            await inFlight.value
+            guard !Task.isCancelled, let self, self.isVisible else { return }
+            self.refreshAfterBoardChange()
+        }
     }
 
     private static func projectScope(
@@ -886,6 +959,8 @@ final class ProgramBoardOverlayController {
         }
         updateCheckTask?.cancel()
         updateCheckTask = nil
+        boardChangeRefreshTask?.cancel()
+        boardChangeRefreshTask = nil
         model.cancelReload()
         loadingStateHandler?(.idle)
         revealContainer?.setUpdateCheckActive(false)
@@ -979,6 +1054,8 @@ final class ProgramBoardOverlayController {
         )
         updateCheckTask?.cancel()
         updateCheckTask = nil
+        boardChangeRefreshTask?.cancel()
+        boardChangeRefreshTask = nil
         model.cancelReload()
         contentLoadBlocked = false
         revealContainer?.setLoading(false)
@@ -1093,7 +1170,8 @@ final class ProgramBoardOverlayController {
 
     private func checkForUpdates(
         inBackground: Bool,
-        preserveProjectSelection: Bool = true
+        preserveProjectSelection: Bool = true,
+        sweepsReadyTickets: Bool = true
     ) {
         refreshContextPresentation()
         guard workspace.showsWorkTab, !workspace.isGeneralContext else {
@@ -1134,7 +1212,10 @@ final class ProgramBoardOverlayController {
         }
         loadingStateHandler?(contentLoadBlocked ? .loadingContent : .refreshing)
 
-        guard let reloadTask = model.reloadIfIdle(inBackground: inBackground) else {
+        guard let reloadTask = model.reloadIfIdle(
+            inBackground: inBackground,
+            sweepsReadyTickets: sweepsReadyTickets
+        ) else {
             return
         }
         observeReload(reloadTask, blocksContent: contentLoadBlocked)
