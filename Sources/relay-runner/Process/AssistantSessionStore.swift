@@ -8,9 +8,21 @@ struct AssistantSessionContext: Codable, Equatable, Identifiable {
     let kind: Kind
     let projectID: String?
     let repositoryPath: String?
+    /// RR-469: an extra PM tab's stable identity; nil is the session's first
+    /// tab, so existing bindings keep their ids. Each tab has its own binding,
+    /// native provider session, spool and history.
+    var tab: String? = nil
+
+    init(kind: Kind, projectID: String?, repositoryPath: String?, tab: String? = nil) {
+        self.kind = kind
+        self.projectID = projectID
+        self.repositoryPath = repositoryPath
+        self.tab = tab
+    }
 
     static let general = AssistantSessionContext(kind: .general, projectID: nil, repositoryPath: nil)
-    var id: String { isGeneral ? "general" : "project:\(projectID ?? repositoryPath ?? "")" }
+    static let tabSeparator = "#tab-"
+    var id: String { Self.tabID(isGeneral ? "general" : "project:\(projectID ?? repositoryPath ?? "")", tab: tab) }
     var isGeneral: Bool { kind == .general }
     var displayName: String {
         let builtInPath = AssistantSessionStore.rootDirectory.appendingPathComponent("general-tasks").path
@@ -18,6 +30,20 @@ struct AssistantSessionContext: Codable, Equatable, Identifiable {
         return URL(fileURLWithPath: repositoryPath ?? "").lastPathComponent
     }
     var workingDirectory: String { repositoryPath ?? AssistantSessionStore.filesDirectory.path }
+
+    /// The same project in another PM tab (nil: the first tab).
+    func inTab(_ tab: String?) -> Self {
+        Self(kind: kind, projectID: projectID, repositoryPath: repositoryPath, tab: tab)
+    }
+
+    static func tabID(_ base: String, tab: String?) -> String {
+        tab.map { base + tabSeparator + $0 } ?? base
+    }
+
+    /// The first tab's id for any tab's context id.
+    static func baseID(_ id: String) -> String {
+        id.range(of: tabSeparator).map { String(id[..<$0.lowerBound]) } ?? id
+    }
 
     static func project(_ token: ConfirmedProjectScopeToken) -> Self {
         Self(kind: .project, projectID: token.projectID, repositoryPath: token.repositoryPath)
@@ -275,6 +301,18 @@ final class AssistantSessionStore {
         return true
     }
 
+    /// RR-473: app-observed activity (PTY input, claimed voice turns, provider
+    /// busy turns) keeps the idle clock moving even when no provider transcript
+    /// can be read. Throttled so a long busy turn does not rewrite the document
+    /// on every poll; the 30-minute timeout makes the lag irrelevant.
+    func recordActivity(context: AssistantSessionContext, at date: Date) throws {
+        guard let binding = binding(for: context),
+              date.timeIntervalSince(binding.lastActivity) >= Self.activityRecordingGranularity else { return }
+        try update { $0.bindings[context.id]?.lastActivity = date }
+    }
+
+    static let activityRecordingGranularity: TimeInterval = 10
+
     /// The provider refused to resume this context's conversation (Claude's "No conversation
     /// found"), so the next launch starts fresh instead of failing the same way. The provider's
     /// own transcript is left where it is.
@@ -286,6 +324,21 @@ final class AssistantSessionStore {
             document.bindings[context.id]?.nativeSessionID = nil
             document.bindings[context.id]?.transcriptPath = nil
             document.bindings[context.id]?.transcriptOffset = nil
+        }
+    }
+
+    /// RR-469: a removed extra PM tab keeps nothing: its binding and public
+    /// history go, so a later tab never resumes it. The first tab (nil) is
+    /// kept for Start Session's resume.
+    func removeTab(context: AssistantSessionContext) throws {
+        guard context.tab != nil, document.bindings[context.id] != nil
+                || document.history.contains(where: { $0.contextID == context.id }) else { return }
+        if let transport = binding(for: context)?.transportSessionID {
+            try? FileManager.default.removeItem(at: bindingURL(transportSessionID: transport))
+        }
+        try update { document in
+            document.bindings[context.id] = nil
+            document.history.removeAll { $0.contextID == context.id }
         }
     }
 

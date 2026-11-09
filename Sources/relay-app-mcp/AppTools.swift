@@ -118,7 +118,7 @@ enum AppTools {
             ),
             AppTool(
                 name: "set_settings",
-                description: "Apply a partial settings update through the same path as the Settings Save button, which also hot-reloads running services. Pass only the keys to change, e.g. {\"tts\": {\"rate\": 1.2}}. Unknown keys, wrong types and values the current provider or model cannot use are refused, never coerced. Idempotent: returns the changed keys (empty when nothing changed) and the effective settings.",
+                description: "Apply a partial settings update through the same path Settings saves each change through, which also hot-reloads running services. Pass only the keys to change, e.g. {\"tts\": {\"rate\": 1.2}}. Unknown keys, wrong types and values the current provider or model cannot use are refused, never coerced. Idempotent: returns the changed keys (empty when nothing changed) and the effective settings.",
                 properties: [
                     "settings": ["type": "object", "description": "Sections (stt, tts, general, awareness) mapping setting names to new values. Call get_settings for the names."],
                 ],

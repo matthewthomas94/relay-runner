@@ -78,11 +78,17 @@ final class SessionWheelHaptics {
                                            subdivisions: SessionWheelSettingsControl.subdivisionCount)
             return enabled && shape.path(in: bounds).contains(point) ? .action(slot: slot, index: control.rawValue) : nil
         }
-        if let index = model.hoveredAction?.rawValue ?? model.hoveredNoteAction?.rawValue {
-            let enabled = model.hoveredAction.flatMap { action in
-                model.hoveredSession.map { action.isEnabled(for: $0) }
-            }
-                ?? (model.hoveredNoteAction?.isEnabled(for: model.notePhase) == true)
+        if let item = model.hoveredSessionItem {
+            let items = model.sessionItems
+            guard let index = items.firstIndex(of: item) else { return nil }
+            let arc = geometry.sessionItemArc(index, items: items.count)
+            let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
+                                           outerRadius: geometry.actionOuterRadius,
+                                           arcStart: arc.start, arcWidth: arc.width)
+            return model.isEnabled(item) && shape.path(in: bounds).contains(point) ? .action(slot: slot, index: index) : nil
+        }
+        if let index = model.hoveredNoteAction?.rawValue {
+            let enabled = model.hoveredNoteAction?.isEnabled(for: model.notePhase) == true
             let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
                                            outerRadius: geometry.actionOuterRadius, subdivision: index)
             return enabled && shape.path(in: bounds).contains(point) ? .action(slot: slot, index: index) : nil

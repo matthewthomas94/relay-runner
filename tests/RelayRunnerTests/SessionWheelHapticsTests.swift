@@ -78,11 +78,14 @@ final class SessionWheelHapticsTests: XCTestCase {
         XCTAssertNil(target(slot: 0, offset: geometry.sliceAngle / 2), "Between wedges")
         XCTAssertNil(target(slot: 0, radius: geometry.actionRadius), "No submenu for an empty slot")
 
-        model.refresh(sessions: [.init(id: "a", name: "A", canRecord: false, canPlay: false)])
+        // RR-469: one tab, so Turn off (the only live tab) is the silent control.
+        model.refresh(sessions: [.init(id: "a", name: "A")])
+        model.tabs = [.init(id: "t0", name: "PM 1", isActive: true)]
         _ = target(slot: 0)
-        for action in SessionWheelAction.allCases {
-            let resolved = target(slot: 0, radius: geometry.actionRadius, offset: geometry.actionOffset(action))
-            XCTAssertEqual(resolved, action == .stop ? .action(slot: 0, index: action.rawValue) : nil)
+        for index in 0..<4 {
+            let arc = geometry.sessionItemArc(index, items: 4)
+            let resolved = target(slot: 0, radius: geometry.actionRadius, offset: arc.start + arc.width / 2)
+            XCTAssertEqual(resolved, index == 3 ? nil : .action(slot: 0, index: index))
         }
         XCTAssertNil(target(slot: 0, radius: geometry.wheelRadius + 4), "The radial gap is silent")
 
@@ -125,15 +128,18 @@ final class SessionWheelHapticsTests: XCTestCase {
         var accepted = false
         var startAccepted = false
         var live: [SessionWheelSession] = []
-        controller.sessionAction = { _, _ in accepted }
+        controller.tabAction = { _ in accepted }
         controller.noteAction = { _ in accepted }
         controller.startSession = {
-            if startAccepted { live = [.init(id: "a", name: "A", canPlay: false)] }
+            if startAccepted { live = [.init(id: "a", name: "A")] }
             return startAccepted
         }
         controller.openShortcut = { _ in }
         controller.focusSession = { _ in }
-        controller.refresh = { model in model.refresh(sessions: live) }
+        controller.refresh = { model in
+            model.refresh(sessions: live)
+            model.tabs = live.isEmpty ? [] : [.init(id: "t0", name: "PM 1", isActive: true)]
+        }
         controller.toggle()
         XCTAssertTrue(pulses.isEmpty)
         controller.refresh?(controller.model)
@@ -142,13 +148,13 @@ final class SessionWheelHapticsTests: XCTestCase {
         startAccepted = true
         controller.selectSlot(0, fromPointer: false) // Accepted launch.
         XCTAssertEqual(pulses, [.generic])
-        controller.performAction("a", .message) // Disabled.
-        controller.performAction("a", .recording) // Rejected.
+        controller.performTabItem(.control(.turnOff)) // Disabled.
+        controller.performTabItem(.control(.add)) // Rejected.
         controller.performNoteAction(.pause) // Disabled.
         controller.performNoteAction(.recording) // Rejected.
         XCTAssertEqual(pulses.count, 1)
         accepted = true
-        controller.performAction("a", .recording)
+        controller.performTabItem(.control(.add))
         controller.performNoteAction(.recording)
         controller.selectSlot(0, fromPointer: false) // Session selection.
         controller.selectSlot(3, fromPointer: false) // Notetaker shortcut.

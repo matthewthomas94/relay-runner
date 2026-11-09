@@ -710,7 +710,6 @@ enum SettingsSurfaceColor {
     static let mutedText = Color(nsColor: mutedTextNSColor)
     static let disabledText = Color(nsColor: disabledTextNSColor)
     static let neutralAccent = Color(nsColor: neutralAccentNSColor)
-    static let dirtyAccent = neutralAccent
     static let success = Color(nsColor: successNSColor)
     static let error = Color(nsColor: errorNSColor)
     static let rowFill = GraphicalTheme.neutral3.opacity(GraphicalTheme.fillThroughDotsOpacity)

@@ -175,8 +175,7 @@ private struct SettingsContent: View {
     let style: SettingsContentStyle
     let onOpenExternalWindow: () -> Void
 
-    @State private var draft: AppConfig
-    @State private var saving = false
+    @State private var autoSave: SettingsAutoSave
     @State private var selectedCategory: SettingsCategory = .permissions
     @State private var scrollTarget: SettingsCategory = .permissions
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -189,10 +188,11 @@ private struct SettingsContent: View {
         self.appState = appState
         self.style = style
         self.onOpenExternalWindow = onOpenExternalWindow
-        self._draft = State(initialValue: appState.config)
+        self._autoSave = State(initialValue: SettingsAutoSave(
+            current: { appState.config },
+            save: { appState.saveConfig($0) }
+        ))
     }
-
-    private var hasChanges: Bool { draft != appState.config }
 
     var body: some View {
         GeometryReader { geometry in
@@ -203,7 +203,7 @@ private struct SettingsContent: View {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     SettingsAgentCard(
                         presentation: SettingsAgentPresentation(
-                            name: SettingsAgentPresentation.voiceName(draft.tts),
+                            name: SettingsAgentPresentation.voiceName(appState.config.tts),
                             subtitle: SettingsAgentPresentation.subtitle(
                                 state: appState.stateMachine.state,
                                 hasActiveSession: appState.hasActiveSession,
@@ -222,11 +222,6 @@ private struct SettingsContent: View {
         .frame(width: style.fixedFrame?.width, height: style.fixedFrame?.height)
         .onAppear { selectRequestedCategory() }
         .onChange(of: appState.requestedSettingsCategory) { _, _ in selectRequestedCategory() }
-        .onChange(of: appState.config) { oldValue, newValue in
-            // A save made elsewhere (Relay App, RR-459) shows at once unless the page has unsaved edits.
-            draft = draft == oldValue ? newValue : draft.mergingWheelSettingsChange(from: oldValue, to: newValue)
-                ?? newValue
-        }
         .onChange(of: selectedCategory) { _, newValue in
             scrollTarget = newValue
         }
@@ -295,23 +290,23 @@ private struct SettingsContent: View {
             PermissionsSettingsTab(appState: appState)
         case .speechToText:
             STTSettingsTab(
-                config: $draft.stt,
+                config: autoSave.binding(\.stt),
                 migrationState: appState.phononMigration?.state,
                 onRetryMigration: { appState.phononMigration?.retry() },
                 cameraPermission: appState.permissions,
                 onTrueWhisperTemplatesChanged: { appState.trueWhisperTemplatesChanged() }
             )
         case .textToSpeech:
-            TTSSettingsTab(config: $draft.tts, appState: appState)
+            TTSSettingsTab(config: autoSave.binding(\.tts), appState: appState)
         case .general:
             GeneralSettingsTab(
-                config: $draft.general,
+                config: autoSave.binding(\.general),
                 onOpenExternalWindow: onOpenExternalWindow,
                 projectRegistryAppState: appState,
                 keepAwake: appState.keepAwake
             )
         case .awareness:
-            AwarenessSettingsTab(config: $draft.awareness)
+            AwarenessSettingsTab(config: autoSave.binding(\.awareness))
         case .relayRemote:
             RelayRemoteSettingsTab(controller: RelayRemoteController.shared)
         }
@@ -321,65 +316,30 @@ private struct SettingsContent: View {
         return AnyView(settingsFooter)
     }
 
-    /// The save bar: its status line appears only for unsaved changes, with
-    /// Save as the primary action once there is something to save.
+    /// Changes save as they are made, so the footer only reports the last save.
     private var settingsFooter: some View {
-        HStack(spacing: 12) {
-            if hasChanges {
-                HStack(spacing: 6) {
-                    Circle()
-                        .frame(width: 6, height: 6)
-                        .accessibilityHidden(true)
-                    Text("Unsaved changes")
-                        .font(AppTypography.font(.settingsDescription))
-                }
-                .foregroundStyle(SettingsSurfaceColor.neutralAccent)
-                .transition(.relayText)
+        let presentation = SettingsFooterPresentation(status: autoSave.status)
+        return HStack(spacing: 12) {
+            RelaySwap(presentation) { presentation in
+                LucideImage(presentation.icon, size: 12)
+                    .foregroundStyle(presentation.iconColor)
+                    .accessibilityHidden(true)
+            }
+
+            RelaySwap(presentation, style: .text, alignment: .leading) { presentation in
+                Text(presentation.statusText)
+                    .font(AppTypography.font(.settingsDescription))
+                    .foregroundStyle(presentation.textColor)
+                    .lineLimit(2)
             }
 
             Spacer(minLength: 0)
-
-            SettingsActionButton(
-                title: "Revert",
-                icon: .undo2,
-                prominence: .secondary,
-                isEnabled: hasChanges && !saving,
-                accessibilityLabel: "Revert settings",
-                helpText: hasChanges ? "Discard changes" : "Nothing to revert"
-            ) {
-                draft = appState.config
-            }
-
-            SettingsFooterSaveButton(isEnabled: hasChanges && !saving) {
-                saving = true
-                appState.saveConfig(draft)
-                saving = false
-            }
         }
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: hasChanges)
         .padding(style.footerPadding)
         .frame(maxWidth: style.detailMaxWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-}
-
-private struct SettingsFooterSaveButton: View {
-    let isEnabled: Bool
-    let action: () -> Void
-
-    var body: some View {
-        SettingsActionButton(
-            title: "Save",
-            icon: .check,
-            prominence: isEnabled ? .primary : .secondary,
-            isEnabled: isEnabled,
-            accessibilityLabel: "Save settings",
-            helpText: isEnabled ? "Save settings" : "Nothing to save",
-            action: action
-        )
-        .keyboardShortcut(.defaultAction)
-    }
 }
 
 enum SettingsSemanticColor: Equatable {
@@ -395,6 +355,37 @@ enum SettingsSemanticColor: Equatable {
         case .error: return SettingsSurfaceColor.error
         case .idle: return SettingsSurfaceColor.mutedText
         }
+    }
+}
+
+struct SettingsFooterPresentation: Hashable {
+    let status: SettingsAutoSave.Status
+
+    var icon: LucideIcon {
+        switch status {
+        case .idle, .saved: return .circleCheck
+        case .failed: return .octagonX
+        }
+    }
+
+    var statusText: String {
+        switch status {
+        case .idle: return "Changes save automatically"
+        case .saved: return "Saved"
+        case .failed(let message): return "Couldn\u{2019}t save settings: \(message)"
+        }
+    }
+
+    var iconSemanticColor: SettingsSemanticColor {
+        if case .failed = status { return .error }
+        return .idle
+    }
+
+    var iconColor: Color { iconSemanticColor.color }
+
+    var textColor: Color {
+        if case .failed = status { return SettingsSurfaceColor.error }
+        return SettingsSurfaceColor.secondaryText
     }
 }
 

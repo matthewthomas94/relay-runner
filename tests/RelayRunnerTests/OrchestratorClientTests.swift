@@ -295,6 +295,23 @@ final class OrchestratorClientTests: XCTestCase {
         XCTAssertEqual(request.timeoutInterval, 120)
     }
 
+    func testBoardChangeDashboardRequestAsksTheDaemonToSkipItsReadySweep() throws {
+        // RR-471: a refresh for a board write that landed; the daemon's
+        // queue-drain monitor sweeps every project every 5 s anyway.
+        let request = try XCTUnwrap(OrchestratorClient.programDashboardRequest(
+            limit: 0,
+            trigger: "program-board-refresh",
+            repoPaths: ["/repo/aurora-web"],
+            sweepsReadyTickets: false,
+            port: 8123
+        ))
+
+        XCTAssertEqual(
+            request.url?.absoluteString,
+            "http://127.0.0.1:8123/v1/program/dashboard?limit=0&trigger=program-board-refresh&sweep=0&repo_path=/repo/aurora-web"
+        )
+    }
+
     func testProgramDashboardFetchesCanonicalBoardLanes() async throws {
         let snapshot = try await OrchestratorClient.buildProgramDashboard(limit: 20) { query, _ in
             switch query {

@@ -1845,11 +1845,20 @@ def _start_pm_update_mode(
 def _pending_messenger_outcome_params(orchestrator_session: dict | None) -> dict[str, object]:
     repo_path = str((orchestrator_session or {}).get("repo_path") or Path.cwd())
     provider = str((orchestrator_session or {}).get("provider") or "").strip() or None
-    return {
+    params: dict[str, object] = {
         "repo_path": repo_path,
         "provider": provider,
         "limit": MESSENGER_OUTCOME_FETCH_LIMIT,
     }
+    # RR-469: a keyed session hears the runs it dispatched, from any project;
+    # the live keys let it also take over outcomes of a session that ended.
+    session_key = str((orchestrator_session or {}).get("session_key") or "")
+    if session_key:
+        params["session_key"] = session_key
+        params["live_session_keys"] = ",".join(sorted({
+            key for key in (_authorization_key_for_target(t) for t in _live_voice_targets()) if key
+        }))
+    return params
 
 
 def _messenger_outcome_trace(outcomes: list[tuple[int, dict]]) -> dict:
@@ -1914,11 +1923,25 @@ def _fetch_pending_messenger_outcomes(
 
 
 def _messenger_outcome_session(target: VoiceTarget | None, fallback: dict | None) -> dict | None:
-    """The outcome scope for a target: the bridge's own session, else its project."""
+    """The outcome scope for a target: the bridge's own session, else its project.
+
+    RR-469: a keyed target also carries its session key, so PM tabs sharing a
+    project each hear only the runs they dispatched.
+    """
     with _VOICE_TARGET_LOCK:
-        if target is None or target.session_key == _VOICE_STARTUP_KEY:
-            return fallback
-    return {"repo_path": target.cwd, "provider": target.provider}
+        startup = target is None or target.session_key == _VOICE_STARTUP_KEY
+    if startup:
+        session = fallback
+    else:
+        session = {"repo_path": target.cwd, "provider": target.provider}
+    key = _authorization_key_for_target(target) if target is not None else ""
+    if session is None or not key:
+        return session
+    return {
+        "repo_path": session.get("repo_path"),
+        "provider": session.get("provider"),
+        "session_key": key,
+    }
 
 
 def _count_background_messenger_outcomes(
@@ -1928,11 +1951,17 @@ def _count_background_messenger_outcomes(
 ) -> None:
     """Badge background sessions' undelivered outcomes; refocus delivers them (RR-401)."""
     focused_repo = str((focused_session or {}).get("repo_path") or "")
+    focused_key = str((focused_session or {}).get("session_key") or "")
     for target in _live_voice_targets():
         if not _is_background_target(target):
             continue
         session = _messenger_outcome_session(target, fallback)
-        if str((session or {}).get("repo_path") or "") == focused_repo:
+        session_key = str((session or {}).get("session_key") or "")
+        if session_key and focused_key:
+            # Keyed tabs may share a project; each counts its own outcomes.
+            if session_key == focused_key:
+                continue
+        elif str((session or {}).get("repo_path") or "") == focused_repo:
             continue
         _record_background_outcomes(
             target, len(_fetch_pending_messenger_outcomes(session, request_get_json))

@@ -26,7 +26,7 @@ RelayActions + ActionGlow is the product. Native MCPs work fine in any other con
 For anything in Relay Runner itself — its status, the Workspace, Notetaker, Terminal and Settings pages, settings values, project selection, starting or ending a session, Relay Remote pairing and paired devices, and Keep Awake — use Relay App (`mcp__relay-app__*`) before Relay Desktop, Relay Vision or Relay Actions. Each tool reaches the app through its owner-only command socket and returns structured JSON, so it needs no screenshot, accessibility snapshot or coordinate click. Keep pixels for what is genuinely visual about Relay Runner, such as checking an animation or a layout.
 
 - **Read first.** `app_status` reports the version, session, Remote mode, paired devices, permissions and Keep Awake; `get_settings` returns the effective settings.
-- **Settings.** `set_settings` takes only the keys to change (for example `{"tts": {"rate": 1.2}}`) and applies them through the Settings Save path. Unknown keys, wrong types and values the current provider or model cannot use are refused, not coerced.
+- **Settings.** `set_settings` takes only the keys to change (for example `{"tts": {"rate": 1.2}}`) and applies them through the same path Settings saves each change through. Unknown keys, wrong types and values the current provider or model cannot use are refused, not coerced.
 - **Destructive tools.** `end_session` and `relay_remote_unpair` refuse without `confirm: true`; pass it only when the user asked for that effect.
 - **Pairing.** `relay_remote_begin_pairing` shows the QR code on Settings > Relay Remote for the user to scan; its one-time key and token never leave the code. Poll `relay_remote_pending_approval`, then approve only a device the user expects with `relay_remote_approve` (`restrict_to_network: true` is "Only from my home network and Tailscale") or decline it with `relay_remote_deny`.
 - **App not running.** When a tool reports that Relay Runner is not running, tell the user; do not fall back to screen control to operate the app.
@@ -49,7 +49,7 @@ Every successful Relay App call pulses ActionGlow like every other Relay tool.
 Relay App (`mcp__relay-app__*`) is first-party control of Relay Runner itself over the app's owner-only command socket. Full rules: `mcp__relay-app__get_relay_instructions` (read-only).
 
 - For Relay Runner's own status, Workspace, Notetaker, Terminal and Settings pages, settings values, projects, sessions, Relay Remote pairing and Keep Awake, use these tools before Relay Desktop, Relay Vision or Relay Actions. They return structured JSON; keep screenshots for what is genuinely visual.
-- Read with `app_status` and `get_settings`. `set_settings` takes only the keys to change and saves through the Settings Save path; unknown keys and invalid values are refused.
+- Read with `app_status` and `get_settings`. `set_settings` takes only the keys to change and saves through the same path as Settings; unknown keys and invalid values are refused.
 - `end_session` and `relay_remote_unpair` need `confirm: true`; pass it only when the user asked for that effect.
 - Pairing: `relay_remote_begin_pairing` shows the QR code on Settings > Relay Remote (its key and token stay in the code), `relay_remote_pending_approval` reports the phone, then `relay_remote_approve` (`restrict_to_network: true` = home network and Tailscale only) or `relay_remote_deny`. Approve only a device the user expects.
 - If Relay Runner is not running, say so instead of falling back to screen control. Never `mcp__computer-use__*`.

@@ -1569,6 +1569,13 @@ struct ProgramTicketDetail: Equatable, Identifiable {
     }
 }
 
+/// One dashboard fetch. A refresh for a board write that just landed skips
+/// the daemon's ready sweep (RR-471).
+struct ProgramBoardDashboardRequest: Equatable {
+    let repoPaths: [String]
+    let sweepsReadyTickets: Bool
+}
+
 @Observable
 final class ProgramBoardViewModel {
     var snapshot: ProgramDashboardSnapshot?
@@ -1630,17 +1637,30 @@ final class ProgramBoardViewModel {
 
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
     @ObservationIgnored private var reloadInFlight = false
-    @ObservationIgnored private var fetchDashboard: ([String]) async throws -> ProgramDashboardSnapshot
+    /// The projects the in-flight reload fetches.
+    @ObservationIgnored private var reloadProjectPaths: [String]?
+    @ObservationIgnored private var fetchDashboard: (ProgramBoardDashboardRequest) async throws -> ProgramDashboardSnapshot
     @ObservationIgnored private var fetchNotes: ([String]) async -> ProgramBoardNoteLoadResult = { _ in .empty }
     @ObservationIgnored private let diagnostics: RelayDiagnostics
 
-    init(fetchDashboard: @escaping ([String]) async throws -> ProgramDashboardSnapshot = { repoPaths in
-        if ProjectRegistryV2Rollout.isEnabled(), repoPaths.isEmpty {
-            return .empty()
-        }
-        return try await OrchestratorClient.fetchProgramDashboard(repoPaths: repoPaths)
-    }, diagnostics: RelayDiagnostics = .shared) {
-        self.fetchDashboard = fetchDashboard
+    init(fetchDashboard: @escaping ([String]) async throws -> ProgramDashboardSnapshot, diagnostics: RelayDiagnostics = .shared) {
+        self.fetchDashboard = { request in try await fetchDashboard(request.repoPaths) }
+        self.diagnostics = diagnostics
+    }
+
+    init(
+        fetchDashboardRequest: @escaping (ProgramBoardDashboardRequest) async throws -> ProgramDashboardSnapshot = { request in
+            if ProjectRegistryV2Rollout.isEnabled(), request.repoPaths.isEmpty {
+                return .empty()
+            }
+            return try await OrchestratorClient.fetchProgramDashboard(
+                repoPaths: request.repoPaths,
+                sweepsReadyTickets: request.sweepsReadyTickets
+            )
+        },
+        diagnostics: RelayDiagnostics = .shared
+    ) {
+        self.fetchDashboard = fetchDashboardRequest
         self.diagnostics = diagnostics
     }
 
@@ -1653,8 +1673,12 @@ final class ProgramBoardViewModel {
     }
 
     func prepareForOpening() {
-        cancelReload()
-        reloadState = .idle
+        // RR-471: a warm-up of these projects keeps running, and the opening
+        // waits for it instead of fetching the board again.
+        if !reloadInFlight || reloadProjectPaths != projectPaths {
+            cancelReload()
+            reloadState = .idle
+        }
         errorMessage = nil
         supportBundlePreview = nil
         selectedTicketDetail = nil
@@ -1683,6 +1707,7 @@ final class ProgramBoardViewModel {
         reloadTask?.cancel()
         reloadTask = nil
         reloadInFlight = false
+        reloadProjectPaths = nil
     }
 
     func setNoteFetcher(_ fetchNotes: @escaping ([String]) async -> ProgramBoardNoteLoadResult) {
@@ -1705,6 +1730,8 @@ final class ProgramBoardViewModel {
         self.selectedProjectPaths = selectedProjectPaths
         if scopeChanged {
             snapshot = nil
+            // A fetch of the previous projects must not land as this board.
+            if reloadInFlight { cancelReload() }
         }
         if scopeChanged || selectionChanged {
             selectedTicketDetail = nil
@@ -1714,9 +1741,9 @@ final class ProgramBoardViewModel {
     }
 
     @discardableResult
-    func reloadIfIdle(inBackground: Bool) -> Task<Void, Never>? {
+    func reloadIfIdle(inBackground: Bool, sweepsReadyTickets: Bool = true) -> Task<Void, Never>? {
         guard !reloadInFlight else { return nil }
-        return inBackground ? refreshInBackground() : reload()
+        return inBackground ? refreshInBackground(sweepsReadyTickets: sweepsReadyTickets) : reload()
     }
 
     @discardableResult
@@ -1729,9 +1756,12 @@ final class ProgramBoardViewModel {
         supportBundlePreview = nil
         let fetchDashboard = fetchDashboard
         let projectPaths = projectPaths
+        reloadProjectPaths = projectPaths
         let task = Task { [weak self] in
             do {
-                let snapshot = try await fetchDashboard(projectPaths)
+                let snapshot = try await fetchDashboard(
+                    ProgramBoardDashboardRequest(repoPaths: projectPaths, sweepsReadyTickets: true)
+                )
                 guard !Task.isCancelled else { return }
                 await self?.finishReload(snapshot: snapshot, attempt: attempt)
             } catch {
@@ -1744,8 +1774,10 @@ final class ProgramBoardViewModel {
         return task
     }
 
+    /// `sweepsReadyTickets: false` refreshes for a board write that landed;
+    /// the daemon then skips its ready sweep of every project (RR-471).
     @discardableResult
-    func refreshInBackground() -> Task<Void, Never> {
+    func refreshInBackground(sweepsReadyTickets: Bool = true) -> Task<Void, Never> {
         cancelReload()
         // A refresh of a healthy board opens no readiness incident; a failure
         // opens one and the next success closes it. The 10 s status poll
@@ -1754,9 +1786,15 @@ final class ProgramBoardViewModel {
         reloadInFlight = true
         let fetchDashboard = fetchDashboard
         let projectPaths = projectPaths
+        reloadProjectPaths = projectPaths
         let task = Task { [weak self] in
             do {
-                let snapshot = try await fetchDashboard(projectPaths)
+                let snapshot = try await fetchDashboard(
+                    ProgramBoardDashboardRequest(
+                        repoPaths: projectPaths,
+                        sweepsReadyTickets: sweepsReadyTickets
+                    )
+                )
                 guard !Task.isCancelled else { return }
                 await self?.finishReload(snapshot: snapshot, attempt: attempt)
             } catch {
@@ -2260,6 +2298,7 @@ final class ProgramBoardViewModel {
         }
         reloadTask = nil
         reloadInFlight = false
+        reloadProjectPaths = nil
         if let attempt {
             diagnostics.record(
                 process: "app",
@@ -2288,6 +2327,7 @@ final class ProgramBoardViewModel {
         reloadState = .failed(displayedMessage)
         reloadTask = nil
         reloadInFlight = false
+        reloadProjectPaths = nil
         diagnostics.record(
             process: "app",
             phase: "workspace_readiness",

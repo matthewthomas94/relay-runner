@@ -6,62 +6,63 @@ struct SessionWheelSession: Identifiable, Equatable {
     let name: String
     var unreadCount = 0
     var isFocused = false
-    var isRecording = false
-    var canRecord = true
-    var canPlay = true
-    var playback: SessionVoicePlayback = .replay
 }
 
-enum SessionWheelAction: Int, CaseIterable {
-    case message, recording, stop
+/// RR-469: one PM tab in the session slot's submenu. An off tab keeps its
+/// conversation; clicking it turns it back on and makes it active.
+struct SessionWheelTab: Identifiable, Equatable {
+    let id: String
+    let name: String
+    var isActive = false
+    var isLive = true
+    var unreadCount = 0
 
-    func title(for session: SessionWheelSession) -> String {
+    var title: String {
+        isActive ? "\(name), active tab" : isLive ? "Make \(name) the active tab" : "Turn \(name) on"
+    }
+
+    var caption: String { isActive ? "\(name) active" : isLive ? name : "\(name) off" }
+}
+
+/// RR-469: the tab controls after the tab segments. Remove and Turn off act
+/// on the active tab.
+enum SessionWheelTabControl: Int, CaseIterable {
+    case add, remove, turnOff
+
+    var title: String {
         switch self {
-        case .message:
-            switch session.playback {
-            case .play: return "Play message"
-            case .stop: return "Stop playback"
-            case .replay: return "Replay message"
-            }
-        case .recording: return session.isRecording ? "Stop recording and send message" : "Record"
-        case .stop: return "Stop session"
+        case .add: return "Add a PM tab"
+        case .remove: return "Remove the active tab"
+        case .turnOff: return "Turn the active tab off"
         }
     }
 
-    /// The notch hover descriptor: what a click does, three words at most.
-    func caption(for session: SessionWheelSession) -> String {
+    /// One or two short words: the notch hover descriptor.
+    var caption: String {
         switch self {
-        case .message:
-            switch session.playback {
-            case .play: return "Play message"
-            case .stop: return "Stop playback"
-            case .replay: return "Replay message"
-            }
-        case .recording: return session.isRecording ? "Send voice message" : "Record voice message"
-        case .stop: return "End session"
+        case .add: return "Add tab"
+        case .remove: return "Remove tab"
+        case .turnOff: return "Turn off"
         }
     }
 
-    func symbol(for session: SessionWheelSession) -> LucideIcon {
+    var symbol: LucideIcon {
         switch self {
-        case .message:
-            switch session.playback {
-            case .play: return .play
-            case .stop: return .square
-            case .replay: return .play
-            }
-        case .recording: return session.isRecording ? .audioWaveform : .mic
-        case .stop: return .power
+        case .add: return .plus
+        case .remove: return .x
+        case .turnOff: return .power
         }
     }
+}
 
-    func isEnabled(for session: SessionWheelSession) -> Bool {
-        switch self {
-        case .message: return session.canPlay
-        case .recording: return session.canRecord
-        case .stop: return true
-        }
-    }
+/// The session submenu's segments, in arc order: the tabs, then the controls.
+enum SessionWheelSessionItem: Equatable {
+    case tab(SessionWheelTab)
+    case control(SessionWheelTabControl)
+
+    var tab: SessionWheelTab? { if case .tab(let tab) = self { return tab } else { return nil } }
+    var control: SessionWheelTabControl? { if case .control(let control) = self { return control } else { return nil } }
+    var title: String { tab?.title ?? control?.title ?? "" }
 }
 
 /// Clockwise from the top session slot: History, Settings, Notetaker, Workspace.
@@ -233,10 +234,52 @@ enum SessionWheelGeometry {
     }
 
     /// Include the black gaps and submenu padding in the wheel's click area.
-    static func contains(_ point: CGPoint, submenuSlot: Int? = nil) -> Bool {
+    /// The session submenu can reach past its own cell (`sessionItems`).
+    static func contains(_ point: CGPoint, submenuSlot: Int? = nil, sessionItems: Int = 0) -> Bool {
         let radius = hypot(point.x - center.x, point.y - center.y)
         if radius <= wheelRadius { return true }
-        return submenuSlot == slot(at: point) && radius <= actionOuterRadius + segmentGap
+        guard radius <= actionOuterRadius + segmentGap, let submenuSlot else { return false }
+        if submenuSlot == sessionSlots.first, sessionItems > 0 {
+            return abs(sessionArcOffset(at: point)) <= sessionSubmenuSpan(items: sessionItems) * sliceAngle / 2
+        }
+        return submenuSlot == slot(at: point)
+    }
+
+    /// RR-469: the session submenu holds six segments over its own cell, the
+    /// standard size for three tabs and their three controls. More segments
+    /// grow it along the arc, evenly on both sides, up to the far ends of
+    /// the History and Workspace cells: three cells for nine tabs.
+    static let sessionStandardItems = 6
+    static let sessionMaxItems = 9 + SessionWheelTabControl.allCases.count
+
+    /// The submenu's width in cells.
+    static func sessionSubmenuSpan(items: Int) -> CGFloat {
+        guard items > sessionStandardItems else { return 1 }
+        let extra = CGFloat(min(items, sessionMaxItems) - sessionStandardItems)
+        return min(3, 1 + 2 * extra / CGFloat(sessionMaxItems - sessionStandardItems))
+    }
+
+    /// One segment's start and width, relative to the session cell's centre.
+    static func sessionItemArc(_ index: Int, items: Int) -> (start: CGFloat, width: CGFloat) {
+        let span = sessionSubmenuSpan(items: items) * sliceAngle
+        let width = span / CGFloat(max(items, 1))
+        return (-span / 2 + CGFloat(index) * width, width)
+    }
+
+    /// The signed angle from the session cell's centre, so the arc never wraps.
+    static func sessionArcOffset(at point: CGPoint) -> CGFloat {
+        let slot = CGFloat(sessionSlots.first ?? 0)
+        let delta = angle(at: point) - (slot * sliceAngle + sliceAngle / 2)
+        return atan2(sin(delta), cos(delta))
+    }
+
+    /// The session submenu segment under `point`, if any.
+    static func sessionItem(at point: CGPoint, items: Int) -> Int? {
+        guard items > 0 else { return nil }
+        let span = sessionSubmenuSpan(items: items) * sliceAngle
+        let offset = sessionArcOffset(at: point) + span / 2
+        guard offset >= 0, offset <= span else { return nil }
+        return min(items - 1, Int(offset / (span / CGFloat(items))))
     }
 
     static func position(slot: Int, radius: CGFloat, offset: CGFloat = 0) -> CGPoint {
@@ -244,19 +287,11 @@ enum SessionWheelGeometry {
         return CGPoint(x: center.x + sin(angle) * radius, y: center.y - cos(angle) * radius)
     }
 
-    static func actionOffset(_ action: SessionWheelAction) -> CGFloat {
-        actionOffset(action.rawValue)
-    }
-
     static func actionOffset(_ index: Int, subdivisions: Int = 3) -> CGFloat {
         ((CGFloat(index) + 0.5) / CGFloat(subdivisions) - 0.5) * sliceAngle
     }
 
     /// Follow the tangent, reversing the lower half so labels stay upright.
-    static func actionLabelRotation(slot: Int, action: SessionWheelAction) -> CGFloat {
-        actionLabelRotation(slot: slot, index: action.rawValue)
-    }
-
     static func actionLabelRotation(slot: Int, index: Int) -> CGFloat {
         labelRotation(slot: slot, offset: actionOffset(index))
     }
@@ -295,11 +330,40 @@ final class SessionWheelModel {
     private var intensityDragAngle: (raw: CGFloat, unwrapped: CGFloat) = (0, 0)
     var startUnavailableReason: String?
     var canStartSession: Bool { startUnavailableReason == nil }
+    /// RR-469: the PM tabs in the session submenu, in tab-strip order.
+    var tabs: [SessionWheelTab] = []
+    /// Why Add is unavailable, such as the nine-tab limit; nil when it is.
+    var addTabUnavailableReason: String?
     var notice: String?
     private(set) var hoveredSlot: Int?
     private var hoveredControl: Int?
-    var hoveredAction: SessionWheelAction? {
-        hoveredSession == nil ? nil : hoveredControl.flatMap(SessionWheelAction.init(rawValue:))
+
+    /// The session submenu's segments: one per tab, then the tab controls.
+    var sessionItems: [SessionWheelSessionItem] {
+        tabs.map { .tab($0) } + SessionWheelTabControl.allCases.map { .control($0) }
+    }
+
+    var hoveredSessionItem: SessionWheelSessionItem? {
+        guard hoveredSession != nil, let hoveredControl, sessionItems.indices.contains(hoveredControl) else { return nil }
+        return sessionItems[hoveredControl]
+    }
+
+    /// Remove and Turn off act on the active tab; turning off needs another
+    /// live tab to become active, and removing the last live tab ends the session.
+    func isEnabled(_ control: SessionWheelTabControl) -> Bool {
+        let active = tabs.contains { $0.isActive }
+        switch control {
+        case .add: return addTabUnavailableReason == nil
+        case .remove: return active
+        case .turnOff: return active && tabs.filter(\.isLive).count > 1
+        }
+    }
+
+    func isEnabled(_ item: SessionWheelSessionItem) -> Bool {
+        switch item {
+        case .tab: return true
+        case .control(let control): return isEnabled(control)
+        }
     }
     var hoveredNoteAction: SessionWheelNoteAction? {
         isHoveringNoteTaker ? hoveredControl.flatMap(SessionWheelNoteAction.init(rawValue:)) : nil
@@ -327,11 +391,14 @@ final class SessionWheelModel {
         if hypot(point.x - geometry.center.x, point.y - geometry.center.y) <= geometry.hubRadius {
             return notice ?? "Close session wheel"
         }
-        if let session = hoveredSession, let action = hoveredAction {
-            guard action.isEnabled(for: session) else {
-                return action == .message ? "Nothing to play" : "Recording unavailable"
+        if let item = hoveredSessionItem {
+            switch item {
+            case .tab(let tab): return tab.caption
+            case .control(let control):
+                if control == .add, let reason = addTabUnavailableReason { return reason }
+                if control == .turnOff, !isEnabled(control) { return "Only live tab" }
+                return control.caption
             }
-            return action.caption(for: session)
         }
         if let action = hoveredNoteAction { return action.caption(for: notePhase) }
         if let control = hoveredSettingsControl {
@@ -404,6 +471,10 @@ final class SessionWheelModel {
             hoveredSlot = nil
         } else if distance <= geometry.wheelRadius {
             hoveredSlot = geometry.slot(at: pointer)
+        } else if hoveredSession != nil,
+                  distance >= geometry.actionInnerRadius, distance <= geometry.actionOuterRadius {
+            // RR-469: the session submenu may reach over History and Workspace.
+            hoveredControl = geometry.sessionItem(at: pointer, items: sessionItems.count)
         } else if submenuSlot != nil,
                   geometry.slot(at: pointer) == hoveredSlot,
                   distance >= geometry.actionInnerRadius, distance <= geometry.actionOuterRadius {
@@ -430,14 +501,5 @@ final class SessionWheelModel {
 
     func endAdjustingIntensity() {
         isAdjustingIntensity = false
-    }
-}
-
-/// Recording is shared, but its target is pinned at capture start. Never stop
-/// another session's recording or change its destination from a wheel action.
-enum SessionWheelRecording {
-    static func canToggle(targetKey: String?, recording: Bool, recordingKey: String?, ready: Bool) -> Bool {
-        guard let targetKey, ready else { return false }
-        return !recording || targetKey == recordingKey
     }
 }

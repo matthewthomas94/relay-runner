@@ -47,8 +47,8 @@ registered project.
   field, which keeps its own theme. It respects Reduce Motion and the Particle field
   setting. The final value is saved to
   `awareness.glow_intensity` (0.1–1.0 in 0.05 steps) when the drag ends, so
-  **Settings → Awareness → Intensity** shows the same value, even while Settings is
-  open, unless it holds its own unsaved intensity edit. A drag keeps the
+  **Settings → Awareness → Intensity** shows the same value at once, even while
+  Settings is open. A drag keeps the
   submenu open wherever the pointer goes. The slider is disabled while the particle
   field is off. VoiceOver exposes it as an adjustable control with a percentage.
 - **Keep Awake** keeps the Mac awake, including idle periods and with the lid
@@ -61,37 +61,39 @@ registered project.
   means a change is pending, a raised hand means the helper is waiting for your
   approval (click to cancel), and a warning icon marks a failure.
   See [Keep Awake](#keep-awake).
-- Hover a session to reveal three controls on the arc just outside its slot:
-  an icon-only **Play / Stop playback / Replay message**, **Record / Stop recording
-  and send message**, and **Stop session**. Tooltips and VoiceOver retain these labels.
-  Play and replay share the triangle; the square stops playback. The microphone
-  becomes a live, speech-reactive waveform while recording; the power icon ends the session.
-- Stop playback cancels the selected session's audio and dismisses its playback
-  pill and particle overlay. The wheel stays open, and queued replies remain
-  available to play later. All submenu actions keep the wheel open. Click the
-  active waveform to send the message to that session; its controls stay available
-  afterward. Ending a session frees its slot without closing the wheel.
-- Click **Terminal** to open Workspace directly to the session's terminal. Its
-  VoiceOver label names the session. The wheel stays open.
+- Hover the session (**Terminal**) to reveal its PM tabs (RR-469). The submenu holds
+  one segment per tab, numbered as in the Workspace terminal's tab strip, then three
+  tab controls: **Add tab** (plus), **Remove tab** (red X) and **Turn off** (power).
+  There are no Play / Replay, Record or Stop session controls on the wheel.
+  - Click a tab's number to make it the **active tab**: voice turns, replies and
+    TTS go to it, and the notch confirms the switch. The active tab's number is
+    orange and selected; a tab that is off is dimmed, and clicking it turns it back
+    on, resuming its conversation, and makes it active.
+  - **Add tab** opens another general PM tab, like the tab strip's "+". It is
+    disabled at nine tabs, the limit counting the first; the notch then reads
+    *Nine tabs open*.
+  - **Remove tab** ends the active tab and drops it; **Turn off** stops its
+    provider but keeps the tab. Either moves the active tab to another live tab.
+    Turn off is disabled when the active tab is the only live one; removing the last
+    live tab ends the session, as End does.
+  - With three tabs or fewer the submenu keeps its standard size over the session's
+    own cell. More tabs grow it evenly along the arc, past its cell and over the
+    outer edge of **History** and **Workspace**, up to their far ends at nine tabs, so
+    every tab shows at once. Each segment stays at least as wide as a standard one.
+    History and Workspace have no submenus of their own, so nothing overlaps.
+  - All tab actions keep the wheel open, and switching tabs does not close or
+    replay the submenu. Each segment and control is also a VoiceOver action on the
+    session slot.
+- Click **Terminal** to open Workspace directly to the active tab's terminal. Its
+  VoiceOver label names the tab. The wheel stays open.
 - With no session running, click **Start session** in the top slot to start
   the general session without opening Workspace. Session changes update the tile in
   place without replaying the whole wheel's transition; navigating between menus
   retains that transition.
-- Playback shows **Play message** for queued speech, **Stop playback** while
-  preparing or playing, and **Replay message** when only replay history remains.
-  State comes from the shared speech coordinator independently of notch recording
-  presentation. Controls target the selected session without changing focus;
-  stored unread replies play in order before replaying the latest reply.
-  Recording is pinned to the
-  chosen session even if focus changes before capture starts. An existing
-  recording can be stopped only from its owning session. Stop session cancels
-  that session's recording before ending it.
-- Absent replies and unavailable recording controls are disabled. Controls are also exposed as VoiceOver actions on
-  session slots.
 
 The UI uses the workspace cards' shared dark fills, hover and selection treatment,
 and subtle borders, with Bai Jamjuree typography, purple session dots, and a red
-end-session control. Playback and recording icons use the primary text color. The wheel has
+Remove tab control. Tab numbers and control icons use the primary text color. The wheel has
 no outer border. Segments use consistent 8-point spacing between their straight
 edges, around the center and outer perimeter. The 34-point-deep outer
 controls follow the wheel's tangent, keeping their icons upright on
@@ -108,15 +110,14 @@ blur-and-alpha-threshold silhouette beneath the unfiltered controls. One native
 spring drives the surface and controls together, reverses from its current position
 and velocity, and lets an outgoing slot merge back while another opens. Controls
 emerge from behind the disc and become clickable as they settle outside it;
-playback or recording icon changes do not restart the submenu entrance.
+tab changes do not restart the submenu entrance. The session submenu's backdrop
+follows its whole arc, however many cells it spans.
 Reduce Motion fades the submenu in its final position without merging, travel,
 or blur. Hover stays active across
 the gap so the controls remain reachable.
 
-The recording waveform reads a bounded 100 ms RMS window from the existing audio
-buffer only for the session that owns the recording. It never consumes samples
-or opens another microphone capture. Reduce Motion holds both the waveform and
-four-dot glyph at rest and crossfades between the glyph, X and Back arrow instead of morphing.
+Reduce Motion holds the four-dot glyph at rest and crossfades between the glyph,
+X and Back arrow instead of morphing.
 
 ## Keep Awake
 
@@ -269,16 +270,16 @@ checks. `scripts/build-dmg.sh` runs `app_signing.py check-helper` on every build
 and verifies the helper's Developer ID requirement on signed builds.
 
 Set `RELAY_WHEEL_RENDER_DIR` to an output directory to export SwiftUI previews
-from `SessionWheelTests.testWheelRendering`, including the `settings-*` states. The motion tests also export each
+from `SessionWheelTests.testWheelRendering`, including the `settings-*` and `tabs-*` states. The motion tests also export each
 submenu's liquid keyframes and a GIF sampled from the native hover/reversal spring.
 Tests use fake capture and temporary
 spools; they do not open the microphone or send commands to live sessions.
 
 Installed-app checks still require a physical trackpad and live sessions: open
 and dismiss across displays, reject swipes and pinches, navigate to every outer
-control, start a project from a later page, replay a background session's reply,
-record and send to each provider, stop one session while the others continue, and
-repeat after sleep or reconnecting a trackpad. Drag the intensity slider past
+control, add PM tabs up to nine and check the submenu wraps to History and
+Workspace, switch, turn off and remove tabs with each provider, and repeat after
+sleep or reconnecting a trackpad. Drag the intensity slider past
 both ends while watching the particle field, then reopen Settings.
 Keep Awake requires its own manual checks on the installed app. Automated tests and
 rendered fixtures cover the controller, helper, and dimmer with fakes. They do not

@@ -610,6 +610,220 @@ class GraphifyIngestTests(unittest.TestCase):
         self.assertEqual(second["tickets_deleted"], 0)
         self.assertIsNotNone(store.find_node(kind=NODE_TICKET, stable_key=archived["stable_key"]))
 
+    def test_archive_catalog_verifies_hundreds_of_entries_with_a_few_git_processes(self):
+        # RR-471: every ticket write publishes a new head, and the per-entry
+        # check spawned Git several times per archived ticket on each one.
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "archive-batch")
+        _install_confirmed_archive(repo, [
+            {
+                "schema_version": 1,
+                "artifact_id": f"artifact-AB-{index:03d}",
+                "ticket_id": f"AB-{index:03d}",
+                "title": f"Archived {index}",
+                "status": "done" if index % 3 else "canceled",
+                "activity_at": "2026-01-01T00:00:00Z",
+                "dependencies": [],
+                "state": "archived",
+                "ticket_path": f".orchestrator/AB-{index:03d}.md",
+                "attachments": [],
+                "_source_canceled": not index % 3,
+            }
+            for index in range(120)
+        ])
+        head = _git(repo, "rev-parse", "refs/heads/relay/artifacts")
+
+        with patch("graphify_ingest.subprocess.run", wraps=subprocess.run) as spawned:
+            tickets = graphify_ingest._archive_catalog_tickets_at_head(str(repo.resolve()), head, True)
+
+        self.assertEqual(len(tickets), 120)
+        self.assertEqual(
+            sum(ticket["canceled"] for ticket in tickets), 40,
+        )
+        self.assertLessEqual(spawned.call_count, 4)
+
+        # A later ticket write leaves the catalog alone; its lines stay proven.
+        _git(repo, "switch", "--quiet", "relay/artifacts")
+        _write_ticket(repo, "AB-live", "Live", "backlog")
+        _git(repo, "add", ".orchestrator")
+        _git(repo, "commit", "--quiet", "-m", "ticket write")
+        _git(repo, "switch", "--quiet", "main")
+        next_head = _git(repo, "rev-parse", "refs/heads/relay/artifacts")
+        with patch("graphify_ingest.subprocess.run", wraps=subprocess.run) as spawned:
+            again = graphify_ingest._archive_catalog_tickets_at_head(str(repo.resolve()), next_head, True)
+        self.assertEqual(again, tickets)
+        self.assertLessEqual(spawned.call_count, 2)
+
+    def test_archive_catalog_reports_the_first_failing_line_across_check_kinds(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        repo = _make_repo(root, "archive-order")
+        entry = {
+            "schema_version": 1,
+            "artifact_id": "artifact-ORDER-1",
+            "ticket_id": "ORDER-1",
+            "title": "Ordered",
+            "status": "done",
+            "activity_at": "2026-01-01T00:00:00Z",
+            "state": "archived",
+            "ticket_path": ".orchestrator/ORDER-1.md",
+            "attachments": [],
+        }
+        _install_confirmed_archive(repo, [entry, {
+            **entry,
+            "artifact_id": "artifact-ORDER-2",
+            "ticket_id": "ORDER-2",
+            "ticket_path": ".orchestrator/ORDER-2.md",
+        }])
+        valid = _git(repo, "show", "refs/heads/relay/artifacts:.orchestrator/archive-index.jsonl")
+        _rewrite_confirmed_archive(repo, {"ticket_blob": "b" * 40})
+        tampered = _git(repo, "show", "refs/heads/relay/artifacts:.orchestrator/archive-index.jsonl")
+
+        def publish(catalog_text: str) -> str:
+            _git(repo, "switch", "--quiet", "relay/artifacts")
+            (repo / ".orchestrator" / "archive-index.jsonl").write_text(catalog_text, encoding="utf-8")
+            _git(repo, "add", ".orchestrator/archive-index.jsonl")
+            _git(repo, "commit", "--quiet", "-m", "publish catalog")
+            _git(repo, "switch", "--quiet", "main")
+            return _git(repo, "rev-parse", "refs/heads/relay/artifacts")
+
+        # Line 1's identity fails before line 3's JSON, exactly as when each
+        # line was checked in turn.
+        head = publish(tampered + "\nnot json\n")
+        with self.assertRaisesRegex(ValueError, "line 1 has mismatched historical identity"):
+            graphify_ingest._archive_catalog_tickets_at_head(str(repo.resolve()), head, True)
+
+        head = publish(valid + "\nnot json\n")
+        with self.assertRaisesRegex(ValueError, "line 3 is invalid JSON"):
+            graphify_ingest._archive_catalog_tickets_at_head(str(repo.resolve()), head, True)
+
+    def test_creation_dates_reread_only_the_head_that_moved(self):
+        # RR-471: a ticket write moves only the artifact head; the source
+        # history's log is the slow one and stays cached.
+        with tempfile.TemporaryDirectory() as directory:
+            repo = _make_repo(Path(directory), "creation-heads")
+            _git(repo, "init", "--initial-branch=main", "--quiet")
+            _git(repo, "config", "user.name", "Graphify Tests")
+            _git(repo, "config", "user.email", "graphify@example.invalid")
+            _write_ticket(repo, "RR-1", "Source", "backlog")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "--quiet", "-m", "source board")
+            _git(repo, "checkout", "--orphan", "relay/artifacts", "--quiet")
+            _write_ticket(repo, "RR-2", "Artifact", "backlog")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "--quiet", "-m", "artifact board")
+            _git(repo, "checkout", "main", "--quiet")
+            before = graphify_ingest._ticket_creation_dates(repo)
+
+            _git(repo, "switch", "--quiet", "relay/artifacts")
+            _write_ticket(repo, "RR-3", "Written", "backlog")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "--quiet", "-m", "ticket write")
+            _git(repo, "switch", "--quiet", "main")
+            with patch("graphify_ingest._git", wraps=graphify_ingest._git) as git_mock:
+                after = graphify_ingest._ticket_creation_dates(repo)
+            logs = [call.args for call in git_mock.call_args_list if call.args[1] == "log"]
+            source_head = _git(repo, "rev-parse", "main")
+            artifact_head = _git(repo, "rev-parse", "relay/artifacts")
+
+            self.assertEqual(set(before), {"RR-1", "RR-2"})
+            self.assertEqual(set(after), {"RR-1", "RR-2", "RR-3"})
+            self.assertEqual(len(logs), 1)
+            self.assertIn(artifact_head, logs[0])
+            self.assertNotIn(source_head, logs[0])
+
+    def test_unchanged_project_inputs_names_only_projects_that_did_not_move(self):
+        registry = b"registry"
+        project_a = ("/repo/a", ("refs", 1), ("entries", 1))
+        project_b = ("/repo/b", ("refs", 1), ("entries", 1))
+        moved_a = ("/repo/a", ("refs", 2), ("entries", 1))
+        previous = (registry, (project_a, project_b), ("runs", 1))
+
+        self.assertEqual(
+            graphify_ingest.unchanged_project_inputs(previous, (registry, (moved_a, project_b), ("runs", 1))),
+            (frozenset({"/repo/b"}), True),
+        )
+        self.assertEqual(
+            graphify_ingest.unchanged_project_inputs(previous, (registry, (project_a, project_b), ("runs", 2))),
+            (frozenset({"/repo/a", "/repo/b"}), False),
+        )
+        self.assertIsNone(
+            graphify_ingest.unchanged_project_inputs(previous, (b"other", (project_a, project_b), ("runs", 1)))
+        )
+        self.assertIsNone(graphify_ingest.unchanged_project_inputs(None, previous))
+
+    def test_incremental_ingest_matches_a_full_ingest_with_runs_in_both_projects(self):
+        # RR-471: a reused project keeps its graph; the result must equal a
+        # full ingest whether or not the runs database moved. The daemon
+        # ingests without file indexing, the only mode that reuses projects.
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _remove_tree(root))
+        changed = _make_repo(root, "changed")
+        quiet = _make_repo(root, "quiet")
+        for repo in (changed, quiet):
+            _write_ticket(repo, "PB-1", "Active", "in_progress", run_id=1 if repo is changed else 2)
+            _write_ticket(repo, "PB-2", "Waiting", "backlog", depends_on=["PB-1"])
+        registry_path = root / "projects.json"
+        registry_path.write_text(json.dumps({
+            "activeProjectID": str(changed.resolve()),
+            "projects": [
+                {"id": str(repo.resolve()), "repoPath": str(repo.resolve()), "displayName": repo.name}
+                for repo in (changed, quiet)
+            ],
+        }))
+        runs_db = root / "runs.db"
+        _write_runs_db(runs_db, [
+            _run_row(root, 1, "PB-1", changed, "Running", "codex"),
+            _run_row(root, 2, "PB-1", quiet, "Running", "claude"),
+        ])
+
+        def graph(store):
+            keys = {node["id"]: (node["kind"], node["stable_key"]) for node in store.nodes()}
+            return (
+                {
+                    (node["kind"], node["stable_key"], node["title"], json.dumps(node["body"], sort_keys=True))
+                    for node in store.nodes()
+                },
+                {(keys[edge["src_id"]], keys[edge["dst_id"]], edge["kind"]) for edge in store.edges()},
+            )
+
+        def full():
+            fresh = self.make_store()
+            ingest_registered_projects(fresh, registry_path=registry_path, runs_db_path=runs_db, index_files=False)
+            return graph(fresh)
+
+        store = self.make_store()
+        ingest_registered_projects(store, registry_path=registry_path, runs_db_path=runs_db, index_files=False)
+
+        _write_ticket(changed, "PB-1", "Active", "done", run_id=1)
+        with patch("graphify_ingest.scan_repo", wraps=graphify_ingest.scan_repo) as scanned:
+            ingest_registered_projects(
+                store,
+                registry_path=registry_path,
+                runs_db_path=runs_db,
+                index_files=False,
+                unchanged_repo_paths={str(quiet.resolve())},
+                runs_unchanged=True,
+            )
+        self.assertEqual([Path(call.args[0]).resolve() for call in scanned.call_args_list], [changed.resolve()])
+        self.assertEqual(graph(store), full())
+
+        runs_db.unlink()
+        _write_runs_db(runs_db, [
+            _run_row(root, 1, "PB-1", changed, "Succeeded", "codex"),
+            _run_row(root, 2, "PB-1", quiet, "Failed", "claude"),
+        ])
+        ingest_registered_projects(
+            store,
+            registry_path=registry_path,
+            runs_db_path=runs_db,
+            index_files=False,
+            unchanged_repo_paths={str(changed.resolve()), str(quiet.resolve())},
+            runs_unchanged=False,
+        )
+        self.assertEqual(graph(store), full())
+
     def test_archive_catalog_cache_invalidates_when_confirmed_head_moves(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: _remove_tree(root))

@@ -201,7 +201,7 @@ final class SessionWheelMotionTests: XCTestCase {
         let model = SessionWheelModel()
         model.refresh(sessions: (0..<3).map { .init(id: "\($0)", name: "Session \($0)") })
         let sessions = SessionWheelMenu(model)
-        let wheel = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
+        let wheel = SessionWheelView(model: model, selectSlot: { _, _ in }, performTabItem: { _ in },
                                      selectCenter: {}, dismiss: {})
         var reference: NSBitmapImageRep?
         let legMilliseconds = Int((SessionWheelPresentation.duration * 1000).rounded())
@@ -241,8 +241,8 @@ final class SessionWheelMotionTests: XCTestCase {
     func testLiquidSubmenusGrowFromTheWheelAndSettleWithTheExistingGap() throws {
         let geometry = SessionWheelGeometry.self
         let model = SessionWheelModel()
-        model.refresh(sessions: (0..<3).map { .init(id: "\($0)", name: "Project \($0 + 1)", canPlay: true) })
-        let wheel = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
+        model.refresh(sessions: (0..<3).map { .init(id: "\($0)", name: "Project \($0 + 1)") })
+        let wheel = SessionWheelView(model: model, selectSlot: { _, _ in }, performTabItem: { _ in },
                                     selectCenter: {}, dismiss: {})
         for slot in 0..<SessionWheelGeometry.slotCount {
             model.hover(at: geometry.position(slot: slot, radius: 119))
@@ -351,7 +351,7 @@ final class SessionWheelMotionTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(frames.last)[0], 0, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(frames.last)[noteTaker], 1, accuracy: 0.001)
         let settled = frames.count
-        model.refresh(sessions: [.init(id: "a", name: "First", isRecording: true)])
+        model.refresh(sessions: [.init(id: "a", name: "First")])
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(frames.dropFirst(settled).allSatisfy { abs($0[noteTaker] - 1) < 0.001 },
                       "Playback and recording changes must not restart the submenu entrance")
@@ -367,9 +367,9 @@ final class SessionWheelMotionTests: XCTestCase {
                                                                   frames.count, nil))
             CGImageDestinationSetProperties(gif, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
             let preview = SessionWheelModel()
-            preview.refresh(sessions: [.init(id: "a", name: "General Tasks", canPlay: true),
-                                       .init(id: "b", name: "Relay Runner", canPlay: true)])
-            let wheel = SessionWheelView(model: preview, selectSlot: { _, _ in }, performAction: { _, _ in },
+            preview.refresh(sessions: [.init(id: "a", name: "General Tasks"),
+                                       .init(id: "b", name: "Relay Runner")])
+            let wheel = SessionWheelView(model: preview, selectSlot: { _, _ in }, performTabItem: { _ in },
                                         selectCenter: {}, dismiss: {})
             for index in frames.indices {
                 if let slot = slots[index] { preview.hover(at: SessionWheelGeometry.position(slot: slot, radius: 119)) }
@@ -396,7 +396,7 @@ final class SessionWheelMotionTests: XCTestCase {
         let duration = SessionWheelPresentation.duration
         for elapsed in [0.0, 0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175, duration] {
             let presentation = SessionWheelPresentation(progress: 1 - elapsed / duration)
-            let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performAction: { _, _ in },
+            let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performTabItem: { _ in },
                 selectCenter: {}, dismiss: {},
                 presentation: presentation)
                 .transaction { $0.animation = nil; $0.disablesAnimations = true }

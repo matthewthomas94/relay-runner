@@ -7,6 +7,9 @@ struct WorkspaceActivitySnapshot {
     let tickets: [Ticket]
     let ticketsByRunKey: [String: Ticket]
     let foregroundProviderTurnActive: Bool
+    /// RR-471: every scoped ticket file's revision. A board write rewrites
+    /// its files, so an open Work tab refreshes when this changes.
+    let ticketFileRevisions: [String: WorkspaceActivitySnapshotStore.FileRevision]
 
     static let empty = WorkspaceActivitySnapshot(
         route: .unavailable,
@@ -14,7 +17,8 @@ struct WorkspaceActivitySnapshot {
         runStates: [],
         tickets: [],
         ticketsByRunKey: [:],
-        foregroundProviderTurnActive: false
+        foregroundProviderTurnActive: false,
+        ticketFileRevisions: [:]
     )
 }
 
@@ -116,7 +120,8 @@ actor WorkspaceActivitySnapshotStore {
                 runStates: activity.runStates,
                 tickets: activity.tickets,
                 ticketsByRunKey: activity.ticketsByRunKey,
-                foregroundProviderTurnActive: activity.foregroundProviderTurnActive
+                foregroundProviderTurnActive: activity.foregroundProviderTurnActive,
+                ticketFileRevisions: activity.ticketFiles.mapValues(\.revision)
             )
             let cache = Cache(
                 routeKey: routeKey,
@@ -176,7 +181,7 @@ actor WorkspaceActivitySnapshotStore {
         )
     }
 
-    private static func loadActivity(
+    static func loadActivity(
         scope: ProjectResolver.WorkspaceScope,
         previous: Cache?
     ) -> ActivityData {

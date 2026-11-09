@@ -7,23 +7,6 @@ struct AppConfig: Codable, Equatable {
     var tts = TtsConfig()
     var general = GeneralConfig()
     var awareness = AwarenessConfig()
-
-    /// The session wheel saves intensity and auto-play immediately. Returns nil for any other
-    /// change; otherwise adopts the new value unless the draft holds its own unsaved one.
-    func mergingWheelSettingsChange(from previous: AppConfig, to saved: AppConfig) -> AppConfig? {
-        var wheelOnly = previous
-        wheelOnly.awareness.glow_intensity = saved.awareness.glow_intensity
-        wheelOnly.tts.auto_play = saved.tts.auto_play
-        guard wheelOnly == saved else { return nil }
-        var draft = self
-        if draft.awareness.glow_intensity == previous.awareness.glow_intensity {
-            draft.awareness.glow_intensity = saved.awareness.glow_intensity
-        }
-        if draft.tts.auto_play == previous.tts.auto_play {
-            draft.tts.auto_play = saved.tts.auto_play
-        }
-        return draft
-    }
 }
 
 struct SttConfig: Codable, Equatable {

@@ -263,6 +263,19 @@ class GraphifyCoreStore:
         body_json = _encode_body(body)
 
         with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM graph_nodes WHERE kind = ? AND stable_key = ?",
+                (kind, stable_key),
+            ).fetchone()
+            # Program ingests re-upsert every node of a changed project; an
+            # unchanged node is not rewritten (RR-471).
+            if (
+                row is not None
+                and row["project_id"] == project_id
+                and row["title"] == title
+                and row["body_json"] == body_json
+            ):
+                return _node_from_row(row)
             conn.execute(
                 """
                 INSERT INTO graph_nodes(id, kind, project_id, stable_key, title, body_json, updated_at)
@@ -332,6 +345,12 @@ class GraphifyCoreStore:
         body_json = _encode_body(body)
 
         with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM graph_edges WHERE src_id = ? AND dst_id = ? AND kind = ?",
+                (src_id, dst_id, kind),
+            ).fetchone()
+            if row is not None and row["body_json"] == body_json:
+                return _edge_from_row(row)
             conn.execute(
                 """
                 INSERT INTO graph_edges(src_id, dst_id, kind, body_json, updated_at)
