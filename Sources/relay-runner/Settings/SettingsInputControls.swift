@@ -226,18 +226,63 @@ struct SettingsStepper: View {
     }
 }
 
+/// A kit text input that saves once typing pauses for half a second, on Return, or
+/// when focus leaves it, so a multi-character edit is one save rather than one per key.
+struct SettingsTextField: View {
+    let title: String
+    @Binding var text: String
+    var placeholder = ""
+    @State private var edit = SettingsDeferredEdit<String>()
+    @FocusState private var isFocused: Bool
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(_ title: String, text: Binding<String>, placeholder: String = "") {
+        self.title = title
+        self._text = text
+        self.placeholder = placeholder
+    }
+
+    var body: some View {
+        let shown = edit.value ?? text
+        // Reads live: ending an edit before the next render must not restore older text.
+        let typed = Binding(get: { edit.value ?? text }, set: { typed in
+            edit.update(typed, settlingAfter: SettingsAutoSave.editPause) { text = $0 }
+        })
+        // Binds its own focus, so it draws the kit input surface itself.
+        TextField(title, text: typed, prompt: Text(""))
+            .appPlaceholder(placeholder, when: shown.isEmpty)
+            .textFieldStyle(.plain)
+            .font(AppTypography.font(.field))
+            .foregroundStyle(isEnabled ? SettingsSurfaceColor.primaryText : SettingsSurfaceColor.disabledText)
+            .lineLimit(1)
+            .padding(.horizontal, GraphicalTheme.spaceS)
+            .frame(minHeight: GraphicalTheme.controlHeight)
+            .background(GraphicalInputSurface(isFocused: isFocused, isEnabled: isEnabled))
+            .focused($isFocused)
+            .animation(reduceMotion ? nil : RelayMotion.hover, value: isFocused)
+            .onSubmit { edit.flush() }
+            .onChange(of: isFocused) { _, focused in if !focused { edit.flush() } }
+            // Our own save lands here with nothing pending; a change made elsewhere replaces the edit.
+            .onChange(of: text) { _, _ in edit.discard() }
+            .onDisappear { edit.flush() }
+    }
+}
+
 /// A slider in the session wheel's intensity style: a card track, a faint fill up to a thin
-/// upright thumb, and the value printed on the wider side of the thumb.
+/// upright thumb, and the value printed on the wider side of the thumb. A drag or a held arrow
+/// key moves it freely and writes the value once, on release.
 struct SettingsSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let step: Double
-    let label: String
+    let label: (Double) -> String
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
     @State private var isHovered = false
     @State private var isDragging = false
+    @State private var edit = SettingsDeferredEdit<Double>()
     @FocusState private var isFocused: Bool
 
     /// Keeps the thumb clear of the rounded ends.
@@ -255,16 +300,19 @@ struct SettingsSlider: View {
         isEnabled ? GraphicalTheme.neutral1 : GraphicalTheme.neutral7
     }
 
-    init(value: Binding<Double>, in range: ClosedRange<Double>, step: Double, label: String) {
+    init(value: Binding<Double>, in range: ClosedRange<Double>, step: Double, label: @escaping (Double) -> String) {
         self._value = value
         self.range = range
         self.step = step
         self.label = label
     }
 
+    /// The value under the thumb, including one still being dragged.
+    private var shownValue: Double { edit.value ?? value }
+
     private var fraction: Double {
         guard range.upperBound > range.lowerBound else { return 0 }
-        return min(max((value - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
+        return min(max((shownValue - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
     }
 
     var body: some View {
@@ -297,7 +345,7 @@ struct SettingsSlider: View {
                     .frame(width: 2.5, height: height - 14)
                     .position(x: thumb, y: height / 2)
                 // Kit value text: neutral-7 beside the fill, dark on it.
-                Text(label)
+                Text(label(shownValue))
                     .font(AppTypography.font(.caption))
                     .monospacedDigit()
                     .foregroundStyle(fraction >= 0.5 ? Self.onFillColor(isEnabled: isEnabled)
@@ -314,6 +362,7 @@ struct SettingsSlider: View {
                 .onEnded { drag in
                     setValue(atX: drag.location.x, width: width)
                     isDragging = false
+                    edit.flush()
                 })
         }
         .frame(height: SharedActionButtonMetrics.controlHeight)
@@ -326,27 +375,35 @@ struct SettingsSlider: View {
         .focused($isFocused)
         .onKeyPress(.leftArrow) { stepValue(-1); return .handled }
         .onKeyPress(.rightArrow) { stepValue(1); return .handled }
+        .onKeyPress(keys: [.leftArrow, .rightArrow], phases: .up) { _ in edit.flush(); return .handled }
+        .onChange(of: isFocused) { _, focused in if !focused { edit.flush() } }
+        .onDisappear { edit.flush() }
         .accessibilityElement(children: .ignore)
         .accessibilityAdjustableAction { direction in
+            // Each VoiceOver adjustment is one deliberate step, written at once.
             switch direction {
             case .increment: stepValue(1)
             case .decrement: stepValue(-1)
             @unknown default: break
             }
+            edit.flush()
         }
     }
 
+    /// A drag holds its value until release.
     private func setValue(atX x: CGFloat, width: CGFloat) {
-        update(Self.value(atX: x, width: width, in: range, step: step))
+        update(Self.value(atX: x, width: width, in: range, step: step), settlingAfter: nil)
     }
 
+    /// Arrow keys write on key up, or once a held key pauses.
     private func stepValue(_ direction: Double) {
-        update(Self.snapped(value + direction * step, in: range, step: step))
+        update(Self.snapped(shownValue + direction * step, in: range, step: step),
+               settlingAfter: SettingsAutoSave.editPause)
     }
 
-    private func update(_ newValue: Double) {
-        guard isEnabled, newValue != value else { return }
-        value = newValue
+    private func update(_ newValue: Double, settlingAfter delay: Duration?) {
+        guard isEnabled, newValue != shownValue else { return }
+        edit.update(newValue, settlingAfter: delay) { value = $0 }
     }
 
     /// The snapped value under a pointer at `x` in a track `width` wide.

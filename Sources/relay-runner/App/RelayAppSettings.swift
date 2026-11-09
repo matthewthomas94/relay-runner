@@ -5,7 +5,8 @@ import Foundation
 /// app-managed keys, values of the wrong type, and values the Settings
 /// controls could not hold for the current provider and model are refused
 /// rather than coerced. The result is saved through `AppState.saveConfig`, the
-/// Settings Save path. `AppConfig` holds no credentials, so nothing is redacted.
+/// path every Settings control saves through. `AppConfig` holds no credentials,
+/// so nothing is redacted.
 enum RelayAppSettings {
     /// Fields Relay Runner records itself; Save ignores edits to them.
     static let readOnly: Set<String> = ["stt.phonon_migration", "stt.phonon_migration_previous_model"]

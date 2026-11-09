@@ -22,7 +22,7 @@ struct RelayAppCommandHost {
     /// Shows a surface the way the session wheel does. Returns why it could not, or nil.
     var navigate: (RelayAppDestination) -> String?
     var config: () -> AppConfig
-    /// `AppState.saveConfig`, the Settings Save path.
+    /// `AppState.saveConfig`, the path every Settings control saves through.
     var saveConfig: (AppConfig) -> Void
     /// Browses a registered project's board as `activate_project` does; never starts or focuses a session.
     var selectProject: @MainActor (_ projectID: String) async -> Result<String, RelayAppCommandError>
