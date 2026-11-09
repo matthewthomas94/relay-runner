@@ -159,6 +159,69 @@ final class SettingsInputControlsTests: XCTestCase {
         XCTAssertEqual(SettingsSlider.snapped(0.1 + 0.05 * 3, in: 0.1...1.0, step: 0.05), 0.25)
     }
 
+    func testSliderHoldsADragAndArrowKeysUntilRelease() throws {
+        // Pointer events cannot reach a gesture in an inactive test window, so this pins the
+        // wiring to `SettingsDeferredEdit`, whose hold-until-release contract SettingsAutoSaveTests covers.
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let contents = try String(contentsOf: root.appendingPathComponent(
+            "Sources/relay-runner/Settings/SettingsInputControls.swift"), encoding: .utf8)
+        let slider = try XCTUnwrap(contents.range(of: "struct SettingsSlider").map { String(contents[$0.lowerBound...]) })
+
+        XCTAssertTrue(slider.contains("isDragging = false\n                    edit.flush()"), "Release writes the drag once")
+        XCTAssertTrue(slider.contains("step: step), settlingAfter: nil)"), "A drag holds its value")
+        XCTAssertTrue(slider.contains(".onKeyPress(keys: [.leftArrow, .rightArrow], phases: .up) { _ in edit.flush()"))
+        XCTAssertTrue(slider.contains("edit.update(newValue, settlingAfter: delay) { value = $0 }"))
+        XCTAssertFalse(slider.contains("        value = newValue\n"), "No write per drag step")
+    }
+
+    func testTextFieldSavesOnceAfterTypingPausesAndAtOnceWhenFocusLeaves() throws {
+        var config = AppConfig()
+        var saves = 0
+        let autoSave = SettingsAutoSave(current: { config }, save: { config = $0; saves += 1; return nil })
+        let window = host(SettingsTextField("Workspace folder", text: autoSave.binding(\.general.working_directory)),
+                          size: NSSize(width: 300, height: 36))
+        defer { window.close() }
+
+        try click(NSPoint(x: 150, y: 18), in: window)
+        try type("~/dev", in: window)
+        XCTAssertEqual(saves, 0, "Typing does not save each character")
+        RunLoop.main.run(until: Date().addingTimeInterval(1))
+        XCTAssertEqual(saves, 1, "One save, so one bridge reload, once typing pauses")
+        XCTAssertEqual(config.general.working_directory, "~/dev")
+
+        try type("/x", in: window)
+        window.makeFirstResponder(nil)
+        settle()
+        XCTAssertEqual(saves, 2, "Leaving the field saves at once")
+        XCTAssertEqual(config.general.working_directory, "~/dev/x")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.7))
+        XCTAssertEqual(saves, 2)
+    }
+
+    func testCompletedHotkeyCaptureSavesAtOnce() throws {
+        var config = AppConfig()
+        var saves = 0
+        let autoSave = SettingsAutoSave(current: { config }, save: { config = $0; saves += 1; return nil })
+        let window = host(KeyCaptureView(label: "Push-to-talk Key", showsLabel: false,
+                                         value: autoSave.binding(\.stt.push_to_talk_key)),
+                          size: NSSize(width: 300, height: 36))
+        defer { window.close() }
+        func captureField(in view: NSView) -> NSView? {
+            if view.isAccessibilityElement(), view.accessibilityRole() == .button,
+               view.accessibilityLabel() == "Push-to-talk Key" { return view }
+            return view.subviews.lazy.compactMap(captureField).first
+        }
+
+        // Starts capture the way VoiceOver does; a click needs an active app.
+        XCTAssertTrue(try XCTUnwrap(captureField(in: try XCTUnwrap(window.contentView))).accessibilityPerformPress())
+        settle()
+        XCTAssertEqual(saves, 0, "Starting a capture saves nothing")
+        try sendKey(96, characters: String(UnicodeScalar(NSF5FunctionKey)!), to: window)
+        XCTAssertEqual(saves, 1)
+        XCTAssertEqual(config.stt.push_to_talk_key, "F5")
+    }
+
     func testRenderSettingsControls() throws {
         guard let directory = ProcessInfo.processInfo.environment["RELAY_SETTINGS_RENDER_DIR"] else {
             throw XCTSkip("Set RELAY_SETTINGS_RENDER_DIR to export the native control fixture")
@@ -199,11 +262,11 @@ final class SettingsInputControlsTests: XCTestCase {
                 }
                 SettingsDivider()
                 SettingsControlRow("Speech Speed") {
-                    SettingsSlider(value: .constant(1.3), in: 0.5...2.0, step: 0.1, label: "1.3x")
+                    SettingsSlider(value: .constant(1.3), in: 0.5...2.0, step: 0.1, label: { "\(String(format: "%.1f", $0))x" })
                 }
                 SettingsDivider()
                 SettingsControlRow("Intensity") {
-                    SettingsSlider(value: .constant(0.25), in: 0.1...1.0, step: 0.05, label: "25%").disabled(true)
+                    SettingsSlider(value: .constant(0.25), in: 0.1...1.0, step: 0.05, label: SessionWheelIntensity.percent).disabled(true)
                 }
             }
             SettingsSection("Orchestrator Effort") {
@@ -261,6 +324,17 @@ final class SettingsInputControlsTests: XCTestCase {
             charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code
         )))
         settle()
+    }
+
+    /// Sends each character with no pause between keys, as fast typing does.
+    private func type(_ text: String, in window: NSWindow) throws {
+        for character in text.map(String.init) {
+            window.sendEvent(try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, characters: character,
+                charactersIgnoringModifiers: character, isARepeat: false, keyCode: 0
+            )))
+        }
     }
 
     private func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }

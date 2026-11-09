@@ -23,7 +23,7 @@ struct AwarenessSettingsTab: View {
             SettingsSection("Particle Field") {
                 SettingsControlRow("Intensity") {
                     SettingsSlider(value: $config.glow_intensity, in: 0.1...1.0, step: 0.05,
-                                   label: SessionWheelIntensity.percent(config.glow_intensity))
+                                   label: SessionWheelIntensity.percent)
                         .disabled(!config.screen_glow)
                         .accessibilityLabel("Particle field intensity")
                         .accessibilityValue(Self.particleIntensityAccessibilityValue(config.glow_intensity))

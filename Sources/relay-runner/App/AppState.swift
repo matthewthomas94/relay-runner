@@ -2213,11 +2213,13 @@ final class AppState {
 
     /// Saves a user edit (Settings or onboarding). A model change is recorded
     /// against the Phonon migration so relaunch or an OS upgrade never
-    /// re-overrides an explicit choice or rollback.
-    func saveConfig(_ newConfig: AppConfig, forceWorkspaceDiscovery: Bool = false) {
+    /// re-overrides an explicit choice or rollback. Returns the error when
+    /// `config.toml` could not be written, so Settings can show it.
+    @discardableResult
+    func saveConfig(_ newConfig: AppConfig, forceWorkspaceDiscovery: Bool = false) -> Error? {
         var newConfig = newConfig
         newConfig.stt = newConfig.stt.recordingUserModelChange(from: config.stt)
-        persistConfig(newConfig, forceWorkspaceDiscovery: forceWorkspaceDiscovery)
+        return persistConfig(newConfig, forceWorkspaceDiscovery: forceWorkspaceDiscovery)
     }
 
     private func startPhononMigrationIfEligible() {
@@ -2278,14 +2280,17 @@ final class AppState {
             && !notePhase.ownsForeground && !noteStartPending && !noteRecoveryPending
     }
 
-    private func persistConfig(_ newConfig: AppConfig, forceWorkspaceDiscovery: Bool = false) {
+    @discardableResult
+    private func persistConfig(_ newConfig: AppConfig, forceWorkspaceDiscovery: Bool = false) -> Error? {
         let oldConfig = config
         config = newConfig
 
+        var saveError: Error?
         do {
             try configManager.save(newConfig)
         } catch {
             NSLog("[RelayRunner] Failed to save config: \(error)")
+            saveError = error
         }
 
         refreshConfiguredWorkspaceDiscoveryIfNeeded(
@@ -2305,7 +2310,7 @@ final class AppState {
         }
 
         // Hot-reload running services
-        guard isRunning else { return }
+        guard isRunning else { return saveError }
 
         // Always tell bridge to reload TTS settings
         SocketClient.bridgeSend("reload")
@@ -2319,6 +2324,7 @@ final class AppState {
         if Self.sttSettingsRequireRestart(old: oldConfig.stt, new: newConfig.stt) {
             restartSTTAfterCurrentRecording()
         }
+        return saveError
     }
 
     /// Any STT change, including the True Whisper toggle, rebuilds the engine.

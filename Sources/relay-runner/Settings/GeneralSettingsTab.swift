@@ -11,7 +11,7 @@ struct GeneralSettingsTab: View {
     @Binding var config: GeneralConfig
     var onOpenExternalWindow: () -> Void = {}
     var projectRegistryAppState: AppState? = nil
-    /// Runtime-only, shared with the session wheel; applies immediately rather than on Save.
+    /// Runtime-only, shared with the session wheel; never written to the config.
     var keepAwake: KeepAwakeController? = nil
     @State private var skillInstalled = ProcessManager().isSkillInstalled
     @State private var skillStatusText: String?
@@ -87,9 +87,7 @@ struct GeneralSettingsTab: View {
                         description: Self.workspaceFolderHelpText
                     ) {
                         HStack(spacing: 8) {
-                            TextField(Self.workspaceFolderLabel, text: $config.working_directory, prompt: Text(""))
-                                .appPlaceholder("~ (home)", when: config.working_directory.isEmpty)
-                                .graphicalInput()
+                            SettingsTextField(Self.workspaceFolderLabel, text: $config.working_directory, placeholder: "~ (home)")
                             SettingsActionButton(
                                 title: "Browse\u{2026}",
                                 systemImage: "folder"
@@ -239,19 +237,22 @@ struct GeneralSettingsTab: View {
         )
     }
 
+    // Each picker writes the config once, so one choice is one save.
     private var orchestratorEffortSelection: Binding<String> {
         Binding(
             get: { config.orchestrator_effort },
             set: {
-                config.orchestrator_effort = GeneralConfig.normalizedOrchestratorEffort(
+                var next = config
+                next.orchestrator_effort = GeneralConfig.normalizedOrchestratorEffort(
                     $0,
-                    for: config.provider,
-                    model: config.model
+                    for: next.provider,
+                    model: next.model
                 )
-                config.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
-                    config.orchestrator_effort,
-                    model: config.model
+                next.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
+                    next.orchestrator_effort,
+                    model: next.model
                 )
+                config = next
             }
         )
     }
@@ -260,16 +261,18 @@ struct GeneralSettingsTab: View {
         Binding(
             get: { config.model },
             set: {
-                config.model = GeneralConfig.normalizeModel($0, for: config.provider)
-                config.orchestrator_effort = GeneralConfig.normalizedOrchestratorEffort(
-                    config.orchestrator_effort,
-                    for: config.provider,
-                    model: config.model
+                var next = config
+                next.model = GeneralConfig.normalizeModel($0, for: next.provider)
+                next.orchestrator_effort = GeneralConfig.normalizedOrchestratorEffort(
+                    next.orchestrator_effort,
+                    for: next.provider,
+                    model: next.model
                 )
-                config.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
-                    config.orchestrator_effort,
-                    model: config.model
+                next.codex_reasoning_effort = GeneralConfig.normalizedCodexReasoningEffort(
+                    next.orchestrator_effort,
+                    model: next.model
                 )
+                config = next
             }
         )
     }

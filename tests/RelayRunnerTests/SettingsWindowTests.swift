@@ -59,10 +59,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(AppTypography.definition(for: .caption).size, GraphicalTheme.textXS)
     }
 
-    func testSettingsSemanticColorsUseWorkspaceNeutralForDirtyAndFocusStates() {
-        XCTAssertEqual(SettingsFooterPresentation(hasChanges: true).iconSemanticColor, .neutralAccent)
-        XCTAssertEqual(SettingsFooterPresentation(hasChanges: false).iconSemanticColor, .idle)
-
+    func testSettingsSemanticColorsUseWorkspaceNeutralForFocusStates() {
         let accent = SettingsSurfaceColor.neutralAccentNSColor.usingColorSpace(.sRGB)!
         let workspaceText = SettingsSurfaceColor.primaryTextNSColor.usingColorSpace(.sRGB)!
         XCTAssertEqual(accent.redComponent, workspaceText.redComponent, accuracy: 0.001)
@@ -195,7 +192,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertFalse(contents.contains("ScrollView(.vertical, showsIndicators: true)"))
     }
 
-    func testSettingsFooterLivesInsideDetailPlaneWithRevertAction() throws {
+    func testSettingsFooterReportsSavesWithoutSaveOrRevertButtons() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -205,10 +202,27 @@ final class SettingsWindowTests: XCTestCase {
 
         XCTAssertFalse(contents.contains("SettingsDetailHeader("))
         XCTAssertFalse(contents.contains("SettingsDetailHeaderPresentation"))
-        XCTAssertTrue(contents.contains("SettingsActionButton(\n                title: \"Revert\""))
-        XCTAssertTrue(contents.contains("draft = appState.config"))
+        XCTAssertFalse(contents.contains("title: \"Revert\""))
+        XCTAssertFalse(contents.contains("title: \"Save\""))
+        XCTAssertFalse(contents.contains("SettingsFooterSaveButton"))
+        XCTAssertFalse(contents.contains("draft"), "Settings edits the live config, not a copy")
+        XCTAssertTrue(contents.contains("SettingsFooterPresentation(status: autoSave.status)"))
         XCTAssertFalse(contents.contains("OnboardingPresentationState"))
         XCTAssertFalse(contents.contains("not selected"))
+    }
+
+    func testSettingsFooterShowsSavedOrTheSaveError() {
+        let idle = SettingsFooterPresentation(status: .idle)
+        XCTAssertEqual(idle.statusText, "Changes save automatically")
+        XCTAssertEqual(idle.iconSemanticColor, .idle)
+
+        let saved = SettingsFooterPresentation(status: .saved)
+        XCTAssertEqual(saved.statusText, "Saved")
+        XCTAssertEqual(saved.iconSemanticColor, .idle, "A save is reported quietly")
+
+        let failed = SettingsFooterPresentation(status: .failed("The disk is full."))
+        XCTAssertEqual(failed.statusText, "Couldn\u{2019}t save settings: The disk is full.")
+        XCTAssertEqual(failed.iconSemanticColor, .error)
     }
 
     func testSharedActionButtonChromeOwnsFocusAndAccessibilityHooks() throws {
