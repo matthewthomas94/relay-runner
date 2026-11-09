@@ -25,6 +25,57 @@ final class WorkspaceActivitySnapshotTests: XCTestCase {
         }
     }
 
+    func testTicketFileRevisionsMoveWhenABoardWriteRewritesATicket() async throws {
+        // RR-471: an open Work tab refreshes when these change, instead of
+        // waiting up to 10 s for its poll.
+        let repo = try makeTempDirectory(named: "board-change")
+        defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
+        let tickets = repo.appendingPathComponent(".orchestrator", isDirectory: true)
+        try FileManager.default.createDirectory(at: tickets, withIntermediateDirectories: true)
+        let ticket = tickets.appendingPathComponent("RR-1.md")
+        func write(title: String, status: String) throws {
+            try """
+            ---
+            id: RR-1
+            title: \(title)
+            status: \(status)
+            priority: medium
+            depends_on: []
+            run_id: null
+            canceled: false
+            ---
+            ## Description
+            One
+            """.write(to: ticket, atomically: true, encoding: .utf8)
+        }
+        try write(title: "First", status: "backlog")
+        let project = ProjectResolver.LinkedProject(repoPath: repo)
+        let store = WorkspaceActivitySnapshotStore(dependencies: .init(
+            routeKey: { alive in
+                WorkspaceActivitySnapshotStore.RouteKey(
+                    bridgeSessionAlive: alive,
+                    bridgeSocketExists: false,
+                    bridgeCwd: nil,
+                    bridgeProvider: nil
+                )
+            },
+            resolveScope: { _ in
+                ProjectResolver.WorkspaceScope(route: .project(project), projects: [project])
+            },
+            loadActivity: WorkspaceActivitySnapshotStore.loadActivity
+        ))
+
+        let first = await store.refresh(bridgeSessionAlive: false).ticketFileRevisions
+        let unchanged = await store.refresh(bridgeSessionAlive: false).ticketFileRevisions
+        try write(title: "First, edited", status: "ready")
+        let edited = await store.refresh(bridgeSessionAlive: false).ticketFileRevisions
+
+        XCTAssertEqual(first.count, 1)
+        XCTAssertTrue(first.keys.first?.hasSuffix("/.orchestrator/RR-1.md") == true)
+        XCTAssertEqual(first, unchanged)
+        XCTAssertNotEqual(first, edited)
+    }
+
     func testConcurrentConsumersCoalesceRefreshAndReuseRouteClassification() async {
         let routeResolutions = LockedCounter()
         let activityLoads = LockedCounter()

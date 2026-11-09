@@ -654,9 +654,13 @@ enum OrchestratorClient {
         }
     }
 
+    /// `sweepsReadyTickets: false` is the refresh for a board write that just
+    /// landed: the daemon skips its ready sweep, which its queue-drain monitor
+    /// runs for every project every 5 s anyway (RR-471).
     static func fetchProgramDashboard(
         limit: Int = 0,
-        repoPaths: [String] = []
+        repoPaths: [String] = [],
+        sweepsReadyTickets: Bool = true
     ) async throws -> ProgramDashboardSnapshot {
         try await fetchProgramDashboardEnsuringDaemon(
             fetchDashboard: {
@@ -666,7 +670,8 @@ enum OrchestratorClient {
                         try await fetchProgramDashboardSnapshot(
                             limit: limit,
                             trigger: "program-board-refresh",
-                            repoPaths: repoPaths
+                            repoPaths: repoPaths,
+                            sweepsReadyTickets: sweepsReadyTickets
                         )
                     },
                     refreshDaemon: {
@@ -753,12 +758,14 @@ enum OrchestratorClient {
     static func fetchProgramDashboardSnapshot(
         limit: Int = 0,
         trigger: String = "program-board-refresh",
-        repoPaths: [String] = []
+        repoPaths: [String] = [],
+        sweepsReadyTickets: Bool = true
     ) async throws -> ProgramDashboardSnapshot {
         guard let req = programDashboardRequest(
             limit: limit,
             trigger: trigger,
             repoPaths: repoPaths,
+            sweepsReadyTickets: sweepsReadyTickets,
             port: readPort()
         ) else {
             throw OrchestratorClientError.invalidRequest
@@ -901,6 +908,7 @@ enum OrchestratorClient {
         limit: Int,
         trigger: String,
         repoPaths: [String] = [],
+        sweepsReadyTickets: Bool = true,
         port: Int
     ) -> URLRequest? {
         getRequest(
@@ -908,7 +916,8 @@ enum OrchestratorClient {
             query: [
                 URLQueryItem(name: "limit", value: "\(limit)"),
                 URLQueryItem(name: "trigger", value: trigger),
-            ] + repoPaths.map { URLQueryItem(name: "repo_path", value: $0) },
+            ] + (sweepsReadyTickets ? [] : [URLQueryItem(name: "sweep", value: "0")])
+                + repoPaths.map { URLQueryItem(name: "repo_path", value: $0) },
             port: port,
             timeout: artifactReadTimeout
         )

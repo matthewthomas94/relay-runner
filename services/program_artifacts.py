@@ -257,13 +257,15 @@ def ingest_project_program_events(
         seen_stable_keys.add(stable_key)
         _project_program_event(store, project=project, repo=repo, document=document)
         count += 1
-    for node in store.nodes(project_id=str(project["id"])):
-        if (
-            node["kind"] in PROJECT_CAPTURE_KINDS
-            and _optional_text(node.get("body", {}).get("durable_event_id"))
-            and node["stable_key"] not in seen_stable_keys
-        ):
-            store.delete_node(node["id"])
+    # Query only capture kinds: decoding every ticket and run node of the
+    # project made each board-change ingest slower (RR-471).
+    for kind in sorted(PROJECT_CAPTURE_KINDS):
+        for node in store.nodes(kind=kind, project_id=str(project["id"])):
+            if (
+                _optional_text(node.get("body", {}).get("durable_event_id"))
+                and node["stable_key"] not in seen_stable_keys
+            ):
+                store.delete_node(node["id"])
     return count
 
 

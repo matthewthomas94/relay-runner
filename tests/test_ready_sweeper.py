@@ -14,6 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVICES = os.path.join(ROOT, "services")
 sys.path.insert(0, SERVICES)
 
+import graphify_ingest  # noqa: E402
 import orchestrator  # noqa: E402
 import tickets  # noqa: E402
 from orchestrator import Daemon, Handler  # noqa: E402
@@ -858,7 +859,100 @@ class ReadySweeperTests(unittest.TestCase):
             "limit": 0,
             "trigger": "refresh",
             "repo_paths": ["/demo/aurora-web", "/demo/harbor-api"],
+            "sweep_ready": True,
         }])
+
+    def test_program_dashboard_route_lets_a_board_change_refresh_skip_the_ready_sweep(self):
+        # RR-471: the Workspace refreshes this way when a board write lands.
+        calls: list[dict] = []
+
+        class FakeDaemon:
+            def program_dashboard(self, **kwargs):
+                calls.append(kwargs)
+                return {"summary": {"items": []}}
+
+        handler = object.__new__(Handler)
+        handler.daemon = FakeDaemon()
+
+        Handler._route(handler, "GET", "/v1/program/dashboard?limit=0&sweep=0&repo_path=%2Fdemo")
+        Handler._route(handler, "GET", "/v1/program/dashboard?limit=0&sweep=1&repo_path=%2Fdemo")
+
+        self.assertEqual([call["sweep_ready"] for call in calls], [False, True])
+
+    def test_board_change_refresh_skips_sweep_and_rereads_only_the_changed_project(self):
+        # RR-471: one ticket write made the next refresh sweep every project
+        # and re-read every board. Now only the written project is re-read,
+        # and the graph matches a full ingest exactly.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            changed = root / "changed"
+            quiet = root / "quiet"
+            for repo in (changed, quiet):
+                self.make_repo(repo)
+                self.write_ticket(repo, "RR-1", status="backlog")
+                self.write_ticket(repo, "RR-2", status="ready", depends_on=["RR-1"])
+            registry_v2 = root / "registry-v2.json"
+            registry_v2.write_text(json.dumps({
+                "schema_version": 2,
+                "active_project_id": None,
+                "projects": [
+                    {
+                        "project_id": repo.name,
+                        "display_name": repo.name,
+                        "last_resolved_path": str(repo.resolve()),
+                        "availability": "available",
+                    }
+                    for repo in (changed, quiet)
+                ],
+            }))
+            daemon = object.__new__(Daemon)
+            daemon.program_registry_path = root / "projects.json"
+            daemon.project_registry_v2_path = registry_v2
+            daemon.graphify_path = root / "graphify.db"
+            daemon.runs = type("EmptyRuns", (), {"path": root / "runs.db"})()
+            sweeps: list[dict] = []
+            daemon.sweep_program_ready_tickets = lambda **kwargs: sweeps.append(kwargs) or {}
+            scope = [str(changed.resolve()), str(quiet.resolve())]
+
+            with patch.dict(os.environ, {"RELAY_RUNNER_REGISTRY_V2": "1"}):
+                Daemon.program_dashboard(daemon, repo_paths=scope)
+                self.assertEqual(len(sweeps), 1)
+
+                self.write_ticket(changed, "RR-1", status="done")
+                with patch(
+                    "graphify_ingest.scan_repo", wraps=graphify_ingest.scan_repo,
+                ) as scanned:
+                    board = Daemon.program_dashboard(daemon, repo_paths=scope, sweep_ready=False)
+
+                self.assertEqual(len(sweeps), 1, "a board-change refresh must not sweep")
+                self.assertEqual(
+                    [Path(call.args[0]).resolve() for call in scanned.call_args_list],
+                    [changed.resolve()],
+                )
+                done = {
+                    (item["project"]["name"], item["ticket_id"])
+                    for item in board["done"]["items"]
+                }
+                self.assertIn(("changed", "RR-1"), done)
+                self.assertNotIn(("quiet", "RR-1"), done)
+
+                fresh = orchestrator.GraphifyCoreStore(root / "fresh.db")
+                orchestrator.ingest_registered_projects(
+                    fresh, registry_path=registry_v2, runs_db_path=daemon.runs.path, index_files=False,
+                )
+
+            def graph(store):
+                nodes = {
+                    (node["kind"], node["stable_key"], node["title"], json.dumps(node["body"], sort_keys=True))
+                    for node in store.nodes()
+                }
+                keys = {node["id"]: (node["kind"], node["stable_key"]) for node in store.nodes()}
+                edges = {
+                    (keys[edge["src_id"]], keys[edge["dst_id"]], edge["kind"]) for edge in store.edges()
+                }
+                return nodes, edges
+
+            self.assertEqual(graph(orchestrator.GraphifyCoreStore(daemon.graphify_path)), graph(fresh))
 
     def test_program_sweeper_preserves_active_project_that_matches_historical_workspace_root(self):
         with tempfile.TemporaryDirectory() as tmp:
