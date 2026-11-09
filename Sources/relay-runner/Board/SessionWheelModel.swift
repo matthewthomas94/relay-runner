@@ -22,47 +22,43 @@ struct SessionWheelTab: Identifiable, Equatable {
     }
 
     var caption: String { isActive ? "\(name) active" : isLive ? name : "\(name) off" }
+
+    /// The x inside the tab's segment.
+    var closeTitle: String { "Close \(name)" }
+
+    /// The segment's short label: S1, S2 and so on by position.
+    static func shortLabel(position: Int) -> String { "S\(position + 1)" }
 }
 
-/// RR-469: the tab controls after the tab segments. Remove and Turn off act
-/// on the active tab.
+/// RR-469: the tab controls after the tab segments. Each tab closes from the
+/// x inside its own segment.
 enum SessionWheelTabControl: Int, CaseIterable {
-    case add, remove, turnOff
+    case add
 
-    var title: String {
-        switch self {
-        case .add: return "Add a PM tab"
-        case .remove: return "Remove the active tab"
-        case .turnOff: return "Turn the active tab off"
-        }
-    }
+    var title: String { "Add a PM tab" }
 
     /// One or two short words: the notch hover descriptor.
-    var caption: String {
-        switch self {
-        case .add: return "Add tab"
-        case .remove: return "Remove tab"
-        case .turnOff: return "Turn off"
-        }
-    }
+    var caption: String { "Add tab" }
 
-    var symbol: LucideIcon {
-        switch self {
-        case .add: return .plus
-        case .remove: return .x
-        case .turnOff: return .power
-        }
-    }
+    var symbol: LucideIcon { .plus }
 }
 
-/// The session submenu's segments, in arc order: the tabs, then the controls.
+/// The session submenu's actions. The segments, in arc order, are the tabs
+/// then the controls; `close` is the x inside a tab's segment.
 enum SessionWheelSessionItem: Equatable {
     case tab(SessionWheelTab)
+    case close(SessionWheelTab)
     case control(SessionWheelTabControl)
 
     var tab: SessionWheelTab? { if case .tab(let tab) = self { return tab } else { return nil } }
     var control: SessionWheelTabControl? { if case .control(let control) = self { return control } else { return nil } }
-    var title: String { tab?.title ?? control?.title ?? "" }
+    var title: String {
+        switch self {
+        case .tab(let tab): return tab.title
+        case .close(let tab): return tab.closeTitle
+        case .control(let control): return control.title
+        }
+    }
 }
 
 /// Clockwise from the top session slot: History, Settings, Notetaker, Workspace.
@@ -246,7 +242,7 @@ enum SessionWheelGeometry {
     }
 
     /// RR-469: the session submenu holds six segments over its own cell, the
-    /// standard size for three tabs and their three controls. More segments
+    /// standard size for five tabs and Add. More segments
     /// grow it along the arc, evenly on both sides, up to the far ends of
     /// the History and Workspace cells: three cells for nine tabs.
     static let sessionStandardItems = 6
@@ -257,6 +253,22 @@ enum SessionWheelGeometry {
         guard items > sessionStandardItems else { return 1 }
         let extra = CGFloat(min(items, sessionMaxItems) - sessionStandardItems)
         return min(3, 1 + 2 * extra / CGFloat(sessionMaxItems - sessionStandardItems))
+    }
+
+    /// A tab segment's label sits before its centre along the label's axis
+    /// and the close x after it, so both stay upright and in reading order.
+    static let tabLabelShift: CGFloat = -6
+    static let tabCloseShift: CGFloat = 9
+    static let tabCloseHitRadius: CGFloat = 8
+
+    /// Where the close x inside tab segment `index` is drawn and hit.
+    static func sessionTabClosePoint(_ index: Int, items: Int) -> CGPoint {
+        let slot = sessionSlots.first ?? 0
+        let arc = sessionItemArc(index, items: items)
+        let offset = arc.start + arc.width / 2
+        let center = position(slot: slot, radius: actionRadius, offset: offset)
+        let rotation = labelRotation(slot: slot, offset: offset)
+        return CGPoint(x: center.x + tabCloseShift * cos(rotation), y: center.y + tabCloseShift * sin(rotation))
     }
 
     /// One segment's start and width, relative to the session cell's centre.
@@ -337,6 +349,7 @@ final class SessionWheelModel {
     var notice: String?
     private(set) var hoveredSlot: Int?
     private var hoveredControl: Int?
+    private var hoveringTabClose = false
 
     /// The session submenu's segments: one per tab, then the tab controls.
     var sessionItems: [SessionWheelSessionItem] {
@@ -348,20 +361,17 @@ final class SessionWheelModel {
         return sessionItems[hoveredControl]
     }
 
-    /// Remove and Turn off act on the active tab; turning off needs another
-    /// live tab to become active, and removing the last live tab ends the session.
+    /// The tab whose close x is under the pointer.
+    var hoveredTabClose: SessionWheelTab? { hoveringTabClose ? hoveredSessionItem?.tab : nil }
+
     func isEnabled(_ control: SessionWheelTabControl) -> Bool {
-        let active = tabs.contains { $0.isActive }
-        switch control {
-        case .add: return addTabUnavailableReason == nil
-        case .remove: return active
-        case .turnOff: return active && tabs.filter(\.isLive).count > 1
-        }
+        addTabUnavailableReason == nil
     }
 
+    /// Any tab can close; closing the last live tab ends the session.
     func isEnabled(_ item: SessionWheelSessionItem) -> Bool {
         switch item {
-        case .tab: return true
+        case .tab, .close: return true
         case .control(let control): return isEnabled(control)
         }
     }
@@ -391,13 +401,11 @@ final class SessionWheelModel {
         if hypot(point.x - geometry.center.x, point.y - geometry.center.y) <= geometry.hubRadius {
             return notice ?? "Close session wheel"
         }
+        if let tab = hoveredTabClose { return tab.closeTitle }
         if let item = hoveredSessionItem {
             switch item {
-            case .tab(let tab): return tab.caption
-            case .control(let control):
-                if control == .add, let reason = addTabUnavailableReason { return reason }
-                if control == .turnOff, !isEnabled(control) { return "Only live tab" }
-                return control.caption
+            case .tab(let tab), .close(let tab): return tab.caption
+            case .control(let control): return addTabUnavailableReason ?? control.caption
             }
         }
         if let action = hoveredNoteAction { return action.caption(for: notePhase) }
@@ -439,7 +447,7 @@ final class SessionWheelModel {
             if let empty = self.sessions.firstIndex(where: { $0 == nil }) { self.sessions[empty] = session }
         }
         if hoveredID != hoveredSession?.id { clearHover() }
-        if submenuSlot == nil { hoveredControl = nil }
+        if submenuSlot == nil { hoveredControl = nil; hoveringTabClose = false }
     }
 
     func reset(at pointer: CGPoint) {
@@ -456,6 +464,7 @@ final class SessionWheelModel {
     func clearHover() {
         hoveredSlot = nil
         hoveredControl = nil
+        hoveringTabClose = false
     }
 
     func hover(at pointer: CGPoint) {
@@ -467,6 +476,7 @@ final class SessionWheelModel {
         let geometry = SessionWheelGeometry.self
         let distance = hypot(pointer.x - geometry.center.x, pointer.y - geometry.center.y)
         hoveredControl = nil
+        hoveringTabClose = false
         if distance <= geometry.hubRadius || distance > geometry.actionOuterRadius + 8 {
             hoveredSlot = nil
         } else if distance <= geometry.wheelRadius {
@@ -475,6 +485,10 @@ final class SessionWheelModel {
                   distance >= geometry.actionInnerRadius, distance <= geometry.actionOuterRadius {
             // RR-469: the session submenu may reach over History and Workspace.
             hoveredControl = geometry.sessionItem(at: pointer, items: sessionItems.count)
+            if let index = hoveredControl, sessionItems.indices.contains(index), sessionItems[index].tab != nil {
+                let close = geometry.sessionTabClosePoint(index, items: sessionItems.count)
+                hoveringTabClose = hypot(pointer.x - close.x, pointer.y - close.y) <= geometry.tabCloseHitRadius
+            }
         } else if submenuSlot != nil,
                   geometry.slot(at: pointer) == hoveredSlot,
                   distance >= geometry.actionInnerRadius, distance <= geometry.actionOuterRadius {

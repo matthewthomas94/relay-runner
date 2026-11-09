@@ -1062,7 +1062,7 @@ final class AppState {
         }
         keepAwake.onStateChange = { [weak self] previous, next in self?.keepAwakeStateChanged(from: previous, to: next) }
         // RR-469: the session slot opens the active tab's terminal; its
-        // submenu switches, adds, removes and turns off PM tabs.
+        // submenu switches, adds and closes PM tabs.
         sessionWheel.focusSession = { [weak self] _ in
             guard let self else { return }
             self.switchSessionFromWheel(contextID: self.activeContext.id)
@@ -1406,12 +1406,12 @@ final class AppState {
         return nil
     }
 
-    /// A general tab reads "PM n" by its position; another project keeps its name.
+    /// A general tab reads "Session n" by its position; another project keeps its name.
     func sessionLabel(contextID: String) -> String {
         let name = assistantSessionStore.document.bindings[contextID]?.context.displayName
             ?? AssistantSessionContext.baseID(contextID)
         guard name == "general", let index = pmTabIDs.firstIndex(of: contextID) else { return name }
-        return "PM \(index + 1)"
+        return "Session \(index + 1)"
     }
 
     /// Open another general PM tab beside the running ones. It gets the first
@@ -1462,18 +1462,6 @@ final class AppState {
         pmTabIDs.removeAll { $0 == contextID }
         if let context { try? assistantSessionStore.removeTab(context: context) }
         publishConversationState()
-    }
-
-    /// Stop a tab's provider but keep the tab; turning it on resumes it. The
-    /// last live tab cannot be turned off.
-    @discardableResult
-    func turnOffPMTab(_ contextID: String) -> Bool {
-        guard sessionRegistry.isLive(contextID),
-              sessionRegistry.liveContextIDs.contains(where: { $0 != contextID }),
-              let context = assistantSessionStore.document.bindings[contextID]?.context else { return false }
-        cancelRecording(targeting: contextID)
-        endSession(context: context)
-        return true
     }
 
     private func cancelRecording(targeting contextID: String) {
@@ -3422,13 +3410,11 @@ final class AppState {
                 recording: recording
             ))
             return true
+        case .close(let tab):
+            removePMTab(tab.id)
+            return true
         case .control(.add):
             return openPMTab(showsTerminal: false)
-        case .control(.remove):
-            removePMTab(activeContext.id)
-            return true
-        case .control(.turnOff):
-            return turnOffPMTab(activeContext.id)
         }
     }
 
