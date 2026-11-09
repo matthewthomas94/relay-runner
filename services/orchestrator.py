@@ -1522,6 +1522,14 @@ def _relay_session_key(value: Any) -> str | None:
     return key
 
 
+def _optional_relay_session_key(value: Any) -> str | None:
+    """A well-formed Relay session key, or None; routing hints never fail a request."""
+    try:
+        return _relay_session_key(value)
+    except ValueError:
+        return None
+
+
 def _relay_command_state_file(relay_session_key: str | None) -> Path | None:
     """Resolve the command state file of the session issuing a request.
 
@@ -3462,9 +3470,15 @@ class OrchestratorCommandStore:
 
 
 class MessengerOutcomeStore:
-    """Durable, bounded queue of public worker outcomes for the voice messenger."""
+    """Durable, bounded queue of public worker outcomes for the voice messenger.
 
-    SCHEMA_VERSION = 1
+    RR-469: a dispatch records the dispatching session (its Relay session
+    key) per ticket, and that ticket's later outcomes carry it, so only the
+    PM tab that dispatched the run hears them. Unkeyed outcomes, and ones
+    whose session has ended, keep the per-repository routing.
+    """
+
+    SCHEMA_VERSION = 2
     MAX_PENDING_PER_REPO = 50
 
     SCHEMA = """
@@ -3480,10 +3494,18 @@ class MessengerOutcomeStore:
         payload_json TEXT NOT NULL,
         created_at REAL NOT NULL,
         delivered_at REAL,
-        delivery_attempts INTEGER NOT NULL DEFAULT 0
+        delivery_attempts INTEGER NOT NULL DEFAULT 0,
+        session_key TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_messenger_outcomes_repo_pending
         ON messenger_outcomes(repo_path, delivered_at, id);
+    CREATE TABLE IF NOT EXISTS messenger_dispatchers (
+        repo_path TEXT NOT NULL,
+        ticket_id TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        updated_at REAL NOT NULL,
+        PRIMARY KEY (repo_path, ticket_id)
+    );
     """
 
     def __init__(self, path: Path, *, max_pending_per_repo: int = MAX_PENDING_PER_REPO):
@@ -3501,12 +3523,32 @@ class MessengerOutcomeStore:
     def _init(self) -> None:
         with self._conn() as c:
             current = int(c.execute("PRAGMA user_version").fetchone()[0])
-            if current != self.SCHEMA_VERSION:
+            if current == 1:
+                # Keep undelivered outcomes; they stay unkeyed.
+                c.execute("ALTER TABLE messenger_outcomes ADD COLUMN session_key TEXT")
+                c.executescript(self.SCHEMA)
+                c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+            elif current != self.SCHEMA_VERSION:
                 c.execute("DROP TABLE IF EXISTS messenger_outcomes")
+                c.execute("DROP TABLE IF EXISTS messenger_dispatchers")
                 c.executescript(self.SCHEMA)
                 c.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
             else:
                 c.executescript(self.SCHEMA)
+
+    def bind_dispatcher(self, *, repo_path: str, ticket_id: str, session_key: str) -> None:
+        """Route this ticket's later outcomes to the session that dispatched it."""
+        repo = str(Path(repo_path).expanduser().resolve())
+        ticket = str(ticket_id or "").strip().upper()
+        if not ticket or not session_key:
+            return
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO messenger_dispatchers(repo_path, ticket_id, session_key, updated_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(repo_path, ticket_id) DO UPDATE SET "
+                "session_key = excluded.session_key, updated_at = excluded.updated_at",
+                (repo, ticket, session_key, time.time()),
+            )
 
     @staticmethod
     def event_key(
@@ -3559,12 +3601,17 @@ class MessengerOutcomeStore:
         payload_json = json.dumps(payload, sort_keys=True)
         provider = OrchestratorSessionStore._normalize_provider(provider_key) if provider_key else None
         with self._conn() as c:
+            dispatcher = c.execute(
+                "SELECT session_key FROM messenger_dispatchers WHERE repo_path = ? AND ticket_id = ?",
+                (repo, ticket_id or ""),
+            ).fetchone() if ticket_id else None
             c.execute(
                 "INSERT OR IGNORE INTO messenger_outcomes("
                 "event_key, repo_path, provider_key, kind, ticket_id, run_id, message, "
-                "payload_json, created_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (key, repo, provider, kind, ticket_id, run_id, message, payload_json, now),
+                "payload_json, created_at, session_key"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (key, repo, provider, kind, ticket_id, run_id, message, payload_json, now,
+                 dispatcher[0] if dispatcher else None),
             )
             self._prune_locked(c, repo)
             row = c.execute(
@@ -3579,13 +3626,34 @@ class MessengerOutcomeStore:
         repo_path: str | None = None,
         provider_key: str | None = None,
         limit: int = 20,
+        session_key: str | None = None,
+        live_session_keys: list[str] | None = None,
     ) -> list[dict[str, Any]]:
+        """Pending outcomes for one session.
+
+        With `session_key`, outcomes keyed to that session are returned from
+        any repository, and ones keyed to another live session are excluded.
+        Unkeyed outcomes, and ones keyed to a session absent from
+        `live_session_keys` (it ended), match on `repo_path` as before.
+        Without `session_key` (a manual bridge) every outcome matches.
+        """
         del provider_key
         params: list[Any] = []
         clauses = ["delivered_at IS NULL"]
-        if repo_path:
+        repo = str(Path(repo_path).expanduser().resolve()) if repo_path else None
+        if session_key:
+            live = sorted({key for key in (live_session_keys or []) if key} | {session_key})
+            marks = ", ".join("?" for _ in live)
+            shared = f"(session_key IS NULL OR session_key NOT IN ({marks}))"
+            if repo:
+                shared += " AND repo_path = ?"
+            clauses.append(f"(session_key = ? OR ({shared}))")
+            params.extend([session_key, *live])
+            if repo:
+                params.append(repo)
+        elif repo:
             clauses.append("repo_path = ?")
-            params.append(str(Path(repo_path).expanduser().resolve()))
+            params.append(repo)
         params.append(max(1, int(limit)))
         with self._conn() as c:
             rows = c.execute(
@@ -5953,7 +6021,22 @@ class Daemon:
         """Atomically claim the artifact-backed board's next display ID."""
         lifecycle = self._artifact_board_lifecycle(repo_path, project_scope_token)
         event_id = _artifact_board_event_id("claim", request_id)
-        for attempt in range(2):
+        # RR-469: several PM tabs author at once. Board writes queue here, and
+        # a base moved by another daemon writer is re-read and retried.
+        with self._artifact_board_mutex():
+            return self._claim_artifact_board_id(lifecycle, event_id)
+
+    def _artifact_board_mutex(self) -> threading.RLock:
+        lock = getattr(self, "_artifact_board_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._artifact_board_lock = lock
+        return lock
+
+    ARTIFACT_BOARD_WRITE_ATTEMPTS = 5
+
+    def _claim_artifact_board_id(self, lifecycle, event_id: str) -> dict[str, Any]:
+        for attempt in range(self.ARTIFACT_BOARD_WRITE_ATTEMPTS):
             snapshot = lifecycle.store.snapshot()
             path = ".orchestrator/config.toml"
             content = snapshot.files[path]
@@ -5996,7 +6079,7 @@ class Daemon:
                     "idempotent": write.idempotent,
                 }
             except ArtifactConcurrentUpdate:
-                if attempt:
+                if attempt == self.ARTIFACT_BOARD_WRITE_ATTEMPTS - 1:
                     raise
         raise AssertionError("unreachable")
 
@@ -6018,7 +6101,13 @@ class Daemon:
         if str(parsed.get("id") or "") != ticket_id:
             raise ValueError("ticket write ID does not match markdown frontmatter")
         event_id = _artifact_board_event_id("ticket", request_id)
-        for attempt in range(2):
+        with self._artifact_board_mutex():
+            return self._write_artifact_board_ticket(lifecycle, event_id, ticket_id, markdown)
+
+    def _write_artifact_board_ticket(
+        self, lifecycle, event_id: str, ticket_id: str, markdown: bytes
+    ) -> dict[str, Any]:
+        for attempt in range(self.ARTIFACT_BOARD_WRITE_ATTEMPTS):
             snapshot = lifecycle.store.snapshot()
             path = f".orchestrator/{ticket_id}.md"
             existing = snapshot.files.get(path)
@@ -6050,7 +6139,7 @@ class Daemon:
                     "idempotent": write.idempotent,
                 }
             except ArtifactConcurrentUpdate:
-                if attempt:
+                if attempt == self.ARTIFACT_BOARD_WRITE_ATTEMPTS - 1:
                     raise
         raise AssertionError("unreachable")
 
@@ -7980,6 +8069,7 @@ Title: {ticket['title']}
         relay_session_key: str | None = None,
         project_scope_token: str | None = None,
         internally_confirmed_project_id: str | None = None,
+        dispatcher_session_key: str | None = None,
     ) -> dict:
         if not ticket_id:
             raise ValueError("ticket_id is required")
@@ -8015,6 +8105,14 @@ Title: {ticket['title']}
             raise ValueError(
                 f"ticket {ticket_id} is verification blocked; use the explicit resume action "
                 "after the external condition changes"
+            )
+        # RR-469: this ticket's lifecycle updates go to the dispatching PM tab,
+        # including a queued dispatch that starts later.
+        dispatcher = _optional_relay_session_key(dispatcher_session_key)
+        outcomes = getattr(self, "messenger_outcomes", None)
+        if dispatcher and outcomes is not None:
+            outcomes.bind_dispatcher(
+                repo_path=str(repo), ticket_id=ticket_id, session_key=dispatcher
             )
         if ticket.get("status") in ("backlog", "ready") and ticket.get("depends_on"):
             all_tickets = scan_repo(repo)
@@ -11004,11 +11102,17 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
         repo_path: str | None = None,
         provider: str | None = None,
         limit: int = 20,
+        session_key: str | None = None,
+        live_session_keys: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         return self.messenger_outcomes.pending(
             repo_path=repo_path,
             provider_key=provider,
             limit=limit,
+            session_key=_optional_relay_session_key(session_key),
+            live_session_keys=[
+                key for key in (_optional_relay_session_key(k) for k in live_session_keys or []) if key
+            ],
         )
 
     def mark_messenger_outcome_delivered(self, outcome_id: int) -> dict[str, Any] | None:
@@ -12326,11 +12430,17 @@ class Handler(BaseHTTPRequestHandler):
                 repo_path = (query.get("repo_path") or [None])[0]
                 provider = (query.get("provider") or [None])[0]
                 limit = int((query.get("limit") or ["20"])[0])
+                session_key = (query.get("session_key") or [None])[0]
+                live_keys = [
+                    key for key in str((query.get("live_session_keys") or [""])[0]).split(",") if key
+                ]
                 return 200, {
                     "outcomes": self.daemon.pending_messenger_outcomes(
                         repo_path=repo_path,
                         provider=provider,
                         limit=limit,
+                        session_key=session_key,
+                        live_session_keys=live_keys,
                     )
                 }
 
@@ -12645,6 +12755,8 @@ class Handler(BaseHTTPRequestHandler):
                     dispatch_args["relay_session_key"] = body.get("relay_session_key")
                 if body.get("project_scope_token"):
                     dispatch_args["project_scope_token"] = body.get("project_scope_token")
+                if body.get("dispatcher_session_key"):
+                    dispatch_args["dispatcher_session_key"] = body.get("dispatcher_session_key")
                 result = self.daemon.dispatch(**dispatch_args)
                 return (200 if result["already_active"] else 202), result
 

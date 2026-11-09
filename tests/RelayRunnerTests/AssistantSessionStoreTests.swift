@@ -13,6 +13,45 @@ final class AssistantSessionStoreTests: XCTestCase {
         XCTAssertEqual(unrelated.displayName, "general-tasks")
     }
 
+    /// RR-469: each PM tab is its own context; the first keeps today's id and encoding.
+    func testPMTabContextsHaveTheirOwnIdsAndTheFirstTabKeepsItsEncoding() throws {
+        let first = AssistantSessionContext(kind: .project, projectID: "built-in", repositoryPath: "/general-tasks")
+        let second = first.inTab("a1b2c3d4")
+        XCTAssertEqual(first.id, "project:built-in")
+        XCTAssertEqual(second.id, "project:built-in#tab-a1b2c3d4")
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(second.inTab(nil), first)
+        XCTAssertEqual(AssistantSessionContext.baseID(second.id), first.id)
+        XCTAssertEqual(AssistantSessionContext.baseID(first.id), first.id)
+        XCTAssertEqual(second.workingDirectory, first.workingDirectory)
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(first)) as? [String: Any]
+        XCTAssertNil(encoded?["tab"], "The first tab's saved document is unchanged")
+        let legacy = Data(#"{"kind":"project","projectID":"built-in","repositoryPath":"/general-tasks"}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(AssistantSessionContext.self, from: legacy), first)
+        XCTAssertEqual(try JSONDecoder().decode(AssistantSessionContext.self, from: JSONEncoder().encode(second)), second)
+    }
+
+    func testRemovingAPMTabDropsOnlyItsBindingAndHistory() throws {
+        let store = AssistantSessionStore(directory: try temporaryDirectory())
+        let first = AssistantSessionContext(kind: .project, projectID: "built-in", repositoryPath: "/general-tasks")
+        let second = first.inTab("tab2")
+        for context in [first, second] {
+            try store.select(context, provider: "claude", model: "opus")
+            try store.begin(context: context, provider: "claude", model: "opus", transportSessionID: UUID().uuidString)
+            try store.append(AssistantConversationEntry(id: context.id, contextID: context.id, role: .user,
+                                                        text: "From \(context.id)", createdAt: Date()))
+        }
+        XCTAssertNotEqual(store.binding(for: first)?.transportSessionID, store.binding(for: second)?.transportSessionID,
+                          "Each tab has its own provider session")
+        try store.removeTab(context: second)
+        XCTAssertNil(store.binding(for: second))
+        XCTAssertTrue(store.history(for: second).isEmpty)
+        XCTAssertNotNil(store.binding(for: first))
+        XCTAssertEqual(store.history(for: first).count, 1)
+        try store.removeTab(context: first)
+        XCTAssertNotNil(store.binding(for: first), "The first tab is kept for Start Session's resume")
+    }
+
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("relay-context-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

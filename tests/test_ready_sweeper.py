@@ -486,6 +486,28 @@ class ReadySweeperTests(unittest.TestCase):
             ).stdout
             self.assertEqual(branches, "")
 
+    def test_queued_dispatch_records_the_dispatching_pm_tab(self):
+        """RR-469: a queued ticket's later outcomes still reach the tab that dispatched it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            self.make_repo(repo)
+            self.write_ticket(repo, "RR-1", status="in_progress")
+            self.write_ticket(repo, "RR-2", status="backlog", depends_on=["RR-1"])
+            daemon = object.__new__(Daemon)
+            daemon.runs = FakeRuns()
+            daemon.messenger_outcomes = orchestrator.MessengerOutcomeStore(Path(tmp) / "outcomes.db")
+
+            queued = Daemon.dispatch(daemon, ticket_id="RR-2", repo_path=str(repo),
+                                     dispatcher_session_key="tab-b")
+            self.assertTrue(queued["queued"])
+            daemon.messenger_outcomes.record(repo_path=str(repo), payload={
+                "text": "RR-2 merged",
+                "trace_event": {"kind": "run-merged", "message": "RR-2 merged", "ticket_id": "RR-2"},
+            })
+            for key, expected in (("tab-b", ["RR-2"]), ("tab-a", [])):
+                rows = daemon.messenger_outcomes.pending(session_key=key, live_session_keys=["tab-a", "tab-b"])
+                self.assertEqual([row["ticket_id"] for row in rows], expected)
+
     def test_stale_relay_dispatch_of_gated_ticket_is_rejected_before_queueing(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"

@@ -177,6 +177,10 @@ struct DispatchTicketTool: MCPTool {
             }
         }
         attachRelaySessionKey(&body)
+        // RR-469: name the dispatching PM tab, so only it hears the run's lifecycle updates.
+        if let key = ProcessInfo.processInfo.environment["RELAY_SESSION_KEY"], !key.isEmpty {
+            body["dispatcher_session_key"] = key
+        }
         return try await proxy(method: "POST", path: "/v1/runs", body: body)
     }
 }

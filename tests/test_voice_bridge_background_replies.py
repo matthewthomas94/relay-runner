@@ -247,6 +247,38 @@ class BackgroundReplyTests(FocusTestCase):
         self.focus("a", "codex")
         self.assertEqual(self.badge(a)["outcome_count"], 0)
 
+    def test_pm_tabs_sharing_a_project_each_hear_only_the_runs_they_dispatched(self):
+        """RR-469: tabs share general-tasks, so outcomes route by session key."""
+        def tab(key: str, provider: str):
+            payload = self.focus_payload(key, provider)
+            payload["cwd"] = os.path.join(self.root, "general-tasks")
+            return voice_bridge._apply_voice_focus(payload)
+
+        a = tab("tab-a", "codex")
+        b = tab("tab-b", "claude")
+        outcomes = {
+            "tab-a": [{"id": 1, "payload": {"trace_event": {"ticket_id": "RR-1"}}}],
+            "tab-b": [{"id": 2, "payload": {"trace_event": {"ticket_id": "RR-2"}}},
+                      {"id": 3, "payload": {"trace_event": {"ticket_id": "RR-3"}}}],
+        }
+        requested = []
+
+        def get_json(path, params):
+            requested.append(params)
+            return {"outcomes": outcomes.get(params.get("session_key"), [])}
+
+        focused = voice_bridge._messenger_outcome_session(b, None)
+        self.assertEqual(focused["session_key"], "tab-b")
+        params = voice_bridge._pending_messenger_outcome_params(focused)
+        self.assertEqual(params["session_key"], "tab-b")
+        self.assertIn("tab-a", params["live_session_keys"].split(","))
+
+        voice_bridge._count_background_messenger_outcomes(focused, None, get_json)
+        self.assertEqual(self.badge(a)["outcome_count"], 1)
+        self.assertEqual(self.badge(b), {})
+        # The unkeyed startup target keeps its per-project request.
+        self.assertEqual([p["session_key"] for p in requested if p.get("session_key")], ["tab-a"])
+
     def test_stop_hook_completion_resolves_its_session_from_the_provider_id(self):
         a = self.focus("a", "claude")
         self.focus("b", "codex")

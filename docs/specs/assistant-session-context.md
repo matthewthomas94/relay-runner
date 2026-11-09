@@ -22,6 +22,16 @@ Since RR-445 the Workspace runs one general session that reaches every registere
 project: `activate_project` only moves the board to that project. It never starts,
 focuses or switches a session and does not forward a `continuation`.
 
+RR-469 adds PM tabs to the running session. An extra tab is the general-tasks
+context with a stable `tab` identity, so its context id is the first tab's id
+plus `#tab-<id>`. Each tab therefore has its own binding, native provider session,
+spool and public history; the first tab keeps the unsuffixed id and its existing
+binding. General-session access (project scope tokens) accepts every tab of the
+general context. Removing a tab deletes its binding and history; turning it off
+saves it like an idle save, and selecting it again resumes it. End discards the
+extra tabs and selects the first tab again, so a restart never restores more than
+the first tab.
+
 After 30 minutes of safe inactivity, the foreground provider is saved and
 terminated. Start Session reconnects it using normal provider resume support.
 Closing the Workspace or changing tabs does not stop the process.

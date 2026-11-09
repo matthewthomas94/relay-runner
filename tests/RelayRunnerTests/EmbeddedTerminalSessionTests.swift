@@ -3988,15 +3988,15 @@ final class EmbeddedSessionRegistryTests: XCTestCase {
         XCTAssertEqual(registry.liveContextIDs, ["b"])
     }
 
-    func testFifthConcurrentSessionIsRefusedWithTheCap() throws {
+    func testTenthConcurrentSessionIsRefusedWithTheCap() throws {
         let registry = makeRegistry()
-        for id in ["a", "b", "c", "d"] { _ = try launch(registry, id) }
+        for id in ["a", "b", "c", "d", "f", "g", "h", "i", "j"] { _ = try launch(registry, id) }
         guard case .refused(let message) = registry.admit(contextID: "e") else {
-            return XCTFail("A fifth session must be refused")
+            return XCTFail("A tenth session must be refused")
         }
         XCTAssertTrue(message.contains("\(EmbeddedSessionRegistry.maxConcurrentSessions)"))
-        XCTAssertEqual(EmbeddedSessionRegistry.maxConcurrentSessions, 4)
-        XCTAssertEqual(registry.focusedContextID, "d", "A refusal changes nothing")
+        XCTAssertEqual(EmbeddedSessionRegistry.maxConcurrentSessions, 9)
+        XCTAssertEqual(registry.focusedContextID, "j", "A refusal changes nothing")
         XCTAssertNil(registry.sessions["e"])
 
         registry.end(contextID: "b")

@@ -56,7 +56,8 @@ struct GeneralSessionAccess: Equatable {
         registry: ProjectRegistryV2Service
     ) throws -> ConfirmedProjectScopeToken {
         guard let general = try registry.projects().first(where: registry.isGeneralTasksProject),
-              requestingContextID == AssistantSessionContext(
+              // RR-469: every PM tab of the general session qualifies.
+              requestingContextID.map(AssistantSessionContext.baseID) == AssistantSessionContext(
                 kind: .project, projectID: general.projectID, repositoryPath: general.lastResolvedPath
               ).id
         else { throw IssueError.notGeneralSession }

@@ -3,11 +3,10 @@ import SwiftUI
 struct SessionWheelView: View {
     @Bindable var model: SessionWheelModel
     let selectSlot: (Int, Bool) -> Void
-    let performAction: (String, SessionWheelAction) -> Void
+    let performTabItem: (SessionWheelSessionItem) -> Void
     let selectCenter: () -> Void
     let dismiss: () -> Void
     var performNoteAction: (SessionWheelNoteAction) -> Void = { _ in }
-    var recordingLevel: (String) -> Float = { _ in 0 }
     var hoverFeedback: (CGPoint?, SessionWheelHaptics.Target?) -> Void = { _, _ in }
     var adjustIntensity: (CGPoint) -> Void = { _ in }
     var finishIntensity: (CGPoint) -> Void = { _ in }
@@ -47,10 +46,14 @@ struct SessionWheelView: View {
         let submenus = submenus ?? .init(slot: submenuSlot)
         return ZStack {
             Color.clear.contentShape(Rectangle()).onTapGesture { point in
-                let slot = geometry.slot(at: point)
-                if !geometry.contains(point, submenuSlot: submenus[slot] > 0 ? slot : nil) { dismiss() }
+                let sessionSlot = geometry.sessionSlots[0]
+                let slot = submenus[sessionSlot] > 0 && model.slots[sessionSlot] != nil
+                    ? sessionSlot : geometry.slot(at: point)
+                if !geometry.contains(point, submenuSlot: submenus[slot] > 0 ? slot : nil,
+                                      sessionItems: model.sessionItems.count) { dismiss() }
             }
-            SessionWheelLiquidBackdrop(progress: submenus, reduceMotion: reduceMotion)
+            SessionWheelLiquidBackdrop(progress: submenus, reduceMotion: reduceMotion,
+                                       sessionItems: model.slots[geometry.sessionSlots[0]] != nil ? model.sessionItems.count : 0)
                 .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
                 .scaleEffect(presentation.discScale)
                 .opacity(presentation.discScale == 0 ? 0 : 1)
@@ -102,9 +105,10 @@ struct SessionWheelView: View {
                         .transition(.identity)
                         .transaction { $0.animation = nil }
                     } else if let session = model.slots[index] ?? menu.sessions[index], frame.progress > 0 {
+                        let items = model.sessionItems
                         ZStack {
-                            ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
-                                actionButton(action, session: session, slot: index)
+                            ForEach(Array(items.enumerated()), id: \.offset) { position, item in
+                                tabItemButton(item, index: position, count: items.count, slot: index)
                             }
                         }
                         .scaleEffect(frame.scale)
@@ -177,9 +181,7 @@ struct SessionWheelView: View {
         let empty = session == nil && shortcut == nil
         // The session slot reads Terminal while a session runs and Start session otherwise.
         let title = shortcut?.title ?? (session != nil ? SessionWheelSessionSlot.title : startSlot ? "Start session" : "")
-        let sessionHint = session?.isFocused == true
-            ? "Open this session's terminal in Workspace."
-            : "Switch session. Move outward for session controls."
+        let sessionHint = "Open the active tab's terminal in Workspace. Move outward for the PM tabs and tab controls."
         let enabled = !empty || (startSlot && menu.canStartSession)
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .projectCard, isEnabled: enabled,
@@ -257,27 +259,40 @@ struct SessionWheelView: View {
                 }
                 Button(model.autoPlayActionTitle) { performAutoPlay() }
             }
-            if let session {
-                ForEach(SessionWheelAction.allCases, id: \.rawValue) { action in
-                    if action.isEnabled(for: session) {
-                        Button(action.title(for: session)) { performAction(session.id, action) }
+            if session != nil {
+                ForEach(Array(model.sessionItems.enumerated()), id: \.offset) { _, item in
+                    if model.isEnabled(item), !(item.tab?.isActive ?? false) {
+                        Button(item.title) { performTabItem(item) }
                     }
                 }
             }
         }
     }
 
-    private func actionButton(_ action: SessionWheelAction, session: SessionWheelSession, slot: Int) -> some View {
-        let enabled = action.isEnabled(for: session)
-        return submenuButton(index: action.rawValue, slot: slot,
-                             title: "\(action.title(for: session)) for \(session.name)",
-                             help: enabled ? action.caption(for: session) : (action == .message ? "No message" : "Recording unavailable"),
-                             symbol: action.symbol(for: session), enabled: enabled,
-                             hovered: model.hoveredAction == action && model.hoveredSession?.id == session.id,
-                             destructive: action == .stop, level: { recordingLevel(session.id) }) {
-            guard model.hoveredSession?.id == session.id else { return }
-            performAction(session.id, action)
+    /// RR-469: a tab segment shows its number, the active one selected; an
+    /// off tab is dimmed. Controls follow the tabs.
+    private func tabItemButton(_ item: SessionWheelSessionItem, index: Int, count: Int, slot: Int) -> some View {
+        let arc = geometry.sessionItemArc(index, items: count)
+        let enabled = model.isEnabled(item)
+        let hovered = model.hoveredSessionItem == item
+        let help: String
+        switch item {
+        case .tab(let tab): help = tab.caption
+        case .control(let control):
+            help = control == .add ? model.addTabUnavailableReason ?? control.caption
+                : enabled ? control.caption : "Only live tab"
         }
+        return submenuButton(index: index, slot: slot, title: item.title, help: help,
+                             symbol: item.control?.symbol ?? "", enabled: enabled, hovered: hovered,
+                             destructive: item == .control(.remove),
+                             label: item.tab == nil ? nil : "\(index + 1)",
+                             selected: item.tab?.isActive ?? false,
+                             dimmed: item.tab.map { !$0.isLive } ?? false,
+                             arc: arc) {
+            guard model.hoveredSession != nil else { return }
+            performTabItem(item)
+        }
+        .accessibilityAddTraits(item.tab?.isActive == true ? .isSelected : [])
     }
 
     private func noteActionButton(_ action: SessionWheelNoteAction) -> some View {
@@ -393,25 +408,32 @@ struct SessionWheelView: View {
                                enabled: Bool, hovered: Bool, destructive: Bool,
                                keepAwake: KeepAwakeState? = nil,
                                isOn: Bool? = nil, subdivisions: Int = 3,
-                               level: @escaping () -> Float = { 0 }, perform: @escaping () -> Void) -> some View {
+                               label: String? = nil, selected: Bool = false, dimmed: Bool = false,
+                               arc: (start: CGFloat, width: CGFloat)? = nil,
+                               perform: @escaping () -> Void) -> some View {
         let isNoteMark = symbol == "checkmark" || symbol == "xmark"
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .control, isEnabled: enabled,
+            isSelected: selected,
             isHovered: hovered,
             reduceMotion: reduceMotion
         )
         let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
-                                       outerRadius: geometry.actionOuterRadius, subdivision: index, subdivisions: subdivisions)
-        let offset = geometry.actionOffset(index, subdivisions: subdivisions)
+                                       outerRadius: geometry.actionOuterRadius, subdivision: index, subdivisions: subdivisions,
+                                       arcStart: arc?.start, arcWidth: arc?.width)
+        let offset = arc.map { $0.start + $0.width / 2 } ?? geometry.actionOffset(index, subdivisions: subdivisions)
         return Button(action: perform) {
             ZStack {
                 controlBackground(shape, presentation: presentation)
                 Group {
-                    if let keepAwake {
+                    if let label {
+                        Text(label)
+                            .font(AppTypography.font(.caption))
+                            .monospacedDigit()
+                            .opacity(dimmed ? 0.45 : 1)
+                    } else if let keepAwake {
                         SessionWheelKeepAwakeGlyph(state: keepAwake)
                             .font(AppTypography.symbolFont(size: 9, weight: .medium))
-                    } else if symbol == "waveform" {
-                        SessionWheelRecordingWaveform(level: level)
                     } else if symbol == "power" {
                         Image(systemName: symbol)
                             .resizable().scaledToFit()
@@ -429,6 +451,7 @@ struct SessionWheelView: View {
                 .foregroundStyle(!enabled
                                  ? (contrast == .increased ? GraphicalTheme.neutral7 : GraphicalTheme.neutral6) // Kit disabled label
                                  : destructive ? ProgramBoardStyle.red
+                                 : selected ? ProgramBoardStyle.activeTrayOrange
                                  : isOn.map { $0 ? ProgramBoardStyle.activeTrayOrange : .white } ?? ProgramBoardStyle.primaryText)
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isOn)
                 .rotationEffect(.radians(geometry.labelRotation(slot: slot, offset: offset)))
@@ -482,42 +505,6 @@ private struct SessionWheelActionButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { configuration.label }
 }
 
-private struct SessionWheelRecordingWaveform: View {
-    let level: () -> Float
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { _ in
-            let amplitude = reduceMotion ? 1 : CGFloat(level())
-            SessionWheelWaveformShape(amplitude: amplitude)
-                .stroke(style: StrokeStyle(lineWidth: 1, lineCap: .round))
-                .animation(reduceMotion ? nil : RelayMotion.changeCurve.animation(duration: RelayMotion.hoverDuration), value: amplitude)
-        }
-        .frame(width: 12, height: 12)
-        .accessibilityHidden(true)
-    }
-}
-
-private struct SessionWheelWaveformShape: Shape {
-    var amplitude: CGFloat
-    var animatableData: CGFloat {
-        get { amplitude }
-        set { amplitude = newValue }
-    }
-
-    func path(in rect: CGRect) -> Path {
-        let bars: [(CGFloat, CGFloat)] = [(4.6667, 6.6667), (2, 9.3333), (0, 12), (3.3333, 8), (1.3333, 10), (4.6667, 6.6667)]
-        let scale = 0.25 + 0.75 * min(max(amplitude, 0), 1)
-        return Path { path in
-            for (index, bar) in bars.enumerated() {
-                let x = rect.minX + CGFloat(index) * rect.width / 5
-                path.move(to: CGPoint(x: x, y: rect.midY + (bar.0 - 6) * scale * rect.height / 12))
-                path.addLine(to: CGPoint(x: x, y: rect.midY + (bar.1 - 6) * scale * rect.height / 12))
-            }
-        }
-    }
-}
-
 struct SessionWheelSector: Shape {
     let slot: Int
     let innerRadius: CGFloat
@@ -528,18 +515,29 @@ struct SessionWheelSector: Shape {
     /// Adjacent subdivisions joined into one control.
     var span = 1
     var subdivisions = 3
+    /// RR-469: an explicit arc relative to the slot's centre, for the session
+    /// submenu that grows past its own cell. Overrides the subdivision.
+    var arcStart: CGFloat? = nil
+    var arcWidth: CGFloat? = nil
 
     func path(in rect: CGRect) -> Path {
         let innerRadius = self.innerRadius - padding
         let outerRadius = self.outerRadius + padding
         let step = 2 * CGFloat.pi / CGFloat(SessionWheelGeometry.slotCount)
         let subdivisionWidth = step / CGFloat(subdivisions)
-        let width = subdivision == nil ? step : subdivisionWidth * CGFloat(span)
         let halfGap = SessionWheelGeometry.segmentGap / 2 - padding
-        let start = CGFloat(slot) * step - .pi / 2 - step / 2 + CGFloat(subdivision ?? 0) * subdivisionWidth
+        let width: CGFloat
+        let start: CGFloat
+        if let arcStart, let arcWidth {
+            width = arcWidth
+            start = CGFloat(slot) * step - .pi / 2 + arcStart
+        } else {
+            width = subdivision == nil ? step : subdivisionWidth * CGFloat(span)
+            start = CGFloat(slot) * step - .pi / 2 - step / 2 + CGFloat(subdivision ?? 0) * subdivisionWidth
+        }
         let end = start + width
         let center = CGPoint(x: rect.midX, y: rect.midY)
-        let corner = min((cornerRadius ?? (subdivision == nil ? SessionWheelGeometry.segmentCornerRadius
+        let corner = min((cornerRadius ?? (subdivision == nil && arcStart == nil ? SessionWheelGeometry.segmentCornerRadius
                                                              : SessionWheelGeometry.actionCornerRadius)) + padding,
                          (outerRadius - innerRadius) / 2)
         // Offset each straight edge by half the gap so spacing stays constant at every radius.
