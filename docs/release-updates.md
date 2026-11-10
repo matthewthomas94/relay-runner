@@ -64,6 +64,12 @@ Releases skip notarization by default: a pushed `v*` tag publishes with Develope
 gh workflow run build-dmg.yml --ref vX.Y.Z -f notarize=true
 ```
 
+Without a local checkout, run the **Tag release** workflow on `main` with the version to tag (for example `v0.5.3`, matching `CFBundleShortVersionString`). It refuses a malformed, mismatched or existing tag, then creates the annotated tag at that commit and starts **Build DMG** on it. A tag pushed with the workflow token starts no other run, so the release builds once:
+
+```bash
+gh workflow run tag-release.yml --ref main -f tag=vX.Y.Z
+```
+
 Tags on commits before this default changed (v0.5.3 and earlier) still notarize on push; publish one of those without notarization by cancelling the tag push run and dispatching with `-f skip_notarization=true`.
 
 ### Preserve permissions across updates
