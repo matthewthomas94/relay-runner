@@ -1,0 +1,62 @@
+name: Tag release
+
+# Cut a release without a local checkout, for example from a phone: run this
+# on main with the version to tag. It creates the annotated tag at the run's
+# commit and starts Build DMG on that tag, which publishes the release. A tag
+# pushed with GITHUB_TOKEN starts no workflow by itself, so the build is
+# dispatched explicitly and never runs twice.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to create, such as v0.5.3. It must match Info.plist's CFBundleShortVersionString."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  tag:
+    name: Create the tag and start the release build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the tag against Info.plist
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The tag must look like v1.2.3, not '$TAG'."
+            exit 1
+          fi
+          version=$(python3 -c "import plistlib; print(plistlib.load(open('Info.plist', 'rb'))['CFBundleShortVersionString'])")
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Info.plist at this commit is version $version, so it cannot be tagged $TAG."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::$TAG already exists."
+            exit 1
+          fi
+
+      - name: Create and push the tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "refs/tags/$TAG"
+
+      - name: Start the release build on the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh workflow run build-dmg.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
