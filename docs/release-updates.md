@@ -56,15 +56,15 @@ Sparkle compares `CFBundleVersion`, not `CFBundleShortVersionString`. Every publ
 
 ## Signing And Notarization
 
-`scripts/build-dmg.sh` signs the nested Sparkle framework, helper binaries, main executable, and outer app bundle, waits for app notarization, and staples the app before creating `RelayRunner.zip`. When `SIGN_IDENTITY` and `NOTARY_PROFILE` are set, CI also waits for DMG notarization and staples `RelayRunner.dmg` before publishing release assets.
+`scripts/build-dmg.sh` signs the nested Sparkle framework, helper binaries, main executable, and outer app bundle. When `SIGN_IDENTITY` and `NOTARY_PROFILE` are set, it also waits for app notarization and staples the app before creating `RelayRunner.zip`, then waits for DMG notarization and staples `RelayRunner.dmg` before publishing release assets.
 
-If Apple's notary service is unavailable (for example, an expired developer agreement returns 403), publish a pushed tag with Developer ID signing but without notarization:
+Releases skip notarization by default: a pushed `v*` tag publishes with Developer ID signing only, and the notary secrets are not required. Sparkle updates install normally because the signing identity is unchanged and Sparkle clears quarantine. Fresh DMG downloads show a Gatekeeper warning. To notarize a release, cancel the tag push run and dispatch the workflow on the tag with `notarize` set; that run also requires `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID` and `NOTARY_PASSWORD`:
 
 ```bash
-gh workflow run build-dmg.yml --ref vX.Y.Z -f skip_notarization=true
+gh workflow run build-dmg.yml --ref vX.Y.Z -f notarize=true
 ```
 
-Cancel the tag push run, which fails at the notary step. Sparkle updates install normally because the signing identity is unchanged and Sparkle clears quarantine. Fresh DMG downloads show a Gatekeeper warning until a notarized release ships.
+Tags on commits before this default changed (v0.5.3 and earlier) still notarize on push; publish one of those without notarization by cancelling the tag push run and dispatching with `-f skip_notarization=true`.
 
 ### Preserve permissions across updates
 
@@ -78,13 +78,13 @@ macOS stores the app's designated requirement with a permission grant. A changin
 
 For the old-version to new-version update checklist, service lifecycle checks, Codex/Claude active-session behavior, and TCC attribution checks, see `docs/verification/RR-68-ota-update-lifecycle.md`.
 
-Before promoting a release broadly, confirm the tag workflow completed notarization and asset upload:
+Before promoting a release broadly, confirm the tag workflow completed asset upload, and notarization when it was requested:
 
 ```bash
 gh run list --workflow build-dmg.yml --limit 5
 ```
 
-Downloaded artifacts should pass Gatekeeper assessment:
+Notarized artifacts should pass Gatekeeper assessment:
 
 ```bash
 spctl -a -vv -t exec '/Applications/Relay Runner.app'

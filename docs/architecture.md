@@ -96,4 +96,4 @@ Deeper references:
 
 Swift Package Manager resolves FluidAudio, TOMLKit, Sparkle, and SwiftTerm. `scripts/build-dmg.sh` builds the app and three MCP helpers, copies read-only Python service sources, embeds Sparkle, includes license notices, signs the nested bundle, and creates a DMG plus Sparkle zip.
 
-Local builds are ad-hoc signed unless Developer ID and notary credentials are provided. Tagged GitHub Actions runs validate release secrets, sign, notarize, staple, generate an EdDSA-signed appcast, and publish existing release paths. Details are in [Release updates](release-updates.md); normal project work never invokes that release path automatically.
+Local builds are ad-hoc signed unless Developer ID and notary credentials are provided. Tagged GitHub Actions runs validate release secrets, sign, generate an EdDSA-signed appcast, and publish existing release paths; they notarize and staple only when dispatched with `notarize`. Details are in [Release updates](release-updates.md); normal project work never invokes that release path automatically.

@@ -19,14 +19,14 @@ on:
       - "tests/test_app_signing.py"
       - "tests/test_notarization_retry.py"
       - ".github/workflows/build-dmg.yml"
-  # Allow manual trigger. Dispatching on a `v*` tag ref publishes that tag;
-  # `skip_notarization` keeps Developer ID signing but skips Apple's notary
-  # service (e.g. while a developer agreement is pending), so Gatekeeper
-  # warns on fresh DMG installs. Sparkle updates are unaffected.
+  # Allow manual trigger. Dispatching on a `v*` tag ref publishes that tag.
+  # Releases sign with Developer ID but skip Apple's notary service by
+  # default, so Gatekeeper warns on fresh DMG installs; Sparkle updates are
+  # unaffected. A tag push never notarises; dispatch with `notarize` to opt in.
   workflow_dispatch:
     inputs:
-      skip_notarization:
-        description: "Sign with Developer ID but skip notarisation"
+      notarize:
+        description: "Also notarise with Apple"
         type: boolean
         default: false
 
@@ -54,9 +54,14 @@ jobs:
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
           UPDATE_REPO_TOKEN: ${{ secrets.UPDATE_REPO_TOKEN }}
+          NOTARIZE: ${{ inputs.notarize == true }}
         run: |
           missing=0
-          for name in SIGN_CERT_P12 SIGN_CERT_PASSWORD KEYCHAIN_PASSWORD SIGN_IDENTITY NOTARY_APPLE_ID NOTARY_TEAM_ID NOTARY_PASSWORD SPARKLE_ED_PRIVATE_KEY UPDATE_REPO_TOKEN; do
+          names="SIGN_CERT_P12 SIGN_CERT_PASSWORD KEYCHAIN_PASSWORD SIGN_IDENTITY SPARKLE_ED_PRIVATE_KEY UPDATE_REPO_TOKEN"
+          if [ "$NOTARIZE" = "true" ]; then
+            names="$names NOTARY_APPLE_ID NOTARY_TEAM_ID NOTARY_PASSWORD"
+          fi
+          for name in $names; do
             if [ -z "${!name:-}" ]; then
               echo "::error::$name secret is required for tagged releases."
               missing=1
@@ -143,7 +148,7 @@ jobs:
       # Store notarytool credentials under a keychain profile that
       # build-dmg.sh references via NOTARY_PROFILE.
       - name: Store notarisation credentials
-        if: inputs.skip_notarization != true
+        if: inputs.notarize == true
         env:
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
@@ -161,7 +166,7 @@ jobs:
       - name: Build and package release artifacts
         env:
           SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
-          NOTARY_PROFILE: ${{ secrets.NOTARY_APPLE_ID != '' && inputs.skip_notarization != true && 'relay-runner-notary' || '' }}
+          NOTARY_PROFILE: ${{ secrets.NOTARY_APPLE_ID != '' && inputs.notarize == true && 'relay-runner-notary' || '' }}
           RELAY_ALLOW_ADHOC_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') && '0' || '1' }}
           RELAY_SKIP_APPLICATIONS_REFRESH: '1'
         run: ./scripts/build-dmg.sh
