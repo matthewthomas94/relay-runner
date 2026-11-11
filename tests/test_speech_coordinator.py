@@ -696,6 +696,27 @@ class SpeechCoordinatorTests(unittest.TestCase):
 
         self.assertTrue(worker.input_queue.empty())
 
+    def test_talking_over_a_reply_counts_it_as_heard(self):
+        worker, coordinator, holder = self.make_coordinator()
+        first = intent(kind="final", text="first", authoritative=True, replayable=True)
+        second = intent(seq=2, command_id="two", kind="final", text="second", authoritative=True)
+        coordinator.submit(first)
+        first_payload = worker.input_queue.get_nowait()["_speech_intent"]
+        worker.observer("started", first_payload)
+        holder["key"] = (2, "two")
+        self.assertTrue(coordinator.submit(second))
+
+        coordinator.stop_playback(reason="recording_barge_in")
+        worker.observer("cancelled", first_payload)
+        self.assertTrue(worker.input_queue.empty())
+        holder["key"] = (3, "three")
+        coordinator.new_turn(3, "three")
+
+        # The interrupted reply moves along; the next queued one plays.
+        payload = worker.input_queue.get_nowait()["_speech_intent"]
+        self.assertEqual(payload["spoken_text"], second.spoken_text)
+        self.assertTrue(worker.input_queue.empty())
+
     def test_newer_turn_keeps_last_message_replayable(self):
         worker, coordinator, holder = self.make_coordinator()
         final = intent(kind="final", authoritative=True, replayable=True)

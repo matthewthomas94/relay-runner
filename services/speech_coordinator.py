@@ -35,7 +35,10 @@ QUEUED_REPLY_KINDS = SUPERSEDING_KINDS
 # A safety bound on queued speech; reaching it is diagnosed, never silent.
 SPEECH_QUEUE_LIMIT = 50
 # Skips that remove the current item without bringing the next one forward.
-NON_ADVANCING_SKIP_REASONS = frozenset({"focus_switch", "wheel_stop"})
+NON_ADVANCING_SKIP_REASONS = frozenset({"focus_switch", "wheel_stop", "recording_barge_in"})
+# Talking over a reply counts it as heard: it leaves the queue instead of
+# replaying after the new turn, and the queue waits for that turn.
+HEARD_STOP_REASONS = frozenset({"recording_barge_in"})
 FRESHNESS_SCOPES = frozenset({"conversation", "work"})
 LIFECYCLE_ROLES = frozenset({
     "acknowledgement",
@@ -848,6 +851,8 @@ class SpeechCoordinator:
             if intent is not None:
                 self._stopped_attempt_reasons[intent.utterance_id] = normalized_reason
                 self._clear_play_request_locked()
+                if normalized_reason in HEARD_STOP_REASONS and intent.utterance_id not in self._retired_ids:
+                    self._retire_locked(intent, normalized_reason)
                 if intent.utterance_id not in self._retired_ids:
                     # A stop holds the queue; a skip moves along.
                     self._speech_stopped = True
