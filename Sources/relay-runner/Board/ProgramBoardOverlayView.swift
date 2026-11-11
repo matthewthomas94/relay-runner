@@ -150,6 +150,8 @@ enum ProgramWorkspaceModalKind: Equatable {
     case createTicket
     case editTicket
     case spikeFollowup
+    /// A Graphical alert dialog, in its own panel above the board.
+    case dialog
 }
 
 struct ProgramWorkspaceDotMatrixPresentation: Equatable {
@@ -167,6 +169,7 @@ struct ProgramWorkspaceDotMatrixPresentation: Equatable {
         showsEditTicket: Bool,
         showsSpikeFollowup: Bool,
         showsHistory: Bool = false,
+        showsDialog: Bool = false,
         viewportHeight: CGFloat
     ) -> ProgramWorkspaceDotMatrixPresentation {
         let modalKind: ProgramWorkspaceModalKind
@@ -180,6 +183,8 @@ struct ProgramWorkspaceDotMatrixPresentation: Equatable {
             modalKind = .spikeFollowup
         } else if showsTicketDetail {
             modalKind = .ticketDetail
+        } else if showsDialog {
+            modalKind = .dialog
         } else {
             modalKind = .none
         }
@@ -500,6 +505,7 @@ struct ProgramBoardOverlayView: View {
             showsCreateTicket: model.creating != nil,
             showsEditTicket: model.editing != nil,
             showsSpikeFollowup: model.spikeFollowupBatch != nil,
+            showsDialog: GraphicalDialogWorkspacePresence.shared.count > 0,
             viewportHeight: viewportSize.height
         )
         let backgroundBlurRadius = dotMatrixPresentation.isVisible

@@ -3,6 +3,22 @@ import XCTest
 @testable import relay_runner
 
 final class WorkspaceDotMatrixTests: XCTestCase {
+    func testAGraphicalDialogShowsTheWorkspaceModalBackdropUnlessATicketModalAlreadyDoes() {
+        let dialog = ProgramWorkspaceDotMatrixPresentation.resolve(
+            showsTicketDetail: false, showsCreateTicket: false, showsEditTicket: false,
+            showsSpikeFollowup: false, showsDialog: true, viewportHeight: 2000
+        )
+        XCTAssertEqual(dialog.modalKind, .dialog)
+        XCTAssertTrue(dialog.isVisible)
+        XCTAssertEqual(dialog.surfaceHeight, ProgramBoardBackdropStyle.backdropHeight)
+
+        let overDetail = ProgramWorkspaceDotMatrixPresentation.resolve(
+            showsTicketDetail: true, showsCreateTicket: false, showsEditTicket: false,
+            showsSpikeFollowup: false, showsDialog: true, viewportHeight: 2000
+        )
+        XCTAssertEqual(overDetail.modalKind, .ticketDetail)
+    }
+
     func testWorkspaceThemeUsesDesignNavyAndPreservesExistingSpeechThemes() {
         XCTAssertEqual(ParticleFieldRenderer.Theme.stt.baseHue, 0.04, accuracy: 0.001)
         XCTAssertEqual(ParticleFieldRenderer.Theme.stt.baseSaturation, 0.95, accuracy: 0.001)

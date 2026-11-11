@@ -16,67 +16,88 @@ struct GraphicalDialogAction {
     }
 }
 
+/// Dialogs open over the Workspace. The board shows its modal backdrop (the
+/// blurred content under the dot matrix) while any is up.
+@Observable
+final class GraphicalDialogWorkspacePresence {
+    static let shared = GraphicalDialogWorkspacePresence()
+    var count = 0
+}
+
 /// The kit's alert dialog: a neutral-2 card with radius 24 and 24 points of
 /// padding over a 20% black backdrop. The title is text-m, the description is
 /// text-s in neutral-7. Cancel is a secondary button; the confirming action is
 /// the white primary button, or the danger button when it destroys something.
+/// Over the Workspace the board draws the backdrop, and the card centres on
+/// the Workspace surface instead of the screen-sized window.
 struct GraphicalDialogView: View {
     static let width: CGFloat = 400
 
     let title: String
     let message: String?
     let actions: [GraphicalDialogAction]
+    var inWorkspace = false
     let dismiss: () -> Void
 
     private var cancel: GraphicalDialogAction? { actions.first { $0.role == .cancel } }
     private var confirming: [GraphicalDialogAction] { actions.filter { $0.role != .cancel } }
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.2)
-                .contentShape(Rectangle())
-                .onTapGesture { perform(cancel) }
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: GraphicalTheme.spaceS) {
-                Text(title)
-                    .font(AppTypography.font(.screenTitle))
-                    .foregroundStyle(GraphicalTheme.neutral10)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let message {
-                    Text(message)
-                        .font(AppTypography.font(.body))
-                        .foregroundStyle(GraphicalTheme.neutral7)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                HStack(spacing: GraphicalTheme.spaceXS) {
-                    Spacer(minLength: 0)
-                    SettingsActionButton(title: cancel?.title ?? "Cancel", icon: nil) { perform(cancel) }
-                        .keyboardShortcut(.cancelAction)
-                    ForEach(confirming.indices, id: \.self) { index in
-                        let action = confirming[index]
-                        SettingsActionButton(
-                            title: action.title,
-                            icon: nil,
-                            prominence: action.role == .destructive ? .danger : .primary
-                        ) { perform(action) }
-                        .keyboardShortcut(index == confirming.count - 1 ? .defaultAction : nil)
-                    }
-                }
-                .padding(.top, GraphicalTheme.spaceXS)
+        GeometryReader { proxy in
+            ZStack(alignment: .top) {
+                Color.black.opacity(inWorkspace ? 0 : 0.2)
+                    .contentShape(Rectangle())
+                    .onTapGesture { perform(cancel) }
+                    .accessibilityHidden(true)
+                card
+                    .frame(maxWidth: .infinity)
+                    .frame(height: inWorkspace
+                        ? min(proxy.size.height, ProgramBoardBackdropStyle.backdropHeight) : proxy.size.height)
             }
-            .padding(GraphicalTheme.spaceL)
-            .frame(width: Self.width, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: GraphicalTheme.radiusM, style: .continuous)
-                    .fill(GraphicalTheme.neutral2)
-                    .graphicalShadow(.l)
-            )
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(title)
-            .accessibilityAddTraits(.isModal)
         }
+        .ignoresSafeArea()
         .onExitCommand { perform(cancel) }
         .environment(\.colorScheme, .dark)
+    }
+
+    private var card: some View {
+        VStack(alignment: .leading, spacing: GraphicalTheme.spaceS) {
+            Text(title)
+                .font(AppTypography.font(.screenTitle))
+                .foregroundStyle(GraphicalTheme.neutral10)
+                .fixedSize(horizontal: false, vertical: true)
+            if let message {
+                Text(message)
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(GraphicalTheme.neutral7)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: GraphicalTheme.spaceXS) {
+                Spacer(minLength: 0)
+                SettingsActionButton(title: cancel?.title ?? "Cancel", icon: nil) { perform(cancel) }
+                    .keyboardShortcut(.cancelAction)
+                ForEach(confirming.indices, id: \.self) { index in
+                    let action = confirming[index]
+                    SettingsActionButton(
+                        title: action.title,
+                        icon: nil,
+                        prominence: action.role == .destructive ? .danger : .primary
+                    ) { perform(action) }
+                    .keyboardShortcut(index == confirming.count - 1 ? .defaultAction : nil)
+                }
+            }
+            .padding(.top, GraphicalTheme.spaceXS)
+        }
+        .padding(GraphicalTheme.spaceL)
+        .frame(width: Self.width, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: GraphicalTheme.radiusM, style: .continuous)
+                .fill(GraphicalTheme.neutral2)
+                .graphicalShadow(.l)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(.isModal)
     }
 
     private func perform(_ action: GraphicalDialogAction?) {
@@ -98,10 +119,13 @@ private struct GraphicalDialogPresenter: NSViewRepresentable {
     func updateNSView(_ view: GraphicalDialogAnchorView, context: Context) {
         if isPresented {
             let binding = $isPresented
-            view.present(AnyView(GraphicalDialogView(
-                title: title, message: message, actions: actions,
-                dismiss: { binding.wrappedValue = false }
-            )))
+            let (title, message, actions) = (title, message, actions)
+            view.present { inWorkspace in
+                AnyView(GraphicalDialogView(
+                    title: title, message: message, actions: actions, inWorkspace: inWorkspace,
+                    dismiss: { binding.wrappedValue = false }
+                ))
+            }
         } else {
             view.hide()
         }
@@ -114,7 +138,8 @@ private struct GraphicalDialogPresenter: NSViewRepresentable {
 
 final class GraphicalDialogAnchorView: NSView {
     private var panel: GraphicalDialogPanel?
-    private var pendingContent: AnyView?
+    private var pendingContent: ((Bool) -> AnyView)?
+    private var countedInWorkspace = false
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -127,9 +152,10 @@ final class GraphicalDialogAnchorView: NSView {
         }
     }
 
-    func present(_ content: AnyView) {
+    func present(_ content: @escaping (_ inWorkspace: Bool) -> AnyView) {
+        let inWorkspace = window is BoardOverlayPanel
         if let hosting = panel?.contentView as? NSHostingView<AnyView> {
-            hosting.rootView = content
+            hosting.rootView = content(inWorkspace)
             return
         }
         guard let window else {
@@ -137,7 +163,12 @@ final class GraphicalDialogAnchorView: NSView {
             return
         }
         pendingContent = nil
-        let hosting = NSHostingView(rootView: content)
+        if inWorkspace {
+            countedInWorkspace = true
+            // Presented during a view update; publish after it.
+            DispatchQueue.main.async { GraphicalDialogWorkspacePresence.shared.count += 1 }
+        }
+        let hosting = NSHostingView(rootView: content(inWorkspace))
         let panel = GraphicalDialogPanel(
             contentRect: window.frame,
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
@@ -160,6 +191,10 @@ final class GraphicalDialogAnchorView: NSView {
     func hide(animated: Bool = true) {
         guard let panel else { return }
         self.panel = nil
+        if countedInWorkspace {
+            countedInWorkspace = false
+            DispatchQueue.main.async { GraphicalDialogWorkspacePresence.shared.count -= 1 }
+        }
         panel.ignoresMouseEvents = true
         if panel.isKeyWindow { window?.makeKey() }
         let close = {
