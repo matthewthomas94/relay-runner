@@ -46,7 +46,7 @@ payload = {
     "verification": ["Replace with concise commands/results."],
     "source_commit": head,
 }
-port_path = pathlib.Path("/tmp/relay_orchestrator.port")
+port_path = pathlib.Path("{{port_file}}")
 port = int(port_path.read_text().strip()) if port_path.exists() else 7634
 request = urllib.request.Request(
     "http://127.0.0.1:%d/v1/runs/%d/outcome" % (port, run_id),
@@ -63,7 +63,7 @@ Recording can take a while because the daemon publishes to the artifact branch, 
 ```bash
 python3 - <<'PY'
 import pathlib, urllib.request
-port_path = pathlib.Path("/tmp/relay_orchestrator.port")
+port_path = pathlib.Path("{{port_file}}")
 port = int(port_path.read_text().strip()) if port_path.exists() else 7634
 url = "http://127.0.0.1:%d/v1/runs/%d/outcome" % (port, {{run_id}})
 print(urllib.request.urlopen(url, timeout=60).read().decode())
@@ -72,7 +72,7 @@ PY
 
 If you already committed on top of a recorded outcome, the daemon accepts one superseding post while this run is live, and only when its `source_commit` is your current HEAD and a new commit whose history contains the recorded `source_commit`; amended or rebased history is always rejected. A rejected post states the recorded `source_commit` and how to recover; follow it instead of posting again.
 
-The installed daemon may bind a different port. If `/tmp/relay_orchestrator.port` exists, read that integer and use it instead of `7634`. For `verification_blocked`, add `verification_blocker` and `verification_resume` strings.
+The installed daemon may bind a different port. If `{{port_file}}` exists, read that integer and use it instead of `7634`. For `verification_blocked`, add `verification_blocker` and `verification_resume` strings.
 
 **Verification close-out.** If the ticket snapshot has `verification_resumed_run_id`, this run resumes a verification-blocked ticket whose source merge already stands. When the resumed verification passes and no source needs to change, make no commit at all — never a placeholder commit. Submit `completed` with `changed_paths: []` (the script above yields this on an unchanged HEAD), `source_commit` set to that unchanged HEAD, at least one `verification` item naming the evidence, and no blocker fields. The daemon then publishes `done` and progresses dependents without a source merge or review. If the source does need to change, commit it and submit the normal outcome.
 

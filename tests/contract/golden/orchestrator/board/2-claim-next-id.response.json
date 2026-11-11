@@ -1,0 +1,7 @@
+{
+  "artifact_commit": "<OID:1>",
+  "id": 2,
+  "idempotent": false,
+  "prefix": "CT",
+  "ticket_id": "CT-2"
+}
