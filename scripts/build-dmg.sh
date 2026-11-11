@@ -51,6 +51,29 @@ INSTALLED="/Applications/$APP_NAME.app"
 SIGN_IDENTITY="$(python3 "$PROJECT_ROOT/services/app_signing.py" identity)"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 
+# The Cargo workspace in rust/ builds the relay-rs helper with the toolchain
+# pinned in rust/rust-toolchain.toml. Check for it before the Swift build, so a
+# missing or different toolchain stops here with nothing built or replaced.
+# rustup selects the pinned toolchain from the working directory, which is why
+# every Rust command runs inside rust/.
+RUST_DIR="$PROJECT_ROOT/rust"
+RUST_TARGET="aarch64-apple-darwin"
+RUST_PINNED="$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$RUST_DIR/rust-toolchain.toml")"
+RUSTUP_INSTALL="curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
+    echo "error: Rust toolchain not found; cargo and rustc must be on PATH to build rust/." >&2
+    echo "Install rustup, which then installs the pinned Rust $RUST_PINNED on first use:" >&2
+    echo "    $RUSTUP_INSTALL" >&2
+    exit 1
+fi
+RUST_FOUND="$(cd "$RUST_DIR" && rustc --version | awk '{print $2}')"
+if [ "$RUST_FOUND" != "$RUST_PINNED" ]; then
+    echo "error: rust/rust-toolchain.toml pins Rust $RUST_PINNED, but rustc on PATH is $RUST_FOUND." >&2
+    echo "Install rustup and put ~/.cargo/bin ahead of other Rust installs on PATH; it selects the pinned toolchain:" >&2
+    echo "    $RUSTUP_INSTALL" >&2
+    exit 1
+fi
+
 remove_tree() {
     local path="$1"
     if [ -e "$path" ]; then
@@ -110,6 +133,9 @@ if [ "$CONFIG" = "release" ]; then
 else
     swift build -c "$CONFIG"
 fi
+
+echo "==> Building Rust workspace (release, $RUST_TARGET)..."
+(cd "$RUST_DIR" && cargo build --release --locked --target "$RUST_TARGET")
 
 # Relay Desktop bundles the pinned vercel-labs/agent-desktop release. The fetch
 # script verifies the archive and license against their pinned SHA-256 before
@@ -176,6 +202,11 @@ cp "$BUILD_DIR/relay-orchestrator-mcp" "$APP_DIR/Contents/MacOS/relay-orchestrat
 # shim) for a paired device's key; it copies NDJSON between the SSH channel and
 # the bridge's local Unix socket.
 cp "$BUILD_DIR/relay-remote-shell" "$APP_DIR/Contents/MacOS/relay-remote-shell"
+
+# Helper binary: relay-rs, built above from the Cargo workspace in rust/
+# (RR-475). It reports the bundle version it was compiled with, which
+# app_signing.py check-helper compares with this bundle's Info.plist.
+cp "$RUST_DIR/target/$RUST_TARGET/release/relay-rs" "$APP_DIR/Contents/MacOS/relay-rs"
 
 # Keep Awake power helper (RR-437). A root launchd daemon registered with
 # SMAppService from Contents/Library/LaunchDaemons; its BundleProgram points at
@@ -413,6 +444,11 @@ if [ -n "$SIGN_IDENTITY" ]; then
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR/Contents/MacOS/relay-remote-shell"
+    # relay-rs is built here, not downloaded, and is signed like the other
+    # helpers: hardened runtime, timestamp, no entitlements.
+    codesign --force --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/relay-rs"
     # The power helper's identifier is part of the requirement the app checks
     # before trusting its replies, so it is set explicitly rather than taken
     # from the file name.
@@ -439,7 +475,8 @@ fi
 # would otherwise be rejected at notarisation / Gatekeeper time.
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 # The helper's launchd metadata must match the identifiers compiled into the
-# app and helper; a signed build also checks the helper's Developer ID identity.
+# app and helper, and relay-rs must run and report this bundle's version; a
+# signed build also checks both helpers' Developer ID identities.
 python3 "$PROJECT_ROOT/services/app_signing.py" check-helper "$APP_DIR"
 if [ -n "$SIGN_IDENTITY" ]; then
     python3 "$PROJECT_ROOT/services/app_signing.py" verify "$APP_DIR"

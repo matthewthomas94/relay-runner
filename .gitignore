@@ -17,3 +17,5 @@ dist/
 # Relay Remote (iOS)
 ios/Config/Signing.local.xcconfig
 xcuserdata/
+# Rust
+rust/target/

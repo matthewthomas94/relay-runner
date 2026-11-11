@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Check the Rust dependency licences and regenerate their notices section.
+
+Reads the dependency tree of the Cargo workspace in `rust/` with
+`cargo metadata` (no extra tool to install), then:
+
+  1. Fails when any crate's licence expression cannot be satisfied from
+     ALLOWED_LICENSES. A missing or unparseable expression fails too.
+  2. Rewrites the block between the BEGIN/END GENERATED markers in
+     `THIRD_PARTY_NOTICES.md`, or with `--check` fails when that block is stale.
+
+Run it after any change to `rust/Cargo.lock` or `rust/rust-toolchain.toml`.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+RUST = REPO / "rust"
+NOTICES = REPO / "THIRD_PARTY_NOTICES.md"
+TARGET = "aarch64-apple-darwin"
+
+# The explicit allow list. Every entry is one SPDX licence, or one licence with
+# one exception, that may be linked into the MIT-licensed app. Copyleft
+# licences (GPL, AGPL, LGPL) must never be added.
+ALLOWED_LICENSES = frozenset({
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+})
+
+BEGIN = "<!-- BEGIN GENERATED: Rust crates — run scripts/rust-licenses, do not edit here -->"
+END = "<!-- END GENERATED: Rust crates -->"
+
+
+def license_allowed(expression: str | None, allowed: frozenset[str] = ALLOWED_LICENSES) -> bool:
+    """Whether an SPDX expression can be satisfied using only allowed licences.
+
+    `OR` needs one side, `AND` needs both, and `X WITH Y` must be listed as a
+    whole. Anything that does not parse is refused.
+    """
+    if not expression:
+        return False
+    # Older crates write `MIT/Apache-2.0` for `MIT OR Apache-2.0`.
+    tokens = re.findall(r"[()]|[^\s()]+", expression.replace("/", " OR "))
+    position = 0
+
+    def peek() -> str | None:
+        return tokens[position] if position < len(tokens) else None
+
+    def take() -> str:
+        nonlocal position
+        if position >= len(tokens):
+            raise ValueError("unexpected end of expression")
+        position += 1
+        return tokens[position - 1]
+
+    def either() -> bool:
+        result = both()
+        while peek() == "OR":
+            take()
+            result = both() or result
+        return result
+
+    def both() -> bool:
+        result = single()
+        while peek() == "AND":
+            take()
+            result = single() and result
+        return result
+
+    def single() -> bool:
+        token = take()
+        if token == "(":
+            result = either()
+            if take() != ")":
+                raise ValueError("unbalanced parentheses")
+            return result
+        if token in {")", "OR", "AND", "WITH"}:
+            raise ValueError(f"unexpected {token}")
+        if peek() == "WITH":
+            take()
+            token = f"{token} WITH {take()}"
+        return token in allowed
+
+    try:
+        result = either()
+    except ValueError:
+        return False
+    return result and position == len(tokens)
+
+
+def third_party_crates(metadata: dict) -> list[dict]:
+    """Every resolved crate that is not a workspace member, sorted by name and version."""
+    resolved = {node["id"] for node in metadata["resolve"]["nodes"]}
+    members = set(metadata["workspace_members"])
+    crates = [
+        package for package in metadata["packages"]
+        if package["id"] in resolved and package["id"] not in members
+    ]
+    return sorted(crates, key=lambda package: (package["name"], package["version"]))
+
+
+def refused_crates(crates: list[dict]) -> list[str]:
+    return [
+        f'{crate["name"]} {crate["version"]}: {crate.get("license") or "no licence expression"}'
+        for crate in crates if not license_allowed(crate.get("license"))
+    ]
+
+
+def pinned_toolchain() -> str:
+    match = re.search(r'^channel = "([^"]+)"$', (RUST / "rust-toolchain.toml").read_text(), re.M)
+    if not match:
+        raise SystemExit("error: rust/rust-toolchain.toml does not pin a channel")
+    return match.group(1)
+
+
+def render(crates: list[dict], toolchain: str) -> str:
+    lines = [
+        BEGIN,
+        "",
+        f"`relay-rs` is built from the Cargo workspace in `rust/` with Rust {toolchain} and statically links "
+        "the Rust standard library, which is licensed under the Apache License 2.0 or the MIT License at "
+        "the user's option; the Rust project's "
+        f"[COPYRIGHT](https://github.com/rust-lang/rust/blob/{toolchain}/COPYRIGHT) file describes the "
+        "third-party material it includes.",
+        "",
+    ]
+    if crates:
+        lines += [
+            f"`rust/Cargo.lock` resolves these crates for `{TARGET}`:",
+            "",
+            "| Crate | Version | License (SPDX) |",
+            "| --- | --- | --- |",
+        ]
+        lines += [
+            f'| [{crate["name"]}](https://crates.io/crates/{crate["name"]}/{crate["version"]}) '
+            f'| {crate["version"]} | {crate["license"]} |'
+            for crate in crates
+        ]
+    else:
+        lines.append(f"`rust/Cargo.lock` resolves no third-party crates for `{TARGET}`.")
+    lines += ["", END]
+    return "\n".join(lines)
+
+
+def replace_block(document: str, block: str) -> str:
+    pattern = re.compile(re.escape(BEGIN) + r".*?" + re.escape(END), re.S)
+    if len(pattern.findall(document)) != 1:
+        raise SystemExit(f"error: {NOTICES.name} must contain exactly one generated Rust crates block")
+    return pattern.sub(lambda _: block, document)
+
+
+def cargo_metadata() -> dict:
+    # Run inside rust/ so a rustup-managed cargo selects the pinned toolchain.
+    try:
+        result = subprocess.run(
+            ["cargo", "metadata", "--format-version", "1", "--locked", "--filter-platform", TARGET],
+            cwd=RUST, capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        raise SystemExit("error: cargo not found; see TESTING.md for the Rust toolchain install")
+    if result.returncode:
+        raise SystemExit(f"error: cargo metadata failed:\n{result.stderr.strip()}")
+    return json.loads(result.stdout)
+
+
+def main() -> int:
+    arguments = sys.argv[1:]
+    if arguments not in ([], ["--check"]):
+        print("usage: rust-licenses [--check]", file=sys.stderr)
+        return 2
+    crates = third_party_crates(cargo_metadata())
+    refused = refused_crates(crates)
+    if refused:
+        print("error: Rust crates with a licence outside the allow list in scripts/rust-licenses:", file=sys.stderr)
+        for line in refused:
+            print(f"  {line}", file=sys.stderr)
+        return 1
+    current = NOTICES.read_text()
+    updated = replace_block(current, render(crates, pinned_toolchain()))
+    if updated == current:
+        print(f"rust-licenses: {len(crates)} crates allowed; {NOTICES.name} is current")
+        return 0
+    if arguments:
+        print(f"error: the Rust crates block in {NOTICES.name} is stale; run scripts/rust-licenses", file=sys.stderr)
+        return 1
+    NOTICES.write_text(updated)
+    print(f"rust-licenses: {len(crates)} crates allowed; updated {NOTICES.name}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
