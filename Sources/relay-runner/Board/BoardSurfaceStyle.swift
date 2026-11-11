@@ -54,17 +54,6 @@ struct BoardDarkSurfaceBackground: View {
     }
 }
 
-struct BoardDarkCapsuleBackground: View {
-    var fill: Color = BoardDarkSurfaceStyle.contentFill
-    var stroke: Color = BoardDarkSurfaceStyle.border
-
-    var body: some View {
-        Capsule()
-            .fill(fill)
-            .overlay(Capsule().stroke(stroke, lineWidth: 1))
-    }
-}
-
 struct BoardDarkCircleBackground: View {
     var fill: Color = BoardDarkSurfaceStyle.contentFill
     var stroke: Color = BoardDarkSurfaceStyle.border

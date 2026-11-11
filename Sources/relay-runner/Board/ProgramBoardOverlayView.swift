@@ -3862,6 +3862,7 @@ private struct ProgramEditTextArea: View {
                 .scrollContentBackground(.hidden)
                 .modifier(ProgramWritingToolsDisabled())
                 .frame(minHeight: minHeight, maxHeight: maxHeight)
+                .relayAppKitScrollEdgeFade()
                 .padding(GraphicalTheme.spaceS)
                 .background(ProgramTicketFieldBackground())
         }

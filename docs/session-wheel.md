@@ -63,7 +63,9 @@ registered project.
   See [Keep Awake](#keep-awake).
 - Hover the session (**Terminal**) to reveal its PM tabs (RR-469). The submenu holds
   one segment per tab, **S1**, **S2** and so on for the tab strip's **Session 1**,
-  **Session 2**, each with its own **x**, then **Add tab** (plus).
+  **Session 2** (a lone tab reads **Session 1** in full), each with its own **x**,
+  then **Add tab** (plus). The label sits at the start of its segment and the x at
+  the end, in reading order.
   There are no Play / Replay, Record or Stop session controls on the wheel.
   - Click a tab's label to make it the **active tab**: voice turns, replies and
     TTS go to it, and the notch confirms the switch. The active tab's label is
@@ -71,8 +73,9 @@ registered project.
     turns it back on, resuming its conversation, and makes it active.
   - A tab's **x** closes that tab, as the tab strip's x does: it ends the tab's
     provider and drops it. Closing the active tab moves activity to another live
-    tab; closing the last live tab ends the session, as End does. The x turns red
-    on hover and the notch reads *Close Session n*.
+    tab; closing the last live tab ends the session, as End does. The x is the
+    size of Add's plus; hovering it fills a circle behind it and the notch reads
+    *Close Session n*.
   - **Add tab** opens another general PM tab, like the tab strip's "+". It is
     disabled at nine tabs, the limit counting the first; the notch then reads
     *Nine tabs open*.

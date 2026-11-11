@@ -49,7 +49,8 @@ final class SessionWheelTests: XCTestCase {
             XCTAssertEqual(items.count, count + 1)
             XCTAssertEqual(items.last, .control(.add))
             for (index, item) in items.enumerated() {
-                let point = itemPoint(index, of: items.count)
+                let point = item.tab == nil ? itemPoint(index, of: items.count)
+                    : geometry.sessionTabLayout(index, items: items.count).label.point
                 model.hover(at: point)
                 XCTAssertEqual(model.hoveredSlot, 0, "\(count) tabs, item \(index)")
                 XCTAssertEqual(model.hoveredSessionItem, item, "\(count) tabs, item \(index)")
@@ -488,6 +489,72 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(SessionWheelTabControl.allCases, [.add])
         XCTAssertEqual(model.sessionItems.compactMap(\.tab).map(\.name), (1...9).map { "Session \($0)" })
         XCTAssertEqual((0..<9).map { SessionWheelTab.shortLabel(position: $0) }, (1...9).map { "S\($0)" })
+    }
+
+    /// A lone tab reads "Session 1" in full, and S1, S2 and so on beside
+    /// others. Its label and close x sit apart like `space-between`: the same
+    /// padding inside each end of the segment, the x after the label in
+    /// reading order, never overlapping.
+    func testTabSegmentSpacesItsLabelAndCloseXApart() {
+        XCTAssertEqual(geometry.sessionTabLabel(0, items: 2), "Session 1")
+        XCTAssertEqual((0..<3).map { geometry.sessionTabLabel($0, items: 4) }, ["S1", "S2", "S3"])
+        let radius = geometry.actionRadius
+        let diameter = geometry.tabCloseDiameter
+        for count in 1...9 {
+            for index in 0..<count {
+                let items = count + 1
+                let arc = geometry.sessionItemArc(index, items: items)
+                let layout = geometry.sessionTabLayout(index, items: items)
+                let text = geometry.sessionTabLabel(index, items: items)
+                let width = geometry.trackedLetters(text).width
+                let axis = CGPoint(x: cos(layout.label.rotation), y: sin(layout.label.rotation))
+                let along = (layout.close.point.x - layout.label.point.x) * axis.x
+                    + (layout.close.point.y - layout.label.point.y) * axis.y
+                XCTAssertGreaterThanOrEqual(along, width / 2 + diameter / 2 - 0.5, "\(count) tabs, item \(index)")
+                XCTAssertEqual(layout.close.rotation - layout.label.rotation,
+                               geometry.sessionArcOffset(at: layout.close.point) - geometry.sessionArcOffset(at: layout.label.point),
+                               accuracy: 0.0001, "The x turns with its label")
+                // Padding inside each end of the segment, along the arc.
+                let label = geometry.sessionArcOffset(at: layout.label.point)
+                let close = geometry.sessionArcOffset(at: layout.close.point)
+                let (leading, trailing) = close > label ? (arc.start, arc.start + arc.width) : (arc.start + arc.width, arc.start)
+                let leadingPadding = abs(label - leading) * radius - width / 2 - geometry.segmentGap / 2
+                let trailingPadding = abs(trailing - close) * radius - diameter / 2 - geometry.segmentGap / 2
+                XCTAssertEqual(leadingPadding, trailingPadding, accuracy: 0.01, "\(count) tabs, item \(index)")
+                XCTAssertGreaterThanOrEqual(leadingPadding, 0, "\(count) tabs, item \(index)")
+                XCTAssertLessThanOrEqual(leadingPadding, geometry.tabContentPadding + 0.01)
+                if count <= 3 {
+                    XCTAssertEqual(leadingPadding, geometry.tabContentPadding, accuracy: 0.01, "Wide segments keep the full padding")
+                }
+                // The label curves with the cell: every letter sits on the arc, give or
+                // take the slight tilt, in reading order, and its outline stays inside the band.
+                XCTAssertEqual(layout.glyphs.count, text.count)
+                for glyph in layout.glyphs {
+                    XCTAssertEqual(glyph.rotation - layout.label.rotation,
+                                   geometry.sessionArcOffset(at: glyph.point) - label + geometry.tabLabelTilt,
+                                   accuracy: 0.01, "Each letter follows the arc, turned by the tilt")
+                    XCTAssertEqual(hypot(glyph.point.x - geometry.center.x, glyph.point.y - geometry.center.y),
+                                   radius, accuracy: 1.5)
+                    var distances: [CGFloat] = []
+                    glyph.outline.applyWithBlock { element in
+                        let count = switch element.pointee.type {
+                        case .moveToPoint, .addLineToPoint: 1
+                        case .addQuadCurveToPoint: 2
+                        case .addCurveToPoint: 3
+                        default: 0
+                        }
+                        for point in UnsafeBufferPointer(start: element.pointee.points, count: count) {
+                            distances.append(hypot(point.x - geometry.center.x, point.y - geometry.center.y))
+                        }
+                    }
+                    guard !distances.isEmpty else { continue } // A space has no outline.
+                    XCTAssertGreaterThan(distances.min() ?? 0, radius - 8, "\(count) tabs, item \(index)")
+                    XCTAssertLessThan(distances.max() ?? .infinity, radius + 8, "\(count) tabs, item \(index)")
+                }
+                let offsets = layout.glyphs.map { geometry.sessionArcOffset(at: $0.point) }
+                XCTAssertEqual(offsets, close > label ? offsets.sorted() : offsets.sorted(by: >), "\(count) tabs, item \(index)")
+            }
+        }
     }
 
     @MainActor
@@ -1054,7 +1121,7 @@ final class SessionWheelTests: XCTestCase {
         model.tabs = tabs(1)
         let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performTabItem: { _ in },
                                     selectCenter: {}, dismiss: {})
-        for state in ["sessions", "session-notice", "controls", "tabs-1", "tabs-3", "tabs-3-close-hover", "tabs-4", "tabs-6",
+        for state in ["sessions", "session-notice", "controls", "tabs-1", "tabs-1-close-hover", "tabs-3", "tabs-3-close-hover", "tabs-4", "tabs-6",
                       "tabs-9", "tabs-9-add-hover", "tabs-off",
                       "shortcuts-empty", "start-unavailable", "notes-idle", "notes-recording", "notes-paused", "notes-saving",
                       "overflow-sessions",
@@ -1069,7 +1136,7 @@ final class SessionWheelTests: XCTestCase {
             case "controls":
                 model.notice = nil
                 model.hover(at: geometry.position(slot: 0, radius: 119))
-            case "tabs-1", "tabs-3", "tabs-3-close-hover", "tabs-4", "tabs-6", "tabs-9", "tabs-9-add-hover", "tabs-off":
+            case "tabs-1", "tabs-1-close-hover", "tabs-3", "tabs-3-close-hover", "tabs-4", "tabs-6", "tabs-9", "tabs-9-add-hover", "tabs-off":
                 // RR-469: the session submenu with that many PM tabs.
                 let count = state == "tabs-off" ? 3 : Int(state.split(separator: "-")[1]) ?? 1
                 model.reset(at: geometry.center)
@@ -1077,8 +1144,9 @@ final class SessionWheelTests: XCTestCase {
                 model.tabs = tabs(count, active: min(1, count - 1), off: state == "tabs-off" ? [2] : [])
                 model.addTabUnavailableReason = count >= 9 ? "Nine tabs open" : nil
                 model.hover(at: geometry.position(slot: 0, radius: 119))
-                model.hover(at: state == "tabs-3-close-hover" ? geometry.sessionTabClosePoint(0, items: count + 1)
-                            : itemPoint(state == "tabs-9-add-hover" ? count : 0, of: count + 1))
+                model.hover(at: state.hasSuffix("-close-hover") ? geometry.sessionTabClosePoint(0, items: count + 1)
+                            : state == "tabs-9-add-hover" ? itemPoint(count, of: count + 1)
+                            : geometry.sessionTabLayout(0, items: count + 1).label.point)
             case "shortcuts-empty":
                 model.reset(at: geometry.center)
                 model.refresh(sessions: [])

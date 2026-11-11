@@ -77,6 +77,7 @@ struct WorkspaceHistoryView: View {
                         .appPlaceholder("Search archived tickets", when: model.query.isEmpty)
                         .graphicalInput()
                         .onSubmit { Task { await model.search() } }
+                        .onChange(of: model.query) { Task { await model.queryChanged() } }
                         .accessibilityLabel("Search Workspace history")
                     ProgramIconButton(icon: .search, help: "Search archived tickets") {
                         Task { await model.search() }
@@ -85,11 +86,13 @@ struct WorkspaceHistoryView: View {
                 RelayFadingScrollView {
                     LazyVStack(spacing: 8) {
                         if model.cards.isEmpty && !model.isLoading {
-                            Text("No archived tickets match this search.")
-                                .font(AppTypography.font(.supporting))
-                                .foregroundStyle(ProgramBoardStyle.mutedText)
-                                .padding(.top, 28)
-                                .transition(.relayReplacing(.text))
+                            RelaySwap(model.emptyMessage, style: .text) { message in
+                                Text(message)
+                                    .font(AppTypography.font(.supporting))
+                                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                            }
+                            .padding(.top, 28)
+                            .transition(.relayReplacing(.text))
                         }
                         ForEach(model.cards) { card in
                             historyCard(card)
@@ -179,27 +182,18 @@ struct WorkspaceHistoryView: View {
     }
 
     private func historyDetail(_ card: ArtifactHistoryCard) -> some View {
-        let badge = WorkspaceHistoryBadge.resolve(
-            state: card.state,
-            availability: model.detail?.availability
-        )
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(card.ticketID)
-                        .font(AppTypography.font(.metadata))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                    RelaySwap(model.detail?.card?.title ?? card.title, style: .text, alignment: .leading) { title in
-                        Text(title)
-                            .font(AppTypography.font(.sectionHeading))
-                            .foregroundStyle(ProgramBoardStyle.primaryText)
-                    }
-                }
-                Spacer()
-                RelaySwap(badge.label, alignment: .trailing) { label in
-                    badgeView(WorkspaceHistoryBadge(label: label, isWarning: badge.isWarning))
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(card.ticketID)
+                    .font(AppTypography.font(.metadata))
+                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                RelaySwap(model.detail?.card?.title ?? card.title, style: .text, alignment: .leading) { title in
+                    Text(title)
+                        .font(AppTypography.font(.sectionHeading))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             ZStack(alignment: .topLeading) {
                 if let detail = model.detail, detail.availability != "available" {
@@ -332,16 +326,6 @@ struct WorkspaceHistoryView: View {
             }
             .transition(.relayElement)
         }
-    }
-
-    private func badgeView(_ badge: WorkspaceHistoryBadge) -> some View {
-        Text(badge.label)
-            .font(AppTypography.font(.caption))
-            .foregroundStyle(badge.isWarning ? ProgramBoardStyle.red : ProgramBoardStyle.secondaryText)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(BoardDarkCapsuleBackground())
-            .accessibilityLabel("Archive state: \(badge.label)")
     }
 
     private func messageStrip(_ message: String, warning: Bool) -> some View {

@@ -792,6 +792,9 @@ final class ProgramBoardOverlayController {
         }
         contentLoadBlocked = opening.contentLoadBlocked
         model.prepareForOpening()
+        // Opening resets History, and the cached view still showing it gets no
+        // fresh onAppear to start it again, so start it here.
+        if workspace.selectedTab == .history { beginHistory() }
         model.theme = themeResolver?()
         model.hasActiveSession = sessionActiveProvider()
         model.runningSessionPaths = runningSessionPathsProvider()

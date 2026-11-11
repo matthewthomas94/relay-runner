@@ -159,6 +159,8 @@ final class WorkspaceHistoryViewModel {
     let projectName: String
     let projectScopeToken: String?
     var query = ""
+    /// The query the shown cards answer; the field can change before the next search.
+    private(set) var searchedQuery = ""
     var cards: [ArtifactHistoryCard] = []
     var selectedCard: ArtifactHistoryCard?
     var detail: ArtifactHistoryDetailResponse?
@@ -179,13 +181,15 @@ final class WorkspaceHistoryViewModel {
     func refresh() async {
         isLoading = true
         errorMessage = nil
+        let submitted = query
         do {
             let response = try await OrchestratorClient.fetchArtifactHistory(
                 repoPath: repoPath,
-                query: query,
+                query: submitted,
                 projectScopeToken: projectScopeToken
             )
             cards = response.history
+            searchedQuery = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             errorMessage = Self.message(for: error)
         }
@@ -194,6 +198,18 @@ final class WorkspaceHistoryViewModel {
     }
 
     func search() async {
+        await refresh()
+    }
+
+    /// An empty list's line: only a search can fail to match. An empty
+    /// query lists the whole archive, so nothing there means none yet.
+    var emptyMessage: String {
+        searchedQuery.isEmpty ? "No archived tickets yet." : "No archived tickets match this search."
+    }
+
+    /// Clearing the field lists the whole archive again, as a search for nothing would.
+    func queryChanged() async {
+        guard query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !searchedQuery.isEmpty else { return }
         await refresh()
     }
 

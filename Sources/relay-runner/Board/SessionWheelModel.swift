@@ -28,6 +28,12 @@ struct SessionWheelTab: Identifiable, Equatable {
 
     /// The segment's short label: S1, S2 and so on by position.
     static func shortLabel(position: Int) -> String { "S\(position + 1)" }
+
+    /// The segment's label: "Session 1" in full while it is the only tab,
+    /// the short label beside others.
+    static func label(position: Int, tabCount: Int) -> String {
+        tabCount == 1 ? "Session \(position + 1)" : shortLabel(position: position)
+    }
 }
 
 /// RR-469: the tab controls after the tab segments. Each tab closes from the
@@ -255,20 +261,107 @@ enum SessionWheelGeometry {
         return min(3, 1 + 2 * extra / CGFloat(sessionMaxItems - sessionStandardItems))
     }
 
-    /// A tab segment's label sits before its centre along the label's axis
-    /// and the close x after it, so both stay upright and in reading order.
-    static let tabLabelShift: CGFloat = -6
-    static let tabCloseShift: CGFloat = 9
-    static let tabCloseHitRadius: CGFloat = 8
+    /// A tab segment spaces its label and close x like `space-between`: the
+    /// label starts `tabContentPadding` inside the segment's leading edge and
+    /// the x's circle ends that far inside its trailing edge, in reading
+    /// order. A segment too narrow for both shrinks the padding.
+    static let tabContentPadding: CGFloat = 10
+    /// The close x's hover circle, which is also where the x is hit.
+    static let tabCloseDiameter: CGFloat = 20
+    static var tabCloseHitRadius: CGFloat { tabCloseDiameter / 2 }
+
+    /// The label in tab segment `index` of `items`.
+    static func sessionTabLabel(_ index: Int, items: Int) -> String {
+        SessionWheelTab.label(position: index, tabCount: items - SessionWheelTabControl.allCases.count)
+    }
+
+    /// Extra space between a tab label's letters.
+    static let tabLabelTracking: CGFloat = 1
+    /// How far a tab label turns clockwise about its middle. The label starts
+    /// near the segment's leading end, where the arc is steeper, so without
+    /// this it reads as leaning anticlockwise of the cell.
+    static let tabLabelTilt: CGFloat = 1 * .pi / 180
+
+    /// One letter of a tab label set on the arc: its outline, already in
+    /// place, and the point on the arc its middle sits on.
+    struct Glyph: Equatable {
+        let outline: CGPath
+        let point: CGPoint
+        let rotation: CGFloat
+    }
+
+    /// A label's letters on a straight, tracked baseline in the wheel's
+    /// caption font: each one's outline (y up, from its origin), advance and
+    /// origin along the baseline, the label's width, and the cap height.
+    static func trackedLetters(_ text: String)
+        -> (letters: [(outline: CGPath, x: CGFloat, advance: CGFloat)], width: CGFloat, capHeight: CGFloat) {
+        let font = AppTypography.appKitFont(.caption) as CTFont
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
+            .font: font, .kern: tabLabelTracking, .ligature: 0,
+        ]))
+        var letters: [(outline: CGPath, x: CGFloat, advance: CGFloat)] = []
+        var width: CGFloat = 0
+        for run in (CTLineGetGlyphRuns(line) as? [CTRun]) ?? [] {
+            let count = CTRunGetGlyphCount(run)
+            let runFont = (CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName].map { $0 as! CTFont } ?? font
+            var glyphs = [CGGlyph](repeating: 0, count: count)
+            var positions = [CGPoint](repeating: .zero, count: count)
+            var advances = [CGSize](repeating: .zero, count: count)
+            CTRunGetGlyphs(run, CFRange(location: 0, length: count), &glyphs)
+            CTRunGetPositions(run, CFRange(location: 0, length: count), &positions)
+            CTFontGetAdvancesForGlyphs(runFont, .horizontal, glyphs, &advances, count)
+            for index in 0..<count {
+                let outline = CTFontCreatePathForGlyph(runFont, glyphs[index], nil) ?? CGMutablePath()
+                letters.append((outline, positions[index].x, advances[index].width))
+                // The width ends at the last letter, without its trailing tracking.
+                width = max(width, positions[index].x + advances[index].width)
+            }
+        }
+        return (letters, width, CTFontGetCapHeight(font))
+    }
+
+    /// Where tab segment `index` draws its label and close x. Each sits on
+    /// the arc at its own angle and turns with the segment, so the two read
+    /// the same way. The label curves with the cell: `glyphs` sets each
+    /// letter's outline on the arc, and `label` is the label's middle.
+    static func sessionTabLayout(_ index: Int, items: Int)
+        -> (label: (point: CGPoint, rotation: CGFloat), glyphs: [Glyph], close: (point: CGPoint, rotation: CGFloat)) {
+        let slot = sessionSlots.first ?? 0
+        let arc = sessionItemArc(index, items: items)
+        let centre = arc.start + arc.width / 2
+        let rotation = labelRotation(slot: slot, offset: centre)
+        // Reading order runs clockwise, or anticlockwise where labelRotation turns labels over.
+        let direction: CGFloat = cos(rotation - (CGFloat(slot) * sliceAngle + centre)) >= 0 ? 1 : -1
+        let half = arc.width / 2 * actionRadius - segmentGap / 2
+        let text = trackedLetters(sessionTabLabel(index, items: items))
+        let padding = min(tabContentPadding, max(0, (2 * half - text.width - tabCloseDiameter) / 2))
+        func place(_ distance: CGFloat) -> (point: CGPoint, rotation: CGFloat) {
+            let offset = centre + direction * distance / actionRadius
+            return (position(slot: slot, radius: actionRadius, offset: offset), rotation + offset - centre)
+        }
+        let start = -(half - padding)
+        let middle = place(start + text.width / 2)
+        let tilt = CGAffineTransform(translationX: middle.point.x, y: middle.point.y)
+            .rotated(by: tabLabelTilt)
+            .translatedBy(x: -middle.point.x, y: -middle.point.y)
+        let glyphs = text.letters.map { letter in
+            let placement = place(start + letter.x + letter.advance / 2)
+            // Centre the letter on its point, flip the font's y-up outline,
+            // drop it so the cap height straddles the arc, then tilt the label.
+            var transform = CGAffineTransform(translationX: placement.point.x, y: placement.point.y)
+                .rotated(by: placement.rotation)
+                .translatedBy(x: -letter.advance / 2, y: text.capHeight / 2)
+                .scaledBy(x: 1, y: -1)
+                .concatenating(tilt)
+            return Glyph(outline: letter.outline.copy(using: &transform) ?? letter.outline,
+                         point: placement.point.applying(tilt), rotation: placement.rotation + tabLabelTilt)
+        }
+        return (middle, glyphs, place(half - padding - tabCloseDiameter / 2))
+    }
 
     /// Where the close x inside tab segment `index` is drawn and hit.
     static func sessionTabClosePoint(_ index: Int, items: Int) -> CGPoint {
-        let slot = sessionSlots.first ?? 0
-        let arc = sessionItemArc(index, items: items)
-        let offset = arc.start + arc.width / 2
-        let center = position(slot: slot, radius: actionRadius, offset: offset)
-        let rotation = labelRotation(slot: slot, offset: offset)
-        return CGPoint(x: center.x + tabCloseShift * cos(rotation), y: center.y + tabCloseShift * sin(rotation))
+        sessionTabLayout(index, items: items).close.point
     }
 
     /// One segment's start and width, relative to the session cell's centre.
