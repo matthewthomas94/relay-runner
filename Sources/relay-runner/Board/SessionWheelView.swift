@@ -267,8 +267,9 @@ struct SessionWheelView: View {
         }
     }
 
-    /// RR-469: a tab segment shows S1, S2 and so on with its close x, the
-    /// active one selected; an off tab is dimmed. Add follows the tabs.
+    /// RR-469: a tab segment shows its label and close x spaced apart: Session 1
+    /// alone, S1, S2 and so on beside other tabs. The active one is selected;
+    /// an off tab is dimmed. Add follows the tabs.
     private func tabItemButton(_ item: SessionWheelSessionItem, index: Int, count: Int, slot: Int) -> some View {
         let arc = geometry.sessionItemArc(index, items: count)
         let enabled = model.isEnabled(item)
@@ -277,8 +278,7 @@ struct SessionWheelView: View {
         return submenuButton(index: index, slot: slot, title: item.title, help: help,
                              symbol: item.control?.symbol, enabled: enabled, hovered: hovered,
                              destructive: false,
-                             label: item.tab == nil ? nil : SessionWheelTab.shortLabel(position: index),
-                             labelShift: geometry.tabLabelShift,
+                             labelGlyphs: item.tab == nil ? nil : geometry.sessionTabLayout(index, items: count).glyphs,
                              selected: item.tab?.isActive ?? false,
                              dimmed: item.tab.map { !$0.isLive } ?? false,
                              arc: arc) {
@@ -289,24 +289,26 @@ struct SessionWheelView: View {
     }
 
     /// The x inside a tab's segment: closes that tab, as the tab strip's x does.
+    /// It is the size of Add's plus, and hovering it fills a circle behind it.
     private func tabCloseButton(_ tab: SessionWheelTab, index: Int, count: Int, slot: Int) -> some View {
-        let arc = geometry.sessionItemArc(index, items: count)
+        let placement = geometry.sessionTabLayout(index, items: count).close
         let hovered = model.hoveredTabClose?.id == tab.id
-        let size = geometry.tabCloseHitRadius * 2
+        let size = geometry.tabCloseDiameter
         return Button {
             guard model.hoveredSession != nil else { return }
             performTabItem(.close(tab))
         } label: {
-            LucideImage(.x, size: Self.submenuIconSize - 2)
-                .foregroundStyle(hovered ? ProgramBoardStyle.red : ProgramBoardStyle.mutedText)
+            LucideImage(.x, size: Self.submenuIconSize)
+                .foregroundStyle(hovered ? ProgramBoardStyle.primaryText : ProgramBoardStyle.mutedText)
                 .opacity(tab.isLive ? 1 : 0.45)
-                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: hovered)
                 .frame(width: size, height: size)
+                .background(Circle().fill(GraphicalTheme.neutral5).opacity(hovered ? 1 : 0))
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: hovered)
                 .contentShape(Circle())
-                .rotationEffect(.radians(geometry.labelRotation(slot: slot, offset: arc.start + arc.width / 2)))
+                .rotationEffect(.radians(placement.rotation))
         }
         .buttonStyle(SessionWheelActionButtonStyle())
-        .position(geometry.sessionTabClosePoint(index, items: count))
+        .position(placement.point)
         .accessibilityLabel(tab.closeTitle)
     }
 
@@ -419,13 +421,13 @@ struct SessionWheelView: View {
         .accessibilityValue(model.autoPlay ? "On" : "Off")
     }
 
-    /// A tab segment passes `label` (S1, S2…) and no symbol; `labelShift`
-    /// moves it along its own axis to leave room for the close x.
+    /// A tab segment passes `labelGlyphs` (Session 1, S1, S2… set along the
+    /// arc beside its close x) and no symbol.
     private func submenuButton(index: Int, slot: Int, title: String, help: String, symbol: LucideIcon?,
                                enabled: Bool, hovered: Bool, destructive: Bool,
                                keepAwake: KeepAwakeState? = nil,
                                isOn: Bool? = nil, subdivisions: Int = 3,
-                               label: String? = nil, labelShift: CGFloat = 0,
+                               labelGlyphs: [SessionWheelGeometry.Glyph]? = nil,
                                selected: Bool = false, dimmed: Bool = false,
                                arc: (start: CGFloat, width: CGFloat)? = nil,
                                perform: @escaping () -> Void) -> some View {
@@ -439,33 +441,36 @@ struct SessionWheelView: View {
                                        outerRadius: geometry.actionOuterRadius, subdivision: index, subdivisions: subdivisions,
                                        arcStart: arc?.start, arcWidth: arc?.width)
         let offset = arc.map { $0.start + $0.width / 2 } ?? geometry.actionOffset(index, subdivisions: subdivisions)
+        let foreground: Color = !enabled
+            ? (contrast == .increased ? GraphicalTheme.neutral7 : GraphicalTheme.neutral6) // Kit disabled label
+            : destructive ? ProgramBoardStyle.red
+            : selected ? ProgramBoardStyle.activeTrayOrange
+            : isOn.map { $0 ? ProgramBoardStyle.activeTrayOrange : .white } ?? ProgramBoardStyle.primaryText
         return Button(action: perform) {
             ZStack {
                 controlBackground(shape, presentation: presentation)
-                Group {
-                    if let label {
-                        Text(label)
-                            .font(AppTypography.font(.caption))
-                            .monospacedDigit()
-                            .opacity(dimmed ? 0.45 : 1)
-                    } else if let keepAwake {
-                        SessionWheelKeepAwakeGlyph(state: keepAwake, size: Self.submenuIconSize)
-                    } else if let symbol {
-                        LucideImage(symbol, size: Self.submenuIconSize)
+                if let labelGlyphs {
+                    // The label curves with its cell: one shape of its letters'
+                    // outlines, so no letter snaps to the pixel grid off the arc.
+                    Path { path in labelGlyphs.forEach { path.addPath(Path($0.outline)) } }
+                        .fill(foreground)
+                        .opacity(dimmed ? 0.45 : 1)
+                } else {
+                    Group {
+                        if let keepAwake {
+                            SessionWheelKeepAwakeGlyph(state: keepAwake, size: Self.submenuIconSize)
+                        } else if let symbol {
+                            LucideImage(symbol, size: Self.submenuIconSize)
+                        }
                     }
+                    .contentTransition(.opacity)
+                    .animation(RelayMotion.change(reduceMotion: reduceMotion), value: symbol)
+                    .frame(width: geometry.actionLabelSize.width, height: geometry.actionLabelSize.height)
+                    .foregroundStyle(foreground)
+                    .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isOn)
+                    .rotationEffect(.radians(geometry.labelRotation(slot: slot, offset: offset)))
+                    .position(geometry.position(slot: slot, radius: geometry.actionRadius, offset: offset))
                 }
-                .contentTransition(.opacity)
-                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: symbol)
-                .frame(width: geometry.actionLabelSize.width, height: geometry.actionLabelSize.height)
-                .offset(x: label == nil ? 0 : labelShift)
-                .foregroundStyle(!enabled
-                                 ? (contrast == .increased ? GraphicalTheme.neutral7 : GraphicalTheme.neutral6) // Kit disabled label
-                                 : destructive ? ProgramBoardStyle.red
-                                 : selected ? ProgramBoardStyle.activeTrayOrange
-                                 : isOn.map { $0 ? ProgramBoardStyle.activeTrayOrange : .white } ?? ProgramBoardStyle.primaryText)
-                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isOn)
-                .rotationEffect(.radians(geometry.labelRotation(slot: slot, offset: offset)))
-                .position(geometry.position(slot: slot, radius: geometry.actionRadius, offset: offset))
             }
             .contentShape(shape)
         }
