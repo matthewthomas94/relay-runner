@@ -38,7 +38,21 @@ These packages are not committed to the repository or pre-bundled in the signed 
 | [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) | `>=0.4.9,<0.6` | MIT License; its Kokoro model is Apache License 2.0 |
 | [huggingface_hub](https://github.com/huggingface/huggingface_hub) | `>=0.20,<1` | Apache License 2.0 |
 
-Those packages can install transitive dependencies. Their wheel metadata and license files remain authoritative for the concrete environment; use `python -m pip show <package>` and the installed `.dist-info` directories when auditing a release machine.
+Those packages install transitive dependencies. Their wheel metadata and license files remain authoritative for the concrete environment; use `python -m pip show <package>` and the installed `.dist-info` directories when auditing a release machine.
+
+### Copyleft-licensed transitive packages
+
+Resolving `services/requirements.txt` on Python 3.13 (macOS arm64) on 2026-11-11 installed 41 packages. The ones below carry a copyleft license; the rest declare MIT, BSD, Apache 2.0, PSF 2.0 or similar permissive terms. pip downloads all of them from PyPI into the services venv named above at first run. None of them is committed to this repository, compiled into the app or included in the signed app bundle or DMG.
+
+| Package | Resolved version | Required by | License |
+| --- | --- | --- | --- |
+| [phonemizer-fork](https://pypi.org/project/phonemizer-fork/) (fork of [bootphon/phonemizer](https://github.com/bootphon/phonemizer)) | 3.3.2 | kokoro-onnx (`>=3.3.2`) | GNU General Public License v3 or later |
+| [espeak-ng](https://github.com/espeak-ng/espeak-ng) (`libespeak-ng.dylib` and `espeak-ng-data`) | 1.52.0, prebuilt inside the `espeakng-loader` wheel | espeakng-loader | GNU General Public License v3 or later |
+| [espeakng-loader](https://github.com/thewh1teagle/espeakng-loader) | 0.2.4 | kokoro-onnx (`>=0.2.4`) | MIT License for the loader code in its upstream repository; the wheel declares no license metadata and carries the GPL-licensed espeak-ng library and data above |
+| [certifi](https://github.com/certifi/python-certifi) | 2026.10.23 | requests, through huggingface_hub | Mozilla Public License 2.0 |
+| [tqdm](https://github.com/tqdm/tqdm) | 4.70.1 | huggingface_hub | Mozilla Public License 2.0 and MIT License |
+
+kokoro-onnx imports `phonemizer` and `espeakng_loader` to convert text to phonemes, so the speech services (`tts_worker.py`, `preview_voice.py`) load the espeak-ng shared library from the venv whenever Kokoro speech is generated. Later installs can resolve newer versions within the declared ranges.
 
 When no compatible system Python exists, setup downloads a checksum-verified [python-build-standalone](https://github.com/astral-sh/python-build-standalone) CPython distribution. Python and the libraries included in that distribution retain their upstream licenses.
 
