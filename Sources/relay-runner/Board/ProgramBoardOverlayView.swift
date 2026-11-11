@@ -35,13 +35,12 @@ enum ProgramBoardLayout {
     static let newTicketButtonSize: CGFloat = compactControlHeight
     static let workHeaderHeight: CGFloat = 36
     static let overviewSectionSpacing: CGFloat = 12
-    /// The band of selected-project pills under the Projects header. It is as
-    /// tall as the gap above the ticket columns' first card, so the first
-    /// project and the first ticket share a top edge.
+    /// The gap under the Projects header. It is as tall as the gap above the
+    /// ticket columns' first card, so the first project and the first ticket
+    /// share a top edge.
     static var projectHeaderToListSpacing: CGFloat {
         workCardTopOffset - panelVerticalPadding - projectsHeaderHeight
     }
-    static let projectPillHeight: CGFloat = 28
     static let workSectionSpacing: CGFloat = 16
     static let dropIndicatorHeight: CGFloat = 3
     static let dropIndicatorBottomPadding: CGFloat = 4
@@ -334,12 +333,100 @@ struct ProgramBoardOverlayView: View {
         }
     }
 
+    /// The Notes page: the list in a left panel as wide as the Workspace's
+    /// Projects panel, and the open note in its own panel beside it, with
+    /// Start Notetaker at its top right.
     private var notesLibraryContent: some View {
+        GeometryReader { geometry in
+            HStack(alignment: .top, spacing: BoardSurfaceLayout.columnSpacing) {
+                notesListPanel
+                    .frame(width: BoardSurfaceLayout.boardColumnWidth(rowWidth: geometry.size.width))
+                    .frame(maxHeight: .infinity)
+                    .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+                    .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+                notesDetailPanel
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+                    .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+            }
+        }
+    }
+
+    private var notesListPanel: some View {
         VStack(spacing: 0) {
             HStack {
                 Text("Notes")
                     .font(AppTypography.font(.sectionHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
+                Spacer()
+            }
+            .padding(.horizontal, 22)
+            .frame(height: 60)
+            if let message = model.noteLoadErrorMessage {
+                ProgramDetailNotice(message: message)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 12)
+                    .transition(.relayElement)
+            }
+            if let message = noteStartFailureMessage {
+                ProgramDetailNotice(message: message)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 12)
+                    .transition(.relayElement)
+            }
+            VStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    TextField("Search titles and summaries", text: $model.noteQuery, prompt: Text(""))
+                        .appPlaceholder("Search titles and summaries", when: model.noteQuery.isEmpty)
+                        .textFieldStyle(.plain)
+                        .font(AppTypography.font(.field))
+                        .foregroundStyle(ProgramBoardStyle.primaryText)
+                        .lineLimit(1)
+                        .padding(.horizontal, GraphicalTheme.spaceS)
+                        .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
+                        .background(ProgramTicketFieldBackground(isFocused: notesSearchFocused))
+                        .focused($notesSearchFocused)
+                        .onSubmit { notesSearchFocused = false }
+                        .accessibilityLabel("Search notes")
+                    ProgramIconButton(icon: .search, help: "Search notes") {
+                        notesSearchFocused = true
+                    }
+                }
+                RelayFadingScrollView {
+                    LazyVStack(spacing: 8) {
+                        if model.visibleNotes.isEmpty {
+                            RelaySwap(model.noteQuery.isEmpty, style: .text, alignment: .leading) { isEmpty in
+                                Text(isEmpty ? "Your notes will appear here." : "No matching notes.")
+                                    .font(AppTypography.font(.supporting))
+                                    .foregroundStyle(ProgramBoardStyle.mutedText)
+                            }
+                            .padding(.top, 28)
+                            .transition(.relayReplacing(.text))
+                        }
+                        ForEach(model.visibleNotes) { note in
+                            ProgramNoteCard(
+                                item: note,
+                                isSelected: model.selectedNoteDetail?.item.id == note.id,
+                                onSelect: { onNoteOpen(note) }
+                            )
+                            // Cards returning to an empty search wait for
+                            // "No matching notes." to leave their place.
+                            .transition(.relayReplacing(.element))
+                        }
+                    }
+                    .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteItems)
+                    .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteQuery)
+                }
+            }
+            .padding(18)
+        }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteLoadErrorMessage)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: noteStartFailureMessage)
+    }
+
+    private var notesDetailPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
                 Spacer()
                 let ownsNote = model.noteCaptureSnapshot.phase.ownsForeground
                 let note = ProgramNoteToolbarPresentation.resolve(phase: model.noteCaptureSnapshot.phase)
@@ -358,111 +445,49 @@ struct ProgramBoardOverlayView: View {
             }
             .padding(.horizontal, 22)
             .frame(height: 60)
-            Rectangle().fill(SettingsSurfaceColor.divider).frame(height: 1)
-            if let message = model.noteLoadErrorMessage {
-                ProgramDetailNotice(message: message)
-                    .padding(.horizontal, 22)
-                    .padding(.top, 12)
-                    .transition(.relayElement)
-            }
-            if let message = noteStartFailureMessage {
-                ProgramDetailNotice(message: message)
-                    .padding(.horizontal, 22)
-                    .padding(.top, 12)
-                    .transition(.relayElement)
-            }
-            HStack(spacing: 0) {
-                VStack(spacing: 12) {
-                    HStack(spacing: 8) {
-                        TextField("Search titles and summaries", text: $model.noteQuery, prompt: Text(""))
-                            .appPlaceholder("Search titles and summaries", when: model.noteQuery.isEmpty)
-                            .textFieldStyle(.plain)
-                            .font(AppTypography.font(.field))
-                            .foregroundStyle(ProgramBoardStyle.primaryText)
-                            .lineLimit(1)
-                            .padding(.horizontal, GraphicalTheme.spaceS)
-                            .frame(height: ProgramTicketPanelStyle.compactFieldHeight)
-                            .background(ProgramTicketFieldBackground(isFocused: notesSearchFocused))
-                            .focused($notesSearchFocused)
-                            .onSubmit { notesSearchFocused = false }
-                            .accessibilityLabel("Search notes")
-                        ProgramIconButton(icon: .search, help: "Search notes") {
-                            notesSearchFocused = true
-                        }
-                    }
-                    RelayFadingScrollView {
-                        LazyVStack(spacing: 8) {
-                            if model.visibleNotes.isEmpty {
-                                RelaySwap(model.noteQuery.isEmpty, style: .text, alignment: .leading) { isEmpty in
-                                    Text(isEmpty ? "Your notes will appear here." : "No matching notes.")
-                                        .font(AppTypography.font(.supporting))
-                                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                                }
-                                .padding(.top, 28)
-                                .transition(.relayReplacing(.text))
-                            }
-                            ForEach(model.visibleNotes) { note in
-                                ProgramNoteCard(
-                                    item: note,
-                                    isSelected: model.selectedNoteDetail?.item.id == note.id,
-                                    onSelect: { onNoteOpen(note) }
-                                )
-                                // Cards returning to an empty search wait for
-                                // "No matching notes." to leave their place.
-                                .transition(.relayReplacing(.element))
-                            }
-                        }
-                        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteItems)
-                        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteQuery)
-                    }
+            notesDetailContent
+        }
+    }
+
+    private var notesDetailContent: some View {
+        ZStack {
+            if let detail = model.selectedNoteDetail {
+                ProgramNoteDetailPanel(
+                    detail: detail,
+                    captureSnapshot: model.noteCaptureSnapshot,
+                    theme: model.theme,
+                    onClose: onNoteClose,
+                    onStop: onStopNoteTaker,
+                    onRetry: { onNoteOpen(detail.item) },
+                    onMetadataRetry: { onNoteMetadataRetry(detail.item) },
+                    onDelete: { onNoteDelete(detail.item) },
+                    recoveryOffer: model.selectedNoteRecoveryOffer,
+                    recoveryInFlight: model.noteRecoveryInFlight,
+                    recoveryErrorMessage: model.noteRecoveryErrorMessage,
+                    onRecover: onNoteRecovery,
+                    onResume: onResumeRecoveredNote
+                )
+                .id(detail.item.id)
+                .transition(.programBoardLeaving(.surface, replacing: true))
+            } else {
+                VStack(spacing: 10) {
+                    LucideImage(.notebookText, size: 32)
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                    Text("Select a note")
+                        .font(AppTypography.font(.sectionHeading))
+                        .foregroundStyle(ProgramBoardStyle.secondaryText)
+                    Text("Your transcripts and summaries, all in one place.")
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 390)
                 }
-                .padding(18)
-                .frame(width: 330)
-                Rectangle().fill(SettingsSurfaceColor.divider).frame(width: 1)
-                ZStack {
-                    if let detail = model.selectedNoteDetail {
-                        ProgramNoteDetailPanel(
-                            detail: detail,
-                            captureSnapshot: model.noteCaptureSnapshot,
-                            theme: model.theme,
-                            onClose: onNoteClose,
-                            onStop: onStopNoteTaker,
-                            onRetry: { onNoteOpen(detail.item) },
-                            onMetadataRetry: { onNoteMetadataRetry(detail.item) },
-                            onDelete: { onNoteDelete(detail.item) },
-                            recoveryOffer: model.selectedNoteRecoveryOffer,
-                            recoveryInFlight: model.noteRecoveryInFlight,
-                            recoveryErrorMessage: model.noteRecoveryErrorMessage,
-                            onRecover: onNoteRecovery,
-                            onResume: onResumeRecoveredNote
-                        )
-                        .id(detail.item.id)
-                        .transition(.programBoardLeaving(.surface, replacing: true))
-                    } else {
-                        VStack(spacing: 10) {
-                            LucideImage(.notebookText, size: 32)
-                                .foregroundStyle(ProgramBoardStyle.mutedText)
-                            Text("Select a note")
-                                .font(AppTypography.font(.sectionHeading))
-                                .foregroundStyle(ProgramBoardStyle.secondaryText)
-                            Text("Your transcripts and summaries, all in one place.")
-                                .font(AppTypography.font(.supporting))
-                                .foregroundStyle(ProgramBoardStyle.mutedText)
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: 390)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .accessibilityElement(children: .combine)
-                        .transition(.relayReplacing(.surface))
-                    }
-                }
-                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.selectedNoteDetail?.item.id)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityElement(children: .combine)
+                .transition(.relayReplacing(.surface))
             }
         }
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteLoadErrorMessage)
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: noteStartFailureMessage)
-        .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
-        .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.selectedNoteDetail?.item.id)
     }
 
     private func boardContent(viewportSize: CGSize) -> some View {
@@ -1378,28 +1403,6 @@ private struct ProgramOverviewColumn: View {
         ProgramProjectRowFilter.visibleProjects(snapshot.projects, query: "")
     }
 
-    /// The selected projects as removable pills, in the band the cards line
-    /// up under. They scroll sideways and fade where they are cut off.
-    private var selectionRow: some View {
-        RelayFadingScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: GraphicalTheme.spaceXS) {
-                ForEach(selectedProjectPaths, id: \.self) { path in
-                    ProgramProjectPill(
-                        name: snapshot.projectName(for: path) ?? URL(fileURLWithPath: path).lastPathComponent,
-                        onRemove: { onToggleProject(path) }
-                    )
-                    .transition(.relayElement)
-                }
-            }
-            .frame(height: ProgramBoardLayout.projectHeaderToListSpacing)
-            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selectedProjectPaths)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: ProgramBoardLayout.projectHeaderToListSpacing)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Selected projects")
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ProgramProjectsHeader(
@@ -1421,7 +1424,9 @@ private struct ProgramOverviewColumn: View {
                     .transition(.relayElement)
             }
 
-            selectionRow
+            // The gap that lines the first project up with the first ticket.
+            Color.clear
+                .frame(height: ProgramBoardLayout.projectHeaderToListSpacing)
 
             BoardOverlayScrollView(contentInsets: ProgramBoardLayout.projectScrollContentInsets) {
                 VStack(alignment: .leading, spacing: ProgramBoardLayout.projectCardSpacing) {
@@ -1646,41 +1651,9 @@ private struct ProgramAddProjectMenu: View {
     }
 }
 
-/// A selected project in the Projects column's filter band; its x removes it.
-private struct ProgramProjectPill: View {
-    let name: String
-    let onRemove: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovered = false
-
-    var body: some View {
-        HStack(spacing: GraphicalTheme.spaceXXS) {
-            Text(name)
-                .font(AppTypography.font(.programAction))
-                .foregroundStyle(ProgramBoardStyle.primaryText)
-                .lineLimit(1)
-            Button(action: onRemove) {
-                LucideImage(.x, size: 12)
-                    .foregroundStyle(isHovered ? ProgramBoardStyle.primaryText : ProgramBoardStyle.secondaryText)
-                    .frame(width: 20, height: 20)
-                    .background(Circle().fill(isHovered ? BoardDarkSurfaceStyle.cardActiveFill : .clear))
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.graphicalPress)
-            .onHover { isHovered = $0 }
-            .animation(reduceMotion ? nil : RelayMotion.hover, value: isHovered)
-            .programButtonCursor()
-            .accessibilityLabel("Remove \(name) from the filter")
-            .notchHint("Remove from filter")
-        }
-        .padding(.leading, GraphicalTheme.spaceS)
-        .padding(.trailing, GraphicalTheme.spaceXXS)
-        .frame(height: ProgramBoardLayout.projectPillHeight)
-        .background(Capsule().fill(BoardDarkSurfaceStyle.cardFill))
-        .fixedSize()
-    }
-}
-
+/// A project in the Projects panel, styled like a Settings category: no fill
+/// at rest, shimmering dots on hover, and a solid fill while it filters the
+/// board. Several rows can be selected at once.
 private struct ProgramProjectCard: View {
     let item: ProgramStatusItem
     let isSelected: Bool
@@ -1688,32 +1661,44 @@ private struct ProgramProjectCard: View {
     let onSelect: () -> Void
     let onOpenInFinder: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @FocusState private var isFocused: Bool
     @State private var isHovered = false
+    @State private var isIconHovered = false
+    @State private var isPickingIcon = false
+
+    private static let iconSlotSize: CGFloat = 24
+    /// Puts the icon's glyph under the "Projects" heading's leading edge.
+    private static let leadingInset: CGFloat = ProgramBoardLayout.projectRowHorizontalInset - 4
+
+    private var iconStore: ProjectIconStore { .shared }
 
     private var isEnabled: Bool {
         item.project?.path != nil
     }
 
     private var presentation: ProgramBoardInteractionPresentation {
-        ProgramBoardInteractionPresentation.resolve(
-            surface: .projectCard,
-            isEnabled: isEnabled,
-            isSelected: isSelected,
+        SettingsNavigationPresentation.resolve(
+            selected: isSelected,
             isHovered: isHovered,
-            isFocused: isFocused,
+            // A clicked row never keeps a focus ring: deselecting returns it
+            // to no background.
+            isFocused: false,
             reduceMotion: reduceMotion
         )
     }
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius, style: .continuous)
         Button(action: onSelect) {
             HStack(alignment: .center, spacing: 8) {
+                // Reserves room for the icon button overlaid outside the row button.
+                Color.clear
+                    .frame(width: Self.iconSlotSize, height: Self.iconSlotSize)
+                    .accessibilityHidden(true)
                 // A long name tightens a little, like the column headings; one
                 // that still overflows loses its tail.
                 Text(item.project?.name ?? "Unknown project")
-                    .font(AppTypography.font(.projectTitle))
-                    .foregroundStyle(ProgramBoardStyle.primaryText)
+                    .font(AppTypography.font(.button))
+                    .foregroundStyle(ProgramBoardStyle.primaryText.opacity(presentation.foregroundOpacity))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                     .truncationMode(.tail)
@@ -1727,30 +1712,81 @@ private struct ProgramProjectCard: View {
                 // under the real actions drawn on top.
                 actions.fixedSize().hidden().accessibilityHidden(true)
             }
-            .padding(.horizontal, ProgramBoardLayout.projectRowHorizontalInset)
+            .padding(.leading, Self.leadingInset)
+            .padding(.trailing, ProgramBoardLayout.projectRowHorizontalInset)
             .frame(maxWidth: .infinity, minHeight: ProgramBoardLayout.projectRowHeight, alignment: .leading)
-            .background(
-                ProgramBoardInteractiveBackground(
-                    shape: .rounded(BoardDarkSurfaceStyle.nestedCardCornerRadius),
-                    presentation: presentation,
-                    disabled: !isEnabled,
-                    usesCardStyle: true
+            .background {
+                ZStack {
+                    // Hover fills the row with the skeleton loader's
+                    // shimmering dots; a selected row has a solid fill.
+                    FluxDotsBackground(
+                        cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius,
+                        style: .standard,
+                        isVisible: isHovered && !isSelected
+                    )
+                    shape.fill(isSelected ? BoardDarkSurfaceStyle.cardActiveFill : .clear)
+                    shape.fill(Color.white.opacity(presentation.fillOverlayOpacity))
+                }
+            }
+            .clipShape(shape)
+            .overlay(
+                shape.strokeBorder(
+                    Color.white.opacity(isSelected || isHovered ? 0 : presentation.strokeOpacity),
+                    lineWidth: 1
                 )
             )
+            .contentShape(shape)
         }
         .buttonStyle(.graphicalPress)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.55)
-        .animation(presentation.animation, value: presentation)
-        .focusable(isEnabled)
+        .animation(presentation.animationDuration > 0 ? RelayMotion.hover : nil, value: presentation)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isSelected)
         .focusEffectDisabled(true)
-        .focused($isFocused)
         .onHover { isHovered = isEnabled && $0 }
         .programButtonCursor(enabled: isEnabled)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .notchHint(isSelected ? "Stop filtering" : "Show project tickets")
+        .overlay(alignment: .leading) {
+            iconButton.padding(.leading, Self.leadingInset)
+        }
         .overlay(alignment: .trailing) {
             actions.fixedSize().padding(.trailing, ProgramBoardLayout.projectRowActionInset)
+        }
+    }
+
+    /// The project's icon; clicking it opens the picker.
+    @ViewBuilder
+    private var iconButton: some View {
+        if let path = item.project?.path {
+            let shape = RoundedRectangle(cornerRadius: GraphicalTheme.radiusXS, style: .continuous)
+            Button { isPickingIcon.toggle() } label: {
+                LucideImage(iconStore.icon(for: path), size: 16)
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
+                    .frame(width: Self.iconSlotSize, height: Self.iconSlotSize)
+                    .background(shape.fill(Color.white.opacity(isIconHovered || isPickingIcon ? 0.1 : 0)))
+                    .contentShape(shape)
+            }
+            .buttonStyle(.graphicalPress)
+            .focusEffectDisabled(true)
+            .onHover { isIconHovered = $0 }
+            .animation(reduceMotion ? nil : RelayMotion.hover, value: isIconHovered)
+            .programButtonCursor()
+            .accessibilityLabel("Choose an icon for \(item.project?.name ?? "this project")")
+            .notchHint("Choose icon")
+            .background {
+                SettingsDropdownPresenter(isPresented: $isPickingIcon, minWidth: ProgramProjectIconPicker.width) {
+                    ProgramProjectIconPicker(
+                        selection: iconStore.icon(for: path),
+                        onSelect: { icon in
+                            iconStore.setIcon(icon, for: path)
+                            isPickingIcon = false
+                        },
+                        dismiss: { isPickingIcon = false }
+                    )
+                    .environment(\.colorScheme, .dark)
+                }
+            }
         }
     }
 
@@ -1768,6 +1804,56 @@ private struct ProgramProjectCard: View {
                 onOpenInFinder()
             }
         }
+    }
+}
+
+/// A grid of every bundled Lucide icon, for choosing a project's icon.
+private struct ProgramProjectIconPicker: View {
+    let selection: LucideIcon
+    let onSelect: (LucideIcon) -> Void
+    let dismiss: () -> Void
+    @State private var hovered: LucideIcon?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let columnCount = 8
+    private static let cellSize: CGFloat = 28
+    private static let spacing: CGFloat = GraphicalTheme.spaceXXS
+    private static let padding: CGFloat = GraphicalTheme.spaceXS
+    static let width = CGFloat(columnCount) * cellSize + CGFloat(columnCount - 1) * spacing + padding * 2
+
+    var body: some View {
+        RelayFadingScrollView {
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.fixed(Self.cellSize), spacing: Self.spacing), count: Self.columnCount),
+                spacing: Self.spacing
+            ) {
+                ForEach(LucideIcon.allCases, id: \.self) { icon in
+                    Button { onSelect(icon) } label: {
+                        LucideImage(icon, size: 16)
+                            .foregroundStyle(SettingsSurfaceColor.primaryText)
+                            .frame(width: Self.cellSize, height: Self.cellSize)
+                            .background(
+                                icon == selection ? GraphicalTheme.neutral4
+                                    : hovered == icon ? GraphicalTheme.neutral3 : .clear,
+                                in: RoundedRectangle(cornerRadius: GraphicalTheme.radiusXS)
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+                    .onHover { hovered = $0 ? icon : (hovered == icon ? nil : hovered) }
+                    .accessibilityLabel(icon.rawValue.replacingOccurrences(of: "-", with: " "))
+                    .accessibilityAddTraits(icon == selection ? .isSelected : [])
+                }
+            }
+            .padding(Self.padding)
+        }
+        .frame(width: Self.width, height: 236)
+        .background(BoardDarkSurfaceBackground(cornerRadius: GraphicalTheme.radiusM))
+        .onExitCommand(perform: dismiss)
+        .animation(reduceMotion ? nil : RelayMotion.hover, value: hovered)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Project icon")
     }
 }
 

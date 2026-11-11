@@ -4,25 +4,103 @@ struct WorkspaceHistoryView: View {
     @Bindable var model: WorkspaceHistoryViewModel
     let onClose: () -> Void
     var onWorkspaceChanged: () -> Void = {}
-    /// Shown as a Workspace tab: it fills the page, and the trailing control
-    /// is `accessory` instead of a close button.
+    /// Shown as a Workspace tab: it fills the page as two panels, and
+    /// `accessory` replaces the close button.
     var isEmbedded = false
     var accessory: AnyView?
     @State private var hoveredCardID: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        if isEmbedded {
+            embeddedBody
+        } else {
+            windowBody
+        }
+    }
+
+    /// The History tab: the title, search and archived tickets in a left
+    /// panel as wide as the Workspace's Projects panel, and the open ticket in
+    /// its own panel with the project picker at its top right.
+    private var embeddedBody: some View {
+        GeometryReader { geometry in
+            HStack(alignment: .top, spacing: BoardSurfaceLayout.columnSpacing) {
+                VStack(spacing: 0) {
+                    HStack {
+                        title
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 22)
+                    .frame(height: Self.headerHeight)
+                    messageStrips
+                    ZStack {
+                        if model.historyLoaded {
+                            historyList
+                                .opacity(model.isLoading ? 0.65 : 1)
+                                .overlay {
+                                    if model.isLoading {
+                                        ProgressView().controlSize(.small)
+                                            .accessibilityLabel("Loading Workspace history")
+                                            .transition(.relayElement)
+                                    }
+                                }
+                                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.isLoading)
+                                .transition(.relayAfterDots(.surface))
+                        } else {
+                            SkeletonLoader(layout: .historyList, label: "Loading Workspace history")
+                                .transition(.dotDisintegrateReplacing)
+                        }
+                    }
+                    .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.historyLoaded)
+                }
+                .frame(width: BoardSurfaceLayout.boardColumnWidth(rowWidth: geometry.size.width))
+                .frame(maxHeight: .infinity)
+                .historyPanelChrome()
+
+                VStack(spacing: 0) {
+                    HStack {
+                        Spacer(minLength: 0)
+                        accessory
+                    }
+                    .padding(.horizontal, 22)
+                    .frame(height: Self.headerHeight)
+                    historyDetailPanel
+                        .opacity(model.isLoading ? 0.65 : 1)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .historyPanelChrome()
+            }
+        }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.errorMessage)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.notice)
+        .task { await model.refresh() }
+    }
+
+    private static let headerHeight: CGFloat = 70
+
+    @ViewBuilder
+    private var messageStrips: some View {
+        if let error = model.errorMessage {
+            messageStrip(error, warning: true)
+                .transition(.relayElement)
+        }
+        if let notice = model.notice {
+            messageStrip(notice, warning: false)
+                .transition(.relayElement)
+        }
+    }
+
+    private var title: some View {
+        Text("Workspace History")
+            .font(AppTypography.font(.sectionHeading))
+            .foregroundStyle(ProgramBoardStyle.primaryText)
+    }
+
+    private var windowBody: some View {
         VStack(spacing: 0) {
             header
             Rectangle().fill(SettingsSurfaceColor.divider).frame(height: 1)
-            if let error = model.errorMessage {
-                messageStrip(error, warning: true)
-                    .transition(.relayElement)
-            }
-            if let notice = model.notice {
-                messageStrip(notice, warning: false)
-                    .transition(.relayElement)
-            }
+            messageStrips
             ZStack {
                 if model.historyLoaded {
                     historySurface
@@ -45,8 +123,7 @@ struct WorkspaceHistoryView: View {
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.errorMessage)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.notice)
-        .frame(width: isEmbedded ? nil : 940, height: isEmbedded ? nil : 640)
-        .frame(maxWidth: isEmbedded ? .infinity : nil, maxHeight: isEmbedded ? .infinity : nil)
+        .frame(width: 940, height: 640)
         .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
         .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius, style: .continuous))
         .task { await model.refresh() }
@@ -54,16 +131,10 @@ struct WorkspaceHistoryView: View {
 
     private var header: some View {
         HStack(spacing: 16) {
-            Text("Workspace History")
-                .font(AppTypography.font(.sectionHeading))
-                .foregroundStyle(ProgramBoardStyle.primaryText)
+            title
             Spacer()
-            if isEmbedded {
-                accessory
-            } else {
-                ProgramIconButton(icon: .x, help: "Close history", action: onClose)
-                    .keyboardShortcut(.cancelAction)
-            }
+            ProgramIconButton(icon: .x, help: "Close history", action: onClose)
+                .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, 22)
         .frame(height: 70)
@@ -71,67 +142,75 @@ struct WorkspaceHistoryView: View {
 
     private var historySurface: some View {
         HStack(spacing: 0) {
-            VStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    TextField("Search archived tickets", text: $model.query, prompt: Text(""))
-                        .appPlaceholder("Search archived tickets", when: model.query.isEmpty)
-                        .graphicalInput()
-                        .onSubmit { Task { await model.search() } }
-                        .onChange(of: model.query) { Task { await model.queryChanged() } }
-                        .accessibilityLabel("Search Workspace history")
-                    ProgramIconButton(icon: .search, help: "Search archived tickets") {
-                        Task { await model.search() }
-                    }
-                }
-                RelayFadingScrollView {
-                    LazyVStack(spacing: 8) {
-                        if model.cards.isEmpty && !model.isLoading {
-                            RelaySwap(model.emptyMessage, style: .text) { message in
-                                Text(message)
-                                    .font(AppTypography.font(.supporting))
-                                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                            }
-                            .padding(.top, 28)
-                            .transition(.relayReplacing(.text))
-                        }
-                        ForEach(model.cards) { card in
-                            historyCard(card)
-                                // Results after an empty search wait for the
-                                // empty-state line to leave their place.
-                                .transition(.relayReplacing(.element))
-                        }
-                    }
-                }
-                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.cards)
-            }
-            .padding(18)
-            .frame(width: 330)
+            historyList
+                .frame(width: 330)
 
             Rectangle().fill(SettingsSurfaceColor.divider).frame(width: 1)
 
-            ZStack {
-                if let card = model.selectedCard {
-                    historyDetail(card)
-                        .id(card.id)
-                        .transition(.relayReplacing(.surface))
-                } else {
-                    VStack(spacing: 10) {
-                        LucideImage(.rotateCcwClock, size: 32)
-                            .foregroundStyle(ProgramBoardStyle.mutedText)
-                        Text("Select a historical ticket")
-                            .foregroundStyle(ProgramBoardStyle.secondaryText)
-                        Text("Search completed work without restoring ticket files.")
-                            .font(AppTypography.font(.supporting))
-                            .foregroundStyle(ProgramBoardStyle.mutedText)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 390)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transition(.relayReplacing(.surface))
+            historyDetailPanel
+        }
+    }
+
+    private var historyList: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                TextField("Search archived tickets", text: $model.query, prompt: Text(""))
+                    .appPlaceholder("Search archived tickets", when: model.query.isEmpty)
+                    .graphicalInput()
+                    .onSubmit { Task { await model.search() } }
+                    .onChange(of: model.query) { Task { await model.queryChanged() } }
+                    .accessibilityLabel("Search Workspace history")
+                ProgramIconButton(icon: .search, help: "Search archived tickets") {
+                    Task { await model.search() }
                 }
             }
-            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.selectedCard?.id)
+            RelayFadingScrollView {
+                LazyVStack(spacing: 8) {
+                    if model.cards.isEmpty && !model.isLoading {
+                        RelaySwap(model.emptyMessage, style: .text) { message in
+                            Text(message)
+                                .font(AppTypography.font(.supporting))
+                                .foregroundStyle(ProgramBoardStyle.mutedText)
+                        }
+                        .padding(.top, 28)
+                        .transition(.relayReplacing(.text))
+                    }
+                    ForEach(model.cards) { card in
+                        historyCard(card)
+                            // Results after an empty search wait for the
+                            // empty-state line to leave their place.
+                            .transition(.relayReplacing(.element))
+                    }
+                }
+            }
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.cards)
         }
+        .padding(18)
+    }
+
+    private var historyDetailPanel: some View {
+        ZStack {
+            if let card = model.selectedCard {
+                historyDetail(card)
+                    .id(card.id)
+                    .transition(.relayReplacing(.surface))
+            } else {
+                VStack(spacing: 10) {
+                    LucideImage(.rotateCcwClock, size: 32)
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                    Text("Select a historical ticket")
+                        .foregroundStyle(ProgramBoardStyle.secondaryText)
+                    Text("Search completed work without restoring ticket files.")
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 390)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.relayReplacing(.surface))
+            }
+        }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.selectedCard?.id)
     }
 
     private func historyCard(_ card: ArtifactHistoryCard) -> some View {
@@ -351,5 +430,12 @@ struct WorkspaceHistoryView: View {
 
     private func formatBytes(_ bytes: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+}
+
+private extension View {
+    func historyPanelChrome() -> some View {
+        background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+            .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius, style: .continuous))
     }
 }

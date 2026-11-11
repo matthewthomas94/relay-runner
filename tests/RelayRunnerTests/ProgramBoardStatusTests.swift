@@ -235,7 +235,7 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         let menuStart = try XCTUnwrap(contents.range(of: "private struct ProgramAddProjectMenu: View"))
         let menuEnd = try XCTUnwrap(
-            contents.range(of: "private struct ProgramProjectPill: View", range: menuStart.upperBound..<contents.endIndex)
+            contents.range(of: "private struct ProgramProjectCard: View", range: menuStart.upperBound..<contents.endIndex)
         )
         let menu = String(contents[menuStart.lowerBound..<menuEnd.lowerBound])
         XCTAssertTrue(menu.contains("SettingsActionPresentation.resolve("))
@@ -307,9 +307,12 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(card.contains(".accessibilityAddTraits(isSelected ? .isSelected : [])"))
         XCTAssertTrue(card.contains(".notchHint("))
         XCTAssertFalse(card.contains(".help("))
-        // Selected projects show as removable pills where the search field was.
+        // A selected project shows as a filled row; there are no filter pills.
         XCTAssertFalse(contents.contains("Search projects"))
-        XCTAssertTrue(contents.contains("ProgramProjectPill("))
+        XCTAssertFalse(contents.contains("ProgramProjectPill"))
+        XCTAssertTrue(card.contains("isVisible: isHovered && !isSelected"))
+        XCTAssertTrue(card.contains("shape.fill(isSelected ? BoardDarkSurfaceStyle.cardActiveFill : .clear)"))
+        XCTAssertTrue(card.contains("AppTypography.font(.button)"))
         XCTAssertTrue(contents.contains("onToggleProject: model.toggleProject(path:)"))
     }
 
@@ -322,7 +325,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         let contents = try String(contentsOf: source, encoding: .utf8)
         let menuStart = try XCTUnwrap(contents.range(of: "private struct ProgramAddProjectMenu: View"))
         let menuEnd = try XCTUnwrap(
-            contents.range(of: "private struct ProgramProjectPill: View", range: menuStart.upperBound..<contents.endIndex)
+            contents.range(of: "private struct ProgramProjectCard: View", range: menuStart.upperBound..<contents.endIndex)
         )
         let menu = String(contents[menuStart.lowerBound..<menuEnd.lowerBound])
         let styleStart = try XCTUnwrap(menu.range(of: "\n        .buttonStyle(.graphicalPress)"))

@@ -9,12 +9,14 @@ enum SkeletonLoaderLayout: Equatable {
     case board(columnTop: CGFloat)
     /// A provider session in the embedded terminal.
     case terminal
-    /// The Notes tab: the list of notes beside the open note.
+    /// The Notes tab: the list of notes in its panel beside the open note's.
     case notes
     /// The Settings tab: categories, their settings, and the agent card.
     case settings
     /// Workspace History: the archived tickets beside the open one.
     case history
+    /// The History tab's left panel: the search and archived tickets alone.
+    case historyList
 }
 
 /// A placeholder shape in a skeleton loader.
@@ -200,9 +202,9 @@ final class SkeletonLoaderView: NSView {
 
     // MARK: Geometry
 
-    /// The surfaces behind the bones: the board's columns, the Notes
-    /// library, or the Settings pane and its agent card. History sits on
-    /// its own panel, so it needs none.
+    /// The surfaces behind the bones: the board's columns, the Notes list
+    /// and open note, or the Settings pane and its agent card. History sits
+    /// on its own panels, so it needs none.
     static func panels(for layout: SkeletonLoaderLayout, in bounds: CGRect) -> [CGRect] {
         switch layout {
         case .board(let top):
@@ -210,7 +212,13 @@ final class SkeletonLoaderView: NSView {
         case .terminal:
             return []
         case .notes:
-            return bounds.width > 0 && bounds.height > 0 ? [bounds] : []
+            guard bounds.width > 0, bounds.height > 0 else { return [] }
+            let listWidth = BoardSurfaceLayout.boardColumnWidth(rowWidth: bounds.width)
+            let detailMinX = bounds.minX + listWidth + BoardSurfaceLayout.columnSpacing
+            return [
+                CGRect(x: bounds.minX, y: bounds.minY, width: listWidth, height: bounds.height),
+                CGRect(x: detailMinX, y: bounds.minY, width: bounds.maxX - detailMinX, height: bounds.height),
+            ]
         case .settings:
             let cardWidth = SettingsAgentCardLayout.width(availableWidth: bounds.width)
             let paneWidth = bounds.width - cardWidth - SettingsAgentCardLayout.spacing
@@ -219,7 +227,7 @@ final class SkeletonLoaderView: NSView {
                 CGRect(x: bounds.minX, y: bounds.minY, width: paneWidth, height: bounds.height),
                 CGRect(x: bounds.maxX - cardWidth, y: bounds.minY, width: cardWidth, height: bounds.height),
             ]
-        case .history:
+        case .history, .historyList:
             return []
         }
     }
@@ -251,11 +259,13 @@ final class SkeletonLoaderView: NSView {
         case .terminal:
             return terminalBones(in: bounds)
         case .notes:
-            return notesBones(in: bounds)
+            return notesBones(panels: panels(for: layout, in: bounds))
         case .settings:
             return settingsBones(panels: panels(for: layout, in: bounds))
         case .history:
-            return historyBones(in: bounds)
+            return historyBones(in: bounds, listWidth: historyListWidth)
+        case .historyList:
+            return historyBones(in: bounds, listWidth: bounds.width, showsPlaceholder: false)
         }
     }
 
@@ -369,25 +379,27 @@ final class SkeletonLoaderView: NSView {
     }
 
     static let notesHeaderHeight: CGFloat = 60
-    static let notesListWidth: CGFloat = 330
     private static let noteCardHeights: [CGFloat] = [84, 68, 84, 76, 68, 84, 76, 68]
 
-    /// Mirrors the Notes library: a header with the note count, the list of
-    /// notes under a search field, and the open note beside it.
-    private static func notesBones(in bounds: CGRect) -> [SkeletonBone] {
-        guard bounds.width > notesListWidth + 160, bounds.height > notesHeaderHeight + 120 else { return [] }
+    /// Mirrors the Notes library: the list panel's header over the notes
+    /// under a search field, and the open note in its own panel.
+    private static func notesBones(panels: [CGRect]) -> [SkeletonBone] {
+        guard panels.count == 2 else { return [] }
+        let listPanel = panels[0]
+        let detailPanel = panels[1]
+        guard listPanel.width > 120, detailPanel.width > 160, listPanel.height > notesHeaderHeight + 120 else { return [] }
         var bones: [SkeletonBone] = []
 
         // The header's note count.
         bones.append(SkeletonBone(
-            rect: CGRect(x: bounds.minX + 22, y: bounds.minY + notesHeaderHeight / 2 - 6, width: 96, height: 12),
+            rect: CGRect(x: listPanel.minX + 22, y: listPanel.minY + notesHeaderHeight / 2 - 6, width: 96, height: 12),
             radius: 6,
             style: .fill
         ))
 
         // The search field and the notes under it.
-        let bodyTop = bounds.minY + notesHeaderHeight + 1
-        let list = CGRect(x: bounds.minX, y: bodyTop, width: notesListWidth, height: bounds.maxY - bodyTop)
+        let bodyTop = listPanel.minY + notesHeaderHeight + 1
+        let list = CGRect(x: listPanel.minX, y: bodyTop, width: listPanel.width, height: listPanel.maxY - bodyTop)
             .insetBy(dx: 18, dy: 18)
         let search = CGRect(x: list.minX, y: list.minY, width: list.width, height: ProgramTicketPanelStyle.compactFieldHeight)
         bones.append(SkeletonBone(rect: search, radius: 8, style: .outline))
@@ -401,8 +413,8 @@ final class SkeletonLoaderView: NSView {
         }
 
         // The open note: a title, a byline, then its paragraphs.
-        let detailMinX = bounds.minX + notesListWidth + 1 + 28
-        let detailWidth = bounds.maxX - 28 - detailMinX
+        let detailMinX = detailPanel.minX + 28
+        let detailWidth = detailPanel.maxX - 28 - detailMinX
         let top = bodyTop + 28
         bones.append(SkeletonBone(
             rect: CGRect(x: detailMinX, y: top, width: min(320, detailWidth * 0.5), height: 16),
@@ -417,7 +429,7 @@ final class SkeletonLoaderView: NSView {
         y = top + 64
         for fraction in [0.92, 0.86, 0.9, 0.64, 0.88, 0.94, 0.8, 0.52] as [CGFloat] {
             let line = CGRect(x: detailMinX, y: y, width: min(detailWidth, 720) * fraction, height: 10)
-            guard line.maxY <= bounds.maxY - 28 else { break }
+            guard line.maxY <= detailPanel.maxY - 28 else { break }
             bones.append(SkeletonBone(rect: line, radius: 5, style: .fill))
             y += 20
         }
@@ -428,14 +440,15 @@ final class SkeletonLoaderView: NSView {
     private static let historyCardHeights: [CGFloat] = [98, 82, 98, 98, 82]
 
     /// Mirrors Workspace History before a ticket is chosen: the search
-    /// field, the archive policy and the archived tickets on the left, and
-    /// the empty placeholder on the right.
-    private static func historyBones(in bounds: CGRect) -> [SkeletonBone] {
-        guard bounds.width > historyListWidth + 160, bounds.height > 240 else { return [] }
+    /// field, the archive policy and the archived tickets `listWidth` wide
+    /// on the left, and, when `showsPlaceholder`, the empty placeholder on
+    /// the right.
+    private static func historyBones(in bounds: CGRect, listWidth: CGFloat, showsPlaceholder: Bool = true) -> [SkeletonBone] {
+        guard bounds.width >= listWidth + (showsPlaceholder ? 160 : 0), listWidth > 120, bounds.height > 240 else { return [] }
         var bones: [SkeletonBone] = []
 
         // The search field and its button.
-        let list = CGRect(x: bounds.minX, y: bounds.minY, width: historyListWidth, height: bounds.height)
+        let list = CGRect(x: bounds.minX, y: bounds.minY, width: listWidth, height: bounds.height)
             .insetBy(dx: 18, dy: 18)
         let button = SharedActionButtonMetrics.controlHeight
         let field = ProgramTicketPanelStyle.compactFieldHeight
@@ -493,8 +506,10 @@ final class SkeletonLoaderView: NSView {
             y = card.maxY + 8
         }
 
+        guard showsPlaceholder else { return bones }
+
         // The placeholder: an icon over a title and a supporting line.
-        let detail = CGRect(x: bounds.minX + historyListWidth + 1, y: bounds.minY, width: bounds.width - historyListWidth - 1, height: bounds.height)
+        let detail = CGRect(x: bounds.minX + listWidth + 1, y: bounds.minY, width: bounds.width - listWidth - 1, height: bounds.height)
         let top = detail.midY - (28 + 10 + 12 + 10 + 8) / 2
         bones.append(SkeletonBone(
             rect: CGRect(x: detail.midX - 14, y: top, width: 28, height: 28),

@@ -10,6 +10,17 @@ enum BoardSurfaceLayout {
     static let navigationToPanelSpacing: CGFloat = 16
     static let columnTopPadding: CGFloat = navigationTopPadding + navigationHeight + navigationToPanelSpacing
     static let columnHeight: CGFloat = 667
+
+    /// The Workspace board's columns: Projects and the four ticket lanes.
+    static let boardColumnCount = ProgramBoardLane.allCases.count + 1
+
+    /// The width of one Workspace board column, the Projects panel, in a row
+    /// `rowWidth` wide. Notes, History and Settings give their left panel
+    /// this width so every page lines up with the board.
+    static func boardColumnWidth(rowWidth: CGFloat) -> CGFloat {
+        let count = CGFloat(boardColumnCount)
+        return max(0, (rowWidth - columnSpacing * (count - 1)) / count)
+    }
 }
 
 enum BoardDarkSurfaceStyle {

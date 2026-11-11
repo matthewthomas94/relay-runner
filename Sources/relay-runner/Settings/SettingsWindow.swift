@@ -196,9 +196,21 @@ private struct SettingsContent: View {
 
     var body: some View {
         GeometryReader { geometry in
-            HStack(spacing: SettingsAgentCardLayout.spacing) {
-                settingsPane
-                    .frame(maxWidth: .infinity)
+            HStack(spacing: style == .window ? SettingsAgentCardLayout.spacing : BoardSurfaceLayout.columnSpacing) {
+                if style == .window {
+                    settingsPane
+                        .frame(maxWidth: .infinity)
+                } else {
+                    // In the Workspace the categories get their own panel, as
+                    // wide as the board's Projects panel, beside the settings.
+                    settingsSidebar
+                        .frame(width: BoardSurfaceLayout.boardColumnWidth(rowWidth: geometry.size.width))
+                        .frame(maxHeight: .infinity)
+                        .settingsPanelChrome(style: style)
+                    settingsDetail
+                        .frame(maxWidth: .infinity)
+                        .settingsPanelChrome(style: style)
+                }
 
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     SettingsAgentCard(
@@ -235,51 +247,52 @@ private struct SettingsContent: View {
 
     private var settingsPane: some View {
         HStack(spacing: 0) {
-            SettingsCategorySidebar(selection: $selectedCategory)
-            .frame(width: style.sidebarWidth)
+            settingsSidebar
+                .frame(width: style.sidebarWidth)
 
             Rectangle()
                 .fill(SettingsSurfaceColor.divider)
                 .frame(width: 1)
 
-            VStack(spacing: 0) {
-                ScrollViewReader { proxy in
-                    // Each category is its own page: the outgoing page sinks away
-                    // at its own scroll position, then the next one rises in.
-                    ZStack(alignment: .topLeading) {
-                        RelayFadingScrollView(showsIndicators: false) {
-                            VStack(spacing: 0) {
-                                Color.clear
-                                    .frame(height: 0)
-                                    .id(selectedCategory)
-                                selectedDetail
-                                    .padding(style.detailPadding)
-                                    .frame(maxWidth: style.detailMaxWidth, alignment: .topLeading)
-                                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                                    .padding(.bottom, 4)
-                            }
-                        }
-                        .id(selectedCategory)
-                        .transition(.relayReplacing(.surface))
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .clipped()
-                    .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selectedCategory)
-                    .onChange(of: scrollTarget) { _, target in
-                        proxy.scrollTo(target, anchor: .top)
-                    }
-                }
-                SettingsDivider()
-                footer
-            }
+            settingsDetail
         }
-        .background(BoardDarkSurfaceStyle.panelFill)
-        .clipShape(RoundedRectangle(cornerRadius: style.embeddedCornerRadius, style: .continuous))
-        .overlay {
-            if style.showsEmbeddedHairline {
-                RoundedRectangle(cornerRadius: style.embeddedCornerRadius, style: .continuous)
-                    .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
+        .settingsPanelChrome(style: style)
+    }
+
+    private var settingsSidebar: some View {
+        SettingsCategorySidebar(selection: $selectedCategory)
+    }
+
+    private var settingsDetail: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                // Each category is its own page: the outgoing page sinks away
+                // at its own scroll position, then the next one rises in.
+                ZStack(alignment: .topLeading) {
+                    RelayFadingScrollView(showsIndicators: false) {
+                        VStack(spacing: 0) {
+                            Color.clear
+                                .frame(height: 0)
+                                .id(selectedCategory)
+                            selectedDetail
+                                .padding(style.detailPadding)
+                                .frame(maxWidth: style.detailMaxWidth, alignment: .topLeading)
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+                                .padding(.bottom, 4)
+                        }
+                    }
+                    .id(selectedCategory)
+                    .transition(.relayReplacing(.surface))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .clipped()
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selectedCategory)
+                .onChange(of: scrollTarget) { _, target in
+                    proxy.scrollTo(target, anchor: .top)
+                }
             }
+            SettingsDivider()
+            footer
         }
     }
 
@@ -396,16 +409,16 @@ private struct SettingsCategorySidebar: View {
 
     var body: some View {
         // The title sits as the Notes and History titles do: 16pt, 22pt in,
-        // centred in a 60pt header. Rows start where the Notes tab's list
-        // does: below that header and an 18pt inset.
-        VStack(alignment: .leading, spacing: 18) {
+        // centred in a 60pt header. Rows are spaced and sized like the
+        // Workspace's project rows, starting at the same height.
+        VStack(alignment: .leading, spacing: ProgramBoardLayout.projectListTopOffset - 60) {
             Text("Settings")
                 .font(AppTypography.font(.sectionHeading))
                 .foregroundStyle(SettingsSurfaceColor.primaryText)
                 .padding(.horizontal, 22)
                 .frame(height: 60)
 
-            VStack(spacing: 4) {
+            VStack(spacing: ProgramBoardLayout.projectCardSpacing) {
                 ForEach(SettingsCategory.allCases) { category in
                     SettingsCategoryButton(
                         category: category,
@@ -414,7 +427,7 @@ private struct SettingsCategorySidebar: View {
                     )
                     .background {
                         if selection == category {
-                            let shape = RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+                            let shape = RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius, style: .continuous)
                             // One highlight glides between rows; Reduce Motion
                             // gives each row its own id so it only crossfades.
                             shape
@@ -428,7 +441,7 @@ private struct SettingsCategorySidebar: View {
                     }
                 }
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, ProgramBoardLayout.panelHorizontalPadding)
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selection)
 
             Spacer(minLength: 0)
@@ -467,9 +480,10 @@ private struct SettingsCategoryButton: View {
         )
 
         Button(action: action) {
-            HStack(alignment: .center, spacing: 10) {
+            // The icon and label sit where a project row's do.
+            HStack(alignment: .center, spacing: 8) {
                 LucideImage(category.icon, size: 16)
-                    .frame(width: 18)
+                    .frame(width: 24)
                     .foregroundStyle(SettingsSurfaceColor.primaryText.opacity(presentation.foregroundOpacity))
 
                 Text(category.navigationLabel)
@@ -479,27 +493,28 @@ private struct SettingsCategoryButton: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, minHeight: SettingsLayout.sidebarRowHeight, alignment: .leading)
+            .padding(.leading, ProgramBoardLayout.projectRowHorizontalInset - 4)
+            .padding(.trailing, ProgramBoardLayout.projectRowHorizontalInset)
+            .frame(maxWidth: .infinity, minHeight: ProgramBoardLayout.projectRowHeight, alignment: .leading)
             .background {
                 ZStack {
                     // Hover fills the row with the skeleton loader's
                     // shimmering dots; a selected row keeps its solid fill.
                     FluxDotsBackground(
-                        cornerRadius: SettingsLayout.sidebarCornerRadius,
+                        cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius,
                         style: .standard,
                         isVisible: isHovered && !selected
                     )
-                    RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+                    RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius, style: .continuous)
                         .fill(Color.white.opacity(presentation.fillOverlayOpacity))
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius, style: .continuous)
                     .strokeBorder(Color.white.opacity(selected || isHovered ? 0 : presentation.strokeOpacity), lineWidth: 1)
             )
-            .contentShape(RoundedRectangle(cornerRadius: SettingsLayout.sidebarCornerRadius, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.nestedCardCornerRadius, style: .continuous))
         }
         .buttonStyle(.graphicalPress)
         .focusable()
@@ -510,5 +525,20 @@ private struct SettingsCategoryButton: View {
         .accessibilityLabel(category.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .notchHint(selected ? "" : category.hoverAction)
+    }
+}
+
+private extension View {
+    /// A Settings panel's surface: the board's panel fill, rounded in the
+    /// Workspace and square in the standalone window.
+    func settingsPanelChrome(style: SettingsContentStyle) -> some View {
+        background(BoardDarkSurfaceStyle.panelFill)
+            .clipShape(RoundedRectangle(cornerRadius: style.embeddedCornerRadius, style: .continuous))
+            .overlay {
+                if style.showsEmbeddedHairline {
+                    RoundedRectangle(cornerRadius: style.embeddedCornerRadius, style: .continuous)
+                        .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
+                }
+            }
     }
 }
