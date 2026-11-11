@@ -2,8 +2,8 @@ import SwiftUI
 
 enum WorkspaceTab: String, CaseIterable, Identifiable, Equatable {
     case work
-    case notes
     case terminal
+    case notes
     case history
     case systemSettings
 
@@ -79,9 +79,9 @@ final class WorkspaceViewModel {
     ) -> [WorkspaceTab] {
         var tabs: [WorkspaceTab] = []
         if showsWorkTab { tabs.append(.work) }
-        tabs.append(.notes)
         if showsTerminalTab { tabs.append(.terminal) }
-        // History lists a project's archived tickets, so it follows the Workspace tab.
+        tabs.append(.notes)
+        // History lists a project's archived tickets, so it only shows with the Workspace tab.
         if showsWorkTab { tabs.append(.history) }
         if showsSettingsTab { tabs.append(.systemSettings) }
         return tabs

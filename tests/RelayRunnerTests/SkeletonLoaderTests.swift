@@ -47,9 +47,13 @@ final class SkeletonLoaderTests: XCTestCase {
 
     func testNotesSkeletonSketchesTheListAndTheOpenNote() throws {
         let bounds = CGRect(x: 0, y: 0, width: 1_400, height: 760)
-        XCTAssertEqual(SkeletonLoaderView.panels(for: .notes, in: bounds), [bounds])
+        let panels = SkeletonLoaderView.panels(for: .notes, in: bounds)
+        XCTAssertEqual(panels.count, 2, "The list panel and the open note's panel")
+        XCTAssertEqual(panels[0].width, BoardSurfaceLayout.boardColumnWidth(rowWidth: bounds.width), accuracy: 0.001)
+        XCTAssertEqual(panels[1].minX - panels[0].maxX, BoardSurfaceLayout.columnSpacing, accuracy: 0.001)
+        XCTAssertEqual(panels[1].maxX, bounds.maxX)
         let bones = SkeletonLoaderView.bones(for: .notes, in: bounds)
-        let listEdge = SkeletonLoaderView.notesListWidth
+        let listEdge = panels[0].maxX
         let outlines = bones.filter { $0.style == .outline }
         XCTAssertGreaterThan(outlines.count, 2, "A search field and several notes")
         for outline in outlines {
@@ -87,6 +91,16 @@ final class SkeletonLoaderTests: XCTestCase {
         }
     }
 
+    func testHistoryListSkeletonKeepsToItsPanel() throws {
+        let bounds = CGRect(x: 0, y: 0, width: 290, height: 569)
+        XCTAssertEqual(SkeletonLoaderView.panels(for: .historyList, in: bounds), [])
+        let bones = SkeletonLoaderView.bones(for: .historyList, in: bounds)
+        XCTAssertGreaterThan(bones.filter { $0.style == .outline }.count, 4, "A search field, its button and several tickets")
+        for bone in bones {
+            XCTAssertTrue(bounds.contains(bone.rect), "\(bone.rect)")
+        }
+    }
+
     func testSettingsSkeletonSketchesTheSidebarSettingsAndAgentCard() throws {
         let bounds = CGRect(x: 0, y: 0, width: 1_400, height: 760)
         let panels = SkeletonLoaderView.panels(for: .settings, in: bounds)
@@ -119,6 +133,7 @@ final class SkeletonLoaderTests: XCTestCase {
             (.notes, CGSize(width: 1_400, height: 760)),
             (.settings, CGSize(width: 1_400, height: 760)),
             (.history, CGSize(width: 940, height: 569)),
+            (.historyList, CGSize(width: 290, height: 569)),
         ] {
             let view = SkeletonLoaderView(layout: layout, label: BoardUpdateStatus.workingLabel)
             view.frame = CGRect(origin: .zero, size: size)

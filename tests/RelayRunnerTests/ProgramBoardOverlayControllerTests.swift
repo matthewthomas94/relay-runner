@@ -488,9 +488,9 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         )
     }
 
-    func testNotesTabFollowsWorkspaceAndAcceptsSearchFocus() {
-        XCTAssertEqual(WorkspaceTab.allCases, [.work, .notes, .terminal, .history, .systemSettings])
-        XCTAssertEqual(WorkspaceViewModel.availableTabs(showsWorkTab: true, showsTerminalTab: true, showsSettingsTab: true), [.work, .notes, .terminal, .history, .systemSettings])
+    func testTabOrderIsWorkspaceTerminalNotetakerHistorySettings() {
+        XCTAssertEqual(WorkspaceTab.allCases, [.work, .terminal, .notes, .history, .systemSettings])
+        XCTAssertEqual(WorkspaceViewModel.availableTabs(showsWorkTab: true, showsTerminalTab: true, showsSettingsTab: true), [.work, .terminal, .notes, .history, .systemSettings])
         XCTAssertEqual(WorkspaceViewModel.availableTabs(showsWorkTab: false, showsTerminalTab: false, showsSettingsTab: false), [.notes])
         XCTAssertFalse(WorkspaceTab.work.requiresKeyWindow)
         XCTAssertTrue(WorkspaceTab.notes.requiresKeyWindow)
