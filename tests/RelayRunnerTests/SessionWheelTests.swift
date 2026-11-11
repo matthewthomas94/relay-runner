@@ -114,6 +114,30 @@ final class SessionWheelTests: XCTestCase {
         }
     }
 
+    func testAnAddedTabGrowsFromTheOldLayoutIntoTheNewOne() {
+        let geometry = SessionWheelGeometry.self
+        // Six tabs and Add become seven tabs and Add, so the arc also widens.
+        for (old, new) in [(2, 3), (6, 7), (9, 10)] {
+            let entering = new - 2
+            for index in 0..<new {
+                let start = geometry.sessionItemArc(index, items: new, entering: (entering, 0))
+                let end = geometry.sessionItemArc(index, items: new, entering: (entering, 1))
+                let target = geometry.sessionItemArc(index, items: new)
+                XCTAssertEqual(end.start, target.start, accuracy: 0.0001)
+                XCTAssertEqual(end.width, target.width, accuracy: 0.0001)
+                if index == entering {
+                    XCTAssertEqual(start.width, 0, accuracy: 0.0001)
+                } else {
+                    let before = geometry.sessionItemArc(index > entering ? index - 1 : index, items: old)
+                    XCTAssertEqual(start.start, before.start, accuracy: 0.0001)
+                    XCTAssertEqual(start.width, before.width, accuracy: 0.0001)
+                }
+            }
+            XCTAssertEqual(geometry.sessionSubmenuSpan(weight: geometry.sessionWeight(items: new, entering: (entering, 0))),
+                           geometry.sessionSubmenuSpan(items: old), accuracy: 0.0001)
+        }
+    }
+
     func testWheelAndSubmenuGapsAreInsideTheClickArea() {
         XCTAssertTrue(geometry.contains(geometry.center))
         for slot in 0..<geometry.slotCount {

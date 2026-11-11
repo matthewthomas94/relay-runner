@@ -19,6 +19,9 @@ struct SessionWheelView: View {
     @State private var hubHovered = false
     @State private var hintOwner = UUID()
     @State var menuMotion = SessionWheelMenuMotion()
+    /// The tab just added from the submenu, while its segment grows in.
+    @State private var enteringTab: String?
+    @State private var tabEntryProgress: Double = 1
 
     private let geometry = SessionWheelGeometry.self
     static let coordinateSpace = "session-wheel"
@@ -31,21 +34,43 @@ struct SessionWheelView: View {
         TimelineView(.animation(paused: !menuMotion.motion.isAnimating)) { _ in
             let menuProgress = menuMotion.motion.progress(at: ProcessInfo.processInfo.systemUptime)
             let progress = reduceMotion ? menuProgress : min(presentation.progress, menuProgress)
-            SessionWheelSubmenuAnimation(progress: .init(slot: submenuSlot)) { submenus in
-                wheel(menu: menuMotion.displayed ?? requestedMenu,
-                      tiles: SessionWheelPresentation(progress: progress, reduceMotion: reduceMotion),
-                      submenus: submenus)
+            SessionWheelTabEntryAnimation(progress: tabEntryProgress) { tabEntry in
+                SessionWheelSubmenuAnimation(progress: .init(slot: submenuSlot)) { submenus in
+                    wheel(menu: menuMotion.displayed ?? requestedMenu,
+                          tiles: SessionWheelPresentation(progress: progress, reduceMotion: reduceMotion),
+                          submenus: submenus, tabEntry: tabEntry)
+                }
+                .animation(SessionWheelSubmenuPresentation.animation(reduceMotion: reduceMotion), value: submenuSlot)
             }
-            .animation(SessionWheelSubmenuPresentation.animation(reduceMotion: reduceMotion), value: submenuSlot)
         }
         .task(id: requestedMenu) {
             await menuMotion.update(to: requestedMenu, reduceMotion: reduceMotion)
         }
+        .onChange(of: model.tabs.map(\.id)) { old, new in
+            // One tab added: grow its segment in while the others make room.
+            let added = new.filter { !old.contains($0) }
+            guard !reduceMotion, new.count == old.count + 1, added.count == 1 else { return }
+            enteringTab = added[0]
+            tabEntryProgress = 0
+            withAnimation(SessionWheelSubmenuPresentation.animation(reduceMotion: false)) {
+                tabEntryProgress = 1
+            } completion: {
+                if enteringTab == added[0] { enteringTab = nil }
+            }
+        }
+    }
+
+    /// The entering tab's index in `sessionItems` and how far it has grown.
+    private func sessionTabEntry(_ progress: Double) -> SessionWheelGeometry.SessionTabEntry? {
+        guard let enteringTab, progress < 1,
+              let index = model.sessionItems.firstIndex(where: { $0.tab?.id == enteringTab }) else { return nil }
+        return (index, CGFloat(max(progress, 0)))
     }
 
     func wheel(menu: SessionWheelMenu, tiles: SessionWheelPresentation,
-               submenus: SessionWheelSubmenuProgress? = nil) -> some View {
+               submenus: SessionWheelSubmenuProgress? = nil, tabEntry: Double = 1) -> some View {
         let submenus = submenus ?? .init(slot: submenuSlot)
+        let entering = sessionTabEntry(tabEntry)
         return ZStack {
             Color.clear.contentShape(Rectangle()).onTapGesture { point in
                 let sessionSlot = geometry.sessionSlots[0]
@@ -55,7 +80,8 @@ struct SessionWheelView: View {
                                       sessionItems: model.sessionItems.count) { dismiss() }
             }
             SessionWheelLiquidBackdrop(progress: submenus, reduceMotion: reduceMotion,
-                                       sessionItems: model.slots[geometry.sessionSlots[0]] != nil ? model.sessionItems.count : 0)
+                                       sessionItems: model.slots[geometry.sessionSlots[0]] != nil
+                                           ? geometry.sessionWeight(items: model.sessionItems.count, entering: entering) : 0)
                 .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
                 .scaleEffect(presentation.discScale)
                 .opacity(presentation.discScale == 0 ? 0 : 1)
@@ -110,12 +136,12 @@ struct SessionWheelView: View {
                         let items = model.sessionItems
                         ZStack {
                             ForEach(Array(items.enumerated()), id: \.offset) { position, item in
-                                tabItemButton(item, index: position, count: items.count, slot: index)
+                                tabItemButton(item, index: position, count: items.count, slot: index, entering: entering)
                             }
                             // Above the segments, so a click on the x closes the tab instead of selecting it.
                             ForEach(Array(items.enumerated()), id: \.offset) { position, item in
                                 if let tab = item.tab {
-                                    tabCloseButton(tab, index: position, count: items.count, slot: index)
+                                    tabCloseButton(tab, index: position, count: items.count, slot: index, entering: entering)
                                 }
                             }
                         }
@@ -270,28 +296,32 @@ struct SessionWheelView: View {
     /// RR-469: a tab segment shows its label and close x spaced apart: Session 1
     /// alone, S1, S2 and so on beside other tabs. The active one is selected;
     /// an off tab is dimmed. Add follows the tabs.
-    private func tabItemButton(_ item: SessionWheelSessionItem, index: Int, count: Int, slot: Int) -> some View {
-        let arc = geometry.sessionItemArc(index, items: count)
+    private func tabItemButton(_ item: SessionWheelSessionItem, index: Int, count: Int, slot: Int,
+                               entering: SessionWheelGeometry.SessionTabEntry? = nil) -> some View {
+        let arc = geometry.sessionItemArc(index, items: count, entering: entering)
         let enabled = model.isEnabled(item)
         let hovered = model.hoveredSessionItem == item
         let help = item.tab?.caption ?? model.addTabUnavailableReason ?? item.control?.caption ?? ""
         return submenuButton(index: index, slot: slot, title: item.title, help: help,
                              symbol: item.control?.symbol, enabled: enabled, hovered: hovered,
                              destructive: false,
-                             labelGlyphs: item.tab == nil ? nil : geometry.sessionTabLayout(index, items: count).glyphs,
+                             labelGlyphs: item.tab == nil ? nil
+                                 : geometry.sessionTabLayout(index, items: count, entering: entering).glyphs,
                              selected: item.tab?.isActive ?? false,
                              dimmed: item.tab.map { !$0.isLive } ?? false,
                              arc: arc) {
             guard model.hoveredSession != nil else { return }
             performTabItem(item)
         }
+        .opacity(entering.map { $0.index == index ? Double($0.progress) : 1 } ?? 1)
         .accessibilityAddTraits(item.tab?.isActive == true ? .isSelected : [])
     }
 
     /// The x inside a tab's segment: closes that tab, as the tab strip's x does.
     /// It is the size of Add's plus, and hovering it fills a circle behind it.
-    private func tabCloseButton(_ tab: SessionWheelTab, index: Int, count: Int, slot: Int) -> some View {
-        let placement = geometry.sessionTabLayout(index, items: count).close
+    private func tabCloseButton(_ tab: SessionWheelTab, index: Int, count: Int, slot: Int,
+                                entering: SessionWheelGeometry.SessionTabEntry? = nil) -> some View {
+        let placement = geometry.sessionTabLayout(index, items: count, entering: entering).close
         let hovered = model.hoveredTabClose?.id == tab.id
         let size = geometry.tabCloseDiameter
         return Button {
@@ -309,6 +339,7 @@ struct SessionWheelView: View {
         }
         .buttonStyle(SessionWheelActionButtonStyle())
         .position(placement.point)
+        .opacity(entering.map { $0.index == index ? Double($0.progress) : 1 } ?? 1)
         .accessibilityLabel(tab.closeTitle)
     }
 

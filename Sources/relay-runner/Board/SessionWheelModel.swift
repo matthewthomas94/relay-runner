@@ -256,9 +256,23 @@ enum SessionWheelGeometry {
 
     /// The submenu's width in cells.
     static func sessionSubmenuSpan(items: Int) -> CGFloat {
-        guard items > sessionStandardItems else { return 1 }
-        let extra = CGFloat(min(items, sessionMaxItems) - sessionStandardItems)
+        sessionSubmenuSpan(weight: CGFloat(items))
+    }
+
+    /// The span for a fractional segment count, while an added tab grows in.
+    static func sessionSubmenuSpan(weight: CGFloat) -> CGFloat {
+        guard weight > CGFloat(sessionStandardItems) else { return 1 }
+        let extra = min(weight, CGFloat(sessionMaxItems)) - CGFloat(sessionStandardItems)
         return min(3, 1 + 2 * extra / CGFloat(sessionMaxItems - sessionStandardItems))
+    }
+
+    /// A tab segment growing into the submenu after Add: its index and how
+    /// far it has grown, from 0 (no width) to 1 (a full segment).
+    typealias SessionTabEntry = (index: Int, progress: CGFloat)
+
+    /// The segment count while `entry` grows: the entering tab counts for its progress.
+    static func sessionWeight(items: Int, entering entry: SessionTabEntry?) -> CGFloat {
+        CGFloat(items) - (entry.map { 1 - $0.progress } ?? 0)
     }
 
     /// A tab segment spaces its label and close x like `space-between`: the
@@ -324,10 +338,10 @@ enum SessionWheelGeometry {
     /// the arc at its own angle and turns with the segment, so the two read
     /// the same way. The label curves with the cell: `glyphs` sets each
     /// letter's outline on the arc, and `label` is the label's middle.
-    static func sessionTabLayout(_ index: Int, items: Int)
+    static func sessionTabLayout(_ index: Int, items: Int, entering: SessionTabEntry? = nil)
         -> (label: (point: CGPoint, rotation: CGFloat), glyphs: [Glyph], close: (point: CGPoint, rotation: CGFloat)) {
         let slot = sessionSlots.first ?? 0
-        let arc = sessionItemArc(index, items: items)
+        let arc = sessionItemArc(index, items: items, entering: entering)
         let centre = arc.start + arc.width / 2
         let rotation = labelRotation(slot: slot, offset: centre)
         // Reading order runs clockwise, or anticlockwise where labelRotation turns labels over.
@@ -365,10 +379,15 @@ enum SessionWheelGeometry {
     }
 
     /// One segment's start and width, relative to the session cell's centre.
-    static func sessionItemArc(_ index: Int, items: Int) -> (start: CGFloat, width: CGFloat) {
-        let span = sessionSubmenuSpan(items: items) * sliceAngle
-        let width = span / CGFloat(max(items, 1))
-        return (-span / 2 + CGFloat(index) * width, width)
+    /// While a tab enters, it grows from no width and the segments after it slide over.
+    static func sessionItemArc(_ index: Int, items: Int, entering entry: SessionTabEntry? = nil)
+        -> (start: CGFloat, width: CGFloat) {
+        let weight = sessionWeight(items: items, entering: entry)
+        let span = sessionSubmenuSpan(weight: weight) * sliceAngle
+        let width = span / max(weight, 1)
+        var before = CGFloat(index)
+        if let entry, index > entry.index { before -= 1 - entry.progress }
+        return (-span / 2 + before * width, entry.map { $0.index == index ? width * $0.progress : width } ?? width)
     }
 
     /// The signed angle from the session cell's centre, so the arc never wraps.
