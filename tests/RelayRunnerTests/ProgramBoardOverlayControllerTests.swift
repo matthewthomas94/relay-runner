@@ -326,6 +326,20 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
         )
     }
 
+    func testRefreshKeepsAClickedProjectWhileTheSessionRunsInGeneralTasks() {
+        let general = "/support/relay-runner/general-tasks"
+        let clicked = "/repo/clicked"
+        XCTAssertEqual(
+            ProgramBoardOverlayController.refreshedProjectSelections(
+                route: .project(.init(repoPath: URL(fileURLWithPath: general))),
+                currentSelections: [clicked],
+                projectScope: [general, clicked],
+                committedContextPath: general
+            ),
+            [clicked]
+        )
+    }
+
     func testRefreshKeepsEveryStillRegisteredSelectedProject() {
         let paths = ["/repo/a", "/repo/b", "/repo/c"]
         let route = ProjectResolver.BoardRoute.project(.init(repoPath: URL(fileURLWithPath: "/repo/c")))
@@ -376,7 +390,9 @@ final class ProgramBoardOverlayControllerTests: XCTestCase {
 
         XCTAssertTrue(appState.contains("programBoardOverlay.refreshProjectScopeAfterRegistryChange()"))
         XCTAssertTrue(controller.contains("func refreshProjectScopeAfterRegistryChange()"))
-        XCTAssertTrue(controller.contains("preserveProjectSelection: false"))
+        // A registry refresh must not replace the project the user clicked
+        // with the session's own project.
+        XCTAssertFalse(controller.contains("preserveProjectSelection: false"))
         XCTAssertTrue(controller.contains("committedContextPath: workspace.contextPath"))
         XCTAssertTrue(controller.contains("currentSelections: model.selectedProjectPaths"))
     }

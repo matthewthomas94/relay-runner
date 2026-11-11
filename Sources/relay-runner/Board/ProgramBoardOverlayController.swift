@@ -736,10 +736,10 @@ final class ProgramBoardOverlayController {
         updateCheckTask?.cancel()
         updateCheckTask = nil
         model.cancelReload()
-        checkForUpdates(
-            inBackground: model.snapshot != nil,
-            preserveProjectSelection: false
-        )
+        // A registry change keeps the projects the user picked to filter the
+        // board. The context poll moves the selection when the session's
+        // project changes.
+        checkForUpdates(inBackground: model.snapshot != nil)
     }
 
     func refreshRouteIfNeeded() {
@@ -1227,7 +1227,6 @@ final class ProgramBoardOverlayController {
 
     private func checkForUpdates(
         inBackground: Bool,
-        preserveProjectSelection: Bool = true,
         sweepsReadyTickets: Bool = true
     ) {
         refreshContextPresentation()
@@ -1258,8 +1257,7 @@ final class ProgramBoardOverlayController {
             route: route,
             currentSelections: model.selectedProjectPaths,
             projectScope: nextScope,
-            committedContextPath: workspace.contextPath,
-            preserveProjectSelection: preserveProjectSelection
+            committedContextPath: workspace.contextPath
         )
         model.setProjectScope(nextScope, selectedProjectPaths: selectedProjectPaths)
         if contentLoadBlocked {
