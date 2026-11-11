@@ -28,13 +28,14 @@ plus `#tab-<id>`. Each tab therefore has its own binding, native provider sessio
 spool and public history; the first tab keeps the unsuffixed id and its existing
 binding. General-session access (project scope tokens) accepts every tab of the
 general context. Removing a tab deletes its binding and history; turning it off
-saves it like an idle save, and selecting it again resumes it. End discards the
+saves it, and selecting it again resumes it. End discards the
 extra tabs and selects the first tab again, so a restart never restores more than
 the first tab.
 
-After 30 minutes of safe inactivity, the foreground provider is saved and
-terminated. Start Session reconnects it using normal provider resume support.
-Closing the Workspace or changing tabs does not stop the process.
+A session has no time or idle limit: the foreground provider runs until the
+user ends the session or quits the app. Start Session reconnects a saved
+conversation using normal provider resume support. Closing the Workspace or
+changing tabs does not stop the process.
 
 Codex resumes with its exact native session UUID using
 `codex resume <uuid> --cd <confirmed-directory>` so a moved repository does not

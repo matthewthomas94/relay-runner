@@ -126,7 +126,6 @@ final class AssistantSessionStore {
             .appendingPathComponent("relay-runner")
     }
     static var filesDirectory: URL { rootDirectory.appendingPathComponent("files", isDirectory: true) }
-    static let idleTimeout: TimeInterval = 30 * 60
     let directory: URL
     private(set) var document = Document()
     private(set) var loadError: String?
@@ -293,18 +292,10 @@ final class AssistantSessionStore {
         }
     }
 
-    @discardableResult
-    func saveIfIdle(context: AssistantSessionContext, now: Date, eligible: Bool, end: () -> Void) throws -> Bool {
-        guard eligible, let binding = binding(for: context), now.timeIntervalSince(binding.lastActivity) >= Self.idleTimeout else { return false }
-        try mark(.saved, context: context, now: now)
-        end()
-        return true
-    }
-
     /// RR-473: app-observed activity (PTY input, claimed voice turns, provider
-    /// busy turns) keeps the idle clock moving even when no provider transcript
-    /// can be read. Throttled so a long busy turn does not rewrite the document
-    /// on every poll; the 30-minute timeout makes the lag irrelevant.
+    /// busy turns) updates last activity even when no provider transcript can
+    /// be read. Throttled so a long busy turn does not rewrite the document on
+    /// every poll. Nothing ends a session for being idle.
     func recordActivity(context: AssistantSessionContext, at date: Date) throws {
         guard let binding = binding(for: context),
               date.timeIntervalSince(binding.lastActivity) >= Self.activityRecordingGranularity else { return }

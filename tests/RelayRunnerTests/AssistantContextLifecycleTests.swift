@@ -4,7 +4,7 @@ import XCTest
 @testable import relay_runner
 
 final class AssistantContextLifecycleTests: XCTestCase {
-    func testObservedActivityKeepsTranscriptlessSessionAliveAndIdleStillEnds() throws {
+    func testObservedActivityIsRecordedWithoutATranscriptAndNeverMovesBackwards() throws {
         let directory = try temporaryDirectory()
         let store = AssistantSessionStore(directory: directory)
         let started = Date(timeIntervalSince1970: 1_800_000_000)
@@ -17,22 +17,14 @@ final class AssistantContextLifecycleTests: XCTestCase {
         XCTAssertNil(store.binding(for: .general)?.transcriptPath)
 
         // Activity 20 minutes in (PTY input, claimed voice turn or busy provider turn all
-        // reach the store through recordActivity) moves the idle clock.
+        // reach the store through recordActivity) updates last activity.
         let active = started.addingTimeInterval(20 * 60)
         try store.recordActivity(context: .general, at: active)
         XCTAssertEqual(store.binding(for: .general)?.lastActivity, active)
-        // More than 30 minutes after launch, but under 30 since the activity: not idle.
-        let later = started.addingTimeInterval(AssistantSessionStore.idleTimeout + 60)
-        XCTAssertFalse(try store.saveIfIdle(context: .general, now: later, eligible: true, end: { XCTFail() }))
         // Activity never moves the clock backwards.
         try store.recordActivity(context: .general, at: started)
         XCTAssertEqual(store.binding(for: .general)?.lastActivity, active)
-        // Truly idle for 30 minutes after the last activity: saved and ended.
-        var ended = false
-        XCTAssertTrue(try store.saveIfIdle(context: .general,
-            now: active.addingTimeInterval(AssistantSessionStore.idleTimeout), eligible: true, end: { ended = true }))
-        XCTAssertTrue(ended)
-        XCTAssertEqual(store.binding(for: .general)?.lifecycle, .saved)
+        XCTAssertEqual(store.binding(for: .general)?.lifecycle, .running)
     }
 
     func testRecordActivityIsThrottledToAvoidRewritingEveryPoll() throws {
@@ -47,7 +39,7 @@ final class AssistantContextLifecycleTests: XCTestCase {
                        started.addingTimeInterval(AssistantSessionStore.activityRecordingGranularity))
     }
 
-    func testAppStateFeedsObservedActivitySourcesIntoIdleClock() throws {
+    func testAppStateFeedsObservedActivitySourcesAndNeverEndsAnIdleSession() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/relay-runner/App/AppState.swift"), encoding: .utf8)
@@ -58,13 +50,14 @@ final class AssistantContextLifecycleTests: XCTestCase {
         XCTAssertTrue(body.contains("assistantPendingIntentIDs()"), "claimed voice turns")
         XCTAssertTrue(body.contains("ProcessManager.foregroundProviderTurnActive()"), "provider busy turns")
         let reconcile = try XCTUnwrap(source.range(of: "    private func reconcileAssistantContext("))
-        let observeCall = try XCTUnwrap(source.range(of: "try observeAssistantActivity(now: now)", range: reconcile.upperBound..<source.endIndex))
-        let idleCall = try XCTUnwrap(source.range(of: "assistantSessionStore.saveIfIdle(", range: reconcile.upperBound..<source.endIndex))
-        XCTAssertLessThan(observeCall.lowerBound, idleCall.lowerBound, "activity is recorded before the idle check")
+        XCTAssertNotNil(source.range(of: "try observeAssistantActivity(now: now)", range: reconcile.upperBound..<source.endIndex))
+        // Sessions have no time or idle limit.
+        XCTAssertFalse(source.contains("saveIfIdle"))
+        XCTAssertFalse(source.contains("idleTimeout"))
     }
 
     @MainActor
-    func testIdleBoundarySavesBeforeEndingAndResumesExactNativeSessionForBothProviders() throws {
+    func testSavedSessionResumesExactNativeSessionForBothProviders() throws {
         for target in [ProcessManager.AgentTarget.codex, .claude] {
             let directory = try temporaryDirectory()
             let store = AssistantSessionStore(directory: directory)
@@ -85,29 +78,11 @@ final class AssistantContextLifecycleTests: XCTestCase {
             try terminal.beginPreparing(providerName: target.providerMetadataValue, workingDirectory: directory.path)
             try terminal.start(launch(target: target, directory: directory))
             XCTAssertEqual(terminal.phase, .running)
-            let before = store.document
-            let boundary = started.addingTimeInterval(AssistantSessionStore.idleTimeout)
-            var resets = 0
-            func end() {
-                let persisted = AssistantSessionStore(directory: directory)
-                XCTAssertEqual(persisted.binding(for: .general)?.lifecycle, .saved,
-                               "The durable save must precede termination")
-                XCTAssertEqual(persisted.binding(for: .general)?.lastActivity, boundary)
-                XCTAssertTrue(first.isRunning)
-                terminal.end()
-                resets += 1
-            }
-            XCTAssertFalse(try store.saveIfIdle(context: .general, now: boundary.addingTimeInterval(-0.001),
-                                               eligible: terminal.phase == .running, end: end))
-            XCTAssertEqual(store.document, before)
-            XCTAssertEqual(first.terminateCount, 0)
-            XCTAssertTrue(try store.saveIfIdle(context: .general, now: boundary,
-                                              eligible: terminal.phase == .running, end: end))
+            let boundary = started.addingTimeInterval(8 * 60 * 60)
+            try store.mark(.saved, context: .general, now: boundary)
+            terminal.end()
             XCTAssertEqual(terminal.phase, .ended)
             XCTAssertEqual(first.terminateCount, 1)
-            XCTAssertEqual(resets, 1)
-            XCTAssertFalse(try store.saveIfIdle(context: .general, now: boundary.addingTimeInterval(1),
-                                               eligible: terminal.phase == .running, end: end))
 
             let restored = AssistantSessionStore(directory: directory)
             XCTAssertEqual(restored.conversationID, store.conversationID)
@@ -137,32 +112,7 @@ final class AssistantContextLifecycleTests: XCTestCase {
     }
 
     @MainActor
-    func testEveryProtectedObligationPreventsIdleSaveAndTermination() throws {
-        let store = AssistantSessionStore(directory: try temporaryDirectory())
-        let started = Date(timeIntervalSince1970: 1_800_000_000)
-        try store.begin(context: .general, provider: "codex", model: "sol", transportSessionID: "transport", now: started)
-        let process = LifecycleTerminalProcess()
-        let terminal = EmbeddedTerminalSession(processFactory: { process })
-        try terminal.beginPreparing(providerName: "Codex", workingDirectory: store.directory.path)
-        try terminal.start(launch(target: .codex, directory: store.directory))
-        let before = store.document
-        for protected in 0..<6 {
-            var flags = Array(repeating: false, count: 6)
-            flags[protected] = true
-            let eligible = AssistantSessionStore.canReplace(recording: flags[0], noteCapture: flags[1],
-                foregroundTurn: flags[2], pendingCommand: flags[3], approval: flags[4], launching: flags[5])
-            XCTAssertFalse(try store.saveIfIdle(context: .general,
-                now: started.addingTimeInterval(AssistantSessionStore.idleTimeout + 60), eligible: eligible,
-                end: { terminal.end(); XCTFail("An active obligation must retain the provider") }))
-            XCTAssertEqual(store.document, before)
-            XCTAssertTrue(process.isRunning)
-        }
-        XCTAssertEqual(process.terminateCount, 0)
-        terminal.end()
-    }
-
-    @MainActor
-    func testFailedIdlePersistenceRetainsRunningTerminalAndPreviousDocument() throws {
+    func testFailedSavePersistenceRetainsRunningTerminalAndPreviousDocument() throws {
         let directory = try temporaryDirectory(), store = AssistantSessionStore(directory: directory)
         let started = Date(timeIntervalSince1970: 1_800_000_000)
         try store.begin(context: .general, provider: "claude", model: "sonnet", transportSessionID: "transport", now: started)
@@ -178,9 +128,7 @@ final class AssistantContextLifecycleTests: XCTestCase {
         try terminal.beginPreparing(providerName: "Claude", workingDirectory: directory.path)
         try terminal.start(launch(target: .claude, directory: directory))
 
-        XCTAssertThrowsError(try store.saveIfIdle(context: .general,
-            now: started.addingTimeInterval(AssistantSessionStore.idleTimeout), eligible: true,
-            end: { terminal.end(); XCTFail("A failed durable save must not terminate the provider") }))
+        XCTAssertThrowsError(try store.mark(.saved, context: .general, now: started.addingTimeInterval(60)))
         XCTAssertEqual(store.document, before)
         XCTAssertEqual(terminal.phase, .running)
         XCTAssertTrue(process.isRunning)
@@ -243,11 +191,6 @@ final class AssistantContextLifecycleTests: XCTestCase {
         let idleStart = try XCTUnwrap(source.range(of: "    private func reconcileAssistantContext("))
         let switchStart = try XCTUnwrap(source.range(of: "    func newSession(", range: idleStart.upperBound..<source.endIndex))
         let switchEnd = try XCTUnwrap(source.range(of: "    private func transitionFromNoteToSession(", range: switchStart.upperBound..<source.endIndex))
-        let idle = source[idleStart.lowerBound..<switchStart.lowerBound]
-        XCTAssertTrue(idle.contains("assistantSessionStore.saveIfIdle(context: activeContext, now: now,"))
-        XCTAssertTrue(idle.contains("eligible: menuSessionActive && embeddedTerminal.phase == .running && canReplaceContextProvider"))
-        XCTAssertTrue(idle.contains("assistantSessionStore.pendingContinuation == nil"))
-        XCTAssertTrue(idle.contains("end: { endSession(context: activeContext) }"))
         let switching = source[switchStart.lowerBound..<switchEnd.lowerBound]
         XCTAssertTrue(switching.contains(".filter { !sessionRegistry.isLive($0.context.id) }"))
         XCTAssertTrue(switching.contains("switch sessionRegistry.admit(contextID: context.id)"))

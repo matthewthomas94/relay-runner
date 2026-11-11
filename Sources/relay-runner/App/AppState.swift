@@ -280,7 +280,6 @@ final class AppState {
     /// Contexts whose provider launched by resuming a saved conversation and isn't ready yet.
     @ObservationIgnored private var resumingContextIDs: Set<String> = []
     var canClearContextContinuation: Bool { assistantSessionStore.pendingContinuation != nil }
-    @ObservationIgnored private var idleSessionSaved = false
     /// RR-394: the context whose spool the shared voice bridge publishes into.
     /// RR-398: it follows the focused live context via `__FOCUS__`. Voice
     /// delivery and continuity recovery act on it.
@@ -2759,7 +2758,7 @@ final class AppState {
         }
     }
 
-    /// RR-473: the idle clock must not depend on a readable provider transcript.
+    /// RR-473: last activity must not depend on a readable provider transcript.
     /// PTY input, a claimed voice turn, or an active provider turn is activity.
     private func observeAssistantActivity(now: Date) throws {
         var observed = embeddedTerminal.lastUserInputAt
@@ -2793,13 +2792,6 @@ final class AppState {
                 _ = newSession(workingDirectory: selection.repositoryPath,
                                showsWorkspaceOnLaunch: pendingContextSelectionShowsTerminal, tab: selection.tab)
                 return
-            }
-            if try assistantSessionStore.saveIfIdle(context: activeContext, now: now,
-                eligible: menuSessionActive && embeddedTerminal.phase == .running && canReplaceContextProvider
-                    && assistantSessionStore.pendingContinuation == nil,
-                end: { endSession(context: activeContext) }) {
-                idleSessionSaved = true
-                contextSwitchMessage = "\(activeContext.displayName) saved after 30 minutes idle. Start Session to resume."
             }
         } catch {
             contextSwitchMessage = "Conversation could not be saved. The active session was retained: \(error.localizedDescription)"
@@ -2966,7 +2958,6 @@ final class AppState {
             projectScopeCoordinator.cancel()
         }
         contextSwitchMessage = nil
-        idleSessionSaved = false
         // Bridge is about to launch — assume alive until watchdog says otherwise
         bridgeAliveCache = true
         programBoardWarmUpPending = true
@@ -3921,7 +3912,7 @@ final class AppState {
         guard pendingSessionLaunchID == nil else { return }
         bridgeManagedProviderState = sample.managedProviderState
         reconcileAssistantContext()
-        guard pendingSessionLaunchID == nil, !idleSessionSaved else { return }
+        guard pendingSessionLaunchID == nil else { return }
         // A stale/external bridge cannot silently choose the conversation's
         // project. The chooser or Start Session establishes that authority.
         if !menuSessionActive, sample.daemonAlive, !bridgeMatchesActiveContext {
