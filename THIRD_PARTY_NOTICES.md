@@ -27,6 +27,18 @@ text-processing-rs is copyright 2026 FluidInference. It is a Rust port of [NVIDI
 
 agent-desktop is copyright Vercel, Inc. Its binaries are re-signed with Relay Runner's Developer ID so the bundle notarises; the packaging script ships its verified `LICENSE` as `ThirdPartyLicenses/agent-desktop.txt`. Relay Runner exposes only the headless subset of its commands (see [Relay Desktop](docs/specs/relay-desktop.md)).
 
+## Rust crates
+
+The app bundle ships `relay-rs`, Relay Runner's own Rust helper, in `Contents/MacOS`. The block below is generated from `rust/Cargo.lock` by `scripts/rust-licenses`, which also refuses any crate whose license is outside its allow list; GPL-family licenses are never on that list.
+
+<!-- BEGIN GENERATED: Rust crates — run scripts/rust-licenses, do not edit here -->
+
+`relay-rs` is built from the Cargo workspace in `rust/` with Rust 1.94.1 and statically links the Rust standard library, which is licensed under the Apache License 2.0 or the MIT License at the user's option; the Rust project's [COPYRIGHT](https://github.com/rust-lang/rust/blob/1.94.1/COPYRIGHT) file describes the third-party material it includes.
+
+`rust/Cargo.lock` resolves no third-party crates for `aarch64-apple-darwin`.
+
+<!-- END GENERATED: Rust crates -->
+
 ## Installed into the local voice environment
 
 These packages are not committed to the repository or pre-bundled in the signed app. First-run setup installs the ranges in `services/requirements.txt` into `~/Library/Application Support/relay-runner/services/.venv/`:

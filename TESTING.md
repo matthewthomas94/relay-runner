@@ -31,9 +31,30 @@ swift test
 
 The Swift suite uses disposable fixtures for permission, registry, terminal, and orchestration behavior. Tests must not depend on an installed proprietary font; the app falls back to system typography when optional PP font faces are unavailable.
 
+## Rust workspace
+
+The Cargo workspace in `rust/` builds `relay-rs`, the Rust helper shipped in the app bundle. `rust/rust-toolchain.toml` pins the toolchain. Install [rustup](https://rustup.rs), which reads that file and installs the pinned toolchain the first time `cargo` runs inside `rust/`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+A Rust install from another source, such as Homebrew's `rust`, ignores the pin; it works only while its `rustc --version` equals the pinned channel. Run the same checks as CI from inside `rust/`, then the license check from the repository root:
+
+```bash
+cd rust
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cd ..
+scripts/rust-licenses --check
+```
+
+After adding, removing or updating a crate, commit `rust/Cargo.lock` and run `scripts/rust-licenses` to regenerate the Rust section of `THIRD_PARTY_NOTICES.md`. It refuses a crate whose license is outside the allow list at the top of that script; GPL-family licenses must not be added to it.
+
 ## Package the app
 
-Install `dmgbuild` into a Python interpreter the script can discover:
+Install the Rust toolchain as described under [Rust workspace](#rust-workspace); the packaging script stops before building anything when `cargo` is missing or `rustc` is not the pinned version. Install `dmgbuild` into a Python interpreter the script can discover:
 
 ```bash
 python3 -m pip install --user --break-system-packages dmgbuild

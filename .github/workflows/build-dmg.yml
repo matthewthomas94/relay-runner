@@ -12,12 +12,15 @@ on:
       - "Sources/**"
       - "Package.swift"
       - "Package.resolved"
+      - "rust/**"
       - "Info.plist"
       - "assets/**"
       - "scripts/**"
       - "services/**"
       - "tests/test_app_signing.py"
       - "tests/test_notarization_retry.py"
+      - "tests/test_rust_licenses.py"
+      - "THIRD_PARTY_NOTICES.md"
       - ".github/workflows/build-dmg.yml"
   # Allow manual trigger. Dispatching on a `v*` tag ref publishes that tag.
   # Releases sign with Developer ID but skip Apple's notary service by
@@ -97,6 +100,43 @@ jobs:
 
       - name: Resolve Swift dependencies
         run: swift package resolve
+
+      # The runner image ships rustup. Install exactly the toolchain pinned in
+      # rust/rust-toolchain.toml; rustup then selects it for every cargo
+      # command run inside rust/, including the one in build-dmg.sh.
+      - name: Install pinned Rust toolchain
+        working-directory: rust
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal \
+            --component clippy --component rustfmt --target aarch64-apple-darwin
+          cargo --version
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/rust-toolchain.toml', 'rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check Rust workspace
+        working-directory: rust
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
+
+      # Fails on a crate whose licence is outside the allow list in
+      # scripts/rust-licenses (no GPL-family licence is on it), or when the
+      # Rust section of THIRD_PARTY_NOTICES.md is stale.
+      - name: Check Rust dependency licences
+        run: |
+          python3 -m unittest discover -s tests -p 'test_rust_licenses.py'
+          python3 scripts/rust-licenses --check
 
       - name: Verify permission identity policy
         run: python3 -m unittest discover -s tests -p 'test_app_signing.py'

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,8 +21,11 @@ from app_signing import (  # noqa: E402
     POWER_HELPER_PROGRAM,
     POWER_HELPER_REQUIREMENT,
     RELEASE_REQUIREMENT,
+    RUST_HELPER_PROGRAM,
+    RUST_HELPER_REQUIREMENT,
     SIGNING_TEAM,
     check_power_helper,
+    check_rust_helper,
     resolve_signing_identity,
     verify_update_identity,
 )
@@ -45,6 +49,17 @@ def make_bundle(directory: str, job: dict | None = None, executable: bool = True
 
 def result(stdout="", stderr="", code=0):
     return subprocess.CompletedProcess([], code, stdout, stderr)
+
+
+def make_rust_bundle(directory: str, reports: str = "relay-rs 1.2.3 (45)") -> Path:
+    app = Path(directory) / "Relay Runner.app"
+    helper = app / RUST_HELPER_PROGRAM
+    helper.parent.mkdir(parents=True)
+    (app / "Contents/Info.plist").write_bytes(
+        plistlib.dumps({"CFBundleShortVersionString": "1.2.3", "CFBundleVersion": "45"}))
+    helper.write_text(f'#!/bin/sh\n[ "$1" = --version ] && echo "{reports}"\n')
+    os.chmod(helper, 0o755)
+    return app
 
 
 class AppSigningTests(unittest.TestCase):
@@ -190,6 +205,82 @@ class PowerHelperPackagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             check_power_helper(make_bundle(directory))
         run.assert_not_called()
+
+
+class RustHelperPackagingTests(unittest.TestCase):
+    def test_build_checks_toolchain_then_builds_embeds_and_signs_the_helper(self):
+        script = (ROOT / "scripts" / "build-dmg.sh").read_text()
+        build = '(cd "$RUST_DIR" && cargo build --release --locked --target "$RUST_TARGET")'
+        copy = 'cp "$RUST_DIR/target/$RUST_TARGET/release/relay-rs" "$APP_DIR/Contents/MacOS/relay-rs"'
+        self.assertIn('RUST_TARGET="aarch64-apple-darwin"', script)
+        # The toolchain is checked before anything is built, and the helper is
+        # signed with the other helpers before the app bundle's seal.
+        self.assertLess(script.index("Rust toolchain not found"), script.index("swift build"))
+        self.assertLess(script.index("swift build"), script.index(build))
+        self.assertLess(script.index(build), script.index(copy))
+        signed = re.findall(
+            r'codesign --force --timestamp --options runtime \\\n\s+--sign "\$SIGN_IDENTITY" \\\n'
+            r'\s+"\$APP_DIR/Contents/MacOS/([^"]+)"', script)
+        self.assertIn("relay-rs", signed)
+        self.assertIn("agent-desktop", signed, "relay-rs is signed exactly like the bundled Rust precedent")
+        self.assertLess(script.index('"$APP_DIR/Contents/MacOS/relay-rs"\n    # The power'), script.index('"$APP_DIR"\nelse'))
+        self.assertLess(script.index('"$APP_DIR"\nelse'), script.index('app_signing.py" check-helper'))
+
+    def test_build_without_a_rust_toolchain_stops_before_building_and_names_the_install(self):
+        if shutil.which("cargo", path="/usr/bin:/bin") or shutil.which("rustc", path="/usr/bin:/bin"):
+            self.skipTest("a system Rust toolchain is installed")
+        with tempfile.TemporaryDirectory() as directory:
+            # A stand-in `swift` proves the script stopped before the build.
+            swift = Path(directory) / "swift"
+            swift.write_text("#!/bin/sh\necho swift-was-run >&2\nexit 99\n")
+            os.chmod(swift, 0o755)
+            run = subprocess.run(
+                ["/bin/bash", str(ROOT / "scripts" / "build-dmg.sh"), "--app-only"],
+                env={"HOME": directory, "PATH": f"{directory}:/usr/bin:/bin",
+                     "SIGN_IDENTITY": "-", "RELAY_ALLOW_ADHOC_SIGNING": "1"},
+                capture_output=True, text=True,
+            )
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertIn("Rust toolchain not found", run.stderr)
+        self.assertIn("https://sh.rustup.rs", run.stderr)
+        self.assertNotIn("swift-was-run", run.stderr)
+        self.assertEqual(run.stdout, "")
+
+    def test_helper_must_be_packaged_and_report_the_bundle_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            check_rust_helper(make_rust_bundle(directory))
+        for reports in ("relay-rs 1.2.3 (44)", "relay-rs 1.2.2 (45)", ""):
+            with self.subTest(reports=reports), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(AppSigningError, "not the bundle's 'relay-rs 1.2.3 \\(45\\)'"):
+                    check_rust_helper(make_rust_bundle(directory, reports))
+        with tempfile.TemporaryDirectory() as directory:
+            app = make_rust_bundle(directory)
+            os.chmod(app / RUST_HELPER_PROGRAM, 0o644)
+            with self.assertRaisesRegex(AppSigningError, "missing"):
+                check_rust_helper(app)
+        with tempfile.TemporaryDirectory() as directory:
+            app = make_rust_bundle(directory)
+            (app / "Contents/Info.plist").unlink()
+            with self.assertRaisesRegex(AppSigningError, "Info.plist"):
+                check_rust_helper(app)
+
+    @mock.patch("app_signing.subprocess.run")
+    def test_signed_build_requires_the_rust_helpers_developer_id_identity(self, run):
+        self.assertEqual(RUST_HELPER_REQUIREMENT, RELEASE_REQUIREMENT.replace(
+            'identifier "com.relayrunner.app"', 'identifier "relay-rs"'))
+        with tempfile.TemporaryDirectory() as directory:
+            app = make_rust_bundle(directory)
+            run.side_effect = [result("relay-rs 1.2.3 (45)\n"), result()]
+            check_rust_helper(app, signed=True)
+            self.assertEqual(run.call_args_list[0].args[0], [str(app / RUST_HELPER_PROGRAM), "--version"])
+            self.assertIn("=" + RUST_HELPER_REQUIREMENT, run.call_args.args[0])
+            self.assertEqual(run.call_args.args[0][-1], str(app / RUST_HELPER_PROGRAM))
+            run.side_effect = [
+                result("relay-rs 1.2.3 (45)\n"),
+                result(code=1, stderr="code failed to satisfy specified code requirement"),
+            ]
+            with self.assertRaisesRegex(AppSigningError, "not signed as relay-rs"):
+                check_rust_helper(app, signed=True)
 
 
 if __name__ == "__main__":

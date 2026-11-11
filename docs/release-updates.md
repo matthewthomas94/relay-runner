@@ -72,6 +72,18 @@ gh workflow run tag-release.yml --ref main -f tag=vX.Y.Z
 
 Tags on commits before this default changed (v0.5.3 and earlier) still notarize on push; publish one of those without notarization by cancelling the tag push run and dispatching with `-f skip_notarization=true`.
 
+### Rust helper
+
+`scripts/build-dmg.sh` also builds the Cargo workspace in `rust/` with `cargo build --release --locked --target aarch64-apple-darwin`, copies `relay-rs` into `Contents/MacOS`, and signs it with the other helper binaries: hardened runtime, timestamp, no entitlements. The script checks the toolchain first. When `cargo` is missing, or `rustc` is not the version pinned in `rust/rust-toolchain.toml`, it stops before the Swift build and before anything in `/Applications` is replaced, and prints the rustup install command:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+rustup installs the pinned toolchain the first time `cargo` runs inside `rust/`. CI installs the same pinned toolchain with the runner's rustup, then runs `cargo fmt`, `cargo clippy`, `cargo test` and `scripts/rust-licenses --check` before packaging, so a tagged release cannot ship a crate whose license is outside the allow list.
+
+`relay-rs --version` prints the `CFBundleShortVersionString` and `CFBundleVersion` it was compiled with, read from `Info.plist` at build time. `services/app_signing.py check-helper` runs the packaged binary and fails the build unless that output matches the bundle's `Info.plist`; a signed build also requires Relay Runner's Developer ID signature on it. To move to a newer Rust release, change `channel` in `rust/rust-toolchain.toml` and run `scripts/rust-licenses`.
+
 ### Preserve permissions across updates
 
 Local builds automatically select the Developer ID Application certificate for Relay Runner's release team (`QK9K4AQRNH`). Without that certificate, the build stops before replacing anything. `SIGN_IDENTITY` can select a certificate explicitly, but the resulting app must still satisfy the release identity check. Certificate renewal within that team is supported; an app version or executable hash is never part of the release requirement.

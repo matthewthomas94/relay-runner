@@ -35,6 +35,13 @@ POWER_HELPER_PROGRAM = f"Contents/MacOS/{POWER_HELPER_EXECUTABLE}"
 POWER_HELPER_PLIST = f"Contents/Library/LaunchDaemons/{POWER_HELPER_LABEL}.plist"
 POWER_HELPER_REQUIREMENT = developer_id_requirement(POWER_HELPER_LABEL)
 
+# relay-rs, the helper built from the Cargo workspace in rust/. Its
+# `--version` output is compiled in from Info.plist, so a binary left over from
+# another version cannot be packaged. codesign names it after its file.
+RUST_HELPER_EXECUTABLE = "relay-rs"
+RUST_HELPER_PROGRAM = f"Contents/MacOS/{RUST_HELPER_EXECUTABLE}"
+RUST_HELPER_REQUIREMENT = developer_id_requirement(RUST_HELPER_EXECUTABLE)
+
 
 class AppSigningError(RuntimeError):
     pass
@@ -143,6 +150,43 @@ def check_power_helper(app: Path, *, signed: bool = False) -> None:
         )
 
 
+def check_rust_helper(app: Path, *, signed: bool = False) -> None:
+    """Checks that relay-rs is packaged, runs and reports the bundle's version, and its signature when signed."""
+    helper = app / RUST_HELPER_PROGRAM
+    if not helper.is_file() or not os.access(helper, os.X_OK):
+        raise AppSigningError(f"The Rust helper is missing from {RUST_HELPER_PROGRAM}.")
+    try:
+        with (app / "Contents/Info.plist").open("rb") as handle:
+            info = plistlib.load(handle)
+        expected = (
+            f'{RUST_HELPER_EXECUTABLE} {info["CFBundleShortVersionString"]} ({info["CFBundleVersion"]})'
+        )
+    except (OSError, plistlib.InvalidFileException, KeyError) as error:
+        raise AppSigningError(f"Cannot read the bundle version from Info.plist: {error}") from error
+    try:
+        version = subprocess.run([str(helper), "--version"], capture_output=True, text=True)
+    except OSError as error:
+        raise AppSigningError(f"The Rust helper cannot run: {error}") from error
+    reported = version.stdout.strip()
+    if version.returncode or reported != expected:
+        raise AppSigningError(
+            f"The Rust helper reports {reported!r}, not the bundle's {expected!r}; "
+            "rebuild the rust/ workspace with this Info.plist. " + version.stderr.strip()
+        )
+    if not signed:
+        return
+    result = subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--strict",
+         "--test-requirement", "=" + RUST_HELPER_REQUIREMENT, str(helper)],
+        capture_output=True, text=True,
+    )
+    if result.returncode:
+        raise AppSigningError(
+            "The Rust helper is not signed as relay-rs by Relay Runner's Developer ID. "
+            + result.stderr.strip()
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -161,9 +205,11 @@ def main() -> int:
             ))
         elif args.command == "check-helper":
             check_power_helper(args.app)
+            check_rust_helper(args.app)
         else:
             verify_update_identity(args.app, args.installed)
             check_power_helper(args.app, signed=True)
+            check_rust_helper(args.app, signed=True)
     except AppSigningError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

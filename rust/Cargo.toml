@@ -1,0 +1,10 @@
+# Relay Runner's Rust workspace (RR-475). scripts/build-dmg.sh builds it in
+# release mode and ships each binary in Contents/MacOS of the app bundle.
+[workspace]
+resolver = "3"
+members = ["relay-rs"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
