@@ -152,7 +152,7 @@ class BargeInTests(SpeechCase):
         self.assertFalse(state["playing"])
         self.assertFalse(state["held"])
         # The audio stopped inside a sentence.
-        self.assertFalse(self.box.spoken()[-1][1])
+        self.wait_cut_off()
         self.assertLess(len(self.box.spoken()), len(LONG_SENTENCES))
         # Nothing else starts until the new turn.
         self.assertStays(lambda: self.phases(second) == [], 0.3, "the next reply came forward")
@@ -399,6 +399,7 @@ class NewTurnTests(SpeechCase):
         reply = self.speak("The answer.", command=older)
         note = self.speak("One more note.", command=older, kind="progress", source="lifecycle")
         self.assertEqual(self.queue(), [reply, note])
+        self.wait_phase(reply, "queued")
 
         self.turn()
 
@@ -672,6 +673,7 @@ class SessionTests(SpeechCase):
 
     def test_play_for_a_session_with_nothing_queued_is_not_handled(self):
         utterance_id = self.speak(session_key="session-a")
+        self.wait_phase(utterance_id, "queued")
         self.assertFalse(self.control("session-b", "play"))
         self.assertEqual(self.phases(utterance_id), ["queued"])
 

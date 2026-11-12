@@ -155,7 +155,7 @@ class ClientGoneTests(SpeechCase):
         self.assertLess(len(spoken), len(LONG_SENTENCES))
         self.assertFalse(spoken[-1][1], "the reply was not cut off")
         self.assertNotIn("Second reply.", [text for text, _ in spoken])
-        self.assertEqual(self.box.playback()[-1]["event"], "output_stopped")
+        self.assertEqual(len(self.box.playback("output_stopped")), len(self.box.playback("output_started")))
         self.assertFalse(os.path.exists(self.box.control_path))
 
     def test_service_exits_when_the_connection_ends_inside_a_line(self):

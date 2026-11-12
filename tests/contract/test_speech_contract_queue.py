@@ -34,6 +34,7 @@ class QueueOrderTests(SpeechCase):
         self.assertTrue(state["speaking"])
         self.assertFalse(state["playing"])
         # Only the head is published as waiting.
+        self.wait_phase(ids[0], "queued")
         self.assertEqual(self.phases(ids[0]), ["queued"])
         self.assertEqual(self.phases(ids[1]), [])
 
@@ -51,6 +52,7 @@ class QueueOrderTests(SpeechCase):
         """`play`: "Plays the reply waiting at the head of the queue"."""
         self.conn.request("play")
         utterance_id = self.speak()
+        self.wait_phase(utterance_id, "queued")
         self.assertStays(lambda: self.phases(utterance_id) == ["queued"], 0.2, "an earlier play was kept")
 
     def test_empty_text_is_refused(self):
@@ -145,6 +147,7 @@ class SupersedeAndReplaceTests(SpeechCase):
     def test_another_commands_reply_is_not_superseded(self):
         """Supersede is for "the same command's" speech only."""
         earlier = self.speak("Earlier reply.")
+        self.wait_phase(earlier, "queued")
         later = self.speak("Later reply.")
         self.assertEqual(self.queue(), [earlier, later])
         self.assertEqual(self.phases(earlier), ["queued"])
@@ -207,6 +210,7 @@ class SupersedeAndReplaceTests(SpeechCase):
     def test_newer_command_never_removes_a_reply(self):
         """Newer command: "A reply is never removed by a newer command"."""
         reply = self.speak("Earlier reply.")
+        self.wait_phase(reply, "queued")
         newer = self.speak("Looking into the next thing.", **HANDOFF)
         self.assertEqual(self.queue(), [reply, newer])
         self.assertEqual(self.phases(reply), ["queued"])

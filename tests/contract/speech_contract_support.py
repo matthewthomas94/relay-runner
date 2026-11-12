@@ -438,6 +438,13 @@ class SpeechCase(unittest.TestCase):
     def wait_idle(self) -> None:
         wait_until(lambda: not self.status()["speaking"], message="the queue to empty")
 
+    def wait_cut_off(self) -> None:
+        """Wait until the last sentence that reached the output was stopped inside it."""
+        wait_until(
+            lambda: self.box.spoken() and not self.box.spoken()[-1][1],
+            message="the reply to be cut off",
+        )
+
     def assertStays(self, predicate, seconds: float = 0.3, message: str = "condition changed") -> None:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:

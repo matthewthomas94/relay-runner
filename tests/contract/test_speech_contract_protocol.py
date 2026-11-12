@@ -105,7 +105,7 @@ class ProcessTests(unittest.TestCase):
                 self.assertEqual(box.wait_exit(), 0)
                 self.assertFalse(os.path.exists(box.control_path))
                 self.assertFalse(box.spoken()[-1][1], "the reply was not cut off")
-                self.assertEqual(box.playback()[-1]["event"], "output_stopped")
+                self.assertEqual(len(box.playback("output_stopped")), len(box.playback("output_started")))
                 wait_until(conn.closed.is_set, message="the connection to close")
 
     def test_signal_before_a_client_connects_ends_the_service(self):
@@ -440,7 +440,7 @@ class SessionRequestTests(SpeechCase):
         self.assertFalse(os.path.exists(self.box.control_path))
         self.assertFalse(os.path.exists(self.box.socket_path))
         # The overlay is told the reply is no longer speaking.
-        self.assertEqual(self.box.datagrams[-1]["state"], "idle")
+        wait_until(lambda: self.box.datagrams[-1]["state"] == "idle", message="the idle datagram")
 
 
 class DiagnosticsTests(SpeechCase):
