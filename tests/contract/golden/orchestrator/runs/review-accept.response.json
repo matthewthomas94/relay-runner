@@ -1,0 +1,29 @@
+{
+  "accepted": true,
+  "promoted": [],
+  "run": {
+    "activity": "Reviewing worker branch",
+    "activity_at": "<TIME>",
+    "attempt": 1,
+    "branch": "relay/ct-5",
+    "ended_at": "<TIME>",
+    "execution_mode": "implementation",
+    "exit_code": 0,
+    "id": 2,
+    "last_error": null,
+    "log_path": "<ROOT>/workspaces/runs-<HASH8>-ct-5/.relay/run.log",
+    "model_alias": "sonnet",
+    "pid": "<PID>",
+    "provider_key": "claude",
+    "repo_path": "<REPO:runs>",
+    "started_at": "<TIME>",
+    "state": "Merged",
+    "ticket_id": "CT-5",
+    "worker_effort": "medium",
+    "worker_model": "balanced",
+    "worker_provider_notes": "none",
+    "worker_sizing_rationale": "A scripted change with no ambiguity.",
+    "workspace_path": "<ROOT>/workspaces/runs-<HASH8>-ct-5"
+  },
+  "worktree_removed": true
+}

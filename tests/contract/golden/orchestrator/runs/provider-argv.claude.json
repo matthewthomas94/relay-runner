@@ -1,0 +1,24 @@
+{
+  "implementation": [
+    "-p",
+    "--dangerously-skip-permissions",
+    "--verbose",
+    "--output-format",
+    "stream-json",
+    "--model",
+    "sonnet",
+    "--effort",
+    "medium"
+  ],
+  "review": [
+    "-p",
+    "--dangerously-skip-permissions",
+    "--verbose",
+    "--output-format",
+    "stream-json",
+    "--model",
+    "sonnet",
+    "--effort",
+    "medium"
+  ]
+}

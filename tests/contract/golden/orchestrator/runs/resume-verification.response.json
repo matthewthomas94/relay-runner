@@ -1,0 +1,30 @@
+{
+  "previous_run": {
+    "activity": "Reviewing worker branch",
+    "activity_at": "<TIME>",
+    "attempt": 1,
+    "branch": "relay/ct-7",
+    "ended_at": "<TIME>",
+    "execution_mode": "implementation",
+    "exit_code": 0,
+    "id": 1,
+    "last_error": "verification blocked: The staging device is unavailable.; resume: Retry once the staging device is online.",
+    "log_path": "<ROOT>/workspaces/runs-<HASH8>-ct-7/.relay/run.log",
+    "model_alias": "sonnet",
+    "pid": "<PID>",
+    "provider_key": "claude",
+    "repo_path": "<REPO:runs>",
+    "started_at": "<TIME>",
+    "state": "VerificationBlocked",
+    "ticket_id": "CT-7",
+    "worker_effort": "medium",
+    "worker_model": "balanced",
+    "worker_provider_notes": "none",
+    "worker_sizing_rationale": "A scripted change with no ambiguity.",
+    "workspace_path": "<ROOT>/workspaces/runs-<HASH8>-ct-7"
+  },
+  "reason": "The device is back online.",
+  "redispatched": null,
+  "resume_commit": "<OID:1>",
+  "resumed": true
+}

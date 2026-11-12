@@ -115,7 +115,10 @@ _UUID_RE = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE
 )
 _DEVICE_RE = re.compile(r"\bdaemon-[0-9a-f]{24}\b")
-_SLUG_RE = re.compile(r"\b([a-z0-9-]+)-[0-9a-f]{8}-([a-z0-9-]+)\b")
+# A worktree directory is `<repo name>-<8 hex of the repo path>-<ticket id>`.
+_WORKSPACE_RE = re.compile(r"-[0-9a-f]{8}-(?=[a-z0-9]+-\d)")
+# A queue drain id is `drain-<12 hex of repo, branch and provider>-<sequence>`.
+_DRAIN_RE = re.compile(r"\bdrain-[0-9a-f]{12}-")
 
 # Numeric fields that hold wall-clock times, durations or process ids.
 VOLATILE_NUMBER_KEYS = {
@@ -156,6 +159,8 @@ class Normalizer:
         value = _HEX32_RE.sub(lambda match: self._number("HEX32", match.group(0)), value)
         value = _UUID_RE.sub(lambda match: self._number("UUID", match.group(0).lower()), value)
         value = _DEVICE_RE.sub("<DEVICE>", value)
+        value = _WORKSPACE_RE.sub("-<HASH8>-", value)
+        value = _DRAIN_RE.sub("drain-<HASH12>-", value)
         return value
 
     def value(self, value, key: str = ""):
@@ -230,7 +235,7 @@ class Sandbox:
         self.extra_environment = dict(environment or {})
         self.process = None
         self.port = None
-        self._literals = [(str(self.root), "<ROOT>")]
+        self._literals = [(str(self.root), "<ROOT>"), (str(REPO_ROOT), "<SOURCE>")]
         self._install_fakes()
         self.write_config(orchestrator=orchestrator, general=general, sections=sections)
         add_cleanup(self.stop)
@@ -375,10 +380,13 @@ class Sandbox:
         return self.start()
 
     def stderr(self) -> str:
+        """The daemon's diagnostics, without its per-request access log."""
         try:
-            return self.stderr_path.read_text(errors="replace")[-6000:]
+            lines = self.stderr_path.read_text(errors="replace").splitlines()
         except OSError:
             return ""
+        kept = [line for line in lines if not line.startswith("[orchestrator-http]")]
+        return "\n".join(kept)[-4000:]
 
     # -- HTTP ----------------------------------------------------------------
 

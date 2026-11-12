@@ -1,0 +1,28 @@
+{
+  "reconciled": true,
+  "run": {
+    "activity": "Reconciled from committed canonical ticket evidence",
+    "activity_at": "<TIME>",
+    "attempt": 1,
+    "branch": "preserved/ct-21",
+    "ended_at": "<TIME>",
+    "execution_mode": "implementation",
+    "exit_code": 0,
+    "id": 77,
+    "last_error": null,
+    "log_path": null,
+    "model_alias": null,
+    "pid": null,
+    "provider_key": null,
+    "repo_path": "<REPO:runs>",
+    "started_at": "<TIME>",
+    "state": "Merged",
+    "ticket_id": "CT-21",
+    "worker_effort": null,
+    "worker_model": null,
+    "worker_provider_notes": null,
+    "worker_sizing_rationale": null,
+    "workspace_path": ""
+  },
+  "source": "canonical-ticket"
+}

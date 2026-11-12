@@ -1,0 +1,26 @@
+{
+  "implementation": [
+    "--search",
+    "exec",
+    "--json",
+    "--ephemeral",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--dangerously-bypass-hook-trust",
+    "--model",
+    "gpt-6-sol",
+    "--config",
+    "model_reasoning_effort=medium"
+  ],
+  "review": [
+    "--search",
+    "exec",
+    "--json",
+    "--ephemeral",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--dangerously-bypass-hook-trust",
+    "--model",
+    "gpt-6-sol",
+    "--config",
+    "model_reasoning_effort=medium"
+  ]
+}
