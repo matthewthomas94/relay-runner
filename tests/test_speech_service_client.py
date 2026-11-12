@@ -459,6 +459,89 @@ class RemoteTests(ClientCase):
         self.assertEqual(self.client.queue_depth, 0)
 
 
+class BridgeControlTests(ClientCase):
+    """The bridge's own FIFO control handling, driving the real service."""
+
+    def control(self, line: str) -> None:
+        handled = voice_bridge._handle_relay_control_message(
+            line,
+            self.client,
+            command_path=os.path.join(self.root, "voice_cmd_ready"),
+            meta_path=os.path.join(self.root, "voice_cmd_ready.meta"),
+            state_path=self.state_path,
+            event_log_path=None,
+        )
+        self.assertTrue(handled)
+
+    def reply(self, text: str, seq: int, command_id: str) -> bool:
+        self.set_command(seq, command_id)
+        return voice_bridge._queue_tts_text(
+            json.dumps({"text": text, "relay_command_seq": seq, "relay_command_id": command_id}),
+            self.client.input_queue,
+            command_path=os.path.join(self.root, "voice_cmd_ready"),
+            state_path=self.state_path,
+            source="orchestrator",
+            kind="final",
+            authoritative=True,
+        )
+
+    def test_reply_is_spoken_barge_in_stops_it_and_replay_repeats_it(self):
+        self.assertTrue(self.reply(LONG, 1, "one"))
+        self.assertFalse(self.reply(LONG, 1, "one"), "the same reply was queued twice")
+        self.assertFalse(self.client.playing, "the reply played before the play gesture")
+
+        # The play gesture speaks the waiting reply.
+        self.control(f"__PLAY__:{time.time()}")
+        wait_until(lambda: self.client.playing, message="the reply to be spoken")
+        wait_until(lambda: len(self.spoken()) >= 2, message="two sentences to play")
+
+        # Talking over it stops the speech; the reply counts as heard.
+        self.control("__TTS_STOP__")
+        wait_until(lambda: not self.client.playing, message="barge-in to stop the speech")
+        wait_until(lambda: not self.spoken()[-1][1], message="the sentence to be cut off")
+        self.assertEqual(self.client.queue_depth, 0)
+        heard = len(self.spoken())
+        time.sleep(0.3)
+        self.assertEqual(len(self.spoken()), heard, "speech went on after the barge-in")
+
+        # Replay speaks it again from the start; cancel dismisses it.
+        self.control("__REPLAY__")
+        wait_until(lambda: len(self.spoken()) > heard, message="the replay to be spoken")
+        self.assertEqual(self.spoken()[heard][0], "Sentence 0 keeps this long reply going for a while.")
+        self.control("__CANCEL__")
+        wait_until(lambda: not self.client.playing, message="cancel to stop the replay")
+        wait_until(lambda: self.finished == ["user_stop"], message="the dismissal to be reported")
+
+    def test_play_gesture_replays_when_nothing_is_waiting(self):
+        self.assertTrue(self.reply("A short reply.", 1, "one"))
+        self.control("__PLAY__")
+        wait_until(lambda: self.finished == ["completed"], message="the reply to finish")
+
+        self.control("__PLAY__")
+
+        wait_until(lambda: self.spoken() == [("A short reply.", True)] * 2, message="the replay")
+
+    def test_reply_of_a_superseded_command_is_dropped(self):
+        self.set_command(2, "two")
+        accepted = voice_bridge._queue_tts_text(
+            json.dumps({"text": "Too late.", "relay_command_seq": 1, "relay_command_id": "one"}),
+            self.client.input_queue,
+            command_path=os.path.join(self.root, "voice_cmd_ready"),
+            state_path=self.state_path,
+            source="messenger",
+            kind="handoff",
+        )
+        self.assertFalse(accepted)
+        self.assertFalse(self.client.speaking)
+
+    def test_cancel_with_nothing_playing_still_reports_the_dismissal(self):
+        self.assertTrue(self.reply("A short reply.", 1, "one"))
+        with mock.patch.object(voice_bridge, "_on_reply_finished") as finished:
+            self.control("__CANCEL__")
+        finished.assert_called_once_with("dismissed", self.client)
+        self.assertFalse(self.client.speaking)
+
+
 class BridgeWiringTests(unittest.TestCase):
     def test_service_reads_the_bridges_config(self):
         with mock.patch.object(sys, "argv", ["voice_bridge.py", "--config", "/tmp/a config.toml", "--relay"]), \
