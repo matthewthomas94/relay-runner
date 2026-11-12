@@ -304,11 +304,15 @@ class SpeechCoordinator:
         event_log_path: str | os.PathLike[str] | None = None,
         control_socket_path: str | None = None,
         on_reply_finished: Callable[[str], None] | None = None,
+        on_playback: Callable[[str, SpeechIntent, dict[str, Any]], None] | None = None,
     ):
         self.worker = worker
         # Called with "completed" or "user_stop" once a final reply ends and
         # nothing else is queued, so the bridge can offer the next unheard one.
         self._on_reply_finished = on_reply_finished
+        # RR-480: called with each worker lifecycle state of an intent, so the
+        # speech service can report playback to its client.
+        self._on_playback = on_playback
         self.input_queue = CoordinatorInputQueue(self)
         self._is_current = is_current
         self._is_preserved = is_preserved
@@ -376,6 +380,28 @@ class SpeechCoordinator:
     def speaking(self) -> bool:
         """Audio is playing or a reply is waiting to be played."""
         return self.has_pending_speech
+
+    def queue_snapshot(self) -> dict[str, Any]:
+        """The queue in playing order: the head, then everything behind it (RR-480)."""
+        with self._lock:
+            heads = [
+                self._intents[intent_id]
+                for intent_id in dict.fromkeys((self._playing_id, self._committed_id))
+                if intent_id in self._intents
+            ]
+            return {
+                "speaking": bool(self._committed_id or self._playing_id or self._backlog),
+                "playing": self._playing_id is not None,
+                "held": self._speech_stopped,
+                "queue_depth": self._queue_depth_locked(),
+                "queue": [
+                    {
+                        "utterance_id": item.utterance_id,
+                        "original_utterance_id": item.original_utterance_id,
+                    }
+                    for item in heads + self._backlog
+                ],
+            }
 
     @property
     def playing(self) -> bool:
@@ -1224,6 +1250,11 @@ class SpeechCoordinator:
                 stop_reason=stop_reason,
                 **({"requeued_as": requeued.utterance_id} if requeued is not None else {}),
             )
+        if self._on_playback is not None:
+            self._on_playback(state, intent, {
+                "stop_reason": stop_reason,
+                "requeued_as": requeued.utterance_id if requeued is not None else None,
+            })
         if next_intent is not None:
             self._enqueue_worker(next_intent)
         elif (
