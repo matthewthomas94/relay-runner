@@ -27,7 +27,7 @@ speech_service --socket <path> [--config <path>]
 
 - `--socket` is the Unix stream socket the service listens on. It defaults to `RELAY_SPEECH_SERVICE_SOCK`, then `/tmp/relay_speech_service.sock`. The service removes a leftover file at that path, creates the socket readable and writable by its owner only, and listens before it loads the voice, so a client can connect at once and wait for the answer to `hello`.
 - `--config` is the `config.toml` to read. The service uses `[tts]` `voice`, `rate`, `chime` and `auto_play`, with the defaults of `services/config.py`.
-- The service accepts **one** connection for its whole life. After accepting it, the service closes the listening socket and removes its path.
+- The service accepts **one** connection for its whole life. After accepting it, the service closes the listening socket and removes its path. The client refuses a socket whose other end belongs to another user.
 - The service exits with status 0 after a `shutdown` request, when its client's connection ends, when its parent process exits, and on `SIGTERM` or `SIGINT`. In each case it first stops speech and releases its sockets. It exits with status 1 when it cannot listen on the socket path.
 - stderr carries free-form diagnostics. stdout is unused.
 
@@ -117,11 +117,11 @@ Intent fields of `speak`. Only `text` is required; `null` and absent mean the de
 
 | `op` | Fields | Result | Effect |
 | --- | --- | --- | --- |
-| `play` | | | Plays the reply waiting at the head of the queue, and releases a held queue. Does nothing while audio is playing. |
+| `play` | | | Plays the reply waiting at the head of the queue, releases a held queue, and brings the next queued reply forward to play when nothing is waiting. Does nothing while audio is playing or when the queue is empty. |
 | `play_or_replay` | | `handled` | `play` when a reply is waiting or queued, otherwise `replay`. |
-| `replay` | | `accepted` | Speaks the newest replayable reply again as a new utterance whose `replay_of` names the original. `false` when there is none. |
+| `replay` | | `accepted` | Speaks the newest replayable reply again as a new utterance whose `replay_of` names the original. `false` when there is none. The request also acts as `play`: with nothing at the head the replay plays at once; with a reply waiting at the head, that reply plays and the replay is next, ahead of everything else queued. |
 | `pause` | | | Speech-only barge-in: stops the audio and **holds** the queue. The reply that was playing returns to the head of the queue and plays from its start on the next `play`. |
-| `stop_playback` | optional `reason` (`user_stop`) | | Stops the reply that is playing. With `recording_barge_in` the reply counts as heard: it leaves the queue, stays replayable, and nothing else starts until `new_turn`. With any other reason the reply returns to the head of the queue and the queue is held. With nothing playing it acts as `pause`. |
+| `stop_playback` | optional `reason` (`user_stop`) | | Stops the reply that is playing. With `recording_barge_in` the reply counts as heard: it leaves the queue, stays replayable, and nothing else comes forward until `new_turn` or `play`. With any other reason the reply returns to the head of the queue and the queue is held. With nothing playing it acts as `pause`. |
 | `skip` | optional `reason` (`user_stop`) | | Removes the reply that is playing, or else the one waiting at the head; it stays replayable. The next queued reply comes forward, except with `focus_switch`, `wheel_stop` or `recording_barge_in`, which bring nothing forward. The bridge sends `focus_switch` when the user changes session. |
 | `new_turn` | `command_seq`, `command_id` | | A new user turn: releases a held queue, stops a playing reply of an older command (it returns to the head of the queue), and drops queued `handoff` and `progress` speech of older commands. Queued replies stay. |
 
@@ -130,7 +130,7 @@ Intent fields of `speak`. Only `text` is required; `null` and absent mean the de
 | `op` | Fields | Result | Effect |
 | --- | --- | --- | --- |
 | `session_playback_states` | optional `waiting_session_key` | `states`: session key to `play`, `stop` or `replay` | What each session's control would do now. |
-| `control_session` | `session_key`, `action` (`play`, `stop` or `replay`), optional `waiting_session_key` | `handled` | Acts for one session only: stops its playing reply, brings its queued reply forward and plays it, or replays its newest reply. `false` when the action does not apply to that session. |
+| `control_session` | `session_key`, `action` (`play`, `stop` or `replay`), optional `waiting_session_key` | `handled` | Acts for one session only. `stop` stops its playing reply with the reason `wheel_stop`: the reply returns to the head and the queue is held. `play` plays its reply waiting at the head, or brings its queued reply forward and plays it; a reply that was waiting at the head is `cancelled`, keeps its `utterance_id`, and is `queued` again when it returns to the head. `replay` replays its newest reply. `false` when the action does not apply to that session, including `play` while another session's reply is playing. |
 
 ### Diagnostics
 
@@ -193,7 +193,7 @@ One utterance's progress. Fields: `phase`, `utterance_id`, `original_utterance_i
 | `cancelled` | It was stopped, skipped, replaced or found stale. |
 | `failed` | Synthesis or the output failed. |
 
-An utterance ends with exactly one of `completed`, `cancelled` or `failed`. Those three carry `stop_reason` (the reason of the stop or skip, otherwise `null`) and `requeued_as` (the `utterance_id` under which the reply returned to the queue, otherwise `null`).
+Only an utterance that reached the head of the queue has `playback` events; one that is replaced, dropped or found stale while still behind the head just leaves the `queue` of the next `state` event. An attempt ends with exactly one of `completed`, `cancelled` or `failed`. Those three carry `stop_reason` (the reason of the stop or skip that ended a reply while it was playing, otherwise `null`) and `requeued_as` (the `utterance_id` under which the reply returned to the queue, otherwise `null`). The one case in which an `utterance_id` is `queued` again after `cancelled` is the reply `control_session` moved back.
 
 ### `reply_finished`
 
@@ -241,7 +241,7 @@ Freshness is checked when an intent is proposed, when it reaches the head of the
 These existed before the split and are unchanged.
 
 - **`TTS_CONTROL_SOCK`** receives datagrams: `play` and `toggle` act as `play`, `replay` as `replay`, `skip` and `cancel` as `skip`, `pause` and `stop` as `pause`.
-- **State datagrams** to `VOICE_STATE_SOCK` are JSON objects with `source: "tts"` and `state` of `message_waiting`, `preparing`, `speaking`, `idle` or `failed`, the utterance's identity, and the display text where there is one. A datagram is at most 2048 bytes; longer text is shortened.
+- **State datagrams** to `VOICE_STATE_SOCK` are JSON objects with `source: "tts"` and `state` of `message_waiting`, `preparing`, `speaking`, `idle` or `failed`, the utterance's identity, and the display text where there is one. A datagram is at most 2048 bytes; longer text is shortened. A reply stopped while it plays should end with `idle` carrying its `stop_reason`. The Python worker often sends no `idle` at all in that case, because its playback thread finishes while the stop is still fading the audio; this was so before the split, and the suite does not check it.
 - **`SPEECH_EVENT_LOG`** gets one JSON object per line for every proposal, decision and playback stage. It never holds reply text.
 - **`voice-audio.lock`** is held with `flock` while audio plays, so a Settings voice preview and a reply never overlap.
 
@@ -255,7 +255,7 @@ When the service ends without being asked to, the client:
 
 1. fails the requests that were waiting for a response;
 2. starts a new service, at most three times a minute, then stops trying and treats every request as refused;
-3. clears the overlay's speech state, attaches its Relay Remote devices again, and sends `speak` again for every reply the last `state` event listed, in queue order. They are ordinary `speak` requests, so a reply whose command is no longer fresh is dropped. Replay history is not restored.
+3. clears the overlay's speech state, attaches its Relay Remote devices again, and sends again every `speak` whose reply the last `state` event still listed, in queue order. They are ordinary `speak` requests, so a reply whose command is no longer fresh is dropped. Replay history, `read_out` text and frames a Relay Remote sink had not acknowledged are not restored.
 
 **The service never outlives its client.** When the connection ends, or the parent process exits before connecting, the service stops speech at once and exits. A restarted bridge starts a new service; nothing queued carries over, exactly as when speech ran inside the bridge.
 
@@ -285,12 +285,33 @@ Everything else runs as in a session: the queue, the sockets, the state datagram
 
 ## Contract cases
 
-`tests/contract/speech_contract_support.py` is the harness. Each case below names the section it checks.
+`tests/contract/speech_contract_support.py` is the harness. Every case is a method of one of the classes below, and its docstring quotes the rule it checks. File names are relative to `tests/contract/`.
 
-| File | Checks |
-| --- | --- |
-| `test_speech_contract_protocol.py` | [Process](#process), [Transport](#transport), [Ordering](#ordering), [Session](#session) requests, [Diagnostics](#diagnostics), [Surfaces the service owns](#surfaces-the-service-owns) |
-| `test_speech_contract_queue.py` | [Queue rules](#queue-rules): queueing in order, supersede and replace, the 50-item cap; [Freshness](#freshness): stale intents |
-| `test_speech_contract_playback.py` | [Playback control](#playback-control): barge-in, skip, pause and resume, replay history; [Sessions](#sessions); [Events](#events) |
-| `test_speech_contract_remote.py` | [Relay Remote](#relay-remote): attach, a remote synthesis request, acknowledgement, stop, detach |
-| `test_speech_contract_restart.py` | [Restarts](#restarts): a service restart with queued speech, shutdown, a client that disappears |
+| File | Class | Checks |
+| --- | --- | --- |
+| `test_speech_contract_protocol.py` | `ProcessTests` | [Process](#process): the socket, its one connection, exit statuses, signals, a parent that exits |
+| | `TransportTests` | [Transport](#transport): `hello`, error codes, request ids, unknown fields, lines that are not messages, the line limit |
+| | `OrderingTests` | [Ordering](#ordering) rules 1 to 4 |
+| | `SessionRequestTests` | [Session](#session): `reload_config`, `shutdown` |
+| | `DiagnosticsTests` | [Diagnostics](#diagnostics): every request |
+| | `OwnedSurfaceTests` | [Surfaces the service owns](#surfaces-the-service-owns): control socket, state datagrams, event log, audio lease |
+| | `TestModeTests` | [Test mode](#test-mode): silence length, the playback log |
+| `test_speech_contract_queue.py` | `QueueOrderTests` | [Queue rules](#queue-rules): queueing in order, refusals, deduplication |
+| | `SupersedeAndReplaceTests` | [Queue rules](#queue-rules): Supersede, Replace, Newer command |
+| | `QueueCapTests` | [Queue rules](#queue-rules): the 50-item cap |
+| | `FreshnessTests` | [Freshness](#freshness): stale intents, preserved commands, the three points of checking |
+| `test_speech_contract_playback.py` | `PlaybackEventTests` | [Events](#events): `playback`, `state`, `reply_finished` |
+| | `AutoPlayTests`, `RateTests` | [Process](#process): `[tts]` `auto_play` and `rate` |
+| | `BargeInTests` | [Playback control](#playback-control): `stop_playback` (barge-in), `pause` and resume, `play` |
+| | `SkipTests` | [Playback control](#playback-control): `skip` and its reasons |
+| | `NewTurnTests` | [Playback control](#playback-control): `new_turn` |
+| | `ReplayTests`, `ReplayHistoryTests` | [Playback control](#playback-control): `replay`, `play_or_replay`, `read_out`; the 32-reply history |
+| | `WaitingPlaybackTests` | [Speaking](#speaking): `arm_waiting_playback`, `waiting_playback_kind` |
+| | `SessionTests` | [Sessions](#sessions): `session_playback_states`, `control_session` |
+| `test_speech_contract_remote.py` | `RemoteSinkTests` | [Relay Remote](#relay-remote): a remote synthesis request, acknowledgement, stop, detach, [Ordering](#ordering) rule 5 |
+| | `RemoteMirrorTests` | [Relay Remote](#relay-remote): the `mirror` role |
+| | `RemoteRequestTests` | [Relay Remote](#relay-remote): request fields |
+| `test_speech_contract_restart.py` | `RestartTests` | [Restarts](#restarts): a service restart with queued speech |
+| | `ClientGoneTests` | [Restarts](#restarts): a client that disappears |
+
+The bridge's side of a restart, its device calls and its start-up code are covered by `tests/test_speech_service_client.py`, which is not part of the contract.
