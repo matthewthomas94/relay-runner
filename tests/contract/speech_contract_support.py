@@ -298,6 +298,8 @@ class Sandbox:
             except OSError:
                 return None
 
+        if self.conn is not None:
+            self.conn.close()
         self.conn = wait_until(attempt, message="the service socket")
         return self.conn
 
