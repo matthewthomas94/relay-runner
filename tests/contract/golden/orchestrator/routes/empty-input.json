@@ -1,0 +1,417 @@
+{
+  "GET /v1/artifacts/dependencies/{ticket_id}": {
+    "error": "project is not using the artifact-backed board writer",
+    "status": 400
+  },
+  "GET /v1/artifacts/history/search": {
+    "keys": [
+      "history",
+      "recovery"
+    ],
+    "status": 200
+  },
+  "GET /v1/artifacts/history/{artifact_id}": {
+    "error": "project is not using the artifact-backed board writer",
+    "status": 400
+  },
+  "GET /v1/artifacts/history/{artifact_id}/attachments/{filename}": {
+    "error": "project is not using the artifact-backed board writer",
+    "status": 400
+  },
+  "GET /v1/artifacts/notes": {
+    "keys": [
+      "artifact_commit",
+      "has_more",
+      "limit",
+      "next_cursor",
+      "notes",
+      "sync",
+      "total_count"
+    ],
+    "status": 200
+  },
+  "GET /v1/artifacts/notes/{identity}": {
+    "error": "no unique project note matches '999'",
+    "status": 422
+  },
+  "GET /v1/artifacts/retention/preview": {
+    "error": "project is not using the artifact-backed board writer",
+    "status": 400
+  },
+  "GET /v1/artifacts/retention/status": {
+    "error": "project is not using the artifact-backed board writer",
+    "status": 400
+  },
+  "GET /v1/artifacts/rollout": {
+    "keys": [
+      "rollout",
+      "status"
+    ],
+    "status": 200
+  },
+  "GET /v1/artifacts/storage": {
+    "error": "project is not using the artifact-backed board writer",
+    "status": 400
+  },
+  "GET /v1/continuity-reports/{report_id}": {
+    "error": "continuity report 999 not found",
+    "status": 400
+  },
+  "GET /v1/general/tasks": {
+    "keys": [
+      "scope",
+      "tasks",
+      "total_count"
+    ],
+    "status": 200
+  },
+  "GET /v1/general/tasks/{task_id}": {
+    "error": "General task not found",
+    "status": 400
+  },
+  "GET /v1/health": {
+    "keys": [
+      "ok",
+      "version"
+    ],
+    "status": 200
+  },
+  "GET /v1/messenger/outcomes": {
+    "keys": [
+      "outcomes"
+    ],
+    "status": 200
+  },
+  "GET /v1/orchestrator-sessions": {
+    "keys": [
+      "orchestrator_sessions"
+    ],
+    "status": 200
+  },
+  "GET /v1/personal-storage/account": {
+    "error": "GitHub is unavailable. Local files are preserved; retry when online.",
+    "status": 409
+  },
+  "GET /v1/personal-storage/files": {
+    "keys": [
+      "files"
+    ],
+    "status": 200
+  },
+  "GET /v1/personal-storage/status": {
+    "keys": [
+      "budget_bytes",
+      "connected",
+      "destination",
+      "disclosure",
+      "files_root",
+      "message",
+      "over_budget",
+      "overage_reasons",
+      "retention_days",
+      "state",
+      "usage"
+    ],
+    "status": 200
+  },
+  "GET /v1/program/dashboard": {
+    "keys": [
+      "awaiting_merge",
+      "backlog",
+      "done",
+      "in_progress",
+      "ready",
+      "summary"
+    ],
+    "status": 200
+  },
+  "GET /v1/program/status": {
+    "keys": [
+      "counts",
+      "items",
+      "message",
+      "provider",
+      "query"
+    ],
+    "status": 200
+  },
+  "GET /v1/queue-drains": {
+    "keys": [
+      "queue_drains"
+    ],
+    "status": 200
+  },
+  "GET /v1/runs": {
+    "keys": [
+      "runs"
+    ],
+    "status": 200
+  },
+  "GET /v1/runs/{run_id}": {
+    "keys": [
+      "run"
+    ],
+    "status": 404
+  },
+  "GET /v1/runs/{run_id}/outcome": {
+    "error": "unknown run_id 999",
+    "status": 400
+  },
+  "GET /v1/runs/{run_id}/review": {
+    "error": "unknown run_id 999",
+    "status": 400
+  },
+  "POST /v1/artifacts/attachments/write": {
+    "error": "project is not using the artifact-backed board writer",
+    "status": 400
+  },
+  "POST /v1/artifacts/history/{artifact_id}/reopen": {
+    "error": "history restore/reopen requires a stable request_id",
+    "status": 400
+  },
+  "POST /v1/artifacts/history/{artifact_id}/restore": {
+    "error": "history restore/reopen requires a stable request_id",
+    "status": 400
+  },
+  "POST /v1/artifacts/notes/create": {
+    "error": "note request_id must be 1 to 120 safe characters",
+    "status": 422
+  },
+  "POST /v1/artifacts/notes/{note_id}/archive": {
+    "error": "invalid unpadded note ID: '999'",
+    "status": 400
+  },
+  "POST /v1/artifacts/notes/{note_id}/cancel": {
+    "error": "invalid unpadded note ID: '999'",
+    "status": 400
+  },
+  "POST /v1/artifacts/notes/{note_id}/delete": {
+    "error": "invalid unpadded note ID: '999'",
+    "status": 400
+  },
+  "POST /v1/artifacts/notes/{note_id}/retry-metadata": {
+    "error": "no unique project note matches '999'",
+    "status": 422
+  },
+  "POST /v1/artifacts/notes/{note_id}/update": {
+    "error": "note update must be an object",
+    "status": 400
+  },
+  "POST /v1/artifacts/retention/apply": {
+    "error": "retention apply requires a stable request_id",
+    "status": 400
+  },
+  "POST /v1/artifacts/retention/retry": {
+    "error": "project is not using the artifact-backed board writer",
+    "status": 400
+  },
+  "POST /v1/artifacts/tickets/claim-next-id": {
+    "error": "project is not using the artifact-backed board writer",
+    "status": 400
+  },
+  "POST /v1/artifacts/tickets/delete": {
+    "error": "project is not using the artifact-backed board writer",
+    "status": 400
+  },
+  "POST /v1/artifacts/tickets/write": {
+    "error": "project is not using the artifact-backed board writer",
+    "status": 400
+  },
+  "POST /v1/continuity-reports/{report_id}/proposals/{proposal_id}/review": {
+    "error": "decision must be 'edit', 'accept', or 'reject'",
+    "status": 400
+  },
+  "POST /v1/continuity/observation": {
+    "error": "continuity event requires session_id",
+    "status": 400
+  },
+  "POST /v1/general/tasks": {
+    "error": "title, description and request_id are required",
+    "status": 400
+  },
+  "POST /v1/general/tasks/{task_id}/artifact": {
+    "error": "General task not found",
+    "status": 400
+  },
+  "POST /v1/general/tasks/{task_id}/cancel": {
+    "error": "General task not found",
+    "status": 400
+  },
+  "POST /v1/general/tasks/{task_id}/dispatch": {
+    "error": "General task not found",
+    "status": 400
+  },
+  "POST /v1/general/tasks/{task_id}/review": {
+    "error": "Review requires approve true/false and an evidence-based summary",
+    "status": 400
+  },
+  "POST /v1/messenger/outcomes/{outcome_id}/attempt": {
+    "keys": [
+      "ok"
+    ],
+    "status": 202
+  },
+  "POST /v1/messenger/outcomes/{outcome_id}/delivered": {
+    "keys": [
+      "outcome"
+    ],
+    "status": 404
+  },
+  "POST /v1/orchestrator-actions": {
+    "error": "repo_path is required",
+    "status": 400
+  },
+  "POST /v1/orchestrator-session/command": {
+    "error": "repo_path is required",
+    "status": 400
+  },
+  "POST /v1/orchestrator-session/ensure": {
+    "error": "repo_path is required",
+    "status": 400
+  },
+  "POST /v1/orchestrator-session/heartbeat": {
+    "error": "orchestrator session not found",
+    "status": 400
+  },
+  "POST /v1/orchestrator-session/stop": {
+    "error": "orchestrator session not found",
+    "status": 400
+  },
+  "POST /v1/personal-storage/configure": {
+    "error": "Enable private GitHub storage explicitly before creating a repository.",
+    "status": 409
+  },
+  "POST /v1/personal-storage/disconnect": {
+    "keys": [
+      "budget_bytes",
+      "connected",
+      "destination",
+      "disclosure",
+      "files_root",
+      "message",
+      "over_budget",
+      "overage_reasons",
+      "retention_days",
+      "state",
+      "usage"
+    ],
+    "status": 200
+  },
+  "POST /v1/personal-storage/pin": {
+    "error": "Unknown personal file identity or revision",
+    "status": 400
+  },
+  "POST /v1/personal-storage/policy": {
+    "keys": [
+      "budget_bytes",
+      "connected",
+      "destination",
+      "disclosure",
+      "files_root",
+      "message",
+      "over_budget",
+      "overage_reasons",
+      "reclaimed_bytes",
+      "retention_days",
+      "state",
+      "usage"
+    ],
+    "status": 200
+  },
+  "POST /v1/personal-storage/retrieve": {
+    "error": "Unknown personal file identity or revision",
+    "status": 400
+  },
+  "POST /v1/personal-storage/sign-in": {
+    "keys": [
+      "device_code",
+      "state",
+      "url"
+    ],
+    "status": 200
+  },
+  "POST /v1/personal-storage/sync": {
+    "keys": [
+      "budget_bytes",
+      "connected",
+      "destination",
+      "disclosure",
+      "files_root",
+      "message",
+      "over_budget",
+      "overage_reasons",
+      "retention_days",
+      "state",
+      "usage"
+    ],
+    "status": 200
+  },
+  "POST /v1/program/capture": {
+    "error": "entries is required",
+    "status": 400
+  },
+  "POST /v1/program/ready-sweep": {
+    "keys": [
+      "dispatched",
+      "projects",
+      "skipped",
+      "trigger"
+    ],
+    "status": 200
+  },
+  "POST /v1/queue-drain/reconcile": {
+    "keys": [
+      "projects",
+      "trigger"
+    ],
+    "status": 200
+  },
+  "POST /v1/queue-drains/{drain_id}/cancel": {
+    "error": "unknown queue drain 999",
+    "status": 400
+  },
+  "POST /v1/ready-sweep": {
+    "error": "repo_path is required",
+    "status": 400
+  },
+  "POST /v1/runs": {
+    "error": "ticket_id is required",
+    "status": 400
+  },
+  "POST /v1/runs/reconcile-preserved": {
+    "error": "ticket_id is required",
+    "status": 400
+  },
+  "POST /v1/runs/recover-preserved-collision": {
+    "error": "ticket_id is required",
+    "status": 400
+  },
+  "POST /v1/runs/{run_id}/cancel": {
+    "error": "unknown run_id 999",
+    "status": 400
+  },
+  "POST /v1/runs/{run_id}/outcome": {
+    "error": "unknown run_id 999",
+    "status": 400
+  },
+  "POST /v1/runs/{run_id}/resume-verification": {
+    "error": "unknown run_id 999",
+    "status": 400
+  },
+  "POST /v1/runs/{run_id}/review": {
+    "error": "unknown run_id 999",
+    "status": 400
+  },
+  "POST /v1/runs/{run_id}/review/decision": {
+    "error": "decision must be 'accept' or 'retry'",
+    "status": 400
+  },
+  "POST /v1/spikes/follow-ups/propose": {
+    "error": "origin_repo_path <ROOT> is not a git repository",
+    "status": 400
+  },
+  "POST /v1/spikes/follow-ups/{batch_id}/proposals/{proposal_id}/review": {
+    "error": "follow-up batch 999 not found",
+    "status": 400
+  }
+}
