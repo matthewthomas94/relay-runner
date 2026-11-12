@@ -144,6 +144,44 @@ class SupersedeAndReplaceTests(SpeechCase):
         self.assertStays(lambda: self.status()["playing"], 0.2, "the handoff was cut off")
         self.assertNotIn("cancelled", self.phases(handoff))
 
+    def test_higher_priority_replaces_the_commands_waiting_progress(self):
+        """Supersede: higher `priority` replaces the same command's waiting `progress`."""
+        command = self.new_command()
+        note = {"command": command, "kind": "progress", "source": "lifecycle", "authoritative": False}
+        progress = self.speak("Still working.", **note)
+        self.wait_phase(progress, "queued")
+
+        # A handoff outranks progress by default: 20 against 10.
+        handoff = self.speak("Looking into it.", command=command, **HANDOFF)
+
+        self.assertEqual(self.queue(), [handoff])
+        self.wait_phase(progress, "cancelled")
+        self.wait_phase(handoff, "queued")
+        # A waiting handoff is never replaced on priority, and equal priority replaces nothing.
+        urgent = self.speak("An urgent note.", priority=90, **note)
+        self.assertEqual(self.queue(), [handoff, urgent])
+        self.assertEqual(self.phases(handoff), ["queued"])
+
+    def test_priority_can_be_set_by_the_client(self):
+        """`priority`: "Only compared between speech of the same command"."""
+        command = self.new_command()
+        note = {"command": command, "kind": "progress", "source": "lifecycle", "authoritative": False}
+        first = self.speak("Still working.", **note)
+        self.wait_phase(first, "queued")
+        same = self.speak("Still working on it.", **note)
+        self.assertEqual(self.queue(), [first, same])
+
+        higher = self.speak("Nearly done.", priority=50, **note)
+
+        self.assertEqual(self.queue(), [higher, same])
+        self.wait_phase(first, "cancelled")
+        # Speech that is not of the same command is not compared.
+        other = self.conn.request(
+            "speak", text="No command.", kind="progress", source="lifecycle", priority=99, dedup_key="note-1",
+        )
+        self.assertTrue(other["accepted"])
+        self.assertEqual(self.queue(), [higher, same, other["utterance_id"]])
+
     def test_another_commands_reply_is_not_superseded(self):
         """Supersede is for "the same command's" speech only."""
         earlier = self.speak("Earlier reply.")

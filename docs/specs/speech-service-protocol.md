@@ -102,16 +102,21 @@ Intent fields of `speak`. Only `text` is required; `null` and absent mean the de
 | `source` | `fallback` | `messenger`, `orchestrator`, `lifecycle`, `completion` or `fallback`. |
 | `kind` | `fallback` | `handoff`, `progress`, `clarification`, `final`, `fallback` or `control`. `clarification`, `final` and `fallback` are **replies**. |
 | `authoritative` | `false` | The provider's own outcome, not a stand-in. |
-| `priority` | by `kind` | Only compared between speech of the same command. |
-| `dedup_key` | derived | Speech with a key already accepted is refused. A reply of a command defaults to one key per command, so a command has one real final and one fallback. |
+| `priority` | by `kind` | Only compared between speech of the same command. The default is `control` 100, `clarification` 80, `final` 70, `fallback` 60, `handoff` 20, `progress` 10, plus 5 when `authoritative`. |
+| `dedup_key` | derived | Speech with a key already accepted is refused. A `final` or `fallback` of a command defaults to one key per command, so a command has one real final and one fallback. |
 | `utterance_id` | a new UUID | The identity used in events and state datagrams. |
 | `expires_at` | none | Unix time after which the intent is no longer spoken. |
 | `freshness_scope` | `conversation` | `work` exempts a `lifecycle` `final` from command freshness. |
 | `work_disposition` | none | Carries `intent_id` for the preserved-command rule. |
 | `replayable` | `kind == "final"` | Whether `replay` may repeat it. |
-| `lifecycle_role`, `covered_facts`, `realization_decision`, `suppression_reason`, `semantic_brief` | | Recorded in the event log and returned by `played_coverage`. |
+| `lifecycle_role` | by `kind` | `acknowledgement`, `progress`, `result`, `failure`, `blocker`, `decision`, `conversation` or `control`. Recorded in the event log and returned by `played_coverage`. |
+| `covered_facts` | the `semantic_brief`, else `text` | List of strings returned by `played_coverage`. |
+| `realization_decision`, `suppression_reason` | `full`, `""` | `full`, `delta` or `suppress`, and why. Recorded in the event log. |
+| `semantic_brief` | `display_text` | A short description used for `covered_facts` and the derived `dedup_key`. |
 | `session_key` | `""` | The app session the speech belongs to. |
 | `waiting_playback_kind` | none | See `arm_waiting_playback`. |
+
+A value outside a field's list is treated as that field's default.
 
 ### Playback control
 
@@ -140,7 +145,7 @@ Intent fields of `speak`. Only `text` is required; `null` and absent mean the de
 | `note_play_control` | optional `option_detected_at`, `fifo_received_at` | | Records play-gesture timing in the event log. |
 | `note_visual_acknowledgement` | `option_detected_at`, `acknowledged_at` | | Same, for the overlay's acknowledgement. |
 | `record_realization` | `command_seq`, `command_id`, `lifecycle_role`, `decision`, `reason` | | Writes a `realization` record. |
-| `record_messenger_stage` | `stage`, `command_seq`, `command_id`, optional `at`, `provider`, `outcome` | | Writes a messenger timing record. |
+| `record_messenger_stage` | `stage`, `command_seq`, `command_id`, optional `at`, `provider`, `outcome` | | Writes a messenger timing record named after `stage`: `user_turn_received`, `messenger_submitted`, `messenger_provider_started`, `messenger_first_semantic_output`, `messenger_failed` or `messenger_unavailable`. Another `stage` is ignored. `provider` is recorded when it is `codex` or `claude`. |
 | `record_missing_outcome` | `command_seq`, `command_id`, `reason`, optional `signals` | `recorded` | Writes one `missing_outcome` record per command; `false` when the command has an accepted reply or was already recorded. |
 
 ### Relay Remote
@@ -214,7 +219,7 @@ There is one queue for every session. `speak` answers `accepted: false`, and the
 
 An accepted intent goes to the back of the queue, with these exceptions:
 
-- **Supersede.** A `clarification`, `final` or `fallback` replaces the same command's `handoff` or `progress` speech that has not started, wherever it is queued.
+- **Supersede.** A `clarification`, `final` or `fallback` replaces the same command's `handoff` or `progress` speech that has not started, wherever it is queued. Speech with a higher `priority` likewise replaces the same command's `progress` or `control` speech waiting at the head.
 - **Replace.** An authoritative `final` from `completion` or `orchestrator` replaces the same command's fallback outcome, even while that fallback is playing.
 - **Newer command.** Speech of a newer command stops the older command's `handoff` or `progress` speech at the head. A reply is never removed by a newer command.
 
