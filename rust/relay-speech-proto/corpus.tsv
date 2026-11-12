@@ -1,0 +1,57 @@
+reply-01	reply	I've finished the change and all the tests pass.
+reply-02	reply	Sure, I can take a look at that for you.
+reply-03	reply	The build failed, so I'm reading the log to find out why.
+reply-04	reply	That's done. Do you want me to open a pull request?
+reply-05	reply	I couldn't find the file you mentioned; could you tell me where it lives?
+reply-06	reply	Two workers are still running, and the third one finished a minute ago.
+reply-07	reply	Sorry, I didn't catch that. Could you say it again?
+reply-08	reply	I read the report you asked about, and I'll read the rest tomorrow.
+code-01	code	The bug is in resolveVoiceWorkItems, which calls dataclasses.replace with the wrong type.
+code-02	code	I renamed speech_coordinator to speech_engine and updated the imports.
+code-03	code	Set RELAY_WORK_STYLE to direct, then restart the session.
+code-04	code	The function parse_frontmatter returns a dict of str to Any.
+code-05	code	AppState.toggleWorkspace is called from the menu bar.
+code-06	code	Run cargo build with the locked flag, then cargo clippy.
+path-01	path	I edited services/tts_worker.py and Sources/relay-runner/App/RelayAppCommands.swift.
+path-02	path	The config lives at ~/Library/Application Support/relay-runner/config.toml.
+path-03	path	The port file is /tmp/relay_orchestrator.port and the pipe is /tmp/voice_in.fifo.
+path-04	path	Open docs/specs/orchestrator-tickets.md and scroll to the frontmatter section.
+path-05	path	The model file is kokoro-v1.0.onnx, in the .local/share/kokoro folder.
+number-01	number	The daemon used 19% of one core and 506 megabytes of memory.
+number-02	number	There are 1,492 tests across 97 files, and 3 of them failed.
+number-03	number	It took 2.5 seconds, which is about 0.4 times real time.
+number-04	number	The port is 7634 and the timeout is 300 seconds.
+number-05	number	That costs $12.50 a month, or $150 a year.
+number-06	number	The sample rate is 24 kHz and each buffer is 20 ms.
+date-01	date	The release went out on 11 November 2026 at 6:06 pm.
+date-02	date	I'll check again on 2026-11-12.
+date-03	date	The last run was on Tuesday, March 3rd, at 09:30.
+date-04	date	The licence dates from the 1990s, and it was last updated in 2007.
+date-05	date	The meeting is at 3:45 tomorrow afternoon.
+version-01	version	Relay Runner 0.5.3 ships with Python 3.13 and onnxruntime 1.28.
+version-02	version	We pin ort at 2.0.0-rc.15 and misaki-rs at 0.8.0.
+version-03	version	Upgrade to macOS 15.2 or later.
+version-04	version	The tag is v0.4.89, and the build number is 412.
+version-05	version	Rust 1.94.1 is installed with Homebrew.
+ticket-01	ticket	RR-448 is done, and RR-479 is in progress.
+ticket-02	ticket	I dispatched RR-475 and it merged as run 334.
+ticket-03	ticket	RR-440's second attempt is still waiting on review.
+ticket-04	ticket	Tickets RR-481 through RR-487 are blocked on the gate.
+ticket-05	ticket	See PR #212 and issue JIRA-1024 for the details.
+product-01	product	Relay Runner uses Kokoro for speech and FluidAudio for transcription.
+product-02	product	Claude and Codex both run as workers; ChatGPT is not used.
+product-03	product	I opened the project in Xcode and pushed it to GitHub.
+product-04	product	The app is built with SwiftUI, SQLite and ONNX Runtime.
+product-05	product	You can pair your iPhone over Tailscale with Relay Remote.
+product-06	product	Anthropic's Claude Fable and OpenAI's Codex share the same hooks.
+unknown-01	unknown	The qzxwv setting is undocumented.
+unknown-02	unknown	Mentistic is the parent brand of Relay Runner.
+unknown-03	unknown	The plugin is called Zorblax, and its mascot is a snarfblat.
+unknown-04	unknown	I couldn't parse the word floopdoodle or the name Xyrgathon.
+unknown-05	unknown	Set the flag to frobnicate and rerun.
+unknown-06	unknown	kubectl, nginx and systemd are all running.
+symbol-01	symbol	Visit https://github.com/pykeio/ort for the source.
+symbol-02	symbol	The API returned a 401, so sign in again with claude auth login.
+symbol-03	symbol	Email support@example.com, e.g. with the log attached.
+symbol-04	symbol	JSON, YAML and TOML are all supported; CSV isn't.
+symbol-05	symbol	It runs on the CPU by default, or on the GPU through CoreML.

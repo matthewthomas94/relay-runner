@@ -1,0 +1,50 @@
+# Licence gate for the speech prototype (RR-479). It is not a member of the
+# workspace in rust/, so scripts/rust-licenses does not read it; run instead:
+#
+#     cargo deny --locked check licenses bans sources
+#
+# Anything not allowed here is refused, which covers every GPL-family licence.
+
+[graph]
+targets = ["aarch64-apple-darwin"]
+
+[licenses]
+# The allow list of scripts/rust-licenses, unchanged.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+# The two crates that list refuses. Neither is copyleft; each is named so a
+# production crate has to decide about it rather than inherit it.
+exceptions = [
+    # Mozilla's root certificates, used only by ort-sys's build script to
+    # download ONNX Runtime. Not linked into the binary.
+    { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
+    # A dependency misaki-rs 0.8.0 declares and never uses. Its manifest names
+    # a licence file, the WTFPL, instead of an SPDX expression.
+    { crate = "language-tokenizer", allow = ["WTFPL"] },
+]
+
+[bans]
+multiple-versions = "allow"
+# Crates that bind or port espeak-ng (GPL-3.0). Most of the bindings declare a
+# permissive licence for their own code, so the licence check would pass them.
+deny = [
+    { crate = "espeak-ng" },
+    { crate = "espeak-rs" },
+    { crate = "espeak-rs-sys" },
+    { crate = "espeakng" },
+    { crate = "espeakng-sys" },
+    { crate = "piper-phonemize" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -19,3 +19,4 @@ ios/Config/Signing.local.xcconfig
 xcuserdata/
 # Rust
 rust/target/
+rust/relay-speech-proto/target/
