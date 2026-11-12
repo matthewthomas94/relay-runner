@@ -178,6 +178,32 @@ class _NullOutput:
         self._log.write("output_stopped")
 
 
+class _LoggedPlayer(SpeechPlayer):
+    """Test mode: a null output, and a log record for each sentence handed to it."""
+
+    def __init__(self, log: _PlaybackLog, describe, **kwargs: Any):
+        super().__init__(
+            output_factory=lambda fmt, rate, render: _NullOutput(fmt, rate, render, log), **kwargs
+        )
+        self._log = log
+        self._describe = describe
+
+    def submit_wav(self, path: str, rate: float):
+        chunk = super().submit_wav(path, rate)
+        chunk.logged = self._describe(path)
+        self._log.write("chunk_started", rate=rate, **chunk.logged)
+        return chunk
+
+    def wait(self, chunk, *, cancelled=lambda: False) -> bool:
+        completed = False
+        try:
+            completed = super().wait(chunk, cancelled=cancelled)
+            return completed
+        finally:
+            fields = {key: chunk.logged[key] for key in ("utterance_id", "text")}
+            self._log.write("chunk_finished", completed=completed, **fields)
+
+
 class TestModeWorker(TTSWorker):
     """``RELAY_SPEECH_TEST_MODE=1``: silence of a fixed length per character
     instead of Kokoro, and a timed null output instead of an audio device."""
@@ -189,9 +215,8 @@ class TestModeWorker(TTSWorker):
         self._test_ms_per_char = ms_per_char
         self._test_chunks: dict[str, tuple[str, float]] = {}
         super().__init__(input_queue, start_control_socket=False)
-        self._speech_player = SpeechPlayer(
-            keep_alive=lambda: self._playing,
-            output_factory=lambda fmt, rate, render: _NullOutput(fmt, rate, render, log),
+        self._speech_player = _LoggedPlayer(
+            log, self._describe_chunk, keep_alive=lambda: self._playing
         )
 
     def _load_voice(self):
@@ -216,21 +241,13 @@ class TestModeWorker(TTSWorker):
         )
         return path
 
-    def _play_wav_blocking(self, wav_path: str, *, generation: int | None = None, rate: float | None = None):
-        if generation is None:
-            generation = self._playback_generation
+    def _describe_chunk(self, wav_path: str) -> dict[str, Any]:
         text, seconds = self._test_chunks.get(wav_path, ("", 0.0))
-        fields = {
+        return {
             "utterance_id": (self._current_speech_intent or {}).get("utterance_id"),
             "text": text,
+            "seconds": seconds,
         }
-        self._test_log.write("chunk_started", seconds=seconds, rate=rate, **fields)
-        try:
-            super()._play_wav_blocking(wav_path, generation=generation, rate=rate)
-        finally:
-            self._test_log.write(
-                "chunk_finished", completed=self._playback_is_current(generation), **fields
-            )
 
     def _remove_wav(self, wav_path: str | None):
         self._test_chunks.pop(wav_path or "", None)

@@ -234,6 +234,9 @@ class Sandbox:
         self.conn: Connection | None = None
         self.datagrams: list = []
         self._state_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        # macOS keeps 4096 bytes by default, which is two full datagrams; a
+        # sender that finds the buffer full drops its update.
+        self._state_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
         self._state_socket.bind(self.state_socket_path)
         self._state_socket.settimeout(0.1)
         self._listening = True
