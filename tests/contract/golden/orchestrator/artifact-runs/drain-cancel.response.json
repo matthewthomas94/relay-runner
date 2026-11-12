@@ -1,0 +1,34 @@
+{
+  "queue_drain": {
+    "canceled_at": "<TIME>",
+    "completed_at": null,
+    "created_at": "<TIME>",
+    "id": "drain-<HASH12>-1",
+    "items": [
+      {
+        "blocker_next_step": null,
+        "blocker_owner": null,
+        "next_action_at": null,
+        "reason": "Claimed",
+        "run_id": 1,
+        "state": "active",
+        "ticket_id": "CT-9",
+        "unresolved_dependencies": [],
+        "updated_at": "<TIME>"
+      }
+    ],
+    "observed_ticket_ids": [
+      "CT-9"
+    ],
+    "provider_goal_id": "drain-<HASH12>-1",
+    "provider_goal_mode": "relay-runner-durable-goal",
+    "provider_goal_state": "canceled",
+    "provider_key": "claude",
+    "quiescent_since": null,
+    "repo_path": "<REPO:drain>",
+    "state": "canceled",
+    "status_message": "contract",
+    "target_branch": "main",
+    "updated_at": "<TIME>"
+  }
+}

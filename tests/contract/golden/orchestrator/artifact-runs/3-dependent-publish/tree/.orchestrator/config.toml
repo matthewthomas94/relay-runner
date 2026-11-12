@@ -1,0 +1,7 @@
+schema_version = 2
+project_id = "contract-flow"
+prefix = "CT"
+artifact_ref = "refs/heads/relay/artifacts"
+remote_sync = "local_only"
+artifact_lifecycle = "enabled"
+next_id = 3

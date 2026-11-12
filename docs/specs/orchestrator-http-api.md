@@ -211,7 +211,11 @@ States: `Claimed`, `Running`, `Reviewing`, `AwaitingReview`, `Merged`,
   repository`, `ticket <id> not found`, `missing worker sizing metadata: …`
   (also recorded as a `Failed` run with `exit_code -1`), `… is verification
   blocked`, and dependency/queue refusals. A ticket whose dependencies are not
-  `done` is queued instead (see [Queue drains](#queue-drains-and-the-ready-sweep)).
+  `done` is queued instead: `202 {"queued": true, "already_active": false,
+  "run": null, "waiting_on": [ticket ids]}` (see
+  [Queue drains](#queue-drains-and-the-ready-sweep)). On an artifact board a
+  dispatch without a valid scope token is `422 artifact lifecycle dispatch
+  requires a confirmed project scope token`.
 - `GET /v1/runs/{id}` → `{"run": run}`; unknown → `404 {"run": null}`.
 - `POST /v1/runs/{id}/cancel` body `prune_worktree` (default true) →
   `{"canceled": true, "run": run, "worktree_removed": bool}`; `worktree_removed`
@@ -232,8 +236,11 @@ States: `Claimed`, `Running`, `Reviewing`, `AwaitingReview`, `Merged`,
   `changed_paths`, `verification`, `source_commit`, and for a blocked run
   `verification_blocker`, `verification_resume` → `202 {"accepted": true,
   "outcome": {…}}`. 400 for a legacy run (`uses the legacy ticket lifecycle`,
-  `is not accepting a worker outcome`) and for a payload that disagrees with
-  the worker branch.
+  `is not accepting a worker outcome`). The outcome is checked against the
+  worker branch when the worker exits: a `source_commit` that is not the
+  worker's HEAD fails the run (`exit=0 but ticket incomplete: structured
+  outcome source_commit does not match worker HEAD`) and publishes
+  `Record failed for <TICKET> run <id>`, returning the ticket to `backlog`.
 - `POST /v1/runs/{id}/resume-verification` body `reason` (required),
   `redispatch` (default true) → `{"resumed": true, "reason", "resume_commit",
   "previous_run", "redispatched": run | null}`; `202` when redispatched.
@@ -260,8 +267,11 @@ result; the daemon writes the report into the ticket and never merges.
 ## Queue drains and the ready sweep
 
 - `POST /v1/ready-sweep` body `repo_path` (required), `trigger`,
-  `project_scope_token` → `{"trigger", "dispatched": […], "skipped": […], …}`:
-  dispatches every `ready` ticket in the project whose dependencies are done.
+  `project_scope_token` → `{"repo_path", "trigger", "promoted", "dispatched":
+  [{"ticket_id", "run_id"}], "skipped": [{"ticket_id", "reason"}], "drain"}`:
+  dispatches every `ready` ticket whose dependencies are done and records the
+  rest with a reason (`dependencies_not_done`, `status:<status>`). The sweep
+  opens or updates the project's queue drain, returned as `drain`.
 - `POST /v1/program/ready-sweep` body `trigger` → the same for every
   registered project: `{"trigger", "projects", "dispatched", "skipped"}`.
 - `GET /v1/queue-drains?repo_path=&include_terminal=false&limit=20` →
@@ -269,7 +279,9 @@ result; the daemon writes the report into the ticket and never merges.
   `drain-<12 hex of repo, branch and provider>-<sequence>`.
 - `POST /v1/queue-drain/reconcile` body `repo_path` or `repo_paths`, `trigger`
   → `{"trigger", "projects": […]}`.
-- `POST /v1/queue-drains/{drain_id}/cancel` body `reason`; 400 `unknown queue drain <id>`.
+- `POST /v1/queue-drains/{drain_id}/cancel` body `reason` → `{"queue_drain":
+  drain}` with `state: canceled`; 400 `unknown queue drain <id>`. A drain
+  completes (`state: completed`) once every observed ticket is done.
 
 ## Program, sessions, messenger and continuity
 

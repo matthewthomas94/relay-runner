@@ -1,0 +1,23 @@
+{
+  "outcome": {
+    "changed_paths": [
+      "work/CT-1.txt"
+    ],
+    "project_id": "contract-flow",
+    "provider": "claude",
+    "run_id": 1,
+    "schema_version": 1,
+    "source_commit": "<OID:1>",
+    "status": "completed",
+    "summary": "Applied the scripted change for CT-1.",
+    "ticket_id": "CT-1",
+    "verification": [
+      "scripted verification passed"
+    ],
+    "verification_blocker": null,
+    "verification_resume": null
+  },
+  "recorded": true,
+  "run_id": 1,
+  "state": "Merged"
+}
