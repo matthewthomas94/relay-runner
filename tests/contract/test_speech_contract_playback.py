@@ -110,6 +110,7 @@ class AutoPlayTests(SpeechCase):
     auto_play = True
 
     def test_each_reply_plays_as_it_reaches_the_head(self):
+        """The head "plays on `play`; with `auto_play` it plays at once"."""
         texts = ["First reply.", "Second reply.", "Third reply."]
         ids = [self.speak(text) for text in texts]
         for utterance_id in ids:
@@ -125,6 +126,7 @@ class RateTests(SpeechCase):
     rate = 2.0
 
     def test_rate_reaches_the_output(self):
+        """`--config`: the service uses `[tts]` `rate`; the output runs "`rate` times real time"."""
         utterance_id = self.speak()
         self.conn.request("play")
         self.wait_phase(utterance_id, "completed")
@@ -273,6 +275,7 @@ class SkipTests(SpeechCase):
     """Playback control: `skip`."""
 
     def test_skip_removes_the_playing_reply_and_brings_the_next_forward(self):
+        """`skip`: "Removes the reply that is playing ... The next queued reply comes forward"."""
         first = self.speak(LONG)
         second = self.speak("Second reply.")
         self.conn.request("play")
@@ -346,6 +349,7 @@ class SkipTests(SpeechCase):
                 self.wait_idle()
 
     def test_skip_with_nothing_queued_does_nothing(self):
+        """`skip` removes a playing or waiting reply; with neither it changes nothing."""
         self.conn.request("skip")
         self.assertEqual(
             self.status(),
@@ -363,6 +367,7 @@ class NewTurnTests(SpeechCase):
         return command
 
     def test_new_turn_stops_a_playing_older_reply_which_returns_to_the_head(self):
+        """`new_turn`: "stops a playing reply of an older command (it returns to the head of the queue)"."""
         first = self.speak(LONG)
         second = self.speak("Second reply.")
         self.conn.request("play")
@@ -387,6 +392,7 @@ class NewTurnTests(SpeechCase):
         self.wait_phase(ended["requeued_as"], "started")
 
     def test_new_turn_leaves_a_reply_of_the_same_command_playing(self):
+        """`new_turn` stops a playing reply "of an older command" only."""
         command = self.new_command()
         utterance_id = self.speak(LONG, command=command)
         self.conn.request("play")
@@ -395,6 +401,7 @@ class NewTurnTests(SpeechCase):
         self.assertStays(lambda: self.status()["playing"], 0.2, "the current command's reply stopped")
 
     def test_new_turn_drops_waiting_handoff_and_progress_of_older_commands(self):
+        """`new_turn`: "drops queued status speech of older commands. Queued replies stay"."""
         older = self.new_command()
         reply = self.speak("The answer.", command=older)
         note = self.speak("One more note.", command=older, kind="progress", source="lifecycle")
@@ -407,6 +414,7 @@ class NewTurnTests(SpeechCase):
         self.assertEqual(self.phases(reply), ["queued"])
 
     def test_new_turn_drops_an_older_handoff_waiting_at_the_head(self):
+        """`new_turn` drops status speech of an older command that waits at the head, too."""
         handoff = self.speak("Looking into it.", **HANDOFF)
         self.wait_phase(handoff, "queued")
         self.turn()
@@ -414,6 +422,7 @@ class NewTurnTests(SpeechCase):
         self.assertEqual(self.queue(), [])
 
     def test_new_turn_releases_a_held_queue(self):
+        """`new_turn`: "releases a held queue"."""
         utterance_id = self.speak(LONG)
         self.conn.request("play")
         self.wait_phase(utterance_id, "started")
@@ -483,6 +492,7 @@ class ReplayTests(SpeechCase):
         self.conn.wait_event("playback", phase="completed", replay_of=reply)
 
     def test_replayable_can_be_set_on_other_kinds(self):
+        """`replayable`: "Whether `replay` may repeat it", whatever the `kind`."""
         question = self.play_through("Which file do you mean?", kind="clarification", replayable=True)
         self.assertTrue(self.conn.request("replay")["accepted"])
         self.conn.wait_event("playback", phase="completed", replay_of=question)
@@ -549,6 +559,7 @@ class ReplayTests(SpeechCase):
             self.wait_idle()
 
     def test_read_out_refuses_empty_text(self):
+        """`read_out`: "Empty text is refused"."""
         self.assertEqual(self.conn.request("read_out", text="  "), {"accepted": False})
 
 
@@ -558,6 +569,7 @@ class ReplayHistoryTests(SpeechCase):
     auto_play = True
 
     def test_history_keeps_the_newest_thirty_two(self):
+        """Replay history: of 33 replies that played, only "The newest 32" can be replayed."""
         ids = [self.speak(f"Reply {number}.", session_key=f"session-{number}") for number in range(33)]
         self.wait_phase(ids[-1], "completed")
         self.wait_idle()
@@ -624,10 +636,23 @@ class SessionTests(SpeechCase):
         self.assertEqual(self.states(), {"session-a": "replay", "session-b": "play"})
 
     def test_waiting_session_key_needs_an_armed_preview(self):
+        """`waiting_session_key`: "While that play is armed, the session reports `play`"."""
         self.assertEqual(self.states(waiting_session_key="session-a"), {})
         command = self.new_command()
         self.conn.request("arm_waiting_playback", command_seq=command[0], command_id=command[1])
         self.assertEqual(self.states(waiting_session_key="session-a"), {"session-a": "play"})
+
+    def test_play_for_the_waiting_session_is_kept_for_its_reply(self):
+        """`waiting_session_key`: "a `control_session` `play` for it is kept for the reply"."""
+        command = self.new_command()
+        self.conn.request("arm_waiting_playback", command_seq=command[0], command_id=command[1])
+        self.assertFalse(self.control("session-b", "play", waiting_session_key="session-a"))
+
+        self.assertTrue(self.control("session-a", "play", waiting_session_key="session-a"))
+
+        # The reply plays as it arrives; no second play is needed.
+        utterance_id = self.speak(command=command, session_key="session-a")
+        self.wait_phase(utterance_id, "completed")
 
     def test_stop_acts_on_its_own_session_only(self):
         """`control_session`: "`false` when the action does not apply to that session"."""
@@ -648,6 +673,7 @@ class SessionTests(SpeechCase):
         self.assertEqual(self.states(), {"session-a": "play", "session-b": "play"})
 
     def test_stop_with_nothing_playing_is_not_handled(self):
+        """`control_session` `stop` "stops its playing reply"; `false` with nothing playing."""
         self.speak(session_key="session-a")
         self.assertFalse(self.control("session-a", "stop"))
 
@@ -667,17 +693,20 @@ class SessionTests(SpeechCase):
         self.assertEqual(self.box.spoken(), [("Second reply.", True)])
 
     def test_play_plays_the_sessions_waiting_reply(self):
+        """`control_session` `play`: "plays its reply waiting at the head"."""
         utterance_id = self.speak(session_key="session-a")
         self.assertTrue(self.control("session-a", "play"))
         self.wait_phase(utterance_id, "completed")
 
     def test_play_for_a_session_with_nothing_queued_is_not_handled(self):
+        """`control_session` `play`: `false` for a session with no reply waiting or queued."""
         utterance_id = self.speak(session_key="session-a")
         self.wait_phase(utterance_id, "queued")
         self.assertFalse(self.control("session-b", "play"))
         self.assertEqual(self.phases(utterance_id), ["queued"])
 
     def test_play_while_another_session_plays_is_not_handled(self):
+        """`control_session`: `false` for "`play` while another session's reply is playing"."""
         first = self.speak(LONG, session_key="session-a")
         second = self.speak("Second reply.", session_key="session-b")
         self.conn.request("play")

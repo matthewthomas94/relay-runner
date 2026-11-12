@@ -139,6 +139,7 @@ class RemoteSinkTests(SpeechCase):
         self.assertEqual(len(self.box.logged("remote_received")), 1)
 
     def test_ack_for_an_unknown_frame_is_not_known(self):
+        """`remote_ack` answers `known: false` for a frame the device was never sent."""
         self.assertFalse(self.conn.request("remote_ack", device_id="device-1", seq=99, played=True)["known"])
         self.assertFalse(self.conn.request("remote_ack", device_id="device-2", seq=1, played=True)["known"])
 
@@ -179,6 +180,7 @@ class RemoteSinkTests(SpeechCase):
         self.assertEqual(len(self.device.of("remote_speech_control")), 1)
 
     def test_pause_sends_a_stop(self):
+        """Stopping: `pause` sends one `stop` with the reason `speech_only_barge_in`."""
         self.speak()
         self.conn.request("pause")
         controls = self.device.of("remote_speech_control")
@@ -187,7 +189,38 @@ class RemoteSinkTests(SpeechCase):
             [("stop", "speech_only_barge_in")],
         )
 
+    def test_stop_playback_sends_a_stop_with_its_reason(self):
+        """Stopping: `stop_playback` sends one `stop` "with the reason of the request"."""
+        self.speak()
+        self.conn.request("stop_playback", reason="interrupt")
+        controls = self.device.of("remote_speech_control")
+        self.assertEqual(
+            [(control["action"], control["reason"]) for control in controls],
+            [("stop", "interrupt")],
+        )
+
+    def test_new_turn_stops_status_speech_of_an_older_command(self):
+        """Stopping: `new_turn` sends `stop` with the reason `superseded`."""
+        self.speak("Looking into it.", kind="handoff", source="messenger", authoritative=False)
+        command = self.new_command()
+        self.conn.request("new_turn", command_seq=command[0], command_id=command[1])
+        controls = self.device.of("remote_speech_control")
+        self.assertEqual(
+            [(control["action"], control["reason"]) for control in controls],
+            [("stop", "superseded")],
+        )
+
+    def test_new_turn_sends_no_stop_that_would_drop_a_reply(self):
+        """Stopping: "unless a reply it has not acknowledged would be dropped with it"."""
+        older = self.new_command()
+        self.speak("The answer.", command=older)
+        self.speak("One more note.", command=older, kind="progress", source="lifecycle")
+        command = self.new_command()
+        self.conn.request("new_turn", command_seq=command[0], command_id=command[1])
+        self.assertEqual(self.device.of("remote_speech_control"), [])
+
     def test_stop_with_nothing_outstanding_sends_no_control(self):
+        """Stopping: "With no unacknowledged frame, no control is sent"."""
         self.speak()
         seq = self.device.of("remote_speech")[0]["seq"]
         self.conn.request("remote_ack", device_id="device-1", seq=seq, played=True)
@@ -240,6 +273,7 @@ class RemoteSinkTests(SpeechCase):
         self.assertEqual(len(self.conn.calls), calls)
 
     def test_unanswered_routable_call_counts_as_not_routable(self):
+        """`remote_routable`: a failed reply is not `routable`, so the Mac speaks the reply."""
         self.device.refuse.add("remote_routable")
         utterance_id = self.speak()
         self.assertEqual(self.queue(), [utterance_id])
@@ -273,6 +307,7 @@ class RemoteSinkTests(SpeechCase):
         self.assertEqual(self.status()["queue"], [])
 
     def test_dedup_applies_to_remote_speech(self):
+        """Queue rules: a `dedup_key` "accepted before" is refused, whatever the output."""
         command = self.new_command()
         self.assertTrue(self.propose(command=command)["accepted"])
         self.assertFalse(self.propose(command=command)["accepted"])
@@ -283,6 +318,7 @@ class RemoteMirrorTests(SpeechCase):
     """`remote_attach` as `mirror`: the Mac speaks, the device shows the text."""
 
     def test_mirror_is_sent_the_text_of_what_the_mac_speaks(self):
+        """`mirror`: "the Mac keeps speaking and the device is sent the text of each reply"."""
         device = self.conn.attach(FakeDevice("device-1"), role="mirror")
         command = self.new_command()
 
@@ -304,6 +340,7 @@ class RemoteMirrorTests(SpeechCase):
         self.assertEqual([call["op"] for call in self.conn.calls], ["remote_speech"])
 
     def test_mirror_that_fails_never_stops_mac_speech(self):
+        """`mirror`: "the Mac keeps speaking", also when the device refuses the text."""
         device = self.conn.attach(FakeDevice("device-1"), role="mirror")
         device.refuse.add("remote_speech")
         utterance_id = self.speak()
@@ -311,6 +348,7 @@ class RemoteMirrorTests(SpeechCase):
         self.wait_phase(utterance_id, "completed")
 
     def test_detached_mirror_is_sent_nothing(self):
+        """`remote_detach`: "Ends the role"; a detached mirror gets no more text."""
         device = self.conn.attach(FakeDevice("device-1"), role="mirror")
         self.conn.request("remote_detach", device_id="device-1", role="mirror")
         self.speak()
@@ -333,6 +371,7 @@ class RemoteRequestTests(SpeechCase):
     """Relay Remote requests name a device and a role."""
 
     def test_device_id_and_role_are_checked(self):
+        """`invalid_request`: "a required field is missing or has the wrong type"."""
         for params in ({}, {"device_id": ""}, {"device_id": "device-1", "role": "speaker"}):
             with self.subTest(params=params):
                 response = self.conn.exchange("remote_attach", **params)
@@ -342,6 +381,7 @@ class RemoteRequestTests(SpeechCase):
         self.assertEqual(response["error"]["code"], "invalid_request")
 
     def test_role_defaults_to_sink(self):
+        """`remote_attach`: `role` is "`sink` or `mirror`, default `sink`"."""
         device = FakeDevice("device-1")
         self.conn.devices[("device-1", "sink")] = device
         self.conn.request("remote_attach", device_id="device-1")
@@ -349,6 +389,7 @@ class RemoteRequestTests(SpeechCase):
         self.assertEqual(len(device.of("remote_speech")), 1)
 
     def test_detaching_an_unknown_device_does_nothing(self):
+        """`remote_detach` ends a role; a device that has none is left alone."""
         self.conn.request("remote_detach", device_id="device-9", role="sink")
         self.conn.request("remote_detach", device_id="device-9", role="mirror")
         self.assertEqual(self.box.logged("remote_sink_detached"), [])

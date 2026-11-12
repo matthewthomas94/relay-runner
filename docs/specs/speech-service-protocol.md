@@ -61,7 +61,7 @@ Both sides send UTF-8 JSON objects, one per line, each ended by `\n`. A line is 
 
 Unknown fields are ignored. Error messages never contain reply text.
 
-Error codes: `hello_required`, `unsupported_protocol`, `unknown_op`, `invalid_request` (a required field is missing or has the wrong type), `internal_error`. A line that is not a JSON object, or is neither a request nor a reply, produces an `error` event with code `invalid_message`; a line over the limit is skipped and produces `line_too_long`. Neither ends the connection.
+Error codes: `hello_required`, `unsupported_protocol`, `unknown_op`, `invalid_request` (a required field is missing or has the wrong type), `internal_error`. A line that is not a JSON object, or is neither a request nor a reply, produces an `error` event with code `invalid_message`; a line over the limit is skipped and produces `line_too_long`. Neither ends the connection. A reply that matches no call is ignored.
 
 ## Ordering
 
@@ -89,7 +89,7 @@ Every request except `hello` fails with `hello_required` until `hello` succeeded
 | `op` | Fields | Result | Effect |
 | --- | --- | --- | --- |
 | `speak` | `text`, plus the intent fields below | `accepted`, `utterance_id` | Proposes one speech intent. See [Queue rules](#queue-rules). |
-| `read_out` | `text`, optional `session_key` | `accepted` | Speaks explicit text now, such as a stored reply: queues it as a replayable reply and plays it. |
+| `read_out` | `text`, optional `session_key` | `accepted` | Speaks explicit text now, such as a stored reply: queues it as a replayable reply and plays it. Empty text is refused. |
 | `arm_waiting_playback` | `command_seq`, `command_id`, optional `kind` (`final`) | | Binds the next play gesture to the speech of this command. `speak` with `waiting_playback_kind` does the same atomically. |
 
 Intent fields of `speak`. Only `text` is required; `null` and absent mean the default.
@@ -137,6 +137,8 @@ A value outside a field's list is treated as that field's default.
 | `session_playback_states` | optional `waiting_session_key` | `states`: session key to `play`, `stop` or `replay` | What each session's control would do now. |
 | `control_session` | `session_key`, `action` (`play`, `stop` or `replay`), optional `waiting_session_key` | `handled` | Acts for one session only. `stop` stops its playing reply with the reason `wheel_stop`: the reply returns to the head and the queue is held. `play` plays its reply waiting at the head, or brings its queued reply forward and plays it; a reply that was waiting at the head is `cancelled`, keeps its `utterance_id`, and is `queued` again when it returns to the head. `replay` replays its newest reply. `false` when the action does not apply to that session, including `play` while another session's reply is playing. |
 
+`waiting_session_key` names the session whose reply the client announced with `arm_waiting_playback` and has not proposed yet. While that play is armed, the session reports `play`, and a `control_session` `play` for it is kept for the reply.
+
 ### Diagnostics
 
 | `op` | Fields | Result | Effect |
@@ -168,6 +170,8 @@ Calls the service makes. Each names `device_id` and `role`.
 | `remote_speech_audio` | `seq`, `part`, `parts`, `last`, `data`, `format`, `sample_rate` | | Send one audio part of the `speech` frame `seq`. |
 
 **Remote synthesis.** While a sink is attached and routable, an accepted `speak` is not queued for the Mac's speaker. The service calls `remote_speech`, with `audio: true` when it can voice the reply itself. It then renders the reply sentence by sentence without opening an audio device, encodes each sentence as AAC-LC in ADTS framing at 24 kHz, and sends it as `remote_speech_audio` parts: `part` counts from 0 across the whole reply, `data` is base64, `parts` is 0 until the last sentence and then the total, and `last` is `true` on the final part only. A failure ends the stream with an empty final part. A `remote_ack` for the frame, or a `remote_speech_control` that covers it, stops the remaining audio.
+
+**Stopping.** A device drops every frame it received before a `remote_speech_control`. While a sink has frames it has not acknowledged, `pause` and `stop_playback` send it one `stop` and `skip` sends one `skip`, with the reason of the request (`speech_only_barge_in` for `pause`). `new_turn` sends `stop` with the reason `superseded` when the sink holds status speech of an older command, unless a reply it has not acknowledged would be dropped with it. With no unacknowledged frame, no control is sent.
 
 ## Events
 

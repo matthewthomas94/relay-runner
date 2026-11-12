@@ -159,6 +159,7 @@ class ClientGoneTests(SpeechCase):
         self.assertFalse(os.path.exists(self.box.control_path))
 
     def test_service_exits_when_the_connection_ends_inside_a_line(self):
+        """"When the connection ends ... the service stops speech at once and exits", even mid-line."""
         self.conn.send(b'{"id": 99, "op": "sta')
         self.conn.close()
         self.assertEqual(self.box.wait_exit(), 0)
@@ -169,6 +170,7 @@ class ClientGoneTests(SpeechCase):
         self.assertEqual(self.box.wait_exit(), 0)
 
     def test_idle_service_exits_when_the_connection_ends(self):
+        """The service exits 0 "when its client's connection ends" and releases its sockets."""
         self.conn.close()
         self.assertEqual(self.box.wait_exit(), 0)
         self.assertFalse(os.path.exists(self.box.control_path))

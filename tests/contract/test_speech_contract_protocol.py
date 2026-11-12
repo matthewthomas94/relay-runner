@@ -109,6 +109,7 @@ class ProcessTests(unittest.TestCase):
                 wait_until(conn.closed.is_set, message="the connection to close")
 
     def test_signal_before_a_client_connects_ends_the_service(self):
+        """The service exits 0 "on `SIGTERM` or `SIGINT`", also before a client connected."""
         self.box.spawn()
         wait_until(lambda: os.path.exists(self.box.socket_path), message="the service socket")
         self.box.process.send_signal(signal.SIGTERM)
@@ -134,6 +135,7 @@ class ProcessTests(unittest.TestCase):
         self.assertFalse(os.path.exists(self.box.socket_path))
 
     def test_stdout_is_unused(self):
+        """Process: "stdout is unused"."""
         conn = self.box.start()
         self.box.set_command(1, "command-1")
         conn.request("speak", text=SHORT, command_seq=1, command_id="command-1", kind="final")
@@ -192,6 +194,7 @@ class TransportTests(SpeechCase):
         self.assertEqual(self.conn.hello()["protocol"], PROTOCOL_VERSION)
 
     def test_unknown_request_is_refused(self):
+        """Error codes: a request whose `op` the service does not know fails with `unknown_op`."""
         self.conn.hello()
         self.assertEqual(self.error_code("no_such_op"), "unknown_op")
         self.assertEqual(self.conn.request("status"), IDLE)
@@ -234,6 +237,7 @@ class TransportTests(SpeechCase):
                 self.assertEqual(response, {"id": request_id, "ok": True, "result": IDLE})
 
     def test_unknown_fields_are_ignored(self):
+        """Transport: "Unknown fields are ignored"."""
         self.conn.hello()
         self.box.set_command(1, "command-1")
         result = self.conn.request(
@@ -270,6 +274,7 @@ class TransportTests(SpeechCase):
         self.assertEqual(self.conn.request("status"), IDLE)
 
     def test_bad_line_before_hello_is_reported(self):
+        """A line that is not a JSON object "produces an `error` event", also before `hello`."""
         self.conn.send(b"this is not json\n")
         self.assertEqual(self.conn.wait_event("error"), {"event": "error", "code": "invalid_message"})
         self.assertEqual(self.conn.hello()["protocol"], PROTOCOL_VERSION)
@@ -283,6 +288,7 @@ class TransportTests(SpeechCase):
         self.assertEqual(self.conn.request("status"), IDLE, "the long request was applied")
 
     def test_line_at_the_limit_is_accepted(self):
+        """Transport: "A line is at most 1 MiB"; a line of exactly that size is a request."""
         self.conn.hello()
         padding = MAX_LINE_BYTES - len(json.dumps({"id": "full", "op": "status", "padding": ""})) - 1
         line = json.dumps({"id": "full", "op": "status", "padding": "x" * padding}).encode("utf-8") + b"\n"
@@ -292,6 +298,7 @@ class TransportTests(SpeechCase):
         self.assertEqual(self.conn.events_named("error"), [])
 
     def test_reply_to_no_call_is_ignored(self):
+        """Transport: "A reply that matches no call is ignored"."""
         self.conn.hello()
         self.conn.send({"reply": 99, "ok": True, "result": {}})
         self.assertEqual(self.conn.request("status"), IDLE)
@@ -416,6 +423,7 @@ class SessionRequestTests(SpeechCase):
         self.assertEqual((again["text"], again["rate"]), (LONG_SENTENCES[0], 2.0))
 
     def test_reload_config_without_a_change_leaves_the_reply_playing(self):
+        """`reload_config`: only "A changed voice or rate stops the current playback"."""
         utterance_id = self.speak(LONG)
         self.conn.request("play")
         self.wait_phase(utterance_id, "started")
@@ -451,6 +459,7 @@ class DiagnosticsTests(SpeechCase):
     """Diagnostics: coverage and the records a client adds to the event log."""
 
     def test_played_coverage_lists_what_finished_playing(self):
+        """`played_coverage`: "What finished playing for a command, newest last"."""
         command = self.new_command()
         params = {"command_seq": command[0], "command_id": command[1]}
         handoff = self.speak(
@@ -484,6 +493,7 @@ class DiagnosticsTests(SpeechCase):
         self.assertEqual(other, {"coverage": []})
 
     def test_stopped_reply_is_not_covered(self):
+        """`played_coverage` lists what "finished playing"; a skipped reply did not."""
         command = self.new_command()
         utterance_id = self.speak(LONG, command=command)
         self.conn.request("play")
@@ -513,10 +523,12 @@ class DiagnosticsTests(SpeechCase):
         self.assertAlmostEqual(acknowledged["option_to_ack_ms"], 60, delta=1)
 
     def test_note_play_control_needs_no_fields(self):
+        """`note_play_control`: `option_detected_at` and `fifo_received_at` are optional."""
         self.conn.request("note_play_control")
         self.assertEqual(len(self.box.logged("fifo_play_received")), 1)
 
     def test_realization_is_recorded(self):
+        """`record_realization`: "Writes a `realization` record"."""
         self.conn.request(
             "record_realization", command_seq=3, command_id="command-3",
             lifecycle_role="progress", decision="suppress", reason="already_covered",
@@ -534,6 +546,7 @@ class DiagnosticsTests(SpeechCase):
         )
 
     def test_messenger_stage_is_recorded(self):
+        """`record_messenger_stage`: a record "named after `stage`"; `provider` when `codex` or `claude`."""
         self.conn.request(
             "record_messenger_stage", stage="messenger_submitted", command_seq=3, command_id="command-3",
             at=1700000000.5, provider="Claude",
@@ -723,6 +736,7 @@ class TestModeTests(SpeechCase):
     """Test mode: deterministic silence and a playback log instead of a device."""
 
     def test_silence_lasts_a_fixed_time_per_character(self):
+        """Synthesis: silence of `RELAY_SPEECH_TEST_MS_PER_CHAR` ms per character, "and at least 20 ms"."""
         text = "A sentence of exactly forty characters.."
         self.assertEqual(len(text), 40)
         utterance_id = self.speak(f"{text} Hi.")
@@ -737,6 +751,7 @@ class TestModeTests(SpeechCase):
         self.assertGreaterEqual(elapsed, 40 * MS_PER_CHAR / 1000)
 
     def test_playback_log_records_what_reached_the_output(self):
+        """`RELAY_SPEECH_TEST_PLAYBACK_LOG`: "what would have reached the speaker", record by record."""
         utterance_id = self.speak("One sentence. Then another.")
         self.wait_phase(utterance_id, "queued")
         self.assertEqual(len(self.box.playback("chime")), 1, "a waiting reply chimes")
