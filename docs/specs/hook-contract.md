@@ -1,8 +1,22 @@
 # Completion hook and reply helper contract
 
-**Status:** Implemented (RR-477)
+**Status:** Implemented (RR-477); Rust implementation RR-478
 
 `services/relay_completion_hook.py` and `services/relay_reply.py` run as separate processes: the hook on every Claude and Codex lifecycle event, the reply helper whenever an agent pipes a reply to `$RELAY_REPLY_HELPER`. This document describes what those two programs read and write, as checked by the black-box suite in `tests/contract/`. The suite starts each program as an opaque command and imports nothing from `services/`, so a replacement written in another language is accepted against the same cases.
+
+## Implementations
+
+Since RR-478 the app registers `relay-rs hook` and `relay-rs reply` (built from `rust/`, shipped in `Contents/MacOS`) for Claude and Codex sessions alike: Codex's `-c hooks.*` flags, Claude's `--settings` hooks JSON, the `--record-process`, `--record-codex-startup` and `--context-continuation` calls, and `RELAY_REPLY_HELPER`, which then names the binary and is invoked as `"$RELAY_REPLY_HELPER" reply`. The skills `scripts/relay-bridge` installs make the same choice. `relay-rs` opens the intent inbox through bundled SQLite with the bridge's settings (WAL, `busy_timeout` 5000, `BEGIN IMMEDIATE`) and the same schema; `tests/test_hook_inbox_concurrency.py` runs it against a Python `ProviderTurnBroker` writing the same database.
+
+The Python scripts stay bundled. Setting `RELAY_HOOK_RUNTIME=python` in the app's environment (for example `launchctl setenv RELAY_HOOK_RUNTIME python`, then relaunch Relay Runner) registers them again for both providers, with `RELAY_REPLY_HELPER` naming `services/relay_reply.py` and invoked as `/usr/bin/python3 "$RELAY_REPLY_HELPER"`. A build without `relay-rs` beside the app executable falls back the same way.
+
+To run the suite against the Rust binary:
+
+```bash
+cargo build --release --manifest-path rust/Cargo.toml
+RELAY_HOOK_CMD="'$PWD/rust/target/release/relay-rs' hook" RELAY_REPLY_CMD="'$PWD/rust/target/release/relay-rs' reply" \
+    python3 -m unittest discover -s tests/contract -p 'test_hook_contract*.py'
+```
 
 ## Running the suite
 

@@ -12,8 +12,33 @@ final class BridgeRestartDeliveryTests: XCTestCase {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
 
+    /// RR-478: the Python hook the app can be rolled back to, then `relay-rs
+    /// hook`, which it registers by default, from the newest build in `rust/`.
+    private static let hookCommands: [[String]] = {
+        let python = ["/usr/bin/python3", repositoryRoot.appendingPathComponent("services/relay_completion_hook.py").path]
+        let modified = { (path: String) in
+            (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
+        }
+        let built = ["debug", "release", "aarch64-apple-darwin/release"]
+            .map { repositoryRoot.appendingPathComponent("rust/target/\($0)/relay-rs").path }
+            .filter { FileManager.default.isExecutableFile(atPath: $0) }
+            .max { modified($0) < modified($1) }
+        return [python] + (built.map { [[$0, "hook"]] } ?? [])
+    }()
+
     func testResumedProviderSlowFirstTurnIsAcknowledgedAcrossBridgeRestart() throws {
+        for hook in Self.hookCommands {
+            try assertSlowFirstTurnIsAcknowledgedAcrossBridgeRestart(hook: hook)
+        }
+        try XCTSkipIf(
+            Self.hookCommands.count < 2,
+            "relay-rs is not built, so only the Python hook was checked; run `cargo build` in rust/"
+        )
+    }
+
+    private func assertSlowFirstTurnIsAcknowledgedAcrossBridgeRestart(hook: [String]) throws {
         for provider in ["codex", "claude"] {
+            let label = "\(provider) with \(URL(fileURLWithPath: hook[0]).lastPathComponent)"
             let sandbox = try makeSandbox()
             let spool = sandbox.appendingPathComponent("relay-sessions/session-a", isDirectory: true)
             try FileManager.default.createDirectory(at: spool, withIntermediateDirectories: true)
@@ -58,24 +83,24 @@ final class BridgeRestartDeliveryTests: XCTestCase {
                 foregroundGateHandle: "gate-a"
             )
 
-            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), label)
             scheduled.removeFirst()()
-            XCTAssertEqual(sent, [prompt, "\r"], provider)
+            XCTAssertEqual(sent, [prompt, "\r"], label)
             XCTAssertEqual(scheduled.count, 1, "only the acknowledgement timer is pending")
 
             // The watchdog restarts the bridge before the resumed provider's
             // slow first turn reaches its prompt hook.
             try runRecoveryCleanup(sandbox: sandbox, spool: spool, provider: provider)
-            try runPromptSubmitHook(prompt: prompt, provider: provider, sandbox: sandbox, spool: spool, paths: paths)
+            try runPromptSubmitHook(hook, prompt: prompt, provider: provider, sandbox: sandbox, spool: spool, paths: paths)
 
             scheduled.removeFirst()()
             let events = try String(contentsOfFile: paths.deliveryEvents, encoding: .utf8)
-            XCTAssertTrue(events.contains(#""event":"provider_acknowledged""#), provider)
-            XCTAssertFalse(events.contains(#""event":"acknowledgement_timeout""#), provider)
-            XCTAssertFalse(events.contains(#""event":"recovery_blocked""#), provider)
-            XCTAssertFalse(delivery.isDeliveryBlocked, provider)
+            XCTAssertTrue(events.contains(#""event":"provider_acknowledged""#), label)
+            XCTAssertFalse(events.contains(#""event":"acknowledgement_timeout""#), label)
+            XCTAssertFalse(events.contains(#""event":"recovery_blocked""#), label)
+            XCTAssertFalse(delivery.isDeliveryBlocked, label)
             // The reply helper binds the provider's reply to this claim.
-            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: paths.claimed)), metadataData, provider)
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: paths.claimed)), metadataData, label)
         }
     }
 
@@ -119,6 +144,7 @@ final class BridgeRestartDeliveryTests: XCTestCase {
     }
 
     private func runPromptSubmitHook(
+        _ hook: [String],
         prompt: String,
         provider: String,
         sandbox: URL,
@@ -132,8 +158,8 @@ final class BridgeRestartDeliveryTests: XCTestCase {
         ]
         payload[provider == "claude" ? "prompt_id" : "turn_id"] = "native-turn-1"
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = [Self.repositoryRoot.appendingPathComponent("services/relay_completion_hook.py").path]
+        process.executableURL = URL(fileURLWithPath: hook[0])
+        process.arguments = Array(hook.dropFirst())
         process.environment = [
             "PATH": "/usr/bin:/bin",
             "HOME": sandbox.path,
