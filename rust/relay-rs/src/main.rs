@@ -1,5 +1,13 @@
-//! relay-rs, Relay Runner's Rust helper. Stage 0 of the Rust port (RR-475)
-//! ships only `--version`; later stages add subcommands or sibling crates.
+//! relay-rs, Relay Runner's Rust helper. `hook` is the provider lifecycle hook
+//! and `reply` the foreground reply helper (RR-478); docs/specs/hook-contract.md
+//! describes both. Later stages of the Rust port add subcommands or sibling
+//! crates.
+
+mod hook;
+mod json;
+mod reply;
+mod sha256;
+mod support;
 
 use std::process::ExitCode;
 
@@ -13,7 +21,9 @@ const VERSION: &str = concat!(
     ")"
 );
 
-const USAGE: &str = "usage: relay-rs --version";
+const USAGE: &str = "usage: relay-rs --version\n       \
+     relay-rs hook [--record-process | --record-codex-startup | --context-continuation]\n       \
+     relay-rs reply";
 
 fn run(arguments: &[String]) -> Result<&'static str, &'static str> {
     match arguments {
@@ -23,7 +33,13 @@ fn run(arguments: &[String]) -> Result<&'static str, &'static str> {
 }
 
 fn main() -> ExitCode {
+    support::start_clock();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    match arguments.split_first() {
+        Some((command, mode)) if command == "hook" => return ExitCode::from(hook::run(mode)),
+        Some((command, _)) if command == "reply" => return ExitCode::from(reply::run()),
+        _ => {}
+    }
     match run(&arguments) {
         Ok(output) => {
             println!("{output}");
