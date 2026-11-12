@@ -191,13 +191,13 @@ class RemoteSinkTests(SpeechCase):
 
     def test_stop_playback_sends_a_stop_with_its_reason(self):
         """Stopping: `stop_playback` sends one `stop` "with the reason of the request"."""
-        self.speak()
-        self.conn.request("stop_playback", reason="interrupt")
-        controls = self.device.of("remote_speech_control")
-        self.assertEqual(
-            [(control["action"], control["reason"]) for control in controls],
-            [("stop", "interrupt")],
-        )
+        for reason, sent in (("interrupt", "interrupt"), ("newer_command", "superseded")):
+            with self.subTest(reason=reason):
+                self.speak()
+                self.conn.request("stop_playback", reason=reason)
+                last = self.device.of("remote_speech_control")[-1]
+                self.assertEqual((last["action"], last["reason"]), ("stop", sent))
+        self.assertEqual(len(self.device.of("remote_speech_control")), 2)
 
     def test_new_turn_stops_status_speech_of_an_older_command(self):
         """Stopping: `new_turn` sends `stop` with the reason `superseded`."""
