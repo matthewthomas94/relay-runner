@@ -312,6 +312,6 @@ Everything else runs as in a session: the queue, the sockets, the state datagram
 | | `RemoteMirrorTests` | [Relay Remote](#relay-remote): the `mirror` role |
 | | `RemoteRequestTests` | [Relay Remote](#relay-remote): request fields |
 | `test_speech_contract_restart.py` | `RestartTests` | [Restarts](#restarts): a service restart with queued speech |
-| | `ClientGoneTests` | [Restarts](#restarts): a client that disappears |
+| | `ClientGoneTests`, `OverlapTests` | [Restarts](#restarts): a client that disappears, an old service still stopping |
 
 The bridge's side of a restart, its device calls and its start-up code are covered by `tests/test_speech_service_client.py`, which is not part of the contract.

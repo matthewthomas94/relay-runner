@@ -11,7 +11,7 @@ import os
 import socket
 import unittest
 
-from speech_contract_support import LONG, LONG_SENTENCES, FakeDevice, SpeechCase, wait_until
+from speech_contract_support import LONG, LONG_SENTENCES, FakeDevice, Sandbox, SpeechCase, wait_until
 
 IDLE = {"speaking": False, "playing": False, "held": False, "queue_depth": 0, "queue": []}
 
@@ -172,6 +172,30 @@ class ClientGoneTests(SpeechCase):
         self.conn.close()
         self.assertEqual(self.box.wait_exit(), 0)
         self.assertFalse(os.path.exists(self.box.control_path))
+
+
+class OverlapTests(SpeechCase):
+    """Restarts: an old service may still be stopping when its successor starts."""
+
+    def test_stopping_service_leaves_its_successors_control_socket(self):
+        """A service removes `TTS_CONTROL_SOCK` "only while it is still the socket it bound"."""
+        path = self.box.control_path
+        wait_until(lambda: os.path.exists(path), message="the first control socket")
+        first = os.stat(path).st_ino
+        successor = Sandbox(self)
+        successor.control_path = path
+        conn = successor.start()
+        wait_until(lambda: os.path.exists(path) and os.stat(path).st_ino != first,
+                   message="the successor's control socket")
+
+        self.conn.close()
+        self.assertEqual(self.box.wait_exit(), 0)
+
+        self.assertTrue(os.path.exists(path), "the old service removed its successor's socket")
+        successor.set_command(1, "command-1")
+        conn.request("speak", text=LONG, command_seq=1, command_id="command-1", kind="final")
+        successor.control("play")
+        conn.wait_event("playback", phase="started")
 
 
 if __name__ == "__main__":
