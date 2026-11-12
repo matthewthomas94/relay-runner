@@ -95,8 +95,12 @@ class Connection:
 
     def __init__(self, path: str):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(path)
-        # Every response and event, in the order received.
+        try:
+            self.sock.connect(path)
+        except OSError:
+            self.sock.close()
+            raise
+        # Every response, event and call, in the order received.
         self.messages: list = []
         self.events: list = []
         self.calls: list = []
@@ -113,16 +117,17 @@ class Connection:
             with self.sock.makefile("rb") as reader:
                 for line in reader:
                     message = json.loads(line)
-                    if "call" in message:
-                        self._answer(message)
-                        continue
                     with self._changed:
                         self.messages.append(message)
-                        if "event" in message:
+                        if "call" in message:
+                            self.calls.append(message)
+                        elif "event" in message:
                             self.events.append(message)
                         else:
                             self._responses[message.get("id")] = message
                         self._changed.notify_all()
+                    if "call" in message:
+                        self._answer(message)
         except (OSError, ValueError):
             pass
         finally:
@@ -131,7 +136,6 @@ class Connection:
                 self._changed.notify_all()
 
     def _answer(self, call: dict) -> None:
-        self.calls.append(call)
         device = self.devices.get((call.get("device_id"), call.get("role")))
         result = device.answer(call) if device is not None else None
         if result is None:
@@ -145,10 +149,11 @@ class Connection:
         with self._write_lock:
             self.sock.sendall(data)
 
-    def exchange(self, op: str, **params) -> dict:
+    def exchange(self, op: str, request_id=None, **params) -> dict:
         """Send one request and return the whole response message."""
-        self._next_id += 1
-        request_id = self._next_id
+        if request_id is None:
+            self._next_id += 1
+            request_id = self._next_id
         self.send({"id": request_id, "op": op, **params})
         with self._changed:
             if not self._changed.wait_for(
@@ -168,6 +173,11 @@ class Connection:
 
     def hello(self) -> dict:
         return self.request("hello", protocol=PROTOCOL_VERSION, client="contract-suite")
+
+    def responses(self) -> list:
+        """Every response received, in order."""
+        with self._changed:
+            return [message for message in self.messages if "id" in message]
 
     def events_named(self, name: str, **fields) -> list:
         with self._changed:
@@ -213,12 +223,13 @@ class Sandbox:
         self.event_log = self.root / "speech_events.jsonl"
         self.command_state = self.root / "voice_command_state.json"
         self.config_path = self.root / "config.toml"
-        self.config_path.write_text(
-            "[tts]\n"
-            f"auto_play = {'true' if auto_play else 'false'}\n"
-            f"rate = {rate}\n"
-        )
+        self.configure(auto_play=auto_play, rate=rate)
         self.stderr_path = self.root / "stderr.log"
+        self.stdout_path = self.root / "stdout.log"
+        # Where the audio lease lives under the service's HOME.
+        self.lease_path = (
+            self.root / "Library" / "Application Support" / "relay-runner" / "voice-audio.lock"
+        )
         self.process: subprocess.Popen | None = None
         self.conn: Connection | None = None
         self.datagrams: list = []
@@ -247,16 +258,27 @@ class Sandbox:
 
     # -- Process -----------------------------------------------------------
 
+    def command(self) -> list:
+        return [*SERVICE_CMD, "--socket", self.socket_path, "--config", str(self.config_path)]
+
     def spawn(self, **env) -> subprocess.Popen:
-        with open(self.stderr_path, "ab") as stderr:
+        with open(self.stderr_path, "ab") as stderr, open(self.stdout_path, "ab") as stdout:
             self.process = subprocess.Popen(
-                [*SERVICE_CMD, "--socket", self.socket_path, "--config", str(self.config_path)],
+                self.command(),
                 env=self.env(**env),
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
+                stdout=stdout,
                 stderr=stderr,
             )
         return self.process
+
+    def configure(self, *, auto_play: bool = False, rate: float = 1.0) -> None:
+        """Rewrite config.toml; the service reads it again on ``reload_config``."""
+        self.config_path.write_text(
+            "[tts]\n"
+            f"auto_play = {'true' if auto_play else 'false'}\n"
+            f"rate = {rate}\n"
+        )
 
     def stderr(self) -> str:
         return self.stderr_path.read_text(errors="replace")
@@ -366,15 +388,22 @@ class SpeechCase(unittest.TestCase):
         self.conn = self.box.start()
         self.commands = 0
 
-    def speak(self, text: str = SHORT, *, command: tuple | None = None, kind: str = "final", **fields) -> str:
-        """Speak a reply of its own new command and return the accepted utterance id."""
+    def propose(self, text: str = SHORT, *, command: tuple | None = None, kind: str = "final", **fields) -> dict:
+        """Send one ``speak`` for a command (a new one by default) and return its result.
+
+        Without other fields it is the provider's own final reply.
+        """
         if command is None:
             command = self.new_command()
         params = {"source": "orchestrator", "authoritative": True}
         params.update(fields)
-        result = self.conn.request(
+        return self.conn.request(
             "speak", text=text, command_seq=command[0], command_id=command[1], kind=kind, **params
         )
+
+    def speak(self, text: str = SHORT, **fields) -> str:
+        """``propose`` a reply that must be accepted and return its utterance id."""
+        result = self.propose(text, **fields)
         self.assertTrue(result["accepted"], "the service did not accept the reply")
         return result["utterance_id"]
 
