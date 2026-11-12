@@ -100,7 +100,7 @@ Intent fields of `speak`. Only `text` is required; `null` and absent mean the de
 | `display_text` | `text` | What the overlay shows. |
 | `command_seq`, `command_id` | none | The Relay command this speech belongs to. |
 | `source` | `fallback` | `messenger`, `orchestrator`, `lifecycle`, `completion` or `fallback`. |
-| `kind` | `fallback` | `handoff`, `progress`, `clarification`, `final`, `fallback` or `control`. `clarification`, `final` and `fallback` are **replies**. |
+| `kind` | `fallback` | `handoff`, `progress`, `clarification`, `final`, `fallback` or `control`. `clarification`, `final` and `fallback` are **replies**; the others are **status speech**. |
 | `authoritative` | `false` | The provider's own outcome, not a stand-in. |
 | `priority` | by `kind` | Only compared between speech of the same command. The default is `control` 100, `clarification` 80, `final` 70, `fallback` 60, `handoff` 20, `progress` 10, plus 5 when `authoritative`. |
 | `dedup_key` | derived | Speech with a key already accepted is refused. A `final` or `fallback` of a command defaults to one key per command, so a command has one real final and one fallback. |
@@ -128,7 +128,7 @@ A value outside a field's list is treated as that field's default.
 | `pause` | | | Speech-only barge-in: stops the audio and **holds** the queue. The reply that was playing returns to the head of the queue and plays from its start on the next `play`. |
 | `stop_playback` | optional `reason` (`user_stop`) | | Stops the reply that is playing. With `recording_barge_in` the reply counts as heard: it leaves the queue, stays replayable, and nothing else comes forward until `new_turn` or `play`. With any other reason the reply returns to the head of the queue and the queue is held. With nothing playing it acts as `pause`. |
 | `skip` | optional `reason` (`user_stop`) | | Removes the reply that is playing, or else the one waiting at the head; it stays replayable. The next queued reply comes forward, except with `focus_switch`, `wheel_stop` or `recording_barge_in`, which bring nothing forward. The bridge sends `focus_switch` when the user changes session. |
-| `new_turn` | `command_seq`, `command_id` | | A new user turn: releases a held queue, stops a playing reply of an older command (it returns to the head of the queue), and drops queued `handoff` and `progress` speech of older commands. Queued replies stay. |
+| `new_turn` | `command_seq`, `command_id` | | A new user turn: releases a held queue, stops a playing reply of an older command (it returns to the head of the queue), and drops queued status speech of older commands. Queued replies stay. |
 
 ### Sessions
 
@@ -221,7 +221,7 @@ An accepted intent goes to the back of the queue, with these exceptions:
 
 - **Supersede.** A `clarification`, `final` or `fallback` replaces the same command's `handoff` or `progress` speech that has not started, wherever it is queued. Speech with a higher `priority` likewise replaces the same command's `progress` or `control` speech waiting at the head.
 - **Replace.** An authoritative `final` from `completion` or `orchestrator` replaces the same command's fallback outcome, even while that fallback is playing.
-- **Newer command.** Speech of a newer command stops the older command's `handoff` or `progress` speech at the head. A reply is never removed by a newer command.
+- **Newer command.** Speech of a newer command stops the older command's status speech at the head. A reply is never removed by a newer command.
 
 The head of the queue is published as waiting and plays on `play`; with `auto_play` it plays at once. When it ends, the next item becomes the head. A reply leaves the queue only by playing to its end, by `skip`, by a `recording_barge_in` stop, or by being replaced; a reply that was only stopped returns to the head.
 
