@@ -7798,11 +7798,16 @@ class VoiceBridgePreemptionTests(unittest.TestCase):
             script.count("RELAY_ACTOR_ROLE=\"${RELAY_ACTOR_ROLE:-foreground_manual}\""),
             2,
         )
-        self.assertEqual(script.count("/usr/bin/python3 '__RELAY_REPLY_HELPER__'"), 2)
+        self.assertEqual(script.count("    __RELAY_REPLY_COMMAND__\n"), 2)
         self.assertEqual(
-            script.count('-e "s|__RELAY_REPLY_HELPER__|$relay_reply_helper_path|g"'),
+            script.count('-e "s|__RELAY_REPLY_COMMAND__|$relay_reply_command|g"'),
             2,
         )
+        # RR-478: relay-rs beside SharedSupport by default; RELAY_HOOK_RUNTIME=python
+        # or a bundle without relay-rs falls back to the Python helper.
+        self.assertIn('local rust="$PROJECT_ROOT/../MacOS/relay-rs"', script)
+        self.assertIn('[ "${RELAY_HOOK_RUNTIME:-}" != "python" ] && [ -x "$rust" ]', script)
+        self.assertIn("printf \"/usr/bin/python3 '%s'\" \"$SERVICES_BUNDLE/relay_reply.py\"", script)
         self.assertEqual(script.count('"kind":"reasoning-summary"'), 2)
         self.assertNotIn("Voice bridge is ready. You can speak at any point.", script)
 
