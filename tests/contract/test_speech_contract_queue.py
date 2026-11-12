@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 import unittest
 
-from speech_contract_support import LONG, LONG_SENTENCES, SHORT, SpeechCase, wait_until
+from speech_contract_support import LONG, LONG_SENTENCES, SpeechCase, wait_until
 
 PRESERVE = {
     "route": "continue_current",

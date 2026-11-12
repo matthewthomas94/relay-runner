@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shutil
 import signal
 import socket
@@ -180,8 +181,6 @@ class SurfaceTests(unittest.TestCase):
             client_source = handle.read()
         with open(os.path.join(SERVICES, "speech_service.py")) as handle:
             service_source = handle.read()
-        import re
-
         requested = set(re.findall(r'_(?:request|roundtrip)\(\s*"([a-z_]+)"', client_source))
         self.assertGreater(len(requested), 20)
         for op in sorted(requested):
