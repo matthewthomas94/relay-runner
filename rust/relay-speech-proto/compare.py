@@ -22,8 +22,8 @@ the two files above.
 
 Scheduling priority decides the timings. The app starts its speech bridge as a
 launchd job, which runs at priority 20 on any core; an orchestrator worker runs
-at background priority 4, which macOS keeps on the efficiency cores, about six
-times slower here. Every record carries the priority it was taken at. To measure
+at background priority 4, which macOS keeps on the efficiency cores, three to
+four times slower here. Every record carries the priority it was taken at. To measure
 as the bridge runs, start this script the way the bridge is started and remove
 the job when it has finished:
 
