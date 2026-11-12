@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -503,6 +505,53 @@ class BridgeWiringTests(unittest.TestCase):
         result = subprocess.run([sys.executable, "-c", script], cwd=SERVICES, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "[]")
+
+
+class ControlSocketTests(unittest.TestCase):
+    """A service that is still stopping must not take its successor's control socket."""
+
+    class Worker:
+        def __init__(self):
+            self.input_queue = queue.Queue()
+
+        def stop_playback(self, *, reason="user_stop"):
+            del reason
+
+        def shutdown(self):
+            pass
+
+    def coordinator(self, path: str) -> SpeechCoordinator:
+        coordinator = SpeechCoordinator(self.Worker(), is_current=lambda seq, command_id: True,
+                                        control_socket_path=path)
+        self.addCleanup(coordinator.shutdown)
+        return coordinator
+
+    def test_old_coordinator_leaves_the_path_its_successor_bound(self):
+        root = tempfile.mkdtemp(prefix="rsc-", dir="/tmp")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = os.path.join(root, "tts_control.sock")
+        old = self.coordinator(path)
+        wait_until(lambda: os.path.exists(path), message="the first control socket")
+        first = os.stat(path).st_ino
+        self.coordinator(path)
+        wait_until(lambda: os.path.exists(path) and os.stat(path).st_ino != first,
+                   message="the second control socket")
+
+        old.shutdown()
+
+        self.assertTrue(os.path.exists(path), "the old coordinator removed its successor's socket")
+        sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(sender.close)
+        sender.sendto(b"play", path)
+
+    def test_coordinator_removes_its_own_socket(self):
+        root = tempfile.mkdtemp(prefix="rsc-", dir="/tmp")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = os.path.join(root, "tts_control.sock")
+        coordinator = self.coordinator(path)
+        wait_until(lambda: os.path.exists(path), message="the control socket")
+        coordinator.shutdown()
+        self.assertFalse(os.path.exists(path))
 
 
 class FreshnessParityTests(unittest.TestCase):

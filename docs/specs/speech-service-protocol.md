@@ -257,7 +257,7 @@ When the service ends without being asked to, the client:
 2. starts a new service, at most three times a minute, then stops trying and treats every request as refused;
 3. clears the overlay's speech state, attaches its Relay Remote devices again, and sends again every `speak` whose reply the last `state` event still listed, in queue order. They are ordinary `speak` requests, so a reply whose command is no longer fresh is dropped. Replay history, `read_out` text and frames a Relay Remote sink had not acknowledged are not restored.
 
-**The service never outlives its client.** When the connection ends, or the parent process exits before connecting, the service stops speech at once and exits. A restarted bridge starts a new service; nothing queued carries over, exactly as when speech ran inside the bridge.
+**The service never outlives its client.** When the connection ends, or the parent process exits before connecting, the service stops speech at once and exits. A restarted bridge starts a new service; nothing queued carries over, exactly as when speech ran inside the bridge. The old service may still be stopping when the new one binds `TTS_CONTROL_SOCK`, so a service removes that path on exit only while it is still the socket it bound.
 
 ## Rollback
 

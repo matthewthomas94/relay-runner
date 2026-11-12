@@ -1603,6 +1603,7 @@ class SpeechCoordinator:
             pass
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         sock.bind(path)
+        bound = os.stat(path).st_ino
         sock.settimeout(0.5)
         try:
             while not self._shutdown.is_set():
@@ -1623,7 +1624,10 @@ class SpeechCoordinator:
         finally:
             sock.close()
             try:
-                os.unlink(path)
+                # RR-480: a speech service that replaced this one, while this
+                # one was still stopping, has bound the path again; leave it.
+                if os.stat(path).st_ino == bound:
+                    os.unlink(path)
             except OSError:
                 pass
 
