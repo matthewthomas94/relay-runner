@@ -19,6 +19,16 @@ Stages, all run by default and each resumable (a finished run is not repeated):
 
 Everything is written under --out: audio/<stack>/<voice>/<id>.wav, runs/, and
 the two files above.
+
+Scheduling priority decides the timings. The app starts its speech bridge as a
+launchd job, which runs at priority 20 on any core; an orchestrator worker runs
+at background priority 4, which macOS keeps on the efficiency cores, about six
+times slower here. Every record carries the priority it was taken at. To measure
+as the bridge runs, start this script the way the bridge is started and remove
+the job when it has finished:
+
+    launchctl submit -l com.relay.rr479-measure -o LOG -e LOG -- /bin/sh -c \
+        '"$0" "$1" --out "$2"; launchctl remove com.relay.rr479-measure' PYTHON SCRIPT OUT
 """
 
 from __future__ import annotations
@@ -40,6 +50,7 @@ BINARY = HERE / "target/aarch64-apple-darwin/release/relay-speech-proto"
 MODELS = Path.home() / ".local/share/kokoro"
 VOICES = ["am_puck", "bm_george", "bf_isabella", "af_sky"]
 FIRST_AUDIO_ID = "reply-02"
+BRIDGE_PRIORITY = 20
 
 # Each stack: label for the page, and how to start it. `python` is today's
 # stack; the others are the Rust prototype with one of its two phonemisers.
@@ -85,6 +96,11 @@ def python_child(corpus: Path, voice: str, out: Path) -> None:
               f"\t{1000 * (synthesized - phonemized):.1f}\t{len(samples) / rate:.3f}\t\t{phonemes}", flush=True)
 
 
+def priority() -> int:
+    """This process's scheduling priority, which its children inherit."""
+    return int(subprocess.check_output(["/bin/ps", "-o", "pri=", "-p", str(os.getpid())]))
+
+
 def parse_run(text: str) -> dict:
     run = {"load": {}, "sentences": {}}
     for line in text.splitlines():
@@ -116,6 +132,7 @@ def timed_run(name: str, argv: list[str], runs: Path, timeout: int = 3600) -> No
         ("peak_footprint_bytes", r"(\d+)\s+peak memory footprint"),
     ) if (match := re.search(pattern, stderr))}
     record = {"status": status, "wall_s": time.perf_counter() - started, "load_average_before": load,
+              "priority": priority(),
               "stderr_tail": stderr.strip().splitlines()[:3] if status else [], **memory, **parse_run(stdout)}
     (runs / f"{name}.json").write_text(json.dumps(record, indent=1, ensure_ascii=False))
     print(f"{name}: status {status}, {record['wall_s']:.0f} s, load {load:.1f}", flush=True)
@@ -151,6 +168,7 @@ def stage_first_audio(out: Path, corpus: Path) -> None:
         sentences = list(parse_run(done.stdout)["sentences"].values())
         numbers["warm_ms"] = [sentence["g2p_ms"] + sentence["synth_ms"] for sentence in sentences[1:]]
         numbers["audio_s"] = sentences[0]["audio_s"]
+        numbers["priority"] = priority()
     (runs / "first-audio.json").write_text(json.dumps(result, indent=1))
 
 
@@ -204,6 +222,7 @@ def summarise(out: Path, corpus: Path) -> dict:
             "max_rss_mb": round(run.get("max_rss_bytes", 0) / 2**20), "wall_s": round(run["wall_s"]),
             "peak_footprint_mb": round(run.get("peak_footprint_bytes", 0) / 2**20),
             "load_average_before": round(run["load_average_before"], 1), "stderr_tail": run["stderr_tail"],
+            "priority": run.get("priority"),
         })
     sentences = []
     for line in corpus.read_text().splitlines():
@@ -303,6 +322,9 @@ def main() -> None:
     arguments = parser.parse_args()
     out = arguments.out.resolve()
     (out / "runs").mkdir(parents=True, exist_ok=True)
+    if priority() < BRIDGE_PRIORITY:
+        print(f"warning: running at priority {priority()}, below the speech bridge's {BRIDGE_PRIORITY}; "
+              "timings will be slower than the app's (see this script's docstring)", flush=True)
     for stage in arguments.stage or [*stages, "page"]:
         if stage in stages:
             stages[stage](out, arguments.corpus)
