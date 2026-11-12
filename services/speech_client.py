@@ -20,6 +20,7 @@ import time
 from typing import Any, Callable
 
 import remote_audio
+from relay_remote import peer_uid
 
 PROTOCOL_VERSION = 1
 DEFAULT_SOCKET = "/tmp/relay_speech_service.sock"
@@ -182,6 +183,10 @@ class SpeechServiceClient:
             except OSError:
                 candidate.close()
                 time.sleep(0.02)
+        # Replies are sent over this socket: only this user's service may read them.
+        if peer_uid(sock) != os.getuid():
+            sock.close()
+            raise SpeechServiceError("speech service socket belongs to another user")
         with self._write_lock:
             self._generation += 1
             generation = self._generation
@@ -572,6 +577,8 @@ class SpeechServiceClient:
     # A device is known here for as long as the service may call on it.
 
     def attach_remote_sink(self, sink) -> None:
+        # Newest last, as the coordinator keeps them.
+        self._remote_sinks.pop(sink.device_id, None)
         self._remote_sinks[sink.device_id] = sink
         self._request("remote_attach", {"device_id": sink.device_id, "role": "sink"})
         self._remote_mirrors.pop(sink.device_id, None)

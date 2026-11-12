@@ -433,6 +433,8 @@ class SpeechService:
             raise _RequestError("hello_required", "The first request must be hello")
         if op == "speak":
             fields = {name: request[name] for name in SPEAK_FIELDS if name in request}
+            if not isinstance(fields.get("work_disposition") or {}, dict):
+                raise _RequestError("invalid_request", "work_disposition must be an object")
             intent = SpeechIntent.build(spoken_text=str(request.get("text") or ""), **fields)
             accepted = coordinator.submit(
                 intent, waiting_playback_kind=request.get("waiting_playback_kind")
