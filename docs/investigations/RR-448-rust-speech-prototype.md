@@ -33,7 +33,44 @@ The Python stack measured is the installed one: Python 3.13.13, kokoro-onnx 0.5.
 
 ## Method
 
-TBD-METHOD
+Model files: `kokoro-v1.0.onnx` (325,532,387 bytes) and `voices-v1.0.bin` (28,214,398 bytes) in `~/.local/share/kokoro`, the ones the app uses. Voices: `am_puck`, `bm_george`, `bf_isabella` and `af_sky`.
+
+```sh
+cd rust/relay-speech-proto
+cargo build --release --locked --target aarch64-apple-darwin
+"$HOME/Library/Application Support/relay-runner/services/.venv/bin/python" compare.py \
+    --out ~/relay-runner-investigations/RR-479-speech-samples
+```
+
+`compare.py` does the rest, and each stage can be repeated on its own with `--stage`:
+
+- **Render.** One process per stack and voice over the whole corpus, each under `/usr/bin/time -l`. The stacks take turns voice by voice, so a busy spell on the machine hits them alike. The Python process imports `kokoro_onnx`, builds `Kokoro(model, voices)` and for each sentence calls `tokenizer.phonemize(text, "en-us")` and then `create(phonemes, voice=..., speed=1.0, lang="en-us", is_phonemes=True)`. That is what `create(text, ...)` does inside, split in two so that phonemes and synthesis are timed separately. The Rust process prints the same timings.
+- **Load time** is everything before the first sentence can be synthesised. Python: importing `numpy` and `kokoro_onnx`, then the `Kokoro` constructor. Rust: creating the ONNX Runtime session, reading the voice and building the phonemiser.
+- **Real-time factor** is the phoneme and synthesis time for the whole corpus divided by the seconds of audio produced. Below 1 is faster than real time.
+- **First audio** uses the reply "Sure, I can take a look at that for you." with `am_puck`. Cold is a new process, from launch until its WAV is on disk, five times per stack in turn, with the model already in the disk cache. Warm is the same sentence eleven times in one process with the first discarded, and the figure is the median of the other ten. Warm is what a running bridge does for each reply.
+- **Peak memory** is the maximum resident set size that `/usr/bin/time -l` reports for a render process.
+- **CoreML** is one more render of the corpus with `am_puck` and `--provider coreml`, which registers the CoreML execution provider with its default options.
+
+### Scheduling priority
+
+The first full pass of these measurements was TBD-FACTOR times too slow for both stacks, and anyone repeating them from a worker will hit the same thing. The orchestrator daemon is a launchd agent with `ProcessType` `Background` (`scripts/relay-orchestrator:344`), so it and every worker it starts run at priority 4, which macOS keeps on the efficiency cores. The app starts its speech bridge with `launchctl submit` (`Sources/relay-runner/Process/ProcessManager.swift:908`), and that job runs at priority 20 on any core. A worker cannot raise itself: `taskpolicy -B` returns success and changes nothing.
+
+The numbers in this report were therefore taken by starting `compare.py` the way the bridge is started, and removing the job when it finished:
+
+```sh
+launchctl submit -l com.relay.rr479-measure -o LOG -e LOG -- /bin/sh -c \
+    '"$0" "$1" --out "$2"; launchctl remove com.relay.rr479-measure' PYTHON SCRIPT OUT
+```
+
+Every record under `runs/` carries the priority it ran at, and all of them say 20. The background-priority pass is kept beside it in `runs-background-priority/`. The audio is the same in both; only the timings differ.
+
+The machine was not idle. The one-minute load average before each run was between TBD-LOADMIN and TBD-LOADMAX, mostly other workers at background priority, and the laptop was on battery. Treat differences of a few percent between the stacks as noise.
+
+### Is the audio path the same?
+
+The two stacks never get the same phonemes, so their audio cannot be compared directly. As a separate check, twelve phoneme strings from the Rust runs (six sentences, `am_puck` and `bf_isabella`) were given to kokoro-onnx with `is_phonemes=True`, and its output was compared with the Rust WAV for the same sentence and voice. The sample counts were identical in all twelve. The waveforms correlate at 0.9965 to 0.9996. For the two sentences where the magnitude spectra were compared as well, those correlate above 0.999.
+
+They are not bit-identical, and that is expected. The model has no random operators, and kokoro-onnx repeats itself exactly. But kokoro-onnx against itself with a different graph-optimisation level or thread count differs by the same amount on those two sentences (waveform correlation 0.996 to 0.998). The prototype links ONNX Runtime 1.31.0 and the Python stack 1.28.0, so the difference is within what ONNX Runtime's own numerics produce, not a porting error in the tokens, the style vector or the trim. This check was run by hand and is not part of `compare.py`.
 
 ## Measurements
 
@@ -121,7 +158,7 @@ loqui-g2p accepts inline markup, `[word](/phonemes/)`, to override one word's pr
 
 ## Listening page
 
-`~/relay-runner-investigations/RR-479-speech-samples/index.html`, with 855 WAV files beside it under `audio/`. Open it in a browser. Each sentence has the phonemes from every stack and a player per voice: today's Python stack, the prototype with misaki-rs, the prototype with loqui-g2p, and for the British voices loqui-g2p with its British lexicon.
+`~/relay-runner-investigations/RR-479-speech-samples/index.html`, with its audio beside it under `audio/` (167 MB in all, outside the repository). Open it in a browser. Each sentence has the phonemes from every stack and a player per voice: today's Python stack, the prototype with misaki-rs, the prototype with loqui-g2p, and for the British voices loqui-g2p with its British lexicon.
 
 The page opens with links to the twelve sentences whose loqui-g2p phonemes are furthest from today's, and marks them in the list:
 
@@ -144,7 +181,14 @@ It also lists the 26 sentences where misaki-rs leaves words unspoken. Five more 
 
 ## Limits
 
-TBD-LIMITS
+- **Nobody has listened to the audio.** Everything this report says about quality comes from reading phonemes. Whether the Rust voice is acceptable is the user's call, on the listening page.
+- One machine, busy with other work and on battery, two passes. These are comparisons between stacks under the same conditions, not latency percentiles.
+- Timing stops when the WAV is on disk. Playback is not part of the prototype.
+- The corpus is hard on purpose: 49 of its 57 sentences are technical: identifiers, paths, numbers, dates, product names and made-up words. Ordinary replies, where the stacks agree most, are a larger share of what the app actually speaks.
+- The phoneme distance is approximate, because it depends on a table that rewrites espeak-ng's IPA.
+- CoreML was tried with its default options only (NeuralNetwork format, all compute units, no model cache). The MLProgram format, static shapes and a cache directory were not tried.
+- The Rust prototype rendered the corpus more than thirty times across the passes without a failure. That is a smoke test of `ort` on macOS, not a soak test.
+- Not built, because it is production work: streaming and cancellation, the control socket, the speech player, and notarisation of a bundle containing the binary.
 
 ## Recommendation
 
