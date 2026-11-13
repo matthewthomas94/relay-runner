@@ -15,6 +15,7 @@ python3 -m unittest discover -s tests/contract -p 'test_speech_contract*.py'
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `RELAY_SPEECH_SERVICE_CMD` | `<python> services/speech_service.py` | The service under test. Split like a shell command line; `--socket <path> --config <path>` are appended. The bridge reads the same variable. |
+| `RELAY_SPEECH_CONTRACT_WAIT_SECONDS` | `10` | How long a case waits for something the service should do promptly. |
 
 To check the Rust service, build it and point the variable at the binary, quoting a path with spaces:
 
@@ -25,7 +26,6 @@ RELAY_SPEECH_SERVICE_CMD="'$PWD/rust/target/debug/relay-speech'" \
 ```
 
 Both services pass every case. The Rust service reports `service: "relay-speech-rust"` in its `hello` result, the Python service `relay-speech-python`.
-| `RELAY_SPEECH_CONTRACT_WAIT_SECONDS` | `10` | How long a case waits for something the service should do promptly. |
 
 The suite needs macOS (`/usr/bin/afconvert` for Relay Remote audio) and Python 3.10 or newer. Each case starts its own service in test mode inside a temporary folder and passes only the variables listed under [Environment](#environment), so it never touches the sockets, files or audio device of a running Relay Runner session.
 
