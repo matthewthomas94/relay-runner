@@ -23,8 +23,12 @@ static RELAY_CONTROL_TYPE_RE: LazyLock<Regex> =
     LazyLock::new(|| pattern::compile_full(r"__[A-Z][A-Z0-9_]*__", false));
 static RAW_RELAY_CONTROL_TYPE_RE: LazyLock<Regex> =
     LazyLock::new(|| pattern::compile(r#""type"\s*:\s*"(?P<type>__[A-Z][A-Z0-9_]*__)""#, false));
-static RESERVED_CONTROL_RE: LazyLock<Regex> =
-    LazyLock::new(|| pattern::compile(r"^(?P<type>__[A-Z][A-Z0-9_]*__)(?P<separator>:|\s+|$)", false));
+static RESERVED_CONTROL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    pattern::compile(
+        r"^(?P<type>__[A-Z][A-Z0-9_]*__)(?P<separator>:|\s+|$)",
+        false,
+    )
+});
 
 /// `_RELAY_CONTROL_TYPE_LABELS`.
 fn control_type_label(control_type: &str) -> &'static str {
@@ -44,7 +48,13 @@ fn control_type_label(control_type: &str) -> &'static str {
 }
 
 /// `_log_quarantined_relay_control`: only fixed, bounded metadata.
-pub fn log_quarantined_relay_control(envelope: &str, control_type: &str, shape: &str, syntax: &str, reason: &str) {
+pub fn log_quarantined_relay_control(
+    envelope: &str,
+    control_type: &str,
+    shape: &str,
+    syntax: &str,
+    reason: &str,
+) {
     eprintln!(
         "[voice_bridge] quarantined_relay_control envelope={envelope} control_type={} shape={shape} syntax={syntax} reason={reason}",
         control_type_label(control_type)
@@ -67,7 +77,10 @@ fn find_control_shaped_type(value: &Value) -> Option<(String, &'static str)> {
         if let Some(Value::Str(raw_type)) = current.get("type")
             && pattern::search(&RELAY_CONTROL_TYPE_RE, raw_type)
         {
-            return Some((raw_type.clone(), if depth == 0 { "top_level" } else { "nested" }));
+            return Some((
+                raw_type.clone(),
+                if depth == 0 { "top_level" } else { "nested" },
+            ));
         }
         if depth >= 4 {
             continue;
@@ -94,7 +107,11 @@ fn raw_control_type(source: &str) -> Option<String> {
         .captures(source)
         .ok()
         .flatten()
-        .and_then(|captures| captures.name("type").map(|found| found.as_str().to_string()))
+        .and_then(|captures| {
+            captures
+                .name("type")
+                .map(|found| found.as_str().to_string())
+        })
 }
 
 /// `_quarantine_raw_relay_control_object`: reject noncanonical JSON control
@@ -122,7 +139,13 @@ pub fn quarantine_raw_relay_control_object(text: &str) -> bool {
         },
         Some(_) => return false,
     };
-    log_quarantined_relay_control("raw_json", &control_type, shape, syntax, "noncanonical_envelope");
+    log_quarantined_relay_control(
+        "raw_json",
+        &control_type,
+        shape,
+        syntax,
+        "noncanonical_envelope",
+    );
     true
 }
 
@@ -133,7 +156,10 @@ fn parse_float(text: &str) -> Option<f64> {
     if lowered.contains("inf") || lowered.contains("nan") {
         return text.parse::<f64>().ok();
     }
-    text.replace('_', "").parse::<f64>().ok().filter(|_| !text.starts_with('_') && !text.ends_with('_'))
+    text.replace('_', "")
+        .parse::<f64>()
+        .ok()
+        .filter(|_| !text.starts_with('_') && !text.ends_with('_'))
 }
 
 /// `_play_control_detected_at`.
@@ -204,7 +230,9 @@ pub fn handle_session_replay(bridge: &Bridge, payload: &Dict) -> bool {
 /// `_publish_session_playback`: the overlay's per-session playback states
 /// and, when it changed, the speech queue depth (RR-464).
 pub fn publish_session_playback(bridge: &Bridge) {
-    let states = bridge.speech().session_playback_states(&targets::waiting_session_key());
+    let states = bridge
+        .speech()
+        .session_playback_states(&targets::waiting_session_key());
     store::notify_text("session_playback", &json::dumps(&Value::Dict(states)));
     let depth = bridge.speech().queue_depth();
     let changed = {
@@ -220,7 +248,11 @@ pub fn publish_session_playback(bridge: &Bridge) {
 
 /// `_handle_relay_control_message`: provider-neutral relay controls before
 /// command publication. `true` when `text` was a control.
-pub fn handle_relay_control_message(bridge: &'static Bridge, text: &str, paths: &PublishPaths) -> bool {
+pub fn handle_relay_control_message(
+    bridge: &'static Bridge,
+    text: &str,
+    paths: &PublishPaths,
+) -> bool {
     let state_path = paths.state_path.as_str();
     if let Some(raw) = text.strip_prefix("__SKIP_UNCERTAIN__:") {
         if let Some(expected @ Value::Dict(_)) = json::parse(raw)
@@ -287,7 +319,9 @@ pub fn handle_relay_control_message(bridge: &'static Bridge, text: &str, paths: 
     }
     if text.starts_with("__PLAY_ACK__:") {
         if let Some((detected, acknowledged)) = play_ack_timestamps(text) {
-            bridge.speech().note_visual_acknowledgement(detected, acknowledged);
+            bridge
+                .speech()
+                .note_visual_acknowledgement(detected, acknowledged);
         }
         return true;
     }
@@ -308,7 +342,13 @@ pub fn handle_relay_control_message(bridge: &'static Bridge, text: &str, paths: 
         return true;
     }
     if let Some(raw) = text.strip_prefix("__PROVIDER_TURN_EVENT__:") {
-        finals::handle_provider_turn_event_control(bridge, raw, None, &settings().claim_file, state_path);
+        finals::handle_provider_turn_event_control(
+            bridge,
+            raw,
+            None,
+            &settings().claim_file,
+            state_path,
+        );
         return true;
     }
     if let Some(raw) = text.strip_prefix("__STATUS__:") {
@@ -323,15 +363,25 @@ pub fn handle_relay_control_message(bridge: &'static Bridge, text: &str, paths: 
         return true;
     }
     if let Ok(Some(captures)) = RESERVED_CONTROL_RE.captures(text) {
-        let control_type = captures.name("type").map(|found| found.as_str()).unwrap_or("");
-        let separator = captures.name("separator").map(|found| found.as_str()).unwrap_or("");
+        let control_type = captures
+            .name("type")
+            .map(|found| found.as_str())
+            .unwrap_or("");
+        let separator = captures
+            .name("separator")
+            .map(|found| found.as_str())
+            .unwrap_or("");
         let unknown = separator == ":";
         log_quarantined_relay_control(
             "prefixed",
             control_type,
             "top_level",
             if unknown { "unknown" } else { "malformed" },
-            if unknown { "unknown_control_type" } else { "noncanonical_separator" },
+            if unknown {
+                "unknown_control_type"
+            } else {
+                "noncanonical_separator"
+            },
         );
         return true;
     }
@@ -355,9 +405,15 @@ mod tests {
 
     #[test]
     fn control_shaped_json_is_quarantined() {
-        assert!(quarantine_raw_relay_control_object(r#"{"type": "__INTERRUPT__"}"#));
-        assert!(quarantine_raw_relay_control_object(r#"{"a": {"type": "__PLAY__"}}"#));
-        assert!(quarantine_raw_relay_control_object(r#"{"type": "__PLAY__", "#));
+        assert!(quarantine_raw_relay_control_object(
+            r#"{"type": "__INTERRUPT__"}"#
+        ));
+        assert!(quarantine_raw_relay_control_object(
+            r#"{"a": {"type": "__PLAY__"}}"#
+        ));
+        assert!(quarantine_raw_relay_control_object(
+            r#"{"type": "__PLAY__", "#
+        ));
         assert!(!quarantine_raw_relay_control_object(r#"{"type": "note"}"#));
         assert!(!quarantine_raw_relay_control_object("hello {"));
     }

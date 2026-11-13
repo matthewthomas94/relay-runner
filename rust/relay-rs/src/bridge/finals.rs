@@ -220,7 +220,10 @@ fn log_fallback_event(
         if !provider_session_id.is_empty() {
             fields.push(format!("provider_session_id={provider_session_id}"));
         }
-        if let Some(siblings) = arbitration.get("siblings").filter(|value| value.as_list().is_some()) {
+        if let Some(siblings) = arbitration
+            .get("siblings")
+            .filter(|value| value.as_list().is_some())
+        {
             fields.push(format!(
                 "aggregate_sibling_states={}",
                 json::dumps_compact_sorted(siblings)
@@ -230,7 +233,10 @@ fn log_fallback_event(
     if let Some(reason) = reason.filter(|reason| !reason.is_empty()) {
         fields.push(format!("reason={reason}"));
     }
-    eprintln!("[voice_bridge] foreground_reply_fallback {}", fields.join(" "));
+    eprintln!(
+        "[voice_bridge] foreground_reply_fallback {}",
+        fields.join(" ")
+    );
 }
 
 /// `_schedule_foreground_reply_fallback`: after the delay, speak the
@@ -255,9 +261,22 @@ pub fn schedule_foreground_reply_fallback(
     log_fallback_event("armed", relay_command, &paths.turns_path, None, None);
     let armed_at = Instant::now();
     let relay_command = relay_command.clone();
-    let cancel = move |relay_command: &Dict, paths: &ReplyPaths, reason: &str, arbitration: Option<&Dict>| {
-        log_fallback_event("cancelled", relay_command, &paths.turns_path, Some(reason), arbitration);
-        replies::close_outcome_watch(Some(relay_command), bridge.speech(), &format!("fallback_{reason}"));
+    let cancel = move |relay_command: &Dict,
+                       paths: &ReplyPaths,
+                       reason: &str,
+                       arbitration: Option<&Dict>| {
+        log_fallback_event(
+            "cancelled",
+            relay_command,
+            &paths.turns_path,
+            Some(reason),
+            arbitration,
+        );
+        replies::close_outcome_watch(
+            Some(relay_command),
+            bridge.speech(),
+            &format!("fallback_{reason}"),
+        );
     };
     let spawned = thread::Builder::new()
         .name("foreground-reply-fallback".to_string())
@@ -273,7 +292,8 @@ pub fn schedule_foreground_reply_fallback(
                     cancel(&relay_command, &paths, "reply_delivered", None);
                     return;
                 }
-                if !turns::relay_command_current_or_preserved(&relay_command, &paths.state_path, "") {
+                if !turns::relay_command_current_or_preserved(&relay_command, &paths.state_path, "")
+                {
                     cancel(&relay_command, &paths, "superseded", None);
                     return;
                 }
@@ -298,7 +318,13 @@ pub fn schedule_foreground_reply_fallback(
                     reason = format!("hard_ceiling:{reason}");
                 }
                 if decision == "defer" {
-                    log_fallback_event("deferred", &relay_command, &paths.turns_path, Some(&reason), Some(&arbitration));
+                    log_fallback_event(
+                        "deferred",
+                        &relay_command,
+                        &paths.turns_path,
+                        Some(&reason),
+                        Some(&arbitration),
+                    );
                     sleep_for = settings().completion_active_poll_seconds.max(0.25);
                     continue;
                 }
@@ -306,7 +332,13 @@ pub fn schedule_foreground_reply_fallback(
                     cancel(&relay_command, &paths, &reason, Some(&arbitration));
                     return;
                 }
-                log_fallback_event("eligible", &relay_command, &paths.turns_path, Some(&reason), Some(&arbitration));
+                log_fallback_event(
+                    "eligible",
+                    &relay_command,
+                    &paths.turns_path,
+                    Some(&reason),
+                    Some(&arbitration),
+                );
                 let delivered = deliver_missing_foreground_reply(
                     bridge,
                     &relay_command,
@@ -314,11 +346,20 @@ pub fn schedule_foreground_reply_fallback(
                     &paths.state_path,
                 );
                 let Some(delivered) = delivered else {
-                    cancel(&relay_command, &paths, "source_reply_deduplicated", Some(&arbitration));
+                    cancel(
+                        &relay_command,
+                        &paths,
+                        "source_reply_deduplicated",
+                        Some(&arbitration),
+                    );
                     return;
                 };
                 log_fallback_event(
-                    if delivered { "emitted" } else { "delivery_failed" },
+                    if delivered {
+                        "emitted"
+                    } else {
+                        "delivery_failed"
+                    },
                     &relay_command,
                     &paths.turns_path,
                     Some(&reason),
@@ -327,7 +368,11 @@ pub fn schedule_foreground_reply_fallback(
                 replies::close_outcome_watch(
                     Some(&relay_command),
                     bridge.speech(),
-                    if delivered { "fallback_emitted" } else { "fallback_delivery_failed" },
+                    if delivered {
+                        "fallback_emitted"
+                    } else {
+                        "fallback_delivery_failed"
+                    },
                 );
                 return;
             }
@@ -372,7 +417,11 @@ pub fn handle_provider_completion_control(
     let provider = provider_name(data.get("provider"), command.get("provider"));
     let failed = data.string("event") == "StopFailure";
     let terminal_signal = if provider.contains("claude") {
-        if failed { "result_error" } else { "result_success" }
+        if failed {
+            "result_error"
+        } else {
+            "result_success"
+        }
     } else if failed {
         "turn_failed"
     } else {
@@ -380,20 +429,34 @@ pub fn handle_provider_completion_control(
     };
     let mut observation = merged(&[&data, &command]);
     observation.insert("provider", provider.as_str());
-    post_continuity_event("provider", terminal_signal, Some(&observation), None, &LocalDaemon);
+    post_continuity_event(
+        "provider",
+        terminal_signal,
+        Some(&observation),
+        None,
+        &LocalDaemon,
+    );
     replies::note_outcome_signal(Some(&command), "hook_received");
     if replies::foreground_reply_delivered(Some(&command)) {
         replies::close_outcome_watch(Some(&command), bridge.speech(), "reply_delivered");
         return true;
     }
     let origin = targets::reply_origin_target(&data);
-    let origin_key = origin.as_ref().map(|target| target.session_key.clone()).unwrap_or_default();
+    let origin_key = origin
+        .as_ref()
+        .map(|target| target.session_key.clone())
+        .unwrap_or_default();
     if !turns::relay_command_current_or_preserved(&command, &paths.state_path, &origin_key) {
-        eprintln!("[voice_bridge] Dropping provider completion because its Relay command was superseded.");
+        eprintln!(
+            "[voice_bridge] Dropping provider completion because its Relay command was superseded."
+        );
         replies::close_outcome_watch(Some(&command), bridge.speech(), "completion_superseded");
         return false;
     }
-    let reply = match data.truthy("text").or(data.truthy("last_assistant_message")) {
+    let reply = match data
+        .truthy("text")
+        .or(data.truthy("last_assistant_message"))
+    {
         Some(value) => json::py_strip(&value.py_str()).to_string(),
         None => String::new(),
     };
@@ -419,9 +482,16 @@ pub fn handle_provider_completion_control(
         if let Some(origin) = &origin {
             payload.insert("session_key", origin.session_key.as_str());
         }
-        let delivered =
-            handle_orchestrator_reply_control(bridge, &json::dumps(&Value::Dict(payload)), &paths.state_path);
-        replies::close_outcome_watch(Some(&command), bridge.speech(), "completion_reply_not_delivered");
+        let delivered = handle_orchestrator_reply_control(
+            bridge,
+            &json::dumps(&Value::Dict(payload)),
+            &paths.state_path,
+        );
+        replies::close_outcome_watch(
+            Some(&command),
+            bridge.speech(),
+            "completion_reply_not_delivered",
+        );
         return delivered;
     }
     schedule_foreground_reply_fallback(
@@ -443,12 +513,24 @@ pub fn handle_orchestrator_reply_control(bridge: &Bridge, raw: &str, state_path:
     }
     let data = match json::parse(text) {
         None => {
-            log_quarantined_relay_control("prefixed", "__ORCHESTRATOR_REPLY__", "top_level", "malformed", "invalid_payload");
+            log_quarantined_relay_control(
+                "prefixed",
+                "__ORCHESTRATOR_REPLY__",
+                "top_level",
+                "malformed",
+                "invalid_payload",
+            );
             return false;
         }
         Some(Value::Dict(data)) => data,
         Some(_) => {
-            log_quarantined_relay_control("prefixed", "__ORCHESTRATOR_REPLY__", "top_level", "valid", "invalid_payload");
+            log_quarantined_relay_control(
+                "prefixed",
+                "__ORCHESTRATOR_REPLY__",
+                "top_level",
+                "valid",
+                "invalid_payload",
+            );
             return false;
         }
     };
@@ -461,16 +543,27 @@ pub fn handle_orchestrator_reply_control(bridge: &Bridge, raw: &str, state_path:
         None => data.clone(),
     };
     let Some(command_key) = relay_command_key(&command) else {
-        log_quarantined_relay_control("prefixed", "__ORCHESTRATOR_REPLY__", "top_level", "valid", "missing_command_key");
+        log_quarantined_relay_control(
+            "prefixed",
+            "__ORCHESTRATOR_REPLY__",
+            "top_level",
+            "valid",
+            "missing_command_key",
+        );
         return false;
     };
     if replies::foreground_reply_delivered(Some(&command)) {
         return true;
     }
     let origin = targets::reply_origin_target(&data);
-    let origin_key = origin.as_ref().map(|target| target.session_key.clone()).unwrap_or_default();
+    let origin_key = origin
+        .as_ref()
+        .map(|target| target.session_key.clone())
+        .unwrap_or_default();
     if !turns::relay_command_current_or_preserved(&command, state_path, &origin_key) {
-        eprintln!("[voice_bridge] Dropping foreground reply because its Relay command was superseded.");
+        eprintln!(
+            "[voice_bridge] Dropping foreground reply because its Relay command was superseded."
+        );
         replies::note_outcome_signal(Some(&command), "reply_helper_rejected");
         return false;
     }
@@ -496,7 +589,10 @@ pub fn handle_orchestrator_reply_control(bridge: &Bridge, raw: &str, state_path:
     if let Some(source) = data.truthy("speech_source") {
         payload.insert("speech_source", source.py_str());
     }
-    let work_disposition = data.get("work_disposition").and_then(Value::as_dict).cloned();
+    let work_disposition = data
+        .get("work_disposition")
+        .and_then(Value::as_dict)
+        .cloned();
     if let Some(disposition) = &work_disposition {
         payload.insert("work_disposition", disposition.clone());
     }
@@ -611,16 +707,26 @@ pub fn handle_provider_turn_event_control(
         "provider_ready" | "provider_started" | "provider_progress" => {
             let signal = if event == "provider_ready" {
                 if let Some(ownership) = ownership {
-                    let decision =
-                        ownership.authorize_transition(&payload, &read_json_file(claimed_path), state_path);
+                    let decision = ownership.authorize_transition(
+                        &payload,
+                        &read_json_file(claimed_path),
+                        state_path,
+                    );
                     log_provider_session_transition(&payload, decision);
                     if decision != "accepted_exact_app_owned_replacement" {
                         return false;
                     }
-                    if matches!(payload.get("discard_unacknowledged_claim"), Some(Value::Bool(true))) {
-                        let retired = bridge.inbox().map(|inbox| inbox.retire_replaced_claim(&payload));
+                    if matches!(
+                        payload.get("discard_unacknowledged_claim"),
+                        Some(Value::Bool(true))
+                    ) {
+                        let retired = bridge
+                            .inbox()
+                            .map(|inbox| inbox.retire_replaced_claim(&payload));
                         if let Some(Err(error)) = &retired {
-                            eprintln!("[voice_bridge] Could not retire the replaced claim: {error}");
+                            eprintln!(
+                                "[voice_bridge] Could not retire the replaced claim: {error}"
+                            );
                         }
                         if retired.is_some() {
                             bridge.sync_inbox_state(state_path);
@@ -629,7 +735,11 @@ pub fn handle_provider_turn_event_control(
                 }
                 "process_ready"
             } else if event == "provider_progress" {
-                if provider.contains("claude") { "stream_progress" } else { "turn_progress" }
+                if provider.contains("claude") {
+                    "stream_progress"
+                } else {
+                    "turn_progress"
+                }
             } else if provider.contains("claude") {
                 "stream_started"
             } else {
@@ -679,20 +789,39 @@ pub fn handle_provider_turn_event_control(
             }
             let event_id = payload.text("event_id");
             let provider_session_id = payload.text("provider_session_id");
-            if let Err(error) =
-                broker.terminate_owner(&payload, &provider_session_id, &release_reason, &event_id, None)
-            {
+            if let Err(error) = broker.terminate_owner(
+                &payload,
+                &provider_session_id,
+                &release_reason,
+                &event_id,
+                None,
+            ) {
                 eprintln!("[voice_bridge] Could not end the provider's turns: {error}");
             }
             drop(broker);
             let mut observation = Dict::new();
-            observation.insert("app_session_id", payload.get("app_session_id").cloned().unwrap_or(Value::Null));
+            observation.insert(
+                "app_session_id",
+                payload
+                    .get("app_session_id")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
             observation.insert(
                 "recovery_generation",
-                payload.get("recovery_generation").cloned().unwrap_or(Value::Null),
+                payload
+                    .get("recovery_generation")
+                    .cloned()
+                    .unwrap_or(Value::Null),
             );
             observation.insert("provider", provider.as_str());
-            post_continuity_event("provider", "process_exit", Some(&observation), None, &LocalDaemon);
+            post_continuity_event(
+                "provider",
+                "process_exit",
+                Some(&observation),
+                None,
+                &LocalDaemon,
+            );
             true
         }
         _ => false,
@@ -701,9 +830,16 @@ pub fn handle_provider_turn_event_control(
 
 /// `_handle_sidecar_lifecycle`: feed sidecar state back through the
 /// foreground speech and freshness boundary.
-pub fn handle_sidecar_lifecycle(bridge: &Bridge, phase: &str, public_summary: &str, command: &Dict) -> bool {
+pub fn handle_sidecar_lifecycle(
+    bridge: &Bridge,
+    phase: &str,
+    public_summary: &str,
+    command: &Dict,
+) -> bool {
     if let Some(inbox) = bridge.inbox() {
-        if let Err(error) = inbox.observe_claim(command, matches!(phase, "completed" | "failed"), None) {
+        if let Err(error) =
+            inbox.observe_claim(command, matches!(phase, "completed" | "failed"), None)
+        {
             eprintln!("[voice_bridge] Could not record the sidecar state: {error}");
         }
         drop(inbox);
@@ -714,9 +850,18 @@ pub fn handle_sidecar_lifecycle(bridge: &Bridge, phase: &str, public_summary: &s
     };
     let mut trace = Dict::new();
     trace.insert("kind", format!("sidecar-{phase}"));
-    trace.insert("message", format!("Sidecar state={phase}; {public_summary}"));
+    trace.insert(
+        "message",
+        format!("Sidecar state={phase}; {public_summary}"),
+    );
     trace.insert("command", command.clone());
-    trace.insert("work_disposition", command.get("work_disposition").cloned().unwrap_or(Value::Null));
+    trace.insert(
+        "work_disposition",
+        command
+            .get("work_disposition")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
     messenger.submit_trace(trace)
 }
 
@@ -731,7 +876,10 @@ pub fn handle_sidecar_final(bridge: &Bridge, text: &str, command: &Dict) -> bool
     if replies::foreground_reply_delivered(Some(command)) {
         return true;
     }
-    let disposition = command.get("work_disposition").and_then(Value::as_dict).cloned();
+    let disposition = command
+        .get("work_disposition")
+        .and_then(Value::as_dict)
+        .cloned();
     let mut delivered = false;
     if let Some(messenger) = bridge.messenger() {
         let mut trace = Dict::new();

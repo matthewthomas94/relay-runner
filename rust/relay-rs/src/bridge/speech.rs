@@ -15,7 +15,8 @@ use crate::json::{self, Dict, Value};
 
 pub const VOICE_ACKNOWLEDGEMENT_AUTO_DISMISS_SECONDS: f64 = 3.0;
 
-static MD_LINK_RE: LazyLock<Regex> = LazyLock::new(|| pattern::compile(r"\[([^\]]+)\]\([^)]+\)", false));
+static MD_LINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| pattern::compile(r"\[([^\]]+)\]\([^)]+\)", false));
 static MD_LINE_PREFIX_RE: LazyLock<Regex> =
     LazyLock::new(|| pattern::compile(r"^\s*(?:>+|#+|[-+*]|\d+\.)\s+", false));
 static MD_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| pattern::compile(r"[*_`]", false));
@@ -28,7 +29,10 @@ static SENSITIVE_ACK_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static INTENT_ACKNOWLEDGEMENTS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     [
-        (r"\b(ack|acknowledg)", "I'll take care of the acknowledgement issue."),
+        (
+            r"\b(ack|acknowledg)",
+            "I'll take care of the acknowledgement issue.",
+        ),
         (
             r"\b(subagent|sub-agent|orchestrator model|worker model|gpt-?5|5\.\d)\b",
             "I'll check the subagent model settings.",
@@ -37,13 +41,22 @@ static INTENT_ACKNOWLEDGEMENTS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock:
             r"\b(program board|board|ticket card|work card|pill)\b",
             "I'll update the board behavior.",
         ),
-        (r"\b(test|tests|coverage|failing)\b", "I'll check the tests."),
+        (
+            r"\b(test|tests|coverage|failing)\b",
+            "I'll check the tests.",
+        ),
         (
             r"\b(status|state|show|summari[sz]e|check|look at|inspect)\b",
             "I'll check that.",
         ),
-        (r"\b(fix|debug|repair|broken|issue|bug)\b", "I'll take care of that issue."),
-        (r"\b(add|build|create|implement|make|wire)\b", "I'll build that."),
+        (
+            r"\b(fix|debug|repair|broken|issue|bug)\b",
+            "I'll take care of that issue.",
+        ),
+        (
+            r"\b(add|build|create|implement|make|wire)\b",
+            "I'll build that.",
+        ),
         (
             r"\b(change|update|swap|replace|refactor|tune|adjust)\b",
             "I'll update that.",
@@ -78,7 +91,12 @@ pub fn parse_tts_payload(raw: &str) -> (String, Option<String>, Option<i64>, Opt
     let command_seq = payload.present("relay_command_seq").and_then(Value::py_int);
     let command_id = payload.truthy("relay_command_id").map(Value::py_str);
     let display_text = payload.present("display_text").map(Value::py_str);
-    (payload.string("text"), display_text, command_seq, command_id)
+    (
+        payload.string("text"),
+        display_text,
+        command_seq,
+        command_id,
+    )
 }
 
 /// `_normalize_display_preview`.
@@ -93,7 +111,11 @@ pub fn normalize_display_preview(text: Option<&str>) -> String {
 
 /// `_session_key_for_command`: the session a Relay command targeted, from
 /// the shared command ledger.
-pub fn session_key_for_command(command_seq: Option<i64>, command_id: Option<&str>, state_path: &str) -> String {
+pub fn session_key_for_command(
+    command_seq: Option<i64>,
+    command_id: Option<&str>,
+    state_path: &str,
+) -> String {
     let (Some(seq), Some(id)) = (command_seq, command_id.filter(|id| !id.is_empty())) else {
         return String::new();
     };
@@ -103,7 +125,9 @@ pub fn session_key_for_command(command_seq: Option<i64>, command_id: Option<&str
     };
     for (key, entry) in sessions.iter() {
         if let Some(entry) = entry.as_dict()
-            && entry.get("relay_command_id").is_some_and(|value| value.is_str(id))
+            && entry
+                .get("relay_command_id")
+                .is_some_and(|value| value.is_str(id))
             && entry
                 .get("relay_command_seq")
                 .is_some_and(|value| json::py_eq(value, &Value::Int(seq)))
@@ -201,7 +225,12 @@ impl TtsOptions {
 }
 
 /// A `_queue_tts_text` payload: the spoken text tagged with its command.
-pub fn tagged_payload(text: &str, display_text: Option<&str>, command_seq: i64, command_id: &str) -> String {
+pub fn tagged_payload(
+    text: &str,
+    display_text: Option<&str>,
+    command_seq: i64,
+    command_id: &str,
+) -> String {
     let mut payload = Dict::new();
     payload.insert("text", text);
     if let Some(display_text) = display_text {
@@ -225,17 +254,22 @@ pub fn queue_tts_text(speech: &dyn Speech, raw: &str, options: TtsOptions) -> bo
     if text.is_empty() {
         return false;
     }
-    let work_fresh =
-        options.freshness_scope == "work" && options.source == "lifecycle" && options.kind == "final";
+    let work_fresh = options.freshness_scope == "work"
+        && options.source == "lifecycle"
+        && options.kind == "final";
     if (command_seq.is_some() || command_id.is_some()) && !work_fresh {
         let seq_value = command_seq.map(Value::Int);
         let id_value = command_id.as_deref().map(Value::from);
-        let current =
-            turns::relay_command_current(seq_value.as_ref(), id_value.as_ref(), &options.state_path);
+        let current = turns::relay_command_current(
+            seq_value.as_ref(),
+            id_value.as_ref(),
+            &options.state_path,
+        );
         let preserved = !current
             && options.preserved_command.as_ref().is_some_and(|preserved| {
                 let key = relay_command_key(preserved);
-                key.as_ref().map(|(seq, id)| (Some(*seq), Some(id.as_str())))
+                key.as_ref()
+                    .map(|(seq, id)| (Some(*seq), Some(id.as_str())))
                     == Some((command_seq, command_id.as_deref()))
                     && turns::relay_command_current_or_preserved(preserved, &options.state_path, "")
             });
@@ -297,7 +331,13 @@ pub fn queue_tts_text(speech: &dyn Speech, raw: &str, options: TtsOptions) -> bo
 }
 
 /// `_record_messenger_stage`.
-pub fn record_messenger_stage(speech: &dyn Speech, stage: &str, command: &Dict, at: Option<f64>, outcome: &str) {
+pub fn record_messenger_stage(
+    speech: &dyn Speech,
+    stage: &str,
+    command: &Dict,
+    at: Option<f64>,
+    outcome: &str,
+) {
     let Some((seq, id)) = relay_command_key(command) else {
         return;
     };
@@ -325,7 +365,9 @@ pub fn queue_messenger_degraded(speech: &dyn Speech, command: &Dict, degraded_te
             source: "fallback".to_string(),
             kind: "handoff".to_string(),
             authoritative: false,
-            semantic_brief: Some("Messenger unavailable; foreground delivery preserved.".to_string()),
+            semantic_brief: Some(
+                "Messenger unavailable; foreground delivery preserved.".to_string(),
+            ),
             replayable: Some(true),
             lifecycle_role: Some("acknowledgement".to_string()),
             ..TtsOptions::default()
@@ -357,7 +399,10 @@ fn acknowledgement_intent(text: Option<&str>) -> Option<&'static str> {
     let text = text.filter(|text| !text.is_empty())?;
     let cleaned = WHITESPACE_RE.replace_all(text, " ");
     let cleaned = json::py_strip(&cleaned);
-    if cleaned.is_empty() || cleaned.starts_with("__") || pattern::search(&SENSITIVE_ACK_RE, cleaned) {
+    if cleaned.is_empty()
+        || cleaned.starts_with("__")
+        || pattern::search(&SENSITIVE_ACK_RE, cleaned)
+    {
         return None;
     }
     INTENT_ACKNOWLEDGEMENTS
@@ -392,16 +437,32 @@ mod tests {
 
     #[test]
     fn markdown_is_stripped_for_speech() {
-        assert_eq!(strip_markdown_for_tts("> **Done**: see [the doc](http://x) `now`"), "Done: see the doc now");
-        assert_eq!(strip_markdown_for_tts("1. first\n- second"), "first\n- second");
+        assert_eq!(
+            strip_markdown_for_tts("> **Done**: see [the doc](http://x) `now`"),
+            "Done: see the doc now"
+        );
+        assert_eq!(
+            strip_markdown_for_tts("1. first\n- second"),
+            "first\n- second"
+        );
     }
 
     #[test]
     fn tts_payloads_are_plain_text_or_tagged_json() {
-        assert_eq!(parse_tts_payload("  hello  "), ("hello".to_string(), None, None, None));
         assert_eq!(
-            parse_tts_payload(r#"{"text": "hi", "display_text": "Hi!", "relay_command_seq": "3", "relay_command_id": "c"}"#),
-            ("hi".to_string(), Some("Hi!".to_string()), Some(3), Some("c".to_string()))
+            parse_tts_payload("  hello  "),
+            ("hello".to_string(), None, None, None)
+        );
+        assert_eq!(
+            parse_tts_payload(
+                r#"{"text": "hi", "display_text": "Hi!", "relay_command_seq": "3", "relay_command_id": "c"}"#
+            ),
+            (
+                "hi".to_string(),
+                Some("Hi!".to_string()),
+                Some(3),
+                Some("c".to_string())
+            )
         );
         assert_eq!(parse_tts_payload(r#"{"other": 1}"#).0, r#"{"other": 1}"#);
     }
@@ -414,8 +475,14 @@ mod tests {
 
     #[test]
     fn acknowledgements_follow_the_intent_and_skip_sensitive_text() {
-        assert_eq!(build_voice_acknowledgement(Some("fix the bug"), None), "I'll take care of that issue.");
-        assert_eq!(build_voice_acknowledgement(Some("run the tests"), None), "I'll check the tests.");
+        assert_eq!(
+            build_voice_acknowledgement(Some("fix the bug"), None),
+            "I'll take care of that issue."
+        );
+        assert_eq!(
+            build_voice_acknowledgement(Some("run the tests"), None),
+            "I'll check the tests."
+        );
         let sensitive = build_voice_acknowledgement(Some("fix my password"), None);
         assert_ne!(sensitive, "I'll take care of that issue.");
     }

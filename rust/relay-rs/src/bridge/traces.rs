@@ -8,11 +8,12 @@ use std::sync::Arc;
 use super::commands::discard_pending_command;
 use super::context::Bridge;
 use super::orchestrator::{
-    self, DaemonError, LocalDaemon, NotifyState, OrchestratorSession, PmUpdatePoll, PmUpdateSources, PmUpdateStep,
+    self, DaemonError, LocalDaemon, NotifyState, OrchestratorSession, PmUpdatePoll,
+    PmUpdateSources, PmUpdateStep,
 };
 use super::pm_frontstage::{
-    CurrentCommandReader, OrchestrationTraceEvent, PMStatusEvent, PMUpdateMode, RelayCommandMetadata, StatusEmitter,
-    UpdateStatusReader, build_pm_update_snapshot,
+    CurrentCommandReader, OrchestrationTraceEvent, PMStatusEvent, PMUpdateMode,
+    RelayCommandMetadata, StatusEmitter, UpdateStatusReader, build_pm_update_snapshot,
 };
 use super::replies;
 use super::settings::settings;
@@ -71,13 +72,14 @@ pub fn orchestration_trace_payload(
         },
         None => None,
     };
-    let event = match OrchestrationTraceEvent::new(kind, source, message, command, run_id, ticket_id) {
-        Ok(event) => event,
-        Err(error) => {
-            eprintln!("[voice_bridge] Could not build orchestration trace: {error}");
-            return None;
-        }
-    };
+    let event =
+        match OrchestrationTraceEvent::new(kind, source, message, command, run_id, ticket_id) {
+            Ok(event) => event,
+            Err(error) => {
+                eprintln!("[voice_bridge] Could not build orchestration trace: {error}");
+                return None;
+            }
+        };
     let mut payload = Dict::new();
     payload.insert("text", event.message.as_str());
     payload.insert("trace_event", event.to_dict());
@@ -104,13 +106,24 @@ pub fn emit_orchestration_trace(
         let seq = command.get("relay_command_seq");
         let id = command.get("relay_command_id");
         let has_seq = seq.is_some_and(|value| !matches!(value, Value::Null));
-        if (has_seq || id.is_some_and(Value::truthy)) && !turns::relay_command_current(seq, id, state_path) {
-            eprintln!("[voice_bridge] Dropping orchestration trace because its Relay command was superseded.");
+        if (has_seq || id.is_some_and(Value::truthy))
+            && !turns::relay_command_current(seq, id, state_path)
+        {
+            eprintln!(
+                "[voice_bridge] Dropping orchestration trace because its Relay command was superseded."
+            );
             return false;
         }
     }
-    let Some(payload) = orchestration_trace_payload(kind, relay_command, None, source, message, ticket_id, run_id)
-    else {
+    let Some(payload) = orchestration_trace_payload(
+        kind,
+        relay_command,
+        None,
+        source,
+        message,
+        ticket_id,
+        run_id,
+    ) else {
         return false;
     };
     store::notify_state("working", payload.clone());
@@ -171,7 +184,11 @@ pub fn handle_orchestration_trace_control(bridge: &Bridge, raw: &str, state_path
 
 /// `_queue_voice_acknowledgement`: the acknowledgement state for the newest
 /// command, published while it is still current.
-pub fn queue_voice_acknowledgement(relay_command: &Dict, source_text: Option<&str>, discard_pending: bool) -> bool {
+pub fn queue_voice_acknowledgement(
+    relay_command: &Dict,
+    source_text: Option<&str>,
+    discard_pending: bool,
+) -> bool {
     let acknowledgement = build_voice_acknowledgement(source_text, Some(relay_command));
     let text = json::py_strip(&acknowledgement);
     if text.is_empty() {
@@ -182,13 +199,23 @@ pub fn queue_voice_acknowledgement(relay_command: &Dict, source_text: Option<&st
         discard_pending_command(&settings.cmd_file, &settings.cmd_meta_file);
     }
     let auto_dismiss = acknowledgement_auto_dismiss_seconds(text);
-    let status_event = pm_status_event_payload("acknowledged", text, "pm", relay_command, source_text, None, None);
+    let status_event = pm_status_event_payload(
+        "acknowledged",
+        text,
+        "pm",
+        relay_command,
+        source_text,
+        None,
+        None,
+    );
     if !turns::relay_command_current(
         relay_command.get("relay_command_seq"),
         relay_command.get("relay_command_id"),
         &settings.command_state_file,
     ) {
-        eprintln!("[voice_bridge] Dropping acknowledgement because its Relay command was superseded.");
+        eprintln!(
+            "[voice_bridge] Dropping acknowledgement because its Relay command was superseded."
+        );
         return true;
     }
     let mut payload = Dict::new();
@@ -212,7 +239,8 @@ pub fn start_pm_update_mode(
 ) {
     let relay_command = metadata.clone();
     let source_text = source_text.to_string();
-    let notify: NotifyState = Arc::new(|state: &str, fields: Dict| store::notify_state(state, fields));
+    let notify: NotifyState =
+        Arc::new(|state: &str, fields: Dict| store::notify_state(state, fields));
     orchestrator::start_pm_update_mode(
         action_kind,
         session.as_ref(),
@@ -220,7 +248,8 @@ pub fn start_pm_update_mode(
         notify,
         Arc::new(LocalDaemon),
         move |sources: Arc<PmUpdateSources>| {
-            let command = RelayCommandMetadata::from_dict(Some(&relay_command), Some(&source_text)).ok()?;
+            let command =
+                RelayCommandMetadata::from_dict(Some(&relay_command), Some(&source_text)).ok()?;
             let reader = Arc::clone(&sources);
             let status_reader: UpdateStatusReader<DaemonError> = Box::new(move || {
                 let payloads = reader.fetch_status()?;
@@ -237,9 +266,11 @@ pub fn start_pm_update_mode(
                 .map_err(|_| DaemonError::Protocol("malformed PM update snapshot"))
             });
             let current = Arc::clone(&sources);
-            let current_reader: CurrentCommandReader = Box::new(move || Some(current.current_command()));
+            let current_reader: CurrentCommandReader =
+                Box::new(move || Some(current.current_command()));
             let emitter = Arc::clone(&sources);
-            let emit: StatusEmitter = Box::new(move |event: &PMStatusEvent| emitter.emit(&event.to_dict()));
+            let emit: StatusEmitter =
+                Box::new(move |event: &PMStatusEvent| emitter.emit(&event.to_dict()));
             let mut mode = PMUpdateMode::new(
                 command,
                 status_reader,

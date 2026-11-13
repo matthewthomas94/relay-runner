@@ -110,7 +110,10 @@ pub fn mirror_command_state(path: &str) {
 pub fn atomic_write_json(path: &str, payload: &Dict) -> io::Result<()> {
     ensure_session_spool_dir();
     let temporary = format!("{path}.tmp");
-    fs::write(&temporary, json::dumps_sorted(&Value::Dict(payload.clone())))?;
+    fs::write(
+        &temporary,
+        json::dumps_sorted(&Value::Dict(payload.clone())),
+    )?;
     fs::rename(&temporary, path)?;
     mirror_command_state(path);
     Ok(())
@@ -172,10 +175,12 @@ pub fn write_command_state(path: &str, metadata: &Dict) -> io::Result<()> {
 
 /// `sync_deliverable_state`: the inbox's view into the state file, mirrored.
 pub fn sync_deliverable_state(state_path: &str, inbox: &IntentInbox) -> io::Result<()> {
-    relay_intents::inbox::sync_deliverable_state(state_path, inbox).map_err(|error| match error {
-        relay_intents::Error::Io(error) => error,
-        other => io::Error::other(other.to_string()),
-    })?;
+    relay_intents::inbox::sync_deliverable_state(state_path, inbox).map_err(
+        |error| match error {
+            relay_intents::Error::Io(error) => error,
+            other => io::Error::other(other.to_string()),
+        },
+    )?;
     mirror_command_state(state_path);
     Ok(())
 }
@@ -342,11 +347,17 @@ pub fn record_private_command_capture(metadata: &Dict) {
     let mut event = Dict::new();
     event.insert(
         "relay_command_seq",
-        metadata.get("relay_command_seq").cloned().unwrap_or(Value::Null),
+        metadata
+            .get("relay_command_seq")
+            .cloned()
+            .unwrap_or(Value::Null),
     );
     event.insert(
         "relay_command_id",
-        metadata.get("relay_command_id").cloned().unwrap_or(Value::Null),
+        metadata
+            .get("relay_command_id")
+            .cloned()
+            .unwrap_or(Value::Null),
     );
     event.insert(
         "received_at",
@@ -454,10 +465,7 @@ fn write_through_temporary(path: &str, value: &str) {
 
 /// `_write_bridge_pid_file`.
 pub fn write_bridge_pid_file() {
-    write_through_temporary(
-        &settings().bridge_pid_file,
-        &std::process::id().to_string(),
-    );
+    write_through_temporary(&settings().bridge_pid_file, &std::process::id().to_string());
 }
 
 /// `_remove_bridge_pid_file`: only while it still names this process.

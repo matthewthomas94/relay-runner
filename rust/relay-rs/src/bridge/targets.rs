@@ -73,7 +73,9 @@ impl ProviderSessionOwnership {
     }
 
     fn fields(&self) -> MutexGuard<'_, OwnershipFields> {
-        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn provider_session_id(&self) -> String {
@@ -97,7 +99,12 @@ impl ProviderSessionOwnership {
 
     /// `authorize_transition`: accepts only the exact app-owned replacement
     /// of the current provider session for the claimed command.
-    pub fn authorize_transition(&self, payload: &Dict, claimed: &Dict, state_path: &str) -> &'static str {
+    pub fn authorize_transition(
+        &self,
+        payload: &Dict,
+        claimed: &Dict,
+        state_path: &str,
+    ) -> &'static str {
         let (provider_session_id, provider, app_session_id, recovery_generation) = {
             let fields = self.fields();
             (
@@ -219,7 +226,9 @@ static TARGETS: LazyLock<Mutex<Targets>> = LazyLock::new(Mutex::default);
 
 /// Locks `_VOICE_TARGET_LOCK`.
 pub fn lock() -> MutexGuard<'static, Targets> {
-    TARGETS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    TARGETS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// `_current_voice_target`.
@@ -380,7 +389,11 @@ pub fn clear_voice_targets() -> Vec<Arc<OrchestratorSession>> {
 pub fn voice_target_from_focus(payload: &Dict) -> Option<VoiceTarget> {
     let key = payload.text("session_key");
     let spool_text = payload.text("spool_dir");
-    let spool = normpath(if spool_text.is_empty() { "/" } else { &spool_text });
+    let spool = normpath(if spool_text.is_empty() {
+        "/"
+    } else {
+        &spool_text
+    });
     let cwd = payload.text("cwd");
     if !valid_session_key(&key)
         || basename(&spool) != key
@@ -440,7 +453,8 @@ pub fn hand_off_mailbox(source: &VoiceTarget, destination: Option<&VoiceTarget>)
     }
 }
 
-pub type StartOrchestrator = Arc<dyn Fn(&VoiceTarget) -> Option<Arc<OrchestratorSession>> + Send + Sync>;
+pub type StartOrchestrator =
+    Arc<dyn Fn(&VoiceTarget) -> Option<Arc<OrchestratorSession>> + Send + Sync>;
 pub type StopOrchestrator = Arc<dyn Fn(Arc<OrchestratorSession>) + Send + Sync>;
 
 /// `_register_target_orchestrator`.
@@ -492,7 +506,10 @@ pub fn apply_voice_focus(
         // new app session or recovery generation is a different owner.
         if scope.get("app_session_id").map(Value::py_str).as_deref()
             != Some(target.app_session_id.as_str())
-            || scope.get("recovery_generation").map(Value::py_str).as_deref()
+            || scope
+                .get("recovery_generation")
+                .map(Value::py_str)
+                .as_deref()
                 != Some(target.recovery_generation.as_str())
         {
             targets.ownership.remove(&target.session_key);
@@ -548,7 +565,13 @@ pub fn apply_voice_focus(
             .ownership
             .get(targets.focused_key.as_deref().unwrap_or(""))
             .cloned();
-        (current, pruned, stopped, needs_orchestrator, focused_ownership)
+        (
+            current,
+            pruned,
+            stopped,
+            needs_orchestrator,
+            focused_ownership,
+        )
     };
     for ended in &pruned {
         let ended_key = authorization_key_for_target(Some(ended));

@@ -109,15 +109,19 @@ impl Bridge {
 
     /// The inbox, locked; `None` without one.
     pub fn inbox(&self) -> Option<MutexGuard<'_, IntentInbox>> {
-        self.inbox
-            .as_ref()
-            .map(|inbox| inbox.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+        self.inbox.as_ref().map(|inbox| {
+            inbox
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        })
     }
 
     pub fn broker(&self) -> Option<MutexGuard<'_, ProviderTurnBroker>> {
-        self.broker
-            .as_ref()
-            .map(|broker| broker.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+        self.broker.as_ref().map(|broker| {
+            broker
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        })
     }
 
     /// `_sync_intent_inbox_state`.

@@ -22,8 +22,9 @@ const VOICE_FOCUS_PREFIX: &str = "__FOCUS__:";
 const VOICE_REPLAY_PREFIX: &str = "__REPLAY__:";
 const VOICE_SESSION_PLAYBACK_PREFIX: &str = "__SESSION_PLAYBACK__:";
 
-static RECOVERY_REPLY_PATH_RE: LazyLock<Regex> =
-    LazyLock::new(|| pattern::compile_full(r"/tmp/relay_recovery_recovery_[0-9a-f]{24}\.json", false));
+static RECOVERY_REPLY_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    pattern::compile_full(r"/tmp/relay_recovery_recovery_[0-9a-f]{24}\.json", false)
+});
 
 fn parse_object(text: &str) -> Option<Dict> {
     match json::parse(text) {
@@ -48,7 +49,12 @@ pub fn serve(bridge: &'static Bridge, socket: UnixDatagram) {
         controls::publish_session_playback(bridge);
         let count = match socket.recv(&mut buffer) {
             Ok(count) => count,
-            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted) => {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) =>
+            {
                 continue;
             }
             Err(error) => {
@@ -102,7 +108,10 @@ fn handle(bridge: &'static Bridge, command: &str) {
                 return;
             }
             Some("continuity_provider_ready") => {
-                if candidate.get("event").is_some_and(|event| event.is_str("provider_ready")) {
+                if candidate
+                    .get("event")
+                    .is_some_and(|event| event.is_str("provider_ready"))
+                {
                     finals::handle_provider_turn_event_control(
                         bridge,
                         &json::dumps(&Value::Dict(candidate.clone())),

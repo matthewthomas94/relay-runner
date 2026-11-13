@@ -62,7 +62,10 @@ impl RemoteLink {
         let mut fds = [0i32; 2];
         // SAFETY: pipe writes two fds into the array.
         if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-            eprintln!("[voice_bridge] Relay Remote socket unavailable: {}", std::io::Error::last_os_error());
+            eprintln!(
+                "[voice_bridge] Relay Remote socket unavailable: {}",
+                std::io::Error::last_os_error()
+            );
             return None;
         }
         set_nonblocking(fds[0]);
@@ -114,21 +117,37 @@ impl RemoteLink {
                 device_name,
             } => post_device_event(state, &device_id, &device_name),
             Event::AttachSink { device_id } => {
-                if let Some(session) = self.server.get().and_then(|server| server.session(&device_id)) {
+                if let Some(session) = self
+                    .server
+                    .get()
+                    .and_then(|server| server.session(&device_id))
+                {
                     speech.attach_remote_sink(session);
                 }
             }
             Event::DetachSink { device_id, reason } => {
-                let reason = if reason.is_empty() { "closed".to_string() } else { reason };
+                let reason = if reason.is_empty() {
+                    "closed".to_string()
+                } else {
+                    reason
+                };
                 speech.detach_remote_sink(&device_id, &reason);
             }
             Event::AttachMirror { device_id } => {
-                if let Some(session) = self.server.get().and_then(|server| server.session(&device_id)) {
+                if let Some(session) = self
+                    .server
+                    .get()
+                    .and_then(|server| server.session(&device_id))
+                {
                     speech.attach_remote_mirror(session);
                 }
             }
             Event::DetachMirror { device_id } => speech.detach_remote_mirror(&device_id),
-            Event::Ack { device_id, seq, played } => {
+            Event::Ack {
+                device_id,
+                seq,
+                played,
+            } => {
                 speech.remote_ack(&device_id, seq, played);
             }
         }
@@ -178,7 +197,11 @@ impl RemoteLink {
         let Some((seq, id)) = store::relay_command_key(relay_command) else {
             return;
         };
-        if let Some(session) = self.server.get().and_then(|server| server.session(&item.device_id)) {
+        if let Some(session) = self
+            .server
+            .get()
+            .and_then(|server| server.session(&item.device_id))
+        {
             session.accept(&item.client_id, seq, &id);
         }
     }

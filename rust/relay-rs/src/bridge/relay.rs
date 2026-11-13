@@ -127,7 +127,11 @@ fn select_readable(fds: &[i32], timeout: Duration) -> Result<Vec<i32>, ()> {
             }
             return Err(());
         }
-        Ok(fds.iter().copied().filter(|&fd| libc::FD_ISSET(fd, &set)).collect())
+        Ok(fds
+            .iter()
+            .copied()
+            .filter(|&fd| libc::FD_ISSET(fd, &set))
+            .collect())
     }
 }
 
@@ -175,26 +179,30 @@ fn start_intent_inbox_pump(bridge: &'static Bridge) {
 fn pump_once(bridge: &Bridge) {
     let settings = settings();
     let live = targets::live_voice_targets();
-    let mailboxes: Vec<(String, String, Option<std::sync::Arc<targets::ProviderSessionOwnership>>, String)> =
-        if live.is_empty() {
-            vec![(
-                settings.claim_file.clone(),
-                settings.manual_ack_file.clone(),
-                bridge.ownership.clone(),
-                String::new(),
-            )]
-        } else {
-            live.iter()
-                .map(|target| {
-                    (
-                        target.claim_path.clone(),
-                        target.manual_ack_path.clone(),
-                        targets::voice_target_ownership(target),
-                        target.provider_session_id.clone(),
-                    )
-                })
-                .collect()
-        };
+    let mailboxes: Vec<(
+        String,
+        String,
+        Option<std::sync::Arc<targets::ProviderSessionOwnership>>,
+        String,
+    )> = if live.is_empty() {
+        vec![(
+            settings.claim_file.clone(),
+            settings.manual_ack_file.clone(),
+            bridge.ownership.clone(),
+            String::new(),
+        )]
+    } else {
+        live.iter()
+            .map(|target| {
+                (
+                    target.claim_path.clone(),
+                    target.manual_ack_path.clone(),
+                    targets::voice_target_ownership(target),
+                    target.provider_session_id.clone(),
+                )
+            })
+            .collect()
+    };
     let Some(inbox) = bridge.inbox() else {
         return;
     };
@@ -206,7 +214,9 @@ fn pump_once(bridge: &Bridge) {
                 None if !target_session_id.is_empty() => target_session_id.clone(),
                 None => turns::authoritative_provider_session_id(),
             };
-            let scope = ownership.as_ref().map(|ownership| ownership.provider_turn_scope());
+            let scope = ownership
+                .as_ref()
+                .map(|ownership| ownership.provider_turn_scope());
             let seen = turns::provider_turn_seen(
                 Some(&claimed),
                 &settings.provider_turns_file,
@@ -221,7 +231,9 @@ fn pump_once(bridge: &Bridge) {
         let claimed_ref = (!claimed.is_empty()).then_some(&claimed);
         let ack_ref = (!manual_ack.is_empty()).then_some(&manual_ack);
         if turns::manual_claim_ack_matches(claimed_ref, ack_ref)
-            && inbox.observe_claim(&manual_ack, true, None).unwrap_or(false)
+            && inbox
+                .observe_claim(&manual_ack, true, None)
+                .unwrap_or(false)
         {
             store::remove(&ack_file);
         }
@@ -229,7 +241,12 @@ fn pump_once(bridge: &Bridge) {
     if let Err(error) = inbox.reconcile_terminal_claims(None) {
         eprintln!("[voice_bridge] Could not reconcile terminal claims: {error}");
     }
-    commands::materialize_next(&inbox, &settings.cmd_file, &settings.cmd_meta_file, "shared-ready-file");
+    commands::materialize_next(
+        &inbox,
+        &settings.cmd_file,
+        &settings.cmd_meta_file,
+        "shared-ready-file",
+    );
     let _guard = store::voice_state_lock();
     if let Err(error) = store::sync_deliverable_state(&settings.command_state_file, &inbox) {
         eprintln!("[voice_bridge] Could not sync intent inbox state: {error}");
@@ -238,27 +255,29 @@ fn pump_once(bridge: &Bridge) {
 
 /// `_tts_fifo_reader`: lines other processes ask to be spoken.
 fn start_tts_fifo_reader(bridge: &'static Bridge) {
-    let _ = thread::Builder::new().name("tts-fifo-reader".to_string()).spawn(move || {
-        while !bridge.shutdown.is_set() {
-            match File::open(&settings().tts_in_fifo) {
-                Ok(file) => {
-                    for line in BufReader::new(file).split(b'\n') {
-                        if bridge.shutdown.is_set() {
-                            break;
+    let _ = thread::Builder::new()
+        .name("tts-fifo-reader".to_string())
+        .spawn(move || {
+            while !bridge.shutdown.is_set() {
+                match File::open(&settings().tts_in_fifo) {
+                    Ok(file) => {
+                        for line in BufReader::new(file).split(b'\n') {
+                            if bridge.shutdown.is_set() {
+                                break;
+                            }
+                            let Ok(line) = line else { break };
+                            let text = String::from_utf8_lossy(&line);
+                            speech::queue_tts_text(bridge.speech(), &text, TtsOptions::default());
                         }
-                        let Ok(line) = line else { break };
-                        let text = String::from_utf8_lossy(&line);
-                        speech::queue_tts_text(bridge.speech(), &text, TtsOptions::default());
                     }
-                }
-                Err(_) => {
-                    if !bridge.shutdown.is_set() {
-                        thread::sleep(Duration::from_millis(200));
+                    Err(_) => {
+                        if !bridge.shutdown.is_set() {
+                            thread::sleep(Duration::from_millis(200));
+                        }
                     }
                 }
             }
-        }
-    });
+        });
 }
 
 /// `_record_bridge_readiness`.
@@ -276,7 +295,11 @@ struct Entry {
 
 /// `_run_relay`: write voice commands for the active agent and read speech
 /// from the TTS FIFO. `false` when the bridge could not start.
-pub fn run_relay(bridge: &'static Bridge, suppress_startup_greeting: bool, remote: Option<&RemoteLink>) -> bool {
+pub fn run_relay(
+    bridge: &'static Bridge,
+    suppress_startup_greeting: bool,
+    remote: Option<&RemoteLink>,
+) -> bool {
     let settings = settings();
     let mut suppress_next_messenger_user_reply = suppress_startup_greeting;
     let watchdog_restart = store::watchdog_restart_preserves_turns(false);
@@ -310,7 +333,11 @@ pub fn run_relay(bridge: &'static Bridge, suppress_startup_greeting: bool, remot
         if let Some(sidecar) = bridge.sidecar() {
             let pending = bridge
                 .inbox()
-                .and_then(|inbox| inbox.pending_for_route(IntentRoute::RunSidecar.as_str()).ok())
+                .and_then(|inbox| {
+                    inbox
+                        .pending_for_route(IntentRoute::RunSidecar.as_str())
+                        .ok()
+                })
                 .unwrap_or_default();
             for work in pending {
                 let Some(metadata) = work.metadata.as_dict() else {
@@ -409,7 +436,13 @@ pub fn run_relay(bridge: &'static Bridge, suppress_startup_greeting: bool, remot
             }));
         }
         for entry in entries {
-            handle_entry(bridge, entry, remote, &mut pinned_target_key, &mut suppress_next_messenger_user_reply);
+            handle_entry(
+                bridge,
+                entry,
+                remote,
+                &mut pinned_target_key,
+                &mut suppress_next_messenger_user_reply,
+            );
         }
     }
     if let Some(remote) = remote {
@@ -420,7 +453,11 @@ pub fn run_relay(bridge: &'static Bridge, suppress_startup_greeting: bool, remot
         stop_persistent_orchestrator_lifecycle(Some(&lifecycle), "bridge stopped", &LocalDaemon);
     }
     let preserved: Vec<&String> = if store::watchdog_restart_preserves_turns(true) {
-        vec![&settings.command_state_file, &settings.claim_file, &settings.provider_turns_file]
+        vec![
+            &settings.command_state_file,
+            &settings.claim_file,
+            &settings.provider_turns_file,
+        ]
     } else {
         Vec::new()
     };
@@ -482,7 +519,8 @@ fn handle_entry(
         Some(target) => target.cwd.clone(),
         None => store::current_dir(),
     };
-    let target_orchestrator = targets::voice_target_orchestrator(voice_target.as_ref(), bridge.orchestrator());
+    let target_orchestrator =
+        targets::voice_target_orchestrator(voice_target.as_ref(), bridge.orchestrator());
     let mut relay_command = match &entry.remote {
         None => commands::begin_relay_command(&text, &settings.command_state_file, None, None),
         Some(item) => {
@@ -500,7 +538,13 @@ fn handle_entry(
         }
     };
     let received_at = relay_command.get("received_at").and_then(Value::py_float);
-    speech::record_messenger_stage(bridge.speech(), "user_turn_received", &relay_command, received_at, "ok");
+    speech::record_messenger_stage(
+        bridge.speech(),
+        "user_turn_received",
+        &relay_command,
+        received_at,
+        "ok",
+    );
     replies::sweep_outcome_watches(bridge.speech(), &settings.provider_turns_file, None);
     replies::watch_command_outcome(Some(&relay_command));
     if let Some((seq, id)) = store::relay_command_key(&relay_command) {
@@ -520,22 +564,41 @@ fn handle_entry(
                 None,
                 "foreground_delivery_preserved",
             );
-            speech::queue_messenger_degraded(bridge.speech(), &relay_command, super::messenger_runtime::MESSENGER_DEGRADED_TEXT);
+            speech::queue_messenger_degraded(
+                bridge.speech(),
+                &relay_command,
+                super::messenger_runtime::MESSENGER_DEGRADED_TEXT,
+            );
         }
     }
     let active = commands::active_work(&settings.provider_turns_file, Some(&target_repo));
     let foreground_active = turns::any_provider_turn_active(&settings.provider_turns_file, None);
-    let resolved = commands::resolve_voice_work_items(&text, &relay_command, &target_repo, &active, foreground_active);
+    let resolved = commands::resolve_voice_work_items(
+        &text,
+        &relay_command,
+        &target_repo,
+        &active,
+        foreground_active,
+    );
     relay_command.insert(
         "voice_work_items",
-        Value::List(resolved.iter().map(|item| Value::Dict(item.item.to_dict())).collect()),
+        Value::List(
+            resolved
+                .iter()
+                .map(|item| Value::Dict(item.item.to_dict()))
+                .collect(),
+        ),
     );
     relay_command.insert(
         "intent_qualifications",
         Value::List(
             resolved
                 .iter()
-                .filter_map(|item| item.metadata.get("intent_qualification").filter(|value| value.as_dict().is_some()))
+                .filter_map(|item| {
+                    item.metadata
+                        .get("intent_qualification")
+                        .filter(|value| value.as_dict().is_some())
+                })
                 .cloned()
                 .collect(),
         ),
@@ -593,7 +656,12 @@ fn handle_entry(
                     &settings.command_state_file,
                 );
             if !accepted && !cancelled {
-                finals::handle_sidecar_lifecycle(bridge, "failed", &disposition.public_reason, &metadata);
+                finals::handle_sidecar_lifecycle(
+                    bridge,
+                    "failed",
+                    &disposition.public_reason,
+                    &metadata,
+                );
                 finals::handle_sidecar_final(
                     bridge,
                     "The independent read-only task could not enter its bounded sidecar lane.",
@@ -649,7 +717,12 @@ fn handle_entry(
             commands::publish_command(&prompt, &metadata, &paths, inbox.as_deref());
         }
         if !cancelled && let Some(inbox) = bridge.inbox() {
-            commands::announce_voice_paused(bridge, &inbox, &metadata, &settings.command_state_file);
+            commands::announce_voice_paused(
+                bridge,
+                &inbox,
+                &metadata,
+                &settings.command_state_file,
+            );
         }
         let state = if cancelled { "cancelled" } else { "queued" };
         store::record_command_action_state(&metadata, state);

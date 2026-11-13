@@ -125,7 +125,11 @@ pub fn normpath(path: &str) -> String {
     }
     let joined = parts.join("/");
     let result = format!("{}{joined}", "/".repeat(initial));
-    if result.is_empty() { ".".to_string() } else { result }
+    if result.is_empty() {
+        ".".to_string()
+    } else {
+        result
+    }
 }
 
 impl Settings {
@@ -158,9 +162,9 @@ impl Settings {
         let cmd_file = spool_path("voice_cmd_ready", "VOICE_CMD_FILE");
         let command_state_file = spool_path("voice_command_state.json", "VOICE_COMMAND_STATE_FILE");
         let legacy_command_state_file = join(&runtime_dir, "voice_command_state.json");
-        let mirrored_command_state_file =
-            (!spool_dir.is_empty() && command_state_file != legacy_command_state_file)
-                .then(|| command_state_file.clone());
+        let mirrored_command_state_file = (!spool_dir.is_empty()
+            && command_state_file != legacy_command_state_file)
+            .then(|| command_state_file.clone());
         let targeted_spool = spool_dir.trim_end_matches('/').to_string();
         let sessions_root = join(&runtime_dir, "relay-sessions");
         let relay_session_key = if dirname(&targeted_spool) == sessions_root {
@@ -186,7 +190,10 @@ impl Settings {
             control_sock: env_or("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock"),
             remote_sock: env_or("RELAY_REMOTE_SOCK", "/tmp/relay_remote.sock"),
             voice_state_sock,
-            orchestrator_port_file: env_or("ORCHESTRATOR_PORT_FILE", "/tmp/relay_orchestrator.port"),
+            orchestrator_port_file: env_or(
+                "ORCHESTRATOR_PORT_FILE",
+                "/tmp/relay_orchestrator.port",
+            ),
             orchestrator_default_port: env_optional("ORCHESTRATOR_DEFAULT_PORT")
                 .and_then(|value| py_strip(&value).parse().ok())
                 .unwrap_or(7634),
@@ -214,7 +221,10 @@ impl Settings {
                 "/tmp/voice_command_authorizations.json",
             ),
             relay_session_key,
-            provider_turns_file: env_or("VOICE_PROVIDER_TURNS_FILE", "/tmp/voice_provider_turns.json"),
+            provider_turns_file: env_or(
+                "VOICE_PROVIDER_TURNS_FILE",
+                "/tmp/voice_provider_turns.json",
+            ),
             provider_turn_projection_file: env_or(
                 "VOICE_PROVIDER_TURN_PROJECTION_FILE",
                 "/tmp/voice_provider_turns_v2.json",
@@ -224,7 +234,9 @@ impl Settings {
             provider_session_id: env_text("RELAY_PROVIDER_SESSION_ID"),
             command_event_log: env_or(
                 "VOICE_COMMAND_EVENT_LOG",
-                &format!("{home}/Library/Application Support/relay-runner/command-actions/events.jsonl"),
+                &format!(
+                    "{home}/Library/Application Support/relay-runner/command-actions/events.jsonl"
+                ),
             ),
             intent_inbox: env_or("VOICE_INTENT_INBOX", "/tmp/relay_intent_inbox.sqlite3"),
             speech_event_log: env_or("SPEECH_EVENT_LOG", "/tmp/relay_speech_events.jsonl"),

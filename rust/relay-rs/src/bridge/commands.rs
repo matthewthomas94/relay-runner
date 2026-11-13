@@ -8,8 +8,8 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use relay_intents::arbitration::{
-    self, ActiveWork, CancellationScope, DispositionRequest, IntentDisposition, IntentRoute, VoiceWorkItem,
-    WorkItemDisposition, WorkItemLifecycle,
+    self, ActiveWork, CancellationScope, DispositionRequest, IntentDisposition, IntentRoute,
+    VoiceWorkItem, WorkItemDisposition, WorkItemLifecycle,
 };
 use relay_intents::inbox::IntentInbox;
 use relay_intents::model::normalize_recovery_generation;
@@ -77,7 +77,13 @@ pub fn begin_relay_command(
         metadata
     };
     store::record_private_command_capture(&metadata);
-    post_continuity_event("bridge", "command_received", Some(&metadata), None, &LocalDaemon);
+    post_continuity_event(
+        "bridge",
+        "command_received",
+        Some(&metadata),
+        None,
+        &LocalDaemon,
+    );
     metadata
 }
 
@@ -96,7 +102,9 @@ pub fn metadata_for_action(
     )
     .to_string();
     let relationship = match disposition {
-        Some(disposition) => arbitration::authorization_relationship_for(disposition, &fallback_relationship),
+        Some(disposition) => {
+            arbitration::authorization_relationship_for(disposition, &fallback_relationship)
+        }
         None => fallback_relationship,
     };
     metadata.insert("action", action.kind.as_str());
@@ -109,8 +117,12 @@ pub fn metadata_for_action(
             &action.source_text,
             action.kind.as_str(),
             Some(action.reason),
-            relay_command.get("relay_command_id").and_then(Value::as_str),
-            relay_command.get("relay_command_seq").and_then(Value::py_int),
+            relay_command
+                .get("relay_command_id")
+                .and_then(Value::as_str),
+            relay_command
+                .get("relay_command_seq")
+                .and_then(Value::py_int),
         )
         .to_dict(),
     );
@@ -132,7 +144,10 @@ pub fn metadata_for_action(
             cancellation_scope = disposition.cancellation_scope;
             target_intent_ids = disposition.target_work_ids.clone();
         }
-        let targets: Vec<Value> = target_intent_ids.iter().map(|id| Value::from(id.as_str())).collect();
+        let targets: Vec<Value> = target_intent_ids
+            .iter()
+            .map(|id| Value::from(id.as_str()))
+            .collect();
         let mut voice_work_item = item.to_dict();
         voice_work_item.insert("cancellation_scope", cancellation_scope.as_str());
         voice_work_item.insert("target_intent_ids", Value::List(targets.clone()));
@@ -154,13 +169,25 @@ pub fn metadata_for_action(
             metadata.insert("provider_preempt_intent_ids", Value::List(targets));
         }
     }
-    if let Some(ticket_id) = action.ticket_id.as_deref().filter(|value| !value.is_empty()) {
+    if let Some(ticket_id) = action
+        .ticket_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
         metadata.insert("ticket_id", ticket_id);
     }
-    if let Some(ticket_path) = action.ticket_path.as_deref().filter(|value| !value.is_empty()) {
+    if let Some(ticket_path) = action
+        .ticket_path
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
         metadata.insert("ticket_path", ticket_path);
     }
-    if let Some(repo_path) = action.repo_path.as_deref().filter(|value| !value.is_empty()) {
+    if let Some(repo_path) = action
+        .repo_path
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
         metadata.insert("repo_path", repo_path);
     }
     if !action.reason.is_empty() {
@@ -185,7 +212,9 @@ pub fn active_work(turns_path: &str, repo_path: Option<&str>) -> Vec<ActiveWork>
         };
         let resources = match record.get("resource_claims").and_then(Value::as_list) {
             Some(resources) => resources.iter().map(Value::py_str).collect(),
-            None if repo_path.is_some_and(|path| !path.is_empty()) => vec!["repository".to_string()],
+            None if repo_path.is_some_and(|path| !path.is_empty()) => {
+                vec!["repository".to_string()]
+            }
             None => Vec::new(),
         };
         let work_id = match record.truthy("intent_id") {
@@ -251,7 +280,11 @@ pub fn resolve_voice_work_items(
         item_command.insert("intent_id", item.intent_id.as_str());
         item_command.insert("within_turn_order", item.within_turn_order);
         item_command.insert("voice_work_item", item.to_dict());
-        let action = command_actions::resolve_command_action(&item.source_text, Some(repo_path), Some(&item_command));
+        let action = command_actions::resolve_command_action(
+            &item.source_text,
+            Some(repo_path),
+            Some(&item_command),
+        );
         let mut disposition = arbitration::resolve_intent_disposition(&DispositionRequest {
             intent_id: &item.intent_id,
             action_kind: action.kind.as_str(),
@@ -264,10 +297,12 @@ pub fn resolve_voice_work_items(
         });
         if foreground_active && disposition.route == IntentRoute::RunSidecar {
             disposition.route = IntentRoute::ContinueCurrent;
-            disposition.public_reason = "Steer the active foreground PM with this voice turn.".to_string();
+            disposition.public_reason =
+                "Steer the active foreground PM with this voice turn.".to_string();
         }
         let metadata = metadata_for_action(&action, &item_command, Some(&disposition), Some(&item));
-        let mut prompt = command_actions::format_command_for_agent(&action, Some(&disposition.to_dict()));
+        let mut prompt =
+            command_actions::format_command_for_agent(&action, Some(&disposition.to_dict()));
         if action.kind != ActionKind::Control {
             prompt.push_str(&format_qualification_for_agent(&qualify_intent(
                 &item.source_text,
@@ -316,7 +351,11 @@ fn sanitized_command_context(relay_command: &Dict) -> Option<String> {
         .truthy("context")
         .or(relay_command.truthy("refined_context"))
         .or(relay_command.truthy("conversation_context"))
-        .or_else(|| relay_command.get("conversation_context").filter(|value| !matches!(value, Value::Null)))?;
+        .or_else(|| {
+            relay_command
+                .get("conversation_context")
+                .filter(|value| !matches!(value, Value::Null))
+        })?;
     let mut lines: Vec<String> = Vec::new();
     for raw in value.py_str().lines() {
         let collapsed = WHITESPACE_RE.replace_all(raw, " ");
@@ -347,7 +386,9 @@ fn raw_instruction_payload(
     orchestrator: Option<&OrchestratorSession>,
 ) -> Dict {
     let metadata = metadata_for_action(action, relay_command, None, None);
-    let session_repo = orchestrator.map(|session| session.repo_path.clone()).unwrap_or_default();
+    let session_repo = orchestrator
+        .map(|session| session.repo_path.clone())
+        .unwrap_or_default();
     let repo = match repo_path.filter(|path| !path.is_empty()) {
         Some(path) => path.to_string(),
         None if !session_repo.is_empty() => session_repo,
@@ -394,7 +435,9 @@ fn with_session_id(relay_command: &Dict, orchestrator: Option<&OrchestratorSessi
     let mut payload = relay_command.clone();
     payload.insert(
         "session_id",
-        orchestrator.map(|session| Value::Int(session.session_id)).unwrap_or(Value::Null),
+        orchestrator
+            .map(|session| Value::Int(session.session_id))
+            .unwrap_or(Value::Null),
     );
     payload
 }
@@ -410,10 +453,13 @@ pub fn deliver_raw_instruction_to_orchestrator(
 ) -> bool {
     if !super::turns::command_current(relay_command, state_path) {
         store::record_command_action_state(relay_command, "superseded");
-        eprintln!("[voice_bridge] Dropping raw orchestrator command because its Relay command was superseded.");
+        eprintln!(
+            "[voice_bridge] Dropping raw orchestrator command because its Relay command was superseded."
+        );
         return false;
     }
-    let payload = raw_instruction_payload(source_text, relay_command, action, repo_path, orchestrator);
+    let payload =
+        raw_instruction_payload(source_text, relay_command, action, repo_path, orchestrator);
     if let Err(error) = LocalDaemon.post_json("/v1/orchestrator-session/command", &payload) {
         let mut failed = relay_command.clone();
         failed.insert("action", action.kind.as_str());
@@ -478,13 +524,18 @@ pub fn discard_pending_command(command_path: &str, meta_path: &str) {
         return;
     }
     let metadata = read_json_file(meta_path);
-    if metadata.get("action").is_some_and(|action| action.is_str("create_ticket")) {
+    if metadata
+        .get("action")
+        .is_some_and(|action| action.is_str("create_ticket"))
+    {
         let ticket_path = metadata.string("ticket_path");
         if !ticket_path.is_empty() {
             match std::fs::remove_file(&ticket_path) {
                 Ok(()) => eprintln!("[voice_bridge] Removed stale unclaimed ticket {ticket_path}."),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => eprintln!("[voice_bridge] Could not remove stale ticket {ticket_path}: {error}"),
+                Err(error) => {
+                    eprintln!("[voice_bridge] Could not remove stale ticket {ticket_path}: {error}")
+                }
             }
         }
     }
@@ -552,14 +603,22 @@ impl Default for PublishPaths {
 
 /// `_publish_command`: publish through the durable inbox, keeping the ready
 /// files as transport.
-pub fn publish_command(text: &str, metadata: &Dict, paths: &PublishPaths, inbox: Option<&IntentInbox>) {
+pub fn publish_command(
+    text: &str,
+    metadata: &Dict,
+    paths: &PublishPaths,
+    inbox: Option<&IntentInbox>,
+) {
     store::ensure_session_spool_dir();
     if inbox.is_none() {
         discard_pending_command(&paths.command_path, &paths.meta_path);
     }
     let mut published = metadata.clone();
     published.insert("agent_prompt", text);
-    if !published.get("authorization_relationship").is_some_and(Value::truthy) {
+    if !published
+        .get("authorization_relationship")
+        .is_some_and(Value::truthy)
+    {
         let relationship = authorization::command_relationship(
             &published.string("action"),
             &published.string("reason"),
@@ -567,11 +626,19 @@ pub fn publish_command(text: &str, metadata: &Dict, paths: &PublishPaths, inbox:
         );
         published.insert("authorization_relationship", relationship);
     }
-    let mut disposition = published.get("work_disposition").and_then(Value::as_dict).cloned();
-    let route = disposition.as_ref().map(|disposition| disposition.string("route")).unwrap_or_default();
+    let mut disposition = published
+        .get("work_disposition")
+        .and_then(Value::as_dict)
+        .cloned();
+    let route = disposition
+        .as_ref()
+        .map(|disposition| disposition.string("route"))
+        .unwrap_or_default();
     if let Some(inbox) = inbox
         && route != IntentRoute::RunSidecar.as_str()
-        && published.get("recovery_generation").is_some_and(Value::truthy)
+        && published
+            .get("recovery_generation")
+            .is_some_and(Value::truthy)
     {
         let generation = published.string("recovery_generation");
         let before = published.get("relay_command_seq").and_then(Value::py_int);
@@ -589,22 +656,35 @@ pub fn publish_command(text: &str, metadata: &Dict, paths: &PublishPaths, inbox:
     if let Some(inbox) = inbox
         && route == IntentRoute::ReplaceCurrent.as_str()
     {
-        if !published.get("cancellation_scope").is_some_and(Value::truthy)
-            && !disposition
-                .as_ref()
-                .is_some_and(|disposition| disposition.get("cancellation_scope").is_some_and(Value::truthy))
+        if !published
+            .get("cancellation_scope")
+            .is_some_and(Value::truthy)
+            && !disposition.as_ref().is_some_and(|disposition| {
+                disposition
+                    .get("cancellation_scope")
+                    .is_some_and(Value::truthy)
+            })
         {
             published.insert("cancellation_scope", CancellationScope::AllWork.as_str());
         }
         let cancelled = inbox
-            .cancel_scoped(&published, Some(&paths.command_path), Some(&paths.meta_path))
+            .cancel_scoped(
+                &published,
+                Some(&paths.command_path),
+                Some(&paths.meta_path),
+            )
             .unwrap_or_else(|error| {
                 eprintln!("[voice_bridge] Could not cancel scoped work: {error}");
                 Vec::new()
             });
         release_cancelled_leases(&cancelled);
         if !cancelled.is_empty() {
-            let ids = Value::List(cancelled.iter().map(|id| Value::from(id.as_str())).collect());
+            let ids = Value::List(
+                cancelled
+                    .iter()
+                    .map(|id| Value::from(id.as_str()))
+                    .collect(),
+            );
             published.insert("target_intent_ids", ids.clone());
             if let Some(Value::Dict(item)) = published.get("voice_work_item").cloned() {
                 let mut item = item;
@@ -630,8 +710,15 @@ pub fn publish_command(text: &str, metadata: &Dict, paths: &PublishPaths, inbox:
             eprintln!("[voice_bridge] Could not write the command state: {error}");
         }
     }
-    if let Some(authorization_path) = paths.authorization_path.as_deref().filter(|path| !path.is_empty()) {
-        let allowed = if published.get("lifecycle_state").is_some_and(|state| state.is_str("cancelled")) {
+    if let Some(authorization_path) = paths
+        .authorization_path
+        .as_deref()
+        .filter(|path| !path.is_empty())
+    {
+        let allowed = if published
+            .get("lifecycle_state")
+            .is_some_and(|state| state.is_str("cancelled"))
+        {
             Vec::new()
         } else {
             authorization::allowed_mutations_for_metadata(&published)
@@ -656,7 +743,11 @@ pub fn publish_command(text: &str, metadata: &Dict, paths: &PublishPaths, inbox:
         }
         return;
     };
-    let route = if route.is_empty() { "continue_current".to_string() } else { route };
+    let route = if route.is_empty() {
+        "continue_current".to_string()
+    } else {
+        route
+    };
     let stored = match inbox.enqueue(text, &published, &route) {
         Ok(stored) => stored,
         Err(error) => {
@@ -673,7 +764,12 @@ pub fn publish_command(text: &str, metadata: &Dict, paths: &PublishPaths, inbox:
             eprintln!("[voice_bridge] Could not sync intent inbox state: {error}");
         }
     }
-    materialize_next(inbox, &paths.command_path, &paths.meta_path, &paths.transport);
+    materialize_next(
+        inbox,
+        &paths.command_path,
+        &paths.meta_path,
+        &paths.transport,
+    );
     let _guard = store::voice_state_lock();
     if let Err(error) = store::sync_deliverable_state(&paths.state_path, inbox) {
         eprintln!("[voice_bridge] Could not sync intent inbox state: {error}");
@@ -682,7 +778,13 @@ pub fn publish_command(text: &str, metadata: &Dict, paths: &PublishPaths, inbox:
 
 /// `_enqueue_sidecar_intent`: route an eligible sidecar without occupying
 /// the foreground provider mailbox.
-pub fn enqueue_sidecar_intent(bridge: &Bridge, prompt: &str, source_text: &str, metadata: &Dict, state_path: &str) -> bool {
+pub fn enqueue_sidecar_intent(
+    bridge: &Bridge,
+    prompt: &str,
+    source_text: &str,
+    metadata: &Dict,
+    state_path: &str,
+) -> bool {
     let mut stored = metadata.clone();
     stored.insert("agent_prompt", prompt);
     let inbox = bridge.inbox();
@@ -704,7 +806,9 @@ pub fn enqueue_sidecar_intent(bridge: &Bridge, prompt: &str, source_text: &str, 
         }
     }
     drop(inbox);
-    bridge.sidecar().is_some_and(|sidecar| sidecar.submit(source_text, &stored))
+    bridge
+        .sidecar()
+        .is_some_and(|sidecar| sidecar.submit(source_text, &stored))
 }
 
 const VOICE_PAUSED_TEXT: &str = "Voice is paused. Message {seq} has an uncertain outcome, so I'm holding this request. \
@@ -712,11 +816,19 @@ const VOICE_PAUSED_TEXT: &str = "Voice is paused. Message {seq} has an uncertain
 
 /// `_announce_voice_paused`: say that an uncertain message holds this turn
 /// instead of going silent (RR-447).
-pub fn announce_voice_paused(bridge: &Bridge, inbox: &IntentInbox, command: &Dict, state_path: &str) -> bool {
+pub fn announce_voice_paused(
+    bridge: &Bridge,
+    inbox: &IntentInbox,
+    command: &Dict,
+    state_path: &str,
+) -> bool {
     let Ok(Some(blocker)) = inbox.recovery_blocker() else {
         return false;
     };
-    if command.get("intent_id").is_some_and(|id| id.is_str(&blocker.intent_id)) {
+    if command
+        .get("intent_id")
+        .is_some_and(|id| id.is_str(&blocker.intent_id))
+    {
         return false;
     }
     let text = VOICE_PAUSED_TEXT.replace("{seq}", &blocker.command_seq.to_string());
@@ -738,7 +850,10 @@ pub fn announce_voice_paused(bridge: &Bridge, inbox: &IntentInbox, command: &Dic
             dedup_key: Some(format!(
                 "voice-paused:{}:{}",
                 blocker.intent_id,
-                command.get("intent_id").map(Value::py_str).unwrap_or_else(|| "None".to_string())
+                command
+                    .get("intent_id")
+                    .map(Value::py_str)
+                    .unwrap_or_else(|| "None".to_string())
             )),
             ..TtsOptions::default()
         },
@@ -755,7 +870,8 @@ pub fn warm_up() {
     let _ = command_actions::is_mixed_query_and_mutation(text);
     let _ = qualification::whole_turn_resolution_required(text);
     for item in arbitration::normalize_voice_work_items(text, 0, "warm-up") {
-        let action = command_actions::resolve_command_action(&item.source_text, None, Some(&command));
+        let action =
+            command_actions::resolve_command_action(&item.source_text, None, Some(&command));
         let disposition = arbitration::resolve_intent_disposition(&DispositionRequest {
             intent_id: &item.intent_id,
             action_kind: action.kind.as_str(),

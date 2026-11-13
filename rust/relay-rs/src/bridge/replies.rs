@@ -59,11 +59,15 @@ static REPLIES: LazyLock<Mutex<ReplyState>> = LazyLock::new(Mutex::default);
 static WATCHES: LazyLock<Mutex<WatchState>> = LazyLock::new(Mutex::default);
 
 fn replies() -> MutexGuard<'static, ReplyState> {
-    REPLIES.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    REPLIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn watches() -> MutexGuard<'static, WatchState> {
-    WATCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    WATCHES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn key(command: Option<&Dict>) -> Option<Key> {
@@ -186,7 +190,11 @@ pub fn note_outcome_signal(command: Option<&Dict>, signal: &str) {
         return;
     };
     let mut state = watches();
-    if let Some((_, watch)) = state.watches.iter_mut().find(|(existing, _)| *existing == key) {
+    if let Some((_, watch)) = state
+        .watches
+        .iter_mut()
+        .find(|(existing, _)| *existing == key)
+    {
         watch.signals.insert(signal.to_string());
     }
 }
@@ -199,7 +207,10 @@ pub fn close_outcome_watch(command: Option<&Dict>, speech: &dyn Speech, ended_by
     };
     let (watch, failure_at, failure_signal) = {
         let mut state = watches();
-        let position = state.watches.iter().position(|(existing, _)| *existing == key);
+        let position = state
+            .watches
+            .iter()
+            .position(|(existing, _)| *existing == key);
         let watch = position.map(|position| state.watches.remove(position).1);
         (watch, state.failure_at, state.failure_signal.clone())
     };
@@ -239,7 +250,13 @@ pub fn sweep_outcome_watches(speech: &dyn Speech, turns_path: &str, at: Option<f
     let watched: Vec<(Key, f64, bool)> = watches()
         .watches
         .iter()
-        .map(|(key, watch)| (key.clone(), watch.started_at, watch.signals.contains("hook_received")))
+        .map(|(key, watch)| {
+            (
+                key.clone(),
+                watch.started_at,
+                watch.signals.contains("hook_received"),
+            )
+        })
         .collect();
     if watched.is_empty() {
         return;

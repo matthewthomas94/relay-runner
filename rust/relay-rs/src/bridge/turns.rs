@@ -85,7 +85,9 @@ pub fn relay_command_current_or_preserved(
     let Some(disposition) = current.get("work_disposition").and_then(Value::as_dict) else {
         return false;
     };
-    disposition.get("route").is_some_and(|value| value.is_str("continue_current"))
+    disposition
+        .get("route")
+        .is_some_and(|value| value.is_str("continue_current"))
         && disposition
             .get("authorization_effect")
             .is_some_and(|value| value.is_str("preserve"))
@@ -100,8 +102,12 @@ pub fn relay_intent_matches(left: Option<&Dict>, right: Option<&Dict>) -> bool {
     if left.and_then(relay_command_key) != right.and_then(relay_command_key) {
         return false;
     }
-    let left_intent = left.map(|value| value.text("intent_id")).unwrap_or_default();
-    let right_intent = right.map(|value| value.text("intent_id")).unwrap_or_default();
+    let left_intent = left
+        .map(|value| value.text("intent_id"))
+        .unwrap_or_default();
+    let right_intent = right
+        .map(|value| value.text("intent_id"))
+        .unwrap_or_default();
     if !left_intent.is_empty() || !right_intent.is_empty() {
         return !left_intent.is_empty() && left_intent == right_intent;
     }
@@ -113,9 +119,9 @@ pub fn provider_turn_ownership_matches(record: &Dict, ownership: Option<&Dict>) 
     let Some(ownership) = ownership.filter(|ownership| !ownership.is_empty()) else {
         return true;
     };
-    ownership.iter().all(|(field, expected)| {
-        !expected.truthy() || record.string(field) == expected.py_str()
-    })
+    ownership
+        .iter()
+        .all(|(field, expected)| !expected.truthy() || record.string(field) == expected.py_str())
 }
 
 /// `_authoritative_provider_session_id`.
@@ -326,7 +332,8 @@ pub fn source_turn_reply_arbitration(
 
     let raw_records = ledger_records(paths.turns_path).unwrap_or_default();
     let session_matches = |record: &Dict| {
-        provider_session_id.is_empty() || record.string("provider_session_id") == provider_session_id
+        provider_session_id.is_empty()
+            || record.string("provider_session_id") == provider_session_id
     };
     let source_records: Vec<Dict> = raw_records
         .iter()
@@ -358,7 +365,10 @@ pub fn source_turn_reply_arbitration(
             state if state.is_empty() => "unknown".to_string(),
             state => state,
         };
-        record_states.entry(identity.clone()).or_default().push(state_name);
+        record_states
+            .entry(identity.clone())
+            .or_default()
+            .push(state_name);
         if entry(&mut inbox_items, &identity).is_none() {
             let mut summary = Dict::new();
             summary.insert("intent_id", optional_text(&intent_id));
@@ -370,8 +380,16 @@ pub fn source_turn_reply_arbitration(
 
     let mut sorted: Vec<&(String, Dict)> = inbox_items.iter().collect();
     sorted.sort_by(|left, right| {
-        let left_order = left.1.get("within_turn_order").and_then(Value::py_int).unwrap_or(0);
-        let right_order = right.1.get("within_turn_order").and_then(Value::py_int).unwrap_or(0);
+        let left_order = left
+            .1
+            .get("within_turn_order")
+            .and_then(Value::py_int)
+            .unwrap_or(0);
+        let right_order = right
+            .1
+            .get("within_turn_order")
+            .and_then(Value::py_int)
+            .unwrap_or(0);
         (left_order, &left.0).cmp(&(right_order, &right.0))
     });
     let siblings: Vec<Value> = sorted
@@ -396,7 +414,11 @@ pub fn source_turn_reply_arbitration(
     result.insert("siblings", Value::List(siblings));
     result.insert("provider_session_id", optional_text(&provider_session_id));
 
-    let item_intent = |item: &Dict| item.get("intent_id").filter(|value| value.truthy()).map(Value::py_str);
+    let item_intent = |item: &Dict| {
+        item.get("intent_id")
+            .filter(|value| value.truthy())
+            .map(Value::py_str)
+    };
     let noncancelled: Vec<&Dict> = inbox_items
         .iter()
         .map(|(_, item)| item)
@@ -408,7 +430,14 @@ pub fn source_turn_reply_arbitration(
     if !inbox_items.is_empty() && noncancelled.is_empty() {
         return decided(&result, "cancel", "source_cancelled");
     }
-    const PENDING: [&str; 6] = ["recognized", "pending", "delivered", "claimed", "queued", "leased"];
+    const PENDING: [&str; 6] = [
+        "recognized",
+        "pending",
+        "delivered",
+        "claimed",
+        "queued",
+        "leased",
+    ];
     if noncancelled.iter().any(|item| {
         item.get("state")
             .and_then(Value::as_str)
@@ -416,7 +445,10 @@ pub fn source_turn_reply_arbitration(
     }) {
         return decided(&result, "defer", "sibling_pending");
     }
-    if scoped_records.iter().any(|record| record.string("state") == "active") {
+    if scoped_records
+        .iter()
+        .any(|record| record.string("state") == "active")
+    {
         return decided(&result, "defer", "provider_turn_active");
     }
     if let Some(broker_turns_path) = paths.broker_turns_path
@@ -463,16 +495,24 @@ pub fn source_turn_reply_arbitration(
         .filter(|(index, _)| !ignored_orphans.contains(index))
         .map(|(_, record)| record)
         .collect();
-    if relevant.iter().any(|record| record.string("state") == "completed_final") {
+    if relevant
+        .iter()
+        .any(|record| record.string("state") == "completed_final")
+    {
         return decided(&result, "cancel", "provider_final_observed");
     }
-    if relevant.iter().any(|record| record.string("state") == "stale") {
+    if relevant
+        .iter()
+        .any(|record| record.string("state") == "stale")
+    {
         return decided(&result, "cancel", "source_stale");
     }
     const TERMINAL: [&str; 5] = ["empty", "failed", "terminated", "cancelled", "abandoned"];
     let terminal = |record: &&Dict| TERMINAL.contains(&record.string("state").as_str());
     for item in &noncancelled {
-        let intent_id = item_intent(item).map(|id| id.trim().to_string()).unwrap_or_default();
+        let intent_id = item_intent(item)
+            .map(|id| id.trim().to_string())
+            .unwrap_or_default();
         if superseded.contains(&intent_id) {
             continue;
         }
@@ -517,11 +557,18 @@ pub fn manual_claim_ack_matches(claimed: Option<&Dict>, acknowledged: Option<&Di
     if claimed.and_then(relay_command_key) != acknowledged.and_then(relay_command_key) {
         return false;
     }
-    ["intent_id", "intent_delivery_id", "intent_claim_id", "intent_ack_id"]
-        .iter()
-        .all(|field| {
-            let claimed = claimed.map(|value| value.text(field)).unwrap_or_default();
-            let acknowledged = acknowledged.map(|value| value.text(field)).unwrap_or_default();
-            !claimed.is_empty() && claimed == acknowledged
-        })
+    [
+        "intent_id",
+        "intent_delivery_id",
+        "intent_claim_id",
+        "intent_ack_id",
+    ]
+    .iter()
+    .all(|field| {
+        let claimed = claimed.map(|value| value.text(field)).unwrap_or_default();
+        let acknowledged = acknowledged
+            .map(|value| value.text(field))
+            .unwrap_or_default();
+        !claimed.is_empty() && claimed == acknowledged
+    })
 }

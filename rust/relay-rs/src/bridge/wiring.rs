@@ -99,9 +99,18 @@ fn start_speech_service(config_path: Option<&str>) -> Option<Arc<SpeechServiceCl
         &settings.speech_service_sock,
         vec![
             // The service judges a command's freshness from the same file.
-            ("VOICE_COMMAND_STATE_FILE".to_string(), settings.command_state_file.clone()),
-            ("SPEECH_EVENT_LOG".to_string(), settings.speech_event_log.clone()),
-            ("TTS_CONTROL_SOCK".to_string(), settings.tts_control_sock.clone()),
+            (
+                "VOICE_COMMAND_STATE_FILE".to_string(),
+                settings.command_state_file.clone(),
+            ),
+            (
+                "SPEECH_EVENT_LOG".to_string(),
+                settings.speech_event_log.clone(),
+            ),
+            (
+                "TTS_CONTROL_SOCK".to_string(),
+                settings.tts_control_sock.clone(),
+            ),
         ],
         Box::new(|_reason: &str| targets::on_reply_finished()),
         Box::new(publish_idle),
@@ -164,17 +173,22 @@ fn provider_session_ownership() -> Option<Arc<ProviderSessionOwnership>> {
     let provider = env_text("RELAY_RUNNER_PROVIDER");
     let app_session_id = env_text("RELAY_APP_SESSION_ID");
     let recovery_generation = env_text("RELAY_RECOVERY_GENERATION");
-    [&provider_session_id, &provider, &app_session_id, &recovery_generation]
-        .iter()
-        .all(|value| !value.is_empty())
-        .then(|| {
-            Arc::new(ProviderSessionOwnership::new(
-                &provider_session_id,
-                &provider,
-                &app_session_id,
-                &recovery_generation,
-            ))
-        })
+    [
+        &provider_session_id,
+        &provider,
+        &app_session_id,
+        &recovery_generation,
+    ]
+    .iter()
+    .all(|value| !value.is_empty())
+    .then(|| {
+        Arc::new(ProviderSessionOwnership::new(
+            &provider_session_id,
+            &provider,
+            &app_session_id,
+            &recovery_generation,
+        ))
+    })
 }
 
 /// The messenger's `speak`: its speech through `_queue_tts_text`.
@@ -241,7 +255,11 @@ fn run_relay_mode(cli: &Arguments, cfg: Dict) -> u8 {
     let ownership = provider_session_ownership();
     targets::lock().provider_session_ownership = ownership.clone();
     let generation = env_or("RELAY_RECOVERY_GENERATION", "");
-    let generation = if generation.is_empty() { "0".to_string() } else { generation };
+    let generation = if generation.is_empty() {
+        "0".to_string()
+    } else {
+        generation
+    };
     let recovery_generation =
         normalize_recovery_generation(&Value::from(generation.as_str())).unwrap_or(generation);
     let messenger_expected = cfg
@@ -287,7 +305,11 @@ fn run_relay_mode(cli: &Arguments, cfg: Dict) -> u8 {
         orchestrator::start_target_orchestrator(&bridge.cfg, target, Arc::new(LocalDaemon))
     });
     let stop: StopOrchestrator = Arc::new(|session| {
-        orchestrator::stop_persistent_orchestrator_lifecycle(Some(&session), "voice session ended", &LocalDaemon)
+        orchestrator::stop_persistent_orchestrator_lifecycle(
+            Some(&session),
+            "voice session ended",
+            &LocalDaemon,
+        )
     });
     let _ = bridge.start_target_orchestrator.set(start);
     let _ = bridge.stop_target_orchestrator.set(stop);
@@ -302,7 +324,12 @@ fn run_relay_mode(cli: &Arguments, cfg: Dict) -> u8 {
     match SidecarLane::new(
         create_sidecar_executor(&bridge.cfg, &store::current_dir()),
         Box::new(move |event| {
-            finals::handle_sidecar_lifecycle(bridge, event.phase, &event.public_summary, &event.command);
+            finals::handle_sidecar_lifecycle(
+                bridge,
+                event.phase,
+                &event.public_summary,
+                &event.command,
+            );
         }),
         Box::new(move |text, command| {
             finals::handle_sidecar_final(bridge, text, command);
@@ -331,7 +358,11 @@ fn run_relay_mode(cli: &Arguments, cfg: Dict) -> u8 {
     if let Some(messenger) = &messenger {
         messenger.shutdown();
     }
-    orchestrator::stop_persistent_orchestrator_lifecycle(orchestrator_session.as_deref(), "bridge stopped", &LocalDaemon);
+    orchestrator::stop_persistent_orchestrator_lifecycle(
+        orchestrator_session.as_deref(),
+        "bridge stopped",
+        &LocalDaemon,
+    );
     speech.shutdown();
     store::remove(&settings.control_sock);
     if completed {
@@ -349,25 +380,47 @@ fn start_messenger(bridge: &'static Bridge) -> Option<Arc<dyn Messenger>> {
         &bridge.cfg,
         &store::current_dir(),
         messenger_runtime::Callbacks {
-            speak: Box::new(move |text, command_seq, command_id, display_text, metadata| {
-                messenger_speak(bridge.speech(), text, command_seq, command_id, display_text, metadata)
-            }),
+            speak: Box::new(
+                move |text, command_seq, command_id, display_text, metadata| {
+                    messenger_speak(
+                        bridge.speech(),
+                        text,
+                        command_seq,
+                        command_id,
+                        display_text,
+                        metadata,
+                    )
+                },
+            ),
             is_current: Box::new(move |command_seq, command_id| {
                 super::turns::key_current(command_seq, command_id, &settings().command_state_file)
             }),
             coverage_provider: Some(Box::new(move |command_seq, command_id| {
                 bridge.speech().played_coverage(command_seq, command_id)
             })),
-            realization_observer: Some(Box::new(move |command_seq, command_id, role, decision, reason| {
-                bridge
-                    .speech()
-                    .record_realization(command_seq, command_id, role, decision, reason)
-            })),
-            timing_observer: Some(Box::new(move |stage, command_seq, command_id, at, provider, outcome| {
-                bridge
-                    .speech()
-                    .record_messenger_stage(stage, command_seq, command_id, at, provider, outcome)
-            })),
+            realization_observer: Some(Box::new(
+                move |command_seq, command_id, role, decision, reason| {
+                    bridge.speech().record_realization(
+                        command_seq,
+                        command_id,
+                        role,
+                        decision,
+                        reason,
+                    )
+                },
+            )),
+            timing_observer: Some(Box::new(
+                move |stage, command_seq, command_id, at, provider, outcome| {
+                    bridge.speech().record_messenger_stage(
+                        stage,
+                        command_seq,
+                        command_id,
+                        at,
+                        provider,
+                        outcome,
+                    )
+                },
+            )),
             continuity_observer: Some(Box::new(|event: &Dict| {
                 orchestrator::post_continuity_event(
                     "messenger",
