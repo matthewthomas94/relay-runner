@@ -238,15 +238,6 @@ struct SessionWheelView: View {
                             // The start tile and a running session share the terminal glyph.
                             LucideImage(shortcut?.symbol ?? SessionWheelSessionSlot.symbol, size: 20)
                         }
-                    if let session {
-                        if session.unreadCount > 0 {
-                            Text("\(session.unreadCount)")
-                                .font(AppTypography.font(.smallCaption))
-                                .padding(.horizontal, 4).padding(.vertical, 2)
-                                .background(.blue, in: Capsule())
-                                .offset(x: 7, y: 31)
-                        }
-                    }
                 }
                 .position(geometry.position(slot: index, radius: 119))
                 .opacity(empty && !startSlot ? 0 : 1)

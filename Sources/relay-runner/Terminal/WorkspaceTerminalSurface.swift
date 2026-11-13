@@ -138,7 +138,6 @@ private struct WorkspaceSessionTab: View {
                         .font(AppTypography.font(.menuTab))
                         .lineLimit(1)
                         .opacity(tab.isLive ? 1 : 0.5)
-                    if tab.unreadCount > 0 { SessionReplyBadge(count: tab.unreadCount) }
                 }
                 .padding(.leading, 16)
                 .frame(maxHeight: .infinity)

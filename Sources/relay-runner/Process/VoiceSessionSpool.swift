@@ -57,8 +57,6 @@ struct VoiceSessionSpool: Equatable {
     var manualSubmission: String { path("relay_terminal_manual_submission.json") }
     var deliveryEvents: String { path("relay_terminal_delivery_events.jsonl") }
     var launcher: String { path("voice_bridge_launch.command") }
-    /// RR-401: written by the bridge with this session's unheard replies.
-    var replyBadge: String { path("voice_reply_badge.json") }
     var authorizations: String { Self.sharedAuthorizationsPath }
 
     /// This session's delivery files; the shared surfaces come from `base`.
@@ -137,22 +135,4 @@ struct VoiceSessionSpool: Equatable {
 
 enum SessionVoicePlayback: String, Decodable {
     case play, replay, stop
-}
-
-/// RR-401: a background session's unheard replies and undelivered worker
-/// outcomes, as the bridge records them in `VoiceSessionSpool.replyBadge`.
-struct VoiceReplyBadge: Equatable {
-    var unreadCount = 0
-    var outcomeCount = 0
-
-    var count: Int { unreadCount + outcomeCount }
-
-    static func load(path: String) -> VoiceReplyBadge {
-        guard let data = FileManager.default.contents(atPath: path),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .init() }
-        return .init(
-            unreadCount: max(0, object["unread_count"] as? Int ?? 0),
-            outcomeCount: max(0, object["outcome_count"] as? Int ?? 0)
-        )
-    }
 }

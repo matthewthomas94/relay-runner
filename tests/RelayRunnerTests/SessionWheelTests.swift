@@ -1141,7 +1141,7 @@ final class SessionWheelTests: XCTestCase {
     @MainActor
     func testWheelRendering() throws {
         let model = SessionWheelModel()
-        model.refresh(sessions: [.init(id: "pm", name: "Session 1", unreadCount: 2, isFocused: true)])
+        model.refresh(sessions: [.init(id: "pm", name: "Session 1", isFocused: true)])
         model.tabs = tabs(1)
         let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performTabItem: { _ in },
                                     selectCenter: {}, dismiss: {})

@@ -119,7 +119,7 @@ final class OverlayPresentationMotionTests: XCTestCase {
         for cancels in [false, true] {
             let scene = Scene(showsCard: true)
             defer { scene.stop() }
-            scene.controller.setReplyStackDepth(1, now: 0)
+            scene.queueReplies(1)
             scene.state.handleServiceEvent(source: "tts", newState: "speaking", text: "First reply.")
             for time in [0.0, 0.31, 0.62] { scene.step(time) }
             XCTAssertEqual(scene.pill.alphaValue, 1)
@@ -129,9 +129,9 @@ final class OverlayPresentationMotionTests: XCTestCase {
             } else {
                 scene.state.handleServiceEvent(source: "tts", newState: "idle", text: nil)
             }
-            // The polled badge drops just after the bridge advances the queue.
+            // The queue depth drops just after the next reply comes forward.
             scene.step(1.0)
-            scene.controller.setReplyStackDepth(0, now: 1.2)
+            scene.queueReplies(0)
             XCTAssertTrue(scene.pill.isFrontCardDismissed)
             for time in [1.15, 1.31, 1.6] {
                 scene.step(time)
@@ -146,25 +146,22 @@ final class OverlayPresentationMotionTests: XCTestCase {
     }
 
     /// RR-464: replies waiting in the speech queue stack above the current
-    /// one together with other sessions' unread replies.
-    func testSpeechQueueDepthDrivesTheReplyStackWithBackgroundBadges() {
+    /// one. RR-488: other sessions' replies wait in the same queue, with no
+    /// separate unread count.
+    func testSpeechQueueDepthDrivesTheReplyStack() {
         let scene = Scene(showsCard: true)
         defer { scene.stop() }
-        scene.controller.setReplyStackDepth(1, now: 0)
         scene.state.handleServiceEvent(source: "tts", newState: "speaking", text: "First reply.")
         scene.state.handleServiceEvent(source: "bridge", newState: "speech_queue", text: "5")
         for time in [0.0, 0.31, 0.62] { scene.step(time) }
         XCTAssertEqual(scene.state.speechQueueDepth, 5)
-        XCTAssertEqual(scene.pill.queuedReplyCount, 5)
+        XCTAssertEqual(scene.pill.queuedReplyCount, 4)
         XCTAssertEqual(scene.pill.stackDepth, 3)
 
         scene.state.handleServiceEvent(source: "bridge", newState: "speech_queue", text: "2")
         scene.step(0.7)
-        XCTAssertEqual(scene.pill.queuedReplyCount, 2)
-        XCTAssertEqual(scene.pill.stackDepth, 2)
-
-        scene.controller.setReplyStackDepth(0, now: 0.8)
         XCTAssertEqual(scene.pill.queuedReplyCount, 1)
+        XCTAssertEqual(scene.pill.stackDepth, 1)
     }
 
     func testWheelStopDismissesPillAndParticlesEvenWithQueuedReplies() {
@@ -172,7 +169,7 @@ final class OverlayPresentationMotionTests: XCTestCase {
             for depth in [0, 1] {
                 let scene = Scene(showsCard: true)
                 defer { scene.stop() }
-                scene.controller.setReplyStackDepth(depth, now: 0)
+                scene.queueReplies(depth)
                 let active = SpeechPresentation(utteranceID: "reply", originalUtteranceID: "reply",
                                                 mode: .newDelivery, sessionKey: "a")
                 scene.state.handleServiceEvent(source: "tts", newState: phase,
@@ -212,7 +209,7 @@ final class OverlayPresentationMotionTests: XCTestCase {
             for depth in [0, 1] {
                 let scene = Scene(showsCard: true)
                 defer { scene.stop() }
-                scene.controller.setReplyStackDepth(depth, now: 0)
+                scene.queueReplies(depth)
                 let active = SpeechPresentation(utteranceID: "reply", originalUtteranceID: "reply",
                                                 mode: .newDelivery, sessionKey: "a")
                 scene.state.handleServiceEvent(source: "tts", newState: phase,
@@ -241,7 +238,7 @@ final class OverlayPresentationMotionTests: XCTestCase {
     func testReplyQueueHoldExpiresWhenNoReplyComesForward() {
         let scene = Scene(showsCard: true)
         defer { scene.stop() }
-        scene.controller.setReplyStackDepth(1, now: 0)
+        scene.queueReplies(1)
         scene.state.handleServiceEvent(source: "tts", newState: "speaking", text: "First reply.")
         for time in [0.0, 0.31, 0.62] { scene.step(time) }
         scene.state.handleServiceEvent(source: "tts", newState: "idle", text: nil)
@@ -259,7 +256,7 @@ final class OverlayPresentationMotionTests: XCTestCase {
             for waitsAt in [1.1, 3.0, 9.0] {
                 let scene = Scene(showsCard: true)
                 defer { scene.stop() }
-                scene.controller.setReplyStackDepth(depth, now: 0)
+                scene.queueReplies(depth)
                 let handoff = SpeechPresentation(utteranceID: "handoff", originalUtteranceID: "handoff", mode: .newDelivery)
                 scene.state.handleServiceEvent(source: "tts", newState: "speaking", text: "On it.", presentation: handoff)
                 for time in [0.0, 0.31, 0.62] { scene.step(time) }
@@ -407,6 +404,11 @@ final class OverlayPresentationMotionTests: XCTestCase {
         func step(_ time: TimeInterval) {
             card?.update(theme: state.state.particleTheme ?? .idle, reduceMotion: true)
             controller.applyPresentation(state, now: time, reduceMotion: false)
+        }
+        /// Replies waiting behind the current one, as the bridge's
+        /// `speech_queue` event reports them; the next step applies it.
+        func queueReplies(_ waiting: Int) {
+            state.handleServiceEvent(source: "bridge", newState: "speech_queue", text: "\(waiting + 1)")
         }
         var frontCardAlpha: CGFloat {
             (Mirror(reflecting: pill).children.first { $0.label == "surfaceContainerView" }?.value as? NSView)?.alphaValue ?? -1
