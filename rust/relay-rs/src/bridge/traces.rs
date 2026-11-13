@@ -3,9 +3,17 @@
 //! `_pm_status_event_payload` to `_handle_orchestration_trace_control`, and
 //! `_queue_voice_acknowledgement`).
 
+use std::sync::Arc;
+
 use super::commands::discard_pending_command;
 use super::context::Bridge;
-use super::pm_frontstage::{OrchestrationTraceEvent, PMStatusEvent, RelayCommandMetadata};
+use super::orchestrator::{
+    self, DaemonError, LocalDaemon, NotifyState, OrchestratorSession, PmUpdatePoll, PmUpdateSources, PmUpdateStep,
+};
+use super::pm_frontstage::{
+    CurrentCommandReader, OrchestrationTraceEvent, PMStatusEvent, PMUpdateMode, RelayCommandMetadata, StatusEmitter,
+    UpdateStatusReader, build_pm_update_snapshot,
+};
 use super::replies;
 use super::settings::settings;
 use super::speech::{acknowledgement_auto_dismiss_seconds, build_voice_acknowledgement};
@@ -191,4 +199,63 @@ pub fn queue_voice_acknowledgement(relay_command: &Dict, source_text: Option<&st
     }
     store::notify_state("acknowledgement", payload);
     true
+}
+
+/// `_start_pm_update_mode` with its `PMUpdateMode` built over the daemon's
+/// status for a ticket action's command.
+pub fn start_pm_update_mode(
+    bridge: &Bridge,
+    metadata: &Dict,
+    action_kind: &str,
+    session: Option<Arc<OrchestratorSession>>,
+    source_text: &str,
+) {
+    let relay_command = metadata.clone();
+    let source_text = source_text.to_string();
+    let notify: NotifyState = Arc::new(|state: &str, fields: Dict| store::notify_state(state, fields));
+    orchestrator::start_pm_update_mode(
+        action_kind,
+        session.as_ref(),
+        bridge.messenger_arc(),
+        notify,
+        Arc::new(LocalDaemon),
+        move |sources: Arc<PmUpdateSources>| {
+            let command = RelayCommandMetadata::from_dict(Some(&relay_command), Some(&source_text)).ok()?;
+            let reader = Arc::clone(&sources);
+            let status_reader: UpdateStatusReader<DaemonError> = Box::new(move || {
+                let payloads = reader.fetch_status()?;
+                build_pm_update_snapshot(
+                    &reader.repo_path,
+                    Some(&payloads.sessions),
+                    Some(&payloads.runs),
+                    Some(&payloads.program),
+                    reader.provider.as_deref(),
+                    reader.session_id,
+                )
+                // Python lets a malformed snapshot end the thread; here the
+                // loop reports it like a failed fetch.
+                .map_err(|_| DaemonError::Protocol("malformed PM update snapshot"))
+            });
+            let current = Arc::clone(&sources);
+            let current_reader: CurrentCommandReader = Box::new(move || Some(current.current_command()));
+            let emitter = Arc::clone(&sources);
+            let emit: StatusEmitter = Box::new(move |event: &PMStatusEvent| emitter.emit(&event.to_dict()));
+            let mut mode = PMUpdateMode::new(
+                command,
+                status_reader,
+                Some(current_reader),
+                Some(emit),
+                settings().pm_update_cadence_seconds,
+                settings().pm_update_startup_grace_seconds,
+            );
+            let poll: PmUpdatePoll = Box::new(move || {
+                mode.poll(None).map(|result| PmUpdateStep {
+                    continue_running: result.continue_running,
+                    state: result.state,
+                    stale: result.stale,
+                })
+            });
+            Some(poll)
+        },
+    );
 }

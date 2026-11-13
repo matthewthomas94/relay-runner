@@ -118,10 +118,10 @@ impl ProviderSessionOwnership {
         {
             return "ownership_context_unavailable";
         }
-        if !super::replies::manual_claim_ack_matches(claimed, payload) {
+        if !super::turns::manual_claim_ack_matches(Some(claimed), Some(payload)) {
             return "claim_identity_mismatch";
         }
-        if !super::replies::relay_command_current_or_preserved(payload, state_path, "") {
+        if !super::turns::relay_command_current_or_preserved(payload, state_path, "") {
             return "claim_not_current_or_preserved";
         }
         let previous_session_id = payload.text("previous_provider_session_id");
@@ -560,6 +560,7 @@ pub fn apply_voice_focus(
                 &settings().authorization_file,
                 &ended_key,
                 &authorization_key_for_target(Some(current)),
+                None,
             ) {
                 eprintln!("[voice_bridge] Could not transfer Relay authorizations: {error}");
             }

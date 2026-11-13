@@ -17,9 +17,9 @@ use relay_intents::pattern::{self, Regex};
 use relay_intents::qualification::{self, format_qualification_for_agent, qualify_intent};
 
 use super::authorization;
-use super::command_actions::{self, CommandAction};
+use super::command_actions::{self, ActionKind, CommandAction};
 use super::context::Bridge;
-use super::orchestrator::{OrchestratorSession, post_continuity_event, post_orchestrator_json};
+use super::orchestrator::{Daemon, LocalDaemon, OrchestratorSession, post_continuity_event};
 use super::settings::settings;
 use super::speech::{self, TtsOptions};
 use super::store::{self, read_json_file, relay_command_key};
@@ -77,7 +77,7 @@ pub fn begin_relay_command(
         metadata
     };
     store::record_private_command_capture(&metadata);
-    post_continuity_event("bridge", "command_received", &metadata, None);
+    post_continuity_event("bridge", "command_received", Some(&metadata), None, &LocalDaemon);
     metadata
 }
 
@@ -90,8 +90,8 @@ pub fn metadata_for_action(
 ) -> Dict {
     let mut metadata = relay_command.clone();
     let fallback_relationship = authorization::command_relationship(
-        &action.kind,
-        action.reason.as_deref().unwrap_or(""),
+        action.kind.as_str(),
+        action.reason,
         &action.source_text,
     )
     .to_string();
@@ -100,15 +100,15 @@ pub fn metadata_for_action(
         None => fallback_relationship,
     };
     metadata.insert("action", action.kind.as_str());
-    metadata.insert("outcome", action.outcome.as_str());
+    metadata.insert("outcome", action.outcome());
     metadata.insert("requires_ticket", action.requires_ticket);
     metadata.insert("authorization_relationship", relationship);
     metadata.insert(
         "intent_qualification",
         qualify_intent(
             &action.source_text,
-            &action.kind,
-            action.reason.as_deref(),
+            action.kind.as_str(),
+            Some(action.reason),
             relay_command.get("relay_command_id").and_then(Value::as_str),
             relay_command.get("relay_command_seq").and_then(Value::py_int),
         )
@@ -163,8 +163,8 @@ pub fn metadata_for_action(
     if let Some(repo_path) = action.repo_path.as_deref().filter(|value| !value.is_empty()) {
         metadata.insert("repo_path", repo_path);
     }
-    if let Some(reason) = action.reason.as_deref().filter(|value| !value.is_empty()) {
-        metadata.insert("reason", reason);
+    if !action.reason.is_empty() {
+        metadata.insert("reason", action.reason);
     }
     metadata
 }
@@ -251,11 +251,11 @@ pub fn resolve_voice_work_items(
         item_command.insert("intent_id", item.intent_id.as_str());
         item_command.insert("within_turn_order", item.within_turn_order);
         item_command.insert("voice_work_item", item.to_dict());
-        let action = command_actions::resolve_command_action(&item.source_text, repo_path, &item_command);
+        let action = command_actions::resolve_command_action(&item.source_text, Some(repo_path), Some(&item_command));
         let mut disposition = arbitration::resolve_intent_disposition(&DispositionRequest {
             intent_id: &item.intent_id,
-            action_kind: &action.kind,
-            action_reason: action.reason.as_deref(),
+            action_kind: action.kind.as_str(),
+            action_reason: Some(action.reason),
             source_text: &item.source_text,
             active_work: &known_work,
             requested_resources: &[],
@@ -267,19 +267,19 @@ pub fn resolve_voice_work_items(
             disposition.public_reason = "Steer the active foreground PM with this voice turn.".to_string();
         }
         let metadata = metadata_for_action(&action, &item_command, Some(&disposition), Some(&item));
-        let mut prompt = command_actions::format_command_for_agent(&action, &disposition.to_dict());
-        if action.kind != "control" {
+        let mut prompt = command_actions::format_command_for_agent(&action, Some(&disposition.to_dict()));
+        if action.kind != ActionKind::Control {
             prompt.push_str(&format_qualification_for_agent(&qualify_intent(
                 &item.source_text,
-                &action.kind,
-                action.reason.as_deref(),
+                action.kind.as_str(),
+                Some(action.reason),
                 Some(&command_id),
                 Some(seq),
             )));
         }
         if item.lifecycle_state != WorkItemLifecycle::Cancelled
             && item.disposition == WorkItemDisposition::Accepted
-            && action.kind != "control"
+            && action.kind != ActionKind::Control
         {
             known_work.push(ActiveWork {
                 work_id: item.intent_id.clone(),
@@ -385,7 +385,7 @@ fn raw_instruction_payload(
         payload.insert("context", context);
     }
     if let Some(session) = orchestrator {
-        payload.insert("session_id", session.session_id.clone());
+        payload.insert("session_id", session.session_id);
     }
     payload
 }
@@ -394,7 +394,7 @@ fn with_session_id(relay_command: &Dict, orchestrator: Option<&OrchestratorSessi
     let mut payload = relay_command.clone();
     payload.insert(
         "session_id",
-        orchestrator.map(|session| session.session_id.clone()).unwrap_or(Value::Null),
+        orchestrator.map(|session| Value::Int(session.session_id)).unwrap_or(Value::Null),
     );
     payload
 }
@@ -414,16 +414,28 @@ pub fn deliver_raw_instruction_to_orchestrator(
         return false;
     }
     let payload = raw_instruction_payload(source_text, relay_command, action, repo_path, orchestrator);
-    if let Err(error) = post_orchestrator_json("/v1/orchestrator-session/command", &payload) {
+    if let Err(error) = LocalDaemon.post_json("/v1/orchestrator-session/command", &payload) {
         let mut failed = relay_command.clone();
         failed.insert("action", action.kind.as_str());
         failed.insert("outcome", "delivery failed");
         store::record_command_action_state(&failed, "delivery_failed");
-        post_continuity_event("bridge", "delivery_failed", &with_session_id(relay_command, orchestrator), None);
+        post_continuity_event(
+            "bridge",
+            "delivery_failed",
+            Some(&with_session_id(relay_command, orchestrator)),
+            None,
+            &LocalDaemon,
+        );
         eprintln!("[voice_bridge] Could not fan out raw command to orchestrator: {error}");
         return false;
     }
-    post_continuity_event("bridge", "command_delivered", &with_session_id(relay_command, orchestrator), None);
+    post_continuity_event(
+        "bridge",
+        "command_delivered",
+        Some(&with_session_id(relay_command, orchestrator)),
+        None,
+        &LocalDaemon,
+    );
     true
 }
 
@@ -453,7 +465,10 @@ pub fn fanout_raw_instruction_to_orchestrator(
 /// `_should_fanout_raw_instruction_to_orchestrator`: durably queue project
 /// work without bypassing the foreground PM.
 pub fn should_fanout_raw_instruction_to_orchestrator(action: &CommandAction) -> bool {
-    matches!(action.kind.as_str(), "create_ticket" | "update_ticket" | "dispatch_ticket")
+    matches!(
+        action.kind,
+        ActionKind::CreateTicket | ActionKind::UpdateTicket | ActionKind::DispatchTicket
+    )
 }
 
 /// `_discard_pending_command`: undo file-backed effects for an unclaimed

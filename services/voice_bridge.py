@@ -10,6 +10,28 @@ mode retained for manual debugging; Start Session and relay-bridge do not use it
 
 from __future__ import annotations
 
+import os
+import sys
+
+# RR-492: RELAY_BRIDGE_RUNTIME=rust runs the Rust bridge (`relay-rs bridge`)
+# in this process's place, for testing; the Python bridge stays the default.
+# It speaks through the same speech service this interpreter would start.
+if __name__ == "__main__" and os.environ.get("RELAY_BRIDGE_RUNTIME", "").strip().lower() == "rust":
+    from rust_messenger import rust_binary
+
+    _RUST_BRIDGE = rust_binary()
+    if _RUST_BRIDGE is None:
+        print("[voice_bridge] RELAY_BRIDGE_RUNTIME=rust but no relay-rs found; using Python", file=sys.stderr)
+    else:
+        if not os.environ.get("RELAY_SPEECH_SERVICE_CMD", "").strip():
+            import shlex
+
+            os.environ["RELAY_SPEECH_SERVICE_CMD"] = shlex.join([
+                sys.executable,
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "speech_service.py"),
+            ])
+        os.execv(_RUST_BRIDGE, [_RUST_BRIDGE, "bridge", *sys.argv[1:]])
+
 from dataclasses import dataclass, replace
 import atexit
 import hashlib

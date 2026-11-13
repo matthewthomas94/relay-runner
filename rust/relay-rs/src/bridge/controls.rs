@@ -11,7 +11,7 @@ use relay_intents::pattern::{self, Regex};
 use super::commands::{self, PublishPaths};
 use super::context::Bridge;
 use super::finals::{self, ReplyPaths};
-use super::orchestrator::{observe_stt_continuity_signal, observe_stt_status};
+use super::orchestrator::{LocalDaemon, observe_stt_continuity_signal, observe_stt_status};
 use super::settings::settings;
 use super::store;
 use super::targets;
@@ -311,11 +311,11 @@ pub fn handle_relay_control_message(bridge: &'static Bridge, text: &str, paths: 
         return true;
     }
     if let Some(raw) = text.strip_prefix("__STATUS__:") {
-        observe_stt_status(raw);
+        observe_stt_status(raw, &LocalDaemon);
         return true;
     }
     if let Some(raw) = text.strip_prefix("__CONTINUITY__:") {
-        observe_stt_continuity_signal(raw);
+        observe_stt_continuity_signal(raw, &LocalDaemon);
         return true;
     }
     if quarantine_raw_relay_control_object(text) {

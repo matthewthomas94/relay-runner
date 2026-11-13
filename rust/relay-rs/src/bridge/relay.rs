@@ -19,7 +19,7 @@ use super::commands::{self, PublishPaths};
 use super::context::Bridge;
 use super::controls;
 use super::finals;
-use super::orchestrator::{self, stop_persistent_orchestrator_lifecycle};
+use super::orchestrator::{LocalDaemon, stop_persistent_orchestrator_lifecycle};
 use super::remote_link::RemoteLink;
 use super::replies;
 use super::settings::settings;
@@ -416,7 +416,7 @@ pub fn run_relay(bridge: &'static Bridge, suppress_startup_greeting: bool, remot
     }
     close_fd(fifo_fd);
     for lifecycle in targets::clear_voice_targets() {
-        stop_persistent_orchestrator_lifecycle(&lifecycle, "bridge stopped");
+        stop_persistent_orchestrator_lifecycle(Some(&lifecycle), "bridge stopped", &LocalDaemon);
     }
     let preserved: Vec<&String> = if store::watchdog_restart_preserves_turns(true) {
         vec![&settings.command_state_file, &settings.claim_file, &settings.provider_turns_file]
@@ -617,10 +617,10 @@ fn handle_entry(
             );
         }
         if !cancelled {
-            orchestrator::start_pm_update_mode(
+            traces::start_pm_update_mode(
                 bridge,
                 &metadata,
-                &action.kind,
+                action.kind.as_str(),
                 target_orchestrator.clone(),
                 &item.source_text,
             );
@@ -654,7 +654,7 @@ fn handle_entry(
         store::record_command_action_state(&metadata, state);
         eprintln!(
             "[voice_bridge] Voice item ready: {} intent={} order={} disposition={} state={state}",
-            action.outcome,
+            action.outcome(),
             item.intent_id,
             item.within_turn_order,
             disposition.route.as_str()

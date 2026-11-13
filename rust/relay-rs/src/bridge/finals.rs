@@ -11,7 +11,7 @@ use relay_intents::model::TurnState;
 
 use super::context::Bridge;
 use super::controls::log_quarantined_relay_control;
-use super::orchestrator::post_continuity_event;
+use super::orchestrator::{LocalDaemon, post_continuity_event};
 use super::replies;
 use super::settings::settings;
 use super::speech::{self, TtsOptions, tagged_payload};
@@ -380,7 +380,7 @@ pub fn handle_provider_completion_control(
     };
     let mut observation = merged(&[&data, &command]);
     observation.insert("provider", provider.as_str());
-    post_continuity_event("provider", terminal_signal, &observation, None);
+    post_continuity_event("provider", terminal_signal, Some(&observation), None, &LocalDaemon);
     replies::note_outcome_signal(Some(&command), "hook_received");
     if replies::foreground_reply_delivered(Some(&command)) {
         replies::close_outcome_watch(Some(&command), bridge.speech(), "reply_delivered");
@@ -619,7 +619,7 @@ pub fn handle_provider_turn_event_control(
                     }
                     if matches!(payload.get("discard_unacknowledged_claim"), Some(Value::Bool(true))) {
                         let retired = bridge.inbox().map(|inbox| inbox.retire_replaced_claim(&payload));
-                        if let Some(Err(error)) = retired {
+                        if let Some(Err(error)) = &retired {
                             eprintln!("[voice_bridge] Could not retire the replaced claim: {error}");
                         }
                         if retired.is_some() {
@@ -637,7 +637,13 @@ pub fn handle_provider_turn_event_control(
             };
             let mut observation = payload.clone();
             observation.insert("provider", provider.as_str());
-            post_continuity_event("provider", signal, &observation, payload.get("observed_at"));
+            post_continuity_event(
+                "provider",
+                signal,
+                Some(&observation),
+                payload.get("observed_at").and_then(Value::py_float),
+                &LocalDaemon,
+            );
             true
         }
         "provider_turn_cancelled" => {
@@ -686,7 +692,7 @@ pub fn handle_provider_turn_event_control(
                 payload.get("recovery_generation").cloned().unwrap_or(Value::Null),
             );
             observation.insert("provider", provider.as_str());
-            post_continuity_event("provider", "process_exit", &observation, None);
+            post_continuity_event("provider", "process_exit", Some(&observation), None, &LocalDaemon);
             true
         }
         _ => false,

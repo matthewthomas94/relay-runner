@@ -13,6 +13,8 @@ pub struct Settings {
     pub runtime_dir: String,
     pub voice_fifo: String,
     pub control_sock: String,
+    /// `RELAY_REMOTE_SOCK`, read by `relay_remote.py`.
+    pub remote_sock: String,
     pub voice_state_sock: String,
     pub orchestrator_port_file: String,
     pub orchestrator_default_port: u16,
@@ -184,6 +186,7 @@ impl Settings {
         Self {
             voice_fifo: env_or("VOICE_FIFO", "/tmp/voice_in.fifo"),
             control_sock: env_or("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock"),
+            remote_sock: env_or("RELAY_REMOTE_SOCK", "/tmp/relay_remote.sock"),
             voice_state_sock,
             orchestrator_port_file: env_or("ORCHESTRATOR_PORT_FILE", "/tmp/relay_orchestrator.port"),
             orchestrator_default_port: env_optional("ORCHESTRATOR_DEFAULT_PORT")
