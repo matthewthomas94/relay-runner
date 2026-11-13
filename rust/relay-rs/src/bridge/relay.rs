@@ -344,6 +344,7 @@ pub fn run_relay(bridge: &'static Bridge, suppress_startup_greeting: bool, remot
         );
     }
     start_tts_fifo_reader(bridge);
+    commands::warm_up();
     eprintln!("[voice_bridge] Relay mode — waiting for voice input...");
     eprintln!("[voice_bridge] Voice commands → {}", settings.cmd_file);
     eprintln!("[voice_bridge] TTS input ← {}", settings.tts_in_fifo);

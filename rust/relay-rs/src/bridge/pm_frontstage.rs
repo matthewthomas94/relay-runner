@@ -57,6 +57,20 @@ pub const TRACE_KINDS: &[&str] = &[
     "preparing-response",
     "board-change",
 ];
+/// `LIFECYCLE_DETAIL_TRACE_KINDS`: the worker lifecycle traces that carry
+/// their full detail and need no command.
+pub const LIFECYCLE_DETAIL_TRACE_KINDS: [&str; 10] = [
+    "run-health-warning",
+    "run-review-needed",
+    "run-merged",
+    "run-reconciled",
+    "run-integration-blocked",
+    "run-verification-blocked",
+    "run-verification-resumed",
+    "run-succeeded",
+    "run-failed",
+    "run-canceled",
+];
 pub const TRACE_MESSAGE_MAX_LEN: usize = 96;
 pub const UPDATE_MODE_MESSAGE_MAX_LEN: usize = 120;
 

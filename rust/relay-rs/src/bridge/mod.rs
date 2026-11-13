@@ -13,20 +13,35 @@
 // The ported modules land before the main loop that uses all of them.
 #![allow(dead_code)]
 
-pub mod authorization;
-pub mod command_actions;
-pub mod config;
-pub mod continuity;
-pub mod diagnostics;
-pub mod messenger_runtime;
-pub mod pm_frontstage;
-pub mod ports;
-pub mod settings;
-pub mod sidecar;
-pub mod speech_client;
+mod authorization;
+mod command_actions;
+mod commands;
+mod config;
+mod context;
+mod continuity;
+mod control_socket;
+mod controls;
+mod diagnostics;
+mod finals;
+mod messenger_runtime;
+mod orchestrator;
+mod pm_frontstage;
+mod ports;
+mod recovery;
+mod relay;
+mod remote_link;
+mod replies;
+mod settings;
+mod sidecar;
+mod speech;
+mod speech_client;
+mod store;
+mod targets;
+mod traces;
+mod turns;
+mod wiring;
 
 /// Runs the bridge with its command-line arguments.
-pub fn run(_arguments: &[String]) -> u8 {
-    eprintln!("relay-rs bridge: not implemented yet");
-    2
+pub fn run(arguments: &[String]) -> u8 {
+    wiring::run(arguments)
 }

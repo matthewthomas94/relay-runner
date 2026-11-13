@@ -2,7 +2,7 @@
 //! the Python order, the relay loop run, and everything stopped again
 //! (`_parse_args`, `_speech_service_command`, `_start_speech_service`).
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::thread;
 
 use relay_intents::broker::ProviderTurnBroker;
@@ -345,8 +345,6 @@ fn run_relay_mode(cli: &Arguments, cfg: Dict) -> u8 {
 /// `create_messenger_runtime(...)` with the bridge's speech, freshness and
 /// observers, started.
 fn start_messenger(bridge: &'static Bridge) -> Option<Arc<dyn Messenger>> {
-    static SPEECH: OnceLock<()> = OnceLock::new();
-    let _ = SPEECH.set(());
     let runtime = messenger_runtime::create_messenger_runtime(
         &bridge.cfg,
         &store::current_dir(),
@@ -357,16 +355,20 @@ fn start_messenger(bridge: &'static Bridge) -> Option<Arc<dyn Messenger>> {
             is_current: Box::new(move |command_seq, command_id| {
                 super::turns::key_current(command_seq, command_id, &settings().command_state_file)
             }),
-            coverage_provider: Box::new(move |command_seq, command_id| {
+            coverage_provider: Some(Box::new(move |command_seq, command_id| {
                 bridge.speech().played_coverage(command_seq, command_id)
-            }),
-            realization_observer: Box::new(move |realization| bridge.speech().record_realization(realization)),
-            timing_observer: Box::new(move |stage, command_seq, command_id, at, provider, outcome| {
+            })),
+            realization_observer: Some(Box::new(move |command_seq, command_id, role, decision, reason| {
+                bridge
+                    .speech()
+                    .record_realization(command_seq, command_id, role, decision, reason)
+            })),
+            timing_observer: Some(Box::new(move |stage, command_seq, command_id, at, provider, outcome| {
                 bridge
                     .speech()
                     .record_messenger_stage(stage, command_seq, command_id, at, provider, outcome)
-            }),
-            continuity_observer: Box::new(|event: &Dict| {
+            })),
+            continuity_observer: Some(Box::new(|event: &Dict| {
                 orchestrator::post_continuity_event(
                     "messenger",
                     &event.string("event"),
@@ -374,9 +376,9 @@ fn start_messenger(bridge: &'static Bridge) -> Option<Arc<dyn Messenger>> {
                     None,
                     &LocalDaemon,
                 );
-            }),
+            })),
         },
     )?;
     runtime.start();
-    Some(runtime)
+    Some(runtime as Arc<dyn Messenger>)
 }

@@ -42,7 +42,7 @@ use crate::json::{self, Dict, Value, py_is_space};
 pub use config::Config;
 
 pub const MESSENGER_SYSTEM_PROMPT: &str = include_str!("system_prompt.txt");
-const SILENT_RESPONSE: &str = "__SILENT__";
+pub const SILENT_RESPONSE: &str = "__SILENT__";
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Receives the first speakable sentence of an answer, at most once.

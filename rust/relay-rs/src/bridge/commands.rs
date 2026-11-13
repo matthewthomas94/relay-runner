@@ -744,3 +744,38 @@ pub fn announce_voice_paused(bridge: &Bridge, inbox: &IntentInbox, command: &Dic
         },
     )
 }
+
+/// Compiles every pattern a voice turn is classified with before the first
+/// turn arrives, so its first command is published as promptly as later ones.
+pub fn warm_up() {
+    let text = "warm up the classifier and then check the tests";
+    let mut command = Dict::new();
+    command.insert("relay_command_seq", 0);
+    command.insert("relay_command_id", "warm-up");
+    let _ = command_actions::is_mixed_query_and_mutation(text);
+    let _ = qualification::whole_turn_resolution_required(text);
+    for item in arbitration::normalize_voice_work_items(text, 0, "warm-up") {
+        let action = command_actions::resolve_command_action(&item.source_text, None, Some(&command));
+        let disposition = arbitration::resolve_intent_disposition(&DispositionRequest {
+            intent_id: &item.intent_id,
+            action_kind: action.kind.as_str(),
+            action_reason: Some(action.reason),
+            source_text: &item.source_text,
+            active_work: &[],
+            requested_resources: &[],
+            cancellation_scope: Some(item.cancellation_scope),
+            target_work_ids: &item.target_intent_ids,
+        });
+        let _ = command_actions::format_command_for_agent(&action, Some(&disposition.to_dict()));
+        let _ = format_qualification_for_agent(&qualify_intent(
+            &item.source_text,
+            action.kind.as_str(),
+            Some(action.reason),
+            None,
+            None,
+        ));
+        let _ = sanitized_command_context(&command);
+    }
+    let _ = speech::build_voice_acknowledgement(Some(text), None);
+    let _ = speech::strip_markdown_for_tts(text);
+}
