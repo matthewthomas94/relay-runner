@@ -205,12 +205,31 @@ fn last_agent_message(items: Option<&Value>) -> String {
 pub struct CodexBackend {
     config: Config,
     argv: Vec<String>,
+    /// `actor_role`: whom the provider process acts as.
+    pub actor_role: &'static str,
+    /// The whole `spawn_command` and the `thread_start_params` of a subclass
+    /// that overrides them.
+    command: Option<Vec<String>>,
+    thread_params: Option<Dict>,
     start_lock: Arc<Mutex<()>>,
     shared: Arc<Shared>,
 }
 
 impl CodexBackend {
     pub fn new(config: Config, argv: Vec<String>) -> Self {
+        Self::with_launch(config, argv, "messenger", None, None)
+    }
+
+    /// A backend that runs as `actor_role` and, given them, spawns `command`
+    /// and starts its thread with `thread_params` instead of the messenger's,
+    /// as `CodexSidecarBackend` (`sidecar_lane.py`) does.
+    pub fn with_launch(
+        config: Config,
+        argv: Vec<String>,
+        actor_role: &'static str,
+        command: Option<Vec<String>>,
+        thread_params: Option<Dict>,
+    ) -> Self {
         let state = State {
             next_request_id: 1,
             ..State::default()
@@ -218,6 +237,9 @@ impl CodexBackend {
         Self {
             config,
             argv,
+            actor_role,
+            command,
+            thread_params,
             start_lock: Arc::default(),
             shared: Arc::new(Shared {
                 state: Mutex::new(state),
@@ -227,6 +249,9 @@ impl CodexBackend {
     }
 
     pub fn spawn_command(&self) -> Vec<String> {
+        if let Some(command) = &self.command {
+            return command.clone();
+        }
         let mut command = self.argv.clone();
         for part in [
             "app-server",
@@ -252,6 +277,9 @@ impl CodexBackend {
     }
 
     pub fn thread_start_params(&self) -> Dict {
+        if let Some(params) = &self.thread_params {
+            return params.clone();
+        }
         let mut params = Dict::new();
         params.insert("model", self.config.model.as_str());
         params.insert("cwd", self.config.cwd.as_str());
@@ -404,7 +432,7 @@ impl Backend for CodexBackend {
             .args(&self.spawn_command()[1..])
             .current_dir(&self.config.cwd)
             .env_clear()
-            .envs(child_environment("messenger"))
+            .envs(child_environment(self.actor_role))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
