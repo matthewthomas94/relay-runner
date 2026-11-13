@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::replies;
 use super::settings::settings;
-use super::store::{self, read_json_file, relay_command_key, relay_command_key_of};
+use super::store::{self, read_json_file, relay_command_key};
 use super::targets;
 use crate::json::{Dict, Value};
 
@@ -170,16 +170,6 @@ pub fn provider_turn_state(
     None
 }
 
-/// `_provider_turn_active`.
-pub fn provider_turn_active(
-    relay_command: Option<&Dict>,
-    turns_path: &str,
-    provider_session_id: Option<&str>,
-) -> bool {
-    provider_turn_state(relay_command, turns_path, provider_session_id, None).as_deref()
-        == Some("active")
-}
-
 /// `_any_provider_turn_active`.
 pub fn any_provider_turn_active(turns_path: &str, provider_session_id: Option<&str>) -> bool {
     let provider_session_id = provider_session_id
@@ -286,7 +276,7 @@ pub fn source_turn_reply_arbitration(
 
     // Insertion-ordered, as the Python dict is before it is sorted.
     let mut inbox_items: Vec<(String, Dict)> = Vec::new();
-    fn entry<'a>(items: &'a mut Vec<(String, Dict)>, identity: &str) -> Option<&'a mut Dict> {
+    fn entry<'a>(items: &'a mut [(String, Dict)], identity: &str) -> Option<&'a mut Dict> {
         items
             .iter_mut()
             .find(|(existing, _)| existing == identity)
@@ -511,15 +501,6 @@ pub fn source_turn_reply_arbitration(
     result
 }
 
-/// `_command_pending_delivery`.
-pub fn command_pending_delivery(relay_command: Option<&Dict>, command_path: &str, meta_path: &str) -> bool {
-    if relay_command.and_then(relay_command_key).is_none() || !store::exists(command_path) {
-        return false;
-    }
-    let metadata = read_json_file(meta_path);
-    relay_intent_matches(Some(&metadata), relay_command)
-}
-
 /// `_provider_turn_seen`.
 pub fn provider_turn_seen(
     command: Option<&Dict>,
@@ -543,9 +524,4 @@ pub fn manual_claim_ack_matches(claimed: Option<&Dict>, acknowledged: Option<&Di
             let acknowledged = acknowledged.map(|value| value.text(field)).unwrap_or_default();
             !claimed.is_empty() && claimed == acknowledged
         })
-}
-
-/// `_relay_command_key` of a JSON value.
-pub fn key_of(value: Option<&Value>) -> Option<(i64, String)> {
-    relay_command_key_of(value)
 }

@@ -16,7 +16,7 @@ use crate::json::{self, Dict, Value};
 use crate::remote::server::{Event, Server};
 
 /// `relay_remote.INPUT_SOURCE`.
-pub const INPUT_SOURCE: &str = "relay_remote";
+pub const INPUT_SOURCE: &str = "remote";
 
 /// `RemoteItem`: one utterance or mapped control token for the relay loop.
 #[derive(Clone, Debug)]

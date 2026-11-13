@@ -33,10 +33,6 @@ impl OrderedSet {
             self.0.drain(..50);
         }
     }
-
-    fn discard(&mut self, key: &Key) {
-        self.0.retain(|existing| existing != key);
-    }
 }
 
 #[derive(Default)]

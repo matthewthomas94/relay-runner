@@ -278,14 +278,6 @@ impl RelayCommandMetadata {
         }
         data
     }
-
-    /// `to_dispatch_fields`.
-    pub fn to_dispatch_fields(&self) -> Dict {
-        let mut data = Dict::new();
-        data.insert("relay_command_seq", self.relay_command_seq);
-        data.insert("relay_command_id", self.relay_command_id.as_str());
-        data
-    }
 }
 
 /// `str(value).upper()` when `value` is truthy, as both event types keep a

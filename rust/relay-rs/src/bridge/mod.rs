@@ -10,9 +10,6 @@
 //! (docs/specs/voice-bridge-contract.md). The Python bridge stays the
 //! default until the cut-over (RR-493).
 
-// The ported modules land before the main loop that uses all of them.
-#![allow(dead_code)]
-
 mod authorization;
 mod command_actions;
 mod commands;

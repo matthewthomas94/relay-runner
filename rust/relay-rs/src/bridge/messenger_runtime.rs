@@ -324,6 +324,7 @@ impl MessengerRuntime {
     }
 
     /// `context_size`.
+    #[cfg(test)]
     pub fn context_size(&self) -> usize {
         self.inner.lock().context.len()
     }

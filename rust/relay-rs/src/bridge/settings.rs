@@ -9,8 +9,6 @@ use crate::json::py_strip;
 use crate::support::{env_optional, env_or, env_text};
 
 pub struct Settings {
-    /// `BRIDGE_RUNTIME_DIR`: `RELAY_BRIDGE_RUNTIME_DIR`, else `/tmp`.
-    pub runtime_dir: String,
     pub voice_fifo: String,
     pub control_sock: String,
     /// `RELAY_REMOTE_SOCK`, read by `relay_remote.py`.
@@ -242,7 +240,6 @@ impl Settings {
             voice_acknowledgement: env_or("VOICE_ACKNOWLEDGEMENT", "Got it. I'm on it."),
             sessions_root,
             spool_dir,
-            runtime_dir,
         }
     }
 }

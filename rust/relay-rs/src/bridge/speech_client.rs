@@ -21,22 +21,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::ports::{Speech, SpeechText};
-use crate::json::{self, Dict, Value, py_eq, py_is_space, py_strip};
+use crate::json::{self, Dict, Value, py_eq, py_is_space};
 use crate::remote::audio::{AUDIO_FORMAT, AudioPart, SAMPLE_RATE};
 use crate::remote::protocol::FrameError;
 use crate::remote::server::{DeviceSession, peer_uid};
 use crate::support::{env_optional, env_or};
 
 pub const PROTOCOL_VERSION: i64 = 1;
-pub const DEFAULT_SOCKET: &str = "/tmp/relay_speech_service.sock";
 /// A crashed service is restarted this often before speech is given up on.
 pub const MAX_RESTARTS: usize = 3;
 pub const RESTART_WINDOW_SECONDS: f64 = 60.0;
 const START_TIMEOUT_SECONDS: f64 = 300.0;
 const REQUEST_TIMEOUT_SECONDS: f64 = 10.0;
 
-/// `tts_worker.TTS_CONTROL_SOCK` without `TTS_CONTROL_SOCK` set.
-pub const DEFAULT_TTS_CONTROL_SOCK: &str = "/tmp/tts_control.sock";
 /// `tts_worker.VOICE_STATE_SOCK` without `VOICE_STATE_SOCK` set. It is not
 /// the bridge's own default, which follows `RELAY_BRIDGE_RUNTIME_DIR`.
 const DEFAULT_VOICE_STATE_SOCK: &str = "/tmp/voice_state.sock";
@@ -250,46 +247,26 @@ impl SpeechServiceClient {
         self.inner.launch(false).inspect_err(|_| self.inner.close())
     }
 
-    /// `close`: stop the service without asking it to finish anything.
-    pub fn close(&self) {
-        self.inner.close();
-    }
-
     /// `instance_id`: the running service's, from its `hello`.
+    #[cfg(test)]
     pub fn instance_id(&self) -> String {
         self.inner.lock().instance_id.clone()
     }
 
     /// `speaking`.
+    #[cfg(test)]
     pub fn speaking(&self) -> bool {
         self.status_flag("speaking")
     }
 
-    /// `has_pending_speech`.
-    pub fn has_pending_speech(&self) -> bool {
-        self.speaking()
-    }
-
-    /// `read_out`.
-    pub fn read_out(&self, text: &str, session_key: &str) -> bool {
-        let result = self.inner.request(
-            "read_out",
-            params([("text", text.into()), ("session_key", session_key.into())]),
-        );
-        truthy(&result, "accepted")
-    }
-
     /// `play`.
+    #[cfg(test)]
     pub fn play(&self) {
         self.inner.request("play", Dict::new());
     }
 
-    /// `stop`: speech-only barge-in.
-    pub fn stop(&self) {
-        self.inner.request("pause", Dict::new());
-    }
-
     /// `arm_waiting_playback` (`_InputQueue.arm_waiting_playback`).
+    #[cfg(test)]
     pub fn arm_waiting_playback(&self, command_seq: i64, command_id: &str, kind: &str) {
         self.inner.request(
             "arm_waiting_playback",
@@ -1277,18 +1254,6 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) {
 
 // -- tts_worker.py -----------------------------------------------------------
 
-/// `tts_worker.publish_waiting_preview(text)`, without a speech intent: the
-/// bridge passes none.
-pub fn publish_waiting_preview(text: &str) {
-    let preview = py_strip(text);
-    if !preview.is_empty() {
-        notify_state(
-            "message_waiting",
-            Some(preview.chars().take(2000).collect()),
-        );
-    }
-}
-
 /// `tts_worker.publish_idle`: clear the overlay's speech state when the
 /// worker that showed it is gone.
 pub fn publish_idle() {
@@ -1345,6 +1310,7 @@ fn state_datagram(message: &Dict) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json::py_strip;
     use std::collections::VecDeque;
     use std::io::ErrorKind;
     use std::os::unix::net::UnixListener;

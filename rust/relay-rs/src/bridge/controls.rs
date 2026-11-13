@@ -160,7 +160,7 @@ pub fn play_or_replay(bridge: &Bridge, option_detected_at: Option<f64>) -> bool 
 /// forward.
 pub fn cancel_speech(bridge: &Bridge) {
     let playing = bridge.speech().playing();
-    bridge.speech().skip("");
+    bridge.speech().skip("user_stop");
     if !playing {
         // Nothing was playing, so no stop event will report the dismissal.
         targets::on_reply_finished();
@@ -172,12 +172,13 @@ pub fn handle_session_playback(bridge: &Bridge, payload: &Dict) -> bool {
     let Some(target) = targets::voice_target_for_value(payload.get("session_key")) else {
         return false;
     };
-    let action = payload.string("action");
-    if !matches!(action.as_str(), "play" | "replay" | "stop")
-        || !payload.get("action").is_some_and(|value| value.as_str().is_some())
-    {
+    let Some(action) = payload
+        .get("action")
+        .and_then(Value::as_str)
+        .filter(|action| matches!(*action, "play" | "replay" | "stop"))
+    else {
         return false;
-    }
+    };
     let waiting_key = targets::waiting_session_key();
     let speech = bridge.speech();
     if speech.control_session(

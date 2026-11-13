@@ -128,11 +128,6 @@ pub fn relay_command_key(command: &Dict) -> Option<(i64, String)> {
     crate::support::relay_command_key(command)
 }
 
-/// `_relay_command_key` for a value that may not be an object.
-pub fn relay_command_key_of(command: Option<&Value>) -> Option<(i64, String)> {
-    command.and_then(Value::as_dict).and_then(relay_command_key)
-}
-
 /// `_write_command_state`: the shared command ledger, keeping each live
 /// session's newest command under `session_commands` (RR-401).
 pub fn write_command_state(path: &str, metadata: &Dict) -> io::Result<()> {

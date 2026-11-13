@@ -70,6 +70,7 @@ pub enum DaemonError {
 }
 
 impl DaemonError {
+    #[cfg(test)]
     pub fn timed_out(&self) -> bool {
         matches!(self, DaemonError::TimedOut)
     }
@@ -473,6 +474,7 @@ impl OrchestratorSession {
         *locked(&self.state) = state.to_string();
     }
 
+    #[cfg(test)]
     pub fn state(&self) -> String {
         locked(&self.state).clone()
     }
