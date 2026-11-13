@@ -65,9 +65,6 @@ class SessionCase(BridgeCase):
         session.acknowledge(claimed)
         self.box.wait_intent_state(claimed["intent_id"], "acked")
 
-    def badge(self, session) -> dict:
-        return read_json(session.badge)
-
 
 class SessionsContract:
     def test_focus_moves_turns_to_the_focused_session(self):
@@ -200,70 +197,72 @@ class SessionsContract:
         _, metadata = self.turn_delivered("the other session is gone")
         self.assertEqual(metadata["voice_target_session_key"], self.session.key)
 
-    def test_background_reply_waits_in_its_session_badge(self):
-        """Sessions: a reply for a background session's current command is not
-        spoken. It is kept in that session's `voice_reply_badge.json` with
-        `unread_count`; focusing the session marks it read and keeps the
-        reply. The reply is judged against `session_commands[<key>]`, not the
-        newest command of another session."""
+    def test_background_reply_is_spoken_in_its_session_without_a_badge(self):
+        """Sessions: a reply for a background session's current command is
+        spoken too (RR-488). It skips the messenger and reaches speech as a
+        `speak` for that session with no command key, only its own outcome
+        slot `outcome:<seq>:<id>`. It is judged against
+        `session_commands[<key>]`, not the newest command of another session,
+        so the same reply without its session is dropped. No
+        `voice_reply_badge.json` is written."""
         other = self.register()
         _, command = self.turn_in(other, "summarise the other repository")
         self.refocus(self.session)
         # The newest command overall is project work in the startup session,
         # which does not preserve the other session's command.
         self.turn_delivered("create a ticket for the broken build")
-        spoken_before = len(self.box.speech_requests("speak"))
+        finals_before = len(self.box.messenger_prompts("orchestrator_final"))
         self.box.say(self.reply_line(command, "Reply without its session."))
         self.box.say(self.reply_line(command, "The other repository is tidy.", session_key=other.key))
-        badge = wait_until(lambda: self.badge(other).get("unread_count") == 1 and self.badge(other), message="the badge")
-        self.assertEqual(badge["replies"][-1]["text"], "The other repository is tidy.")
-        self.assertEqual(badge["replies"][-1]["relay_command_id"], command["relay_command_id"])
-        self.assertEqual(len(badge["replies"]), 1)
-        self.assertStays(lambda: not [
-            request for request in self.box.speech_requests("speak")[spoken_before:]
-            if request["text"] in ("The other repository is tidy.", "Reply without its session.")
-        ])
+        spoken = self.box.wait_spoken(text="The other repository is tidy.")
+        self.assertEqual(spoken["session_key"], other.key)
+        self.assertEqual(
+            spoken["dedup_key"], f"outcome:{command['relay_command_seq']}:{command['relay_command_id']}"
+        )
+        self.assertIsNone(spoken.get("command_seq"))
+        self.assertStays(lambda: (
+            not self.box.spoken(text="Reply without its session.")
+            and len(self.box.spoken(text="The other repository is tidy.")) == 1
+            and len(self.box.messenger_prompts("orchestrator_final")) == finals_before
+        ))
         self.refocus(other)
-        badge = wait_until(lambda: self.badge(other).get("unread_count") == 0 and self.badge(other), message="read")
-        self.assertEqual(badge["replies"][-1]["text"], "The other repository is tidy.")
+        self.assertFalse(other.badge.exists())
+        self.assertFalse(self.session.badge.exists())
 
     def test_background_completion_is_matched_by_its_provider_session(self):
         """Sessions: a `__RELAY_COMPLETION__` names no session key; its
         `session_id` is matched to the session whose provider session it is,
-        and a background session's reply goes to that session's badge."""
+        and a background session's reply is spoken for that session."""
         other = self.register()
         _, command = self.turn_in(other, "look at the other tests")
         self.refocus(self.session)
         self.box.say(self.completion_line(command, "The other tests pass.", session_id=other.provider_session_id))
-        badge = wait_until(lambda: self.badge(other).get("unread_count") == 1 and self.badge(other), message="the badge")
-        self.assertEqual(badge["replies"][-1]["text"], "The other tests pass.")
-        self.assertNeverSpoken("The other tests pass.")
+        spoken = self.box.wait_spoken(text="The other tests pass.")
+        self.assertEqual(spoken["session_key"], other.key)
+        self.assertFalse(other.badge.exists())
 
-    def test_replay_reads_out_a_session_s_latest_reply(self):
+    def test_replay_asks_speech_to_play_then_replay_the_session(self):
         """Sessions: `__REPLAY__:{"session_key": ...}` on the control socket asks
-        speech to `read_out` that session's latest stored reply; a session
-        without one reads out nothing."""
+        speech to `control_session` the session with `play` (queued speech
+        first) and, when that is not handled, `replay` (its replay history).
+        The bridge reads nothing out itself; an unknown session does nothing."""
         other = self.register()
-        _, command = self.turn_in(other, "what changed over there")
-        self.refocus(self.session)
-        self.box.say(self.reply_line(command, "Two files changed.", session_key=other.key))
-        wait_until(lambda: self.badge(other).get("unread_count") == 1, message="the badge")
-        self.box.control("__REPLAY__:" + json.dumps({"session_key": self.session.key}))
+        self.box.control("__REPLAY__:" + json.dumps({"session_key": "session-9"}))
         self.box.control("__REPLAY__:" + json.dumps({"session_key": other.key}))
-        read = self.box.wait_speech_request("read_out", text="Two files changed.")
-        self.assertEqual(read.get("session_key"), "")
-        self.assertStays(lambda: len(self.box.speech_requests("read_out")) == 1)
+        replay = self.box.wait_speech_request("control_session", action="replay")
+        self.assertEqual(replay["session_key"], other.key)
+        self.assertEqual(
+            [(request["session_key"], request["action"]) for request in self.box.speech_requests("control_session")],
+            [(other.key, "play"), (other.key, "replay")],
+        )
+        self.assertStays(lambda: not self.box.speech_requests("read_out"))
 
-    def test_session_playback_asks_speech_then_reads_out_the_unread_reply(self):
-        """Sessions: `__SESSION_PLAYBACK__` with `play` first asks speech to
-        `control_session`; when that is not handled it reads out the session's
-        unread reply and counts it heard. `stop` only asks `control_session`.
-        An unknown session or action does nothing."""
+    def test_session_playback_asks_speech_for_the_session(self):
+        """Sessions: `__SESSION_PLAYBACK__` with `play` asks speech to
+        `control_session` with `play`, then `replay` when that is not handled.
+        `stop` only asks `control_session` with `stop`. An unknown session or
+        action does nothing, and the bridge never reads a reply out itself."""
         other = self.register()
-        _, command = self.turn_in(other, "anything new over there")
-        self.refocus(self.session)
-        self.box.say(self.reply_line(command, "Nothing new.", session_key=other.key))
-        wait_until(lambda: self.badge(other).get("unread_count") == 1, message="the badge")
         for payload in (
             {"session_key": "session-9", "action": "play"},
             {"session_key": other.key, "action": "pause"},
@@ -273,19 +272,18 @@ class SessionsContract:
         stop = self.box.wait_speech_request("control_session", action="stop")
         self.assertEqual(stop["session_key"], other.key)
         self.box.control("__SESSION_PLAYBACK__:" + json.dumps({"session_key": other.key, "action": "play"}))
-        play = self.box.wait_speech_request("control_session", action="play")
-        self.assertEqual(play["session_key"], other.key)
-        read = self.box.wait_speech_request("read_out", text="Nothing new.")
-        self.assertEqual(read["session_key"], other.key)
-        wait_until(lambda: self.badge(other).get("unread_count") == 0, message="the reply counted heard")
-        self.assertEqual(len(self.box.speech_requests("control_session")), 2)
-        self.assertEqual(len(self.box.speech_requests("read_out")), 1)
+        self.box.wait_speech_request("control_session", action="replay")
+        self.assertEqual(
+            [(request["session_key"], request["action"]) for request in self.box.speech_requests("control_session")],
+            [(other.key, "stop"), (other.key, "play"), (other.key, "replay")],
+        )
+        self.assertStays(lambda: not self.box.speech_requests("read_out"))
 
-    def test_focused_session_hears_its_outcomes_and_others_count_them(self):
+    def test_focused_session_hears_its_outcomes_and_others_wait_for_focus(self):
         """Sessions: undelivered worker outcomes are fetched per session key.
         The focused session's outcomes go to the messenger and are marked
-        delivered; a background session's count goes to its badge's
-        `outcome_count` until it is focused, when they are delivered."""
+        delivered; a background session's outcomes are left undelivered, and
+        uncounted, until it is focused, when they are delivered."""
         orchestrator = self.box.orchestrator
         scoped = {
             self.session.key: [{"id": 1, "payload": {"trace_event": {
@@ -321,30 +319,29 @@ class SessionsContract:
         other = self.register(focus=False)
         self.box.wait_messenger_prompt("orchestrator_trace", "Worker RR-7 finished.")
         wait_until(lambda: orchestrator.requests("/v1/messenger/outcomes/1/delivered"), message="outcome 1 delivered")
-        badge = wait_until(lambda: self.badge(other).get("outcome_count") == 2 and self.badge(other), message="count")
-        self.assertEqual(badge["unread_count"], 0)
-        background = [
-            call["query"] for call in orchestrator.requests("/v1/messenger/outcomes")
-            if call["query"].get("session_key") == other.key
-        ][-1]
-        self.assertEqual(background["repo_path"], str(other.cwd))
-        self.assertEqual(background["provider"], self.provider)
         focused = [
             call["query"] for call in orchestrator.requests("/v1/messenger/outcomes")
             if call["query"].get("session_key") == self.session.key
         ][-1]
         self.assertEqual(focused["live_session_keys"], f"{self.session.key},{other.key}")
         self.assertEqual(focused["repo_path"], os.path.realpath(self.box.repo))
-        self.assertFalse(orchestrator.requests("/v1/messenger/outcomes/2/delivered"))
+        self.assertStays(lambda: not orchestrator.requests("/v1/messenger/outcomes/2/delivered"))
+        self.assertFalse(other.badge.exists())
         self.refocus(other)
         wait_until(
             lambda: orchestrator.requests("/v1/messenger/outcomes/2/delivered")
             and orchestrator.requests("/v1/messenger/outcomes/3/delivered"),
             message="the background outcomes delivered",
         )
+        background = [
+            call["query"] for call in orchestrator.requests("/v1/messenger/outcomes")
+            if call["query"].get("session_key") == other.key
+        ][-1]
+        self.assertEqual(background["repo_path"], str(other.cwd))
+        self.assertEqual(background["provider"], self.provider)
         # Two outcomes are summarised as one update.
         self.box.wait_messenger_prompt("orchestrator_trace", "2 Relay work updates accumulated")
-        wait_until(lambda: self.badge(other).get("outcome_count") == 0, message="the count cleared")
+        self.assertFalse(other.badge.exists())
 
 
 class QuietSessionsContract:
@@ -353,51 +350,47 @@ class QuietSessionsContract:
     greeting = False
     messenger = False
 
-    def test_focus_switch_cuts_off_playing_speech(self):
-        """Sessions: changing focus while speech is playing skips it with the
-        reason `focus_switch`; changing focus while nothing plays sends no
-        skip."""
+    def test_focus_switch_leaves_playing_speech_alone(self):
+        """Sessions: changing focus, while speech is playing or not, sends
+        speech no `skip`, `stop_playback` or `pause` (RR-488): a reply playing
+        or queued is still heard."""
         other = self.register()
         self.refocus(self.session)
-        self.assertStays(lambda: not self.box.speech_requests("skip"))
         self.box.speech_command(op="playing", value=True)
-        wait_until(lambda: self.box.speech_records() and any(
+        wait_until(lambda: any(
             record.get("record") == "control" and record.get("op") == "playing"
             for record in self.box.speech_records()
         ), message="the fake to play")
         self.refocus(other)
-        skip = self.box.wait_speech_request("skip")
-        self.assertEqual(skip["reason"], "focus_switch")
+        self.refocus(self.session)
+        self.assertStays(lambda: not (
+            self.box.speech_requests("skip")
+            or self.box.speech_requests("stop_playback")
+            or self.box.speech_requests("pause")
+        ))
 
-    def test_finished_reply_brings_forward_the_oldest_unheard_reply(self):
-        """Sessions: when the speech service reports `reply_finished` and
-        nothing is speaking, the bridge offers the oldest unread reply of a
-        background session as a `speak` for that session, with a `dedup_key`
-        starting `queued-reply:`, and counts it heard."""
+    def test_background_reply_queues_behind_playing_speech_once(self):
+        """Sessions: a background session's reply that arrives while speech is
+        playing is handed to speech as one `speak` and never cuts in: the
+        bridge sends no `skip`, `stop_playback` or `pause`. When speech
+        reports `reply_finished`, or `__CANCEL__` skips it, the bridge offers
+        nothing again; the speech queue owns what plays next."""
         other = self.register()
         _, command = self.turn_in(other, "how is the other build")
         self.refocus(self.session)
+        self.box.speech_command(op="playing", value=True)
         self.box.say(self.reply_line(command, "The other build is green.", session_key=other.key))
-        wait_until(lambda: self.badge(other).get("unread_count") == 1, message="the badge")
-        self.assertNeverSpoken("The other build is green.")
-        self.box.speech_command(op="finish")
         spoken = self.box.wait_spoken(text="The other build is green.")
         self.assertEqual(spoken["session_key"], other.key)
-        self.assertTrue(spoken["dedup_key"].startswith(f"queued-reply:{other.key}:"))
-        self.assertNotIn("command_seq", spoken)
-        wait_until(lambda: self.badge(other).get("unread_count") == 0, message="the reply counted heard")
-
-    def test_cancel_with_nothing_playing_brings_forward_an_unheard_reply(self):
-        """Sessions: `__CANCEL__` while nothing is playing dismisses the
-        current reply and offers the next unheard background reply."""
-        other = self.register()
-        _, command = self.turn_in(other, "and the other docs")
-        self.refocus(self.session)
-        self.box.say(self.reply_line(command, "The other docs are current.", session_key=other.key))
-        wait_until(lambda: self.badge(other).get("unread_count") == 1, message="the badge")
+        self.assertStays(lambda: not (
+            self.box.speech_requests("skip")
+            or self.box.speech_requests("stop_playback")
+            or self.box.speech_requests("pause")
+        ))
+        self.box.speech_command(op="finish")
         self.box.say("__CANCEL__")
-        spoken = self.box.wait_spoken(text="The other docs are current.")
-        self.assertEqual(spoken["session_key"], other.key)
+        self.box.wait_speech_request("skip")
+        self.assertStays(lambda: len(self.box.spoken(text="The other build is green.")) == 1)
 
 
 class ClaudeSessions(SessionsContract, SessionCase):

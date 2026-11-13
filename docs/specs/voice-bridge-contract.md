@@ -20,7 +20,7 @@ python3 -m unittest discover -s tests/contract -p 'test_bridge_contract*.py'
 | `RELAY_BRIDGE_CONTRACT_WAIT_SECONDS` | `10` | How long a case waits for something the bridge should do promptly. |
 | `RELAY_BRIDGE_CONTRACT_QUIET_SECONDS` | `1.0` | How long a case watches for something that must not happen. |
 
-The suite needs macOS and Python 3.10 or newer. A full run is 289 cases (each starts its own bridge, some two) and takes about 16 minutes; run one area with `-p 'test_bridge_contract_replies.py'`.
+The suite needs macOS and Python 3.10 or newer. A full run is 287 cases (each starts its own bridge, some two) and takes about 16 minutes; run one area with `-p 'test_bridge_contract_replies.py'`.
 
 Each case builds a sandbox under a fresh `/tmp/rbc-XXXX` folder (short, because Unix socket paths are limited to 104 bytes on macOS) and starts the bridge with **only** the environment the sandbox builds: `HOME`, `PATH` (the sandbox's `bin/` first, then `/usr/bin:/bin`), `TMPDIR`, `LANG` and the variables in [Environment](#environment). Every path the bridge reads or writes is redirected into the sandbox, so a case never touches the sockets, mailbox, inbox or speech of a running Relay Runner session. The one exception is the continuity reply path, which the bridge accepts only under `/tmp` (see [Continuity](#continuity)); that case uses a unique name and removes the file.
 
@@ -142,7 +142,7 @@ auto_play = false
 | `<spool>/voice_cmd_claimed.json` | session | The claimed metadata; the bridge then records the intent `claimed`. | commands/test_claim_then_acknowledgement_moves_the_intent_through_its_states |
 | `<spool>/voice_cmd_manual_ack.json` | session | Acknowledges a claim when its ids match; the bridge removes it. | commands/test_an_acknowledgement_that_does_not_match_the_claim_is_ignored |
 | `<spool>/voice_command_state.json` | bridge | The newest command, `deliverable_commands`, `cancelled_intent_ids`, `inbox_recovery_blocker`, `source_command_intents`, `session_commands`. | replies/test_reply_for_a_cancelled_intent_is_dropped, restart/test_a_claimed_unacknowledged_command_becomes_a_recovery_blocker |
-| `<spool>/voice_reply_badge.json` | bridge | A background session's unread replies and `unread_count`. | sessions/test_background_reply_waits_in_its_session_badge |
+| `<spool>/voice_reply_badge.json` | nobody | No longer written (RR-488): a background session's reply is spoken in turn, and its outcomes wait for focus uncounted. The cases check the file stays absent. | sessions/test_background_reply_is_spoken_in_its_session_without_a_badge, sessions/test_focused_session_hears_its_outcomes_and_others_wait_for_focus |
 | `<runtime>/voice_bridge.pid` | bridge | Its pid. | process/test_startup_creates_the_fifos_and_sockets_at_their_configured_paths |
 | `<runtime>/voice_bridge.cwd`, `.provider`, `.spool` | bridge | The focused session's directory, provider and spool, written on focus. | sessions/test_focus_moves_turns_to_the_focused_session |
 | `<runtime>/voice_bridge_watchdog_restart` | app | Names the bridge pid and provider; keeps the claim, turns and command state across the stop. | restart/test_a_watchdog_restart_keeps_the_claim_turns_and_command_state, restart/test_a_marker_for_another_bridge_does_not_preserve |
@@ -169,7 +169,7 @@ Each line on `VOICE_FIFO` is one input, UTF-8, ended by `\n`; a line may arrive 
 | `slash foo` spoken | Becomes `/foo`. | fifo/test_spoken_slash_commands_become_slash_commands |
 | `__TTS_STOP__` | `stop_playback` as a barge-in. | fifo/test_tts_stop_stops_playback_as_a_barge_in |
 | `__INTERRUPT__` | Stops speech and publishes an interrupt command that supersedes the current one. | fifo/test_interrupt_stops_speech_and_publishes_an_interrupt_command, remote/test_interrupt_control_publishes_an_interrupt_command |
-| `__CANCEL__` | `skip`; no command; clears a voice target pin; with nothing playing brings forward an unheard reply. | fifo/test_cancel_dismisses_speech_without_starting_a_command, sessions/test_cancel_clears_a_voice_target_pin, sessions/test_cancel_with_nothing_playing_brings_forward_an_unheard_reply |
+| `__CANCEL__` | `skip`; no command; clears a voice target pin; offers no other reply itself (the speech queue plays the next). | fifo/test_cancel_dismisses_speech_without_starting_a_command, sessions/test_cancel_clears_a_voice_target_pin, sessions/test_background_reply_queues_behind_playing_speech_once |
 | `__PLAY__`, `__PLAY__:<json>` | `note_play_control`, then `play_or_replay`. | fifo/test_play_records_the_gesture_and_plays_or_replays |
 | `__PLAY_ACK__:<json>` | `note_visual_acknowledgement`; malformed records nothing. | fifo/test_play_ack_records_the_visual_acknowledgement |
 | `__REPLAY__` | `replay`. | fifo/test_replay_asks_speech_to_replay |
@@ -193,9 +193,9 @@ Datagrams on `BRIDGE_CONTROL_SOCK`, at most 4096 bytes. macOS refuses back-to-ba
 | anything unknown | Ignored. | process/test_ping_and_unknown_commands_leave_the_bridge_running |
 | `reload` | `reload_config` to speech. | process/test_reload_rereads_the_speech_configuration |
 | `shutdown` | Clean stop. | process/test_shutdown_request_stops_the_bridge_and_removes_its_files |
-| `__FOCUS__:<json>` | Focuses or registers (`focus: false`) a session; invalid payloads are rejected; a focus switch cuts off speech. | sessions/test_focus_moves_turns_to_the_focused_session, sessions/test_invalid_focus_payloads_are_rejected, sessions/test_focus_false_registers_without_focusing, sessions/test_focus_switch_cuts_off_playing_speech |
-| `__REPLAY__:<json>` | Reads out a session's latest reply. | sessions/test_replay_reads_out_a_session_s_latest_reply |
-| `__SESSION_PLAYBACK__:<json>` | `control_session` to speech, else reads out the unread reply. | sessions/test_session_playback_asks_speech_then_reads_out_the_unread_reply |
+| `__FOCUS__:<json>` | Focuses or registers (`focus: false`) a session; invalid payloads are rejected; a focus switch leaves speech alone (RR-488). | sessions/test_focus_moves_turns_to_the_focused_session, sessions/test_invalid_focus_payloads_are_rejected, sessions/test_focus_false_registers_without_focusing, sessions/test_focus_switch_leaves_playing_speech_alone |
+| `__REPLAY__:<json>` | `control_session` to speech with `play`, then `replay` when not handled; nothing for an unknown session. | sessions/test_replay_asks_speech_to_play_then_replay_the_session |
+| `__SESSION_PLAYBACK__:<json>` | `control_session` to speech: `stop` only stops; `play` falls back to `replay`. The bridge reads nothing out itself. | sessions/test_session_playback_asks_speech_for_the_session |
 | `{"type": "continuity_recovery", …}` | Answers on its `reply_path`. | restart/test_invalid_continuity_recovery_reports_failure_to_its_reply_path |
 | `{"type": "continuity_resume", …}` | Please-repeat after lost speech, once; ignored for another session or generation. | restart/test_continuity_resume_after_lost_speech_asks_the_user_to_repeat, restart/test_continuity_resume_for_another_session_or_generation_does_nothing |
 | `{"type": "continuity_provider_ready", "event": "provider_ready", …}` | Accepted only for the exact replacement. | restart/test_provider_ready_for_the_exact_replacement_is_accepted, restart/test_provider_ready_for_a_mismatched_replacement_is_refused |
@@ -260,7 +260,7 @@ A reply is `__ORCHESTRATOR_REPLY__:{"relay_command_seq", "relay_command_id", "te
 | Two or more at once are summarised in one update. | replies/test_several_outcomes_at_once_are_summarised_in_one_update |
 | An outcome's whole `lifecycle_detail` reaches the messenger even when its `message` is cut short. | replies/test_an_outcomes_whole_lifecycle_detail_reaches_the_messenger |
 | Not polled without the messenger. | replies/test_without_the_messenger_outcomes_are_not_polled |
-| The focused session hears its outcomes; others count them. | sessions/test_focused_session_hears_its_outcomes_and_others_count_them |
+| The focused session hears its outcomes; others stay undelivered and uncounted until focused. | sessions/test_focused_session_hears_its_outcomes_and_others_wait_for_focus |
 
 ## Messenger
 
@@ -289,8 +289,8 @@ A reply is `__ORCHESTRATOR_REPLY__:{"relay_command_seq", "relay_command_id", "te
 | --- | --- |
 | Each added session registers its own orchestrator session; pruning one stops it. | sessions/test_each_added_session_registers_its_own_orchestrator_session |
 | A pruned session hands its undelivered command to the focused one. | sessions/test_pruned_session_hands_its_undelivered_command_to_the_focused_session |
-| A background reply waits in its badge; a completion is matched by provider session. | sessions/test_background_reply_waits_in_its_session_badge, sessions/test_background_completion_is_matched_by_its_provider_session |
-| A finished reply brings forward the oldest unheard reply. | sessions/test_finished_reply_brings_forward_the_oldest_unheard_reply |
+| A background session's reply is spoken for that session (RR-488): no messenger, no command key, `dedup_key` `outcome:<seq>:<id>`, judged against its own session's command; a completion is matched by provider session. | sessions/test_background_reply_is_spoken_in_its_session_without_a_badge, sessions/test_background_completion_is_matched_by_its_provider_session |
+| A background reply queues behind playing speech as one `speak` and never cuts in; `reply_finished` and `__CANCEL__` make the bridge offer nothing again. | sessions/test_background_reply_queues_behind_playing_speech_once |
 
 ## Relay Remote
 
@@ -522,4 +522,4 @@ RELAY_VOICE_BRIDGE_CMD="python3 -c 'import time; time.sleep(3600)'" \
   python3 -m unittest discover -s tests/contract -p 'test_bridge_contract*.py'
 ```
 
-a process that never reads its FIFO or creates its sockets, every one of the 289 cases fails (`FAILED (failures=289)`, each a timeout waiting for the bridge to come up), and the harness kills every stub it started. The shorter wait only makes the check quicker; it does not change what fails.
+a process that never reads its FIFO or creates its sockets, every one of the 287 cases fails (`FAILED (failures=287)`, each a timeout waiting for the bridge to come up), and the harness kills every stub it started. The shorter wait only makes the check quicker; it does not change what fails.
