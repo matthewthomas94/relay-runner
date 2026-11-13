@@ -100,6 +100,23 @@ class RustLicenseTests(unittest.TestCase):
             ["unlabelled 1.0.0: no licence expression"],
         )
 
+    def test_a_build_only_exception_holds_only_while_nothing_links_the_crate(self):
+        tool = crate("ureq", "MIT OR Apache-2.0", "3.0.0")
+        roots = crate("webpki-root-certs", "CDLA-Permissive-2.0", "1.0.12")
+        built = rust_licenses.linked_packages(
+            "relay-speech v0.0.0 (/repo/rust/relay-speech)\nort v2.0.0-rc.15\nlibc v0.2.1\nlibc v0.2.1 (*)\n"
+        )
+        self.assertEqual(built, {("relay-speech", "0.0.0"), ("ort", "2.0.0-rc.15"), ("libc", "0.2.1")})
+        self.assertEqual(rust_licenses.refused_crates([tool, roots], built), [])
+        linked = built | {("webpki-root-certs", "1.0.12")}
+        self.assertEqual(
+            rust_licenses.refused_crates([tool, roots], linked),
+            ["webpki-root-certs 1.0.12: CDLA-Permissive-2.0"],
+        )
+        # The exception names one licence for one crate.
+        other = crate("other-roots", "CDLA-Permissive-2.0")
+        self.assertEqual(rust_licenses.refused_crates([other], set()), ["other-roots 1.0.0: CDLA-Permissive-2.0"])
+
     def test_rendered_block_lists_each_crate_and_replaces_only_the_generated_block(self):
         block = rust_licenses.render([crate("zeta", "MIT OR Apache-2.0", "1.4.0")], "1.2.3")
         self.assertIn("| [zeta](https://crates.io/crates/zeta/1.4.0) | 1.4.0 | MIT OR Apache-2.0 |", block)

@@ -153,16 +153,21 @@ final class ProcessManager {
             return true
         }
 
-        let script = bundledServicesDir.appendingPathComponent("tts_worker.py")
-        guard FileManager.default.fileExists(atPath: script.path) else {
-            NSLog("[ProcessManager] Tutorial TTS worker is missing: \(script.path)")
-            return false
-        }
-
         let input = Pipe()
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: Self.servicePython)
-        process.arguments = [script.path]
+        switch SpeechRuntime.resolve() {
+        case .rust(let binary):
+            process.executableURL = URL(fileURLWithPath: binary)
+            process.arguments = ["tutorial"]
+        case .python:
+            let script = bundledServicesDir.appendingPathComponent("tts_worker.py")
+            guard FileManager.default.fileExists(atPath: script.path) else {
+                NSLog("[ProcessManager] Tutorial TTS worker is missing: \(script.path)")
+                return false
+            }
+            process.executableURL = URL(fileURLWithPath: Self.servicePython)
+            process.arguments = [script.path]
+        }
         process.currentDirectoryURL = bundledServicesDir
         process.standardInput = input
         var environment = ProcessInfo.processInfo.environment
@@ -2285,6 +2290,32 @@ final class ProcessManager {
         }
     }
 
+    /// RR-481: the speech the app runs itself, the tutorial voice and the
+    /// Settings voice preview. `relay-speech tutorial` and `relay-speech
+    /// preview` are the default. Setting `RELAY_SPEECH_RUNTIME=python` in the
+    /// app's environment runs the bundled Python scripts instead, the fallback
+    /// for one release; so does a build with no relay-speech beside the app
+    /// executable. The voice bridge makes the same choice for the speech service.
+    enum SpeechRuntime: Equatable {
+        case rust(binary: String)
+        case python
+
+        static let environmentName = "RELAY_SPEECH_RUNTIME"
+        static let binaryName = "relay-speech"
+
+        static func resolve(
+            executableDirectory: URL? = Bundle.main.executableURL?.deletingLastPathComponent(),
+            environment: [String: String] = ProcessInfo.processInfo.environment,
+            isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+        ) -> SpeechRuntime {
+            let requested = environment[environmentName]?.trimmingCharacters(in: .whitespaces).lowercased()
+            guard requested != "python",
+                  let binary = executableDirectory?.appendingPathComponent(binaryName).path,
+                  isExecutable(binary) else { return .python }
+            return .rust(binary: binary)
+        }
+    }
+
     private static func completionHookScriptPath(relayBridge: String) -> String {
         URL(fileURLWithPath: relayBridge)
             .deletingLastPathComponent()
@@ -2571,6 +2602,14 @@ final class ProcessManager {
     /// Build an owned preview process. The caller drains stderr, bounds its
     /// lifetime and plays the output locally; it never enters the response queue.
     func voicePreviewProcess(name: String, text: String, output: URL) throws -> Process {
+        let arguments = ["--voice", name, "--text", text, "--output", output.path]
+        if case .rust(let binary) = SpeechRuntime.resolve() {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: binary)
+            proc.arguments = ["preview"] + arguments
+            proc.standardOutput = FileHandle.nullDevice
+            return proc
+        }
         let python = Self.userVenvPython
         let script = bundledServicesDir.appendingPathComponent("preview_voice.py").path
 
@@ -2587,7 +2626,7 @@ final class ProcessManager {
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: python)
-        proc.arguments = [script, "--voice", name, "--text", text, "--output", output.path]
+        proc.arguments = [script] + arguments
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         proc.environment = environment

@@ -574,11 +574,32 @@ class BridgeControlTests(ClientCase):
 class BridgeWiringTests(unittest.TestCase):
     def test_service_reads_the_bridges_config(self):
         with mock.patch.object(sys, "argv", ["voice_bridge.py", "--config", "/tmp/a config.toml", "--relay"]), \
-                mock.patch.dict(os.environ, {"RELAY_SPEECH_SERVICE_CMD": ""}):
+                mock.patch.dict(os.environ, {"RELAY_SPEECH_SERVICE_CMD": "", "RELAY_SPEECH_RUNTIME": "python"}):
             command = voice_bridge._speech_service_command()
         self.assertEqual(command[0], sys.executable)
         self.assertEqual(command[1], os.path.join(SERVICES, "speech_service.py"))
         self.assertEqual(command[2:], ["--config", "/tmp/a config.toml"])
+
+    def test_the_rust_service_is_the_default_and_python_the_fallback(self):
+        root = tempfile.mkdtemp(prefix="rsb-", dir="/tmp")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        binary = os.path.join(root, "relay speech")
+        with open(binary, "w") as handle:
+            handle.write("#!/bin/sh\n")
+        os.chmod(binary, 0o755)
+        python = [sys.executable, os.path.join(SERVICES, "speech_service.py")]
+        cases = (
+            ({"RELAY_SPEECH_BINARY": binary}, [binary, "--config", "/tmp/c.toml"]),
+            ({"RELAY_SPEECH_BINARY": binary, "RELAY_SPEECH_RUNTIME": " Python "}, [*python, "--config", "/tmp/c.toml"]),
+            # Without the binary, as in a source checkout, the Python service speaks.
+            ({"RELAY_SPEECH_BINARY": os.path.join(root, "missing")}, [*python, "--config", "/tmp/c.toml"]),
+        )
+        for environment, expected in cases:
+            with self.subTest(environment=environment), \
+                    mock.patch.object(sys, "argv", ["voice_bridge.py", "--config", "/tmp/c.toml", "--relay"]), \
+                    mock.patch.dict(os.environ, {"RELAY_SPEECH_SERVICE_CMD": "", "RELAY_SPEECH_RUNTIME": "", **environment}), \
+                    mock.patch("sys.stderr"):
+                self.assertEqual(voice_bridge._speech_service_command(), expected)
 
     def test_service_command_can_be_replaced(self):
         with mock.patch.object(sys, "argv", ["voice_bridge.py", "--relay"]), \

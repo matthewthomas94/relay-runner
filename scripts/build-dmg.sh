@@ -207,6 +207,10 @@ cp "$BUILD_DIR/relay-remote-shell" "$APP_DIR/Contents/MacOS/relay-remote-shell"
 # (RR-475). It reports the bundle version it was compiled with, which
 # app_signing.py check-helper compares with this bundle's Info.plist.
 cp "$RUST_DIR/target/$RUST_TARGET/release/relay-rs" "$APP_DIR/Contents/MacOS/relay-rs"
+# Speech service: relay-speech, from the same workspace (RR-481). It links ONNX
+# Runtime statically, so there is no library beside it to bundle or sign. The
+# bridge, the tutorial voice and the Settings preview run it by default.
+cp "$RUST_DIR/target/$RUST_TARGET/release/relay-speech" "$APP_DIR/Contents/MacOS/relay-speech"
 
 # Keep Awake power helper (RR-437). A root launchd daemon registered with
 # SMAppService from Contents/Library/LaunchDaemons; its BundleProgram points at
@@ -329,7 +333,7 @@ cp "$AGENT_DESKTOP_DIR/LICENSE" "$THIRD_PARTY_LICENSES_DIR/agent-desktop.txt"
 
 # Python services
 for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py work_style_cli.py intent_qualification.py continuity_incidents.py continuity_agent.py continuity_recovery.py continuity_reports.py continuity_resume.py relay_authorization.py relay_remote.py relay_remote_protocol.py intent_arbitration.py intent_inbox.py provider_turn_broker.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py claude_subscription.py rust_messenger.py harness_update.py \
-         voice_audio_lease.py speech_player.py remote_audio.py speech_service.py speech_client.py \
+         voice_audio_lease.py speech_player.py remote_audio.py speech_service.py speech_client.py requirements-python-speech.txt \
          artifact_lifecycle.py artifact_migration.py artifact_migration_cli.py artifact_history_cli.py automatic_retention.py \
          artifact_catalog.py artifact_retention.py artifact_rollout.py artifact_rollout_cli.py artifact_store.py artifact_sync.py note_contract.py project_notes.py global_notes.py general_work.py personal_file_storage.py personal_notes.py note_metadata.py \
          artifact_verification.py artifact_verification_cli.py app_signing.py fresh_install.py fresh_install_cli.py \
@@ -444,6 +448,10 @@ if [ -n "$SIGN_IDENTITY" ]; then
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR/Contents/MacOS/relay-remote-shell"
+    # relay-speech is built here too, and is signed the same way.
+    codesign --force --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/relay-speech"
     # relay-rs is built here, not downloaded, and is signed like the other
     # helpers: hardened runtime, timestamp, no entitlements.
     codesign --force --timestamp --options runtime \

@@ -2,9 +2,9 @@
 # release mode and ships each binary in Contents/MacOS of the app bundle.
 [workspace]
 resolver = "3"
-members = ["relay-rs"]
+members = ["relay-rs", "relay-speech"]
 # The speech prototype (RR-479) is a workspace of its own: it is not built into
-# the app, and it resolves about a hundred crates the app does not ship.
+# the app. relay-speech (RR-481) is the production speech service built from it.
 exclude = ["relay-speech-proto"]
 
 [workspace.package]

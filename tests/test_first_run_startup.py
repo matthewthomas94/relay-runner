@@ -194,6 +194,110 @@ exit 0
             self.assertIn("Existing venv uses Python 3.9", result.stdout)
             self.assertIn("Venv ready (--venv-only)", result.stdout)
 
+    def test_fresh_setup_installs_the_python_speech_stack_only_for_the_fallback(self):
+        """RR-481: speech runs in the Rust relay-speech, so a fresh install
+        installs requirements.txt only and downloads the model without
+        huggingface_hub; RELAY_SPEECH_RUNTIME=python adds the Python stack."""
+        for runtime, requirements in (("", "requirements.txt"), ("python", "requirements-python-speech.txt")):
+            with self.subTest(runtime=runtime), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                scripts, services, fake_bin, home = (root / name for name in ("scripts", "services", "bin", "home"))
+                for directory in (scripts, services, fake_bin, home):
+                    directory.mkdir()
+                source = (ROOT / "scripts" / "relay-bridge").read_text()
+                start = source.index("find_codex_bin() {")
+                end = source.index("\n}\n", start) + 3
+                source = source[:start] + 'find_codex_bin() {\n    echo ""\n}\n' + source[end:]
+                source = source.replace(
+                    "/opt/homebrew/bin/python3.13 /usr/local/bin/python3.13 python3.13", "python3.13"
+                )
+                launcher = scripts / "relay-bridge"
+                launcher.write_text(source)
+                launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
+                for name in ("requirements.txt", "requirements-python-speech.txt"):
+                    shutil.copy(SERVICES / name, services / name)
+                for relative in (
+                    ".claude/skills/relay-bridge/SKILL.md",
+                    ".claude/skills/relay-stop/SKILL.md",
+                    ".claude/skills/relay-dispatch/SKILL.md",
+                    ".claude/skills/relay-workflow/SKILL.md",
+                    ".codex/skills/relay-bridge/SKILL.md",
+                    ".codex/skills/relay-stop/SKILL.md",
+                    ".codex/skills/relay-dispatch/SKILL.md",
+                    ".codex/skills/relay-workflow/SKILL.md",
+                    "Library/LaunchAgents/com.relay.orchestrator.plist",
+                ):
+                    path = home / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("ready\n")
+                (home / ".local/bin").mkdir(parents=True, exist_ok=True)
+                self.write_executable(home / ".local/bin/claude", "#!/bin/bash\nexit 0\n")
+                # A new venv whose pip records what it was asked to install.
+                self.write_executable(
+                    fake_bin / "python3.13",
+                    """#!/bin/bash
+if [ "${1:-}" = "--version" ]; then echo 'Python 3.13.7'; exit 0; fi
+if [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ]; then
+  mkdir -p "$3/bin"
+  cp "$0" "$3/bin/python3"
+  cp "$0" "$3/bin/python"
+  printf '#!/bin/bash\\necho "$@" >> "$FAKE_PIP_LOG"\\n' > "$3/bin/pip"
+  chmod +x "$3/bin/python3" "$3/bin/python" "$3/bin/pip"
+  exit 0
+fi
+exit 0
+""",
+                )
+                self.write_executable(
+                    fake_bin / "curl",
+                    """#!/bin/bash
+output=""
+while [ $# -gt 0 ]; do
+  case "$1" in --output) output="$2"; shift ;; https://*) echo "$1" >> "$FAKE_CURL_LOG" ;; esac
+  shift
+done
+echo model > "$output"
+""",
+                )
+                pip_log, curl_log = root / "pip.log", root / "curl.log"
+                env = {
+                    **os.environ,
+                    "HOME": str(home),
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "FAKE_PIP_LOG": str(pip_log),
+                    "FAKE_CURL_LOG": str(curl_log),
+                    "RELAY_DIAGNOSTICS_DIR": str(root / "diagnostics"),
+                    "RELAY_SPEECH_RUNTIME": runtime,
+                }
+                result = subprocess.run(
+                    [str(launcher), "--venv-only"], env=env, text=True, capture_output=True, check=False
+                )
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Venv ready (--venv-only)", result.stdout)
+                installs = [line for line in pip_log.read_text().splitlines() if line.startswith("install -r ")]
+                self.assertEqual(installs, [f"install -r {services / requirements}"])
+                self.assertEqual(
+                    curl_log.read_text().splitlines(),
+                    [
+                        "https://huggingface.co/fastrtc/kokoro-onnx/resolve/main/kokoro-v1.0.onnx",
+                        "https://huggingface.co/fastrtc/kokoro-onnx/resolve/main/voices-v1.0.bin",
+                    ],
+                )
+                kokoro = home / ".local/share/kokoro"
+                self.assertEqual(
+                    sorted(path.name for path in kokoro.iterdir()), ["kokoro-v1.0.onnx", "voices-v1.0.bin"]
+                )
+
+    def test_base_requirements_leave_the_python_speech_stack_to_the_fallback(self):
+        base = (SERVICES / "requirements.txt").read_text()
+        fallback = (SERVICES / "requirements-python-speech.txt").read_text()
+        for package in ("numpy", "onnxruntime", "kokoro-onnx", "huggingface_hub"):
+            with self.subTest(package=package):
+                self.assertNotIn(package, base)
+                self.assertIn(package, fallback)
+        self.assertIn("-r requirements.txt", fallback)
+
     def test_claude_setup_installs_claude_even_when_codex_is_present(self):
         for provider, expect_install in (("claude", True), ("codex", False), ("", False)):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp:

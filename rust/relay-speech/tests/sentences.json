@@ -1,0 +1,598 @@
+{
+ "source": "services/tts_worker.py _sentence_chunks; regenerate with python3 tests/test_speech_sentence_fixture.py --write",
+ "cases": [
+  {
+   "text": "I've finished the change and all the tests pass.",
+   "chunks": [
+    "I've finished the change and all the tests pass."
+   ]
+  },
+  {
+   "text": "Sure, I can take a look at that for you.",
+   "chunks": [
+    "Sure, I can take a look at that for you."
+   ]
+  },
+  {
+   "text": "The build failed, so I'm reading the log to find out why.",
+   "chunks": [
+    "The build failed, so I'm reading the log to find out why."
+   ]
+  },
+  {
+   "text": "That's done. Do you want me to open a pull request?",
+   "chunks": [
+    "That's done.",
+    "Do you want me to open a pull request?"
+   ]
+  },
+  {
+   "text": "I couldn't find the file you mentioned; could you tell me where it lives?",
+   "chunks": [
+    "I couldn't find the file you mentioned; could you tell me where it lives?"
+   ]
+  },
+  {
+   "text": "Two workers are still running, and the third one finished a minute ago.",
+   "chunks": [
+    "Two workers are still running, and the third one finished a minute ago."
+   ]
+  },
+  {
+   "text": "Sorry, I didn't catch that. Could you say it again?",
+   "chunks": [
+    "Sorry, I didn't catch that.",
+    "Could you say it again?"
+   ]
+  },
+  {
+   "text": "I read the report you asked about, and I'll read the rest tomorrow.",
+   "chunks": [
+    "I read the report you asked about, and I'll read the rest tomorrow."
+   ]
+  },
+  {
+   "text": "The bug is in resolveVoiceWorkItems, which calls dataclasses.replace with the wrong type.",
+   "chunks": [
+    "The bug is in resolveVoiceWorkItems, which calls dataclasses.replace with the wrong type."
+   ]
+  },
+  {
+   "text": "I renamed speech_coordinator to speech_engine and updated the imports.",
+   "chunks": [
+    "I renamed speech_coordinator to speech_engine and updated the imports."
+   ]
+  },
+  {
+   "text": "Set RELAY_WORK_STYLE to direct, then restart the session.",
+   "chunks": [
+    "Set RELAY_WORK_STYLE to direct, then restart the session."
+   ]
+  },
+  {
+   "text": "The function parse_frontmatter returns a dict of str to Any.",
+   "chunks": [
+    "The function parse_frontmatter returns a dict of str to Any."
+   ]
+  },
+  {
+   "text": "AppState.toggleWorkspace is called from the menu bar.",
+   "chunks": [
+    "AppState.toggleWorkspace is called from the menu bar."
+   ]
+  },
+  {
+   "text": "Run cargo build with the locked flag, then cargo clippy.",
+   "chunks": [
+    "Run cargo build with the locked flag, then cargo clippy."
+   ]
+  },
+  {
+   "text": "I edited services/tts_worker.py and Sources/relay-runner/App/RelayAppCommands.swift.",
+   "chunks": [
+    "I edited services/tts_worker.py and Sources/relay-runner/App/RelayAppCommands.swift."
+   ]
+  },
+  {
+   "text": "The config lives at ~/Library/Application Support/relay-runner/config.toml.",
+   "chunks": [
+    "The config lives at ~/Library/Application Support/relay-runner/config.toml."
+   ]
+  },
+  {
+   "text": "The port file is /tmp/relay_orchestrator.port and the pipe is /tmp/voice_in.fifo.",
+   "chunks": [
+    "The port file is /tmp/relay_orchestrator.port and the pipe is /tmp/voice_in.fifo."
+   ]
+  },
+  {
+   "text": "Open docs/specs/orchestrator-tickets.md and scroll to the frontmatter section.",
+   "chunks": [
+    "Open docs/specs/orchestrator-tickets.md and scroll to the frontmatter section."
+   ]
+  },
+  {
+   "text": "The model file is kokoro-v1.0.onnx, in the .local/share/kokoro folder.",
+   "chunks": [
+    "The model file is kokoro-v1.0.onnx, in the .local/share/kokoro folder."
+   ]
+  },
+  {
+   "text": "The daemon used 19% of one core and 506 megabytes of memory.",
+   "chunks": [
+    "The daemon used 19% of one core and 506 megabytes of memory."
+   ]
+  },
+  {
+   "text": "There are 1,492 tests across 97 files, and 3 of them failed.",
+   "chunks": [
+    "There are 1,492 tests across 97 files, and 3 of them failed."
+   ]
+  },
+  {
+   "text": "It took 2.5 seconds, which is about 0.4 times real time.",
+   "chunks": [
+    "It took 2.5 seconds, which is about 0.4 times real time."
+   ]
+  },
+  {
+   "text": "The port is 7634 and the timeout is 300 seconds.",
+   "chunks": [
+    "The port is 7634 and the timeout is 300 seconds."
+   ]
+  },
+  {
+   "text": "That costs $12.50 a month, or $150 a year.",
+   "chunks": [
+    "That costs $12.50 a month, or $150 a year."
+   ]
+  },
+  {
+   "text": "The sample rate is 24 kHz and each buffer is 20 ms.",
+   "chunks": [
+    "The sample rate is 24 kHz and each buffer is 20 ms."
+   ]
+  },
+  {
+   "text": "The release went out on 11 November 2026 at 6:06 pm.",
+   "chunks": [
+    "The release went out on 11 November 2026 at 6:06 pm."
+   ]
+  },
+  {
+   "text": "I'll check again on 2026-11-12.",
+   "chunks": [
+    "I'll check again on 2026-11-12."
+   ]
+  },
+  {
+   "text": "The last run was on Tuesday, March 3rd, at 09:30.",
+   "chunks": [
+    "The last run was on Tuesday, March 3rd, at 09:30."
+   ]
+  },
+  {
+   "text": "The licence dates from the 1990s, and it was last updated in 2007.",
+   "chunks": [
+    "The licence dates from the 1990s, and it was last updated in 2007."
+   ]
+  },
+  {
+   "text": "The meeting is at 3:45 tomorrow afternoon.",
+   "chunks": [
+    "The meeting is at 3:45 tomorrow afternoon."
+   ]
+  },
+  {
+   "text": "Relay Runner 0.5.3 ships with Python 3.13 and onnxruntime 1.28.",
+   "chunks": [
+    "Relay Runner 0.5.3 ships with Python 3.13 and onnxruntime 1.28."
+   ]
+  },
+  {
+   "text": "We pin ort at 2.0.0-rc.15 and misaki-rs at 0.8.0.",
+   "chunks": [
+    "We pin ort at 2.0.0-rc.15 and misaki-rs at 0.8.0."
+   ]
+  },
+  {
+   "text": "Upgrade to macOS 15.2 or later.",
+   "chunks": [
+    "Upgrade to macOS 15.2 or later."
+   ]
+  },
+  {
+   "text": "The tag is v0.4.89, and the build number is 412.",
+   "chunks": [
+    "The tag is v0.4.89, and the build number is 412."
+   ]
+  },
+  {
+   "text": "Rust 1.94.1 is installed with Homebrew.",
+   "chunks": [
+    "Rust 1.94.1 is installed with Homebrew."
+   ]
+  },
+  {
+   "text": "RR-448 is done, and RR-479 is in progress.",
+   "chunks": [
+    "RR-448 is done, and RR-479 is in progress."
+   ]
+  },
+  {
+   "text": "I dispatched RR-475 and it merged as run 334.",
+   "chunks": [
+    "I dispatched RR-475 and it merged as run 334."
+   ]
+  },
+  {
+   "text": "RR-440's second attempt is still waiting on review.",
+   "chunks": [
+    "RR-440's second attempt is still waiting on review."
+   ]
+  },
+  {
+   "text": "Tickets RR-481 through RR-487 are blocked on the gate.",
+   "chunks": [
+    "Tickets RR-481 through RR-487 are blocked on the gate."
+   ]
+  },
+  {
+   "text": "See PR #212 and issue JIRA-1024 for the details.",
+   "chunks": [
+    "See PR #212 and issue JIRA-1024 for the details."
+   ]
+  },
+  {
+   "text": "Relay Runner uses Kokoro for speech and FluidAudio for transcription.",
+   "chunks": [
+    "Relay Runner uses Kokoro for speech and FluidAudio for transcription."
+   ]
+  },
+  {
+   "text": "Claude and Codex both run as workers; ChatGPT is not used.",
+   "chunks": [
+    "Claude and Codex both run as workers; ChatGPT is not used."
+   ]
+  },
+  {
+   "text": "I opened the project in Xcode and pushed it to GitHub.",
+   "chunks": [
+    "I opened the project in Xcode and pushed it to GitHub."
+   ]
+  },
+  {
+   "text": "The app is built with SwiftUI, SQLite and ONNX Runtime.",
+   "chunks": [
+    "The app is built with SwiftUI, SQLite and ONNX Runtime."
+   ]
+  },
+  {
+   "text": "You can pair your iPhone over Tailscale with Relay Remote.",
+   "chunks": [
+    "You can pair your iPhone over Tailscale with Relay Remote."
+   ]
+  },
+  {
+   "text": "Anthropic's Claude Fable and OpenAI's Codex share the same hooks.",
+   "chunks": [
+    "Anthropic's Claude Fable and OpenAI's Codex share the same hooks."
+   ]
+  },
+  {
+   "text": "The qzxwv setting is undocumented.",
+   "chunks": [
+    "The qzxwv setting is undocumented."
+   ]
+  },
+  {
+   "text": "Mentistic is the parent brand of Relay Runner.",
+   "chunks": [
+    "Mentistic is the parent brand of Relay Runner."
+   ]
+  },
+  {
+   "text": "The plugin is called Zorblax, and its mascot is a snarfblat.",
+   "chunks": [
+    "The plugin is called Zorblax, and its mascot is a snarfblat."
+   ]
+  },
+  {
+   "text": "I couldn't parse the word floopdoodle or the name Xyrgathon.",
+   "chunks": [
+    "I couldn't parse the word floopdoodle or the name Xyrgathon."
+   ]
+  },
+  {
+   "text": "Set the flag to frobnicate and rerun.",
+   "chunks": [
+    "Set the flag to frobnicate and rerun."
+   ]
+  },
+  {
+   "text": "kubectl, nginx and systemd are all running.",
+   "chunks": [
+    "kubectl, nginx and systemd are all running."
+   ]
+  },
+  {
+   "text": "Visit https://github.com/pykeio/ort for the source.",
+   "chunks": [
+    "Visit https://github.com/pykeio/ort for the source."
+   ]
+  },
+  {
+   "text": "The API returned a 401, so sign in again with claude auth login.",
+   "chunks": [
+    "The API returned a 401, so sign in again with claude auth login."
+   ]
+  },
+  {
+   "text": "Email support@example.com, e.g. with the log attached.",
+   "chunks": [
+    "Email support@example.com, e.g.",
+    "with the log attached."
+   ]
+  },
+  {
+   "text": "JSON, YAML and TOML are all supported; CSV isn't.",
+   "chunks": [
+    "JSON, YAML and TOML are all supported; CSV isn't."
+   ]
+  },
+  {
+   "text": "It runs on the CPU by default, or on the GPU through CoreML.",
+   "chunks": [
+    "It runs on the CPU by default, or on the GPU through CoreML."
+   ]
+  },
+  {
+   "text": "I've finished the change and all the tests pass. Sure, I can take a look at that for you. The build failed, so I'm reading the log to find out why. That's done. Do you want me to open a pull request? I couldn't find the file you mentioned; could you tell me where it lives? Two workers are still running, and the third one finished a minute ago. Sorry, I didn't catch that. Could you say it again? I read the report you asked about, and I'll read the rest tomorrow. The bug is in resolveVoiceWorkItems, which calls dataclasses.replace with the wrong type. I renamed speech_coordinator to speech_engine and updated the imports. Set RELAY_WORK_STYLE to direct, then restart the session. The function parse_frontmatter returns a dict of str to Any. AppState.toggleWorkspace is called from the menu bar. Run cargo build with the locked flag, then cargo clippy. I edited services/tts_worker.py and Sources/relay-runner/App/RelayAppCommands.swift. The config lives at ~/Library/Application Support/relay-runner/config.toml. The port file is /tmp/relay_orchestrator.port and the pipe is /tmp/voice_in.fifo. Open docs/specs/orchestrator-tickets.md and scroll to the frontmatter section. The model file is kokoro-v1.0.onnx, in the .local/share/kokoro folder. The daemon used 19% of one core and 506 megabytes of memory. There are 1,492 tests across 97 files, and 3 of them failed. It took 2.5 seconds, which is about 0.4 times real time. The port is 7634 and the timeout is 300 seconds. That costs $12.50 a month, or $150 a year. The sample rate is 24 kHz and each buffer is 20 ms. The release went out on 11 November 2026 at 6:06 pm. I'll check again on 2026-11-12. The last run was on Tuesday, March 3rd, at 09:30. The licence dates from the 1990s, and it was last updated in 2007. The meeting is at 3:45 tomorrow afternoon. Relay Runner 0.5.3 ships with Python 3.13 and onnxruntime 1.28. We pin ort at 2.0.0-rc.15 and misaki-rs at 0.8.0. Upgrade to macOS 15.2 or later. The tag is v0.4.89, and the build number is 412. Rust 1.94.1 is installed with Homebrew. RR-448 is done, and RR-479 is in progress. I dispatched RR-475 and it merged as run 334. RR-440's second attempt is still waiting on review. Tickets RR-481 through RR-487 are blocked on the gate. See PR #212 and issue JIRA-1024 for the details. Relay Runner uses Kokoro for speech and FluidAudio for transcription. Claude and Codex both run as workers; ChatGPT is not used. I opened the project in Xcode and pushed it to GitHub. The app is built with SwiftUI, SQLite and ONNX Runtime. You can pair your iPhone over Tailscale with Relay Remote. Anthropic's Claude Fable and OpenAI's Codex share the same hooks. The qzxwv setting is undocumented. Mentistic is the parent brand of Relay Runner. The plugin is called Zorblax, and its mascot is a snarfblat. I couldn't parse the word floopdoodle or the name Xyrgathon. Set the flag to frobnicate and rerun. kubectl, nginx and systemd are all running. Visit https://github.com/pykeio/ort for the source. The API returned a 401, so sign in again with claude auth login. Email support@example.com, e.g. with the log attached. JSON, YAML and TOML are all supported; CSV isn't. It runs on the CPU by default, or on the GPU through CoreML.",
+   "chunks": [
+    "I've finished the change and all the tests pass.",
+    "Sure, I can take a look at that for you.",
+    "The build failed, so I'm reading the log to find out why.",
+    "That's done.",
+    "Do you want me to open a pull request?",
+    "I couldn't find the file you mentioned; could you tell me where it lives?",
+    "Two workers are still running, and the third one finished a minute ago.",
+    "Sorry, I didn't catch that.",
+    "Could you say it again?",
+    "I read the report you asked about, and I'll read the rest tomorrow.",
+    "The bug is in resolveVoiceWorkItems, which calls dataclasses.replace with the wrong type.",
+    "I renamed speech_coordinator to speech_engine and updated the imports.",
+    "Set RELAY_WORK_STYLE to direct, then restart the session.",
+    "The function parse_frontmatter returns a dict of str to Any.",
+    "AppState.toggleWorkspace is called from the menu bar.",
+    "Run cargo build with the locked flag, then cargo clippy.",
+    "I edited services/tts_worker.py and Sources/relay-runner/App/RelayAppCommands.swift.",
+    "The config lives at ~/Library/Application Support/relay-runner/config.toml.",
+    "The port file is /tmp/relay_orchestrator.port and the pipe is /tmp/voice_in.fifo.",
+    "Open docs/specs/orchestrator-tickets.md and scroll to the frontmatter section.",
+    "The model file is kokoro-v1.0.onnx, in the .local/share/kokoro folder.",
+    "The daemon used 19% of one core and 506 megabytes of memory.",
+    "There are 1,492 tests across 97 files, and 3 of them failed.",
+    "It took 2.5 seconds, which is about 0.4 times real time.",
+    "The port is 7634 and the timeout is 300 seconds.",
+    "That costs $12.50 a month, or $150 a year.",
+    "The sample rate is 24 kHz and each buffer is 20 ms.",
+    "The release went out on 11 November 2026 at 6:06 pm.",
+    "I'll check again on 2026-11-12.",
+    "The last run was on Tuesday, March 3rd, at 09:30.",
+    "The licence dates from the 1990s, and it was last updated in 2007.",
+    "The meeting is at 3:45 tomorrow afternoon.",
+    "Relay Runner 0.5.3 ships with Python 3.13 and onnxruntime 1.28.",
+    "We pin ort at 2.0.0-rc.15 and misaki-rs at 0.8.0.",
+    "Upgrade to macOS 15.2 or later.",
+    "The tag is v0.4.89, and the build number is 412.",
+    "Rust 1.94.1 is installed with Homebrew.",
+    "RR-448 is done, and RR-479 is in progress.",
+    "I dispatched RR-475 and it merged as run 334.",
+    "RR-440's second attempt is still waiting on review.",
+    "Tickets RR-481 through RR-487 are blocked on the gate.",
+    "See PR #212 and issue JIRA-1024 for the details.",
+    "Relay Runner uses Kokoro for speech and FluidAudio for transcription.",
+    "Claude and Codex both run as workers; ChatGPT is not used.",
+    "I opened the project in Xcode and pushed it to GitHub.",
+    "The app is built with SwiftUI, SQLite and ONNX Runtime.",
+    "You can pair your iPhone over Tailscale with Relay Remote.",
+    "Anthropic's Claude Fable and OpenAI's Codex share the same hooks.",
+    "The qzxwv setting is undocumented.",
+    "Mentistic is the parent brand of Relay Runner.",
+    "The plugin is called Zorblax, and its mascot is a snarfblat.",
+    "I couldn't parse the word floopdoodle or the name Xyrgathon.",
+    "Set the flag to frobnicate and rerun.",
+    "kubectl, nginx and systemd are all running.",
+    "Visit https://github.com/pykeio/ort for the source.",
+    "The API returned a 401, so sign in again with claude auth login.",
+    "Email support@example.com, e.g.",
+    "with the log attached.",
+    "JSON, YAML and TOML are all supported; CSV isn't.",
+    "It runs on the CPU by default, or on the GPU through CoreML."
+   ]
+  },
+  {
+   "text": "I've finished the change and all the tests pass.\nSure, I can take a look at that for you.\nThe build failed, so I'm reading the log to find out why.\nThat's done. Do you want me to open a pull request?\nI couldn't find the file you mentioned; could you tell me where it lives?\nTwo workers are still running, and the third one finished a minute ago.\nSorry, I didn't catch that. Could you say it again?\nI read the report you asked about, and I'll read the rest tomorrow.\nThe bug is in resolveVoiceWorkItems, which calls dataclasses.replace with the wrong type.\nI renamed speech_coordinator to speech_engine and updated the imports.\nSet RELAY_WORK_STYLE to direct, then restart the session.\nThe function parse_frontmatter returns a dict of str to Any.\nAppState.toggleWorkspace is called from the menu bar.\nRun cargo build with the locked flag, then cargo clippy.\nI edited services/tts_worker.py and Sources/relay-runner/App/RelayAppCommands.swift.\nThe config lives at ~/Library/Application Support/relay-runner/config.toml.\nThe port file is /tmp/relay_orchestrator.port and the pipe is /tmp/voice_in.fifo.\nOpen docs/specs/orchestrator-tickets.md and scroll to the frontmatter section.\nThe model file is kokoro-v1.0.onnx, in the .local/share/kokoro folder.\nThe daemon used 19% of one core and 506 megabytes of memory.\nThere are 1,492 tests across 97 files, and 3 of them failed.\nIt took 2.5 seconds, which is about 0.4 times real time.\nThe port is 7634 and the timeout is 300 seconds.\nThat costs $12.50 a month, or $150 a year.\nThe sample rate is 24 kHz and each buffer is 20 ms.\nThe release went out on 11 November 2026 at 6:06 pm.\nI'll check again on 2026-11-12.\nThe last run was on Tuesday, March 3rd, at 09:30.\nThe licence dates from the 1990s, and it was last updated in 2007.\nThe meeting is at 3:45 tomorrow afternoon.\nRelay Runner 0.5.3 ships with Python 3.13 and onnxruntime 1.28.\nWe pin ort at 2.0.0-rc.15 and misaki-rs at 0.8.0.\nUpgrade to macOS 15.2 or later.\nThe tag is v0.4.89, and the build number is 412.\nRust 1.94.1 is installed with Homebrew.\nRR-448 is done, and RR-479 is in progress.\nI dispatched RR-475 and it merged as run 334.\nRR-440's second attempt is still waiting on review.\nTickets RR-481 through RR-487 are blocked on the gate.\nSee PR #212 and issue JIRA-1024 for the details.\nRelay Runner uses Kokoro for speech and FluidAudio for transcription.\nClaude and Codex both run as workers; ChatGPT is not used.\nI opened the project in Xcode and pushed it to GitHub.\nThe app is built with SwiftUI, SQLite and ONNX Runtime.\nYou can pair your iPhone over Tailscale with Relay Remote.\nAnthropic's Claude Fable and OpenAI's Codex share the same hooks.\nThe qzxwv setting is undocumented.\nMentistic is the parent brand of Relay Runner.\nThe plugin is called Zorblax, and its mascot is a snarfblat.\nI couldn't parse the word floopdoodle or the name Xyrgathon.\nSet the flag to frobnicate and rerun.\nkubectl, nginx and systemd are all running.\nVisit https://github.com/pykeio/ort for the source.\nThe API returned a 401, so sign in again with claude auth login.\nEmail support@example.com, e.g. with the log attached.\nJSON, YAML and TOML are all supported; CSV isn't.\nIt runs on the CPU by default, or on the GPU through CoreML.",
+   "chunks": [
+    "I've finished the change and all the tests pass.",
+    "Sure, I can take a look at that for you.",
+    "The build failed, so I'm reading the log to find out why.",
+    "That's done.",
+    "Do you want me to open a pull request?",
+    "I couldn't find the file you mentioned; could you tell me where it lives?",
+    "Two workers are still running, and the third one finished a minute ago.",
+    "Sorry, I didn't catch that.",
+    "Could you say it again?",
+    "I read the report you asked about, and I'll read the rest tomorrow.",
+    "The bug is in resolveVoiceWorkItems, which calls dataclasses.replace with the wrong type.",
+    "I renamed speech_coordinator to speech_engine and updated the imports.",
+    "Set RELAY_WORK_STYLE to direct, then restart the session.",
+    "The function parse_frontmatter returns a dict of str to Any.",
+    "AppState.toggleWorkspace is called from the menu bar.",
+    "Run cargo build with the locked flag, then cargo clippy.",
+    "I edited services/tts_worker.py and Sources/relay-runner/App/RelayAppCommands.swift.",
+    "The config lives at ~/Library/Application Support/relay-runner/config.toml.",
+    "The port file is /tmp/relay_orchestrator.port and the pipe is /tmp/voice_in.fifo.",
+    "Open docs/specs/orchestrator-tickets.md and scroll to the frontmatter section.",
+    "The model file is kokoro-v1.0.onnx, in the .local/share/kokoro folder.",
+    "The daemon used 19% of one core and 506 megabytes of memory.",
+    "There are 1,492 tests across 97 files, and 3 of them failed.",
+    "It took 2.5 seconds, which is about 0.4 times real time.",
+    "The port is 7634 and the timeout is 300 seconds.",
+    "That costs $12.50 a month, or $150 a year.",
+    "The sample rate is 24 kHz and each buffer is 20 ms.",
+    "The release went out on 11 November 2026 at 6:06 pm.",
+    "I'll check again on 2026-11-12.",
+    "The last run was on Tuesday, March 3rd, at 09:30.",
+    "The licence dates from the 1990s, and it was last updated in 2007.",
+    "The meeting is at 3:45 tomorrow afternoon.",
+    "Relay Runner 0.5.3 ships with Python 3.13 and onnxruntime 1.28.",
+    "We pin ort at 2.0.0-rc.15 and misaki-rs at 0.8.0.",
+    "Upgrade to macOS 15.2 or later.",
+    "The tag is v0.4.89, and the build number is 412.",
+    "Rust 1.94.1 is installed with Homebrew.",
+    "RR-448 is done, and RR-479 is in progress.",
+    "I dispatched RR-475 and it merged as run 334.",
+    "RR-440's second attempt is still waiting on review.",
+    "Tickets RR-481 through RR-487 are blocked on the gate.",
+    "See PR #212 and issue JIRA-1024 for the details.",
+    "Relay Runner uses Kokoro for speech and FluidAudio for transcription.",
+    "Claude and Codex both run as workers; ChatGPT is not used.",
+    "I opened the project in Xcode and pushed it to GitHub.",
+    "The app is built with SwiftUI, SQLite and ONNX Runtime.",
+    "You can pair your iPhone over Tailscale with Relay Remote.",
+    "Anthropic's Claude Fable and OpenAI's Codex share the same hooks.",
+    "The qzxwv setting is undocumented.",
+    "Mentistic is the parent brand of Relay Runner.",
+    "The plugin is called Zorblax, and its mascot is a snarfblat.",
+    "I couldn't parse the word floopdoodle or the name Xyrgathon.",
+    "Set the flag to frobnicate and rerun.",
+    "kubectl, nginx and systemd are all running.",
+    "Visit https://github.com/pykeio/ort for the source.",
+    "The API returned a 401, so sign in again with claude auth login.",
+    "Email support@example.com, e.g.",
+    "with the log attached.",
+    "JSON, YAML and TOML are all supported; CSV isn't.",
+    "It runs on the CPU by default, or on the GPU through CoreML."
+   ]
+  },
+  {
+   "text": "",
+   "chunks": []
+  },
+  {
+   "text": "   \n\t  ",
+   "chunks": []
+  },
+  {
+   "text": "No terminator at all",
+   "chunks": [
+    "No terminator at all"
+   ]
+  },
+  {
+   "text": "One.\n\nTwo?  Three",
+   "chunks": [
+    "One.",
+    "Two?",
+    "Three"
+   ]
+  },
+  {
+   "text": "Wait... what?! Really?!\" Yes.",
+   "chunks": [
+    "Wait...",
+    "what?!",
+    "Really?!\"",
+    "Yes."
+   ]
+  },
+  {
+   "text": "He said \"stop.\" Then he left.",
+   "chunks": [
+    "He said \"stop.\"",
+    "Then he left."
+   ]
+  },
+  {
+   "text": "(See the note.) Next one.",
+   "chunks": [
+    "(See the note.)",
+    "Next one."
+   ]
+  },
+  {
+   "text": "A list [item one.] and more.",
+   "chunks": [
+    "A list [item one.]",
+    "and more."
+   ]
+  },
+  {
+   "text": "It's 5.5 seconds, or 2.5 at most.",
+   "chunks": [
+    "It's 5.5 seconds, or 2.5 at most."
+   ]
+  },
+  {
+   "text": "Version 0.5.3 ships today. See v2.0.0-rc.15 too.",
+   "chunks": [
+    "Version 0.5.3 ships today.",
+    "See v2.0.0-rc.15 too."
+   ]
+  },
+  {
+   "text": "Ends with a closer.'",
+   "chunks": [
+    "Ends with a closer.'"
+   ]
+  },
+  {
+   "text": "Stray .dots in.the middle",
+   "chunks": [
+    "Stray .dots in.the middle"
+   ]
+  },
+  {
+   "text": "Mixed?!.' punctuation. Done",
+   "chunks": [
+    "Mixed?!.'",
+    "punctuation.",
+    "Done"
+   ]
+  },
+  {
+   "text": "Tabs\tand non-breaking spaces. Next line.",
+   "chunks": [
+    "Tabs and non-breaking spaces.",
+    "Next line."
+   ]
+  },
+  {
+   "text": "File\u001cseparator. Kept",
+   "chunks": [
+    "File separator.",
+    "Kept"
+   ]
+  },
+  {
+   "text": "Unicode “quotes.” and… an ellipsis… done.",
+   "chunks": [
+    "Unicode “quotes.” and… an ellipsis… done."
+   ]
+  },
+  {
+   "text": "Ends with many dots...",
+   "chunks": [
+    "Ends with many dots..."
+   ]
+  },
+  {
+   "text": "?! Leading terminators.",
+   "chunks": [
+    "?!",
+    "Leading terminators."
+   ]
+  }
+ ]
+}
