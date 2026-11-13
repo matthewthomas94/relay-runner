@@ -1,8 +1,8 @@
 //! JSON as Python's `json` module reads and writes it.
 //!
-//! The hook and the reply helper replace Python scripts whose files, FIFO lines
-//! and SQLite rows are still read by the Python bridge and by Swift, so the
-//! text they produce must be what `json.dumps` produced: insertion-ordered
+//! The hook, the reply helper and the intent inbox replace Python code whose
+//! files, FIFO lines and SQLite rows are still read by the Python bridge and
+//! by Swift, so the text they produce must be what `json.dumps` produced: insertion-ordered
 //! objects, `sort_keys`, ASCII-only escapes and `repr` floats. The same holds
 //! for the values they act on, which follow Python's truthiness, `str()`,
 //! `int()` and `float()` rules.
@@ -687,6 +687,13 @@ impl Parser<'_> {
 pub fn dumps_sorted(value: &Value) -> String {
     let mut out = String::new();
     write_value(&mut out, value, true, ", ", ": ");
+    out
+}
+
+/// `json.dumps(value)`: insertion order with the default separators.
+pub fn dumps(value: &Value) -> String {
+    let mut out = String::new();
+    write_value(&mut out, value, false, ", ", ": ");
     out
 }
 

@@ -59,6 +59,7 @@ The app bundle ships `relay-rs` and `relay-speech`, Relay Runner's own Rust help
 | [fallible-iterator](https://crates.io/crates/fallible-iterator/0.3.0) | 0.3.0 | MIT/Apache-2.0 |
 | [fallible-streaming-iterator](https://crates.io/crates/fallible-streaming-iterator/0.1.9) | 0.1.9 | MIT/Apache-2.0 |
 | [fancy-regex](https://crates.io/crates/fancy-regex/0.14.0) | 0.14.0 | MIT |
+| [fancy-regex](https://crates.io/crates/fancy-regex/0.20.2) | 0.20.2 | MIT |
 | [fastrand](https://crates.io/crates/fastrand/2.5.0) | 2.5.0 | Apache-2.0 OR MIT |
 | [find-msvc-tools](https://crates.io/crates/find-msvc-tools/0.1.15) | 0.1.15 | MIT OR Apache-2.0 |
 | [getrandom](https://crates.io/crates/getrandom/0.4.3) | 0.4.3 | MIT OR Apache-2.0 |

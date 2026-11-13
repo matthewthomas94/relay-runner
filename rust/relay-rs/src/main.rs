@@ -1,18 +1,20 @@
 //! relay-rs, Relay Runner's Rust helper. `hook` is the provider lifecycle hook
 //! and `reply` the foreground reply helper (RR-478); docs/specs/hook-contract.md
 //! describes both. `messenger` serves the voice messenger's provider backends
-//! (RR-490) and `remote` is the Relay Remote server (RR-491). Later stages of
-//! the Rust port add subcommands or sibling crates.
+//! (RR-490), `remote` is the Relay Remote server (RR-491) and `bridge` the
+//! voice bridge (RR-492). Later stages of the Rust port add subcommands or
+//! sibling crates.
 
+mod bridge;
 mod hook;
-mod json;
 mod messenger;
 mod remote;
 mod reply;
-mod sha256;
 mod support;
 
 use std::process::ExitCode;
+
+use relay_intents::{json, sha256};
 
 /// `relay-rs <CFBundleShortVersionString> (<CFBundleVersion>)`, as compiled in
 /// by build.rs. `services/app_signing.py` compares it with the packaged bundle.
@@ -28,7 +30,8 @@ const USAGE: &str = "usage: relay-rs --version\n       \
      relay-rs hook [--record-process | --record-codex-startup | --context-continuation]\n       \
      relay-rs reply\n       \
      relay-rs messenger\n       \
-     relay-rs remote [--socket <path>]";
+     relay-rs remote [--socket <path>]\n       \
+     relay-rs bridge --config <path> --relay [--suppress-startup-greeting]";
 
 fn run(arguments: &[String]) -> Result<&'static str, &'static str> {
     match arguments {
@@ -47,6 +50,7 @@ fn main() -> ExitCode {
             return ExitCode::from(messenger::run());
         }
         Some((command, rest)) if command == "remote" => return ExitCode::from(remote::run(rest)),
+        Some((command, rest)) if command == "bridge" => return ExitCode::from(bridge::run(rest)),
         _ => {}
     }
     match run(&arguments) {

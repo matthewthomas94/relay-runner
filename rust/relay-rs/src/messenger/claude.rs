@@ -218,15 +218,33 @@ fn emit(partial: Option<(Partial, String)>) {
 pub struct ClaudeBackend {
     config: Config,
     argv: Vec<String>,
+    /// `actor_role`: whom the provider process acts as.
+    pub actor_role: &'static str,
+    /// The whole `spawn_command` of a subclass that overrides it.
+    command: Option<Vec<String>>,
     start_lock: Mutex<()>,
     shared: Arc<Shared>,
 }
 
 impl ClaudeBackend {
     pub fn new(config: Config, argv: Vec<String>) -> Self {
+        Self::with_launch(config, argv, "messenger", None)
+    }
+
+    /// A backend that runs as `actor_role` and, given `command`, spawns that
+    /// instead of the messenger's command, as `ClaudeSidecarBackend`
+    /// (`sidecar_lane.py`) does.
+    pub fn with_launch(
+        config: Config,
+        argv: Vec<String>,
+        actor_role: &'static str,
+        command: Option<Vec<String>>,
+    ) -> Self {
         Self {
             config,
             argv,
+            actor_role,
+            command,
             start_lock: Mutex::new(()),
             shared: Arc::new(Shared {
                 state: Mutex::new(State::default()),
@@ -236,6 +254,9 @@ impl ClaudeBackend {
     }
 
     pub fn spawn_command(&self, session_id: Option<&str>) -> Vec<String> {
+        if let Some(command) = &self.command {
+            return command.clone();
+        }
         let mut command = self.argv.clone();
         for part in [
             "--print",
@@ -295,7 +316,7 @@ impl Backend for ClaudeBackend {
         {
             return Ok(());
         }
-        let environment = child_environment("messenger");
+        let environment = child_environment(self.actor_role);
         // Subscription-only: never start Claude on an API key or other metered route.
         let readiness = subscription::check(&self.argv, &self.config.cwd, &environment);
         if !readiness.ready() {
