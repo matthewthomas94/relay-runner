@@ -846,8 +846,9 @@ final class STTEngine: @unchecked Sendable {
                             NSLog("[STTEngine] >> \(finalText)")
                         }
                     } else {
-                        writeVoiceOutput("__INTERRUPT__")
-                        NSLog("[STTEngine] >> __INTERRUPT__")
+                        // An empty hold sends nothing: talking over a reply
+                        // already stops it, and Cancel stops the agent.
+                        NSLog("[STTEngine] Empty hold released; nothing sent")
                     }
                     transcript.reset()
                     resetRecordingBuffer()
