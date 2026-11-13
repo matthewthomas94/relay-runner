@@ -257,7 +257,7 @@ package is not embedded; the interactive controls retain Relay's own styling.
 Run the focused checks with:
 
 ```sh
-env -u SDKROOT swift test --filter 'FourFingerTapGestureTests|SessionWheelTests|SessionWheelHapticsTests|SessionWheelMotionTests|MeetingNoteCoordinatorTests|ProgramBoardOverlayControllerTests|VoiceReplyBadgeTests|STT|VoiceBridgeFocusTests|CapsLockGestureTests'
+env -u SDKROOT swift test --filter 'FourFingerTapGestureTests|SessionWheelTests|SessionWheelHapticsTests|SessionWheelMotionTests|MeetingNoteCoordinatorTests|ProgramBoardOverlayControllerTests|SessionVoicePlaybackTests|STT|VoiceBridgeFocusTests|CapsLockGestureTests'
 ```
 
 Run `KeepAwakeControllerTests|KeepAwakePowerHelperTests|ConfigManagerTests|GeneralConfigTests`

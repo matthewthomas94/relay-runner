@@ -184,10 +184,10 @@ final class SessionWheelMotionTests: XCTestCase {
         XCTAssertTrue(menus.motion.isPresented)
         change.cancel()
         await change.value
-        model.refresh(sessions: [.init(id: "a", name: "Updated", unreadCount: 2)])
+        model.refresh(sessions: [.init(id: "a", name: "Updated", isFocused: true)])
         await menus.update(to: SessionWheelMenu(model), reduceMotion: true)
         XCTAssertEqual(menus.displayed?.sessions[0]?.name, "Updated")
-        XCTAssertEqual(menus.displayed?.sessions[0]?.unreadCount, 2)
+        XCTAssertEqual(menus.displayed?.sessions[0]?.isFocused, true)
         XCTAssertFalse(menus.motion.isAnimating)
         let frame = SessionWheelPresentation(progress: menus.motion.progress(at: ProcessInfo.processInfo.systemUptime),
                                              reduceMotion: true)

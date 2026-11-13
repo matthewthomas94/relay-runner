@@ -4,7 +4,6 @@ import Observation
 struct SessionWheelSession: Identifiable, Equatable {
     let id: String
     let name: String
-    var unreadCount = 0
     var isFocused = false
 }
 
@@ -15,7 +14,6 @@ struct SessionWheelTab: Identifiable, Equatable {
     let name: String
     var isActive = false
     var isLive = true
-    var unreadCount = 0
 
     var title: String {
         isActive ? "\(name), active tab" : isLive ? "Make \(name) the active tab" : "Turn \(name) on"

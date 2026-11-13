@@ -1314,7 +1314,6 @@ private struct ProgramBoardContent: View {
                         snapshot: snapshot,
                         projectTargets: model.projectTargets,
                         selectedProjectPaths: model.selectedProjectPaths,
-                        sessionReplyBadges: model.sessionReplyBadges,
                         errorMessage: model.errorMessage,
                         isDiagnosticsExporting: model.isDiagnosticsExporting,
                         theme: model.theme,
@@ -1391,7 +1390,6 @@ private struct ProgramOverviewColumn: View {
     let snapshot: ProgramDashboardSnapshot
     let projectTargets: [ProgramBoardProjectTarget]
     let selectedProjectPaths: [String]
-    let sessionReplyBadges: [String: Int]
     let errorMessage: String?
     let isDiagnosticsExporting: Bool
     let theme: ParticleFieldRenderer.Theme?
@@ -1446,11 +1444,6 @@ private struct ProgramOverviewColumn: View {
                         ProgramProjectCard(
                             item: item,
                             isSelected: ProgramBoardProjectPath.contains(selectedProjectPaths, scopedPath),
-                            replyBadgeCount: scopedPath.map { path in
-                                sessionReplyBadges.reduce(0) { total, entry in
-                                    ProgramBoardProjectPath.matches(entry.key, path) ? total + entry.value : total
-                                }
-                            } ?? 0,
                             onSelect: {
                                 if let path = scopedPath {
                                     onToggleProject(path)
@@ -1663,7 +1656,6 @@ private struct ProgramAddProjectMenu: View {
 private struct ProgramProjectCard: View {
     let item: ProgramStatusItem
     let isSelected: Bool
-    let replyBadgeCount: Int
     let onSelect: () -> Void
     let onOpenInFinder: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1708,10 +1700,6 @@ private struct ProgramProjectCard: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                     .truncationMode(.tail)
-                if replyBadgeCount > 0 {
-                    SessionReplyBadge(count: replyBadgeCount)
-                        .transition(.relayElement)
-                }
                 Spacer(minLength: 0)
                 // Reserves room for the actions overlaid outside the row button.
                 // Fixed size: if this copy could shrink, a long name would run

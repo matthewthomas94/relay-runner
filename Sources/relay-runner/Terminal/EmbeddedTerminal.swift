@@ -4161,18 +4161,3 @@ struct WorkspaceTerminalPanel: View {
         .frame(height: BoardSurfaceLayout.columnHeight, alignment: .top)
     }
 }
-
-/// RR-401: unheard replies and outcomes waiting in a background session.
-struct SessionReplyBadge: View {
-    let count: Int
-
-    var body: some View {
-        Text("\(count)")
-            .font(.system(size: 10, weight: .semibold).monospacedDigit())
-            .foregroundStyle(.white)
-            .padding(.horizontal, 5)
-            .frame(minWidth: 16, minHeight: 16)
-            .background(Capsule().fill(Color.accentColor))
-            .accessibilityLabel("\(count) unheard \(count == 1 ? "update" : "updates")")
-    }
-}

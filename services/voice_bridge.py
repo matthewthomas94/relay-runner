@@ -894,7 +894,6 @@ def _apply_voice_focus(
             daemon=True,
         ).start()
     if current is not None and current.session_key == target.session_key:
-        _clear_reply_badge(current)
         _write_bridge_target_files(current)
         _PROVIDER_SESSION_OWNERSHIP = focused_ownership
         if recovery_context is not None:
@@ -906,95 +905,10 @@ def _apply_voice_focus(
     )
     return target
 
-VOICE_REPLY_BADGE_FILENAME = "voice_reply_badge.json"
-VOICE_REPLY_BADGE_LIMIT = 5
 VOICE_REPLAY_PREFIX = "__REPLAY__:"
 VOICE_SESSION_PLAYBACK_PREFIX = "__SESSION_PLAYBACK__:"
-_VOICE_BADGE_LOCK = threading.Lock()
 # The focused session's reply most recently handed to speech.
 _SPOKEN_REPLY: dict | None = None
-
-
-def _reply_badge_path(target: VoiceTarget | None) -> str:
-    if target is None or not target.spool_dir:
-        return ""
-    return os.path.join(target.spool_dir, VOICE_REPLY_BADGE_FILENAME)
-
-
-def _update_reply_badge(target: VoiceTarget | None, update) -> dict:
-    """Apply ``update`` to a session's badge file; the app shows its counts."""
-    path = _reply_badge_path(target)
-    if not path:
-        return {}
-    with _VOICE_BADGE_LOCK:
-        badge = _read_json_file(path)
-        replies = badge.get("replies")
-        badge = {
-            "unread_count": int(badge.get("unread_count") or 0),
-            "outcome_count": int(badge.get("outcome_count") or 0),
-            "replies": replies if isinstance(replies, list) else [],
-        }
-        if update(badge) is False:
-            return badge
-        badge["replies"] = badge["replies"][-VOICE_REPLY_BADGE_LIMIT:]
-        try:
-            os.makedirs(target.spool_dir, mode=0o700, exist_ok=True)
-            tmp = path + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(badge, f, sort_keys=True)
-            os.replace(tmp, path)
-        except OSError as exc:
-            print(f"[voice_bridge] Could not write reply badge: {exc}", file=sys.stderr)
-        return badge
-
-
-def _record_background_reply(target: VoiceTarget, text: str, command: dict) -> None:
-    """Keep a reply the user has not heard in its session's badge (RR-401)."""
-    entry = {
-        field: command[field]
-        for field in ("relay_command_seq", "relay_command_id", "intent_id")
-        if command.get(field) is not None
-    }
-    entry.update({"text": text, "at": time.time()})
-
-    def _add(badge: dict) -> None:
-        badge["unread_count"] += 1
-        badge["replies"].append(entry)
-
-    _update_reply_badge(target, _add)
-
-
-def _record_background_outcomes(target: VoiceTarget, count: int) -> None:
-    def _set(badge: dict) -> bool:
-        if badge["outcome_count"] == count:
-            return False
-        badge["outcome_count"] = count
-        return True
-
-    _update_reply_badge(target, _set)
-
-
-def _clear_reply_badge(target: VoiceTarget | None) -> None:
-    """Focusing a session marks its badge read; stored replies stay for read-out."""
-    def _clear(badge: dict) -> bool:
-        if not badge["unread_count"] and not badge["outcome_count"]:
-            return False
-        badge["unread_count"] = 0
-        badge["outcome_count"] = 0
-        return True
-
-    _update_reply_badge(target, _clear)
-
-
-def _latest_badge_reply(target: VoiceTarget | None) -> str:
-    path = _reply_badge_path(target)
-    if not path:
-        return ""
-    with _VOICE_BADGE_LOCK:
-        replies = _read_json_file(path).get("replies")
-    if not isinstance(replies, list) or not replies or not isinstance(replies[-1], dict):
-        return ""
-    return str(replies[-1].get("text") or "").strip()
 
 
 def _reply_origin_target(data: dict) -> VoiceTarget | None:
@@ -1040,115 +954,14 @@ def _note_spoken_reply(target: VoiceTarget | None, text: str, command: dict) -> 
     _SPOKEN_REPLY = {"session_key": session_key, "text": text, "command": dict(command)}
 
 
-def _cut_off_unfocused_speech(previous_key: str | None, tts_worker, messenger) -> None:
-    """Stop the old session's speech on a focus switch and badge its unheard reply.
-
-    Only speech and the messenger generation end; the provider command keeps
-    running in its own session.
-    """
-    global _SPOKEN_REPLY
-    with _VOICE_TARGET_LOCK:
-        focused_key = _VOICE_TARGET_KEY
-        spoken = _SPOKEN_REPLY
-        spoken_target = (
-            _VOICE_TARGETS.get(spoken.get("session_key") or "") if spoken else None
-        )
-    if not previous_key or previous_key == focused_key:
-        return
-    if spoken_target is not None and spoken_target.session_key == focused_key:
-        # The waiting reply belongs to the session the user just opened.
-        return
-    speaking = tts_worker is not None and getattr(tts_worker, "speaking", False)
-    if spoken_target is None and not speaking:
-        return
-    if speaking:
-        # A distinct reason so the stop is not taken as the user finishing it.
-        tts_worker.skip(reason="focus_switch")
-    if messenger is not None:
-        messenger.interrupt()
-    if spoken_target is not None:
-        _SPOKEN_REPLY = None
-        _record_background_reply(
-            spoken_target, str(spoken.get("text") or ""), spoken.get("command") or {}
-        )
-    print(
-        f"[voice_bridge] Focus switch stopped speech for session={previous_key}",
-        file=sys.stderr,
-    )
-
-
-def _oldest_unread_reply() -> tuple[VoiceTarget, dict] | None:
-    """The earliest unheard reply across sessions other than the focused one."""
-    with _VOICE_TARGET_LOCK:
-        focused_key = _VOICE_TARGET_KEY
-    oldest: tuple[VoiceTarget, dict] | None = None
-    for target in _live_voice_targets():
-        path = _reply_badge_path(target)
-        if target.session_key == focused_key or not path:
-            continue
-        with _VOICE_BADGE_LOCK:
-            badge = _read_json_file(path)
-        unread = int(badge.get("unread_count") or 0)
-        replies = badge.get("replies")
-        if unread <= 0 or not isinstance(replies, list) or not replies:
-            continue
-        entry = replies[-min(unread, len(replies))]
-        if not isinstance(entry, dict) or not str(entry.get("text") or "").strip():
-            continue
-        if oldest is None or float(entry.get("at") or 0) < float(oldest[1].get("at") or 0):
-            oldest = (target, entry)
-    return oldest
-
-
-def _advance_reply_queue(tts_worker) -> bool:
-    """Bring the next unheard reply forward; it waits for the play gesture."""
-    global _SPOKEN_REPLY
-    if tts_worker is None or getattr(tts_worker, "speaking", False):
-        return False
-    found = _oldest_unread_reply()
-    if found is None:
-        return False
-    target, entry = found
-
-    def _take(badge: dict) -> bool:
-        if badge["unread_count"] <= 0:
-            return False
-        badge["unread_count"] -= 1
-        return True
-
-    _update_reply_badge(target, _take)
-    text = str(entry.get("text") or "").strip()
-    command = {
-        field: entry[field]
-        for field in ("relay_command_seq", "relay_command_id", "intent_id")
-        if entry.get(field) is not None
-    }
-    _SPOKEN_REPLY = {"session_key": target.session_key, "text": text, "command": command}
-    # No command metadata: the reply's own command is no longer the newest.
-    tts_worker.input_queue.put({
-        "text": text,
-        "display_text": text,
-        "_speech_intent_spec": {
-            "dedup_key": f"queued-reply:{target.session_key}:{entry.get('at')}",
-            "session_key": target.session_key,
-        },
-    })
-    print(
-        f"[voice_bridge] Brought forward unheard reply from session={target.session_key}",
-        file=sys.stderr,
-    )
-    return True
-
-
 def _on_reply_finished(reason: str, tts_worker) -> None:
-    """A reply was heard or dismissed: offer the next unheard one."""
+    """A reply was heard or dismissed; the speech queue plays the next one."""
     global _SPOKEN_REPLY
     _SPOKEN_REPLY = None
-    _advance_reply_queue(tts_worker)
 
 
 def _cancel_speech(tts_worker) -> None:
-    """Dismiss the current reply; the next unheard reply comes forward."""
+    """Dismiss the current reply; the next queued reply comes forward."""
     playing = getattr(tts_worker, "playing", None)
     tts_worker.skip()
     if playing is False:
@@ -1157,12 +970,8 @@ def _cancel_speech(tts_worker) -> None:
 
 
 def _handle_session_replay(payload: dict, tts_worker) -> bool:
-    """Read out a session's latest stored reply on explicit request (RR-401)."""
-    text = _latest_badge_reply(_voice_target_for(payload.get("session_key")))
-    if not text or tts_worker is None:
-        return False
-    tts_worker.read_out(text)
-    return True
+    """Replay a session's latest reply on explicit request (RR-401)."""
+    return _handle_session_playback({**payload, "action": "replay"}, tts_worker)
 
 
 def _handle_session_playback(payload: dict, tts_worker) -> bool:
@@ -1180,20 +989,7 @@ def _handle_session_playback(payload: dict, tts_worker) -> bool:
         return True
     if action == "stop":
         return False
-    badge = _read_json_file(_reply_badge_path(target))
-    replies = badge.get("replies") or []
-    unread = min(max(0, int(badge.get("unread_count") or 0)), len(replies))
-    if not unread and control(target.session_key, "replay", waiting_session_key=waiting_key):
-        return True
-    entry = replies[-unread] if unread else (replies[-1] if replies else {})
-    text = str(entry.get("text") or "").strip()
-    if not text or not tts_worker.read_out(text, session_key=target.session_key):
-        return False
-    if unread:
-        def mark_heard(current):
-            current["unread_count"] = max(0, current["unread_count"] - 1)
-        _update_reply_badge(target, mark_heard)
-    return True
+    return bool(control(target.session_key, "replay", waiting_session_key=waiting_key))
 
 
 _PUBLISHED_SPEECH_QUEUE_DEPTH: int | None = None
@@ -1954,30 +1750,6 @@ def _messenger_outcome_session(target: VoiceTarget | None, fallback: dict | None
     }
 
 
-def _count_background_messenger_outcomes(
-    focused_session: dict | None,
-    fallback: dict | None,
-    request_get_json=_get_orchestrator_json,
-) -> None:
-    """Badge background sessions' undelivered outcomes; refocus delivers them (RR-401)."""
-    focused_repo = str((focused_session or {}).get("repo_path") or "")
-    focused_key = str((focused_session or {}).get("session_key") or "")
-    for target in _live_voice_targets():
-        if not _is_background_target(target):
-            continue
-        session = _messenger_outcome_session(target, fallback)
-        session_key = str((session or {}).get("session_key") or "")
-        if session_key and focused_key:
-            # Keyed tabs may share a project; each counts its own outcomes.
-            if session_key == focused_key:
-                continue
-        elif str((session or {}).get("repo_path") or "") == focused_repo:
-            continue
-        _record_background_outcomes(
-            target, len(_fetch_pending_messenger_outcomes(session, request_get_json))
-        )
-
-
 def _deliver_pending_messenger_outcomes_once(
     *,
     orchestrator_session: dict | None,
@@ -2022,7 +1794,7 @@ def _start_messenger_outcome_polling(
     def _run() -> None:
         poll_seconds = max(0.25, MESSENGER_OUTCOME_POLL_SECONDS)
         while not shutdown_event.is_set():
-            # Only the focused session hears its outcomes; the rest are counted.
+            # Only the focused session hears its outcomes; refocus delivers the rest.
             focused_session = _messenger_outcome_session(
                 _current_voice_target(), orchestrator_session
             )
@@ -2031,9 +1803,6 @@ def _start_messenger_outcome_polling(
                 messenger=messenger,
                 request_get_json=request_get_json,
                 request_json=request_json,
-            )
-            _count_background_messenger_outcomes(
-                focused_session, orchestrator_session, request_get_json
             )
             shutdown_event.wait(poll_seconds)
 
@@ -4122,15 +3891,13 @@ def _start_control_socket(
                         focus_payload = None
                     if isinstance(focus_payload, dict):
                         context = recovery_context or {}
-                        previous_key = _VOICE_TARGET_KEY
+                        # RR-488: a focus switch leaves speech alone, so a
+                        # reply playing or queued is still heard.
                         _apply_voice_focus(
                             focus_payload,
                             recovery_context,
                             start_orchestrator=context.get("start_target_orchestrator"),
                             stop_orchestrator=context.get("stop_target_orchestrator"),
-                        )
-                        _cut_off_unfocused_speech(
-                            previous_key, tts_worker, context.get("messenger")
                         )
                         if context.get("messenger") is not None:
                             context["messenger"].focus(_VOICE_TARGET_KEY or "")
@@ -5292,25 +5059,31 @@ def _handle_orchestrator_reply_control(
         _finish_foreground_reply_delivery(command, delivered=False)
         _note_outcome_signal(command, "reply_helper_rejected")
         return False
-    if _is_background_target(origin):
-        # Only the focused session speaks; the rest wait in a badge.
-        _record_background_reply(origin, reply, command)
-        _finish_foreground_reply_delivery(command, delivered=True)
-        if effect_id is not None:
-            provider_turn_broker.finish_effect(effect_id, delivered=True)
-        return True
-    _note_spoken_reply(origin, reply, command)
-    if messenger is not None and messenger.submit_final(payload):
-        _finish_foreground_reply_delivery(command, delivered=True)
-        if effect_id is not None:
-            provider_turn_broker.finish_effect(effect_id, delivered=True)
-        return True
+    background = _is_background_target(origin)
+    if not background:
+        _note_spoken_reply(origin, reply, command)
+        if messenger is not None and messenger.submit_final(payload):
+            _finish_foreground_reply_delivery(command, delivered=True)
+            if effect_id is not None:
+                provider_turn_broker.finish_effect(effect_id, delivered=True)
+            return True
 
     # A missing or out-of-sync messenger must not swallow a current outcome.
     # _queue_tts_text still rejects stale command metadata.
+    speech_payload = {**payload, "display_text": reply}
+    dedup_key = None
+    if background:
+        # RR-488: an unfocused session's reply is spoken too, queued behind
+        # whatever is playing or waiting; it never cuts in. Its command was
+        # checked against its own session above. The shared ledger's newer
+        # commands belong to other sessions, so the speech carries no command
+        # key, only the reply's own outcome slot.
+        speech_payload.pop("relay_command_seq", None)
+        speech_payload.pop("relay_command_id", None)
+        dedup_key = f"outcome:{command_key[0]}:{command_key[1]}"
     speech_source = payload.get("speech_source")
     delivered = _queue_tts_text(
-        json.dumps({**payload, "display_text": reply}),
+        json.dumps(speech_payload),
         tts_worker.input_queue,
         state_path=state_path,
         allow_pending_command=True,
@@ -5328,6 +5101,7 @@ def _handle_orchestrator_reply_control(
         kind="final",
         authoritative=True,
         semantic_brief=reply,
+        dedup_key=dedup_key,
         work_disposition=payload.get("work_disposition"),
         replayable=True,
         session_key=origin.session_key if origin is not None else None,

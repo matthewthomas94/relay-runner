@@ -10,6 +10,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from test_voice_bridge_background_replies import FakeTTS  # noqa: E402
+from speech_coordinator import SpeechCoordinator  # noqa: E402
+from test_speech_coordinator import FakeWorker  # noqa: E402
 from test_voice_bridge_focus import FocusTestCase, voice_bridge  # noqa: E402
 from intent_inbox import IntentInbox  # noqa: E402
 from unittest import mock  # noqa: E402
@@ -48,12 +50,26 @@ class FocusSwitchMatrixTests(FocusTestCase):
             inbox=inbox,
         )
 
-    def badge(self, target) -> dict:
-        try:
-            with open(voice_bridge._reply_badge_path(target)) as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {}
+    def speech(self):
+        worker = FakeWorker()
+        self.tts = SpeechCoordinator(
+            worker,
+            is_current=lambda seq, command_id: voice_bridge._relay_command_current(
+                seq, command_id, state_path=self.state_path
+            ),
+        )
+        return worker
+
+    @staticmethod
+    def sent(worker) -> list[dict]:
+        items = []
+        while not worker.input_queue.empty():
+            items.append(worker.input_queue.get_nowait()["_speech_intent"])
+        return items
+
+    @staticmethod
+    def has_badge(target) -> bool:
+        return os.path.exists(os.path.join(target.spool_dir, "voice_reply_badge.json"))
 
     def test_idle_session_keeps_an_empty_spool_while_the_focused_one_gets_the_command(self):
         for a_provider, b_provider in ORDERINGS:
@@ -74,7 +90,7 @@ class FocusSwitchMatrixTests(FocusTestCase):
     def test_claimed_in_flight_command_stays_in_its_session_across_a_focus_switch(self):
         for a_provider, b_provider in ORDERINGS:
             with self.subTest(a=a_provider, b=b_provider):
-                self.tts = FakeTTS()
+                worker = self.speech()
                 self.messenger.reset_mock()
                 a = self.focus(f"a-{a_provider}", a_provider)
                 command = {
@@ -95,7 +111,8 @@ class FocusSwitchMatrixTests(FocusTestCase):
                     self.assertEqual(f.read(), claim)
                 self.assertFalse(os.path.exists(b.claim_path))
 
-                # A's reply, arriving after the switch, is badged on A, not spoken for B.
+                # RR-488: A's reply, arriving after the switch, is spoken as A's,
+                # outside B's messenger, and badges nothing.
                 payload = {
                     "text": "A done.",
                     "relay_command_seq": 20,
@@ -111,14 +128,17 @@ class FocusSwitchMatrixTests(FocusTestCase):
                     state_path=self.state_path,
                 ))
                 self.messenger.submit_final.assert_not_called()
-                self.assertEqual(self.badge(a)["unread_count"], 1)
-                self.assertEqual(self.badge(b), {})
+                [item] = self.sent(worker)
+                self.assertEqual((item["spoken_text"], item["session_key"]), ("A done.", a.session_key))
+                self.assertFalse(self.has_badge(a))
+                self.assertFalse(self.has_badge(b))
 
-    def test_tts_playing_when_focus_moves_is_stopped_and_badged_to_the_speaking_session(self):
+    def test_tts_playing_when_focus_moves_keeps_playing_for_the_speaking_session(self):
         for a_provider, b_provider in ORDERINGS:
             with self.subTest(a=a_provider, b=b_provider):
-                self.tts = FakeTTS()
+                worker = self.speech()
                 self.messenger.reset_mock()
+                self.messenger.submit_final.return_value = False
                 a = self.focus(f"a-{a_provider}", a_provider)
                 command = {
                     "relay_command_seq": 30,
@@ -141,15 +161,20 @@ class FocusSwitchMatrixTests(FocusTestCase):
                     messenger=self.messenger,
                     state_path=self.state_path,
                 ))
-                self.tts.speaking = True
+                [playing] = self.sent(worker)
+                worker.observer("started", playing)
 
                 b = self.focus(f"b-{b_provider}", b_provider)
-                voice_bridge._cut_off_unfocused_speech(a.session_key, self.tts, self.messenger)
 
-                self.tts.skip.assert_called_once()
-                self.messenger.interrupt.assert_called_once()
-                self.assertEqual(self.badge(a)["replies"][-1]["text"], "A is talking.")
-                self.assertEqual(self.badge(b), {})
+                # RR-488: the switch neither stops A's reply nor badges it.
+                self.assertTrue(self.tts.playing)
+                self.assertEqual(worker.calls, [])
+                self.messenger.interrupt.assert_not_called()
+                worker.observer("completed", playing)
+                self.assertFalse(self.tts.playing)
+                self.assertFalse(self.has_badge(a))
+                self.assertFalse(self.has_badge(b))
+                self.messenger.submit_final.return_value = True
 
 
 if __name__ == "__main__":

@@ -92,24 +92,11 @@ final class OverlayController {
         NSLog("[OverlayController] Stopped")
     }
 
-    /// Unread replies waiting in other sessions, shown as cards stacked
-    /// above the reply pill.
-    func setReplyStackDepth(_ depth: Int, now: TimeInterval = CACurrentMediaTime()) {
-        replyBadgeDepth = max(0, depth)
-        applyReplyStackDepth(now: now)
-    }
-
     /// RR-464: replies queued behind the current one in the speech queue
-    /// also stack above the pill, alongside other sessions' unread replies.
+    /// stack above the pill. RR-488: every session's replies share that queue.
     private func syncSpeechQueueDepth(_ queued: Int, now: TimeInterval) {
-        let waiting = max(0, queued - 1)
-        guard waiting != speechQueueWaiting else { return }
-        speechQueueWaiting = waiting
-        applyReplyStackDepth(now: now)
-    }
-
-    private func applyReplyStackDepth(now: TimeInterval) {
-        let depth = replyBadgeDepth + speechQueueWaiting
+        let depth = max(0, queued - 1)
+        guard depth != replyStackDepth else { return }
         if depth < replyStackDepth { replyStackDroppedAt = now }
         replyStackDepth = depth
         pill.setStackDepth(depth)
@@ -287,13 +274,11 @@ final class OverlayController {
     private var lastPartial: String = ""
     private var lastPreview: String?
 
-    /// Unread replies still queued keep the overlay up between replies: only
-    /// the finished reply's card leaves while the bridge brings the next one
-    /// forward. The badge count is polled, so a drop just before the reply
-    /// ends still counts as queued.
+    /// Replies still queued keep the overlay up between replies: only the
+    /// finished reply's card leaves while the next one comes forward. The
+    /// queue depth arrives separately, so a drop just before the reply ends
+    /// still counts as queued.
     private var replyStackDepth = 0
-    private var replyBadgeDepth = 0
-    private var speechQueueWaiting = 0
     private var replyStackDroppedAt: TimeInterval = -.infinity
     private var replyQueueHoldUntil: TimeInterval?
     private var replyQueueHoldTheme: ParticleFieldRenderer.Theme?

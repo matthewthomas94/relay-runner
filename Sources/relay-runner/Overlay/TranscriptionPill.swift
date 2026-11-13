@@ -50,8 +50,8 @@ final class TranscriptionPill: NSView {
     /// of ending on a hard line.
     private let bodyFadeMask = CAGradientLayer()
     private var bodyEdgeFade: (top: Bool, bottom: Bool) = (false, false)
-    /// Cards that peek above the reply, one per reply queued behind it (in the
-    /// speech queue or unread in another session), nearest first.
+    /// Cards that peek above the reply, one per reply queued behind it in the
+    /// speech queue, nearest first.
     /// Notification-style, but cascading from the top. RR-464: up to three.
     private let stackCards: [NSView] = (0..<TranscriptionPill.maxStackCards).map { _ in NSView() }
     /// Cards shown: the queued count clamped to `maxStackCards`.

@@ -1,4 +1,4 @@
-"""RR-401: background-session replies are badged, not spoken."""
+"""RR-401/RR-488: replies from every session are spoken in turn, never badged."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from test_voice_bridge_focus import FocusTestCase, voice_bridge, wait_until  # noqa: E402
+from speech_coordinator import SpeechCoordinator  # noqa: E402
+from test_speech_coordinator import FakeWorker  # noqa: E402
 
 
 class FakeTTS:
@@ -51,19 +53,26 @@ class BackgroundReplyTests(FocusTestCase):
                 thread.join(2)
             self.assertFalse(thread.is_alive())
 
-    def test_wheel_plays_unread_messages_in_order_then_replays_for_both_providers(self):
+    def test_wheel_and_replay_fall_back_to_the_speech_queue_history_for_both_providers(self):
+        # RR-488: with nothing queued for the session, play and the explicit
+        # replay control replay its last reply from the speech queue.
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider):
                 target = self.focus(provider, provider)
+                key = target.session_key
+                for handle, payload in (
+                    (voice_bridge._handle_session_playback, {"session_key": key, "action": "play"}),
+                    (voice_bridge._handle_session_replay, {"session_key": key}),
+                ):
+                    self.tts.control_session = mock.Mock(side_effect=[False, True])
+                    self.assertTrue(handle(payload, self.tts))
+                    self.assertEqual(
+                        [c.args for c in self.tts.control_session.call_args_list],
+                        [(key, "play"), (key, "replay")],
+                    )
+                    self.tts.read_out.assert_not_called()
                 self.tts.control_session = mock.Mock(return_value=False)
-                self.tts.read_out = mock.Mock(return_value=True)
-                voice_bridge._record_background_reply(target, "First", {})
-                voice_bridge._record_background_reply(target, "Second", {})
-                payload = {"session_key": target.session_key, "action": "play"}
-                for expected, unread in (("First", 1), ("Second", 0), ("Second", 0)):
-                    self.assertTrue(voice_bridge._handle_session_playback(payload, self.tts))
-                    self.tts.read_out.assert_called_with(expected, session_key=target.session_key)
-                    self.assertEqual(self.badge(target)["unread_count"], unread)
+                self.assertFalse(voice_bridge._handle_session_replay({"session_key": key}, self.tts))
 
     def test_wheel_play_and_stop_do_not_require_a_stored_background_reply(self):
         self.focus("a")
@@ -140,55 +149,129 @@ class BackgroundReplyTests(FocusTestCase):
             state_path=self.state_path,
         )
 
-    def badge(self, target) -> dict:
-        try:
-            with open(voice_bridge._reply_badge_path(target)) as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {}
+    def speech(self):
+        """A real speech queue playing into a fake player, as the bridge wires it."""
+        worker = FakeWorker()
+        coordinator = SpeechCoordinator(
+            worker,
+            is_current=lambda seq, command_id: voice_bridge._relay_command_current(
+                seq, command_id, state_path=self.state_path
+            ),
+            is_preserved=lambda seq, command_id, disposition: (
+                voice_bridge._relay_command_current_or_preserved(
+                    {
+                        "relay_command_seq": seq,
+                        "relay_command_id": command_id,
+                        "intent_id": disposition.get("intent_id"),
+                    },
+                    state_path=self.state_path,
+                )
+            ),
+        )
+        self.tts = coordinator
+        return worker, coordinator
 
-    def test_background_reply_is_badged_under_its_own_command_not_the_focused_one(self):
+    @staticmethod
+    def sent(worker) -> list[dict]:
+        """Items the queue handed to the player since the last call."""
+        items = []
+        while not worker.input_queue.empty():
+            items.append(worker.input_queue.get_nowait()["_speech_intent"])
+        return items
+
+    @staticmethod
+    def play_through(worker, item) -> None:
+        worker.observer("started", item)
+        worker.observer("completed", item)
+
+    def assert_no_badge(self, *targets) -> None:
+        for target in targets:
+            self.assertFalse(
+                os.path.exists(os.path.join(target.spool_dir, "voice_reply_badge.json"))
+            )
+
+    def test_unfocused_reply_is_spoken_once_after_the_current_speech(self):
+        # The focused reply reaches the queue directly, as without a messenger.
+        self.messenger.submit_final.return_value = False
         for provider in ("codex", "claude"):
             with self.subTest(provider=provider):
-                self.messenger.reset_mock()
-                self.tts = FakeTTS()
+                worker, _ = self.speech()
                 a = self.focus(f"a-{provider}", provider)
                 a_command = self.command(10, f"cmd-a-{provider}", a.session_key)
                 b = self.focus(f"b-{provider}", provider)
                 # B's newer command now leads the shared ledger.
-                self.command(11, f"cmd-b-{provider}", b.session_key)
+                b_command = self.command(11, f"cmd-b-{provider}", b.session_key)
+                self.assertTrue(self.reply(b_command, b.session_key, "B finished.", provider))
+                [playing] = self.sent(worker)
+                worker.observer("started", playing)
 
                 self.assertTrue(self.reply(a_command, a.session_key, "A finished.", provider))
 
-                self.messenger.submit_final.assert_not_called()
-                self.assertTrue(self.tts.input_queue.empty())
-                badge = self.badge(a)
-                self.assertEqual(badge["unread_count"], 1)
-                self.assertEqual(badge["replies"][-1]["text"], "A finished.")
-                self.assertEqual(self.badge(b), {})
+                # A waits its turn: B keeps playing and nothing is cut.
+                self.assertEqual(self.sent(worker), [])
+                self.assertEqual(worker.calls, [])
+                worker.observer("completed", playing)
+                [queued] = self.sent(worker)
+                self.assertEqual(queued["spoken_text"], "A finished.")
+                self.assertEqual(queued["session_key"], a.session_key)
+                self.assertEqual(queued["kind"], "final")
+                self.play_through(worker, queued)
 
-                # Focusing A marks it read and speaks nothing.
-                self.focus(a.session_key, provider)
-                badge = self.badge(a)
-                self.assertEqual(badge["unread_count"], 0)
-                self.assertEqual(badge["replies"][-1]["text"], "A finished.")
-                self.messenger.submit_final.assert_not_called()
-                self.tts.read_out.assert_not_called()
+                # A repeat of the same reply is not spoken twice.
+                self.assertTrue(self.reply(a_command, a.session_key, "A finished.", provider))
+                self.assertEqual(self.sent(worker), [])
+                self.assertEqual(self.tts.queue_depth, 0)
+                self.assert_no_badge(a, b)
 
-                # The explicit read-out speaks the stored reply.
-                self.assertTrue(voice_bridge._handle_session_replay(
-                    {"session_key": a.session_key}, self.tts
-                ))
-                self.tts.read_out.assert_called_with("A finished.")
+    def test_unfocused_reply_skips_the_focused_sessions_messenger(self):
+        a = self.focus("a", "codex")
+        a_command = self.command(10, "cmd-a", "a")
+        self.focus("b", "claude")
+        self.command(11, "cmd-b", "b")
+        worker, _ = self.speech()
+
+        self.assertTrue(self.reply(a_command, "a", "A finished.", "codex"))
+
+        self.messenger.submit_final.assert_not_called()
+        [item] = self.sent(worker)
+        self.assertEqual(item["spoken_text"], "A finished.")
+        self.assertIsNone(item["command_seq"])
+        self.assert_no_badge(a)
+
+    def test_replies_from_two_unfocused_sessions_play_in_arrival_order(self):
+        for first, second in (("codex", "claude"), ("claude", "codex")):
+            with self.subTest(first=first, second=second):
+                worker, _ = self.speech()
+                a = self.focus(f"a-{first}", first)
+                a_command = self.command(20, f"cmd-a-{first}", a.session_key)
+                b = self.focus(f"b-{second}", second)
+                b_command = self.command(21, f"cmd-b-{second}", b.session_key)
+                self.focus(f"c-{first}", first)
+                self.command(22, f"cmd-c-{first}", f"c-{first}")
+
+                self.assertTrue(self.reply(a_command, a.session_key, "A finished.", first))
+                self.assertTrue(self.reply(b_command, b.session_key, "B finished.", second))
+
+                [head] = self.sent(worker)
+                self.assertEqual(head["spoken_text"], "A finished.")
+                self.assertEqual(self.tts.queue_depth, 2)
+                self.play_through(worker, head)
+                [following] = self.sent(worker)
+                self.assertEqual(following["spoken_text"], "B finished.")
+                self.play_through(worker, following)
+                self.assertEqual(worker.calls, [])
+                self.assertEqual(self.tts.queue_depth, 0)
 
     def test_reply_without_its_session_ledger_entry_is_still_superseded(self):
         a = self.focus("a", "codex")
         stale = self.command(10, "cmd-a-old", "a")
         self.command(11, "cmd-a-new", "a")
         self.focus("b", "claude")
+        worker, _ = self.speech()
 
         self.assertFalse(self.reply(stale, "a", "Old answer.", "codex"))
-        self.assertEqual(self.badge(a), {})
+        self.assertEqual(self.sent(worker), [])
+        self.assert_no_badge(a)
 
     def test_focused_reply_is_spoken(self):
         b = self.focus("b", "claude")
@@ -197,55 +280,98 @@ class BackgroundReplyTests(FocusTestCase):
         self.assertTrue(self.reply(command, "b", "B finished.", "claude"))
 
         self.messenger.submit_final.assert_called_once()
-        self.assertEqual(self.badge(b), {})
+        self.assert_no_badge(b)
 
-    def test_focus_switch_mid_speech_stops_playback_and_badges_the_reply(self):
+    def test_wheel_stop_and_barge_in_still_stop_an_unfocused_reply(self):
         a = self.focus("a", "codex")
-        command = self.command(5, "cmd-a", "a")
-        self.assertTrue(self.reply(command, "a", "A is talking.", "codex"))
-        self.tts.speaking = True
-
+        a_command = self.command(10, "cmd-a", "a")
         self.focus("b", "claude")
-        voice_bridge._cut_off_unfocused_speech("a", self.tts, self.messenger)
+        self.command(11, "cmd-b", "b")
+        worker, coordinator = self.speech()
+        self.assertTrue(self.reply(a_command, "a", "A finished.", "codex"))
+        [item] = self.sent(worker)
+        worker.observer("started", item)
 
-        self.tts.skip.assert_called_once()
-        self.messenger.interrupt.assert_called_once()
-        badge = self.badge(a)
-        self.assertEqual(badge["unread_count"], 1)
-        self.assertEqual(badge["replies"][-1]["text"], "A is talking.")
+        self.assertTrue(voice_bridge._handle_session_playback(
+            {"session_key": "a", "action": "stop"}, coordinator
+        ))
+        self.assertEqual(worker.calls, ["stop"])
+        worker.observer("cancelled", item)
 
-    def test_focus_switch_without_speech_leaves_playback_alone(self):
-        self.focus("a", "codex")
-        self.focus("b", "claude")
-        voice_bridge._cut_off_unfocused_speech("a", self.tts, self.messenger)
-        self.tts.skip.assert_not_called()
-        self.messenger.interrupt.assert_not_called()
+        # The stopped reply stays queued and Play brings it back.
+        self.assertTrue(voice_bridge._handle_session_playback(
+            {"session_key": "a", "action": "play"}, coordinator
+        ))
+        [resumed] = self.sent(worker)
+        self.assertEqual(resumed["spoken_text"], "A finished.")
+        worker.observer("started", resumed)
+        coordinator.stop()
+        self.assertEqual(worker.calls[-1], "stop")
 
-    def test_background_outcomes_are_counted_and_cleared_on_focus(self):
-        a = self.focus("a", "codex")
-        b = self.focus("b", "claude")
-        outcomes = {
-            a.cwd: [
-                {"id": 1, "payload": {"trace_event": {"ticket_id": "RR-1"}}},
-                {"id": 2, "payload": {"trace_event": {"ticket_id": "RR-2"}}},
-            ],
-            b.cwd: [{"id": 3, "payload": {"trace_event": {"ticket_id": "RR-3"}}}],
-        }
-        requested = []
+    def send_focus(self, coordinator, key: str, provider: str) -> None:
+        """Move focus through the bridge's control socket, as the app does."""
+        shutdown = threading.Event()
+        path = os.path.join(self.root, "focus.sock")
+        with mock.patch.object(voice_bridge, "BRIDGE_CONTROL_SOCK", path), \
+                mock.patch.object(voice_bridge, "_notify_state"):
+            thread = threading.Thread(
+                target=voice_bridge._start_control_socket,
+                args=(coordinator, shutdown),
+                kwargs={"recovery_context": {"messenger": self.messenger}},
+                daemon=True,
+            )
+            thread.start()
+            try:
+                self.assertTrue(wait_until(lambda: os.path.exists(path)))
+                message = voice_bridge.VOICE_FOCUS_PREFIX + json.dumps(
+                    self.focus_payload(key, provider)
+                )
 
-        def get_json(path, params):
-            requested.append(params["repo_path"])
-            return {"outcomes": outcomes.get(params["repo_path"], [])}
+                def send() -> bool:
+                    # The socket file appears a moment before it takes datagrams.
+                    try:
+                        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+                            client.sendto(message.encode(), path)
+                        return True
+                    except ConnectionRefusedError:
+                        return False
 
-        focused = voice_bridge._messenger_outcome_session(b, None)
-        voice_bridge._count_background_messenger_outcomes(focused, None, get_json)
+                self.assertTrue(wait_until(send))
+                self.assertTrue(wait_until(
+                    lambda: voice_bridge._current_voice_target().session_key == key
+                ))
+            finally:
+                shutdown.set()
+                thread.join(2)
+            self.assertFalse(thread.is_alive())
 
-        self.assertEqual(self.badge(a)["outcome_count"], 2)
-        self.assertEqual(self.badge(b), {})
-        self.assertNotIn(b.cwd, requested)
+    def test_focus_switch_keeps_the_playing_and_queued_replies(self):
+        for a_provider, b_provider in (("codex", "claude"), ("claude", "codex")):
+            with self.subTest(a=a_provider, b=b_provider):
+                worker, coordinator = self.speech()
+                self.messenger.reset_mock()
+                a = self.focus(f"a-{a_provider}", a_provider)
+                a_command = self.command(30, f"cmd-a-{a_provider}", a.session_key)
+                b = self.focus(f"b-{b_provider}", b_provider)
+                b_command = self.command(31, f"cmd-b-{b_provider}", b.session_key)
+                self.messenger.submit_final.return_value = False
+                self.assertTrue(self.reply(b_command, b.session_key, "B is talking.", b_provider))
+                [playing] = self.sent(worker)
+                worker.observer("started", playing)
+                self.assertTrue(self.reply(a_command, a.session_key, "A waits.", a_provider))
 
-        self.focus("a", "codex")
-        self.assertEqual(self.badge(a)["outcome_count"], 0)
+                self.send_focus(coordinator, a.session_key, a_provider)
+                self.send_focus(coordinator, b.session_key, b_provider)
+
+                # Neither reply is stopped, skipped or moved into a badge.
+                self.assertEqual(worker.calls, [])
+                self.assertEqual(coordinator.queue_depth, 2)
+                worker.observer("completed", playing)
+                [queued] = self.sent(worker)
+                self.assertEqual(queued["spoken_text"], "A waits.")
+                self.play_through(worker, queued)
+                self.assert_no_badge(a, b)
+                self.messenger.submit_final.return_value = True
 
     def test_pm_tabs_sharing_a_project_each_hear_only_the_runs_they_dispatched(self):
         """RR-469: tabs share general-tasks, so outcomes route by session key."""
@@ -273,11 +399,15 @@ class BackgroundReplyTests(FocusTestCase):
         self.assertEqual(params["session_key"], "tab-b")
         self.assertIn("tab-a", params["live_session_keys"].split(","))
 
-        voice_bridge._count_background_messenger_outcomes(focused, None, get_json)
-        self.assertEqual(self.badge(a)["outcome_count"], 1)
-        self.assertEqual(self.badge(b), {})
-        # The unkeyed startup target keeps its per-project request.
-        self.assertEqual([p["session_key"] for p in requested if p.get("session_key")], ["tab-a"])
+        voice_bridge._deliver_pending_messenger_outcomes_once(
+            orchestrator_session=focused,
+            messenger=self.messenger,
+            request_get_json=get_json,
+            request_json=lambda path, payload: {},
+        )
+        # Only tab B's own outcomes reach it; tab A's wait for its focus.
+        self.assertEqual([p.get("session_key") for p in requested], ["tab-b"])
+        self.assert_no_badge(a, b)
 
     def test_stop_hook_completion_resolves_its_session_from_the_provider_id(self):
         a = self.focus("a", "claude")
@@ -290,69 +420,11 @@ class BackgroundReplyTests(FocusTestCase):
         self.assertEqual(voice_bridge._reply_origin_target({"session_id": "claude-resumed-id"}), a)
         self.assertIsNone(voice_bridge._reply_origin_target({"session_id": "unknown"}))
 
-    def unheard(self, key: str, provider: str, seq: int, text: str):
-        target = self.focus(key, provider)
-        command = self.command(seq, f"cmd-{key}", key)
-        self.focus("focused", "codex")
-        voice_bridge._record_background_reply(target, text, command)
-        return target
-
-    def test_dismissing_a_reply_brings_the_oldest_unheard_reply_forward(self):
-        a = self.unheard("a", "codex", 1, "A finished.")
-        b = self.unheard("b", "claude", 2, "B finished.")
-
+    def test_dismissing_a_reply_leaves_the_queue_to_the_speech_service(self):
+        self.tts.playing = False
         voice_bridge._cancel_speech(self.tts)
-
-        item = self.tts.input_queue.get_nowait()
-        self.assertEqual(item["text"], "A finished.")
-        self.assertEqual(self.badge(a)["unread_count"], 0)
-        self.assertEqual(self.badge(b)["unread_count"], 1)
-
-        # Listening to A to the end offers B next.
-        voice_bridge._on_reply_finished("completed", self.tts)
-        self.assertEqual(self.tts.input_queue.get_nowait()["text"], "B finished.")
-        self.assertEqual(self.badge(b)["unread_count"], 0)
-
-        voice_bridge._on_reply_finished("completed", self.tts)
+        self.tts.skip.assert_called_once_with()
         self.assertTrue(self.tts.input_queue.empty())
-
-    def test_cancelling_playback_leaves_the_advance_to_the_stop_event(self):
-        self.unheard("a", "codex", 1, "A finished.")
-        self.tts.playing = True
-
-        voice_bridge._cancel_speech(self.tts)
-
-        self.tts.skip.assert_called_once()
-        self.assertTrue(self.tts.input_queue.empty())
-
-    def test_no_reply_is_brought_forward_while_speech_is_pending(self):
-        self.unheard("a", "codex", 1, "A finished.")
-        self.tts.speaking = True
-
-        self.assertFalse(voice_bridge._advance_reply_queue(self.tts))
-        self.assertTrue(self.tts.input_queue.empty())
-
-    def test_a_brought_forward_reply_is_rebadged_when_focus_moves_away(self):
-        a = self.unheard("a", "codex", 1, "A finished.")
-        self.assertTrue(voice_bridge._advance_reply_queue(self.tts))
-        self.tts.speaking = True
-
-        self.focus("c", "claude")
-        voice_bridge._cut_off_unfocused_speech("focused", self.tts, self.messenger)
-
-        self.tts.skip.assert_called_once_with(reason="focus_switch")
-        self.assertEqual(self.badge(a)["unread_count"], 1)
-
-    def test_opening_the_session_of_the_waiting_reply_keeps_it(self):
-        a = self.unheard("a", "codex", 1, "A finished.")
-        self.assertTrue(voice_bridge._advance_reply_queue(self.tts))
-        self.tts.speaking = True
-
-        self.focus("a", "codex")
-        voice_bridge._cut_off_unfocused_speech("focused", self.tts, self.messenger)
-
-        self.tts.skip.assert_not_called()
-        self.assertEqual(self.badge(a)["unread_count"], 0)
 
     def coordinated_tts(self) -> FakeTTS:
         tts = FakeTTS()
@@ -402,12 +474,6 @@ class BackgroundReplyTests(FocusTestCase):
 
         self.assertEqual(tts.input_queue.submit_text.call_args.kwargs["session_key"], "a")
 
-    def test_brought_forward_reply_speech_carries_its_session_key(self):
-        a = self.unheard("a", "codex", 1, "A finished.")
-        self.assertTrue(voice_bridge._advance_reply_queue(self.tts))
-
-        item = self.tts.input_queue.get_nowait()
-        self.assertEqual(item["_speech_intent_spec"]["session_key"], a.session_key)
 
 
 if __name__ == "__main__":

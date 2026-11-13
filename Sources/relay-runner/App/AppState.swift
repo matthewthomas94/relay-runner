@@ -286,11 +286,6 @@ final class AppState {
     @ObservationIgnored private var voiceContextID: String?
     /// The `__FOCUS__` datagrams the running bridge last accepted.
     @ObservationIgnored private var sentVoiceFocus: [String] = []
-    /// RR-401: unheard reply and outcome counts per background live context.
-    private(set) var sessionReplyBadges: [String: Int] = [:] {
-        didSet { overlayController?.setReplyStackDepth(sessionReplyBadges.values.reduce(0, +)) }
-    }
-    @ObservationIgnored private var replyBadgeTimer: Timer?
     private var voiceContext: AssistantSessionContext {
         voiceContextID.flatMap { assistantSessionStore.document.bindings[$0]?.context } ?? activeContext
     }
@@ -970,9 +965,6 @@ final class AppState {
         programBoardOverlay.setRunningSessionPathsProvider { [weak self] in
             self?.runningSessionProjectPaths ?? []
         }
-        programBoardOverlay.setSessionReplyBadgesProvider { [weak self] in
-            self?.sessionReplyBadgeProjectPaths ?? [:]
-        }
         programBoardOverlay.setSessionProvider { [weak self] in
             self?.config.general.provider ?? .codex
         }
@@ -1379,7 +1371,6 @@ final class AppState {
         let name: String
         let isLive: Bool
         let isActive: Bool
-        let unreadCount: Int
     }
 
     /// The PM tabs in the order they opened. A tab stays listed while it is
@@ -1390,7 +1381,7 @@ final class AppState {
         pmTabIDs.map { id in
             let live = sessionRegistry.isLive(id)
             return PMTab(id: id, name: sessionLabel(contextID: id), isLive: live,
-                         isActive: live && id == activeContext.id, unreadCount: sessionReplyBadges[id] ?? 0)
+                         isActive: live && id == activeContext.id)
         }
     }
 
@@ -1486,27 +1477,6 @@ final class AppState {
             try? assistantSessionStore.removeTab(context: active)
         }
         publishConversationState()
-    }
-
-    /// RR-401: badge counts keyed by project path, for the board's project cards.
-    var sessionReplyBadgeProjectPaths: [String: Int] {
-        sessionReplyBadges.reduce(into: [:]) { paths, entry in
-            if let path = assistantSessionStore.document.bindings[entry.key]?.context.repositoryPath {
-                paths[path] = entry.value
-            }
-        }
-    }
-
-    /// RR-401: read each background session's badge file. The focused
-    /// session shows none; the bridge clears its file on focus.
-    private func refreshSessionReplyBadges() {
-        let badges = sessionRegistry.liveContextIDs.reduce(into: [String: Int]()) { badges, contextID in
-            guard contextID != activeContext.id,
-                  let spool = sessionRegistry.spool(for: contextID), !spool.isLegacy else { return }
-            let count = VoiceReplyBadge.load(path: spool.replyBadge).count
-            if count > 0 { badges[contextID] = count }
-        }
-        if badges != sessionReplyBadges { sessionReplyBadges = badges }
     }
 
     /// Focus that context's live session, which also routes voice there.
@@ -3375,13 +3345,12 @@ final class AppState {
         // submenu open; its segments are the tabs.
         let tabs = pmTabs
         model.tabs = tabs.map {
-            SessionWheelTab(id: $0.id, name: $0.name, isActive: $0.isActive, isLive: $0.isLive, unreadCount: $0.unreadCount)
+            SessionWheelTab(id: $0.id, name: $0.name, isActive: $0.isActive, isLive: $0.isLive)
         }
         model.addTabUnavailableReason = pmTabUnavailableReason
-        let unread = tabs.filter { !$0.isActive }.reduce(0) { $0 + $1.unreadCount }
         model.refresh(sessions: sessionRegistry.hasLiveSessions
             ? [SessionWheelSession(id: Self.wheelSessionID, name: sessionLabel(contextID: activeContext.id),
-                                   unreadCount: unread, isFocused: true)]
+                                   isFocused: true)]
             : [])
     }
 
@@ -3867,9 +3836,6 @@ final class AppState {
         refreshBridgeWatchdog()
         bridgeWatchdog = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.refreshBridgeWatchdog()
-        }
-        replyBadgeTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.refreshSessionReplyBadges()
         }
     }
 
@@ -4455,9 +4421,6 @@ final class AppState {
         bridgeWatchdog = nil
         bridgeWatchdogTask?.cancel()
         bridgeWatchdogTask = nil
-        replyBadgeTimer?.invalidate()
-        replyBadgeTimer = nil
-        sessionReplyBadges = [:]
     }
 
     private func sweepReadyTicketsForActiveProject(trigger: String) {
@@ -4604,7 +4567,6 @@ final class AppState {
         let oc = OverlayController(config: config.awareness)
         oc.start(stateMachine: stateMachine)
         overlayController = oc
-        oc.setReplyStackDepth(sessionReplyBadges.values.reduce(0, +))
 
         // Workspace overlay — install Esc dismissal once macOS has granted
         // either global-event permission. Accessibility is the normal setup
