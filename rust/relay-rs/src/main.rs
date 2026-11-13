@@ -4,12 +4,12 @@
 //! crates.
 
 mod hook;
-mod json;
 mod reply;
-mod sha256;
 mod support;
 
 use std::process::ExitCode;
+
+use relay_intents::{json, sha256};
 
 /// `relay-rs <CFBundleShortVersionString> (<CFBundleVersion>)`, as compiled in
 /// by build.rs. `services/app_signing.py` compares it with the packaged bundle.
