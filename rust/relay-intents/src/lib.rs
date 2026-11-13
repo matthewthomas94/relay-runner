@@ -21,7 +21,7 @@ pub mod database;
 pub mod inbox;
 pub mod json;
 pub mod model;
-mod pattern;
+pub mod pattern;
 pub mod qualification;
 pub mod sha256;
 

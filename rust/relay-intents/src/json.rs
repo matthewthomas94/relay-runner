@@ -690,6 +690,13 @@ pub fn dumps_sorted(value: &Value) -> String {
     out
 }
 
+/// `json.dumps(value)`: insertion order with the default separators.
+pub fn dumps(value: &Value) -> String {
+    let mut out = String::new();
+    write_value(&mut out, value, false, ", ", ": ");
+    out
+}
+
 /// `json.dumps(value, sort_keys=True, separators=(",", ":"))`.
 pub fn dumps_compact_sorted(value: &Value) -> String {
     let mut out = String::new();
