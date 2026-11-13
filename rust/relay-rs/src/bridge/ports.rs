@@ -3,9 +3,10 @@
 //! its own logic does not depend on how each is built; `wiring.rs` connects
 //! the real ones.
 
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use super::speech_client::RemoteDevice;
 use crate::json::Dict;
 
 /// The keyword arguments of `_InputQueue.submit_text` (`speech_client.py`):
@@ -68,6 +69,29 @@ pub trait Speech: Send + Sync {
         signals: &[String],
     ) -> bool;
     fn shutdown(&self);
+    /// The messenger runtime's `coverage_provider`: what finished playing
+    /// for a command, newest last.
+    fn played_coverage(&self, command_seq: i64, command_id: &str) -> Vec<Dict>;
+    /// The messenger runtime's `realization_observer`.
+    fn record_realization(
+        &self,
+        command_seq: i64,
+        command_id: &str,
+        lifecycle_role: &str,
+        decision: &str,
+        reason: &str,
+    );
+    /// Relay Remote's `attach_sink` event: the device becomes the speech
+    /// output, and stops being a mirror.
+    fn attach_remote_sink(&self, sink: Arc<dyn RemoteDevice>);
+    /// Relay Remote's `detach_sink` event (`reason` defaults to `closed`).
+    fn detach_remote_sink(&self, device_id: &str, reason: &str);
+    /// Relay Remote's `attach_mirror` event.
+    fn attach_remote_mirror(&self, sink: Arc<dyn RemoteDevice>);
+    /// Relay Remote's `detach_mirror` event.
+    fn detach_remote_mirror(&self, device_id: &str);
+    /// Relay Remote's `ack` event: whether the service knew the frame.
+    fn remote_ack(&self, device_id: &str, seq: i64, played: bool) -> bool;
 }
 
 /// `MessengerRuntime`, as the bridge calls it.
