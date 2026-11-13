@@ -1,0 +1,28 @@
+{
+  "canceled": true,
+  "run": {
+    "activity": null,
+    "activity_at": null,
+    "attempt": 1,
+    "branch": "relay/ct-8",
+    "ended_at": "<TIME>",
+    "execution_mode": "implementation",
+    "exit_code": -15,
+    "id": 2,
+    "last_error": null,
+    "log_path": "<ROOT>/workspaces/runs-<HASH8>-ct-8/.relay/run.log",
+    "model_alias": "sonnet",
+    "pid": "<PID>",
+    "provider_key": "claude",
+    "repo_path": "<REPO:runs>",
+    "started_at": "<TIME>",
+    "state": "Canceled",
+    "ticket_id": "CT-8",
+    "worker_effort": "medium",
+    "worker_model": "balanced",
+    "worker_provider_notes": "none",
+    "worker_sizing_rationale": "A scripted change with no ambiguity.",
+    "workspace_path": "<ROOT>/workspaces/runs-<HASH8>-ct-8"
+  },
+  "worktree_removed": true
+}

@@ -1,0 +1,14 @@
+{
+  "identities": {
+    "author": "Relay Runner <relay-runner@localhost>",
+    "committer": "Relay Runner <relay-runner@localhost>"
+  },
+  "message": "Claim CT-1 for run 1\n\nRelay-Project-ID: contract-flow\nRelay-Event-ID: lifecycle:run:1:claim\nRelay-Event-Digest: <SHA256:1>\nRelay-Device-ID: <DEVICE>\nRelay-Actor-Type: system\nRelay-Provider: claude",
+  "modes": {
+    ".orchestrator/CT-1.md": "100644",
+    ".orchestrator/CT-2.md": "100644",
+    ".orchestrator/archive-index.jsonl": "100644",
+    ".orchestrator/config.toml": "100644"
+  },
+  "parents": 1
+}

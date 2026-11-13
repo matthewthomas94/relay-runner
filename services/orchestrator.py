@@ -187,16 +187,24 @@ from tickets import (
     write as write_ticket,
 )
 
-PORT_FILE = Path("/tmp/relay_orchestrator.port")
-RELAY_COMMAND_STATE_FILE = Path("/tmp/voice_command_state.json")
-RELAY_COMMAND_AUTHORIZATION_FILE = Path("/tmp/voice_command_authorizations.json")
+# Isolation switches (docs/specs/orchestrator-http-api.md): a contract-test or
+# second daemon sets these so it shares no file with the installed one. Unset,
+# every path keeps its default.
+RUNTIME_DIR = Path(os.environ.get("RELAY_ORCHESTRATOR_RUNTIME_DIR") or "/tmp")
+PORT_FILE = Path(
+    os.environ.get("RELAY_ORCHESTRATOR_PORT_FILE") or RUNTIME_DIR / "relay_orchestrator.port"
+)
+RELAY_COMMAND_STATE_FILE = RUNTIME_DIR / "voice_command_state.json"
+RELAY_COMMAND_AUTHORIZATION_FILE = RUNTIME_DIR / "voice_command_authorizations.json"
 # App-owned sessions keep their command state in a per-session spool (see
 # Sources/relay-runner/Process/VoiceSessionSpool.swift); manual single-session
 # bridges keep RELAY_COMMAND_STATE_FILE.
-RELAY_SESSION_SPOOL_ROOT = Path("/tmp/relay-sessions")
+RELAY_SESSION_SPOOL_ROOT = RUNTIME_DIR / "relay-sessions"
 RELAY_SESSION_KEY_RE = re.compile(r"[a-z0-9-]{1,64}")
-VOICE_STATE_SOCK = Path("/tmp/voice_state.sock")
-BRIDGE_CONTROL_SOCK = Path(os.environ.get("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock"))
+VOICE_STATE_SOCK = RUNTIME_DIR / "voice_state.sock"
+BRIDGE_CONTROL_SOCK = Path(
+    os.environ.get("BRIDGE_CONTROL_SOCK", str(RUNTIME_DIR / "voice_bridge.sock"))
+)
 DEFAULT_PORT = 7634
 MAX_HTTP_REQUEST_THREADS = 32
 MAX_PROGRAM_REQUEST_THREADS = 8
@@ -893,6 +901,9 @@ def _orchestration_trace_payload(
 # ---------------------------------------------------------------------------
 
 def _data_root() -> Path:
+    override = os.environ.get("RELAY_ORCHESTRATOR_DATA_ROOT")
+    if override:
+        return Path(override).expanduser()
     if sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
     else:
@@ -5535,7 +5546,7 @@ class Daemon:
             return RecoveryActionResult("failed", "component_owner_unavailable")
 
         context = RecoveryExecutionContext(request, validation)
-        reply_path = Path(f"/tmp/relay_recovery_{request.idempotency_key}.json")
+        reply_path = RUNTIME_DIR / f"relay_recovery_{request.idempotency_key}.json"
         try:
             reply_path.unlink(missing_ok=True)
         except OSError:
@@ -6949,6 +6960,7 @@ class Daemon:
             attempt=str(attempt),
             run_id=str(run_id),
             caller_context=context_block,
+            port_file=str(PORT_FILE),
         )
 
     @staticmethod

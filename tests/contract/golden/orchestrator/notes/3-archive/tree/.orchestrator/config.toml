@@ -1,0 +1,8 @@
+schema_version = 2
+project_id = "global-notes"
+prefix = "RR"
+artifact_ref = "refs/heads/relay/artifacts"
+remote_sync = "local_only"
+artifact_lifecycle = "legacy"
+next_id = 1
+next_note_id = 2

@@ -1,0 +1,8 @@
+{
+  "artifact_commit": "<OID:1>",
+  "idempotent": false,
+  "ticket_id": "CT-2",
+  "warnings": [
+    "Routine Delete is recoverable and does not erase Git history. Rotate exposed secrets and use a separately reviewed coordinated purge if privacy erasure is required."
+  ]
+}

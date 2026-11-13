@@ -1,0 +1,67 @@
+{
+  "dispatched": [
+    {
+      "run_id": 2,
+      "ticket_id": "CT-1"
+    }
+  ],
+  "drain": {
+    "canceled_at": null,
+    "completed_at": null,
+    "created_at": "<TIME>",
+    "id": "drain-<HASH12>-1",
+    "items": [
+      {
+        "blocker_next_step": null,
+        "blocker_owner": null,
+        "next_action_at": null,
+        "reason": "Claimed",
+        "run_id": 2,
+        "state": "active",
+        "ticket_id": "CT-1",
+        "unresolved_dependencies": [],
+        "updated_at": "<TIME>"
+      },
+      {
+        "blocker_next_step": "Automatically resume when every predecessor is reviewed, merged, and done.",
+        "blocker_owner": "dependency",
+        "next_action_at": null,
+        "reason": "waiting on CT-1",
+        "run_id": null,
+        "state": "dependency_waiting",
+        "ticket_id": "CT-2",
+        "unresolved_dependencies": [
+          "CT-1"
+        ],
+        "updated_at": "<TIME>"
+      }
+    ],
+    "observed_ticket_ids": [
+      "CT-1",
+      "CT-2"
+    ],
+    "provider_goal_id": "drain-<HASH12>-1",
+    "provider_goal_mode": "relay-runner-durable-goal",
+    "provider_goal_state": "active",
+    "provider_key": "claude",
+    "quiescent_since": null,
+    "repo_path": "<REPO:sweep>",
+    "state": "active",
+    "status_message": "Queue drain waiting on 2 ticket(s).",
+    "target_branch": "main",
+    "updated_at": "<TIME>"
+  },
+  "promoted": [],
+  "repo_path": "<REPO:sweep>",
+  "skipped": [
+    {
+      "reason": "dependencies_not_done",
+      "ticket_id": "CT-2"
+    },
+    {
+      "reason": "status:backlog",
+      "ticket_id": "CT-3"
+    }
+  ],
+  "trigger": "contract"
+}

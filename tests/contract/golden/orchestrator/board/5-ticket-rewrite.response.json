@@ -1,0 +1,6 @@
+{
+  "artifact_commit": "<OID:1>",
+  "idempotent": false,
+  "markdown_base64": "<base64 of the ticket blob in the golden tree>",
+  "ticket_id": "CT-1"
+}

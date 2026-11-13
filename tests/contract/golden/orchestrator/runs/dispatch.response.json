@@ -1,0 +1,27 @@
+{
+  "already_active": false,
+  "run": {
+    "activity": null,
+    "activity_at": null,
+    "attempt": 1,
+    "branch": "relay/ct-1",
+    "ended_at": null,
+    "execution_mode": "implementation",
+    "exit_code": null,
+    "id": 3,
+    "last_error": null,
+    "log_path": "<ROOT>/workspaces/runs-<HASH8>-ct-1/.relay/run.log",
+    "model_alias": "sonnet",
+    "pid": null,
+    "provider_key": "claude",
+    "repo_path": "<REPO:runs>",
+    "started_at": "<TIME>",
+    "state": "Claimed",
+    "ticket_id": "CT-1",
+    "worker_effort": "medium",
+    "worker_model": "balanced",
+    "worker_provider_notes": "none",
+    "worker_sizing_rationale": "A scripted change with no ambiguity.",
+    "workspace_path": "<ROOT>/workspaces/runs-<HASH8>-ct-1"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "identities": {
+    "author": "Relay Runner <relay-runner@localhost>",
+    "committer": "Relay Runner <relay-runner@localhost>"
+  },
+  "message": "Save Relay ticket CT-2\n\nRelay-Project-ID: contract-board\nRelay-Event-ID: board-ticket:write-1\nRelay-Event-Digest: <SHA256:1>\nRelay-Device-ID: <DEVICE>\nRelay-Actor-Type: user",
+  "modes": {
+    ".orchestrator/CT-1.md": "100644",
+    ".orchestrator/CT-2.md": "100644",
+    ".orchestrator/archive-index.jsonl": "100644",
+    ".orchestrator/config.toml": "100644"
+  },
+  "parents": 1
+}

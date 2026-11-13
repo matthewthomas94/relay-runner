@@ -1,0 +1,40 @@
+{
+  "batch": {
+    "created_at": "<TIME>",
+    "id": "<SPIKE:1>",
+    "origin_repo_path": "<REPO:program>",
+    "origin_run_id": 1,
+    "origin_ticket_id": "CT-1",
+    "proposals": [
+      {
+        "batch_id": "<SPIKE:1>",
+        "draft": {
+          "acceptance_criteria": [
+            "The accepted spike recommendation is implemented: Write the follow-up implementation ticket.",
+            "Focused verification covers the changed behavior.",
+            "The run log records the implementation outcome and any remaining uncertainty."
+          ],
+          "depends_on": [],
+          "description": "Write the follow-up implementation ticket.",
+          "priority": "medium",
+          "target_repo_path": "<REPO:program>",
+          "title": "Write the follow-up implementation ticket",
+          "worker_effort": "medium",
+          "worker_model": "balanced",
+          "worker_provider_notes": "Codex uses model_reasoning_effort and Claude uses --effort while preserving the same ticket outcome.",
+          "worker_sizing_rationale": "Automatically proposed from a completed spike; review and adjust sizing before acceptance."
+        },
+        "error": null,
+        "id": "<PROPOSAL:1>",
+        "position": 0,
+        "state": "draft",
+        "ticket_id": null,
+        "updated_at": "<TIME>"
+      }
+    ],
+    "provider_key": "claude",
+    "updated_at": "<TIME>"
+  },
+  "created": true,
+  "duplicate": false
+}

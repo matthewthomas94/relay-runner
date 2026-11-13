@@ -1,0 +1,13 @@
+{
+  "identities": {
+    "author": "Relay Runner <relay-runner@localhost>",
+    "committer": "Relay Runner <relay-runner@localhost>"
+  },
+  "message": "Bootstrap reviewed legacy Relay artifacts\n\nRelay-Project-ID: contract-board\nRelay-Event-ID: migration-bootstrap:<HEX32:1>\nRelay-Event-Digest: <SHA256:1>\nRelay-Device-ID: migration-cli\nRelay-Actor-Type: migration",
+  "modes": {
+    ".orchestrator/CT-1.md": "100644",
+    ".orchestrator/archive-index.jsonl": "100644",
+    ".orchestrator/config.toml": "100644"
+  },
+  "parents": 0
+}
