@@ -102,9 +102,13 @@ from speech_coordinator import SpeechCoordinator
 from support_diagnostics import record_event as record_support_event
 from tts_worker import TTS_CONTROL_SOCK, TTSWorker, publish_idle, publish_waiting_preview
 
+# Isolation switch (docs/specs/voice-bridge-contract.md): a contract-test bridge
+# sets this so its fixed files and sockets stay out of a running session's
+# /tmp. Unset, every path keeps its default.
+BRIDGE_RUNTIME_DIR = os.environ.get("RELAY_BRIDGE_RUNTIME_DIR", "").strip() or "/tmp"
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
 BRIDGE_CONTROL_SOCK = os.environ.get("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock")
-VOICE_STATE_SOCK = "/tmp/voice_state.sock"
+VOICE_STATE_SOCK = os.environ.get("VOICE_STATE_SOCK") or os.path.join(BRIDGE_RUNTIME_DIR, "voice_state.sock")
 ORCHESTRATOR_PORT_FILE = os.environ.get("ORCHESTRATOR_PORT_FILE", "/tmp/relay_orchestrator.port")
 ORCHESTRATOR_DEFAULT_PORT = int(os.environ.get("ORCHESTRATOR_DEFAULT_PORT", "7634"))
 ORCHESTRATOR_HEARTBEAT_SECONDS = float(os.environ.get("ORCHESTRATOR_HEARTBEAT_SECONDS", "10"))
@@ -408,7 +412,7 @@ def _session_spool_path(name: str, override_env: str | None = None) -> str:
         if explicit:
             return explicit
     spool = os.environ.get("RELAY_SESSION_SPOOL_DIR", "").strip()
-    return os.path.join(spool or "/tmp", name)
+    return os.path.join(spool or BRIDGE_RUNTIME_DIR, name)
 
 
 def _ensure_session_spool_dir() -> None:
@@ -434,7 +438,7 @@ VOICE_MANUAL_CLAIM_ACK_FILE = _session_spool_path("voice_cmd_manual_ack.json", "
 # RR-399: the daemon resolves a keyed mutation's state from its session spool,
 # but key-less daemon paths (the background orchestrator-command loop) still
 # read the legacy state path, so a targeted session spool is mirrored there.
-LEGACY_VOICE_COMMAND_STATE_FILE = "/tmp/voice_command_state.json"
+LEGACY_VOICE_COMMAND_STATE_FILE = os.path.join(BRIDGE_RUNTIME_DIR, "voice_command_state.json")
 _MIRRORED_COMMAND_STATE_FILE = (
     VOICE_COMMAND_STATE_FILE
     if os.environ.get("RELAY_SESSION_SPOOL_DIR", "").strip()
@@ -450,7 +454,7 @@ VOICE_COMMAND_AUTHORIZATION_FILE = os.environ.get(
 _TARGETED_SPOOL_DIR = os.environ.get("RELAY_SESSION_SPOOL_DIR", "").strip().rstrip("/")
 RELAY_SESSION_KEY = (
     os.path.basename(_TARGETED_SPOOL_DIR)
-    if os.path.dirname(_TARGETED_SPOOL_DIR) == "/tmp/relay-sessions"
+    if os.path.dirname(_TARGETED_SPOOL_DIR) == os.path.join(BRIDGE_RUNTIME_DIR, "relay-sessions")
     else ""
 )
 VOICE_PROVIDER_TURNS_FILE = os.environ.get("VOICE_PROVIDER_TURNS_FILE", "/tmp/voice_provider_turns.json")
@@ -483,20 +487,20 @@ SPEECH_SERVICE_SOCK = os.environ.get("RELAY_SPEECH_SERVICE_SOCK", "").strip() or
 VOICE_COMMAND_EVENT_LIMIT = 200
 COMMAND_ACTION_RECOVERY_STATES = frozenset({"claimed", "delivery_failed", "superseded"})
 COMMAND_ACTION_TERMINAL_STATES = frozenset({"delivery_failed", "superseded"})
-TTS_IN_FIFO = "/tmp/tts_in.fifo"
+TTS_IN_FIFO = os.path.join(BRIDGE_RUNTIME_DIR, "tts_in.fifo")
 VOICE_ACKNOWLEDGEMENT = os.environ.get("VOICE_ACKNOWLEDGEMENT", "Got it. I'm on it.")
 
 # RR-398: one bridge serves every live app session. The focused session is a
 # lock-guarded mutable target that the app re-targets with ``__FOCUS__`` on the
 # control socket instead of relaunching the bridge. The command ledger stays
 # at the startup state path; per-session mailboxes receive their own commands.
-RELAY_SESSIONS_ROOT = "/tmp/relay-sessions"
-BRIDGE_CWD_FILE = "/tmp/voice_bridge.cwd"
-BRIDGE_PROVIDER_FILE = "/tmp/voice_bridge.provider"
-BRIDGE_SPOOL_FILE = "/tmp/voice_bridge.spool"
+RELAY_SESSIONS_ROOT = os.path.join(BRIDGE_RUNTIME_DIR, "relay-sessions")
+BRIDGE_CWD_FILE = os.path.join(BRIDGE_RUNTIME_DIR, "voice_bridge.cwd")
+BRIDGE_PROVIDER_FILE = os.path.join(BRIDGE_RUNTIME_DIR, "voice_bridge.provider")
+BRIDGE_SPOOL_FILE = os.path.join(BRIDGE_RUNTIME_DIR, "voice_bridge.spool")
 # RR-403: the running bridge's own PID, so recovery and stop paths signal this
 # process instead of pattern-matching every voice_bridge.py on the machine.
-BRIDGE_PID_FILE = "/tmp/voice_bridge.pid"
+BRIDGE_PID_FILE = os.path.join(BRIDGE_RUNTIME_DIR, "voice_bridge.pid")
 VOICE_FOCUS_PREFIX = "__FOCUS__:"
 VOICE_TARGET_PREFIX = "__VOICE_TARGET__:"
 # Matches the orchestrator's RELAY_SESSION_KEY_RE and the app's sanitized
@@ -710,8 +714,8 @@ def _write_bridge_pid_file() -> None:
 # stopping bridge's pid here. That bridge keeps the provider turn ledger and
 # claim on the way out, because the provider session continues and its
 # completion hook still needs them to deliver the final reply.
-BRIDGE_WATCHDOG_RESTART_FILE = "/tmp/voice_bridge_watchdog_restart"
-BRIDGE_STOP_REQUESTED_FILE = "/tmp/voice_bridge_stop_requested"
+BRIDGE_WATCHDOG_RESTART_FILE = os.path.join(BRIDGE_RUNTIME_DIR, "voice_bridge_watchdog_restart")
+BRIDGE_STOP_REQUESTED_FILE = os.path.join(BRIDGE_RUNTIME_DIR, "voice_bridge_stop_requested")
 
 
 def _watchdog_restart_preserves_turns(
