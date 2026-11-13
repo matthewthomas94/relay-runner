@@ -40,6 +40,15 @@ ALLOWED_LICENSES = frozenset({
     "Zlib",
 })
 
+# Crates that only a build script uses, so nothing of theirs is linked into or
+# shipped with the app, with the one licence each may have. The check refuses
+# such a crate as soon as anything links it.
+BUILD_ONLY_EXCEPTIONS = {
+    # Mozilla's root certificates, for the ort-sys build script that downloads
+    # ONNX Runtime (RR-481). A permissive data licence, not copyleft.
+    "webpki-root-certs": "CDLA-Permissive-2.0",
+}
+
 BEGIN = "<!-- BEGIN GENERATED: Rust crates — run scripts/rust-licenses, do not edit here -->"
 END = "<!-- END GENERATED: Rust crates -->"
 
@@ -112,10 +121,36 @@ def third_party_crates(metadata: dict) -> list[dict]:
     return sorted(crates, key=lambda package: (package["name"], package["version"]))
 
 
-def refused_crates(crates: list[dict]) -> list[str]:
+def linked_packages(tree: str) -> set[tuple[str, str]]:
+    """(name, version) of each crate in `cargo tree -e normal --prefix none` output.
+
+    That is what the binaries link. A build dependency, and everything it
+    pulls in, runs at compile time only. `cargo metadata` cannot tell the two
+    apart, because it unifies features across build and normal dependencies.
+    """
+    linked = set()
+    for line in tree.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].startswith("v"):
+            linked.add((parts[0], parts[1][1:]))
+    return linked
+
+
+def refused_crates(crates: list[dict], linked: set[tuple[str, str]] | None = None) -> list[str]:
+    def allowed(crate: dict) -> bool:
+        if license_allowed(crate.get("license")):
+            return True
+        exception = BUILD_ONLY_EXCEPTIONS.get(crate["name"])
+        return (
+            exception is not None
+            and crate.get("license") == exception
+            and linked is not None
+            and (crate["name"], crate["version"]) not in linked
+        )
+
     return [
         f'{crate["name"]} {crate["version"]}: {crate.get("license") or "no licence expression"}'
-        for crate in crates if not license_allowed(crate.get("license"))
+        for crate in crates if not allowed(crate)
     ]
 
 
@@ -130,8 +165,8 @@ def render(crates: list[dict], toolchain: str) -> str:
     lines = [
         BEGIN,
         "",
-        f"`relay-rs` is built from the Cargo workspace in `rust/` with Rust {toolchain} and statically links "
-        "the Rust standard library, which is licensed under the Apache License 2.0 or the MIT License at "
+        f"`relay-rs` and `relay-speech` are built from the Cargo workspace in `rust/` with Rust {toolchain} "
+        "and statically link the Rust standard library, which is licensed under the Apache License 2.0 or the MIT License at "
         "the user's option; the Rust project's "
         f"[COPYRIGHT](https://github.com/rust-lang/rust/blob/{toolchain}/COPYRIGHT) file describes the "
         "third-party material it includes.",
@@ -176,13 +211,23 @@ def cargo_metadata() -> dict:
     return json.loads(result.stdout)
 
 
+def cargo_linked() -> set[tuple[str, str]]:
+    result = subprocess.run(
+        ["cargo", "tree", "--workspace", "--locked", "-e", "normal", "--target", TARGET, "--prefix", "none"],
+        cwd=RUST, capture_output=True, text=True,
+    )
+    if result.returncode:
+        raise SystemExit(f"error: cargo tree failed:\n{result.stderr.strip()}")
+    return linked_packages(result.stdout)
+
+
 def main() -> int:
     arguments = sys.argv[1:]
     if arguments not in ([], ["--check"]):
         print("usage: rust-licenses [--check]", file=sys.stderr)
         return 2
     crates = third_party_crates(cargo_metadata())
-    refused = refused_crates(crates)
+    refused = refused_crates(crates, cargo_linked())
     if refused:
         print("error: Rust crates with a licence outside the allow list in scripts/rust-licenses:", file=sys.stderr)
         for line in refused:

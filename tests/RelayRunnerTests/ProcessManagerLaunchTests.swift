@@ -615,6 +615,27 @@ final class ProcessManagerLaunchTests: XCTestCase {
         )
     }
 
+    func testSpeechRuntimeIsRustUnlessRolledBackOrTheBinaryIsMissing() {
+        let directory = URL(fileURLWithPath: "/Relay Runner.app/Contents/MacOS", isDirectory: true)
+        let binary = "/Relay Runner.app/Contents/MacOS/relay-speech"
+        func resolve(_ environment: [String: String], bundled: Bool = true) -> ProcessManager.SpeechRuntime {
+            ProcessManager.SpeechRuntime.resolve(
+                executableDirectory: directory,
+                environment: environment,
+                isExecutable: { bundled && $0 == binary }
+            )
+        }
+        XCTAssertEqual(resolve([:]), .rust(binary: binary))
+        XCTAssertEqual(resolve(["RELAY_SPEECH_RUNTIME": "rust"]), .rust(binary: binary))
+        XCTAssertEqual(resolve(["RELAY_SPEECH_RUNTIME": "python"]), .python)
+        XCTAssertEqual(resolve(["RELAY_SPEECH_RUNTIME": " Python "]), .python)
+        XCTAssertEqual(resolve([:], bundled: false), .python)
+        XCTAssertEqual(
+            ProcessManager.SpeechRuntime.resolve(executableDirectory: nil, environment: [:], isExecutable: { _ in true }),
+            .python
+        )
+    }
+
     func testEmbeddedLaunchUsesProviderNative150KAutomaticCompaction() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
         var config = AppConfig()

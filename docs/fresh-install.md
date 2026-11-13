@@ -87,3 +87,30 @@ support bundle before sharing it.
 A VM snapshot taken before step 1 is an equivalent, faster reset path. Revert
 the snapshot for another first-run pass, but still record physical-Mac checks
 when Gatekeeper, device permissions, or hardware audio behavior are in scope.
+
+## Speech runtime
+
+Speech runs in `relay-speech`, the Rust speech service the app bundle ships in
+`Contents/MacOS` (RR-481). The voice bridge, the onboarding tutorial voice and
+the Settings voice preview all start it. First-run setup therefore installs
+only `services/requirements.txt` into the services venv, and downloads the two
+Kokoro model files to `~/.local/share/kokoro` over plain HTTPS with `curl`. A
+fresh install no longer installs numpy, onnxruntime, kokoro-onnx or
+huggingface_hub.
+
+For one release, the Python speech service remains available as a fallback.
+Set `RELAY_SPEECH_RUNTIME=python` in the app's environment, then relaunch the
+app and start a session:
+
+```bash
+launchctl setenv RELAY_SPEECH_RUNTIME python
+```
+
+The next setup run (onboarding, or `scripts/relay-bridge --venv-only`) then
+also installs `services/requirements-python-speech.txt`: numpy, onnxruntime,
+kokoro-onnx and huggingface_hub, with their espeak-ng based phonemiser. Those
+packages are installable only for this fallback. Undo it with
+`launchctl unsetenv RELAY_SPEECH_RUNTIME`. A build without `relay-speech`, such
+as a source checkout, also uses the Python service and needs those packages,
+unless `RELAY_SPEECH_BINARY` names a `relay-speech` built from `rust/`. The
+fallback is removed one release after the Rust service ships.

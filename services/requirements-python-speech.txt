@@ -1,0 +1,8 @@
+# The Python speech service, installed only when RELAY_SPEECH_RUNTIME=python
+# selects it as the fallback to the Rust relay-speech (RR-481). Remove one
+# release after the Rust service ships as the default.
+-r requirements.txt
+numpy>=1.26,<3
+onnxruntime>=1.20,<2
+kokoro-onnx>=0.4.9,<0.6
+huggingface_hub>=0.20,<1

@@ -5680,13 +5680,35 @@ def _record_bridge_readiness(outcome: str) -> None:
     )
 
 
+def _speech_service_binary() -> str | None:
+    """The Rust speech service (RR-481): `RELAY_SPEECH_BINARY`, else the
+    relay-speech the app bundle ships in Contents/MacOS."""
+    configured = os.environ.get("RELAY_SPEECH_BINARY", "").strip()
+    candidate = configured or str(Path(__file__).resolve().parent.parent.parent / "MacOS" / "relay-speech")
+    return candidate if os.path.isfile(candidate) and os.access(candidate, os.X_OK) else None
+
+
 def _speech_service_command() -> list[str]:
-    """The speech service's command line; it reads the same --config as the bridge."""
+    """The speech service's command line; it reads the same --config as the bridge.
+
+    RR-481: the Rust service is the default. `RELAY_SPEECH_RUNTIME=python`
+    runs services/speech_service.py instead, as the fallback for one release;
+    it needs the packages in requirements-python-speech.txt.
+    """
     configured = os.environ.get("RELAY_SPEECH_SERVICE_CMD", "").strip()
-    command = shlex.split(configured) if configured else [
-        sys.executable,
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "speech_service.py"),
-    ]
+    python_requested = os.environ.get("RELAY_SPEECH_RUNTIME", "").strip().lower() == "python"
+    binary = None if configured or python_requested else _speech_service_binary()
+    if configured:
+        command = shlex.split(configured)
+    elif binary:
+        command = [binary]
+    else:
+        if not python_requested:
+            print("[voice_bridge] relay-speech is not installed; using the Python speech service", file=sys.stderr)
+        command = [
+            sys.executable,
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "speech_service.py"),
+        ]
     args = sys.argv[1:]
     for index, arg in enumerate(args[:-1]):
         if arg == "--config":

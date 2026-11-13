@@ -2088,7 +2088,8 @@ fi
 
 # -- Ensure Python venv with dependencies AND speech-model files --
 # Two separate things have to be true for the voice bridge to work:
-#   1. Python venv exists with numpy / kokoro_onnx / huggingface_hub
+#   1. Python venv exists with requirements.txt installed (and, only with
+#      RELAY_SPEECH_RUNTIME=python, the Python speech stack)
 #   2. Kokoro speech-model files (~350 MB) are on disk
 # Old code only checked (1), so the user could finish onboarding and then
 # discover the first session was silent because tts_worker.py was lazy-
@@ -2097,10 +2098,32 @@ fi
 # models as part of the install, so a successful onboarding means the
 # session works immediately, fully offline.
 PYTHON="$SERVICES_DIR/.venv/bin/python3"
-# Match what tts_worker.py:_find_kokoro_model() looks for.
+# Match where relay-speech (kokoro.rs) and tts_worker.py look for the model.
 KOKORO_DIR="$HOME/.local/share/kokoro"
 KOKORO_MODEL_FILE="$KOKORO_DIR/kokoro-v1.0.onnx"
 KOKORO_VOICES_FILE="$KOKORO_DIR/voices-v1.0.bin"
+# Where relay-speech (kokoro.rs) and, before RR-481, huggingface_hub download from.
+KOKORO_DOWNLOAD_BASE="https://huggingface.co/fastrtc/kokoro-onnx/resolve/main"
+
+# Each file is written beside its final name and renamed into place, so a
+# broken download never looks complete.
+download_kokoro_models() {
+    mkdir -p "$KOKORO_DIR" || return 1
+    local name partial
+    for name in kokoro-v1.0.onnx voices-v1.0.bin; do
+        [ -f "$KOKORO_DIR/$name" ] && continue
+        partial="$KOKORO_DIR/$name.download"
+        echo "[Relay Runner] Downloading $name to $KOKORO_DIR" >&2
+        if ! curl --fail --location --silent --show-error --retry 3 \
+                --output "$partial" "$KOKORO_DOWNLOAD_BASE/$name"; then
+            rm -f -- "$partial"
+            echo "[Relay Runner] Speech model download failed: $name" >&2
+            return 1
+        fi
+        mv -f -- "$partial" "$KOKORO_DIR/$name" || return 1
+    done
+    echo "[Relay Runner] Speech model files present." >&2
+}
 
 # Check the retained interpreter before dependency imports can short-circuit
 # setup. Older releases accepted Python 3.9 venvs; their voice dependencies may
@@ -2112,8 +2135,21 @@ if [ -x "$PYTHON" ] && \
     rm -rf "$SERVICES_DIR/.venv"
 fi
 
+# RR-481: speech runs in the Rust relay-speech the app bundle ships, so the
+# venv needs only requirements.txt. RELAY_SPEECH_RUNTIME=python selects the
+# Python speech service, the fallback for one release, which also needs numpy,
+# onnxruntime, kokoro-onnx and huggingface_hub (requirements-python-speech.txt).
+SPEECH_RUNTIME="$(printf '%s' "${RELAY_SPEECH_RUNTIME:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+PYTHON_DEPS_CHECK='import sys; sys.version_info >= (3, 11) or __import__("tomli")'
+PYTHON_REQUIREMENTS="$SERVICES_BUNDLE/requirements.txt"
+PYTHON_DEPS_PROGRESS="Installing Python packages..."
+if [ "$SPEECH_RUNTIME" = python ]; then
+    PYTHON_DEPS_CHECK="$PYTHON_DEPS_CHECK; import numpy, kokoro_onnx, huggingface_hub"
+    PYTHON_REQUIREMENTS="$SERVICES_BUNDLE/requirements-python-speech.txt"
+    PYTHON_DEPS_PROGRESS="Installing numpy, onnxruntime, kokoro-onnx, huggingface_hub..."
+fi
 PYTHON_DEPS_OK=false
-"$PYTHON" -c 'import numpy, kokoro_onnx, huggingface_hub' >/dev/null 2>&1 && PYTHON_DEPS_OK=true
+"$PYTHON" -c "$PYTHON_DEPS_CHECK" >/dev/null 2>&1 && PYTHON_DEPS_OK=true
 KOKORO_MODELS_OK=false
 [ -f "$KOKORO_MODEL_FILE" ] && [ -f "$KOKORO_VOICES_FILE" ] && KOKORO_MODELS_OK=true
 CLAUDE_BIN="$(find_claude_bin)"
@@ -2384,44 +2420,21 @@ if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $AGENT_CLI_OK || ! $RELAY_SKILL
         # the dep-install band each time it sees one — that's where the
         # perceived "hang" lives, so the sub-progress is what makes the
         # bar feel alive.
-        emit_progress 65 "Installing numpy, onnxruntime, kokoro-onnx, huggingface_hub..."
-        "$SERVICES_DIR/.venv/bin/pip" install -r "$SERVICES_BUNDLE/requirements.txt" || \
+        emit_progress 65 "$PYTHON_DEPS_PROGRESS"
+        "$SERVICES_DIR/.venv/bin/pip" install -r "$PYTHON_REQUIREMENTS" || \
             { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
     fi
 
     if ! $KOKORO_MODELS_OK; then
         # Pre-download the Kokoro speech model + voices (~350 MB) so the
-        # first session works immediately. tts_worker.py:_load_voice
-        # has lazy-download fallback logic, but a pre-downloaded model
-        # means the user never sees TTS silently fail or hang on first
-        # use because of a bad network moment. Heredoc uses single-
-        # quoted PYEOF so $vars inside Python aren't expanded by the
-        # shell.
+        # first session works immediately. The speech service can download
+        # the model itself, but a pre-downloaded model means the user never
+        # sees speech silently fail or hang on first use because of a bad
+        # network moment. RR-481: plain HTTPS from the repository
+        # huggingface_hub fetched from, into the same folder, so setup no
+        # longer needs huggingface_hub.
         emit_progress 80 "Downloading speech model (~350 MB, may take 1–2 minutes)..."
-        if ! "$SERVICES_DIR/.venv/bin/python3" - <<'PYEOF'
-import sys
-from pathlib import Path
-download_dir = Path.home() / ".local" / "share" / "kokoro"
-download_dir.mkdir(parents=True, exist_ok=True)
-files = ["kokoro-v1.0.onnx", "voices-v1.0.bin"]
-needed = [f for f in files if not (download_dir / f).is_file()]
-if not needed:
-    print("[Relay Runner] Speech model files already present.")
-    sys.exit(0)
-print(f"[Relay Runner] Downloading {len(needed)} model file(s) to {download_dir}", file=sys.stderr)
-try:
-    from huggingface_hub import hf_hub_download
-    for filename in needed:
-        hf_hub_download(
-            repo_id="fastrtc/kokoro-onnx",
-            filename=filename,
-            local_dir=str(download_dir),
-        )
-    print("[Relay Runner] Speech model download complete.", file=sys.stderr)
-except Exception as e:
-    print(f"[Relay Runner] Speech model download failed: {e}", file=sys.stderr)
-    sys.exit(1)
-PYEOF
+        if ! download_kokoro_models
         then
             echo ''
             echo "[Relay Runner] Failed to download speech model files."
