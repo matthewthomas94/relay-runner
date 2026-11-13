@@ -329,8 +329,8 @@ by re-materialising the untracked `.orchestrator/` projection in the working
 tree; `golden/orchestrator/board/` holds every commit byte for byte.
 
 - `POST /v1/artifacts/tickets/claim-next-id` body `request_id` → `201
-  {"ticket_id", "next_id", …}`; reusing a `request_id` for a different claim
-  is refused.
+  {"ticket_id", "id", "prefix", "idempotent", "artifact_commit"}`; reusing a
+  `request_id` for a different claim is refused.
 - `POST /v1/artifacts/tickets/write` body `ticket_id`, `markdown_base64`,
   `request_id`; the daemon adds `artifact_id` and `user_edited_at` to the
   frontmatter.
@@ -418,8 +418,11 @@ Under the data root (default `~/Library/Application Support/relay-runner/orchest
 | `workspaces/` | default `workspace_root` for worktrees |
 
 The parent directory (the state root) holds `projects/registry-v2.json` (owned
-by the app), `program/projects.json`, the artifact rollout state, the notes
-library (`notes/`) and personal storage (`files/`, `general/`).
+by the app), `program/projects.json`, the artifact rollout state and
+per-project artifact state (`artifacts/`, `locks/`), the notes library
+(`notes/`, a git repository), personal storage (`files/`,
+`personal-storage/catalog.sqlite3`) and the General task ledger
+(`general/work.db`).
 
 `runs.json` is rewritten atomically (temp file and rename) on every run
 transition and periodically. `Sources/relay-runner/Board/RunStateStore.swift`
