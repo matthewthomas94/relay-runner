@@ -1483,7 +1483,8 @@ final class ProcessManager {
         providerBindingPath: String? = nil,
         publicHandoff: String = "",
         preservesContextAuthorization: Bool = false,
-        spool: VoiceSessionSpool = .legacy
+        spool: VoiceSessionSpool = .legacy,
+        hookRuntime: HookRuntime = .resolve()
     ) -> String {
         let effectiveProviderSessionID = voiceDelivery == .appOwned || sessionContext != nil
             ? (providerSessionID ?? UUID().uuidString.lowercased())
@@ -1536,12 +1537,14 @@ final class ProcessManager {
                 voiceDelivery: voiceDelivery,
                 sessionContext: sessionContext,
                 publicHandoff: publicHandoff,
-                reachesRegisteredProjects: !generalAccess.isEmpty
+                reachesRegisteredProjects: !generalAccess.isEmpty,
+                hookRuntime: hookRuntime
             ),
             completionHookFlag: Self.appOwnedCompletionHookFlag(
                 relayBridge: relayBridge,
                 target: target,
-                voiceDelivery: voiceDelivery
+                voiceDelivery: voiceDelivery,
+                hookRuntime: hookRuntime
             ),
             mcpEnvironmentFlag: Self.appOwnedMCPEnvironmentFlag(target: target, voiceDelivery: voiceDelivery),
             voiceDelivery: voiceDelivery,
@@ -1586,10 +1589,11 @@ final class ProcessManager {
         ))
         \(Self.appOwnedReplyHelperExport(
             relayBridge: relayBridge,
-            voiceDelivery: voiceDelivery
+            voiceDelivery: voiceDelivery,
+            hookRuntime: hookRuntime
         ))
         \(cdLine)
-        \(sessionContext != nil ? "export RELAY_PROVIDER_PROCESS_ID=$$\n" + Self.completionHookCommand(relayBridge: relayBridge) + " --record-process || { echo '[Relay Runner] Process ownership could not be saved.'; exit 1; }" : "")
+        \(sessionContext != nil ? "export RELAY_PROVIDER_PROCESS_ID=$$\n" + Self.completionHookCommand(relayBridge: relayBridge, hookRuntime: hookRuntime) + " --record-process || { echo '[Relay Runner] Process ownership could not be saved.'; exit 1; }" : "")
         relay_record_session_event launcher_start started
         \(Self.claudeSubscriptionGate(relayBridge: relayBridge, target: target, agentBinary: agentBinary))
         \(Self.codexLoginGate(target: target, agentBinary: agentBinary))
@@ -1600,7 +1604,7 @@ final class ProcessManager {
         \(Self.appOwnedProviderSessionPublish(effectiveProviderSessionID))
         relay_record_session_event provider_spawn started
         relay_record_support_event provider provider_readiness spawned
-        \(sessionContext != nil && target == .codex ? "export RELAY_PROVIDER_BINARY=" + Self.shellQuoted(agentBinary) + "\n" + Self.completionHookCommand(relayBridge: relayBridge) + " --record-codex-startup </dev/null >/dev/null 2>&1 &" : "")
+        \(sessionContext != nil && target == .codex ? "export RELAY_PROVIDER_BINARY=" + Self.shellQuoted(agentBinary) + "\n" + Self.completionHookCommand(relayBridge: relayBridge, hookRuntime: hookRuntime) + " --record-codex-startup </dev/null >/dev/null 2>&1 &" : "")
         # Interactive agent session with Relay Runner voice mode pre-fired.
         # Replacing this launcher process keeps the PTY child PID aligned with
         # the agent, so End Session terminates the interactive process cleanly.
@@ -2127,7 +2131,7 @@ final class ProcessManager {
     Resolve each command as non-work/control, direct action, ticket creation/refinement, ticket update, worker dispatch, or clarification. Raw Relay command captures are private metadata and must not appear in visible .orchestrator tickets. Do not implement substantial project work inline unless the user explicitly asks.
     Public internet research is available by default. Use it only to read public evidence; it does not authorize messages, publishing, uploads of private workspace data, purchases, or unrelated mutations. Pin public-repository evidence to a commit when conclusions depend on source code, and report provider/network failure explicitly instead of claiming the source was assessed.
     Use mcp__relay-app__* for Relay Runner's own status, pages, settings, sessions, Relay Remote pairing and Keep Awake, mcp__relay-desktop__snapshot and act to read and operate apps through accessibility, mcp__relay-actions__* for physical screen manipulation, and mcp__relay-vision__screenshot only when pixels matter; never use native computer-use fallbacks for those capabilities, and do not call propose_action.
-    The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. A Relay-owned completion hook will recover a non-empty final provider message at turn Stop. Do not write reply JSON or reply envelopes to /tmp/voice_in.fifo directly. If an explicit current reply is needed, pipe only the final reply text to `/usr/bin/python3 "$RELAY_REPLY_HELPER"`; that shared helper binds and checks the claimed seq/id and is the sole app-owned __ORCHESTRATOR_REPLY__ encoder. Its accepted reply remains authoritative and deduplicates the later completion hook. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.
+    The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. A Relay-owned completion hook will recover a non-empty final provider message at turn Stop. Do not write reply JSON or reply envelopes to /tmp/voice_in.fifo directly. If an explicit current reply is needed, pipe only the final reply text to `\(HookRuntime.rustReplyInvocation)`; that shared helper binds and checks the claimed seq/id and is the sole app-owned __ORCHESTRATOR_REPLY__ encoder. Its accepted reply remains authoritative and deduplicates the later completion hook. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.
     Provider responses, reasoning summaries, tool calls, progress, and final output should remain visible in this terminal.
     """
 
@@ -2140,10 +2144,17 @@ final class ProcessManager {
         voiceDelivery: SessionVoiceDelivery,
         sessionContext: AssistantSessionContext? = nil,
         publicHandoff: String = "",
-        reachesRegisteredProjects: Bool = false
+        reachesRegisteredProjects: Bool = false,
+        hookRuntime: HookRuntime
     ) -> String {
         guard voiceDelivery == .appOwned else { return "" }
         var instructions = appOwnedRelayInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        if hookRuntime == .python {
+            instructions = instructions.replacingOccurrences(
+                of: HookRuntime.rustReplyInvocation,
+                with: HookRuntime.pythonReplyInvocation
+            )
+        }
         if let sessionContext {
             instructions += "\nActive context: \(sessionContext.displayName) (\(sessionContext.kind.rawValue)). Execution is bound to \(sessionContext.workingDirectory). A context change requires Relay Runner to replace or resume the provider; never claim that a chat instruction changed your cwd or project mutation authority."
             if reachesRegisteredProjects {
@@ -2211,10 +2222,17 @@ final class ProcessManager {
     /// Bounded read-only access to the durable broker. Temporary bridge files
     /// disappear during a switch and cannot establish parent work authority.
     static func contextContinuationAuthority(operation: String, source: [String: String],
-                                             submissionID: String? = nil, destination: [String: String]? = nil) throws -> [String: Any] {
+                                             submissionID: String? = nil, destination: [String: String]? = nil,
+                                             hookRuntime: HookRuntime = .resolve()) throws -> [String: Any] {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = [servicesDirectory.appendingPathComponent("relay_completion_hook.py").path, "--context-continuation"]
+        switch hookRuntime {
+        case .rust(let binary):
+            process.executableURL = URL(fileURLWithPath: binary)
+            process.arguments = ["hook", "--context-continuation"]
+        case .python:
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            process.arguments = [servicesDirectory.appendingPathComponent("relay_completion_hook.py").path, "--context-continuation"]
+        }
         let input = Pipe(), output = Pipe()
         process.standardInput = input
         process.standardOutput = output
@@ -2239,6 +2257,34 @@ final class ProcessManager {
         return reply
     }
 
+    /// RR-478: the completion hook and reply helper a session registers.
+    /// `relay-rs hook` and `relay-rs reply` are the default. Setting
+    /// `RELAY_HOOK_RUNTIME=python` in the app's environment registers the
+    /// bundled Python scripts instead, for both providers; so does a build
+    /// with no relay-rs beside the app executable. scripts/relay-bridge makes
+    /// the same choice for the skills it installs.
+    enum HookRuntime: Equatable {
+        case rust(binary: String)
+        case python
+
+        static let environmentName = "RELAY_HOOK_RUNTIME"
+        static let binaryName = "relay-rs"
+        /// How the app-owned instructions tell the provider to publish a reply.
+        static let rustReplyInvocation = "\"$RELAY_REPLY_HELPER\" reply"
+        static let pythonReplyInvocation = "/usr/bin/python3 \"$RELAY_REPLY_HELPER\""
+
+        static func resolve(
+            executableDirectory: URL? = Bundle.main.executableURL?.deletingLastPathComponent(),
+            environment: [String: String] = ProcessInfo.processInfo.environment,
+            isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+        ) -> HookRuntime {
+            guard environment[environmentName] != "python",
+                  let binary = executableDirectory?.appendingPathComponent(binaryName).path,
+                  isExecutable(binary) else { return .python }
+            return .rust(binary: binary)
+        }
+    }
+
     private static func completionHookScriptPath(relayBridge: String) -> String {
         URL(fileURLWithPath: relayBridge)
             .deletingLastPathComponent()
@@ -2257,11 +2303,16 @@ final class ProcessManager {
 
     private static func appOwnedReplyHelperExport(
         relayBridge: String,
-        voiceDelivery: SessionVoiceDelivery
+        voiceDelivery: SessionVoiceDelivery,
+        hookRuntime: HookRuntime
     ) -> String {
         guard voiceDelivery == .appOwned else { return "" }
-        return "export RELAY_REPLY_HELPER="
-            + Self.shellQuoted(Self.replyHelperScriptPath(relayBridge: relayBridge))
+        let helper: String
+        switch hookRuntime {
+        case .rust(let binary): helper = binary
+        case .python: helper = Self.replyHelperScriptPath(relayBridge: relayBridge)
+        }
+        return "export RELAY_REPLY_HELPER=" + Self.shellQuoted(helper)
     }
 
     private static func appOwnedProviderSessionExport(_ providerSessionID: String?) -> String {
@@ -2351,8 +2402,13 @@ final class ProcessManager {
         """
     }
 
-    private static func completionHookCommand(relayBridge: String) -> String {
-        "/usr/bin/python3 \(Self.shellQuoted(Self.completionHookScriptPath(relayBridge: relayBridge)))"
+    private static func completionHookCommand(relayBridge: String, hookRuntime: HookRuntime) -> String {
+        switch hookRuntime {
+        case .rust(let binary):
+            return "\(Self.shellQuoted(binary)) hook"
+        case .python:
+            return "/usr/bin/python3 \(Self.shellQuoted(Self.completionHookScriptPath(relayBridge: relayBridge)))"
+        }
     }
 
     private static func codexCompletionHookFlag(event: String, command: String, statusMessage: String) -> String {
@@ -2372,10 +2428,11 @@ final class ProcessManager {
     private static func appOwnedCompletionHookFlag(
         relayBridge: String,
         target: AgentTarget,
-        voiceDelivery: SessionVoiceDelivery
+        voiceDelivery: SessionVoiceDelivery,
+        hookRuntime: HookRuntime
     ) -> String {
         guard voiceDelivery == .appOwned else { return "" }
-        let command = Self.completionHookCommand(relayBridge: relayBridge)
+        let command = Self.completionHookCommand(relayBridge: relayBridge, hookRuntime: hookRuntime)
         switch target {
         case .codex:
             return "--enable hooks --dangerously-bypass-hook-trust "

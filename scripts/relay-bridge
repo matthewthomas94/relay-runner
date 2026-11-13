@@ -29,6 +29,18 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Read-only services bundled inside the .app (or repo, for dev): the
 # Python source files and requirements.txt that ship with each release.
 SERVICES_BUNDLE="$PROJECT_ROOT/services"
+# RR-478: the reply helper the installed skills pipe replies to. The app
+# bundle ships relay-rs in Contents/MacOS beside SharedSupport; without it, or
+# with RELAY_HOOK_RUNTIME=python (the app's rollback switch), the skills use the
+# bundled Python helper, as ProcessManager.HookRuntime does for app sessions.
+relay_reply_command() {
+    local rust="$PROJECT_ROOT/../MacOS/relay-rs"
+    if [ "${RELAY_HOOK_RUNTIME:-}" != "python" ] && [ -x "$rust" ]; then
+        printf "'%s' reply" "$(cd "$(dirname "$rust")" && pwd)/relay-rs"
+    else
+        printf "/usr/bin/python3 '%s'" "$SERVICES_BUNDLE/relay_reply.py"
+    fi
+}
 # Writable runtime data — venv + downloaded Python live here so the
 # install path works for non-admin users with no Homebrew or system
 # Python. Admin is required to install Homebrew or run macOS package
@@ -538,7 +550,8 @@ install_skills() {
     local codex_work_style_dir="$codex_skills_dir/work-style"
     local codex_work_style_md="$codex_work_style_dir/SKILL.md"
     local relay_bridge_path="$SCRIPT_DIR/relay-bridge"
-    local relay_reply_helper_path="$SERVICES_BUNDLE/relay_reply.py"
+    local relay_reply_command
+    relay_reply_command="$(relay_reply_command)"
     local staged
 
     mkdir -p "$(dirname "$bridge_md")" "$(dirname "$stop_md")" \
@@ -817,7 +830,7 @@ printf '%s' 'YOUR_AUTHORITATIVE_RESPONSE' | \
     RELAY_RECOVERY_GENERATION="${RELAY_RECOVERY_GENERATION:-manual-${PPID:-$$}}" \
     RELAY_ACTOR_ROLE="${RELAY_ACTOR_ROLE:-foreground_manual}" \
     RELAY_FOREGROUND_GATE_HANDLE="${RELAY_FOREGROUND_GATE_HANDLE:-manual-${PPID:-$$}}" \
-    /usr/bin/python3 '__RELAY_REPLY_HELPER__'
+    __RELAY_REPLY_COMMAND__
 ```
 
 Important: Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not send a stale reply; handle the newer message instead.
@@ -850,7 +863,7 @@ BRIDGE_MD_EOF
     # suffix arg, GNU doesn't — round-trip via mv is portable).
     sed \
         -e "s|__RELAY_BRIDGE__|$relay_bridge_path|g" \
-        -e "s|__RELAY_REPLY_HELPER__|$relay_reply_helper_path|g" \
+        -e "s|__RELAY_REPLY_COMMAND__|$relay_reply_command|g" \
         "$staged" > "$staged.tmp" && mv "$staged.tmp" "$staged"
     install_relay_command "$mode" "$staged" "$bridge_md"
 
@@ -1128,7 +1141,7 @@ printf '%s' 'YOUR_AUTHORITATIVE_RESPONSE' | \
     RELAY_RECOVERY_GENERATION="${RELAY_RECOVERY_GENERATION:-manual-${PPID:-$$}}" \
     RELAY_ACTOR_ROLE="${RELAY_ACTOR_ROLE:-foreground_manual}" \
     RELAY_FOREGROUND_GATE_HANDLE="${RELAY_FOREGROUND_GATE_HANDLE:-manual-${PPID:-$$}}" \
-    /usr/bin/python3 '__RELAY_REPLY_HELPER__'
+    __RELAY_REPLY_COMMAND__
 ```
 
 Run the preemption checkpoint immediately before this write. If a newer Relay message is waiting, do not send a stale reply; handle the newer message instead.
@@ -1150,7 +1163,7 @@ launchctl remove com.relay.voicebridge 2>/dev/null || true
 CODEX_BRIDGE_MD_EOF
     sed \
         -e "s|__RELAY_BRIDGE__|$relay_bridge_path|g" \
-        -e "s|__RELAY_REPLY_HELPER__|$relay_reply_helper_path|g" \
+        -e "s|__RELAY_REPLY_COMMAND__|$relay_reply_command|g" \
         "$staged" > "$staged.tmp" && mv "$staged.tmp" "$staged"
     install_relay_command "$mode" "$staged" "$codex_bridge_md"
 

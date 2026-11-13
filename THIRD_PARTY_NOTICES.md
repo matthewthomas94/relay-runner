@@ -35,9 +35,26 @@ The app bundle ships `relay-rs`, Relay Runner's own Rust helper, in `Contents/Ma
 
 `relay-rs` is built from the Cargo workspace in `rust/` with Rust 1.94.1 and statically links the Rust standard library, which is licensed under the Apache License 2.0 or the MIT License at the user's option; the Rust project's [COPYRIGHT](https://github.com/rust-lang/rust/blob/1.94.1/COPYRIGHT) file describes the third-party material it includes.
 
-`rust/Cargo.lock` resolves no third-party crates for `aarch64-apple-darwin`.
+`rust/Cargo.lock` resolves these crates for `aarch64-apple-darwin`:
+
+| Crate | Version | License (SPDX) |
+| --- | --- | --- |
+| [bitflags](https://crates.io/crates/bitflags/2.13.2) | 2.13.2 | MIT OR Apache-2.0 |
+| [cc](https://crates.io/crates/cc/1.11.1) | 1.11.1 | MIT OR Apache-2.0 |
+| [fallible-iterator](https://crates.io/crates/fallible-iterator/0.3.0) | 0.3.0 | MIT/Apache-2.0 |
+| [fallible-streaming-iterator](https://crates.io/crates/fallible-streaming-iterator/0.1.9) | 0.1.9 | MIT/Apache-2.0 |
+| [find-msvc-tools](https://crates.io/crates/find-msvc-tools/0.1.15) | 0.1.15 | MIT OR Apache-2.0 |
+| [libc](https://crates.io/crates/libc/0.2.191) | 0.2.191 | MIT OR Apache-2.0 |
+| [libsqlite3-sys](https://crates.io/crates/libsqlite3-sys/0.40.0) | 0.40.0 | MIT |
+| [pkg-config](https://crates.io/crates/pkg-config/0.3.34) | 0.3.34 | MIT OR Apache-2.0 |
+| [rusqlite](https://crates.io/crates/rusqlite/0.42.0) | 0.42.0 | MIT |
+| [shlex](https://crates.io/crates/shlex/2.0.1) | 2.0.1 | MIT OR Apache-2.0 |
+| [smallvec](https://crates.io/crates/smallvec/1.16.5) | 1.16.5 | MIT OR Apache-2.0 |
+| [vcpkg](https://crates.io/crates/vcpkg/0.2.15) | 0.2.15 | MIT/Apache-2.0 |
 
 <!-- END GENERATED: Rust crates -->
+
+`libsqlite3-sys` compiles in the [SQLite](https://sqlite.org/copyright.html) amalgamation, which is in the public domain.
 
 ## Installed into the local voice environment
 
