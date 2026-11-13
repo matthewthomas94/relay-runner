@@ -1,0 +1,12 @@
+{
+  "identities": {
+    "author": "Relay Runner <relay-runner@localhost>",
+    "committer": "Relay Runner <relay-runner@localhost>"
+  },
+  "message": "Delete Relay project note RR-N1\n\nRelay-Project-ID: global-notes\nRelay-Event-ID: note-delete:d-1\nRelay-Event-Digest: <SHA256:1>\nRelay-Device-ID: <DEVICE>\nRelay-Actor-Type: user",
+  "modes": {
+    ".orchestrator/config.toml": "100644",
+    ".orchestrator/note-index.jsonl": "100644"
+  },
+  "parents": 1
+}

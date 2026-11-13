@@ -168,6 +168,12 @@ class Normalizer:
             return {self.text(str(name)): self.value(item, str(name)) for name, item in value.items()}
         if isinstance(value, list):
             return [self.value(item, key) for item in value]
+        if isinstance(value, str) and key.endswith("_base64"):
+            try:
+                decoded = base64.b64decode(value, validate=True).decode("utf-8")
+            except ValueError:
+                return self.text(value)
+            return "base64:" + self.text(decoded)
         if isinstance(value, str):
             return self.text(value)
         if isinstance(value, bool) or value is None:
@@ -252,18 +258,21 @@ class Sandbox:
     # -- files the daemon reads -------------------------------------------
 
     def _install_fakes(self) -> None:
+        # The wrappers name the fake state directory themselves: the daemon
+        # runs some providers (note metadata) with a whitelisted environment.
+        state = "RELAY_CONTRACT_FAKE_STATE=%s" % shlex.quote(str(self.fake_state))
         provider = FAKES_DIR / "provider.py"
         for name in ("claude", "codex"):
             script = self.bin / name
             script.write_text(
-                "#!/bin/sh\nexec %s %s %s \"$@\"\n"
-                % (shlex.quote(sys.executable), shlex.quote(str(provider)), name)
+                "#!/bin/sh\n%s exec %s %s %s \"$@\"\n"
+                % (state, shlex.quote(sys.executable), shlex.quote(str(provider)), name)
             )
             script.chmod(0o755)
         gh = self.bin / "gh"
         gh.write_text(
-            "#!/bin/sh\nexec %s %s \"$@\"\n"
-            % (shlex.quote(sys.executable), shlex.quote(str(FAKES_DIR / "gh.py")))
+            "#!/bin/sh\n%s exec %s %s \"$@\"\n"
+            % (state, shlex.quote(sys.executable), shlex.quote(str(FAKES_DIR / "gh.py")))
         )
         gh.chmod(0o755)
         # The only real program the daemon needs from outside the system
@@ -281,7 +290,12 @@ class Sandbox:
             "worker_health_check_seconds": 3600,
         }
         settings.update(orchestrator or {})
-        tables = {"orchestrator": settings, "general": dict(general or {}),
+        # Note metadata and General tasks read [general]. Unset, the provider
+        # is Codex and the binary is looked up in the ChatGPT and Codex app
+        # bundles first, which would launch a real CLI.
+        foreground = {"provider": self.agent, "command": str(self.bin / self.agent)}
+        foreground.update(general or {})
+        tables = {"orchestrator": settings, "general": foreground,
                   "continuity": {"enabled": False}}
         for name, values in (sections or {}).items():
             tables.setdefault(name, {}).update(values)

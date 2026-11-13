@@ -1,0 +1,49 @@
+{
+  "artifact_commit": "<SHA256:2>",
+  "has_more": false,
+  "limit": 50,
+  "next_cursor": null,
+  "notes": [
+    {
+      "archived_at": null,
+      "artifact_id": "note-34adf893a22bbf7cc00d1ad749a6808da4a12b6c",
+      "created_at": "<TIMESTAMP>",
+      "global_code": "N1",
+      "legacy_recovery": null,
+      "materialized": true,
+      "metadata": {
+        "generated_at": "<TIMESTAMP>",
+        "generated_source_sha256": "<SHA256:1>",
+        "model": "opus",
+        "origin": "generated",
+        "prompt_version": 1,
+        "provider": "claude",
+        "source_sha256": "<SHA256:1>",
+        "state": "ready",
+        "summary": "A scripted summary of the captured note.",
+        "title": "Scripted note title"
+      },
+      "note_id": "RR-N1",
+      "project_id": "global-notes",
+      "recording_state": "completed",
+      "reference": {
+        "artifact_ref": "refs/heads/relay/artifacts",
+        "catalog_commit": "<OID:1>",
+        "commit": "<OID:1>",
+        "history_reference": "<OID:1>:.orchestrator/notes/RR-N1.md",
+        "path": ".orchestrator/notes/RR-N1.md",
+        "revision": "<OID:2>",
+        "verified": true
+      },
+      "repository_path": "<ROOT>/state/notes",
+      "segment_count": 2,
+      "updated_at": "<TIMESTAMP>"
+    }
+  ],
+  "sync": {
+    "mode": "local_only",
+    "recovery": null,
+    "state": "local_only"
+  },
+  "total_count": 1
+}

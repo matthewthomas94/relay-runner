@@ -440,7 +440,8 @@ def note_metadata(provider: str, argv: list[str]) -> int:
     wait_for_hold(plan)
     fields = plan.get("result", NOTE_METADATA)
     if provider == "claude":
-        sys.stdout.write(json.dumps({"type": "result", "is_error": False, "structured_output": fields}))
+        sys.stdout.write(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                                     "structured_output": fields}))
     else:
         target = argv[argv.index("--output-last-message") + 1]
         Path(target).write_text(json.dumps(fields), encoding="utf-8")

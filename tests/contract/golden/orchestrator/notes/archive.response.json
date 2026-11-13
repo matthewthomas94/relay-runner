@@ -1,0 +1,61 @@
+{
+  "artifact_commit": "<OID:1>",
+  "idempotent": false,
+  "markdown_base64": "base64:---\nnote_schema_version: 1\nid: RR-N1\nartifact_id: note-34adf893a22bbf7cc00d1ad749a6808da4a12b6c\nproject_id: global-notes\ncreated_at: <TIMESTAMP>\ncapture_started_at: <TIMESTAMP>\nupdated_at: <TIMESTAMP>\nrecording_state: completed\ncheckpoint_reason: complete\nsegment_count: 2\ncapture_ended_at: <TIMESTAMP>\nnote_metadata: {\"title\": \"Retried title\", \"summary\": \"Retried summary.\", \"provider\": \"claude\", \"model\": \"opus\", \"prompt_version\": 1, \"generated_at\": \"<TIMESTAMP>\", \"origin\": \"generated\", \"state\": \"ready\", \"source_sha256\": \"<SHA256:1>\", \"generated_source_sha256\": \"<SHA256:1>\"}\n---\n\n## Transcript\n\n<!-- relay-note-segment {\"captured_at\":\"<TIMESTAMP>\",\"end_ms\":1200,\"segment_id\":\"s1\",\"start_ms\":0} -->\nWe decided to ship the contract suite.\n\n<!-- relay-note-segment {\"captured_at\":\"<TIMESTAMP>\",\"end_ms\":2000,\"segment_id\":\"s2\",\"start_ms\":1200} -->\nThe port follows next quarter.\n",
+  "materialized": false,
+  "note": {
+    "capture_ended_at": "<TIMESTAMP>",
+    "captured_at": "<TIMESTAMP>",
+    "checkpoint_reason": "complete",
+    "identity": {
+      "artifact_id": "note-34adf893a22bbf7cc00d1ad749a6808da4a12b6c",
+      "capture_started_at": "<TIMESTAMP>",
+      "created_at": "<TIMESTAMP>",
+      "note_id": "RR-N1",
+      "project_id": "global-notes"
+    },
+    "metadata": {
+      "generated_at": "<TIMESTAMP>",
+      "generated_source_sha256": "<SHA256:1>",
+      "model": "opus",
+      "origin": "generated",
+      "prompt_version": 1,
+      "provider": "claude",
+      "source_sha256": "<SHA256:1>",
+      "state": "ready",
+      "summary": "Retried summary.",
+      "title": "Retried title"
+    },
+    "recording_state": "completed",
+    "segments": [
+      {
+        "captured_at": "<TIMESTAMP>",
+        "end_ms": 1200,
+        "segment_id": "s1",
+        "start_ms": 0,
+        "text": "We decided to ship the contract suite."
+      },
+      {
+        "captured_at": "<TIMESTAMP>",
+        "end_ms": 2000,
+        "segment_id": "s2",
+        "start_ms": 1200,
+        "text": "The port follows next quarter."
+      }
+    ]
+  },
+  "reference": {
+    "artifact_ref": "refs/heads/relay/artifacts",
+    "catalog_commit": "<OID:1>",
+    "commit": "<OID:2>",
+    "history_reference": "<OID:2>:.orchestrator/notes/RR-N1.md",
+    "path": ".orchestrator/notes/RR-N1.md",
+    "revision": "<OID:3>",
+    "verified": true
+  },
+  "sync": {
+    "mode": "local_only",
+    "recovery": null,
+    "state": "local_only"
+  }
+}

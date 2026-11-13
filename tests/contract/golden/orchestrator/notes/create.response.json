@@ -1,0 +1,47 @@
+{
+  "artifact_commit": "<OID:1>",
+  "idempotent": false,
+  "markdown_base64": "base64:---\nnote_schema_version: 1\nid: RR-N1\nartifact_id: note-34adf893a22bbf7cc00d1ad749a6808da4a12b6c\nproject_id: global-notes\ncreated_at: <TIMESTAMP>\ncapture_started_at: <TIMESTAMP>\nupdated_at: <TIMESTAMP>\nrecording_state: recording\ncheckpoint_reason: checkpoint\nsegment_count: 1\nnote_metadata: {\"origin\": \"generated\", \"state\": \"pending\", \"source_sha256\": \"<SHA256:1>\", \"error_code\": null}\n---\n\n## Transcript\n\n<!-- relay-note-segment {\"captured_at\":\"<TIMESTAMP>\",\"end_ms\":1200,\"segment_id\":\"s1\",\"start_ms\":0} -->\nWe decided to ship the contract suite.\n",
+  "materialized": true,
+  "note": {
+    "captured_at": "<TIMESTAMP>",
+    "checkpoint_reason": "checkpoint",
+    "identity": {
+      "artifact_id": "note-34adf893a22bbf7cc00d1ad749a6808da4a12b6c",
+      "capture_started_at": "<TIMESTAMP>",
+      "created_at": "<TIMESTAMP>",
+      "note_id": "RR-N1",
+      "project_id": "global-notes"
+    },
+    "metadata": {
+      "error_code": null,
+      "origin": "generated",
+      "source_sha256": "<SHA256:1>",
+      "state": "pending"
+    },
+    "recording_state": "recording",
+    "segments": [
+      {
+        "captured_at": "<TIMESTAMP>",
+        "end_ms": 1200,
+        "segment_id": "s1",
+        "start_ms": 0,
+        "text": "We decided to ship the contract suite."
+      }
+    ]
+  },
+  "reference": {
+    "artifact_ref": "refs/heads/relay/artifacts",
+    "catalog_commit": "<OID:1>",
+    "commit": "<OID:1>",
+    "history_reference": "<OID:1>:.orchestrator/notes/RR-N1.md",
+    "path": ".orchestrator/notes/RR-N1.md",
+    "revision": "<OID:2>",
+    "verified": true
+  },
+  "sync": {
+    "mode": "local_only",
+    "recovery": null,
+    "state": "local_only"
+  }
+}

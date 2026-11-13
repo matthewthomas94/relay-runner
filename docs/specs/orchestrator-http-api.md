@@ -345,8 +345,12 @@ tree; `golden/orchestrator/board/` holds every commit byte for byte.
 - `GET /v1/artifacts/retention/preview`, `/retention/status`, `/storage`;
   `POST /retention/apply` body `request_id` (required), `provider`,
   `confirm_github_exposure`; `POST /retention/retry` body
-  `confirm_github_exposure`. Archival needs a GitHub remote; a local-only
-  project previews and reports but never archives.
+  `confirm_github_exposure`. The policy (`terminal-count-v1`) keeps the newest
+  25 done or canceled tickets; the preview names the rest in
+  `eviction_candidate_ids`. Archival needs a GitHub remote: on a local-only
+  project `status` reports `state: blocked` and `apply` is `422 terminal
+  cleanup remains preview-only until a GitHub remote is selected and
+  confirmed`, writing nothing.
 - `GET /v1/artifacts/history/search?query=` → `{"history": […], "recovery"}`;
   `GET /history/{artifact_id}?online=&confirm_github_exposure=`;
   `GET /history/{artifact_id}/attachments/{filename}`; `POST
@@ -365,8 +369,15 @@ is independent of `repo_path`.
 - `POST /v1/artifacts/notes/create` body `request_id`, `created_at`,
   `capture_started_at`, `captured_at`, `recording_state`,
   `checkpoint_reason`, `segments`, `capture_ended_at`, `provider` → `201`.
-  Completing a capture starts a metadata worker (the provider CLI with a JSON
-  schema) that fills `title` and `summary`.
+  A repeated `request_id` answers the first result with `idempotent: true`
+  and writes nothing. Each change schedules a metadata worker (the
+  `[general]` provider CLI with a JSON schema, after a 2-second debounce) that
+  fills `title` and `summary` and commits `Update metadata for Relay project
+  note <id>`. A Claude reply must be `{"type": "result", "subtype": "success",
+  "is_error": false, "structured_output": {"title", "summary"}}`; any other
+  reply leaves `metadata.state: failed` with an `error_code`. Notes are stored
+  in a git repository at `<state root>/notes`, one commit per change on
+  `refs/heads/relay/artifacts`; `golden/orchestrator/notes/` holds them.
 - `POST …/{note_id}/update` body `request_id`, `update` (object), `provider`;
   `…/retry-metadata`; `…/archive` body `artifact_id`, `archived_at`,
   `request_id`, `provider`; `…/delete` and `…/cancel` (cancel also stops a
@@ -451,6 +462,14 @@ the daemon's own port file, so a worker reports to the daemon that started it.
 directory and `PATH` to its fake `claude`, `codex` and `gh` plus the system
 directories.
 
+Two lookups bypass `PATH`. Codex is found in the ChatGPT and Codex application
+bundles before `PATH`, and note metadata and General tasks take their provider
+from `[general] provider` (default `codex`) and `[general] command`. An
+isolated daemon must name its fake in both `[orchestrator] command` and
+`[general] command`, or it launches the installed Codex CLI. Note metadata also
+runs its provider with a whitelisted environment (`HOME`, `PATH`, `TMPDIR`,
+locale, proxy and provider-login variables only).
+
 ## Golden files
 
 `tests/contract/golden/orchestrator/` holds the expected JSON responses and
@@ -475,6 +494,8 @@ normalised by these rules, in order (`Normalizer` in
    `review_pid` become `<KEY>`; numbers under keys ending `_at`, `_time` or
    `_until`, and under `timestamp`, `ts`, `deadline`, `issuedAt` and
    `registryRecordUpdatedAt`, become `<TIME>`.
+6. A string under a key ending `_base64` that decodes to UTF-8 text becomes
+   `base64:` followed by the decoded text, normalised by the rules above.
 
 A golden commit is a directory: `COMMIT.json` holds the normalised message,
 author and committer identities without their dates, the parent count and
