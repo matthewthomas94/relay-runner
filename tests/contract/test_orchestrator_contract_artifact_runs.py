@@ -8,12 +8,10 @@ Each golden-bearing case owns its daemon so run ids are fixed.
 
 from __future__ import annotations
 
-import json
 import unittest
 
 from orchestrator_contract_support import ARTIFACT_REF, DaemonCase, git
 
-ACTIVE = ("Claimed", "Running", "SpikeResultReady")
 RUNS_JSON_KEYS = sorted([
     "activity", "activity_at", "attempt", "branch", "ended_at", "execution_mode",
     "last_error", "model_alias", "provider_key", "repo_path", "run_id", "started_at", "state",

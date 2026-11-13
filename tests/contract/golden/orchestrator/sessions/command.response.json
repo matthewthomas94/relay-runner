@@ -1,0 +1,56 @@
+{
+  "orchestrator_command": {
+    "action": "conversation",
+    "cancellation_scope": "none",
+    "created_at": "<TIME>",
+    "disposition": null,
+    "error": null,
+    "id": 1,
+    "intent_id": "contract-1",
+    "lifecycle_state": "recognized",
+    "outcome": "non-work-command",
+    "processed_at": "<TIME>",
+    "provider_key": "claude",
+    "received_at": null,
+    "recovery_generation": "0",
+    "relay_command_id": "contract-1",
+    "relay_command_seq": 1,
+    "repo_path": "<REPO:pm>",
+    "session_id": 1,
+    "status": "handled",
+    "status_message": "No backstage ticket action is needed for this Relay command.",
+    "target": null,
+    "ticket_id": null,
+    "updated_at": "<TIME>",
+    "within_turn_order": 1
+  },
+  "processing": {
+    "processed": [
+      {
+        "action": "conversation",
+        "cancellation_scope": "none",
+        "created_at": "<TIME>",
+        "disposition": null,
+        "error": null,
+        "id": 1,
+        "intent_id": "contract-1",
+        "lifecycle_state": "recognized",
+        "outcome": "non-work-command",
+        "processed_at": "<TIME>",
+        "provider_key": "claude",
+        "received_at": null,
+        "recovery_generation": "0",
+        "relay_command_id": "contract-1",
+        "relay_command_seq": 1,
+        "repo_path": "<REPO:pm>",
+        "session_id": 1,
+        "status": "handled",
+        "status_message": "No backstage ticket action is needed for this Relay command.",
+        "target": null,
+        "ticket_id": null,
+        "updated_at": "<TIME>",
+        "within_turn_order": 1
+      }
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "canceled": [],
+  "dispatch_requests": [],
+  "dispatches": [],
+  "repo_path": "<REPO:pm>",
+  "request_id": "action-1",
+  "skipped": [],
+  "tickets_written": [
+    {
+      "action": "create_ticket",
+      "ticket_id": "CT-7"
+    }
+  ]
+}

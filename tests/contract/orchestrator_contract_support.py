@@ -119,6 +119,10 @@ _DEVICE_RE = re.compile(r"\bdaemon-[0-9a-f]{24}\b")
 _WORKSPACE_RE = re.compile(r"-[0-9a-f]{8}-(?=[a-z0-9]+-\d)")
 # A queue drain id is `drain-<12 hex of repo, branch and provider>-<sequence>`.
 _DRAIN_RE = re.compile(r"\bdrain-[0-9a-f]{12}-")
+# Spike follow-up batch and proposal ids hash the origin repository path.
+_FOLLOWUP_RE = re.compile(r"\b(spike|proposal)-([0-9a-f]{16}|[0-9a-f]{24})\b")
+# An orchestrator session key is `project:<16 hex of the repository path>`.
+_SESSION_KEY_RE = re.compile(r"\bproject:[0-9a-f]{16}\b")
 
 # Numeric fields that hold wall-clock times, durations or process ids.
 VOLATILE_NUMBER_KEYS = {
@@ -161,6 +165,10 @@ class Normalizer:
         value = _DEVICE_RE.sub("<DEVICE>", value)
         value = _WORKSPACE_RE.sub("-<HASH8>-", value)
         value = _DRAIN_RE.sub("drain-<HASH12>-", value)
+        value = _FOLLOWUP_RE.sub(
+            lambda match: self._number(match.group(1).upper(), match.group(0)), value,
+        )
+        value = _SESSION_KEY_RE.sub(lambda match: self._number("PROJECT", match.group(0)), value)
         return value
 
     def value(self, value, key: str = ""):

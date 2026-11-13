@@ -1,0 +1,25 @@
+{
+  "command_action_reconciliation": {
+    "ignored": [],
+    "reconciled": []
+  },
+  "orchestrator_session": {
+    "created": true,
+    "effort": "medium",
+    "heartbeat_at": "<TIME>",
+    "id": 1,
+    "model_alias": "opus",
+    "pid": null,
+    "provider_changed": false,
+    "provider_key": "claude",
+    "repo_path": "<REPO:pm>",
+    "session_key": "<PROJECT:1>",
+    "source": "contract",
+    "started_at": "<TIME>",
+    "state": "idle",
+    "stop_reason": null,
+    "stopped_at": null,
+    "updated_at": "<TIME>"
+  },
+  "recoverable_commands": []
+}

@@ -503,7 +503,10 @@ normalised by these rules, in order (`Normalizer` in
    a word character or `-` (such as `ticket-<40 hex>`, derived from fixed
    project and ticket ids) is kept.
 4. `daemon-<24 hex>` device ids become `<DEVICE>`; the 8-hex worktree hash
-   `-<HASH8>-`; the 12-hex drain hash `drain-<HASH12>-`.
+   `-<HASH8>-`; the 12-hex drain hash `drain-<HASH12>-`; spike follow-up ids
+   (`spike-<24 hex>`, `proposal-<16 hex>`), which hash the origin repository
+   path, `<SPIKE:n>` and `<PROPOSAL:n>`; session keys (`project:<16 hex>`)
+   `<PROJECT:n>`.
 5. Numbers under `pid`, `port`, `duration_seconds`, `elapsed_seconds`,
    `age_seconds`, `idle_seconds`, `uptime_seconds`, `worker_pid`,
    `review_pid` become `<KEY>`; numbers under keys ending `_at`, `_time` or
