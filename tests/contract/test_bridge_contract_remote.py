@@ -4,17 +4,24 @@
 Frames are checked against the shared vectors in
 `tests/RelayRemoteProtocolTests/Vectors`, the same files the Swift
 `RelayRemoteProtocol` tests read.
+
+RR-491: the `Rust` classes run the same cases against the reference bridge with
+`RELAY_REMOTE_RUNTIME=rust`, so the socket is served by `relay-rs remote`. They
+need a release build (`cargo build --release` in rust/) and skip without one.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 import unittest
 import uuid
 
 from bridge_contract_support import (
+    BRIDGE_IS_REFERENCE,
+    REPO_ROOT,
     WAIT_SECONDS,
     BridgeCase,
     load_vectors,
@@ -389,6 +396,26 @@ class ClaudeRemote(RemoteContract, BridgeCase):
 
 class CodexRemote(RemoteContract, BridgeCase):
     provider = "codex"
+
+
+RUST_REMOTE = REPO_ROOT / "rust" / "target" / "release" / "relay-rs"
+rust_remote = unittest.skipUnless(
+    BRIDGE_IS_REFERENCE and os.access(RUST_REMOTE, os.X_OK),
+    "needs the reference bridge and a relay-rs release build (cargo build --release in rust/)",
+)
+RUST_REMOTE_ENV = {"RELAY_REMOTE_RUNTIME": "rust", "RELAY_RS_BIN": str(RUST_REMOTE)}
+
+
+@rust_remote
+class ClaudeRustRemote(RemoteContract, BridgeCase):
+    provider = "claude"
+    env = RUST_REMOTE_ENV
+
+
+@rust_remote
+class CodexRustRemote(RemoteContract, BridgeCase):
+    provider = "codex"
+    env = RUST_REMOTE_ENV
 
 
 if __name__ == "__main__":

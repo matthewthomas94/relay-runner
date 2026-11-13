@@ -1,12 +1,13 @@
 //! relay-rs, Relay Runner's Rust helper. `hook` is the provider lifecycle hook
 //! and `reply` the foreground reply helper (RR-478); docs/specs/hook-contract.md
 //! describes both. `messenger` serves the voice messenger's provider backends
-//! (RR-490). Later stages of the Rust port add subcommands or sibling
-//! crates.
+//! (RR-490) and `remote` is the Relay Remote server (RR-491). Later stages of
+//! the Rust port add subcommands or sibling crates.
 
 mod hook;
 mod json;
 mod messenger;
+mod remote;
 mod reply;
 mod sha256;
 mod support;
@@ -26,7 +27,8 @@ const VERSION: &str = concat!(
 const USAGE: &str = "usage: relay-rs --version\n       \
      relay-rs hook [--record-process | --record-codex-startup | --context-continuation]\n       \
      relay-rs reply\n       \
-     relay-rs messenger";
+     relay-rs messenger\n       \
+     relay-rs remote [--socket <path>]";
 
 fn run(arguments: &[String]) -> Result<&'static str, &'static str> {
     match arguments {
@@ -44,6 +46,7 @@ fn main() -> ExitCode {
         Some((command, rest)) if command == "messenger" && rest.is_empty() => {
             return ExitCode::from(messenger::run());
         }
+        Some((command, rest)) if command == "remote" => return ExitCode::from(remote::run(rest)),
         _ => {}
     }
     match run(&arguments) {
