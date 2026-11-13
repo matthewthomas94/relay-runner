@@ -33,7 +33,13 @@ from speech_client import SpeechServiceClient, SpeechServiceError  # noqa: E402
 from speech_coordinator import CoordinatorInputQueue, SpeechCoordinator  # noqa: E402
 
 SERVICE = [sys.executable, os.path.join(SERVICES, "speech_service.py")]
-LONG = " ".join(f"Sentence {number} keeps this long reply going for a while." for number in range(40))
+# A first sentence of 30 s of test-mode audio, three times as long as a case
+# waits. A case that stops the reply once that sentence is at the output
+# (``wait_at_output``) stops it inside the sentence however slowly the machine
+# runs: the worker can end a reply stopped between sentences ``failed`` (see
+# "playback" in docs/specs/speech-service-protocol.md).
+LONG_FIRST = "This sentence keeps the reply going" + " and going" * 1500 + "."
+LONG = f"{LONG_FIRST} It is the second sentence that ends the reply."
 # Everything the bridge and Relay Remote call on the speech object.
 BRIDGE_SURFACE = (
     "input_queue", "speaking", "playing", "queue_depth", "session_playback_states", "control_session",
@@ -144,14 +150,31 @@ class ClientCase(unittest.TestCase):
             "text": text, "display_text": text, "_speech_intent_spec": {"dedup_key": key},
         })
 
-    def spoken(self) -> list[tuple[str, bool]]:
+    @staticmethod
+    def records(path: str, event: str) -> list[dict]:
+        """The records of one kind in a JSON-lines log."""
         try:
-            with open(self.playback_log) as handle:
+            with open(path) as handle:
                 records = [json.loads(line) for line in handle if line.strip()]
         except FileNotFoundError:
             return []
-        return [(record["text"], record["completed"]) for record in records
-                if record["event"] == "chunk_finished"]
+        return [record for record in records if record["event"] == event]
+
+    def spoken(self) -> list[tuple[str, bool]]:
+        return [(record["text"], record["completed"])
+                for record in self.records(self.playback_log, "chunk_finished")]
+
+    def at_output(self) -> list[str]:
+        """The text of every sentence handed to the output, in order."""
+        return [record["text"] for record in self.records(self.playback_log, "chunk_started")]
+
+    def waiting(self) -> int:
+        """How many times a reply was reported waiting for play (`queued`)."""
+        return len(self.records(self.env["SPEECH_EVENT_LOG"], "queued"))
+
+    def wait_at_output(self, before: int = 0) -> str:
+        """Wait for a sentence after the first ``before`` to reach the output; return its text."""
+        return wait_until(lambda: self.at_output()[before:], message="a sentence to reach the output")[0]
 
     def kill_service(self) -> str:
         instance_id = self.client.instance_id
@@ -236,6 +259,7 @@ class SpeakingTests(ClientCase):
         self.assertTrue(self.final(LONG, 1, "one"))
         self.client.play()
         wait_until(lambda: self.client.playing, message="the reply to play")
+        self.wait_at_output()
 
         self.client.stop_playback(reason="interrupt")
         wait_until(lambda: not self.client.playing, message="the reply to stop")
@@ -301,14 +325,20 @@ class RestartTests(ClientCase):
         self.assertEqual(self.client.queue_depth, 3)
         self.assertFalse(self.client.playing)
         before = len(self.spoken())
+        started = len(self.at_output())
         self.client.play()
         wait_until(lambda: self.client.playing, message="the first reply to play again")
+        self.assertEqual(self.wait_at_output(started), LONG_FIRST)
+        waiting = self.waiting()
         self.client.skip()
         for expected in texts[1:]:
             wait_until(lambda: not self.client.playing and self.client.queue_depth, message="the next reply")
+            # Play once the worker has the reply: see "playback" in the protocol document.
+            wait_until(lambda: self.waiting() > waiting, message=f"{expected!r} to wait for play")
+            waiting = self.waiting()
             self.client.play()
-            wait_until(lambda: self.spoken()[-1] == (expected, True), message=f"{expected!r} to play")
-        self.assertEqual(self.spoken()[before][0], "Sentence 0 keeps this long reply going for a while.")
+            wait_until(lambda: self.spoken()[-1:] == [(expected, True)], message=f"{expected!r} to play")
+        self.assertEqual(self.spoken()[before][0], LONG_FIRST)
         wait_until(lambda: self.client.queue_depth == 0, message="the queue to empty")
 
     def test_heard_replies_are_not_queued_again(self):
@@ -493,21 +523,20 @@ class BridgeControlTests(ClientCase):
         # The play gesture speaks the waiting reply.
         self.control(f"__PLAY__:{time.time()}")
         wait_until(lambda: self.client.playing, message="the reply to be spoken")
-        wait_until(lambda: len(self.spoken()) >= 2, message="two sentences to play")
+        self.wait_at_output()
 
         # Talking over it stops the speech; the reply counts as heard.
         self.control("__TTS_STOP__")
         wait_until(lambda: not self.client.playing, message="barge-in to stop the speech")
-        wait_until(lambda: not self.spoken()[-1][1], message="the sentence to be cut off")
+        wait_until(lambda: self.spoken() == [(LONG_FIRST, False)], message="the sentence to be cut off")
         self.assertEqual(self.client.queue_depth, 0)
-        heard = len(self.spoken())
+        heard = len(self.at_output())
         time.sleep(0.3)
-        self.assertEqual(len(self.spoken()), heard, "speech went on after the barge-in")
+        self.assertEqual(len(self.at_output()), heard, "speech went on after the barge-in")
 
         # Replay speaks it again from the start; cancel dismisses it.
         self.control("__REPLAY__")
-        wait_until(lambda: len(self.spoken()) > heard, message="the replay to be spoken")
-        self.assertEqual(self.spoken()[heard][0], "Sentence 0 keeps this long reply going for a while.")
+        self.assertEqual(self.wait_at_output(heard), LONG_FIRST)
         self.control("__CANCEL__")
         wait_until(lambda: not self.client.playing, message="cancel to stop the replay")
         wait_until(lambda: self.finished == ["user_stop"], message="the dismissal to be reported")
