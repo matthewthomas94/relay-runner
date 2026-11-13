@@ -39,6 +39,7 @@ from codex_model_catalog import (
 )
 from command_actions import is_relay_runner_self_explanation
 from pm_frontstage import LIFECYCLE_DETAIL_TRACE_KINDS
+from rust_messenger import create_rust_backend
 
 CODEX_DEFAULT_MODEL = CODEX_MESSENGER_DEFAULT_FAMILY
 CODEX_DEFAULT_EFFORT = "low"
@@ -2360,8 +2361,12 @@ def create_messenger_runtime(
     if not config.enabled:
         print("[messenger] disabled by config", file=sys.stderr)
         return None
-    resolved_command = resolve_messenger_command(config.provider, config.command)
-    if resolved_command is None:
+    # RR-490: RELAY_MESSENGER_RUNTIME=rust serves both providers' backends
+    # from relay-rs; the runtime above them stays the same.
+    backend: MessengerBackend | None = create_rust_backend(app_config, config.cwd, error_type=MessengerError)
+    if backend is not None:
+        print("[messenger] using the Rust provider backends", file=sys.stderr)
+    elif (resolved_command := resolve_messenger_command(config.provider, config.command)) is None:
         executable = _command_prefix(config.command)[0]
         print(f"[messenger] provider command not found: {executable}", file=sys.stderr)
         backend: MessengerBackend = UnavailableMessengerBackend(

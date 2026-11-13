@@ -332,7 +332,7 @@ pub fn py_eq_optional(left: Option<&Value>, right: Option<&Value>) -> bool {
 
 /// The characters Python's `str.strip()` removes: Unicode whitespace plus the
 /// four ASCII separators U+001C to U+001F, which Rust does not count.
-fn py_is_space(character: char) -> bool {
+pub fn py_is_space(character: char) -> bool {
     character.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&character)
 }
 

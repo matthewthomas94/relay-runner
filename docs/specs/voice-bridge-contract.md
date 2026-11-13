@@ -109,6 +109,8 @@ The suite sets every variable below in each sandbox unless the Case column names
 | `RELAY_SESSION_SCOPE`, `RELAY_GENERAL_FILES_ROOT` | unset | `general` with the general-tasks folder: ticket work there is general, not project, work. | environment/test_a_general_session_keeps_ticket_work_off_the_project |
 | `VOICE_TERMINAL_<SECTION>_<KEY>` | unset | Value for a config key the file leaves out. | environment/test_a_setting_missing_from_the_config_file_comes_from_the_environment |
 | `HOME`, `PATH` | | Default file locations; the messenger child's search path. | messenger/test_messenger_is_started_tool_free_on_the_configured_provider |
+| `RELAY_MESSENGER_RUNTIME` | unset | `rust` serves both providers' messenger backends from `relay-rs messenger` ([Rust backends](#rust-backends)); anything else keeps the Python backends. | messenger/test_messenger_is_started_tool_free_on_the_configured_provider, run with the variable set |
+| `RELAY_RS_BINARY` | `relay-rs` in the app bundle's `Contents/MacOS` | The helper `RELAY_MESSENGER_RUNTIME=rust` starts; without it the Python backends run. | messenger/test_user_turn_reaches_the_messenger_and_its_handoff_is_spoken, run with the variable set |
 
 Read by the bridge or a module it imports, but not part of this contract (see [Not covered](#not-covered)): `RELAY_SPEECH_SERVICE_MODE`, `VOICE_ACKNOWLEDGEMENT`, `FOREGROUND_REPLY_HARD_CEILING_SECONDS`, `FOREGROUND_REPLY_TRACE_ACTIVE_SECONDS`, `RELAY_CODEX_MODEL_LIST_JSON`, `RELAY_CORRELATION_ID`, `XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR`, `ANTHROPIC_CONFIG_DIR`, `ANTHROPIC_BASE_URL` and the metered-route variables `claude_subscription.py` refuses. `VOICE_MODELS_DIR` and `RELAY_TUTORIAL_TTS` belong to the speech worker.
 
@@ -273,6 +275,18 @@ A reply is `__ORCHESTRATOR_REPLY__:{"relay_command_seq", "relay_command_id", "te
 | A newer turn drops the unfinished answer. | messenger/test_a_newer_turn_drops_the_messengers_unfinished_answer |
 | The final is spoken verbatim; a final adding nothing to the messenger's answer is not spoken again. | messenger/test_the_orchestrators_final_is_spoken_without_asking_the_messenger, messenger/test_a_final_that_repeats_the_messengers_answer_is_not_spoken_again |
 | A missing command is `messenger_failed` / `provider_unavailable`; disabled is silent. | messenger/test_a_missing_provider_command_speaks_the_degraded_acknowledgement, messenger/test_a_disabled_messenger_is_silent |
+
+### Rust backends
+
+RR-490 ports the messenger's provider backends to Rust: `relay-rs messenger` (`rust/relay-rs/src/messenger/`) owns the Claude stream-json and Codex app-server processes, the model and effort resolution (Codex through `model/list`), the Claude subscription gate, warm-up, re-binding to the focused session and interruption. The runtime above them (prompts, realization, speech) stays in `services/messenger.py` and reaches the helper through `services/rust_messenger.py`, one JSON object per line on its stdio. The Python backends stay the default until the bridge cut-over; `RELAY_MESSENGER_RUNTIME=rust` selects the Rust ones, and a missing helper falls back to Python with a note on stderr. Both providers move together, and what they send the provider is the same in both: the launch command and environment, `thread/start` and `turn/start` parameters, stream-json input and the interrupt path.
+
+The messenger cases accept the Rust backends with the same fakes:
+
+```bash
+cargo build --manifest-path rust/Cargo.toml
+RELAY_VOICE_BRIDGE_CMD="/usr/bin/env RELAY_MESSENGER_RUNTIME=rust 'RELAY_RS_BINARY=$PWD/rust/target/debug/relay-rs' python3 '$PWD/services/voice_bridge.py'" \
+  python3 -m unittest discover -s tests/contract -p 'test_bridge_contract_messenger.py'
+```
 
 ### Provider differences
 
