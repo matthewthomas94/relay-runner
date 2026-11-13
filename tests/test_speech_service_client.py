@@ -624,9 +624,11 @@ class ControlSocketTests(unittest.TestCase):
     class Worker:
         def __init__(self):
             self.input_queue = queue.Queue()
+            self.stopped = False
 
         def stop_playback(self, *, reason="user_stop"):
             del reason
+            self.stopped = True
 
         def shutdown(self):
             pass
@@ -644,16 +646,38 @@ class ControlSocketTests(unittest.TestCase):
         old = self.coordinator(path)
         wait_until(lambda: os.path.exists(path), message="the first control socket")
         first = os.stat(path).st_ino
-        self.coordinator(path)
-        wait_until(lambda: os.path.exists(path) and os.stat(path).st_ino != first,
-                   message="the second control socket")
-
-        old.shutdown()
-
-        self.assertTrue(os.path.exists(path), "the old coordinator removed its successor's socket")
         sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self.addCleanup(sender.close)
-        sender.sendto(b"play", path)
+
+        def send(command):
+            # bind() makes the file a moment before the socket takes datagrams.
+            try:
+                sender.sendto(command, path)
+            except ConnectionRefusedError:
+                return False
+            return True
+
+        # A command the first coordinator handles shows its control loop is
+        # listening, so it has recorded the socket it bound.
+        wait_until(lambda: send(b"stop"), message="the first control socket to take a command")
+        wait_until(lambda: old.worker.stopped, message="the first coordinator to listen")
+        self.coordinator(path)
+
+        def inode():
+            # The successor unlinks the old socket before it binds its own.
+            try:
+                return os.stat(path).st_ino
+            except FileNotFoundError:
+                return None
+
+        wait_until(lambda: inode() not in (None, first), message="the second control socket")
+
+        old.shutdown()
+        old._control_thread.join(timeout=10)
+        self.assertFalse(old._control_thread.is_alive(), "the old control loop did not stop")
+
+        self.assertTrue(os.path.exists(path), "the old coordinator removed its successor's socket")
+        wait_until(lambda: send(b"play"), message="the second control socket to take a command")
 
     def test_coordinator_removes_its_own_socket(self):
         root = tempfile.mkdtemp(prefix="rsc-", dir="/tmp")
