@@ -6,7 +6,7 @@
 
 Every case is written once as a contract class and runs twice, once per provider: `ClaudeX` and `CodexX` subclasses set `RELAY_RUNNER_PROVIDER` and the `[general] provider` of the config. A case named below as `area/test_name` is `test_name` in `tests/contract/test_bridge_contract_<area>.py`.
 
-Related contracts: the speech service the bridge starts is [speech-service-protocol.md](speech-service-protocol.md); the completion hook that writes the provider turn ledger and sends `__RELAY_COMPLETION__` is [hook-contract.md](hook-contract.md); Relay Remote framing is [relay-remote.md](relay-remote.md) with the shared vectors in `tests/RelayRemoteProtocolTests/Vectors`.
+Related contracts: the speech service the bridge starts is [speech-service-protocol.md](speech-service-protocol.md); the completion hook that writes the provider turn ledger and sends `__RELAY_COMPLETION__` is [hook-contract.md](hook-contract.md); Relay Remote framing is [relay-remote.md](relay-remote.md) with the shared vectors in `tests/RelayRemoteProtocolTests/Vectors`. The inbox and turn-ledger cases below are also checked one level down, against the library calls the bridge makes, for both the Python modules and the Rust `relay-intents` crate (RR-489) by `tests/test_relay_intents_parity.py`.
 
 ## Running the suite
 

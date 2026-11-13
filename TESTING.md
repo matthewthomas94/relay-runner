@@ -50,6 +50,8 @@ cd ..
 scripts/rust-licenses --check
 ```
 
+The workspace also holds `relay-intents`, the library crate for the intent inbox, the provider-turn broker and the intent model that `relay-rs hook` is built on (RR-489). `cargo test` builds its test driver, `rust/target/debug/examples/intents_driver`, which `tests/test_relay_intents_parity.py` and `tests/test_relay_intents_concurrency.py` run beside the Python modules on one database; without the driver their Rust cases skip.
+
 After adding, removing or updating a crate, commit `rust/Cargo.lock` and run `scripts/rust-licenses` to regenerate the Rust section of `THIRD_PARTY_NOTICES.md`. It refuses a crate whose license is outside the allow list at the top of that script; GPL-family licenses must not be added to it.
 
 ## Package the app
