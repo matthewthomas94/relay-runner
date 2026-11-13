@@ -436,9 +436,24 @@ decodes it:
 ```
 
 It lists active runs, runs that ended inside the retention window, and runs in
-review-blocking or durable states, newest first. A daemon starting over
-databases written by an earlier release migrates them in place; on start it
-also marks runs whose worker is gone as stalled or failed.
+review-blocking or durable states, newest first.
+
+### Restart and earlier releases
+
+- On `SIGTERM` the daemon cancels its in-flight runs (`state: Canceled`),
+  stops, and removes the port file.
+- A daemon that died without cleanup leaves active rows behind. On the next
+  start it marks each one `Stalled` with `last_error: "Worker process was no
+  longer running when daemon restarted"` and an `ended_at`, logs `reconciled
+  <n> stalled run(s) on startup`, and publishes nothing to the artifact ref or
+  the legacy ticket. A stalled ticket can be dispatched again; ids and
+  attempts continue from the ledger.
+- A daemon starting over databases written by an earlier release opens them in
+  place: it never lowers `PRAGMA user_version`, drops a table or changes an
+  existing column, and it serves the earlier rows (runs, queue drains,
+  sessions) unchanged. `tests/contract/fixtures/orchestrator/<release>/`
+  holds SQL dumps captured from the previous release by
+  `make_release_fixture.py`; refresh them after each release.
 
 ## Isolation
 
