@@ -60,6 +60,8 @@ from relay_remote import (
     RelayRemoteServer,
     RemoteIngress,
     RemoteItem,
+    RustRelayRemoteServer,
+    create_server as create_remote_server,
     post_device_event as post_remote_device_event,
 )
 from relay_authorization import (
@@ -5896,8 +5898,8 @@ def main():
             messenger=messenger,
             shutdown_event=shutdown_event,
         )
-        remote_server: RelayRemoteServer | None = RelayRemoteServer(
-            RemoteIngress(),
+        # RR-491: RELAY_REMOTE_RUNTIME=rust runs the Rust server instead.
+        remote_server: RelayRemoteServer | RustRelayRemoteServer | None = create_remote_server(
             speech=tts_worker,
             notify=post_remote_device_event,
         )
