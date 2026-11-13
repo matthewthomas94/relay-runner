@@ -305,11 +305,12 @@ enum SessionWheelGeometry {
     }
 
     /// A label's letters on a straight, tracked baseline in the wheel's
-    /// caption font: each one's outline (y up, from its origin), advance and
-    /// origin along the baseline, the label's width, and the cap height.
+    /// semibold caption-size font: each one's outline (y up, from its
+    /// origin), advance and origin along the baseline, the label's width,
+    /// and the cap height.
     static func trackedLetters(_ text: String)
         -> (letters: [(outline: CGPath, x: CGFloat, advance: CGFloat)], width: CGFloat, capHeight: CGFloat) {
-        let font = AppTypography.appKitFont(.caption) as CTFont
+        let font = AppTypography.appKitFont(.status) as CTFont
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
             .font: font, .kern: tabLabelTracking, .ligature: 0,
         ]))
