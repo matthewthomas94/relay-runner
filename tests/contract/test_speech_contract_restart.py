@@ -31,7 +31,7 @@ class RestartTests(SpeechCase):
             })
             self.assertTrue(self.conn.request("speak", **self.requests[-1])["accepted"])
         self.conn.request("play")
-        self.wait_phase("reply-1", "started")
+        self.wait_playing("reply-1")
         return [request["utterance_id"] for request in self.requests]
 
     def restart(self):
@@ -83,7 +83,7 @@ class RestartTests(SpeechCase):
         self.wait_phase(ids[0], "queued")
         before = len(self.box.playback("chunk_started"))
         self.conn.request("play")
-        self.wait_phase(ids[0], "started")
+        self.wait_playing(ids[0])
         again = wait_until(lambda: self.box.playback("chunk_started")[before:], message="the reply again")[0]
         self.assertEqual((again["utterance_id"], again["text"]), (ids[0], LONG_SENTENCES[0]))
         self.conn.request("skip")
@@ -146,15 +146,13 @@ class ClientGoneTests(SpeechCase):
         utterance_id = self.speak(LONG)
         self.speak("Second reply.")
         self.conn.request("play")
-        self.wait_phase(utterance_id, "started")
+        self.wait_playing(utterance_id)
 
         self.conn.close()
 
         self.assertEqual(self.box.wait_exit(), 0)
-        spoken = self.box.spoken()
-        self.assertLess(len(spoken), len(LONG_SENTENCES))
-        self.assertFalse(spoken[-1][1], "the reply was not cut off")
-        self.assertNotIn("Second reply.", [text for text, _ in spoken])
+        # Cut off inside its first sentence, and the reply behind it never played.
+        self.assertEqual(self.box.spoken(), [(LONG_SENTENCES[0], False)], "the reply was not cut off")
         self.assertEqual(len(self.box.playback("output_stopped")), len(self.box.playback("output_started")))
         self.assertFalse(os.path.exists(self.box.control_path))
 

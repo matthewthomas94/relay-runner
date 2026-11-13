@@ -60,7 +60,7 @@ class PlaybackEventTests(SpeechCase):
         )
 
         self.conn.request("play")
-        self.wait_phase(utterance_id, "started")
+        self.wait_playing(utterance_id)
         playing = self.status()
         self.assertEqual((playing["speaking"], playing["playing"], playing["queue_depth"]), (True, True, 1))
 
@@ -91,7 +91,7 @@ class PlaybackEventTests(SpeechCase):
         """`reply_finished` carries `user_stop` when the user dismissed the reply."""
         utterance_id = self.speak(LONG)
         self.conn.request("play")
-        self.wait_phase(utterance_id, "started")
+        self.wait_playing(utterance_id)
         self.conn.request("skip")
         self.assertEqual(self.conn.wait_event("reply_finished")["reason"], "user_stop")
 
@@ -142,7 +142,7 @@ class BargeInTests(SpeechCase):
         first = self.speak(LONG)
         second = self.speak("Second reply.")
         self.conn.request("play")
-        self.wait_phase(first, "started")
+        self.wait_playing(first)
 
         self.conn.request("stop_playback", reason="recording_barge_in")
 
@@ -155,7 +155,7 @@ class BargeInTests(SpeechCase):
         self.assertFalse(state["held"])
         # The audio stopped inside a sentence.
         self.wait_cut_off()
-        self.assertLess(len(self.box.spoken()), len(LONG_SENTENCES))
+        self.assertEqual(self.box.spoken(), [(LONG_SENTENCES[0], False)])
         # Nothing else starts until the new turn.
         self.assertStays(lambda: self.phases(second) == [], 0.3, "the next reply came forward")
 
@@ -167,7 +167,7 @@ class BargeInTests(SpeechCase):
         """`stop_playback` with `recording_barge_in`: the reply "stays replayable"."""
         first = self.speak(LONG)
         self.conn.request("play")
-        self.wait_phase(first, "started")
+        self.wait_playing(first)
         self.conn.request("stop_playback", reason="recording_barge_in")
         self.wait_phase(first, "cancelled")
 
@@ -180,7 +180,7 @@ class BargeInTests(SpeechCase):
         first = self.speak(LONG)
         second = self.speak("Second reply.")
         self.conn.request("play")
-        self.wait_phase(first, "started")
+        self.wait_playing(first)
 
         self.conn.request("stop_playback", reason="interrupt")
 
@@ -224,10 +224,11 @@ class BargeInTests(SpeechCase):
 
     def test_pause_holds_the_queue_and_play_resumes_it(self):
         """`pause`: stops the audio, holds the queue; `play` starts the reply again."""
-        first = self.speak(LONG)
+        first = self.speak(f"One sentence. Then another. {LONG}")
         self.conn.request("play")
-        self.wait_phase(first, "started")
-        wait_until(lambda: len(self.box.spoken()) >= 2, message="two sentences to play")
+        # Two sentences play; the pause lands inside the third.
+        self.wait_playing(first, sentences=3)
+        self.assertEqual(self.box.spoken(), [("One sentence.", True), ("Then another.", True)])
 
         self.conn.request("pause")
 
@@ -246,7 +247,7 @@ class BargeInTests(SpeechCase):
         again = wait_until(
             lambda: self.box.playback("chunk_started")[spoken:], message="the reply to start again"
         )[0]
-        self.assertEqual(again["text"], LONG_SENTENCES[0])
+        self.assertEqual(again["text"], "One sentence.")
 
     def test_pause_before_play_keeps_the_reply_waiting(self):
         """`pause` holds a queue whose head has not started; nothing is dropped."""
@@ -279,7 +280,7 @@ class SkipTests(SpeechCase):
         first = self.speak(LONG)
         second = self.speak("Second reply.")
         self.conn.request("play")
-        self.wait_phase(first, "started")
+        self.wait_playing(first)
 
         self.conn.request("skip")
 
@@ -315,13 +316,13 @@ class SkipTests(SpeechCase):
                 self.wait_phase(utterance_id, "queued")
                 if playing:
                     self.conn.request("play")
-                    self.wait_phase(utterance_id, "started")
+                    self.wait_playing(utterance_id)
                 self.conn.request("skip")
                 self.wait_phase(utterance_id, "cancelled")
                 self.assertEqual(self.queue(), [])
 
                 self.assertTrue(self.conn.request("replay")["accepted"])
-                replay = self.conn.wait_event("playback", phase="started", replay_of=utterance_id)
+                replay = self.conn.wait_event("playback", phase="chunk_started", replay_of=utterance_id)
                 self.conn.request("skip")
                 self.wait_phase(replay["utterance_id"], "cancelled")
 
@@ -332,7 +333,7 @@ class SkipTests(SpeechCase):
                 first = self.speak(LONG)
                 second = self.speak("Second reply.")
                 self.conn.request("play")
-                self.wait_phase(first, "started")
+                self.wait_playing(first)
 
                 self.conn.request("skip", reason=reason)
 
@@ -371,7 +372,7 @@ class NewTurnTests(SpeechCase):
         first = self.speak(LONG)
         second = self.speak("Second reply.")
         self.conn.request("play")
-        self.wait_phase(first, "started")
+        self.wait_playing(first)
 
         self.turn()
 
@@ -425,7 +426,7 @@ class NewTurnTests(SpeechCase):
         """`new_turn`: "releases a held queue"."""
         utterance_id = self.speak(LONG)
         self.conn.request("play")
-        self.wait_phase(utterance_id, "started")
+        self.wait_playing(utterance_id)
         self.conn.request("pause")
         requeued = self.wait_phase(utterance_id, "cancelled")["requeued_as"]
         self.assertTrue(self.status()["held"])
@@ -628,7 +629,7 @@ class SessionTests(SpeechCase):
         self.assertEqual(self.states(), {"session-a": "play", "session-b": "play"})
 
         self.conn.request("play")
-        self.wait_phase(first, "started")
+        self.wait_playing(first)
         self.assertEqual(self.states(), {"session-a": "stop", "session-b": "play"})
 
         self.conn.request("skip")
@@ -659,7 +660,7 @@ class SessionTests(SpeechCase):
         first = self.speak(LONG, session_key="session-a")
         self.speak("Second reply.", session_key="session-b")
         self.conn.request("play")
-        self.wait_phase(first, "started")
+        self.wait_playing(first)
 
         self.assertFalse(self.control("session-b", "stop"))
         self.assertStays(lambda: self.status()["playing"], 0.2, "another session's stop was taken")

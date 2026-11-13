@@ -42,10 +42,25 @@ MS_PER_CHAR = 2
 
 # About 0.03 s of test-mode audio: over before a case can act on it.
 SHORT = "Short reply."
-# About 4 s of test-mode audio at rate 1.0, in 40 sentences: still playing
-# when a case acts on it.
-LONG_SENTENCES = [f"Sentence {number} keeps this long reply going for a while." for number in range(40)]
+# A reply whose first sentence alone plays for three times as long as a case
+# ever waits (half that at rate 2.0). A case that acts on it once that
+# sentence is at the output (``wait_playing``) therefore always acts inside
+# the sentence, however slowly the machine runs. A sentence that is cut off
+# costs no time.
+LONG_SENTENCES = [
+    "This sentence keeps the reply going"
+    + " and going" * round(3 * WAIT_SECONDS * 1000 / MS_PER_CHAR / len(" and going"))
+    + ".",
+    "It is the second sentence that ends the reply.",
+]
 LONG = " ".join(LONG_SENTENCES)
+# A reply of short sentences, about 0.1 s each, that together play for as long
+# as ``LONG``: for the cases about what happens between two sentences.
+MANY_SENTENCES = [
+    f"Sentence {number} keeps this long reply going for a while."
+    for number in range(round(3 * WAIT_SECONDS * 10))
+]
+MANY = " ".join(MANY_SENTENCES)
 
 
 def wait_until(predicate, timeout: float = WAIT_SECONDS, message: str = "condition"):
@@ -248,6 +263,9 @@ class Sandbox:
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": str(self.root),
+            # Rendered sentences are temporary files; a service that a case
+            # kills leaves them behind, so they live in the sandbox.
+            "TMPDIR": str(self.root),
             "RELAY_SPEECH_TEST_MODE": "1",
             "RELAY_SPEECH_TEST_PLAYBACK_LOG": str(self.playback_log),
             "RELAY_SPEECH_TEST_MS_PER_CHAR": str(MS_PER_CHAR),
@@ -437,6 +455,21 @@ class SpeechCase(unittest.TestCase):
 
     def wait_idle(self) -> None:
         wait_until(lambda: not self.status()["speaking"], message="the queue to empty")
+
+    def wait_playing(self, utterance_id: str, sentences: int = 1) -> None:
+        """Wait until this many sentences of the reply were handed to the output.
+
+        ``started`` comes a moment before the first sentence is at the output.
+        The Python worker can report a reply stopped in that moment, or between
+        two sentences, as ``failed`` (see "playback" in the protocol document),
+        so a case stops, skips or replaces a reply only inside a sentence.
+        """
+        wait_until(
+            lambda: len(self.conn.events_named(
+                "playback", utterance_id=utterance_id, phase="chunk_started"
+            )) >= sentences,
+            message=f"sentence {sentences} of {utterance_id} to reach the output",
+        )
 
     def wait_cut_off(self) -> None:
         """Wait until the last sentence that reached the output was stopped inside it."""

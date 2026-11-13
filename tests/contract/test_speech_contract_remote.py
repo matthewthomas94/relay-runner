@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 import unittest
 
-from speech_contract_support import LONG, LONG_SENTENCES, FakeDevice, SpeechCase, wait_until
+from speech_contract_support import MANY, MANY_SENTENCES, FakeDevice, SpeechCase, wait_until
 
 THREE = "One sentence. Then another. And a third."
 
@@ -145,7 +145,7 @@ class RemoteSinkTests(SpeechCase):
 
     def test_ack_stops_the_remaining_audio(self):
         """Remote synthesis: a `remote_ack` for the frame stops the remaining audio."""
-        self.speak(LONG)
+        self.speak(MANY)
         seq = self.device.of("remote_speech")[0]["seq"]
         wait_until(lambda: audio_of(self.device, seq), message="the first audio part")
 
@@ -155,12 +155,12 @@ class RemoteSinkTests(SpeechCase):
         self.assertStays(
             lambda: len(audio_of(self.device, seq)) <= sent + 1, 0.4, "audio went on after the ack"
         )
-        self.assertLess(len(audio_of(self.device, seq)), len(LONG_SENTENCES))
+        self.assertLess(len(audio_of(self.device, seq)), len(MANY_SENTENCES))
         self.assertFalse(any(part["last"] for part in audio_of(self.device, seq)))
 
     def test_skip_sends_one_speech_control(self):
         """`remote_speech_control`: the device is told to drop what it has."""
-        self.speak(LONG)
+        self.speak(MANY)
         seq = self.device.of("remote_speech")[0]["seq"]
         wait_until(lambda: audio_of(self.device, seq), message="the first audio part")
 

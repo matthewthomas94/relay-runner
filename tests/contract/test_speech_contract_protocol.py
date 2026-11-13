@@ -97,14 +97,15 @@ class ProcessTests(unittest.TestCase):
                 box.set_command(1, "command-1")
                 conn.request("speak", text=LONG, command_seq=1, command_id="command-1", kind="final")
                 conn.request("play")
-                conn.wait_event("playback", phase="started")
+                # The signal arrives inside the reply's first sentence.
+                conn.wait_event("playback", phase="chunk_started")
                 self.assertTrue(os.path.exists(box.control_path))
 
                 box.process.send_signal(signum)
 
                 self.assertEqual(box.wait_exit(), 0)
                 self.assertFalse(os.path.exists(box.control_path))
-                self.assertFalse(box.spoken()[-1][1], "the reply was not cut off")
+                self.assertEqual(box.spoken(), [(LONG_SENTENCES[0], False)], "the reply was not cut off")
                 self.assertEqual(len(box.playback("output_stopped")), len(box.playback("output_started")))
                 wait_until(conn.closed.is_set, message="the connection to close")
 
@@ -405,7 +406,7 @@ class SessionRequestTests(SpeechCase):
         """`reload_config`: a changed rate stops the playback; the reply returns to the head."""
         utterance_id = self.speak(LONG)
         self.conn.request("play")
-        self.wait_phase(utterance_id, "started")
+        self.wait_playing(utterance_id)
         self.box.configure(rate=2.0)
 
         self.conn.request("reload_config")
@@ -441,14 +442,13 @@ class SessionRequestTests(SpeechCase):
         """`shutdown`: "Stops speech, answers, then exits 0"."""
         utterance_id = self.speak(LONG)
         self.conn.request("play")
-        self.wait_phase(utterance_id, "started")
+        self.wait_playing(utterance_id)
 
         self.assertEqual(self.conn.exchange("shutdown", request_id="bye"), {"id": "bye", "ok": True, "result": {}})
 
         self.assertEqual(self.box.wait_exit(), 0)
         wait_until(self.conn.closed.is_set, message="the connection to close")
-        self.assertFalse(self.box.spoken()[-1][1], "the reply was not cut off")
-        self.assertLess(len(self.box.spoken()), len(LONG_SENTENCES))
+        self.assertEqual(self.box.spoken(), [(LONG_SENTENCES[0], False)], "the reply was not cut off")
         self.assertFalse(os.path.exists(self.box.control_path))
         self.assertFalse(os.path.exists(self.box.socket_path))
         # The overlay is told the reply is no longer speaking.
@@ -497,7 +497,7 @@ class DiagnosticsTests(SpeechCase):
         command = self.new_command()
         utterance_id = self.speak(LONG, command=command)
         self.conn.request("play")
-        self.wait_phase(utterance_id, "started")
+        self.wait_playing(utterance_id)
         self.conn.request("skip")
         self.wait_phase(utterance_id, "cancelled")
         coverage = self.conn.request("played_coverage", command_seq=command[0], command_id=command[1])
@@ -590,27 +590,27 @@ class OwnedSurfaceTests(SpeechCase):
         """`TTS_CONTROL_SOCK`: `play`, `toggle`, `replay`, `skip`, `cancel`, `pause`, `stop`."""
         first = self.speak(LONG)
         self.box.control("play")
-        self.wait_phase(first, "started")
+        self.wait_playing(first)
 
         self.box.control("pause")
         requeued = self.wait_phase(first, "cancelled")["requeued_as"]
         wait_until(lambda: self.status()["held"], message="the queue to be held")
 
         self.box.control("toggle")
-        self.wait_phase(requeued, "started")
+        self.wait_playing(requeued)
 
         self.box.control("stop")
         again = self.wait_phase(requeued, "cancelled")["requeued_as"]
         wait_until(lambda: self.status()["held"], message="the queue to be held")
 
         self.box.control("PLAY\n")
-        self.wait_phase(again, "started")
+        self.wait_playing(again)
         self.box.control("skip")
         self.assertEqual(self.wait_phase(again, "cancelled")["stop_reason"], "user_stop")
         self.wait_idle()
 
         self.box.control("replay")
-        replay = self.conn.wait_event("playback", phase="started", replay_of=first)
+        replay = self.conn.wait_event("playback", phase="chunk_started", replay_of=first)
         self.box.control("cancel")
         self.wait_phase(replay["utterance_id"], "cancelled")
         self.wait_idle()
@@ -692,9 +692,9 @@ class OwnedSurfaceTests(SpeechCase):
         utterance_id = self.speak(LONG)
         self.assertFalse(self.lease_is_held(), "the lease was taken before audio played")
         self.conn.request("play")
-        self.wait_phase(utterance_id, "started")
+        self.wait_playing(utterance_id)
 
-        wait_until(self.lease_is_held, timeout=2.0, message="the lease to be held")
+        self.assertTrue(self.lease_is_held(), "the lease is free while audio plays")
 
         self.conn.request("skip")
         self.wait_phase(utterance_id, "cancelled")

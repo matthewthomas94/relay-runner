@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 import unittest
 
-from speech_contract_support import LONG, LONG_SENTENCES, SpeechCase, wait_until
+from speech_contract_support import LONG, LONG_SENTENCES, MANY, MANY_SENTENCES, SpeechCase, wait_until
 
 PRESERVE = {
     "route": "continue_current",
@@ -209,7 +209,7 @@ class SupersedeAndReplaceTests(SpeechCase):
         command = self.new_command()
         fallback = self.speak(LONG, command=command, **FALLBACK)
         self.conn.request("play")
-        self.wait_phase(fallback, "started")
+        self.wait_playing(fallback)
 
         final = self.speak("The build passed.", command=command)
 
@@ -396,7 +396,7 @@ class FreshnessTests(SpeechCase):
 
     def test_stale_handoff_stops_between_sentences(self):
         """Freshness is checked "before each sentence is played"."""
-        handoff = self.speak(LONG, **HANDOFF)
+        handoff = self.speak(MANY, **HANDOFF)
         self.conn.request("play")
         self.wait_phase(handoff, "started")
 
@@ -406,7 +406,7 @@ class FreshnessTests(SpeechCase):
         self.assertIsNone(ended["requeued_as"])
         self.wait_idle()
         spoken = self.box.spoken()
-        self.assertLess(len(spoken), len(LONG_SENTENCES))
+        self.assertLess(len(spoken), len(MANY_SENTENCES))
         # The sentence that was playing is finished, not cut off.
         self.assertTrue(all(completed for _, completed in spoken))
 
