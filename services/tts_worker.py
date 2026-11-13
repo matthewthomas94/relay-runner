@@ -17,8 +17,6 @@ import wave
 from dataclasses import dataclass
 from typing import Callable
 
-import numpy as np
-
 from config import load_config
 import remote_audio
 from speech_player import SpeechPlaybackError, SpeechPlayer
@@ -144,6 +142,11 @@ def publish_waiting_preview(text: str, speech_intent: dict | None = None) -> Non
             text=preview[:2000],
             **_presentation_fields(speech_intent),
         )
+
+
+def publish_idle() -> None:
+    """Clear the overlay's speech state when the worker that showed it is gone."""
+    _notify_state("idle")
 
 
 def _resolve_chime(name: str) -> str:
@@ -789,6 +792,9 @@ class TTSWorker:
                 except OSError:
                     pass
                 return None
+            # Imported here so a process that only uses this module's helpers
+            # (the bridge, when speech runs as a service) never loads numpy.
+            import numpy as np
             samples = np.asarray(samples)
             if not np.isfinite(samples).all():
                 raise VoiceAudioError("invalid_audio")

@@ -18,6 +18,7 @@ import os
 import queue
 import re
 import select
+import shlex
 import shutil
 import signal
 import socket
@@ -92,9 +93,14 @@ from sidecar_lane import (
     SidecarLifecycleEvent,
     create_sidecar_executor,
 )
+from speech_client import (
+    DEFAULT_SOCKET as DEFAULT_SPEECH_SERVICE_SOCK,
+    SpeechServiceClient,
+    SpeechServiceError,
+)
 from speech_coordinator import SpeechCoordinator
 from support_diagnostics import record_event as record_support_event
-from tts_worker import TTS_CONTROL_SOCK, TTSWorker, publish_waiting_preview
+from tts_worker import TTS_CONTROL_SOCK, TTSWorker, publish_idle, publish_waiting_preview
 
 VOICE_FIFO = os.environ.get("VOICE_FIFO", "/tmp/voice_in.fifo")
 BRIDGE_CONTROL_SOCK = os.environ.get("BRIDGE_CONTROL_SOCK", "/tmp/voice_bridge.sock")
@@ -470,6 +476,10 @@ VOICE_COMMAND_EVENT_LOG = os.environ.get(
 )
 VOICE_INTENT_INBOX = os.environ.get("VOICE_INTENT_INBOX", "/tmp/relay_intent_inbox.sqlite3")
 SPEECH_EVENT_LOG = os.environ.get("SPEECH_EVENT_LOG", "/tmp/relay_speech_events.jsonl")
+# RR-480: relay-mode speech runs in its own process (speech_service.py).
+# ``legacy`` keeps it inside the bridge, as rollback for one release.
+SPEECH_SERVICE_MODE = os.environ.get("RELAY_SPEECH_SERVICE_MODE", "service").strip().lower()
+SPEECH_SERVICE_SOCK = os.environ.get("RELAY_SPEECH_SERVICE_SOCK", "").strip() or DEFAULT_SPEECH_SERVICE_SOCK
 VOICE_COMMAND_EVENT_LIMIT = 200
 COMMAND_ACTION_RECOVERY_STATES = frozenset({"claimed", "delivery_failed", "superseded"})
 COMMAND_ACTION_TERMINAL_STATES = frozenset({"delivery_failed", "superseded"})
@@ -5868,6 +5878,47 @@ def _record_bridge_readiness(outcome: str) -> None:
     )
 
 
+def _speech_service_command() -> list[str]:
+    """The speech service's command line; it reads the same --config as the bridge."""
+    configured = os.environ.get("RELAY_SPEECH_SERVICE_CMD", "").strip()
+    command = shlex.split(configured) if configured else [
+        sys.executable,
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "speech_service.py"),
+    ]
+    args = sys.argv[1:]
+    for index, arg in enumerate(args[:-1]):
+        if arg == "--config":
+            command += ["--config", args[index + 1]]
+            break
+    return command
+
+
+def _start_speech_service(on_reply_finished) -> SpeechServiceClient | None:
+    """Start speech as its own process (RR-480); None means speak in-process."""
+    client = SpeechServiceClient(
+        _speech_service_command(),
+        SPEECH_SERVICE_SOCK,
+        env={
+            **os.environ,
+            # The service judges a command's freshness from the same file.
+            "VOICE_COMMAND_STATE_FILE": VOICE_COMMAND_STATE_FILE,
+            "SPEECH_EVENT_LOG": SPEECH_EVENT_LOG,
+            "TTS_CONTROL_SOCK": TTS_CONTROL_SOCK,
+        },
+        on_reply_finished=on_reply_finished,
+        on_restart=publish_idle,
+    )
+    try:
+        client.start()
+    except SpeechServiceError as exc:
+        print(
+            f"[voice_bridge] Speech service unavailable, speaking in-process instead: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    return client
+
+
 def _write_cmd_file(text: str, path: str = VOICE_CMD_FILE):
     """Atomically write a voice command to the ready file."""
     _ensure_session_spool_dir()
@@ -5900,28 +5951,33 @@ def main():
         atexit.register(_remove_bridge_pid_file)
 
     tts_queue: queue.Queue = queue.Queue()
-    tts_executor = TTSWorker(tts_queue, start_control_socket=not relay_mode)
-    tts_worker = tts_executor
+    tts_worker = None
+    if relay_mode and SPEECH_SERVICE_MODE != "legacy":
+        tts_worker = _start_speech_service(lambda reason: _on_reply_finished(reason, tts_worker))
+    in_process_speech = tts_worker is None
+    if in_process_speech:
+        tts_worker = TTSWorker(tts_queue, start_control_socket=not relay_mode)
     intent_inbox: IntentInbox | None = None
     provider_turn_broker: ProviderTurnBroker | None = None
     if relay_mode:
-        tts_worker = SpeechCoordinator(
-            tts_executor,
-            is_current=lambda command_seq, command_id: _relay_command_current(
-                command_seq,
-                command_id,
-            ),
-            is_preserved=lambda command_seq, command_id, disposition: (
-                _relay_command_current_or_preserved({
-                    "relay_command_seq": command_seq,
-                    "relay_command_id": command_id,
-                    "intent_id": disposition.get("intent_id"),
-                })
-            ),
-            event_log_path=SPEECH_EVENT_LOG,
-            control_socket_path=TTS_CONTROL_SOCK,
-            on_reply_finished=lambda reason: _on_reply_finished(reason, tts_worker),
-        )
+        if in_process_speech:
+            tts_worker = SpeechCoordinator(
+                tts_worker,
+                is_current=lambda command_seq, command_id: _relay_command_current(
+                    command_seq,
+                    command_id,
+                ),
+                is_preserved=lambda command_seq, command_id, disposition: (
+                    _relay_command_current_or_preserved({
+                        "relay_command_seq": command_seq,
+                        "relay_command_id": command_id,
+                        "intent_id": disposition.get("intent_id"),
+                    })
+                ),
+                event_log_path=SPEECH_EVENT_LOG,
+                control_socket_path=TTS_CONTROL_SOCK,
+                on_reply_finished=lambda reason: _on_reply_finished(reason, tts_worker),
+            )
         projection_path = (
             None
             if PROVIDER_TURN_BROKER_MODE == "legacy"
