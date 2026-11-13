@@ -20,6 +20,8 @@ pub mod continuity;
 pub mod diagnostics;
 pub mod messenger_runtime;
 pub mod pm_frontstage;
+pub mod ports;
+pub mod settings;
 pub mod sidecar;
 pub mod speech_client;
 

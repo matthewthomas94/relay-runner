@@ -10,7 +10,7 @@ use crate::json::Dict;
 
 /// The keyword arguments of `_InputQueue.submit_text` (`speech_client.py`):
 /// one typed speech intent offered to the speech service.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct SpeechText {
     pub text: String,
     pub display_text: String,
