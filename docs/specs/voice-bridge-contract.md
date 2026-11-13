@@ -296,6 +296,8 @@ A reply is `__ORCHESTRATOR_REPLY__:{"relay_command_seq", "relay_command_id", "te
 
 `RELAY_REMOTE_SOCK` carries the newline-JSON frames of [relay-remote.md](relay-remote.md); the cases use the vectors in `tests/RelayRemoteProtocolTests/Vectors`.
 
+RR-491: with `RELAY_REMOTE_RUNTIME=rust` the Python bridge serves this socket with `relay-rs remote` (`RELAY_RS_BIN`, or `Contents/MacOS/relay-rs` in the app bundle, or `rust/target/release/relay-rs` in a checkout) instead of `services/relay_remote.py`; unset, or with no binary found, it stays on Python. The `ClaudeRustRemote` and `CodexRustRemote` classes run every case below that way against the reference bridge when a release build exists.
+
 | Rule | Case |
 | --- | --- |
 | `identify` answers a status probe and closes. | remote/test_identify_status_probe_answers_and_closes |
