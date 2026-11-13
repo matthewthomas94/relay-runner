@@ -28,6 +28,30 @@ Each case builds a sandbox under a fresh `/tmp/rbc-XXXX` folder (short, because 
 
 Before RR-483 several bridge paths were fixed under `/tmp`. They now resolve under `RELAY_BRIDGE_RUNTIME_DIR`, whose default is `/tmp`, so a session that does not set it is unchanged. This is the same switch RR-485 gave the orchestrator daemon (`RELAY_ORCHESTRATOR_RUNTIME_DIR`). `VOICE_STATE_SOCK` is also honoured by the bridge now; the speech service already read it, and the app already sets it to `/tmp/voice_state.sock`, the same path. No other behaviour changed.
 
+### The Rust bridge
+
+RR-492 ports the bridge to Rust as `relay-rs bridge` (`rust/relay-rs/src/bridge/`). It covers the main loop, the FIFO and control-socket dispatch, the spool and mailbox files, the orchestrator client, focus and multi-session targeting, and the speech-service client. It also covers `pm_frontstage.py` and the bridge's use of the continuity modules. It builds on the `relay-intents` crate (RR-489), the Rust messenger backends (RR-490) and the Rust Relay Remote server (RR-491); the bridge hosts that server in-process. `voice_audio_lease.py` needs no port. Since RR-480 only the speech service (`tts_worker.py`) takes that lease, and the bridge always speaks through the speech service. Both providers change together, and the same cases accept the Rust bridge for each:
+
+```bash
+cargo build --manifest-path rust/Cargo.toml
+RELAY_VOICE_BRIDGE_CMD="'$PWD/rust/target/debug/relay-rs' bridge" \
+  python3 -m unittest discover -s tests/contract -p 'test_bridge_contract*.py'
+```
+
+The Python bridge stays the default until the cut-over (RR-493). With `RELAY_BRIDGE_RUNTIME=rust`, `services/voice_bridge.py` replaces itself with `relay-rs bridge`, passing the same arguments. The binary comes from `RELAY_RS_BINARY`, or else the app bundle's `Contents/MacOS/relay-rs`. With no binary found, the bridge stays on Python and notes that on stderr. When `RELAY_SPEECH_SERVICE_CMD` is unset, the switch sets it to the speech service this interpreter would have started. The same cases run through the switch:
+
+```bash
+RELAY_VOICE_BRIDGE_CMD="/usr/bin/env RELAY_BRIDGE_RUNTIME=rust 'RELAY_RS_BINARY=$PWD/rust/target/debug/relay-rs' '$(command -v python3)' '$PWD/services/voice_bridge.py'" \
+  python3 -m unittest discover -s tests/contract -p 'test_bridge_contract*.py'
+```
+
+Intentional differences, none visible to either provider:
+
+- **`--relay` only.** The legacy direct mode exits with status 2.
+- **No in-process speech.** `RELAY_SPEECH_SERVICE_MODE=legacy` is not read. If the speech service cannot be started, the Rust bridge reports it on stderr and exits with status 1. The Python bridge falls back to speaking in-process.
+- **Default speech service command.** When `RELAY_SPEECH_SERVICE_CMD` is unset, the default is `python3` plus the bundled `Contents/SharedSupport/services/speech_service.py`. From a checkout, it is the nearest `services/speech_service.py` above the binary.
+- **Relay Remote is always the Rust server.** `RELAY_REMOTE_RUNTIME` is not read. The `ClaudeRustRemote` and `CodexRustRemote` classes need the reference bridge, so they skip under `RELAY_VOICE_BRIDGE_CMD`; the `ClaudeRemote` and `CodexRemote` cases cover the in-process server.
+
 ## The fakes
 
 The suite owns three fakes and never reaches a model, a speaker or the real daemon.

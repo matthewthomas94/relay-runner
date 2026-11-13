@@ -7,7 +7,7 @@
 //! the separators U+001C to U+001F. `\w` and `\d` follow Unicode in both, from
 //! slightly different tables; no voice-turn pattern relies on the difference.
 
-use fancy_regex::Regex;
+pub use fancy_regex::Regex;
 
 /// Compiles a Python pattern, with `re.IGNORECASE` when `ignore_case`.
 pub fn compile(pattern: &str, ignore_case: bool) -> Regex {
@@ -41,6 +41,11 @@ pub fn compile(pattern: &str, ignore_case: bool) -> Regex {
         }
     }
     Regex::new(&translated).unwrap_or_else(|error| panic!("invalid pattern {pattern:?}: {error}"))
+}
+
+/// Compiles a pattern for `re.fullmatch`: it must match the whole text.
+pub fn compile_full(pattern: &str, ignore_case: bool) -> Regex {
+    compile(&format!("^(?:{pattern})\\z"), ignore_case)
 }
 
 /// `pattern.search(text) is not None`. A search that exceeds the backtracking
