@@ -45,4 +45,14 @@ impl Daemon {
     ) -> Outcome<Dict> {
         Ok(Dict::new())
     }
+
+    /// `_record_queue_drain_after_event(repo_path=, trigger=, drive_reviews=)`:
+    /// a placeholder until the queue routes are ported.
+    pub fn record_queue_drain_after_event(
+        &self,
+        _repo_path: Option<&str>,
+        _trigger: &str,
+        _drive_reviews: bool,
+    ) {
+    }
 }
