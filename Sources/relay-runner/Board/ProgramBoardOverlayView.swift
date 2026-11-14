@@ -1867,7 +1867,7 @@ private struct ProgramProjectIconPicker: View {
             .padding(Self.padding)
         }
         .frame(width: Self.width, height: 236)
-        .background(BoardDarkSurfaceBackground(cornerRadius: GraphicalTheme.radiusM))
+        .background(BoardDarkSurfaceBackground(cornerRadius: GraphicalTheme.radiusM, floating: true))
         .onExitCommand(perform: dismiss)
         .animation(reduceMotion ? nil : RelayMotion.hover, value: hovered)
         .accessibilityElement(children: .contain)
@@ -3287,8 +3287,9 @@ private struct ProgramTicketPanelChrome: ViewModifier {
                 alignment: .topLeading
             )
             .background(
-                ProgramBoardDarkSurfaceBackground(
-                    cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius
+                BoardDarkSurfaceBackground(
+                    cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius,
+                    floating: true
                 )
                 // The ticket panels are the kit's dialog: the large shadow.
                 .graphicalShadow(.l)
@@ -3392,8 +3393,9 @@ private struct ProgramSpikeFollowupReviewModal: View {
         .padding(20)
         .frame(width: 760, height: 690, alignment: .topLeading)
         .background(
-            ProgramBoardDarkSurfaceBackground(
-                cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius
+            BoardDarkSurfaceBackground(
+                cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius,
+                floating: true
             )
         )
         .contentShape(Rectangle())

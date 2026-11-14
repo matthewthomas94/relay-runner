@@ -78,7 +78,8 @@ struct SettingsMenuOptions<Value: Hashable>: View {
             .frame(height: min(284, contentHeight))
             // Kit popovers are neutral-2: radius s for a select, m for an action menu.
             .background(BoardDarkSurfaceBackground(
-                cornerRadius: showsCheckmarks ? GraphicalTheme.radiusS : GraphicalTheme.radiusM
+                cornerRadius: showsCheckmarks ? GraphicalTheme.radiusS : GraphicalTheme.radiusM,
+                floating: true
             ))
             .onAppear { focusedIndex = options.firstIndex { $0.value == selection } ?? options.indices.first }
             .onChange(of: focusedIndex) { _, index in

@@ -38,6 +38,7 @@ enum BoardDarkSurfaceStyle {
     static let borderNSColor = NSColor.clear
 
     static let panelFill = Color(nsColor: panelFillNSColor)
+    static let floatingFill = GraphicalTheme.neutral2.opacity(actionOpacity)
     static let contentFill = Color(nsColor: contentFillNSColor)
     static let hoverFill = Color(nsColor: hoverFillNSColor)
     static let cardFill = Color(nsColor: cardFillNSColor)
@@ -90,10 +91,18 @@ struct LiquidGlassBackdrop: NSViewRepresentable {
 struct BoardDarkSurfaceBackground: View {
     let cornerRadius: CGFloat
     var fill: Color = BoardDarkSurfaceStyle.panelFill
+    /// A surface that floats over other content (a menu, a dialog) brings its
+    /// own blur and a denser tint, so what is under it cannot show through.
+    var floating = false
 
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius)
-            .fill(fill)
+            .fill(floating ? BoardDarkSurfaceStyle.floatingFill : fill)
+            .background {
+                if floating {
+                    LiquidGlassBackdrop().clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+                }
+            }
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)

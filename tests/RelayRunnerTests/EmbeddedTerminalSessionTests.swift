@@ -1516,10 +1516,10 @@ final class RelayTerminalViewInputOriginTests: XCTestCase {
         XCTAssertTrue(limiter.allows(now: start.addingTimeInterval(5)))
     }
 
-    func testProcessUsesLongScrollbackAndPanelBackground() {
+    func testProcessUsesLongScrollbackAndClearBackgroundOverTheGlassPanel() {
         let process = SwiftTermEmbeddedProcess()
         XCTAssertEqual(process.terminalView.getTerminal().options.scrollback, RelayTerminalView.scrollbackLines)
-        XCTAssertEqual(process.terminalView.nativeBackgroundColor, BoardDarkSurfaceStyle.panelFillNSColor)
+        XCTAssertEqual(process.terminalView.nativeBackgroundColor.alphaComponent, 0)
     }
 }
 
