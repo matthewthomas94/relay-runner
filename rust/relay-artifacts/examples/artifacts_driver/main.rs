@@ -18,13 +18,20 @@ use relay_artifacts::tickets::{self, Fields, Ticket, TicketDocument};
 use relay_artifacts::{Error, ErrorKind, board_config, catalog, config, isotime, notes, toml};
 use relay_intents::json::{self, Dict, Value};
 
-type Answer = Result<Value, Error>;
+pub(crate) type Answer = Result<Value, Error>;
 
-fn invalid(message: &str) -> Error {
+mod lifecycle;
+mod migration;
+mod retention;
+mod rollout;
+mod sync;
+mod verification;
+
+pub(crate) fn invalid(message: &str) -> Error {
     Error::new(ErrorKind::Value, message)
 }
 
-fn text(request: &Dict, key: &str) -> String {
+pub(crate) fn text(request: &Dict, key: &str) -> String {
     request
         .get(key)
         .and_then(Value::as_str)
@@ -32,15 +39,15 @@ fn text(request: &Dict, key: &str) -> String {
         .to_string()
 }
 
-fn optional_text(request: &Dict, key: &str) -> Option<String> {
+pub(crate) fn optional_text(request: &Dict, key: &str) -> Option<String> {
     request.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
-fn integer(request: &Dict, key: &str) -> Option<i64> {
+pub(crate) fn integer(request: &Dict, key: &str) -> Option<i64> {
     request.present(key).and_then(Value::py_int)
 }
 
-fn dict(request: &Dict, key: &str) -> Dict {
+pub(crate) fn dict(request: &Dict, key: &str) -> Dict {
     request
         .get(key)
         .and_then(Value::as_dict)
@@ -48,7 +55,7 @@ fn dict(request: &Dict, key: &str) -> Dict {
         .unwrap_or_default()
 }
 
-fn dicts(request: &Dict, key: &str) -> Vec<Dict> {
+pub(crate) fn dicts(request: &Dict, key: &str) -> Vec<Dict> {
     request
         .get(key)
         .and_then(Value::as_list)
@@ -59,11 +66,11 @@ fn dicts(request: &Dict, key: &str) -> Vec<Dict> {
         .collect()
 }
 
-fn hex(bytes: &[u8]) -> Value {
+pub(crate) fn hex(bytes: &[u8]) -> Value {
     Value::Str(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn unhex(request: &Dict, key: &str) -> Result<Vec<u8>, Error> {
+pub(crate) fn unhex(request: &Dict, key: &str) -> Result<Vec<u8>, Error> {
     let digits = text(request, key);
     if !digits.len().is_multiple_of(2) {
         return Err(invalid("odd hex length"));
@@ -76,7 +83,7 @@ fn unhex(request: &Dict, key: &str) -> Result<Vec<u8>, Error> {
         .collect()
 }
 
-fn strings(values: &[String]) -> Value {
+pub(crate) fn strings(values: &[String]) -> Value {
     Value::List(
         values
             .iter()
@@ -85,7 +92,7 @@ fn strings(values: &[String]) -> Value {
     )
 }
 
-fn operation(request: &Dict) -> Result<Operation, Error> {
+pub(crate) fn operation(request: &Dict) -> Result<Operation, Error> {
     let t = |key: &str| text(request, key);
     Ok(match t("type").as_str() {
         "TicketWrite" => Operation::TicketWrite {
@@ -133,7 +140,7 @@ fn operation(request: &Dict) -> Result<Operation, Error> {
     })
 }
 
-fn mutation(request: &Dict) -> Result<Mutation, Error> {
+pub(crate) fn mutation(request: &Dict) -> Result<Mutation, Error> {
     let source = dict(request, "mutation");
     let operations = dicts(&source, "operations")
         .iter()
@@ -153,7 +160,7 @@ fn mutation(request: &Dict) -> Result<Mutation, Error> {
     Ok(mutation)
 }
 
-fn write_result(result: store::WriteResult) -> Value {
+pub(crate) fn write_result(result: store::WriteResult) -> Value {
     let mut value = Dict::new();
     value.insert("event_id", result.event_id);
     value.insert("commit_id", result.commit_id);
@@ -165,7 +172,7 @@ fn write_result(result: store::WriteResult) -> Value {
 }
 
 /// The dict `tickets.parse` returns.
-fn ticket_value(ticket: &Ticket) -> Value {
+pub(crate) fn ticket_value(ticket: &Ticket) -> Value {
     let mut value = Dict::new();
     value.insert("id", ticket.id.as_str());
     value.insert("title", ticket.title.as_str());
@@ -190,7 +197,7 @@ fn ticket_value(ticket: &Ticket) -> Value {
 }
 
 /// A parsed ticket dict, possibly edited, as `tickets.write` takes it.
-fn ticket_from(value: &Dict) -> Ticket {
+pub(crate) fn ticket_from(value: &Dict) -> Ticket {
     let optional = |key: &str| optional_text(value, key);
     let mut raw_fields = Fields::default();
     for (key, field) in dict(value, "_raw_fields").iter() {
@@ -282,13 +289,13 @@ fn note_value(document: &notes::NoteDocument) -> Value {
 }
 
 #[derive(Default)]
-struct Driver {
-    store: Option<ArtifactStore>,
+pub(crate) struct Driver {
+    pub(crate) store: Option<ArtifactStore>,
     followups: Option<FollowupProposalStore>,
 }
 
 impl Driver {
-    fn store(&self) -> Result<&ArtifactStore, Error> {
+    pub(crate) fn store(&self) -> Result<&ArtifactStore, Error> {
         self.store
             .as_ref()
             .ok_or_else(|| Error::new(ErrorKind::Runtime, "store is not open"))
@@ -307,6 +314,13 @@ impl Driver {
             "store" => self.store_op(function, request),
             "tickets" => tickets_op(function, request),
             "followup" => self.followup_op(function, request),
+            "rollout" => rollout::handle(self, function, request),
+            "sync" => sync::handle(self, function, request),
+            "retention" => retention::handle(self, function, request),
+            "lifecycle" => lifecycle::handle(self, function, request),
+            "migration" => migration::handle(self, function, request),
+            "automatic_retention" => migration::handle_automatic(self, function, request),
+            "verification" => verification::handle(self, function, request),
             _ => module_op(module, function, request),
         }
     }
@@ -587,6 +601,16 @@ fn main() {
                 reply.insert("ok", false);
                 reply.insert("error", error.kind.python_class());
                 reply.insert("message", error.message);
+                // The extra attributes some error classes carry.
+                if let Some(code) = error.code {
+                    reply.insert("code", code);
+                }
+                if let Some(recovery) = error.recovery {
+                    reply.insert("recovery", recovery);
+                }
+                if let Some(report) = error.report {
+                    reply.insert("report", report);
+                }
             }
         }
         let mut out = stdout.lock();

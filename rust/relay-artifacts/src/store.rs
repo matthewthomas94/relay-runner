@@ -428,12 +428,18 @@ type Prepared = Vec<(String, Option<Vec<u8>>)>;
 /// A test hook called at named stages; an error aborts the operation there.
 pub type FailureInjector = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
 
+/// A test hook told the arguments of every `git` call made through
+/// `ArtifactStore::git`, as `artifact_verification._RecordingArtifactStore`
+/// records them.
+pub type GitObserver = Box<dyn Fn(&[&str]) + Send + Sync>;
+
 /// The constructor's keyword arguments.
 pub struct StoreOptions {
     pub enabled: bool,
     pub artifact_ref: String,
     pub project_warning_bytes: u64,
     pub failure_injector: Option<FailureInjector>,
+    pub git_observer: Option<GitObserver>,
 }
 
 impl Default for StoreOptions {
@@ -443,6 +449,7 @@ impl Default for StoreOptions {
             artifact_ref: ARTIFACT_REF.to_string(),
             project_warning_bytes: DEFAULT_PROJECT_WARNING_BYTES,
             failure_injector: None,
+            git_observer: None,
         }
     }
 }
@@ -489,7 +496,7 @@ impl Drop for WriterGuard {
     }
 }
 
-fn random_hex() -> String {
+pub fn random_hex() -> String {
     let mut bytes = [0u8; 16];
     let read = File::open("/dev/urandom").and_then(|mut source| source.read_exact(&mut bytes));
     if read.is_err() {
@@ -571,6 +578,7 @@ pub struct ArtifactStore {
     pub history_verification_path: PathBuf,
     pub materialized_path: PathBuf,
     failure_injector: Option<FailureInjector>,
+    git_observer: Option<GitObserver>,
     snapshot_cache: Mutex<Option<SnapshotCache>>,
 }
 
@@ -605,6 +613,7 @@ impl ArtifactStore {
             artifact_ref: options.artifact_ref,
             project_warning_bytes: options.project_warning_bytes,
             failure_injector: options.failure_injector,
+            git_observer: options.git_observer,
             snapshot_cache: Mutex::new(None),
         })
     }
@@ -2264,6 +2273,9 @@ impl ArtifactStore {
         input: Option<&[u8]>,
         allowed: &[i32],
     ) -> Result<Output> {
+        if let Some(observer) = &self.git_observer {
+            observer(arguments);
+        }
         git::run(&self.repo_path, arguments, environment, input, allowed)
     }
 }
@@ -2277,7 +2289,7 @@ fn remove_if_present(path: &Path) -> Result<()> {
 
 /// `json.loads(bytes)` decodes by `json.detect_encoding`: a BOM or the NUL
 /// pattern of the first bytes selects UTF-8, UTF-16 or UTF-32.
-fn decode_json_bytes(content: &[u8]) -> Option<String> {
+pub fn decode_json_bytes(content: &[u8]) -> Option<String> {
     fn utf16(units: &[u8], little: bool) -> Option<String> {
         if !units.len().is_multiple_of(2) {
             return None;
@@ -2486,7 +2498,7 @@ pub fn validate_event_id<'v>(value: &'v str, label: &str) -> Result<&'v str> {
     }
 }
 
-fn validate_actor(value: &str) -> Result<&str> {
+pub fn validate_actor(value: &str) -> Result<&str> {
     if ["migration", "pm", "reviewer", "system", "user", "worker"].contains(&value) {
         Ok(value)
     } else {
@@ -2775,7 +2787,7 @@ fn validate_note_index(content: &[u8], project_id: &str) -> Result<()> {
 }
 
 /// `_ticket_front_matter_value`.
-fn ticket_front_matter_value(content: &[u8], wanted: &str) -> Option<String> {
+pub fn ticket_front_matter_value(content: &[u8], wanted: &str) -> Option<String> {
     let text = std::str::from_utf8(content).ok()?;
     let lines = pystr::splitlines(text);
     if lines.is_empty() || pystr::strip(lines[0]) != "---" {
@@ -2794,7 +2806,9 @@ fn ticket_front_matter_value(content: &[u8], wanted: &str) -> Option<String> {
     None
 }
 
-fn attachment_mime_for_filename(filename: &str) -> Result<&'static str> {
+/// `_attachment_mime_for_filename`: the one MIME type an attachment
+/// extension may carry.
+pub fn attachment_mime_for_filename(filename: &str) -> Result<&'static str> {
     match suffix_of(filename).as_str() {
         ".png" => Ok("image/png"),
         ".jpg" | ".jpeg" => Ok("image/jpeg"),
@@ -2837,7 +2851,7 @@ fn guessed_mime(filename: &str) -> &'static str {
     }
 }
 
-fn validate_attachment(filename: &str, mime_type: &str, content: &[u8]) -> Result<()> {
+pub fn validate_attachment(filename: &str, mime_type: &str, content: &[u8]) -> Result<()> {
     if content.len() > ATTACHMENT_MAX_BYTES {
         return Err(validation(format!(
             "attachment {} is {} bytes; limit is {ATTACHMENT_MAX_BYTES}",
@@ -2883,7 +2897,7 @@ fn validate_attachment(filename: &str, mime_type: &str, content: &[u8]) -> Resul
     Ok(())
 }
 
-fn validate_archive_index(content: &[u8]) -> Result<()> {
+pub fn validate_archive_index(content: &[u8]) -> Result<()> {
     let text =
         std::str::from_utf8(content).map_err(|_| validation("archive index is not UTF-8"))?;
     for (index, line) in pystr::splitlines(text).into_iter().enumerate() {
@@ -2912,7 +2926,7 @@ fn validate_archive_index(content: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn reject_secrets(content: &[u8], label: &str) -> Result<()> {
+pub fn reject_secrets(content: &[u8], label: &str) -> Result<()> {
     if search(&SECRET_PATTERNS, content) {
         return Err(validation(format!(
             "{label} appears to contain a credential or private key; Git commit refused"
@@ -2931,7 +2945,7 @@ fn reject_note_private_runtime(content: &[u8], note_id: &str) -> Result<()> {
 }
 
 /// `_find_forbidden_keys`: prohibited keys anywhere in a JSON value.
-fn find_forbidden_keys(value: &Value) -> BTreeSet<String> {
+pub fn find_forbidden_keys(value: &Value) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     match value {
         Value::Dict(dict) => {
@@ -2954,7 +2968,7 @@ fn find_forbidden_keys(value: &Value) -> BTreeSet<String> {
 }
 
 /// `_parse_trailers`: `Key: value` lines, a later key replacing an earlier.
-fn parse_trailers(message: &str) -> HashMap<String, String> {
+pub fn parse_trailers(message: &str) -> HashMap<String, String> {
     let mut trailers = HashMap::new();
     for line in pystr::splitlines(message) {
         let key_end = line

@@ -51,10 +51,12 @@ _PLACEHOLDER = re.compile(r"<(TIMESTAMP|DEVICE|(SHA256|OID|HEX32):(\d+))>")
 class Refused(Exception):
     """The implementation refused the call, as Python would raise ``error``."""
 
-    def __init__(self, error: str, message: str = ""):
+    def __init__(self, error: str, message: str = "", answer: dict | None = None):
         super().__init__(f"{error}: {message}")
         self.error = error
         self.message = message
+        # The driver's whole answer, with `recovery`, `report` or `code`.
+        self.answer = answer or {}
 
 
 def driver_command() -> list | None:
@@ -254,7 +256,7 @@ class RustArtifacts:
             raise RuntimeError(f"artifacts driver exited: {self._process.stderr.read()}")
         answer = json.loads(line)
         if not answer["ok"]:
-            raise Refused(answer["error"], answer.get("message", ""))
+            raise Refused(answer["error"], answer.get("message", ""), answer)
         return answer["result"]
 
     def close(self) -> None:
