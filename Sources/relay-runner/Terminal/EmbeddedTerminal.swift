@@ -590,11 +590,47 @@ final class RelayTerminalView: TerminalView {
     override func scrolled(source terminal: Terminal, yDisp: Int) {
         clearPromptSelection()
         super.scrolled(source: terminal, yDisp: yDisp)
+        updateEdgeFade()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         if promptSelection != nil { clearPromptSelection() }
+        updateEdgeFade()
+    }
+
+    /// Lines scrolled past either edge fade out instead of being cut off.
+    private let edgeFadeMask: CAGradientLayer = {
+        let mask = CAGradientLayer()
+        mask.startPoint = CGPoint(x: 0.5, y: 0)
+        mask.endPoint = CGPoint(x: 0.5, y: 1)
+        mask.colors = [NSColor.clear.cgColor, NSColor.black.cgColor, NSColor.black.cgColor, NSColor.clear.cgColor]
+        mask.locations = [0, 0, 1, 1]
+        return mask
+    }()
+
+    /// An edge fades only while there are lines beyond it: the top once there
+    /// is scrollback above, the bottom while scrolled back from the newest line.
+    private func updateEdgeFade() {
+        guard let layer else { return }
+        if layer.mask !== edgeFadeMask { layer.mask = edgeFadeMask }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        edgeFadeMask.frame = bounds
+        let height = bounds.height
+        guard height > 0, canScroll else {
+            edgeFadeMask.locations = [0, 0, 1, 1]
+            return
+        }
+        let fade = Double(min(RelayScrollEdgeFade.length, height / 2) / height)
+        let position = scrollPosition
+        let topFade = position > 0 ? fade : 0
+        let bottomFade = position < 1 ? fade : 0
+        // The gradient runs along the layer's y axis, which a flipped view
+        // starts at the top.
+        let (startFade, endFade) = isFlipped ? (topFade, bottomFade) : (bottomFade, topFade)
+        edgeFadeMask.locations = [0, NSNumber(value: startFade), NSNumber(value: 1 - endFade), 1]
     }
 
     override func send(source: Terminal, data: ArraySlice<UInt8>) {

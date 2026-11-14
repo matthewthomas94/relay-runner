@@ -432,7 +432,7 @@ private struct SettingsCategorySidebar: View {
                             // gives each row its own id so it only crossfades.
                             shape
                                 .fill(BoardDarkSurfaceStyle.cardActiveFill)
-                                .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1))
+                                .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1))
                                 .matchedGeometryEffect(
                                     id: reduceMotion ? category.id : "selection",
                                     in: selectionHighlight
