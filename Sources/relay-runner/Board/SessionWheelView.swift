@@ -81,40 +81,13 @@ struct SessionWheelView: View {
                 if !geometry.contains(point, submenuSlot: submenus[slot] > 0 ? slot : nil,
                                       sessionItems: model.sessionItems.count) { dismiss() }
             }
-            // Glass background level: the blurred desktop under the liquid
-            // black at 75%, inside the disc and inside each open submenu.
-            ZStack {
-                LiquidGlassBackdrop()
-                    .frame(width: geometry.wheelRadius * 2, height: geometry.wheelRadius * 2)
-                    .clipShape(Circle())
-                submenuGlass(submenus, sessionWeight: sessionWeight) { shape in
-                    LiquidGlassBackdrop().clipShape(shape)
-                }
-            }
-            .scaleEffect(presentation.discScale)
-            .opacity(presentation.discScale == 0 ? 0 : 1)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+            // Pure black, like the notch and the recording pill; the glass is on the tiles.
             SessionWheelLiquidBackdrop(progress: submenus, reduceMotion: reduceMotion, sessionItems: sessionWeight)
-                .opacity(BoardDarkSurfaceStyle.wheelBackdropOpacity)
                 .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
                 .scaleEffect(presentation.discScale)
                 .opacity(presentation.discScale == 0 ? 0 : 1)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
-            // The backdrop's own glass edge, round the disc and each submenu.
-            ZStack {
-                Circle()
-                    .strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)
-                    .frame(width: geometry.wheelRadius * 2, height: geometry.wheelRadius * 2)
-                submenuGlass(submenus, sessionWeight: sessionWeight) { shape in
-                    shape.stroke(BoardDarkSurfaceStyle.glassRim, lineWidth: 2).clipShape(shape)
-                }
-            }
-            .scaleEffect(presentation.discScale)
-            .opacity(presentation.discScale == 0 ? 0 : 1)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
             ZStack {
                 ForEach(0..<geometry.slotCount, id: \.self) { index in
                     slot(index, menu: menu)
@@ -225,28 +198,6 @@ struct SessionWheelView: View {
         .onDisappear { NotchHoverDescriptor.hide(owner: hintOwner) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Session wheel")
-    }
-
-    /// Draws `content` in the outline of each open submenu's backdrop, moving
-    /// with it as it grows out of the disc.
-    private func submenuGlass<Content: View>(
-        _ submenus: SessionWheelSubmenuProgress, sessionWeight: CGFloat,
-        @ViewBuilder content: @escaping (SessionWheelSector) -> Content
-    ) -> some View {
-        ForEach(0..<geometry.slotCount, id: \.self) { slot in
-            let frame = SessionWheelSubmenuPresentation(progress: submenus[slot], reduceMotion: reduceMotion)
-            if frame.progress > 0 {
-                let span = slot == geometry.sessionSlots[0] && sessionWeight > 0
-                    ? geometry.sessionSubmenuSpan(weight: sessionWeight) * geometry.sliceAngle : nil
-                content(SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
-                                           outerRadius: geometry.actionOuterRadius,
-                                           cornerRadius: SessionWheelGeometry.actionCornerRadius,
-                                           padding: geometry.segmentGap,
-                                           arcStart: span.map { -$0 / 2 }, arcWidth: span))
-                    .scaleEffect(frame.scale)
-                    .opacity(frame.surfaceOpacity)
-            }
-        }
     }
 
     /// Names the hovered segment or outer control in the notch.
