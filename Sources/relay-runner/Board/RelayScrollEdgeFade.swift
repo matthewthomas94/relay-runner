@@ -116,11 +116,42 @@ struct RelayFadingScrollView<Content: View>: View {
                 if drawsThumb { RelayScrollThumb(tracker: tracker) }
             }
             .onHover { tracker.isHovering = $0 }
+            .modifier(RelayScrollArrivalRest(axis: axis, tracker: tracker))
         } else {
             ScrollView(axis == .vertical ? .vertical : .horizontal, showsIndicators: showsIndicators) {
                 content()
             }
         }
+    }
+}
+
+/// A scroller that arrives inside a page's scale-in is left a few points
+/// from its start once the animation ends, cutting the first row's top edge.
+/// Until someone scrolls it, a scroller that drifts that little while it
+/// arrives is put back at its start.
+@available(macOS 15.0, *)
+private struct RelayScrollArrivalRest: ViewModifier {
+    let axis: Axis
+    let tracker: RelayScrollTracker
+    @State private var position = ScrollPosition(edge: .top)
+    @State private var hasScrolled = false
+    @State private var arrived = Date()
+
+    private static let arrivalWindow: TimeInterval = 3
+    private static let driftLimit: CGFloat = 8
+
+    func body(content: Content) -> some View {
+        content
+            .scrollPosition($position)
+            .onScrollPhaseChange { _, phase in
+                if phase != .idle { hasScrolled = true }
+            }
+            .onAppear { arrived = Date() }
+            .onChange(of: tracker.extent.offset) { _, offset in
+                guard !hasScrolled, offset > 0.25, offset < Self.driftLimit,
+                      Date().timeIntervalSince(arrived) < Self.arrivalWindow else { return }
+                position.scrollTo(edge: axis == .vertical ? .top : .leading)
+            }
     }
 }
 

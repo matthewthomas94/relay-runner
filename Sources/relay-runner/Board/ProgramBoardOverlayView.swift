@@ -422,10 +422,6 @@ struct ProgramBoardOverlayView: View {
                     .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteItems)
                     .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.noteQuery)
                 }
-                // A list that fills after it was laid out empty can settle a
-                // point or two under the top edge, too little for the fade to
-                // show. Notes arriving get a fresh scroller, resting at the top.
-                .id(model.noteItems.isEmpty)
             }
             .padding(18)
         }
