@@ -11,7 +11,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 
-use relay_intents::json::{self, Dict, Value, py_strip};
+use relay_intents::json::{Dict, Value, py_strip};
 use relay_services::program::capture::{ArtifactAuthority, CaptureRequest, capture_session_review};
 use relay_services::program::ingest::{
     IngestOptions, InputState, StatKey, graph_file_state, ingest_registered_projects,
@@ -270,22 +270,7 @@ impl Daemon {
     /// The repository filter rides in the body for that module to read; the
     /// Python route itself takes only `trigger`.
     fn sweep_for_dashboard(&self, trigger: &str, repo_paths: Option<&[String]>) -> Outcome<()> {
-        let mut body = Dict::new();
-        body.insert("trigger", trigger);
-        if let Some(paths) = repo_paths {
-            body.insert(
-                "repo_paths",
-                Value::List(
-                    paths
-                        .iter()
-                        .map(|path| Value::from(path.as_str()))
-                        .collect(),
-                ),
-            );
-        }
-        let bytes = json::dumps(&Value::Dict(body));
-        let request = Request::new("POST", "/v1/program/ready-sweep", bytes.as_bytes());
-        self.sweep_program_ready_tickets_route(&request)?;
+        self.sweep_program_ready_tickets(Some(trigger), repo_paths)?;
         Ok(())
     }
 }

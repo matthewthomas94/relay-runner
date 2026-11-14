@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
 
-use relay_artifacts::retention::{ArtifactRetentionManager, RetentionOptions};
 use relay_artifacts::tickets::{self, Fields, Ticket};
 use relay_artifacts::{board_config, pystr};
 use relay_intents::json::{Dict, Value, py_is_space, py_strip, str_repr};
@@ -1235,7 +1234,7 @@ impl Daemon {
                 ]));
                 all_tickets = scan_tickets(&repo)?;
             }
-            if !self.all_dependencies_done(&repo, &ticket, &all_tickets)? {
+            if !self.all_dependencies_done(&repo, &ticket.depends_on, &all_tickets, None)? {
                 skip(&mut applied, "dependencies_not_done".to_string());
                 continue;
             }
@@ -1549,69 +1548,18 @@ impl Daemon {
         })
     }
 
-    /// `_all_dependencies_done(repo=, ticket=, all_tickets=)`: a dependency
-    /// missing from the board counts when the artifact history shows it
-    /// done.
-    fn all_dependencies_done(
-        &self,
-        repo: &Path,
-        ticket: &Ticket,
-        all_tickets: &[Ticket],
-    ) -> Outcome<bool> {
-        let mut missing = Vec::new();
-        for dependency in &ticket.depends_on {
-            match all_tickets.iter().rev().find(|item| &item.id == dependency) {
-                Some(found) if found.status != "done" => return Ok(false),
-                Some(_) => {}
-                None => missing.push(dependency.clone()),
-            }
-        }
-        if missing.is_empty() {
-            return Ok(true);
-        }
-        let Some(lifecycle) = self.artifact_lifecycle(&repo.to_string_lossy())? else {
-            return Ok(false);
-        };
-        let manager = ArtifactRetentionManager::new(
-            &lifecycle.store,
-            RetentionOptions {
-                lease_store: Some(lifecycle.leases.clone()),
-                enabled: true,
-                ..RetentionOptions::default()
-            },
-        )?;
-        for dependency in missing {
-            if !manager.dependency_satisfied(&dependency, None)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    /// `self.dispatch(...)` through `POST /v1/runs`, whose route reads the
-    /// same fields `dispatch` takes.
+    /// `self.dispatch(...)` for an orchestrator action or voice command.
     pub(crate) fn dispatch_ticket_internal(&self, call: &DispatchCall<'_>) -> Outcome<Dict> {
-        let mut body = Dict::new();
-        body.insert("ticket_id", call.ticket_id);
-        body.insert("repo_path", call.repo_path);
-        body.insert("context", call.context);
-        body.insert("source", call.source);
-        if let Some(seq) = call.relay_command_seq {
-            body.insert("relay_command_seq", seq.clone());
-        }
-        if let Some(id) = call.relay_command_id {
-            body.insert("relay_command_id", id.clone());
-        }
-        if let Some(intent) = call.relay_intent_id {
-            body.insert("relay_intent_id", intent);
-        }
-        let bytes = relay_intents::json::dumps(&Value::Dict(body));
-        let request = Request::new("POST", "/v1/runs", bytes.as_bytes());
-        let (_, result) = self.dispatch_route(&request)?;
-        Ok(match result {
-            Value::Dict(result) => result,
-            _ => Dict::new(),
-        })
+        let mut request =
+            crate::dispatch::DispatchRequest::new(call.ticket_id, call.repo_path, call.source);
+        request.context = call.context.map(str::to_string);
+        request.voice = crate::relay_command::VoiceFields {
+            relay_command_seq: call.relay_command_seq.cloned(),
+            relay_command_id: call.relay_command_id.cloned(),
+            relay_intent_id: call.relay_intent_id.map(Value::from),
+            relay_session_key: None,
+        };
+        self.dispatch(&request)
     }
 }
 
