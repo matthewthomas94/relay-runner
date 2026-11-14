@@ -3561,7 +3561,7 @@ impl<'s> ArtifactRetentionManager<'s> {
         Ok(())
     }
 
-    fn catalog(&self, head: &str) -> Result<Catalog> {
+    pub fn catalog(&self, head: &str) -> Result<Catalog> {
         let snapshot = self.store.snapshot()?;
         if snapshot.commit_id != head {
             return Err(concurrent(
@@ -3571,7 +3571,7 @@ impl<'s> ArtifactRetentionManager<'s> {
         parse_catalog(snapshot.file(CATALOG_PATH).unwrap_or_default())
     }
 
-    fn head_required(&self) -> Result<String> {
+    pub fn head_required(&self) -> Result<String> {
         self.store
             .head()?
             .filter(|head| !head.is_empty())

@@ -1482,12 +1482,12 @@ pub fn privacy_safe_report_digest(report: &Value) -> Result<String> {
 // -- the command line -------------------------------------------------------
 
 /// One parsed `--option`: its value, or `None` for a flag.
-struct Options {
+pub(crate) struct Options {
     values: Vec<(String, Option<String>)>,
 }
 
 impl Options {
-    fn value(&self, name: &str) -> Option<&str> {
+    pub(crate) fn value(&self, name: &str) -> Option<&str> {
         self.values
             .iter()
             .rev()
@@ -1495,7 +1495,7 @@ impl Options {
             .and_then(|(_, value)| value.as_deref())
     }
 
-    fn flag(&self, name: &str) -> bool {
+    pub(crate) fn flag(&self, name: &str) -> bool {
         self.values.iter().any(|(key, _)| key == name)
     }
 }
@@ -1510,7 +1510,7 @@ fn usage_error(message: &str) -> u8 {
 
 /// argparse's option matching: exact names, `--name=value` and unique
 /// prefixes. `valued` options take an argument; the rest are flags.
-fn parse_options(
+pub(crate) fn parse_options(
     arguments: &[String],
     valued: &[&str],
     flags: &[&str],

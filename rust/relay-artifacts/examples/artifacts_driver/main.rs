@@ -319,6 +319,7 @@ impl Driver {
             "retention" => retention::handle(self, function, request),
             "lifecycle" => lifecycle::handle(self, function, request),
             "migration" => migration::handle(self, function, request),
+            "automatic_retention" => migration::handle_automatic(self, function, request),
             "verification" => verification::handle(self, function, request),
             _ => module_op(module, function, request),
         }
