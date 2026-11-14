@@ -9,6 +9,9 @@ publish.workspace = true
 # The intent inbox and provider-turn broker the hook shares with the bridge,
 # and the Python-compatible JSON both write.
 relay-intents = { path = "../relay-intents" }
+# Command actions, authorization and the provider gates, shared with the
+# daemon (RR-499).
+relay-services = { path = "../relay-services" }
 # O_NONBLOCK and ENXIO, for the FIFO the bridge reads.
 libc = "0.2"
 # Bundled SQLite: the hook shares the intent inbox with the Python bridge and

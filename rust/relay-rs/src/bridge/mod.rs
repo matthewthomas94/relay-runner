@@ -10,8 +10,6 @@
 //! (docs/specs/voice-bridge-contract.md). The Python bridge stays the
 //! default until the cut-over (RR-493).
 
-mod authorization;
-mod command_actions;
 mod commands;
 mod config;
 mod context;
@@ -37,6 +35,9 @@ mod targets;
 mod traces;
 mod turns;
 mod wiring;
+
+// Shared with the daemon (RR-499).
+use relay_services::{authorization, command_actions};
 
 /// Runs the bridge with its command-line arguments.
 pub fn run(arguments: &[String]) -> u8 {

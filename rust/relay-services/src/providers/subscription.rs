@@ -12,12 +12,12 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::json::{self, Dict, Value, py_strip};
+use relay_intents::json::{self, Dict, Value, py_strip};
 
 const SUBSCRIPTION_TYPES: [&str; 4] = ["pro", "max", "team", "enterprise"];
 const FIRST_PARTY_BASE_URLS: [&str; 2] =
     ["https://api.anthropic.com", "https://api.anthropic.com/"];
-const METERED_ENVIRONMENT: [&str; 9] = [
+pub const METERED_ENVIRONMENT: [&str; 9] = [
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_PROFILE",

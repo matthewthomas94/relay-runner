@@ -2,7 +2,7 @@
 //! `hashlib.sha1`: queue-drain ids and orchestrator session keys. Not used
 //! for anything that needs collision resistance.
 
-pub(crate) fn hex_digest(data: &[u8]) -> String {
+pub fn hex_digest(data: &[u8]) -> String {
     let mut state: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
     let mut message = data.to_vec();
     let bit_length = (data.len() as u64).wrapping_mul(8);

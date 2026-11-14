@@ -1,7 +1,9 @@
 //! Relay command action classification: `services/command_actions.py`, the
 //! part the voice bridge imports (`resolve_command_action`,
-//! `format_command_for_agent`, `is_mixed_query_and_mutation`) and everything
-//! they reach.
+//! `format_command_for_agent`, `is_mixed_query_and_mutation`), the part the
+//! orchestrator daemon imports (`resolve_command_action`,
+//! `refined_command_summary`, `refined_ticket_title`) and everything they
+//! reach.
 //!
 //! The foreground Codex or Claude session is the PM frontstage. Command
 //! handling stays explicit before work routes backstage: controls are
@@ -10,9 +12,9 @@
 //! worker implementation starts. Raw Relay captures stay private.
 //!
 //! Each pattern is the Python module's, compiled with the same meaning (see
-//! `relay_intents::pattern::compile`). Ticket authoring
-//! (`create_ticket_for_command` and its summary and worker-sizing helpers) and
-//! `set_session_work_style` are not reached by the bridge and are not here.
+//! `relay_intents::pattern::compile`). Legacy ticket authoring
+//! (`create_ticket_for_command` and its worker-sizing helpers) and
+//! `set_session_work_style` are reached by neither and are not here.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -24,8 +26,12 @@ use relay_intents::qualification::{
     discussion_only_requested, foreground_action_requested, mixed_bucket_request,
 };
 
-use crate::json::{self, Dict, Value};
-use crate::support::env_optional;
+use relay_intents::json::{self, Dict, Value};
+
+/// `os.environ.get(name)`.
+fn env_optional(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
 
 /// `CONTROL_COMMANDS`: the internal controls and their reasons.
 const CONTROL_COMMANDS: [(&str, &str); 5] = [
@@ -1331,6 +1337,136 @@ fn resolve_path(path: &str) -> String {
     resolved.to_string_lossy().into_owned()
 }
 
+// -- the daemon's ticket summaries -------------------------------------------
+
+/// `SUMMARY_VERBS`: the leading verb each spoken one becomes.
+const SUMMARY_VERBS: [(&str, &str); 21] = [
+    ("add", "Add"),
+    ("build", "Build"),
+    ("change", "Update"),
+    ("clean", "Clean up"),
+    ("create", "Create"),
+    ("debug", "Debug"),
+    ("delete", "Remove"),
+    ("design", "Design"),
+    ("fix", "Fix"),
+    ("implement", "Implement"),
+    ("install", "Install"),
+    ("make", "Implement"),
+    ("migrate", "Migrate"),
+    ("refactor", "Refactor"),
+    ("remove", "Remove"),
+    ("repair", "Repair"),
+    ("ship", "Ship"),
+    ("test", "Test"),
+    ("update", "Update"),
+    ("wire", "Wire"),
+    ("write", "Write"),
+];
+const SUMMARY_STOP_WORDS: [&str; 28] = [
+    "a", "an", "and", "are", "as", "can", "could", "for", "from", "i", "in", "into", "it", "let",
+    "lets", "me", "my", "of", "on", "our", "please", "that", "the", "this", "to", "we", "with",
+    "you",
+];
+const SUMMARY_PRIVATE_WORDS: [&str; 11] = [
+    "api",
+    "credential",
+    "credentials",
+    "key",
+    "passcode",
+    "password",
+    "private",
+    "secret",
+    "source_text",
+    "token",
+    "transcript",
+];
+
+fn summary_verb(token: &str) -> Option<&'static str> {
+    SUMMARY_VERBS
+        .iter()
+        .find(|(spoken, _)| *spoken == token)
+        .map(|(_, verb)| *verb)
+}
+
+/// `SUMMARY_TOKEN_RE.findall(text)`: `[A-Za-z0-9][A-Za-z0-9_-]*`, lowered.
+fn summary_tokens(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current: Option<String> = None;
+    for character in text.chars() {
+        let word = character.is_ascii_alphanumeric();
+        match current.as_mut() {
+            Some(token) if word || character == '_' || character == '-' => {
+                token.push(character.to_ascii_lowercase());
+            }
+            _ => {
+                tokens.extend(current.take());
+                if word {
+                    current = Some(character.to_ascii_lowercase().to_string());
+                }
+            }
+        }
+    }
+    tokens.extend(current);
+    tokens
+}
+
+/// `re.fullmatch(r"[a-z][a-z0-9]*-\d+", token)`: a ticket id.
+fn is_ticket_token(token: &str) -> bool {
+    let Some((prefix, number)) = token.split_once('-') else {
+        return false;
+    };
+    prefix.starts_with(|c: char| c.is_ascii_lowercase())
+        && prefix
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && !number.is_empty()
+        && number.chars().all(|c| c.is_ascii_digit())
+}
+
+/// `refined_command_summary`: a short, user-safe summary without copying the
+/// raw command: a verb and at most six subject words, with stop words,
+/// private words and ticket ids left out.
+pub fn refined_command_summary(source_text: &str) -> String {
+    let tokens = summary_tokens(source_text);
+    let found = tokens
+        .iter()
+        .enumerate()
+        .find_map(|(index, token)| summary_verb(token).map(|verb| (index, verb)));
+    let (verb, start) = found.map_or(("Implement", 0), |(index, verb)| (verb, index + 1));
+    let subject: Vec<String> = tokens[start..]
+        .iter()
+        .filter(|token| {
+            summary_verb(token).is_none()
+                && !SUMMARY_STOP_WORDS.contains(&token.as_str())
+                && !SUMMARY_PRIVATE_WORDS.contains(&token.as_str())
+                && !is_ticket_token(token)
+        })
+        .take(6)
+        .map(|token| token.replace('_', "-"))
+        .collect();
+    let subject = subject.join(" ");
+    let subject = if subject.is_empty() {
+        "requested project change"
+    } else {
+        subject.as_str()
+    };
+    format!("{verb} {subject}.")
+}
+
+/// `refined_ticket_title`: the summary without its full stop, cut to 76
+/// characters.
+pub fn refined_ticket_title(source_text: &str) -> String {
+    let summary = refined_command_summary(source_text);
+    let title = summary.trim_end_matches('.');
+    if title.chars().count() > 76 {
+        let cut: String = title.chars().take(73).collect();
+        format!("{}...", cut.trim_end())
+    } else {
+        title.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ActionKind::*;
@@ -1866,7 +2002,7 @@ mod tests {
     #[test]
     fn labelled_development_regressions() {
         let corpus = json::parse(include_str!(
-            "../../../../tests/fixtures/intent_qualification.json"
+            "../../../tests/fixtures/intent_qualification.json"
         ))
         .unwrap();
         let cases = corpus
@@ -2140,7 +2276,7 @@ mod tests {
     #[test]
     fn labelled_routes_for_every_work_style() {
         let corpus = json::parse(include_str!(
-            "../../../../tests/fixtures/work_style_routing.json"
+            "../../../tests/fixtures/work_style_routing.json"
         ))
         .unwrap();
         let cases = corpus

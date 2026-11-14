@@ -1,14 +1,17 @@
-//! Port of `services/relay_authorization.py` for the Rust bridge (RR-492):
-//! the half of it the bridge reaches.
+//! Port of `services/relay_authorization.py`, shared by the voice bridge
+//! (RR-492) and the orchestrator daemon (RR-499).
 //!
 //! Conversational freshness and project-mutation authorization are separate:
 //! `voice_command_state.json` names the newest turn for replies and speech,
 //! while this ledger (`VOICE_COMMAND_AUTHORIZATION_FILE`) lists the project
 //! mutations still authorized. The bridge registers each turn's grants and
-//! revokes superseded ones; the orchestrator daemon validates and marks
-//! mutations against the same file, so it is written exactly as Python's
-//! `json.dump(ledger, f, sort_keys=True)` writes it, under the same
-//! `<ledger>.lock` `flock`.
+//! revokes superseded ones ([`record_command_authorization`],
+//! [`transfer_session_authorizations`]); the daemon validates and marks
+//! mutations against the same file ([`authorization_exists`],
+//! [`validate_and_mark_mutation`], [`mark_mutations_canceled`]). Both write it
+//! exactly as Python's `json.dump(ledger, f, sort_keys=True)` writes it, under
+//! the same `<ledger>.lock` `flock`. A daemon refusal is a `ValueError` with
+//! Python's message, which the HTTP layer returns as a 400.
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions, Permissions};
@@ -17,12 +20,13 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use relay_intents::json::{self, Dict, Value};
 use relay_intents::pattern::{self, Regex, compile};
 use relay_intents::qualification::dispatch_forbidden;
 
-use crate::json::{self, Dict, Value};
-use crate::support::{self, read_json_file, relay_command_key};
+use crate::{Error, Result};
 
 pub const AUTHORIZATION_CONTRACT_VERSION: i64 = 1;
 pub const AUTHORIZATION_LIMIT: usize = 32;
@@ -172,6 +176,39 @@ pub fn allowed_mutations_for_metadata(metadata: &Dict) -> Vec<Dict> {
 
 // -- the ledger file ----------------------------------------------------------
 
+/// `time.time()`.
+fn now_seconds() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |elapsed| elapsed.as_secs_f64())
+}
+
+/// `relay_command_key`: the command a metadata object or ledger record
+/// names, an integer sequence and a non-empty, stripped id.
+pub fn relay_command_key(command: &Dict) -> Option<(i64, String)> {
+    let command_id = command.text("relay_command_id");
+    if command_id.is_empty() {
+        return None;
+    }
+    let command_seq = command.get("relay_command_seq")?.py_int()?;
+    Some((command_seq, command_id))
+}
+
+/// The key of a route's separate `relay_command_seq` and `relay_command_id`.
+fn command_key(relay_command_seq: &Value, relay_command_id: &Value) -> Option<(i64, String)> {
+    let mut command = Dict::new();
+    command.insert("relay_command_seq", relay_command_seq.clone());
+    command.insert("relay_command_id", relay_command_id.clone());
+    relay_command_key(&command)
+}
+
+/// `path` with `suffix` appended to its file name.
+fn sibling(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    name.into()
+}
+
 /// `_authorization_ledger_lock`: an exclusive `flock` on `<ledger>.lock`,
 /// released when this is dropped.
 struct LedgerLock(File);
@@ -183,11 +220,11 @@ impl Drop for LedgerLock {
     }
 }
 
-fn lock_ledger(path: &str) -> io::Result<LedgerLock> {
-    if let Some(parent) = Path::new(path).parent() {
+fn lock_ledger(path: &Path) -> io::Result<LedgerLock> {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let lock_path = format!("{path}.lock");
+    let lock_path = sibling(path, ".lock");
     let file = OpenOptions::new()
         .read(true)
         .append(true)
@@ -207,8 +244,14 @@ fn lock_ledger(path: &str) -> io::Result<LedgerLock> {
 }
 
 /// `_load_ledger`: the stored `updated_at` and the records that are objects.
-fn load_ledger(path: &str) -> (Value, Vec<Dict>) {
-    let mut data = read_json_file(path);
+fn load_ledger(path: &Path) -> (Value, Vec<Dict>) {
+    let mut data = match fs::read(path)
+        .ok()
+        .and_then(|bytes| json::parse_bytes(&bytes))
+    {
+        Some(Value::Dict(data)) => data,
+        _ => Dict::new(),
+    };
     let records = match data.remove("authorizations") {
         Some(Value::List(items)) => items
             .into_iter()
@@ -236,10 +279,10 @@ fn ledger(updated_at: Value, records: Vec<Dict>) -> Dict {
 
 /// `_atomic_write_json`: key-sorted JSON through a temporary file named for
 /// this process and thread.
-fn atomic_write_json(path: &str, payload: &Dict) -> io::Result<()> {
+fn atomic_write_json(path: &Path, payload: &Dict) -> io::Result<()> {
     // SAFETY: `pthread_self` has no preconditions; it is `threading.get_ident()`.
     let thread = unsafe { libc::pthread_self() } as usize;
-    let temporary = format!("{path}.{}.{thread}.tmp", std::process::id());
+    let temporary = sibling(path, &format!(".{}.{thread}.tmp", std::process::id()));
     let written = fs::write(
         &temporary,
         json::dumps_sorted(&Value::Dict(payload.clone())),
@@ -297,19 +340,20 @@ fn ticket_of(record: &Dict) -> String {
 /// its own session, so `all_work` never preempts another session. `now` is
 /// `time.time()` unless given. Returns the ledger as written.
 pub fn record_command_authorization(
-    path: &str,
+    path: impl AsRef<Path>,
     metadata: &Dict,
     relationship: &str,
     allowed_mutations: Option<Vec<Dict>>,
     session_key: &str,
     now: Option<f64>,
 ) -> io::Result<Dict> {
+    let path = path.as_ref();
     let _lock = lock_ledger(path)?;
     let Some(key) = relay_command_key(metadata) else {
         let (updated_at, records) = load_ledger(path);
         return Ok(ledger(updated_at, records));
     };
-    let now = now.unwrap_or_else(support::now);
+    let now = now.unwrap_or_else(now_seconds);
     let fallback;
     let relationship = if relationship.is_empty() {
         fallback = metadata.string("authorization_relationship");
@@ -419,16 +463,17 @@ pub fn record_command_authorization(
 /// key-less), so a queued command handed off keeps its bounds under the key
 /// the receiving provider presents. Returns how many moved.
 pub fn transfer_session_authorizations(
-    path: &str,
+    path: impl AsRef<Path>,
     from_session_key: &str,
     to_session_key: &str,
     now: Option<f64>,
 ) -> io::Result<usize> {
+    let path = path.as_ref();
     let _lock = lock_ledger(path)?;
     if from_session_key.is_empty() || from_session_key == to_session_key {
         return Ok(0);
     }
-    let now = now.unwrap_or_else(support::now);
+    let now = now.unwrap_or_else(now_seconds);
     let (_, mut records) = load_ledger(path);
     let mut moved = 0;
     for record in &mut records {
@@ -449,10 +494,238 @@ pub fn transfer_session_authorizations(
     Ok(moved)
 }
 
+// -- the daemon's half ---------------------------------------------------------
+
+/// `_session_records`: a keyed request may only use records registered for
+/// its own session. Indices into `records`.
+fn session_records(records: &[Dict], session_key: &str) -> Vec<usize> {
+    (0..records.len())
+        .filter(|&index| {
+            session_key.is_empty() || records[index].string("relay_session_key") == session_key
+        })
+        .collect()
+}
+
+/// `authorization_exists`: whether the command registered any record (in
+/// `session_key`'s session when one is given).
+pub fn authorization_exists(
+    path: impl AsRef<Path>,
+    relay_command_seq: &Value,
+    relay_command_id: &Value,
+    session_key: &str,
+) -> bool {
+    let Some(key) = command_key(relay_command_seq, relay_command_id) else {
+        return false;
+    };
+    let (_, records) = load_ledger(path.as_ref());
+    session_records(&records, session_key)
+        .into_iter()
+        .any(|index| relay_command_key(&records[index]).as_ref() == Some(&key))
+}
+
+/// `_ticket_allowed`.
+fn ticket_allowed(allowed: &Dict, ticket_id: &str) -> bool {
+    if let Some(Value::List(ticket_ids)) = allowed.get("ticket_ids") {
+        return ticket_ids.iter().any(|value| {
+            let text = json::py_strip(&value.py_str()).to_uppercase();
+            !text.is_empty() && text == ticket_id
+        });
+    }
+    let allowed_ticket = allowed.text("ticket_id").to_uppercase();
+    allowed_ticket.is_empty() || allowed_ticket == "*" || allowed_ticket == ticket_id
+}
+
+/// `mutation_allowed`: whether one of the record's `allowed_mutations`
+/// covers the mutation's kind, action kind and ticket.
+pub fn mutation_allowed(record: &Dict, mutation: &Dict) -> bool {
+    let kind = mutation.text("kind");
+    let action_kind = mutation.text("action_kind");
+    let ticket_id = mutation.text("ticket_id").to_uppercase();
+    let Some(allowed_mutations) = record.truthy("allowed_mutations").and_then(Value::as_list)
+    else {
+        return false;
+    };
+    allowed_mutations
+        .iter()
+        .filter_map(Value::as_dict)
+        .any(|allowed| {
+            if allowed.text("kind") != kind {
+                return false;
+            }
+            if let Some(Value::List(action_kinds)) = allowed.get("action_kinds")
+                && !action_kinds
+                    .iter()
+                    .any(|value| value.py_str() == action_kind)
+            {
+                return false;
+            }
+            ticket_id.is_empty() || ticket_allowed(allowed, &ticket_id)
+        })
+}
+
+/// `mutation_fingerprint`: the identifying fields, as key-sorted JSON.
+pub fn mutation_fingerprint(mutation: &Dict) -> String {
+    let mut kept = Dict::new();
+    for key in [
+        "kind",
+        "action_kind",
+        "ticket_id",
+        "action_index",
+        "request_id",
+    ] {
+        if let Some(value) = mutation.present(key) {
+            kept.insert(key, value.clone());
+        }
+    }
+    json::dumps_sorted(&Value::Dict(kept))
+}
+
+fn fingerprints(record: &Dict, field: &str) -> Vec<String> {
+    record
+        .get(field)
+        .and_then(Value::as_list)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_dict)
+        .map(|item| item.string("fingerprint"))
+        .collect()
+}
+
+/// `record.setdefault(field, []).append(item)`: an existing key keeps its
+/// place, a new one goes last.
+fn append_to(record: &mut Dict, field: &str, item: Dict) {
+    let mut items = match record.get(field) {
+        Some(Value::List(items)) => items.clone(),
+        _ => Vec::new(),
+    };
+    items.push(Value::Dict(item));
+    record.insert(field, Value::List(items));
+}
+
+/// `validate_and_mark_mutation`: validates an active authorization of the
+/// command (and `relay_intent_id`, when not empty) for `mutation`, in
+/// `session_key`'s session when one is given, and marks the mutation
+/// started. Returns the record as written. `now` is `time.time()` unless
+/// given.
+pub fn validate_and_mark_mutation(
+    path: impl AsRef<Path>,
+    relay_command_seq: &Value,
+    relay_command_id: &Value,
+    mutation: &Dict,
+    relay_intent_id: &str,
+    session_key: &str,
+    now: Option<f64>,
+) -> Result<Dict> {
+    let path = path.as_ref();
+    let _lock = lock_ledger(path)?;
+    let Some(key) = command_key(relay_command_seq, relay_command_id) else {
+        return Err(Error::value(
+            "stale Relay command: missing mutation authorization metadata",
+        ));
+    };
+    let now = now.unwrap_or_else(now_seconds);
+    let (_, mut records) = load_ledger(path);
+    let matching: Vec<usize> = session_records(&records, session_key)
+        .into_iter()
+        .rev()
+        .filter(|&index| {
+            let record = &records[index];
+            relay_command_key(record).as_ref() == Some(&key)
+                && (relay_intent_id.is_empty() || record.string("intent_id") == relay_intent_id)
+        })
+        .collect();
+    let chosen = matching
+        .iter()
+        .copied()
+        .find(|&index| is_active(&records[index]) && mutation_allowed(&records[index], mutation))
+        .or_else(|| matching.first().copied());
+    let Some(index) = chosen else {
+        return Err(Error::value(
+            "stale Relay command: no mutation authorization was registered",
+        ));
+    };
+    let record = &mut records[index];
+    if !is_active(record) {
+        let relationship = record
+            .get("revoked_by")
+            .and_then(Value::as_dict)
+            .map(|revoked_by| revoked_by.string("relationship"))
+            .filter(|relationship| !relationship.is_empty())
+            .unwrap_or_else(|| "newer command".to_string());
+        return Err(Error::value(format!(
+            "stale Relay command: mutation authorization was revoked by a newer {relationship} turn"
+        )));
+    }
+    if !mutation_allowed(record, mutation) {
+        return Err(Error::value(
+            "Relay command is not authorized for this mutation",
+        ));
+    }
+    let fingerprint = mutation_fingerprint(mutation);
+    if fingerprints(record, "started_mutations").contains(&fingerprint) {
+        return Err(Error::value("replayed Relay mutation authorization"));
+    }
+    let mut started = Dict::new();
+    started.insert("fingerprint", fingerprint);
+    started.insert("mutation", mutation.clone());
+    started.insert("started_at", now);
+    append_to(record, "started_mutations", started);
+    record.insert("updated_at", now);
+    let record = record.clone();
+    atomic_write_json(path, &ledger(Value::Float(now), records))?;
+    Ok(record)
+}
+
+/// `mark_mutations_canceled`: records each mutation the command will not
+/// start, once per fingerprint already recorded, with `reason`. Nothing
+/// changes when the command has no record.
+pub fn mark_mutations_canceled(
+    path: impl AsRef<Path>,
+    relay_command_seq: &Value,
+    relay_command_id: &Value,
+    mutations: &[Dict],
+    reason: &str,
+    now: Option<f64>,
+) -> Result<()> {
+    let path = path.as_ref();
+    let _lock = lock_ledger(path)?;
+    let Some(key) = command_key(relay_command_seq, relay_command_id) else {
+        return Ok(());
+    };
+    if mutations.is_empty() {
+        return Ok(());
+    }
+    let now = now.unwrap_or_else(now_seconds);
+    let (_, mut records) = load_ledger(path);
+    let Some(index) = find_record(&records, &key, None) else {
+        return Ok(());
+    };
+    let record = &mut records[index];
+    let existing = fingerprints(record, "canceled_mutations");
+    if record.get("canceled_mutations").is_none() {
+        record.insert("canceled_mutations", Value::List(Vec::new()));
+    }
+    for mutation in mutations {
+        let fingerprint = mutation_fingerprint(mutation);
+        if existing.contains(&fingerprint) {
+            continue;
+        }
+        let mut canceled = Dict::new();
+        canceled.insert("fingerprint", fingerprint);
+        canceled.insert("mutation", mutation.clone());
+        canceled.insert("canceled_at", now);
+        canceled.insert("reason", reason);
+        append_to(record, "canceled_mutations", canceled);
+    }
+    record.insert("updated_at", now);
+    atomic_write_json(path, &ledger(Value::Float(now), records))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::json::parse;
+    use relay_intents::json::parse;
 
     fn dict(text: &str) -> Dict {
         parse(text).unwrap().as_dict().unwrap().clone()
@@ -487,7 +760,7 @@ mod tests {
         }
 
         fn records(&self) -> Vec<Dict> {
-            load_ledger(&self.path).1
+            load_ledger(Path::new(&self.path)).1
         }
 
         fn record(

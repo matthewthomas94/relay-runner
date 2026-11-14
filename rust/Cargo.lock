@@ -592,6 +592,19 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "relay-intents",
+ "relay-services",
+ "rusqlite",
+]
+
+[[package]]
+name = "relay-services"
+version = "0.0.0"
+dependencies = [
+ "fancy-regex 0.20.2",
+ "libc",
+ "relay-artifacts",
+ "relay-intents",
+ "relay-store",
  "rusqlite",
 ]
 

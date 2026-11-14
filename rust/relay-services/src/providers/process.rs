@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::json::{self, Dict, Value};
+use relay_intents::json::{self, Dict, Value};
 
 pub struct Proc {
     child: Mutex<Child>,
