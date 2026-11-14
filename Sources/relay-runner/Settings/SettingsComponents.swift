@@ -198,7 +198,11 @@ struct SettingsMenuPicker<Value: Hashable>: View {
             // with the accent focus ring while open or focused.
             .background(
                 RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous)
-                    .fill(isEnabled ? BoardDarkSurfaceStyle.contentFill : GraphicalTheme.neutral3)
+                    .fill(isEnabled ? BoardDarkSurfaceStyle.contentFill : BoardDarkSurfaceStyle.cardFill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous)
+                            .strokeBorder(BoardDarkSurfaceStyle.selectStroke, lineWidth: 1)
+                    )
                     .overlay(
                         RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous)
                             .strokeBorder(
@@ -373,10 +377,10 @@ struct SharedActionButtonPalette {
 }
 
 extension SharedActionButtonPalette {
-    /// Kit secondary button: neutral-3 fill, white label, no border.
+    /// Secondary button: the glass action fill, white label, no border.
     static let settingsSecondary = SharedActionButtonPalette(
         foreground: SettingsSurfaceColor.primaryText,
-        fill: GraphicalTheme.neutral3,
+        fill: BoardDarkSurfaceStyle.cardFill,
         stroke: SettingsSurfaceColor.focusRing
     )
 
@@ -387,10 +391,10 @@ extension SharedActionButtonPalette {
         stroke: SettingsSurfaceColor.focusRing
     )
 
-    /// Kit primary button: white fill, black label.
+    /// Primary button: white glass at 75%, black label.
     static let settingsPrimary = SharedActionButtonPalette(
         foreground: GraphicalTheme.neutral1,
-        fill: GraphicalTheme.neutral10,
+        fill: BoardDarkSurfaceStyle.primaryActionFill,
         stroke: SettingsSurfaceColor.focusRing
     )
 }
@@ -406,14 +410,18 @@ struct SharedActionButtonSurface: View {
             style: .continuous
         )
 
-        // Solid kit fills; a disabled button drops to neutral-3. Hover lays the
-        // kit's translucent neutral-4 over the fill, or warms a danger tint.
-        // Focus draws the accent ring.
+        // Glass action fills; a disabled button drops to the resting action
+        // fill. Hover lightens: neutral-4 over a dark fill, white over the
+        // primary, a warmer tint over danger. Focus draws the accent ring.
         shape
-            .fill(presentation.isEnabled ? palette.fill : GraphicalTheme.neutral3)
+            .fill(presentation.isEnabled ? palette.fill : BoardDarkSurfaceStyle.cardFill)
             // Kit primary and danger buttons lift with the small shadow on hover.
             .graphicalShadow(.s, isVisible: presentation.isHovered && (prominence == .primary || prominence == .danger))
             .overlay(shape.fill(GraphicalTheme.neutral4.opacity(presentation.sharedFillOpacity(for: prominence))))
+            .overlay(shape.fill(GraphicalTheme.neutral10.opacity(
+                prominence == .primary && presentation.isEnabled && presentation.isHovered ? 0.6 : 0
+            )))
+            .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1))
             .overlay(shape.fill(GraphicalTheme.dangerForeground.opacity(
                 prominence == .danger && presentation.isEnabled && presentation.isHovered ? 0.12 : 0
             )))
@@ -660,14 +668,14 @@ struct SettingsActionPresentation: Equatable {
             )
         }
 
-        // Kit states: primary has no hover tint; secondary hovers with neutral-4
-        // at 20%; focus is the accent ring and nothing else.
+        // Hover lightens the glass: secondary lays neutral-4 over its fill and
+        // the primary lays white (in the surface); focus is the accent ring.
         return SettingsActionPresentation(
             isEnabled: true,
             isHovered: isHovered,
             fillOpacity: 0,
             strokeOpacity: isFocused ? 1 : 0,
-            neutralFillOpacity: isHovered ? 0.2 : 0,
+            neutralFillOpacity: isHovered ? 0.6 : 0,
             neutralStrokeOpacity: isFocused ? 1 : 0,
             foregroundOpacity: boardPresentation.foregroundOpacity,
             accentOpacity: isFocused ? 1 : 0,

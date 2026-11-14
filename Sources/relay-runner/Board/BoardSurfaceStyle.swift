@@ -24,13 +24,17 @@ enum BoardSurfaceLayout {
 }
 
 enum BoardDarkSurfaceStyle {
-    // Graphical "RR" theme: page neutral-1, panels neutral-2, raised cards and
-    // hovered controls neutral-3, active cards neutral-4. Borders are zero width.
-    static let panelFillNSColor = GraphicalTheme.neutral2NSColor
+    // Liquid glass, three levels. Background: the black shell that drops from
+    // the notch. Surface: panels, neutral-2 at 50% over the shell's blur.
+    // Action: anything clickable, neutral-3 at 75%, one neutral step lighter
+    // on hover or when selected. Fields stay black with a hairline.
+    static let surfaceOpacity: CGFloat = 0.5
+    static let actionOpacity: CGFloat = 0.75
+    static let panelFillNSColor = GraphicalTheme.neutral2NSColor.withAlphaComponent(surfaceOpacity)
     static let contentFillNSColor = GraphicalTheme.neutral1NSColor
-    static let hoverFillNSColor = GraphicalTheme.neutral3NSColor
-    static let cardFillNSColor = GraphicalTheme.neutral3NSColor
-    static let cardActiveFillNSColor = GraphicalTheme.neutral4NSColor
+    static let hoverFillNSColor = GraphicalTheme.neutral3NSColor.withAlphaComponent(actionOpacity)
+    static let cardFillNSColor = GraphicalTheme.neutral3NSColor.withAlphaComponent(actionOpacity)
+    static let cardActiveFillNSColor = GraphicalTheme.neutral4NSColor.withAlphaComponent(actionOpacity)
     static let borderNSColor = NSColor.clear
 
     static let panelFill = Color(nsColor: panelFillNSColor)
@@ -39,6 +43,24 @@ enum BoardDarkSurfaceStyle {
     static let cardFill = Color(nsColor: cardFillNSColor)
     static let cardActiveFill = Color(nsColor: cardActiveFillNSColor)
     static let border = Color(nsColor: borderNSColor)
+    /// The primary (white) action and its lighter hover.
+    static let primaryActionFill = GraphicalTheme.neutral10.opacity(actionOpacity)
+    static let primaryActionHoverFill = GraphicalTheme.neutral10.opacity(0.9)
+    /// Hairlines on black controls: selects neutral-4, text fields neutral-5.
+    static let selectStroke = GraphicalTheme.neutral4.opacity(0.5)
+    static let fieldStroke = GraphicalTheme.neutral5.opacity(0.5)
+    /// The light a glass edge catches, strongest at the top left.
+    static let glassRim = LinearGradient(
+        colors: [Color.white.opacity(0.12), Color.white.opacity(0.02)],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    /// The shell's black, solid under the notch and 75% at its foot.
+    static let shellFill = LinearGradient(
+        colors: [GraphicalTheme.neutral1, GraphicalTheme.neutral1.opacity(actionOpacity)],
+        startPoint: .top,
+        endPoint: .bottom
+    )
     static let placeholderTextNSColor = GraphicalTheme.neutral6NSColor
     static let placeholderText = Color(nsColor: placeholderTextNSColor)
 
@@ -51,6 +73,20 @@ enum BoardDarkSurfaceStyle {
     static let shadowYOffset: CGFloat = 2
 }
 
+/// The desktop behind the window, blurred: what every glass level sits on.
+struct LiquidGlassBackdrop: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .hudWindow
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.appearance = NSAppearance(named: .darkAqua)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+}
+
 struct BoardDarkSurfaceBackground: View {
     let cornerRadius: CGFloat
     var fill: Color = BoardDarkSurfaceStyle.panelFill
@@ -60,7 +96,7 @@ struct BoardDarkSurfaceBackground: View {
             .fill(fill)
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius)
-                    .strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1)
+                    .strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)
             )
     }
 }

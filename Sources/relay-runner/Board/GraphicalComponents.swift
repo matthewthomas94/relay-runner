@@ -13,6 +13,7 @@ struct GraphicalInputSurface: View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         shape
             .fill(fill)
+            .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.fieldStroke, lineWidth: 1))
             .overlay(
                 shape.strokeBorder(GraphicalTheme.focusRing.opacity(isFocused && isEnabled ? 1 : 0),
                                    lineWidth: GraphicalTheme.focusRingWidth)
@@ -20,8 +21,8 @@ struct GraphicalInputSurface: View {
     }
 
     private var fill: Color {
-        if !isEnabled { return GraphicalTheme.neutral3 }
-        return isReadOnly ? GraphicalTheme.neutral2 : GraphicalTheme.neutral1
+        if !isEnabled { return BoardDarkSurfaceStyle.cardFill }
+        return isReadOnly ? BoardDarkSurfaceStyle.panelFill : GraphicalTheme.neutral1
     }
 }
 

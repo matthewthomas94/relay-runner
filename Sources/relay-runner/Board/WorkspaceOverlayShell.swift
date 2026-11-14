@@ -114,7 +114,7 @@ enum TrayIconAsset {
 /// the kit's neutral-3 list, still used by the Settings segmented control.
 enum WorkspaceNavigationStyle {
     static let listPadding: CGFloat = GraphicalTheme.spaceXXS
-    static let listFill = GraphicalTheme.neutral3
+    static let listFill = BoardDarkSurfaceStyle.cardFill
     static let controlHeight: CGFloat = BoardSurfaceLayout.navigationHeight - 2 * listPadding
     static let horizontalPadding: CGFloat = GraphicalTheme.spaceS
     static let verticalPadding: CGFloat = 4

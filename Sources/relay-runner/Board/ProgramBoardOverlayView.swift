@@ -517,8 +517,7 @@ struct ProgramBoardOverlayView: View {
             replacing: presentedModalKind != .none
         )
         return ZStack(alignment: .topLeading) {
-            ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
-                .fill(Color.black.opacity(ProgramBoardBackdropStyle.backdropOpacity))
+            ProgramBoardGlassShell()
                 .frame(maxWidth: .infinity)
                 .frame(height: ProgramBoardBackdropStyle.backdropHeight)
                 .allowsHitTesting(false)
@@ -770,6 +769,25 @@ struct ProgramBoardOverlayView: View {
             hasRegisteredProjects: model.snapshot?.hasRegisteredProjects ?? false,
             reloadState: model.reloadState
         )
+    }
+}
+
+/// The glass background level: the blurred desktop under a black that is
+/// solid at the notch and 75% at the foot, where the edge catches a glow.
+private struct ProgramBoardGlassShell: View {
+    var body: some View {
+        let shape = ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
+        LiquidGlassBackdrop()
+            .overlay(BoardDarkSurfaceStyle.shellFill)
+            .overlay(alignment: .bottom) {
+                LinearGradient(
+                    colors: [.clear, GraphicalTheme.neutral5.opacity(0.35)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 40)
+            }
+            .clipShape(shape)
     }
 }
 
@@ -1186,8 +1204,8 @@ struct ProgramBoardInteractiveBackground: View {
         }
     }
 
-    /// Cards rest at neutral-3 and lift to neutral-4. Controls are the kit's
-    /// secondary button: neutral-3, with neutral-4 at 20% laid over on hover.
+    /// Cards and controls share the glass action fill: neutral-3 at 75%,
+    /// lifting to neutral-4 at 75% on hover or when selected.
     private var backgroundColor: Color {
         if usesCardStyle {
             let fill = presentation.usesHoverFill
@@ -1196,15 +1214,15 @@ struct ProgramBoardInteractiveBackground: View {
             return disabled ? fill.opacity(0.55) : fill
         }
         if disabled {
-            return GraphicalTheme.neutral3
+            return BoardDarkSurfaceStyle.cardFill.opacity(0.55)
         }
-        return GraphicalTheme.neutral3
+        return presentation.usesHoverFill
+            ? BoardDarkSurfaceStyle.cardActiveFill
+            : BoardDarkSurfaceStyle.cardFill
     }
 
-    private var hoverOverlay: Color {
-        guard !usesCardStyle, !disabled, presentation.usesHoverFill else { return .clear }
-        return GraphicalTheme.neutral4.opacity(0.2)
-    }
+    /// Hover swaps the fill for the lighter action fill rather than tinting it.
+    private var hoverOverlay: Color { .clear }
 
     /// No borders in the kit; a focused control shows the soft white ring.
     private var strokeColor: Color {
@@ -4725,7 +4743,7 @@ struct ProgramIconButton: View {
             helpText: help,
             palette: SharedActionButtonPalette(
                 foreground: iconColor,
-                fill: GraphicalTheme.neutral3,
+                fill: BoardDarkSurfaceStyle.cardActiveFill,
                 stroke: SettingsSurfaceColor.focusRing
             ),
             action: action,
