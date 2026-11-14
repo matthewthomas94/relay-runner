@@ -216,7 +216,9 @@ impl GraphifyStore {
             let connection = self.lock();
             let mut target = Connection::open(&temporary)?;
             let backup = rusqlite::backup::Backup::new(&connection, &mut target)?;
-            backup.run_to_completion(-1, Duration::ZERO, None)?;
+            // Every page in one step, as Python's `pages=-1`; rusqlite
+            // panics on a count that is not positive.
+            backup.run_to_completion(i32::MAX, Duration::ZERO, None)?;
         }
         fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
         fs::rename(&temporary, destination)?;

@@ -33,7 +33,7 @@ pub mod personal_catalog;
 pub mod queue_drains;
 pub mod runs;
 pub mod sessions;
-mod sha1;
+pub mod sha1;
 pub mod sql;
 
 use std::fmt;
