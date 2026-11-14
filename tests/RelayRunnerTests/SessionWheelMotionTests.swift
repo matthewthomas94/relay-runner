@@ -220,11 +220,19 @@ final class SessionWheelMotionTests: XCTestCase {
                 XCTAssertEqual(color.alphaComponent, expected.alphaComponent, accuracy: 0.01)
             }
             if milliseconds == legMilliseconds {
-                // Fully contracted, only the permanent background and centre are visible.
+                // Fully contracted, only the permanent glass disc and centre are
+                // visible: where a tile sat matches the gap between two tiles.
+                let first = SessionWheelGeometry.position(slot: 0, radius: 119)
+                let second = SessionWheelGeometry.position(slot: 1, radius: 119)
+                let centre = CGPoint(x: 264, y: 264)
+                let middle = CGPoint(x: (first.x + second.x) / 2 - centre.x, y: (first.y + second.y) / 2 - centre.y)
+                let scale = 119 / hypot(middle.x, middle.y)
+                let disc = try XCTUnwrap(bitmap.colorAt(x: Int(centre.x + middle.x * scale),
+                                                        y: Int(centre.y + middle.y * scale))?.usingColorSpace(.deviceRGB))
                 for slot in 0..<SessionWheelGeometry.slotCount {
                     let point = SessionWheelGeometry.position(slot: slot, radius: 119)
                     let color = try XCTUnwrap(bitmap.colorAt(x: Int(point.x), y: Int(point.y))?.usingColorSpace(.deviceRGB))
-                    XCTAssertEqual(color.redComponent, 0, accuracy: 0.01)
+                    XCTAssertEqual(color.redComponent, disc.redComponent, accuracy: 0.01)
                     XCTAssertEqual(color.alphaComponent, 1)
                 }
             }

@@ -3481,8 +3481,9 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
             weight: .regular
         )
 
-        // Same fill as the surrounding panel so the padded inset is seamless.
-        let background = BoardDarkSurfaceStyle.panelFillNSColor
+        // Clear, so the glass panel drawn behind the terminal shows through
+        // and the padded inset is seamless.
+        let background = NSColor.clear
         terminalView.nativeBackgroundColor = background
         terminalView.nativeForegroundColor = NSColor(srgbRed: 218 / 255, green: 225 / 255, blue: 234 / 255, alpha: 1)
         terminalView.caretColor = .controlAccentColor
@@ -4038,7 +4039,6 @@ struct EmbeddedTerminalTab: View {
                         EmbeddedTerminalRepresentable(session: session)
                             .id(session.presentationRevision)
                     }
-                    .background(Color(nsColor: BoardDarkSurfaceStyle.panelFillNSColor))
                     // Stays mounted, sized, and hidden while the loader stands
                     // in, then arrives once the loader has left.
                     .opacity(session.loadingStatus == nil ? 1 : 0)

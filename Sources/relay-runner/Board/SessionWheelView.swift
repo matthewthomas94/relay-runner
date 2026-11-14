@@ -79,9 +79,19 @@ struct SessionWheelView: View {
                 if !geometry.contains(point, submenuSlot: submenus[slot] > 0 ? slot : nil,
                                       sessionItems: model.sessionItems.count) { dismiss() }
             }
+            // Glass background level: the blurred desktop inside the disc, under
+            // the liquid black at 75%. Submenus outside the disc carry the tint alone.
+            LiquidGlassBackdrop()
+                .frame(width: geometry.wheelRadius * 2, height: geometry.wheelRadius * 2)
+                .clipShape(Circle())
+                .scaleEffect(presentation.discScale)
+                .opacity(presentation.discScale == 0 ? 0 : 1)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
             SessionWheelLiquidBackdrop(progress: submenus, reduceMotion: reduceMotion,
                                        sessionItems: model.slots[geometry.sessionSlots[0]] != nil
                                            ? geometry.sessionWeight(items: model.sessionItems.count, entering: entering) : 0)
+                .opacity(BoardDarkSurfaceStyle.actionOpacity)
                 .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
                 .scaleEffect(presentation.discScale)
                 .opacity(presentation.discScale == 0 ? 0 : 1)

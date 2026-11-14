@@ -57,7 +57,7 @@ struct WorkspaceTerminalSurface<Content: View>: View {
                     .fill(BoardDarkSurfaceStyle.panelFill)
                     .overlay {
                         WorkspaceTerminalOutline(tabFrame: frame, contentTop: contentTop)
-                            .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
+                            .stroke(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)
                     }
                     .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 10)
                     .animation(reduceMotion ? nil : RelayMotion.change, value: frame)
@@ -150,7 +150,7 @@ private struct WorkspaceSessionTab: View {
             Button(action: close) {
                 LucideImage(.x, size: 14)
                     .frame(width: 28, height: 28)
-                    .background(closeHovered ? BoardDarkSurfaceStyle.hoverFill : .clear,
+                    .background(closeHovered ? BoardDarkSurfaceStyle.cardActiveFill : .clear,
                                 in: RoundedRectangle(cornerRadius: 8))
                     .contentShape(Rectangle())
             }
@@ -164,7 +164,7 @@ private struct WorkspaceSessionTab: View {
         .background {
             if !selected {
                 RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
-                    .fill(isHovered ? BoardDarkSurfaceStyle.hoverFill : BoardDarkSurfaceStyle.panelFill)
+                    .fill(isHovered ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.cardFill)
                     .overlay {
                         RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
                             .strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1)
@@ -193,7 +193,7 @@ private struct WorkspaceAddTabButton: View {
                 .frame(width: WorkspaceTerminalLayout.tabHeight, height: WorkspaceTerminalLayout.tabHeight)
                 .background {
                     RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
-                        .fill(isHovered && unavailableReason == nil ? BoardDarkSurfaceStyle.hoverFill : BoardDarkSurfaceStyle.panelFill)
+                        .fill(isHovered && unavailableReason == nil ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.cardFill)
                         .overlay {
                             RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
                                 .strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1)

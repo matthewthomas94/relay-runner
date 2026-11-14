@@ -335,14 +335,11 @@ private struct RegisteredProjectsSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsRow {
-                SettingsRowLabel(
-                    "Registered projects",
-                    description: "Start immediately in general. Choose a project in Workspace to work in its repository and keep tickets with that project."
-                )
+                SettingsRowLabel("Registered projects")
                 Spacer(minLength: 16)
                 HStack(spacing: 8) {
                     SettingsActionButton(
-                        title: "Add Existing",
+                        title: "Add project",
                         icon: .folderPlus
                     ) {
                         appState.addExistingProject(resumeInSettings: true) { result in
@@ -396,6 +393,15 @@ private struct RegisteredProjectsSettingsView: View {
             }
         }
         .onAppear(perform: reload)
+        // Availability refreshes on its own once the rows are up; there is no
+        // per-row Refresh button.
+        .task {
+            await Task.yield()
+            for project in projects {
+                _ = try? appState.refreshRegisteredProject(project.projectID)
+            }
+            animated { reload() }
+        }
         .graphicalAlert(
             "Remove registered project?",
             isPresented: Binding(
@@ -429,35 +435,19 @@ private struct RegisteredProjectsSettingsView: View {
                 Text(project.displayName)
                     .font(AppTypography.font(.body))
                     .foregroundStyle(SettingsSurfaceColor.primaryText)
-                RelaySwap("\(project.availability.settingsLabel) · \(project.lastResolvedPath)", style: .text, alignment: .leading) { availabilityText in
-                    Text(availabilityText)
+                // Only a project that needs attention says so.
+                if project.availability != .available {
+                    Text(project.availability.settingsLabel)
                         .font(AppTypography.font(.settingsDescription))
-                        .foregroundStyle(
-                            project.availability == .available
-                                ? SettingsSurfaceColor.secondaryText
-                                : SettingsSurfaceColor.error
-                        )
-                        .lineLimit(2)
+                        .foregroundStyle(SettingsSurfaceColor.error)
+                        .lineLimit(1)
+                        .transition(.relayElement)
                 }
             }
             Spacer(minLength: 12)
             HStack(spacing: 6) {
                 SettingsActionButton(
-                    title: "Refresh",
-                    icon: .refreshCw
-                ) {
-                    animated {
-                        do {
-                            _ = try appState.refreshRegisteredProject(project.projectID)
-                            statusText = nil
-                        } catch {
-                            statusText = String(describing: error)
-                        }
-                        reload()
-                    }
-                }
-                SettingsActionButton(
-                    title: project.availability == .accessRequiresRegrant ? "Regrant" : "Locate",
+                    title: project.availability == .accessRequiresRegrant ? "Regrant" : "Locate folder",
                     icon: .locate
                 ) {
                     appState.locateRegisteredProject(project.projectID) { result in

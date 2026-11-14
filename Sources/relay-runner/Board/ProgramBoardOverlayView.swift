@@ -1179,11 +1179,13 @@ struct ProgramBoardInteractiveBackground: View {
             Capsule()
                 .fill(backgroundColor)
                 .overlay(Capsule().fill(hoverOverlay))
+                .overlay(Capsule().strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1))
                 .overlay(Capsule().strokeBorder(strokeColor, lineWidth: GraphicalTheme.focusRingWidth))
         case .circle:
             Circle()
                 .fill(backgroundColor)
                 .overlay(Circle().fill(hoverOverlay))
+                .overlay(Circle().strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1))
                 .overlay(Circle().strokeBorder(strokeColor, lineWidth: GraphicalTheme.focusRingWidth))
         case .rounded(let radius):
             RoundedRectangle(cornerRadius: radius)
@@ -1191,6 +1193,10 @@ struct ProgramBoardInteractiveBackground: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: radius)
                         .fill(hoverOverlay)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: radius)
+                        .strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: radius)
@@ -2708,7 +2714,7 @@ private struct ProgramWorkCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             ProgramBoardInteractiveBackground(
-                shape: .rounded(BoardDarkSurfaceStyle.nestedCardCornerRadius),
+                shape: .rounded(BoardDarkSurfaceStyle.columnCornerRadius),
                 presentation: presentation,
                 disabled: false,
                 usesCardStyle: true
