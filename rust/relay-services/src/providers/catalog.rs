@@ -8,12 +8,16 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::json::{self, Dict, Value, py_strip};
+use relay_intents::json::{self, Dict, Value, py_strip};
 
 use super::process::{Proc, read_json_lines};
 
 pub const CODEX_FAMILIES: [&str; 4] = ["astra", "sol", "terra", "luna"];
+pub const CODEX_DEFAULT_FAMILY: &str = "sol";
 pub const CODEX_MESSENGER_DEFAULT_FAMILY: &str = "luna";
+/// `CODEX_WORKER_TIER_FAMILIES`: the family each shared worker tier runs on.
+pub const CODEX_WORKER_TIER_FAMILIES: [(&str, &str); 3] =
+    [("fast", "luna"), ("balanced", "sol"), ("strong", "astra")];
 const PROVIDER_DEFAULT_EFFORT: &str = "default";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -85,6 +89,11 @@ pub fn codex_family_for_model(value: &str) -> Option<String> {
         return Some(text);
     }
     family_match(&text).map(|(_, family)| family.to_string())
+}
+
+/// `is_codex_family`: a bare family name, not a concrete model id.
+pub fn is_codex_family(value: &str) -> bool {
+    CODEX_FAMILIES.contains(&py_strip(value).to_lowercase().as_str())
 }
 
 fn family_version(value: &str) -> Option<Vec<u64>> {
@@ -188,7 +197,7 @@ pub fn models_from_model_list(payload: &Value) -> Vec<CodexModel> {
 
 /// `resolve_codex_family`: the newest visible, text-capable model of a family.
 pub fn resolve_family(family: &str, models: &[CodexModel]) -> Result<CodexModel, String> {
-    let family = normalize_codex_family(family, "sol");
+    let family = normalize_codex_family(family, CODEX_DEFAULT_FAMILY);
     let mut best: Option<(&CodexModel, Vec<u64>)> = None;
     for model in models {
         if model.hidden
@@ -375,6 +384,16 @@ mod tests {
             {"model": "gpt-6-terra"},
             {"id": ""}
         ], "nextCursor": null}"#).unwrap())
+    }
+
+    #[test]
+    fn the_daemons_family_names() {
+        assert!(is_codex_family(" Astra "));
+        assert!(!is_codex_family("gpt-6-astra"));
+        assert_eq!(
+            CODEX_WORKER_TIER_FAMILIES.map(|(_, family)| family),
+            ["luna", "sol", "astra"]
+        );
     }
 
     #[test]

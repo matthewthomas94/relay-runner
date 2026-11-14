@@ -25,12 +25,13 @@
 //!
 //! End of input shuts the backend down and exits.
 
-pub mod catalog;
 pub mod claude;
 pub mod codex;
 pub mod config;
-mod process;
-mod subscription;
+
+// Shared with the daemon (RR-499).
+pub use relay_services::providers::catalog;
+use relay_services::providers::{process, subscription};
 
 use std::io::{self, BufRead, Write};
 use std::sync::{Arc, Mutex};

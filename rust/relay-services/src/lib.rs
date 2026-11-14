@@ -1,8 +1,11 @@
 //! The orchestrator daemon's services (RR-499), the Rust form of the Python
 //! modules in `services/` that sit beside the HTTP routes: the notes library
 //! and personal storage, program capture, status and graph ingest, the
-//! continuity lane, General work, and the daemon's half of Relay command
-//! authorization and command actions.
+//! continuity lane, General work, Relay command authorization and command
+//! actions, and the provider gates (Claude subscription readiness and the
+//! Codex model catalogue). Command actions, authorization and the provider
+//! gates were first ported for the voice bridge (RR-490, RR-492); they live
+//! here so the bridge in `relay-rs` and the daemon share one port.
 //!
 //! A Rust and a Python daemon must be able to take turns on one data root
 //! with no migration, so everything that leaves the process is the Python
@@ -18,6 +21,7 @@ pub mod notes;
 pub mod personal_storage;
 pub mod program;
 pub mod program_status;
+pub mod providers;
 
 use std::fmt;
 
