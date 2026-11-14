@@ -41,8 +41,8 @@ enum BoardDarkSurfaceStyle {
     /// Under a floating surface's fill: the shell's black, so a dialog or a
     /// menu settles on the same colour as a ticket on the board.
     static let floatingBaseFill = GraphicalTheme.neutral1.opacity(actionOpacity)
-    /// The session wheel: black at 90% over the blurred desktop, tiles at 50%.
-    static let wheelBackdropOpacity: CGFloat = 0.9
+    /// The session wheel: black at 75% over the blurred desktop, tiles at 50%.
+    static let wheelBackdropOpacity: CGFloat = actionOpacity
     static let wheelTileFill = GraphicalTheme.neutral3.opacity(surfaceOpacity)
     static let wheelTileActiveFill = GraphicalTheme.neutral4.opacity(surfaceOpacity)
     /// The terminal's New tab button, a surface-level square.
