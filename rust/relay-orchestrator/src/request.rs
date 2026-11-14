@@ -122,6 +122,15 @@ pub fn parse_int(text: &str) -> Outcome<i64> {
 
 /// `urlparse(target)`: the path (without `;params`) and the query.
 fn split_target(target: &str) -> (String, String) {
+    // `parse_request` collapses a leading `//` (gh-87389) before urlparse
+    // could read the first segment as a host.
+    let collapsed;
+    let target = if target.starts_with("//") {
+        collapsed = format!("/{}", target.trim_start_matches('/'));
+        collapsed.as_str()
+    } else {
+        target
+    };
     let without_fragment = target.split('#').next().unwrap_or_default();
     let (mut path, query) = match without_fragment.split_once('?') {
         Some((path, query)) => (path.to_string(), query.to_string()),

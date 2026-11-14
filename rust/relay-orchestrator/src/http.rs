@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn dates_are_rfc_7231() {
         let at = UNIX_EPOCH + Duration::from_secs(1_786_000_000);
-        assert_eq!(http_date(at), "Thu, 06 Aug 2026 09:46:40 GMT");
+        assert_eq!(http_date(at), "Thu, 06 Aug 2026 07:06:40 GMT");
         assert_eq!(http_date(UNIX_EPOCH), "Thu, 01 Jan 1970 00:00:00 GMT");
     }
 
