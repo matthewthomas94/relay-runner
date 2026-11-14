@@ -600,6 +600,16 @@ fn main() {
                 reply.insert("ok", false);
                 reply.insert("error", error.kind.python_class());
                 reply.insert("message", error.message);
+                // The extra attributes some error classes carry.
+                if let Some(code) = error.code {
+                    reply.insert("code", code);
+                }
+                if let Some(recovery) = error.recovery {
+                    reply.insert("recovery", recovery);
+                }
+                if let Some(report) = error.report {
+                    reply.insert("report", report);
+                }
             }
         }
         let mut out = stdout.lock();

@@ -88,16 +88,13 @@ impl Instant {
     /// fractional digits, offset `+00:00`.
     pub fn isoformat_micros(self) -> String {
         let (year, month, day, hour, minute, second, micro) = self.fields();
-        format!(
-            "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{micro:06}+00:00"
-        )
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{micro:06}+00:00")
     }
 
     /// `value.isoformat()` in UTC: the fraction only when it is not zero.
     pub fn isoformat(self) -> String {
         let (year, month, day, hour, minute, second, micro) = self.fields();
-        let mut text =
-            format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}");
+        let mut text = format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}");
         if micro != 0 {
             text.push_str(&format!(".{micro:06}"));
         }
@@ -163,7 +160,11 @@ mod tests {
             .unwrap();
         assert_eq!(whole.isoformat_z(), "2026-08-04T05:00:00Z");
         assert_eq!(whole.isoformat_micros(), "2026-08-04T05:00:00.000000+00:00");
-        assert!(Instant::fromisoformat("2026-08-04T05:00:00").unwrap().is_none());
+        assert!(
+            Instant::fromisoformat("2026-08-04T05:00:00")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
