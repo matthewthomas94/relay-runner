@@ -3896,6 +3896,9 @@ final class EmbeddedTerminalHostNSView: NSView {
     /// Breathing room between the grid and the panel edge (Ghostty-style
     /// window padding); the panel fill shows through.
     static let terminalInset = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+    /// Concentric with the panel: its corner radius less the inset, so
+    /// scrolled text is cut on a curve that follows the panel's corner.
+    static let terminalCornerRadius = BoardDarkSurfaceStyle.columnCornerRadius - terminalInset.top
 
     private weak var installedView: NSView?
 
@@ -3916,6 +3919,10 @@ final class EmbeddedTerminalHostNSView: NSView {
 
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(terminalView)
+        terminalView.wantsLayer = true
+        terminalView.layer?.cornerRadius = Self.terminalCornerRadius
+        terminalView.layer?.cornerCurve = .continuous
+        terminalView.layer?.masksToBounds = true
         let inset = Self.terminalInset
         NSLayoutConstraint.activate([
             terminalView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset.left),
