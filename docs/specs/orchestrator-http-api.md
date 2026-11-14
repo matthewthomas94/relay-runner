@@ -525,6 +525,17 @@ and byte for byte otherwise. The suite's repositories commit as
 `Contract Suite <suite@contract.invalid>` and its fake workers as `Scripted
 Worker <worker@contract.invalid>`.
 
+The board, artifact-run and note commits are also rebuilt without a daemon by
+the Rust `relay-artifacts` crate (RR-494).
+`test_orchestrator_contract_artifact_crate.py` replays each of those goldens
+through the crate's test driver (`rust/relay-artifacts/examples/artifacts_driver.rs`,
+or `RELAY_ARTIFACTS_DRIVER`) and compares the commit with its golden as above.
+It skips when the driver is not built (`cargo test` in `rust/`) and while
+goldens are being regenerated. `tests/test_relay_artifacts_parity.py` makes the
+same commits with the Python store and with the crate, with pinned commit
+dates, and requires identical commit ids, including when the two take turns on
+one data root.
+
 ## Running the suite
 
 ```bash

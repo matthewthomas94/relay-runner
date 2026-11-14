@@ -407,7 +407,9 @@ pub fn float_repr(value: f64) -> String {
     format!("{sign}{}.{}", &digits[..point], &digits[point..])
 }
 
-fn str_repr(text: &str) -> String {
+/// Python's `repr(text)` for a string, with the escaping limits `py_repr`
+/// describes.
+pub fn str_repr(text: &str) -> String {
     let quote = if text.contains('\'') && !text.contains('"') {
         '"'
     } else {
@@ -441,14 +443,32 @@ fn str_repr(text: &str) -> String {
 /// and `-Infinity` are accepted, as Python accepts them. A lone surrogate
 /// escape, which a Rust string cannot hold, is read as U+FFFD.
 pub fn parse(text: &str) -> Option<Value> {
+    parse_reporting(text).map(|(value, _)| value)
+}
+
+/// `parse`, refusing a lone surrogate escape. Python reads one, but text that
+/// holds it cannot be encoded as UTF-8 again, so `json.loads` followed by
+/// `json.dumps(..., ensure_ascii=False).encode()` raises there.
+pub fn parse_strict(text: &str) -> Option<Value> {
+    match parse_reporting(text)? {
+        (value, surrogates) if surrogates.is_empty() => Some(value),
+        _ => None,
+    }
+}
+
+/// `parse`, and every string, key or value, in which a lone surrogate escape
+/// was read as U+FFFD: the strings Python could not encode as UTF-8 again.
+pub fn parse_reporting(text: &str) -> Option<(Value, Vec<String>)> {
     let mut parser = Parser {
         bytes: text.as_bytes(),
         position: 0,
+        lone_surrogates: 0,
+        surrogate_strings: Vec::new(),
     };
     parser.skip_whitespace();
     let value = parser.value(0)?;
     parser.skip_whitespace();
-    (parser.position == parser.bytes.len()).then_some(value)
+    (parser.position == parser.bytes.len()).then_some((value, parser.surrogate_strings))
 }
 
 /// `parse` for bytes: anything that is not UTF-8 is refused.
@@ -459,6 +479,10 @@ pub fn parse_bytes(bytes: &[u8]) -> Option<Value> {
 struct Parser<'a> {
     bytes: &'a [u8],
     position: usize,
+    /// How many `\uXXXX` escapes named a surrogate that has no partner.
+    lone_surrogates: usize,
+    /// The strings that held one.
+    surrogate_strings: Vec<String>,
 }
 
 impl Parser<'_> {
@@ -629,6 +653,7 @@ impl Parser<'_> {
     fn string(&mut self) -> Option<String> {
         self.position += 1;
         let mut out = String::new();
+        let surrogates = self.lone_surrogates;
         loop {
             let start = self.position;
             while !matches!(self.peek()?, b'"' | b'\\' | 0..=0x1f) {
@@ -639,6 +664,9 @@ impl Parser<'_> {
             match self.peek()? {
                 b'"' => {
                     self.position += 1;
+                    if self.lone_surrogates != surrogates {
+                        self.surrogate_strings.push(out.clone());
+                    }
                     return Some(out);
                 }
                 b'\\' => {
@@ -676,7 +704,9 @@ impl Parser<'_> {
                 _ => self.position = after_high,
             }
         }
-        Some(char::from_u32(unit).unwrap_or(char::REPLACEMENT_CHARACTER))
+        let character = char::from_u32(unit);
+        self.lone_surrogates += usize::from(character.is_none());
+        Some(character.unwrap_or(char::REPLACEMENT_CHARACTER))
     }
 }
 
@@ -686,32 +716,54 @@ impl Parser<'_> {
 /// version 1 ledger, the binding and the manual submission file.
 pub fn dumps_sorted(value: &Value) -> String {
     let mut out = String::new();
-    write_value(&mut out, value, true, ", ", ": ");
+    write_value(&mut out, value, true, ", ", ": ", true);
     out
 }
 
 /// `json.dumps(value)`: insertion order with the default separators.
 pub fn dumps(value: &Value) -> String {
     let mut out = String::new();
-    write_value(&mut out, value, false, ", ", ": ");
+    write_value(&mut out, value, false, ", ", ": ", true);
     out
 }
 
 /// `json.dumps(value, sort_keys=True, separators=(",", ":"))`.
 pub fn dumps_compact_sorted(value: &Value) -> String {
     let mut out = String::new();
-    write_value(&mut out, value, true, ",", ":");
+    write_value(&mut out, value, true, ",", ":", true);
     out
 }
 
 /// `json.dumps(value, separators=(",", ":"))`, in insertion order.
 pub fn dumps_compact(value: &Value) -> String {
     let mut out = String::new();
-    write_value(&mut out, value, false, ",", ":");
+    write_value(&mut out, value, false, ",", ":", true);
     out
 }
 
-fn write_value(out: &mut String, value: &Value, sort_keys: bool, item: &str, key: &str) {
+/// `json.dumps(value, ensure_ascii=False)`: insertion order, default
+/// separators, and only `"`, `\` and control characters escaped.
+pub fn dumps_unicode(value: &Value) -> String {
+    let mut out = String::new();
+    write_value(&mut out, value, false, ", ", ": ", false);
+    out
+}
+
+/// `json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`.
+pub fn dumps_compact_sorted_unicode(value: &Value) -> String {
+    let mut out = String::new();
+    write_value(&mut out, value, true, ",", ":", false);
+    out
+}
+
+fn write_value(
+    out: &mut String,
+    value: &Value,
+    sort_keys: bool,
+    item: &str,
+    key: &str,
+    ascii: bool,
+) {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(true) => out.push_str("true"),
@@ -729,14 +781,14 @@ fn write_value(out: &mut String, value: &Value, sort_keys: bool, item: &str, key
             });
         }
         Value::Float(number) => out.push_str(&float_repr(*number)),
-        Value::Str(text) => write_string(out, text),
+        Value::Str(text) => write_string(out, text, ascii),
         Value::List(items) => {
             out.push('[');
             for (index, element) in items.iter().enumerate() {
                 if index > 0 {
                     out.push_str(item);
                 }
-                write_value(out, element, sort_keys, item, key);
+                write_value(out, element, sort_keys, item, key, ascii);
             }
             out.push(']');
         }
@@ -752,18 +804,19 @@ fn write_value(out: &mut String, value: &Value, sort_keys: bool, item: &str, key
                 if index > 0 {
                     out.push_str(item);
                 }
-                write_string(out, name);
+                write_string(out, name, ascii);
                 out.push_str(key);
-                write_value(out, element, sort_keys, item, key);
+                write_value(out, element, sort_keys, item, key, ascii);
             }
             out.push('}');
         }
     }
 }
 
-/// `ensure_ascii`: everything outside space to `~` is escaped, astral
-/// characters as a surrogate pair.
-fn write_string(out: &mut String, text: &str) {
+/// With `ascii` (`ensure_ascii`) everything outside space to `~` is escaped,
+/// astral characters as a surrogate pair; without it only the control
+/// characters below U+0020 are.
+fn write_string(out: &mut String, text: &str, ascii: bool) {
     out.push('"');
     for character in text.chars() {
         match character {
@@ -775,6 +828,7 @@ fn write_string(out: &mut String, text: &str) {
             '\u{8}' => out.push_str("\\b"),
             '\u{c}' => out.push_str("\\f"),
             ' '..='~' => out.push(character),
+            other if !ascii && other >= ' ' => out.push(other),
             other => {
                 let mut units = [0u16; 2];
                 for unit in other.encode_utf16(&mut units) {
@@ -838,6 +892,28 @@ mod tests {
             r#"{"a":"x","b":[1,{"c":2,"d":1}]}"#
         );
         assert_eq!(dumps_compact(&value), r#"{"b":[1,{"d":1,"c":2}],"a":"x"}"#);
+    }
+
+    #[test]
+    fn unicode_forms_escape_only_control_characters() {
+        // json.dumps(..., ensure_ascii=False), with and without sort_keys.
+        let value = parse(r#"{"b": "déjà   \u007f 😀", "a": "\u0001\t\"\\"}"#).unwrap();
+        assert_eq!(
+            dumps_unicode(&value),
+            "{\"b\": \"déjà \u{2028} \u{7f} 😀\", \"a\": \"\\u0001\\t\\\"\\\\\"}"
+        );
+        assert_eq!(
+            dumps_compact_sorted_unicode(&value),
+            "{\"a\":\"\\u0001\\t\\\"\\\\\",\"b\":\"déjà \u{2028} \u{7f} 😀\"}"
+        );
+    }
+
+    #[test]
+    fn strict_parse_refuses_lone_surrogates() {
+        assert!(parse(r#""\ud800""#).is_some());
+        assert!(parse_strict(r#""\ud800""#).is_none());
+        assert!(parse_strict(r#""\udc00x""#).is_none());
+        assert!(parse_strict(r#"["😀"]"#).is_some());
     }
 
     #[test]
