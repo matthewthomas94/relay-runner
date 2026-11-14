@@ -69,6 +69,16 @@ enum BoardDarkSurfaceStyle {
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
+    /// The same edge on a white glass fill, where it has to be brighter to show.
+    static let glassRimOnLight = LinearGradient(
+        stops: [
+            .init(color: Color.white.opacity(0.7), location: 0),
+            .init(color: Color.white.opacity(0.2), location: 0.5),
+            .init(color: Color.white.opacity(0.45), location: 1),
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
     /// The shell's black, solid under the notch and 75% at its foot.
     static let shellFill = LinearGradient(
         colors: [GraphicalTheme.neutral1, GraphicalTheme.neutral1.opacity(actionOpacity)],

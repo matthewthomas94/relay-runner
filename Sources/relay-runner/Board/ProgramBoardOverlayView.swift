@@ -4616,7 +4616,7 @@ struct ProgramSessionPrimaryButton: View {
         .foregroundStyle(GraphicalTheme.onPrimaryAction)
         .background(shape.fill(BoardDarkSurfaceStyle.primaryActionFill))
         .clipShape(shape)
-        .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1).allowsHitTesting(false))
+        .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.glassRimOnLight, lineWidth: 1).allowsHitTesting(false))
         .fixedSize()
         .animation(reduceMotion ? nil : RelayMotion.hover, value: hovered)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isEnabled)

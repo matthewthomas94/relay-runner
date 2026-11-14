@@ -363,18 +363,29 @@ struct SessionWheelView: View {
         let percent = SessionWheelIntensity.percent(value)
         let foreground = enabled ? ProgramBoardStyle.primaryText
             : (contrast == .increased ? ProgramBoardStyle.disabledText : ProgramBoardStyle.mutedText.opacity(0.5))
+        // The value fill is a glass cell of its own inside the track, rounded
+        // at both ends and stopping short of the thumb. At full it takes the
+        // whole track; too short to round, its corners tighten.
+        let isFull = value >= SessionWheelIntensity.range.upperBound
+        let fillFrom = isFull ? highEnd : thumb + 2 / geometry.actionRadius
+        let fillLength = (lowEnd - fillFrom) * geometry.actionRadius - geometry.segmentGap
+        let fillShape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
+                                           outerRadius: geometry.actionOuterRadius,
+                                           cornerRadius: min(SessionWheelGeometry.actionCornerRadius, max(0, fillLength / 2 - 0.5)),
+                                           arcStart: fillFrom - highEnd - geometry.sliceAngle / 2,
+                                           arcWidth: lowEnd - fillFrom)
         return ZStack {
             controlBackground(shape, presentation: presentation)
-            // The Settings slider's value fill: hovering or dragging shimmers
-            // the filled part with the Settings sidebar's dots.
-            shape.fill(SettingsSlider.fillColor(contrast: contrast, isEnabled: enabled))
-                .background(FluxDotsBackground(
-                    cornerRadius: 0,
-                    style: .standard,
-                    isVisible: enabled && (model.hoveredSettingsControl == .intensity || model.isAdjustingIntensity)
-                ).clipShape(shape))
-                .mask(SessionWheelWedge(from: value >= SessionWheelIntensity.range.upperBound ? highEnd : thumb,
-                                       to: lowEnd))
+            // Hovering or dragging shimmers the fill with the Settings sidebar's dots.
+            if fillLength > 2 {
+                fillShape.fill(SettingsSlider.fillColor(contrast: contrast, isEnabled: enabled))
+                    .background(FluxDotsBackground(
+                        cornerRadius: 0,
+                        style: .standard,
+                        isVisible: enabled && (model.hoveredSettingsControl == .intensity || model.isAdjustingIntensity)
+                    ).clipShape(fillShape))
+                    .overlay(fillShape.stroke(BoardDarkSurfaceStyle.glassRimOnLight, lineWidth: 2).clipShape(fillShape))
+            }
             SessionWheelThumb(angle: thumb)
                 .stroke(foreground, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
             // The value sits on the fill from 55%, where it turns dark like the Settings slider's.
@@ -600,23 +611,6 @@ struct SessionWheelSector: Shape {
                                 y: outerStartCorner.y - corner * cos(start)))
         path.addArc(center: outerStartCorner, radius: corner,
                     startAngle: .radians(start - .pi / 2), endAngle: .radians(start + outerInset), clockwise: false)
-        path.closeSubpath()
-        return path
-    }
-}
-
-/// A pie slice between two `SessionWheelGeometry.angle(at:)` angles, used to mask the slider fill.
-struct SessionWheelWedge: Shape {
-    let from: CGFloat
-    let to: CGFloat
-
-    func path(in rect: CGRect) -> Path {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let offset = -CGFloat.pi / 2 - SessionWheelGeometry.sliceAngle / 2
-        var path = Path()
-        path.move(to: center)
-        path.addArc(center: center, radius: max(rect.width, rect.height), startAngle: .radians(min(from, to) + offset),
-                    endAngle: .radians(max(from, to) + offset), clockwise: false)
         path.closeSubpath()
         return path
     }
