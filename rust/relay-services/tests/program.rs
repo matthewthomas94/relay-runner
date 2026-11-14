@@ -25,6 +25,9 @@ use relay_services::program::ingest::{
     unchanged_project_inputs,
 };
 use relay_services::program::{in_transaction, with_graph};
+use relay_services::program_status::{
+    STALE_AFTER_SECONDS, build_program_dashboard, build_program_status,
+};
 use relay_store::graphify::{GraphifyStore, NODE_DECISION, NODE_PROJECT};
 use rusqlite::Connection;
 
@@ -102,8 +105,9 @@ fn capture_request(repo: &Path, entries: Value, capture_id: &str) -> CaptureRequ
     }
 }
 
-/// `ProgramAndFollowupTests.test_capture_status_and_dashboard`, its capture
-/// half: the response fields, the artifact commit and the refusal.
+/// `ProgramAndFollowupTests.test_capture_status_and_dashboard`: the capture
+/// response fields, the artifact commit and the refusal, then the status
+/// counts and dashboard after the daemon's refresh ingests the capture.
 #[test]
 fn contract_capture_commits_one_decision() {
     let root = TempRoot::new("program-contract");
@@ -223,6 +227,30 @@ fn contract_capture_commits_one_decision() {
         (refused.class, refused.message.as_str()),
         ("SessionCaptureError", "entries is required")
     );
+
+    // The status half: the daemon refreshes the graph, then reads it.
+    ingest_registered_projects(
+        &graph,
+        &IngestOptions {
+            registry_path: registry.clone(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let status = build_program_status(&graph, None, None, 8, None, STALE_AFTER_SECONDS).unwrap();
+    assert_eq!(
+        json::dumps(status.get("counts").unwrap()),
+        r#"{"projects": 1, "items": 1}"#
+    );
+    let item = dict(&status.get("items").and_then(Value::as_list).unwrap()[0]);
+    let project = dict(item.get("project").unwrap());
+    assert_eq!(
+        project.get("path").and_then(Value::as_str),
+        Some(repo.to_string_lossy().as_ref())
+    );
+    let dashboard =
+        build_program_dashboard(&graph, None, None, 8, None, STALE_AFTER_SECONDS, None).unwrap();
+    assert!(dashboard.get("summary").is_some());
 }
 
 #[test]
