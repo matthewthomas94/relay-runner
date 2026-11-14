@@ -38,7 +38,16 @@ enum BoardDarkSurfaceStyle {
     static let borderNSColor = NSColor.clear
 
     static let panelFill = Color(nsColor: panelFillNSColor)
-    static let floatingFill = GraphicalTheme.neutral2.opacity(actionOpacity)
+    /// Under a floating surface's fill: the shell's black, so a dialog or a
+    /// menu settles on the same colour as a ticket on the board.
+    static let floatingBaseFill = GraphicalTheme.neutral1.opacity(actionOpacity)
+    /// The session wheel: black at 90% over the blurred desktop, tiles at 50%.
+    static let wheelBackdropOpacity: CGFloat = 0.9
+    static let wheelTileFill = GraphicalTheme.neutral3.opacity(surfaceOpacity)
+    static let wheelTileActiveFill = GraphicalTheme.neutral4.opacity(surfaceOpacity)
+    /// The terminal's New tab button, a surface-level square.
+    static let tabActionFill = GraphicalTheme.neutral3.opacity(surfaceOpacity)
+    static let tabActionHoverFill = GraphicalTheme.neutral4.opacity(surfaceOpacity)
     static let contentFill = Color(nsColor: contentFillNSColor)
     static let hoverFill = Color(nsColor: hoverFillNSColor)
     static let cardFill = Color(nsColor: cardFillNSColor)
@@ -50,9 +59,14 @@ enum BoardDarkSurfaceStyle {
     /// Hairlines on black controls: selects neutral-4, text fields neutral-5.
     static let selectStroke = GraphicalTheme.neutral4.opacity(0.5)
     static let fieldStroke = GraphicalTheme.neutral5.opacity(0.5)
-    /// The light a glass edge catches, strongest at the top left.
+    /// The light a glass edge catches: strongest at the top left, fading
+    /// across the face and returning at the bottom right.
     static let glassRim = LinearGradient(
-        colors: [Color.white.opacity(0.12), Color.white.opacity(0.02)],
+        stops: [
+            .init(color: Color.white.opacity(0.18), location: 0),
+            .init(color: Color.white.opacity(0.04), location: 0.5),
+            .init(color: Color.white.opacity(0.1), location: 1),
+        ],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
@@ -97,10 +111,12 @@ struct BoardDarkSurfaceBackground: View {
 
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius)
-            .fill(floating ? BoardDarkSurfaceStyle.floatingFill : fill)
+            .fill(floating ? BoardDarkSurfaceStyle.cardFill : fill)
             .background {
                 if floating {
-                    LiquidGlassBackdrop().clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+                    LiquidGlassBackdrop()
+                        .overlay(BoardDarkSurfaceStyle.floatingBaseFill)
+                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
                 }
             }
             .overlay(

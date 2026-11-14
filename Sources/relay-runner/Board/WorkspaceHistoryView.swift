@@ -235,10 +235,13 @@ struct WorkspaceHistoryView: View {
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
-                Text(badge.label)
-                    .font(AppTypography.font(.caption))
-                    .foregroundStyle(badge.isWarning ? ProgramBoardStyle.red : ProgramBoardStyle.mutedText)
-                    .lineLimit(2)
+                // Only a problem earns a line; a healthy archive state says nothing.
+                if badge.isWarning {
+                    Text(badge.label)
+                        .font(AppTypography.font(.caption))
+                        .foregroundStyle(ProgramBoardStyle.red)
+                        .lineLimit(2)
+                }
                 if card.attachmentCount > 0 {
                     Text("\(card.attachmentCount) attachment\(card.attachmentCount == 1 ? "" : "s")")
                         .font(AppTypography.font(.caption))
@@ -257,7 +260,7 @@ struct WorkspaceHistoryView: View {
         }
         .buttonStyle(.graphicalPress)
         .onHover { hoveredCardID = $0 ? card.id : nil }
-        .accessibilityLabel("\(card.ticketID), \(card.title), \(badge.label)")
+        .accessibilityLabel(badge.isWarning ? "\(card.ticketID), \(card.title), \(badge.label)" : "\(card.ticketID), \(card.title)")
     }
 
     private func historyDetail(_ card: ArtifactHistoryCard) -> some View {

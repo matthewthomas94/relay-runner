@@ -432,7 +432,7 @@ private struct SettingsCategorySidebar: View {
                             // gives each row its own id so it only crossfades.
                             shape
                                 .fill(BoardDarkSurfaceStyle.cardActiveFill)
-                                .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1))
+                                .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1))
                                 .matchedGeometryEffect(
                                     id: reduceMotion ? category.id : "selection",
                                     in: selectionHighlight
@@ -447,7 +447,6 @@ private struct SettingsCategorySidebar: View {
             Spacer(minLength: 0)
         }
         .padding(.bottom, 12)
-        .background(BoardDarkSurfaceStyle.panelFill)
         .onMoveCommand { direction in
             switch direction {
             case .up:
@@ -537,7 +536,7 @@ private extension View {
             .overlay {
                 if style.showsEmbeddedHairline {
                     RoundedRectangle(cornerRadius: style.embeddedCornerRadius, style: .continuous)
-                        .stroke(BoardDarkSurfaceStyle.border, lineWidth: 1)
+                        .strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)
                 }
             }
     }

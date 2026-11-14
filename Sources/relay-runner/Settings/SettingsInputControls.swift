@@ -56,11 +56,12 @@ struct SettingsMenuOptions<Value: Hashable>: View {
                             .foregroundStyle(SettingsSurfaceColor.primaryText)
                             .padding(.horizontal, GraphicalTheme.spaceS)
                             .frame(height: rowHeight)
-                            // Kit option: radius xs, neutral-3 when highlighted.
-                            .background(
-                                focusedIndex == index ? GraphicalTheme.neutral3 : .clear,
-                                in: RoundedRectangle(cornerRadius: GraphicalTheme.radiusXS)
-                            )
+                            // The highlighted option shimmers like a hovered project row.
+                            .background(FluxDotsBackground(
+                                cornerRadius: GraphicalTheme.radiusXS,
+                                style: .standard,
+                                isVisible: focusedIndex == index
+                            ))
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -76,7 +77,7 @@ struct SettingsMenuOptions<Value: Hashable>: View {
             }
             .frame(maxWidth: .infinity)
             .frame(height: min(284, contentHeight))
-            // Kit popovers are neutral-2: radius s for a select, m for an action menu.
+            // Popovers are floating glass: radius s for a select, m for an action menu.
             .background(BoardDarkSurfaceBackground(
                 cornerRadius: showsCheckmarks ? GraphicalTheme.radiusS : GraphicalTheme.radiusM,
                 floating: true

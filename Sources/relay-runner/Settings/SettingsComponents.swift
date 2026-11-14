@@ -242,6 +242,7 @@ struct SettingsSegmentedPicker<Value: Hashable>: View {
     let options: [(label: String, value: Value)]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
+    @Namespace private var selectionHighlight
 
     init(_ title: String, selection: Binding<Value>, options: [(label: String, value: Value)]) {
         self.title = title
@@ -261,8 +262,23 @@ struct SettingsSegmentedPicker<Value: Hashable>: View {
                     isSelected: selection == option.value,
                     action: { selection = option.value }
                 )
+                .background {
+                    if selection == option.value {
+                        // One highlight glides between segments; Reduce Motion
+                        // gives each its own id so it only crossfades.
+                        RoundedRectangle(cornerRadius: GraphicalTheme.radiusS, style: .continuous)
+                            .fill(GraphicalTheme.neutral1.opacity(GraphicalTheme.fillThroughDotsOpacity))
+                            .graphicalShadow(.s)
+                            .padding(WorkspaceNavigationStyle.listPadding)
+                            .matchedGeometryEffect(
+                                id: reduceMotion ? AnyHashable(index) : AnyHashable("selection"),
+                                in: selectionHighlight
+                            )
+                    }
+                }
             }
         }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: selection)
         .frame(maxWidth: .infinity)
         .frame(height: SharedActionButtonMetrics.controlHeight)
         // The kit's tab list: neutral-3, radius m.
@@ -312,22 +328,14 @@ private struct SettingsSegmentButton: View {
                 )
                 .frame(maxWidth: .infinity, minHeight: SharedActionButtonMetrics.controlHeight)
                 .background {
-                    // The selection sits inside the group's stroke; hovering it
-                    // shimmers with the Settings sidebar's dots.
-                    if isSelected {
-                        RoundedRectangle(
-                            cornerRadius: GraphicalTheme.radiusS,
-                            style: .continuous
-                        )
-                        .fill(GraphicalTheme.neutral1.opacity(GraphicalTheme.fillThroughDotsOpacity))
-                        .graphicalShadow(.s)
-                        .background(FluxDotsBackground(
-                            cornerRadius: GraphicalTheme.radiusS,
-                            style: .standard,
-                            isVisible: isHovered
-                        ))
-                        .padding(selectionInset)
-                    }
+                    // The picker draws the selection so it can glide; hovering
+                    // it shimmers with the Settings sidebar's dots.
+                    FluxDotsBackground(
+                        cornerRadius: GraphicalTheme.radiusS,
+                        style: .standard,
+                        isVisible: isSelected && isHovered
+                    )
+                    .padding(selectionInset)
                 }
                 .contentShape(shape)
         }

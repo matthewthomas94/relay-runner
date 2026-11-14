@@ -80,7 +80,7 @@ struct SessionWheelView: View {
                                       sessionItems: model.sessionItems.count) { dismiss() }
             }
             // Glass background level: the blurred desktop inside the disc, under
-            // the liquid black at 75%. Submenus outside the disc carry the tint alone.
+            // the liquid black at 90%. Submenus outside the disc carry the tint alone.
             LiquidGlassBackdrop()
                 .frame(width: geometry.wheelRadius * 2, height: geometry.wheelRadius * 2)
                 .clipShape(Circle())
@@ -91,7 +91,7 @@ struct SessionWheelView: View {
             SessionWheelLiquidBackdrop(progress: submenus, reduceMotion: reduceMotion,
                                        sessionItems: model.slots[geometry.sessionSlots[0]] != nil
                                            ? geometry.sessionWeight(items: model.sessionItems.count, entering: entering) : 0)
-                .opacity(BoardDarkSurfaceStyle.actionOpacity)
+                .opacity(BoardDarkSurfaceStyle.wheelBackdropOpacity)
                 .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
                 .scaleEffect(presentation.discScale)
                 .opacity(presentation.discScale == 0 ? 0 : 1)
@@ -241,15 +241,9 @@ struct SessionWheelView: View {
         } label: {
             ZStack {
                 controlBackground(shape, presentation: presentation, disabled: !enabled)
-                ZStack(alignment: .topTrailing) {
-                    controlBackground(Circle(), presentation: presentation)
-                        .frame(width: 42, height: 42)
-                        .overlay {
-                            // The start tile and a running session share the terminal glyph.
-                            LucideImage(shortcut?.symbol ?? SessionWheelSessionSlot.symbol, size: 20)
-                        }
-                }
-                .position(geometry.position(slot: index, radius: 119))
+                // The start tile and a running session share the terminal glyph.
+                LucideImage(shortcut?.symbol ?? SessionWheelSessionSlot.symbol, size: 20)
+                    .position(geometry.position(slot: index, radius: 119))
                 .opacity(empty && !startSlot ? 0 : 1)
             }
             .contentShape(shape)
@@ -534,12 +528,13 @@ struct SessionWheelView: View {
     private func controlBackground<S: Shape>(
         _ shape: S, presentation: ProgramBoardInteractionPresentation, disabled: Bool = false
     ) -> some View {
-        ProgramBoardInteractiveBackground(
-            shape: .custom(AnyShape(shape)),
-            presentation: presentation,
-            disabled: disabled,
-            usesCardStyle: true
-        )
+        // Glass tiles: neutral-3 at 50%, neutral-4 on hover or when selected,
+        // with the rim drawn inside the tile's edge.
+        shape
+            .fill(presentation.usesHoverFill
+                ? BoardDarkSurfaceStyle.wheelTileActiveFill : BoardDarkSurfaceStyle.wheelTileFill)
+            .opacity(disabled ? 0.55 : 1)
+            .overlay(shape.stroke(BoardDarkSurfaceStyle.glassRim, lineWidth: 2).clipShape(shape))
         .overlay {
             if contrast == .increased { shape.stroke(.white.opacity(0.55), lineWidth: 1) }
         }

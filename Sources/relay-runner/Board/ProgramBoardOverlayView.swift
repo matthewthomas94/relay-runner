@@ -4566,7 +4566,7 @@ enum ProgramNoteStartFailurePresentation {
     }
 }
 
-/// The Start/End session action: a solid white primary button with a chevron
+/// The Start/End session action: a white glass primary button with a chevron
 /// segment that picks the session's work style. A change applies from the
 /// session's next request, so the menu stays available while it runs.
 struct ProgramSessionPrimaryButton: View {
@@ -4580,7 +4580,9 @@ struct ProgramSessionPrimaryButton: View {
 
     private enum Segment { case action, menu }
 
-    static let menuSegmentWidth: CGFloat = 32
+    /// 12 points either side of the divider, a 16-point chevron, 8 trailing.
+    static let dividerGap: CGFloat = 12
+    static let menuSegmentWidth: CGFloat = 36
     static let menuMinWidth: CGFloat = 300
 
     var body: some View {
@@ -4593,7 +4595,8 @@ struct ProgramSessionPrimaryButton: View {
                         .font(AppTypography.font(.primaryButton))
                         .lineLimit(1)
                 }
-                .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
+                .padding(.leading, SharedActionButtonMetrics.horizontalPadding)
+                .padding(.trailing, Self.dividerGap)
                 .frame(height: SharedActionButtonMetrics.controlHeight)
                 .background(hoverFill(.action))
                 .contentShape(Rectangle())
@@ -4608,12 +4611,13 @@ struct ProgramSessionPrimaryButton: View {
             .notchHint(presentation.help)
 
             Rectangle()
-                .fill(GraphicalTheme.onPrimaryAction.opacity(0.12))
-                .frame(width: 1, height: SharedActionButtonMetrics.controlHeight - GraphicalTheme.spaceM)
+                .fill(GraphicalTheme.onPrimaryAction.opacity(0.18))
+                .frame(width: 1, height: 20)
                 .accessibilityHidden(true)
 
             Button { isMenuPresented.toggle() } label: {
-                LucideImage(.chevronDown, size: 12)
+                LucideImage(.chevronDown, size: 16)
+                    .padding(.leading, Self.dividerGap - 8)
                     .frame(width: Self.menuSegmentWidth, height: SharedActionButtonMetrics.controlHeight)
                     .background(hoverFill(.menu))
                     .contentShape(Rectangle())
@@ -4626,8 +4630,9 @@ struct ProgramSessionPrimaryButton: View {
             .notchHint("Change work style")
         }
         .foregroundStyle(GraphicalTheme.onPrimaryAction)
-        .background(shape.fill(GraphicalTheme.primaryAction))
+        .background(shape.fill(BoardDarkSurfaceStyle.primaryActionFill))
         .clipShape(shape)
+        .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1).allowsHitTesting(false))
         .fixedSize()
         .animation(reduceMotion ? nil : RelayMotion.hover, value: hovered)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isEnabled)

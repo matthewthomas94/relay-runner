@@ -255,7 +255,7 @@ final class ProgramBoardStatusTests: XCTestCase {
 
         XCTAssertFalse(contents.contains("prominence: .primary"))
         XCTAssertTrue(contents.contains("prominence: ownsNote ? .secondary : .primary"))
-        XCTAssertTrue(contents.contains(".background(shape.fill(GraphicalTheme.primaryAction))"))
+        XCTAssertTrue(contents.contains(".background(shape.fill(BoardDarkSurfaceStyle.primaryActionFill))"))
     }
 
     func testDoneColumnHoldsTheOneSessionControlAndCardsHaveNone() throws {

@@ -4,6 +4,8 @@ enum WorkspaceTerminalLayout {
     static let tabHeight: CGFloat = 40
     static let tabGap: CGFloat = 8
     static let tabCornerRadius: CGFloat = 12
+    static let addButtonSize: CGFloat = 32
+    static let addButtonCornerRadius: CGFloat = GraphicalTheme.radiusXS
     static let shoulderRadius = tabCornerRadius + tabGap
     static let horizontalPadding = BoardDarkSurfaceStyle.columnCornerRadius + shoulderRadius
 }
@@ -190,13 +192,14 @@ private struct WorkspaceAddTabButton: View {
     var body: some View {
         Button(action: add) {
             LucideImage(.plus, size: 16)
-                .frame(width: WorkspaceTerminalLayout.tabHeight, height: WorkspaceTerminalLayout.tabHeight)
+                .frame(width: WorkspaceTerminalLayout.addButtonSize, height: WorkspaceTerminalLayout.addButtonSize)
                 .background {
-                    RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
-                        .fill(isHovered && unavailableReason == nil ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.cardFill)
+                    RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.addButtonCornerRadius, style: .continuous)
+                        .fill(isHovered && unavailableReason == nil
+                            ? BoardDarkSurfaceStyle.tabActionHoverFill : BoardDarkSurfaceStyle.tabActionFill)
                         .overlay {
-                            RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
-                                .strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1)
+                            RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.addButtonCornerRadius, style: .continuous)
+                                .strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)
                         }
                 }
                 .contentShape(Rectangle())

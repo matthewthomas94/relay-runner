@@ -40,7 +40,8 @@ struct SettingsAgentPresentation: Equatable {
 
 enum SettingsAgentCardLayout {
     static let spacing: CGFloat = 8
-    static let cornerRadius: CGFloat = 12
+    /// The Settings panels' radius, so the card's corners line up with theirs.
+    static let cornerRadius: CGFloat = BoardDarkSurfaceStyle.columnCornerRadius
 
     static func width(availableWidth: CGFloat) -> CGFloat {
         min(480, max(220, (availableWidth - spacing) * 480 / 1672))
@@ -82,10 +83,10 @@ struct SettingsAgentCard: View {
             .padding(.top, 61)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: SettingsAgentCardLayout.cornerRadius))
+        .clipShape(RoundedRectangle(cornerRadius: SettingsAgentCardLayout.cornerRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: SettingsAgentCardLayout.cornerRadius)
-                .strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1)
+            RoundedRectangle(cornerRadius: SettingsAgentCardLayout.cornerRadius, style: .continuous)
+                .strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Orchestrator, \(presentation.name)")
