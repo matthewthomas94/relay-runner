@@ -161,4 +161,16 @@ final class VoiceBridgeFocusTests: XCTestCase {
         XCTAssertTrue(source.contains("joinsRunningVoiceBridge: joinsVoiceBridge"))
         XCTAssertTrue(source.contains("sttEngine?.voiceTargetSessionKey"))
     }
+
+    /// Two sessions in one repository share the per-repository generation
+    /// entry; a focus must carry each session's own launch generation, or the
+    /// bridge re-owns the older session and its claims are never acknowledged.
+    func testFocusCarriesEachSessionsOwnRecoveryGeneration() throws {
+        let source = try String(contentsOf: Self.root.appendingPathComponent("Sources/relay-runner/App/AppState.swift"), encoding: .utf8)
+        let syncStart = try XCTUnwrap(source.range(of: "    private func syncVoiceFocus(force: Bool = false) -> Bool {"))
+        let syncBody = String(source[syncStart.lowerBound...]).components(separatedBy: "\n    }\n")[0]
+        let own = try XCTUnwrap(syncBody.range(of: "recoveryGeneration: owner[\"recovery_generation\"]"))
+        let shared = try XCTUnwrap(syncBody.range(of: "continuityRecoveryGenerationBySession[sessionID]"))
+        XCTAssertLessThan(own.lowerBound, shared.lowerBound, "The session's own generation wins over the shared repository entry")
+    }
 }
