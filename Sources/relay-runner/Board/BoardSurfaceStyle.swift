@@ -41,9 +41,11 @@ enum BoardDarkSurfaceStyle {
     /// Under a floating surface's fill: the shell's black, so a dialog reads
     /// as a board panel and a menu as a ticket on the board.
     static let floatingBaseFill = GraphicalTheme.neutral1.opacity(actionOpacity)
-    /// The session wheel's tiles, on its pure black backdrop.
-    static let wheelTileFill = GraphicalTheme.neutral3.opacity(surfaceOpacity)
-    static let wheelTileActiveFill = GraphicalTheme.neutral4.opacity(surfaceOpacity)
+    /// The session wheel's tiles: neutral-3 at 50% over its pure black
+    /// backdrop (neutral-4 when active), as solid colours, so a tile that
+    /// leaves the backdrop mid-animation never lets the desktop through.
+    static let wheelTileFill = Color(.sRGB, red: 11.5 / 255, green: 13 / 255, blue: 15 / 255, opacity: 1)
+    static let wheelTileActiveFill = Color(.sRGB, red: 16.5 / 255, green: 18.5 / 255, blue: 20.5 / 255, opacity: 1)
     /// The terminal's New tab button, a surface-level square.
     static let tabActionFill = GraphicalTheme.neutral3.opacity(surfaceOpacity)
     static let tabActionHoverFill = GraphicalTheme.neutral4.opacity(surfaceOpacity)
@@ -60,24 +62,20 @@ enum BoardDarkSurfaceStyle {
     static let fieldStroke = GraphicalTheme.neutral5.opacity(0.5)
     /// The light a glass edge catches: strongest at the top left, fading
     /// across the face and returning at the bottom right.
-    static let glassRim = LinearGradient(
-        stops: [
-            .init(color: Color.white.opacity(0.18), location: 0),
-            .init(color: Color.white.opacity(0.04), location: 0.5),
-            .init(color: Color.white.opacity(0.1), location: 1),
-        ],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
+    static let glassRimStops: [Gradient.Stop] = [
+        .init(color: Color.white.opacity(0.18), location: 0),
+        .init(color: Color.white.opacity(0.04), location: 0.5),
+        .init(color: Color.white.opacity(0.1), location: 1),
+    ]
+    static let glassRim = LinearGradient(stops: glassRimStops, startPoint: .topLeading, endPoint: .bottomTrailing)
     /// The same edge on a white glass fill, where it has to be brighter to show.
+    static let glassRimOnLightStops: [Gradient.Stop] = [
+        .init(color: Color.white.opacity(0.7), location: 0),
+        .init(color: Color.white.opacity(0.2), location: 0.5),
+        .init(color: Color.white.opacity(0.45), location: 1),
+    ]
     static let glassRimOnLight = LinearGradient(
-        stops: [
-            .init(color: Color.white.opacity(0.7), location: 0),
-            .init(color: Color.white.opacity(0.2), location: 0.5),
-            .init(color: Color.white.opacity(0.45), location: 1),
-        ],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
+        stops: glassRimOnLightStops, startPoint: .topLeading, endPoint: .bottomTrailing
     )
     /// The shell's black, solid under the notch and 75% at its foot.
     static let shellFill = LinearGradient(

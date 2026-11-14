@@ -114,6 +114,7 @@ struct SessionWheelView: View {
                                 noteActionButton(action)
                             }
                         }
+                        .compositingGroup()
                         .scaleEffect(frame.scale)
                         .opacity(frame.controlsOpacity)
                         .allowsHitTesting(model.isHoveringNoteTaker && (reduceMotion || frame.progress >= 0.95))
@@ -127,6 +128,7 @@ struct SessionWheelView: View {
                             keepAwakeButton
                             autoPlayButton
                         }
+                        .compositingGroup()
                         .scaleEffect(frame.scale)
                         .opacity(frame.controlsOpacity)
                         .allowsHitTesting(model.isHoveringSettings && (reduceMotion || frame.progress >= 0.95))
@@ -146,6 +148,7 @@ struct SessionWheelView: View {
                                 }
                             }
                         }
+                        .compositingGroup()
                         .scaleEffect(frame.scale)
                         .opacity(frame.controlsOpacity)
                         .allowsHitTesting(model.hoveredSession?.id == session.id && (reduceMotion || frame.progress >= 0.95))
@@ -384,7 +387,7 @@ struct SessionWheelView: View {
                         style: .standard,
                         isVisible: enabled && (model.hoveredSettingsControl == .intensity || model.isAdjustingIntensity)
                     ).clipShape(fillShape))
-                    .overlay(fillShape.stroke(BoardDarkSurfaceStyle.glassRimOnLight, lineWidth: 2).clipShape(fillShape))
+                    .overlay(SessionWheelGlassRim(shape: fillShape, stops: BoardDarkSurfaceStyle.glassRimOnLightStops))
             }
             SessionWheelThumb(angle: thumb)
                 .stroke(foreground, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
@@ -530,17 +533,44 @@ struct SessionWheelView: View {
     private func controlBackground<S: Shape>(
         _ shape: S, presentation: ProgramBoardInteractionPresentation, disabled: Bool = false
     ) -> some View {
-        // Glass tiles: neutral-3 at 50%, neutral-4 on hover or when selected,
-        // with the rim drawn inside the tile's edge.
+        // Glass tiles: the tile fill, lighter on hover or when selected, with
+        // the rim drawn inside the tile's edge.
         shape
             .fill(presentation.usesHoverFill
                 ? BoardDarkSurfaceStyle.wheelTileActiveFill : BoardDarkSurfaceStyle.wheelTileFill)
             .opacity(disabled ? 0.55 : 1)
-            .overlay(shape.stroke(BoardDarkSurfaceStyle.glassRim, lineWidth: 2).clipShape(shape))
+            .overlay(SessionWheelGlassRim(shape: shape, stops: BoardDarkSurfaceStyle.glassRimStops))
         .overlay {
             if contrast == .increased { shape.stroke(.white.opacity(0.55), lineWidth: 1) }
         }
         .animation(presentation.animation, value: presentation)
+    }
+}
+
+/// A tile's glass edge. Wheel shapes are drawn in the whole wheel's frame, so
+/// the highlight runs across the shape's own bounds, not the wheel's: every
+/// tile catches the light at its top left wherever it sits.
+private struct SessionWheelGlassRim<S: Shape>: View {
+    let shape: S
+    let stops: [Gradient.Stop]
+
+    var body: some View {
+        GeometryReader { proxy in
+            let box = shape.path(in: CGRect(origin: .zero, size: proxy.size)).boundingRect
+            let width = max(proxy.size.width, 1)
+            let height = max(proxy.size.height, 1)
+            shape
+                .stroke(
+                    LinearGradient(
+                        stops: stops,
+                        startPoint: UnitPoint(x: box.minX / width, y: box.minY / height),
+                        endPoint: UnitPoint(x: box.maxX / width, y: box.maxY / height)
+                    ),
+                    lineWidth: 2
+                )
+                .clipShape(shape)
+        }
+        .allowsHitTesting(false)
     }
 }
 
