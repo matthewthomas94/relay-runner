@@ -43,6 +43,18 @@ pub mod store;
 pub mod tickets;
 pub mod toml;
 
+// Part 2 (RR-495): the artifact lifecycle, sync, retention, migration,
+// verification, rollout and history modules on top of the store.
+pub mod automatic_retention;
+pub mod history;
+pub mod instant;
+pub mod lifecycle;
+pub mod migration;
+pub mod retention;
+pub mod rollout;
+pub mod sync;
+pub mod verification;
+
 pub mod git;
 
 use std::fmt;
@@ -88,6 +100,23 @@ pub enum ErrorKind {
     Io,
     /// `sqlite3.Error`.
     Sqlite,
+    /// `artifact_retention.DependencyHistoryUnavailable`, an
+    /// `ArtifactValidationError` subclass.
+    DependencyHistoryUnavailable,
+    /// `artifact_rollout.ArtifactRolloutError`; `code` and `recovery` are set.
+    Rollout,
+    /// `artifact_rollout.ArtifactRolloutBlocked`.
+    RolloutBlocked,
+    /// `artifact_migration.ArtifactMigrationError`; `recovery` and `report` are set.
+    Migration,
+    /// `artifact_migration.ArtifactMigrationBlocked`.
+    MigrationBlocked,
+    /// `artifact_migration.ArtifactMigrationReconciliationRequired`.
+    MigrationReconciliationRequired,
+    /// `artifact_migration.ArtifactMigrationInjectedFailure`, raised only by test hooks.
+    MigrationInjectedFailure,
+    /// `artifact_verification.ArtifactVerificationError`; `code` and `recovery` are set.
+    Verification,
 }
 
 impl ErrorKind {
@@ -113,15 +142,65 @@ impl ErrorKind {
             ErrorKind::InjectedFailure => "ArtifactInjectedFailure",
             ErrorKind::Io => "OSError",
             ErrorKind::Sqlite => "sqlite3.Error",
+            ErrorKind::DependencyHistoryUnavailable => "DependencyHistoryUnavailable",
+            ErrorKind::Rollout => "ArtifactRolloutError",
+            ErrorKind::RolloutBlocked => "ArtifactRolloutBlocked",
+            ErrorKind::Migration => "ArtifactMigrationError",
+            ErrorKind::MigrationBlocked => "ArtifactMigrationBlocked",
+            ErrorKind::MigrationReconciliationRequired => "ArtifactMigrationReconciliationRequired",
+            ErrorKind::MigrationInjectedFailure => "ArtifactMigrationInjectedFailure",
+            ErrorKind::Verification => "ArtifactVerificationError",
         }
+    }
+
+    /// Whether Python's `except ArtifactValidationError` catches this kind.
+    pub fn is_validation(self) -> bool {
+        matches!(
+            self,
+            ErrorKind::Validation | ErrorKind::DependencyHistoryUnavailable
+        )
+    }
+
+    /// Whether Python's `except ArtifactStoreError` catches this kind.
+    pub fn is_store_error(self) -> bool {
+        matches!(
+            self,
+            ErrorKind::Store
+                | ErrorKind::StoreDisabled
+                | ErrorKind::Validation
+                | ErrorKind::Identity
+                | ErrorKind::ConcurrentUpdate
+                | ErrorKind::EventCollision
+                | ErrorKind::MaterializationConflict
+                | ErrorKind::InjectedFailure
+                | ErrorKind::DependencyHistoryUnavailable
+        )
+    }
+
+    /// Whether Python's `except ArtifactMigrationError` catches this kind.
+    pub fn is_migration(self) -> bool {
+        matches!(
+            self,
+            ErrorKind::Migration
+                | ErrorKind::MigrationBlocked
+                | ErrorKind::MigrationReconciliationRequired
+                | ErrorKind::MigrationInjectedFailure
+        )
     }
 }
 
-/// A failure: the Python exception class and its `str()`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A failure: the Python exception class and its `str()`, with the extra
+/// attributes some classes carry (`code`, `recovery`, `report`).
+#[derive(Clone, Debug)]
 pub struct Error {
     pub kind: ErrorKind,
     pub message: String,
+    /// `error.code` (rollout and verification errors).
+    pub code: Option<String>,
+    /// `error.recovery` (rollout, migration and verification errors).
+    pub recovery: Option<String>,
+    /// `error.report` (migration errors).
+    pub report: Option<relay_intents::json::Value>,
 }
 
 impl Error {
@@ -129,7 +208,28 @@ impl Error {
         Self {
             kind,
             message: message.into(),
+            code: None,
+            recovery: None,
+            report: None,
         }
+    }
+
+    /// The error with `code` set.
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
+    }
+
+    /// The error with `recovery` set.
+    pub fn with_recovery(mut self, recovery: impl Into<String>) -> Self {
+        self.recovery = Some(recovery.into());
+        self
+    }
+
+    /// The error with `report` set.
+    pub fn with_report(mut self, report: relay_intents::json::Value) -> Self {
+        self.report = Some(report);
+        self
     }
 
     pub(crate) fn value(message: impl Into<String>) -> Self {
@@ -139,6 +239,22 @@ impl Error {
     /// The same message under another class, as `raise B(str(a)) from a`.
     pub(crate) fn recast(self, kind: ErrorKind) -> Self {
         Self { kind, ..self }
+    }
+}
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        let report = |error: &Error| {
+            error
+                .report
+                .as_ref()
+                .map(relay_intents::json::dumps_compact_sorted)
+        };
+        self.kind == other.kind
+            && self.message == other.message
+            && self.code == other.code
+            && self.recovery == other.recovery
+            && report(self) == report(other)
     }
 }
 
