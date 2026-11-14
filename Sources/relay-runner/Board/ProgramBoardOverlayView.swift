@@ -1871,7 +1871,9 @@ private struct ProgramProjectIconPicker: View {
             .padding(Self.padding)
         }
         .frame(width: Self.width, height: 236)
-        .background(BoardDarkSurfaceBackground(cornerRadius: GraphicalTheme.radiusM, floating: true))
+        .background(BoardDarkSurfaceBackground(
+            cornerRadius: GraphicalTheme.radiusM, fill: BoardDarkSurfaceStyle.cardFill, floating: true
+        ))
         .onExitCommand(perform: dismiss)
         .animation(reduceMotion ? nil : RelayMotion.hover, value: hovered)
         .accessibilityElement(children: .contain)

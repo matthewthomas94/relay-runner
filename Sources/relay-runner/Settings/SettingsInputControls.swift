@@ -80,6 +80,7 @@ struct SettingsMenuOptions<Value: Hashable>: View {
             // Popovers are floating glass: radius s for a select, m for an action menu.
             .background(BoardDarkSurfaceBackground(
                 cornerRadius: showsCheckmarks ? GraphicalTheme.radiusS : GraphicalTheme.radiusM,
+                fill: BoardDarkSurfaceStyle.cardFill,
                 floating: true
             ))
             .onAppear { focusedIndex = options.firstIndex { $0.value == selection } ?? options.indices.first }

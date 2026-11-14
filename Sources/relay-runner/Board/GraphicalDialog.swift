@@ -24,7 +24,7 @@ final class GraphicalDialogWorkspacePresence {
     var count = 0
 }
 
-/// The kit's alert dialog: a neutral-2 card with radius 24 and 24 points of
+/// The kit's alert dialog: a glass panel with radius 16 and 24 points of
 /// padding over a 20% black backdrop. The title is text-m, the description is
 /// text-s in neutral-7. Cancel is a secondary button; the confirming action is
 /// the white primary button, or the danger button when it destroys something.
@@ -91,8 +91,7 @@ struct GraphicalDialogView: View {
         .padding(GraphicalTheme.spaceL)
         .frame(width: Self.width, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: GraphicalTheme.radiusM, style: .continuous)
-                .fill(GraphicalTheme.neutral2)
+            BoardDarkSurfaceBackground(cornerRadius: GraphicalTheme.radiusM, floating: true)
                 .graphicalShadow(.l)
         )
         .accessibilityElement(children: .contain)

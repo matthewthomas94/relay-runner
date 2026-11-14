@@ -38,8 +38,8 @@ enum BoardDarkSurfaceStyle {
     static let borderNSColor = NSColor.clear
 
     static let panelFill = Color(nsColor: panelFillNSColor)
-    /// Under a floating surface's fill: the shell's black, so a dialog or a
-    /// menu settles on the same colour as a ticket on the board.
+    /// Under a floating surface's fill: the shell's black, so a dialog reads
+    /// as a board panel and a menu as a ticket on the board.
     static let floatingBaseFill = GraphicalTheme.neutral1.opacity(actionOpacity)
     /// The session wheel: black at 75% over the blurred desktop, tiles at 50%.
     static let wheelBackdropOpacity: CGFloat = actionOpacity
@@ -106,12 +106,13 @@ struct BoardDarkSurfaceBackground: View {
     let cornerRadius: CGFloat
     var fill: Color = BoardDarkSurfaceStyle.panelFill
     /// A surface that floats over other content (a menu, a dialog) brings its
-    /// own blur and a denser tint, so what is under it cannot show through.
+    /// own blur and the shell's black under its fill, so it matches the same
+    /// fill drawn on the board: the panel fill for a dialog, by default.
     var floating = false
 
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius)
-            .fill(floating ? BoardDarkSurfaceStyle.cardFill : fill)
+            .fill(fill)
             .background {
                 if floating {
                     LiquidGlassBackdrop()
