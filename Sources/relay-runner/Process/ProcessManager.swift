@@ -297,7 +297,7 @@ final class ProcessManager {
     private static func voiceBridgeProcessPgrep() -> BridgeProbeResult {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        proc.arguments = ["-f", "voice_bridge.py"]
+        proc.arguments = ["-f", "voice_bridge[.]py|relay-rs bridge"]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         do {
@@ -893,7 +893,7 @@ final class ProcessManager {
         else
             rm -f \(bridgeWatchdogRestartPath)
         fi
-        if [ -n "$BRIDGE_PID" ] && ps -p "$BRIDGE_PID" -o command= 2>/dev/null | grep -q '[v]oice_bridge.py'; then
+        if [ -n "$BRIDGE_PID" ] && ps -p "$BRIDGE_PID" -o command= 2>/dev/null | grep -qE '[v]oice_bridge[.]py|[r]elay-rs bridge'; then
             kill "$BRIDGE_PID" 2>/dev/null || true
         fi
         \(strayBridgeStopScript())
@@ -959,7 +959,7 @@ final class ProcessManager {
     /// bracketed so neither this script nor its subshells match it.
     static func strayBridgeStopScript(listing: String = "ps -U \"$(id -u)\" -o pid=,command=") -> String {
         """
-        for stray_pid in $(\(listing) 2>/dev/null | awk '/[v]oice_bridge[.]py/ {print $1}'); do
+        for stray_pid in $(\(listing) 2>/dev/null | awk '/[v]oice_bridge[.]py|[r]elay-rs bridge/ {print $1}'); do
             [ "$stray_pid" = "$$" ] && continue
             [ "$stray_pid" = "$BRIDGE_PID" ] && continue
             echo "[relay-runner] app watchdog stopping stray voice bridge pid=$stray_pid" >> "$VOICE_BRIDGE_LOG"
@@ -997,9 +997,17 @@ final class ProcessManager {
         }
     }
 
+    /// RR-493: scripts/relay-bridge runs `relay-rs bridge` by default and
+    /// `voice_bridge.py` with `RELAY_BRIDGE_RUNTIME=python` (the rollback
+    /// switch for one release), so a bridge process is either command line.
+    /// The shell scripts match the same two with '[v]oice_bridge[.]py|[r]elay-rs bridge'.
+    static func isVoiceBridgeCommandLine(_ command: String) -> Bool {
+        command.contains("voice_bridge.py") || command.contains("relay-rs bridge")
+    }
+
     /// RR-403: stop the bridge by the PID it recorded, never by command-line
     /// pattern, so another user's or session's bridge-named process survives.
-    /// A recycled PID is rejected by checking the process still runs voice_bridge.py.
+    /// A recycled PID is rejected by checking the process still runs the bridge.
     @discardableResult
     static func terminateRecordedBridge(
         pidFile: String = bridgePIDPath,
@@ -1053,13 +1061,13 @@ final class ProcessManager {
             return BridgeLivenessReport(result: .unknown, failedProbes: ["pid_signal"])
         }
         if let command = kernelCommandLine(pid) {
-            return command.contains("voice_bridge.py")
+            return isVoiceBridgeCommandLine(command)
                 ? BridgeLivenessReport(result: .alive)
                 : BridgeLivenessReport(result: .dead, failedProbes: ["pid_signal"])
         }
         switch psCommandLine(pid) {
         case .found(let command):
-            return command.contains("voice_bridge.py")
+            return isVoiceBridgeCommandLine(command)
                 ? BridgeLivenessReport(result: .alive)
                 : BridgeLivenessReport(result: .dead, failedProbes: ["ps"])
         case .missing:
@@ -1108,7 +1116,7 @@ final class ProcessManager {
         guard let raw = try? String(contentsOfFile: pidFile, encoding: .utf8),
               let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
               pid > 1,
-              commandLine(pid)?.contains("voice_bridge.py") == true else { return nil }
+              commandLine(pid).map(isVoiceBridgeCommandLine) == true else { return nil }
         return pid
     }
 

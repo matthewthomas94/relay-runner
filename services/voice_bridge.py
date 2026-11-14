@@ -14,8 +14,10 @@ import os
 import sys
 
 # RR-492: RELAY_BRIDGE_RUNTIME=rust runs the Rust bridge (`relay-rs bridge`)
-# in this process's place, for testing; the Python bridge stays the default.
-# It speaks through the same speech service this interpreter would start.
+# in this process's place. Since RR-493 scripts/relay-bridge starts the Rust
+# bridge itself by default; run directly, this file is the Python bridge
+# unless the switch asks for Rust. When the Rust bridge would fall back to the
+# Python speech service, it uses this interpreter's.
 if __name__ == "__main__" and os.environ.get("RELAY_BRIDGE_RUNTIME", "").strip().lower() == "rust":
     from rust_messenger import rust_binary
 
@@ -23,7 +25,12 @@ if __name__ == "__main__" and os.environ.get("RELAY_BRIDGE_RUNTIME", "").strip()
     if _RUST_BRIDGE is None:
         print("[voice_bridge] RELAY_BRIDGE_RUNTIME=rust but no relay-rs found; using Python", file=sys.stderr)
     else:
-        if not os.environ.get("RELAY_SPEECH_SERVICE_CMD", "").strip():
+        _RUST_SPEECH = (os.environ.get("RELAY_SPEECH_BINARY", "").strip()
+                        or os.path.join(os.path.dirname(_RUST_BRIDGE), "relay-speech"))
+        if not os.environ.get("RELAY_SPEECH_SERVICE_CMD", "").strip() and (
+            os.environ.get("RELAY_SPEECH_RUNTIME", "").strip().lower() == "python"
+            or not (os.path.isfile(_RUST_SPEECH) and os.access(_RUST_SPEECH, os.X_OK))
+        ):
             import shlex
 
             os.environ["RELAY_SPEECH_SERVICE_CMD"] = shlex.join([

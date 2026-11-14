@@ -114,3 +114,22 @@ packages are installable only for this fallback. Undo it with
 as a source checkout, also uses the Python service and needs those packages,
 unless `RELAY_SPEECH_BINARY` names a `relay-speech` built from `rust/`. The
 fallback is removed one release after the Rust service ships.
+
+## Voice bridge runtime
+
+The voice bridge runs as `relay-rs bridge`, the Rust bridge the app bundle
+ships in `Contents/MacOS` (RR-493), for Claude and Codex sessions alike. For
+one release, the Python bridge remains available as a rollback. Set
+`RELAY_BRIDGE_RUNTIME=python` in the app's environment, then relaunch the app
+and start a session:
+
+```bash
+launchctl setenv RELAY_BRIDGE_RUNTIME python
+```
+
+`scripts/relay-bridge` then runs `services/voice_bridge.py`; the bridge log
+(`/tmp/voice_bridge.log`) names the runtime each launch used. Undo it with
+`launchctl unsetenv RELAY_BRIDGE_RUNTIME`. A build without `relay-rs`, such as
+a source checkout, also runs the Python bridge. The switch is independent of
+`RELAY_SPEECH_RUNTIME` and `RELAY_HOOK_RUNTIME`. The rollback is removed one
+release after the Rust bridge ships.

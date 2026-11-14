@@ -566,7 +566,7 @@ class FreshInstallCoordinator:
         while parent is not None and parent not in lineage:
             lineage.add(parent)
             parent = processes.get(parent, (None, ""))[0]
-        markers = ("relay-runner", "voice_bridge.py", "orchestrator.py", "tts_worker.py")
+        markers = ("relay-runner", "voice_bridge.py", "relay-rs bridge", "orchestrator.py", "tts_worker.py")
         installer_markers = ("fresh_install_cli.py", "relay-runner-fresh-install")
         return [
             f"{pid} {parent} {command}"

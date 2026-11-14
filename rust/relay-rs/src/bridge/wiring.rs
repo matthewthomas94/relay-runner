@@ -2,6 +2,7 @@
 //! the Python order, the relay loop run, and everything stopped again
 //! (`_parse_args`, `_speech_service_command`, `_start_speech_service`).
 
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::thread;
 
@@ -70,14 +71,45 @@ fn default_speech_service_script() -> Option<String> {
     None
 }
 
-/// `_speech_service_command`: `RELAY_SPEECH_SERVICE_CMD`, else `python3`
-/// with the shipped `speech_service.py`, given the bridge's `--config`.
+/// The Rust speech service (RR-481): `RELAY_SPEECH_BINARY`, else the
+/// relay-speech beside this binary (both ship in the app's `Contents/MacOS`).
+fn speech_service_binary() -> Option<String> {
+    let configured = env_text("RELAY_SPEECH_BINARY");
+    let candidate = if configured.is_empty() {
+        std::env::current_exe()
+            .ok()?
+            .parent()?
+            .join("relay-speech")
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        configured
+    };
+    let executable = std::fs::metadata(&candidate)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0);
+    executable.then_some(candidate)
+}
+
+/// `_speech_service_command`: `RELAY_SPEECH_SERVICE_CMD`, else relay-speech,
+/// else (`RELAY_SPEECH_RUNTIME=python`, or no relay-speech) `python3` with the
+/// shipped `speech_service.py`, given the bridge's `--config`.
 fn speech_service_command(config_path: Option<&str>) -> Option<Vec<String>> {
     let configured = env_text("RELAY_SPEECH_SERVICE_CMD");
-    let mut command = if configured.is_empty() {
-        vec!["python3".to_string(), default_speech_service_script()?]
-    } else {
+    let python_requested = env_text("RELAY_SPEECH_RUNTIME").to_lowercase() == "python";
+    let binary = (configured.is_empty() && !python_requested)
+        .then(speech_service_binary)
+        .flatten();
+    let mut command = if !configured.is_empty() {
         shlex_split(&configured)?
+    } else if let Some(binary) = binary {
+        vec![binary]
+    } else {
+        if !python_requested {
+            eprintln!(
+                "[voice_bridge] relay-speech is not installed; using the Python speech service"
+            );
+        }
+        vec!["python3".to_string(), default_speech_service_script()?]
     };
     if let Some(path) = config_path {
         command.push("--config".to_string());
