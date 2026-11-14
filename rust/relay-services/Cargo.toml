@@ -1,0 +1,24 @@
+[package]
+name = "relay-services"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The Rust daemon's sixth part (RR-499): notes and personal storage, program
+# capture, status and graph ingest, the continuity lane, General work and the
+# daemon's half of command authorization. A library, so nothing ships until
+# the daemon binary does.
+[dependencies]
+# Python-compatible JSON, SHA-256 and `re` patterns, shared with the hook.
+relay-intents = { path = "../relay-intents" }
+# The artifact store, note contract, tickets and config (part 1).
+relay-artifacts = { path = "../relay-artifacts" }
+# The daemon's SQLite stores (part 3).
+relay-store = { path = "../relay-store" }
+# Lookaround in ported Python patterns.
+fancy-regex = "0.20"
+# flock and kill, as the Python modules call them.
+libc = "0.2"
+# Bundled SQLite: every database is shared with the Python daemon.
+rusqlite = { version = "0.42", default-features = false, features = ["bundled"] }

@@ -596,6 +596,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "relay-services"
+version = "0.0.0"
+dependencies = [
+ "fancy-regex 0.20.2",
+ "libc",
+ "relay-artifacts",
+ "relay-intents",
+ "relay-store",
+ "rusqlite",
+]
+
+[[package]]
 name = "relay-speech"
 version = "0.0.0"
 dependencies = [
