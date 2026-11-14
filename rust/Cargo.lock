@@ -587,6 +587,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "relay-orchestrator"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "relay-artifacts",
+ "relay-intents",
+ "relay-services",
+ "relay-store",
+]
+
+[[package]]
 name = "relay-rs"
 version = "0.0.0"
 dependencies = [
