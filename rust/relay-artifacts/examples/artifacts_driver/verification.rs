@@ -8,8 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use relay_artifacts::verification::{
-    self, CommandOutput, InstalledBundleIdentity, SignedInstalledAppGate,
-    SourceVerificationHarness,
+    self, CommandOutput, InstalledBundleIdentity, SignedInstalledAppGate, SourceVerificationHarness,
 };
 use relay_artifacts::{Error, ErrorKind};
 use relay_intents::json::{Dict, Value};
@@ -32,8 +31,8 @@ fn canned(spec: &Dict) -> CommandOutput {
             .get("returncode")
             .and_then(Value::py_int)
             .unwrap_or_default() as i32,
-        stdout: spec.text("stdout").into_bytes(),
-        stderr: spec.text("stderr").into_bytes(),
+        stdout: spec.string("stdout").into_bytes(),
+        stderr: spec.string("stderr").into_bytes(),
     }
 }
 
@@ -65,12 +64,18 @@ fn operation(function: &str, request: &Dict) -> Result<Value, Error> {
             }
             harness.run()?
         }
-        "source_matrix_status" => verification::source_matrix_status(Path::new(&text(request, "root")))?,
-        "audit_source_matrix" => verification::audit_source_matrix(Path::new(&text(request, "root")))?,
+        "source_matrix_status" => {
+            verification::source_matrix_status(Path::new(&text(request, "root")))?
+        }
+        "audit_source_matrix" => {
+            verification::audit_source_matrix(Path::new(&text(request, "root")))?
+        }
         "inspect" => gate(request)
             .inspect(
                 &text(request, "app"),
-                request.get("require_applications").is_none_or(Value::truthy),
+                request
+                    .get("require_applications")
+                    .is_none_or(Value::truthy),
             )?
             .as_dict(),
         "evaluate" => gate(request).evaluate(
@@ -80,7 +85,9 @@ fn operation(function: &str, request: &Dict) -> Result<Value, Error> {
         "evidence_template" => SignedInstalledAppGate::evidence_template(
             &InstalledBundleIdentity::from_dict(&dict(request, "identity")),
         ),
-        "bundle_digest" => Value::Str(verification::bundle_digest(Path::new(&text(request, "app")))?),
+        "bundle_digest" => Value::Str(verification::bundle_digest(Path::new(&text(
+            request, "app",
+        )))?),
         _ => return Err(Error::new(ErrorKind::Type, "unknown operation")),
     })
 }

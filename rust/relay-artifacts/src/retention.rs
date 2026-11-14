@@ -42,7 +42,7 @@ use crate::store::{
     self, ArtifactStore, Entries, FailureInjector, Mutation, Operation, Snapshot, TreeEntry,
     WriteResult,
 };
-use crate::sync::{ArtifactSyncEngine, RemoteProof, SyncState, SyncResult};
+use crate::sync::{ArtifactSyncEngine, RemoteProof, SyncResult, SyncState};
 use crate::{Error, ErrorKind, Result, pystr};
 
 pub const RETENTION_POLICY: &str = "terminal-count-v1";
@@ -228,7 +228,10 @@ pub struct RetentionPlan {
 }
 
 fn ids(tickets: &[RetentionTicket]) -> Vec<String> {
-    tickets.iter().map(|ticket| ticket.ticket_id.clone()).collect()
+    tickets
+        .iter()
+        .map(|ticket| ticket.ticket_id.clone())
+        .collect()
 }
 
 impl RetentionPlan {
@@ -402,7 +405,10 @@ impl StorageMetrics {
     pub fn as_dict(&self) -> Dict {
         let mut result = Dict::new();
         for (key, value) in [
-            ("materialized_worktree_bytes", self.materialized_worktree_bytes),
+            (
+                "materialized_worktree_bytes",
+                self.materialized_worktree_bytes,
+            ),
             ("materialized_file_count", self.materialized_file_count),
             ("materialized_ticket_bytes", self.materialized_ticket_bytes),
             ("materialized_ticket_count", self.materialized_ticket_count),
@@ -421,14 +427,20 @@ impl StorageMetrics {
                 "remotely_backed_history_count",
                 self.remotely_backed_history_count,
             ),
-            ("reachable_git_object_bytes", self.reachable_git_object_bytes),
+            (
+                "reachable_git_object_bytes",
+                self.reachable_git_object_bytes,
+            ),
             ("database_bytes", self.database_bytes),
             ("run_log_bytes", self.run_log_bytes),
             ("index_bytes", self.index_bytes),
             ("cache_bytes", self.cache_bytes),
             ("run_database_log_bytes", self.run_database_log_bytes),
             ("derived_index_cache_bytes", self.derived_index_cache_bytes),
-            ("reclaimable_estimate_bytes", self.reclaimable_estimate_bytes),
+            (
+                "reclaimable_estimate_bytes",
+                self.reclaimable_estimate_bytes,
+            ),
         ] {
             result.insert(key, value);
         }
@@ -545,9 +557,9 @@ fn is_repository(value: &str) -> bool {
     let Some((owner, name)) = value.split_once('/') else {
         return false;
     };
-    [owner, name].iter().all(|part| {
-        !part.is_empty() && part.chars().all(ignorecase_repository_character)
-    })
+    [owner, name]
+        .iter()
+        .all(|part| !part.is_empty() && part.chars().all(ignorecase_repository_character))
 }
 
 /// `_is_github_url`.
@@ -569,9 +581,7 @@ fn is_ticket_path(path: &str) -> bool {
 
 /// `PurePosixPath(path).name`.
 fn posix_name(path: &str) -> &str {
-    path.split('/')
-        .filter(|part| !part.is_empty() && *part != ".")
-        .next_back()
+    path.split('/').rfind(|part| !part.is_empty() && *part != ".")
         .unwrap_or("")
 }
 
@@ -597,8 +607,8 @@ fn front_get<'f>(front: &'f Front, key: &str) -> Option<&'f str> {
 
 /// `_front_matter`.
 fn front_matter(content: &[u8]) -> Result<Front> {
-    let text = std::str::from_utf8(content)
-        .map_err(|_| validation("ticket front matter is not UTF-8"))?;
+    let text =
+        std::str::from_utf8(content).map_err(|_| validation("ticket front matter is not UTF-8"))?;
     let lines = pystr::splitlines(text);
     if lines.first().is_none_or(|line| pystr::strip(line) != "---") {
         return Err(validation("ticket has no front matter"));
@@ -720,7 +730,10 @@ fn get_str(entry: &Dict, key: &str, default: &str) -> String {
 
 /// `str(entry[key])`.
 fn index_str(entry: &Dict, key: &str) -> Result<String> {
-    entry.get(key).map(Value::py_str).ok_or_else(|| key_error(key))
+    entry
+        .get(key)
+        .map(Value::py_str)
+        .ok_or_else(|| key_error(key))
 }
 
 /// `str.casefold()`, as far as Relay's titles need.
@@ -729,7 +742,12 @@ fn casefold(text: &str) -> String {
 }
 
 fn strings(values: &[String]) -> Value {
-    Value::List(values.iter().map(|value| Value::Str(value.clone())).collect())
+    Value::List(
+        values
+            .iter()
+            .map(|value| Value::Str(value.clone()))
+            .collect(),
+    )
 }
 
 fn random_hex() -> String {
@@ -801,7 +819,10 @@ fn disk_usage(path: &Path) -> i64 {
     if path.is_file() {
         return file_size(path);
     }
-    regular_files(path).iter().map(|child| file_size(child)).sum()
+    regular_files(path)
+        .iter()
+        .map(|child| file_size(child))
+        .sum()
 }
 
 /// `_validate_transaction`'s and the confirmation's checks need SHA-256 hex.
@@ -812,7 +833,10 @@ fn sha256_text(text: &str) -> String {
 // -- remotes -------------------------------------------------------------------
 
 /// `_configured_remote_urls`: the fetch URL and the single push URL.
-pub fn configured_remote_urls(store: &ArtifactStore, remote_name: &str) -> Result<(String, String)> {
+pub fn configured_remote_urls(
+    store: &ArtifactStore,
+    remote_name: &str,
+) -> Result<(String, String)> {
     let fetch = store.git(&["remote", "get-url", remote_name], &[], None, &[0, 2, 128])?;
     let push = store.git(
         &["remote", "get-url", "--push", "--all", remote_name],
@@ -1183,7 +1207,8 @@ impl SnapshotLeaseStore {
         if fs::metadata(&self.path).is_err() {
             return Ok(BTreeMap::new());
         }
-        let corrupt = |detail: String| validation(format!("snapshot lease store is corrupt: {detail}"));
+        let corrupt =
+            |detail: String| validation(format!("snapshot lease store is corrupt: {detail}"));
         let bytes = fs::read(&self.path).map_err(|error| corrupt(error.to_string()))?;
         let text = pystr::universal_newlines(pystr::decode_utf8(&bytes)?);
         let payload = json::parse(&text).ok_or_else(|| corrupt("Expecting value".to_string()))?;
@@ -1206,7 +1231,9 @@ impl SnapshotLeaseStore {
             .get("project_id")
             .is_some_and(|value| value.is_str(&self.project_id))
         {
-            return Err(validation("snapshot lease store belongs to another project"));
+            return Err(validation(
+                "snapshot lease store belongs to another project",
+            ));
         }
         let mut result = BTreeMap::new();
         let raws = match payload.get("leases") {
@@ -1365,7 +1392,10 @@ fn encode_catalog(catalog: &Catalog) -> Vec<u8> {
 
 /// `_card`.
 fn card(entry: &Dict) -> Result<HistoricalCard> {
-    let attachments = entry.get("attachments").and_then(Value::as_list).unwrap_or_default();
+    let attachments = entry
+        .get("attachments")
+        .and_then(Value::as_list)
+        .unwrap_or_default();
     let mut attachment_bytes = 0;
     for item in attachments {
         let size = match item.as_dict() {
@@ -1458,7 +1488,9 @@ pub struct EventArgs {
 
 impl EventArgs {
     fn actor(&self, default: &str) -> String {
-        self.actor_type.clone().unwrap_or_else(|| default.to_string())
+        self.actor_type
+            .clone()
+            .unwrap_or_else(|| default.to_string())
     }
 }
 
@@ -1747,7 +1779,11 @@ impl<'s> ArtifactRetentionManager<'s> {
             ));
         }
         if plan.candidates.is_empty() {
-            return Ok(ArchiveResult::new(RetentionState::Archived, None, Vec::new()));
+            return Ok(ArchiveResult::new(
+                RetentionState::Archived,
+                None,
+                Vec::new(),
+            ));
         }
         let confirmation = self.validate_remote_transaction(synchronizer, None)?;
         let synchronizer = synchronizer.expect("validated above");
@@ -1897,7 +1933,9 @@ impl<'s> ArtifactRetentionManager<'s> {
                 .chain(retained.iter())
                 .map(String::as_str)
                 .collect();
-            if !plan.candidates.is_empty() || !plan.materialize.is_empty() || materialized != expected
+            if !plan.candidates.is_empty()
+                || !plan.materialize.is_empty()
+                || materialized != expected
             {
                 return Err(validation(
                     "remote artifact ref does not materialize every nonterminal ticket and the newest 25 terminal tickets",
@@ -1971,7 +2009,10 @@ impl<'s> ArtifactRetentionManager<'s> {
                     return Ok(HistoricalDetail::unavailable(
                         HistoryAvailability::NeedsNetwork,
                         Some(card),
-                        Some("Connect and explicitly deepen the configured artifact ref.".to_string()),
+                        Some(
+                            "Connect and explicitly deepen the configured artifact ref."
+                                .to_string(),
+                        ),
                     ));
                 }
                 Some(deepen) => deepen(&source_commit)?,
@@ -2042,7 +2083,10 @@ impl<'s> ArtifactRetentionManager<'s> {
         let matches: Vec<&Dict> = detail
             .attachments
             .iter()
-            .filter(|item| item.get("path").is_some_and(|path| path.is_str(&expected_path)))
+            .filter(|item| {
+                item.get("path")
+                    .is_some_and(|path| path.is_str(&expected_path))
+            })
             .collect();
         if matches.len() != 1 {
             return Err(validation(format!(
@@ -2146,7 +2190,10 @@ impl<'s> ArtifactRetentionManager<'s> {
             })
             .cloned()
             .ok_or_else(|| {
-                validation(format!("artifact {} is not archived", pystr::repr(artifact_id)))
+                validation(format!(
+                    "artifact {} is not archived",
+                    pystr::repr(artifact_id)
+                ))
             })?;
         let detail = self.historical_detail(artifact_id, access)?;
         let ticket_bytes = match (&detail.availability, &detail.ticket_bytes) {
@@ -2194,8 +2241,11 @@ impl<'s> ArtifactRetentionManager<'s> {
         let source_commit = index_str(&entry, "source_commit")?;
         for attachment in &detail.attachments {
             let path = index_str(attachment, "path")?;
-            let content =
-                self.verified_historical_blob(&source_commit, &path, &index_str(attachment, "blob")?)?;
+            let content = self.verified_historical_blob(
+                &source_commit,
+                &path,
+                &index_str(attachment, "blob")?,
+            )?;
             operations.push(Operation::AttachmentWrite {
                 ticket_id: ticket_id.clone(),
                 filename: posix_name(&path).to_string(),
@@ -2249,7 +2299,11 @@ impl<'s> ArtifactRetentionManager<'s> {
             .get(path.as_str())
             .map(|entry| entry.oid.clone())
             .ok_or_else(|| key_error(&path))?;
-        let paths: Vec<&str> = snapshot.files.iter().map(|(path, _)| path.as_str()).collect();
+        let paths: Vec<&str> = snapshot
+            .files
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect();
         let leased: HashSet<String> = self.lease_store.active_ticket_ids()?.into_iter().collect();
         let ticket =
             self.retention_ticket(&head, ticket_id, &path, &content, &blob_id, &paths, &leased)?;
@@ -2315,13 +2369,14 @@ impl<'s> ArtifactRetentionManager<'s> {
             {
                 continue;
             }
-            if !entry.get("status").is_some_and(|value| value.is_str("done")) {
+            if !entry
+                .get("status")
+                .is_some_and(|value| value.is_str("done"))
+            {
                 return Ok(false);
             }
-            let detail = self.historical_detail(
-                &get_str(entry, "artifact_id", ""),
-                HistoryAccess::default(),
-            )?;
+            let detail = self
+                .historical_detail(&get_str(entry, "artifact_id", ""), HistoryAccess::default())?;
             if detail.availability != HistoryAvailability::Available {
                 return Err(dependency_history_unavailable(dependency_id, &detail));
             }
@@ -2361,10 +2416,8 @@ impl<'s> ArtifactRetentionManager<'s> {
             {
                 continue;
             }
-            let detail = self.historical_detail(
-                &get_str(entry, "artifact_id", ""),
-                HistoryAccess::default(),
-            )?;
+            let detail = self
+                .historical_detail(&get_str(entry, "artifact_id", ""), HistoryAccess::default())?;
             return match (&detail.availability, &detail.ticket_bytes) {
                 (HistoryAvailability::Available, Some(bytes)) => {
                     Ok(Some(execution_mode(front_matter(bytes)?)))
@@ -2406,7 +2459,10 @@ impl<'s> ArtifactRetentionManager<'s> {
         );
         result.insert(
             "last_error",
-            transaction.get("last_error").cloned().unwrap_or(Value::Null),
+            transaction
+                .get("last_error")
+                .cloned()
+                .unwrap_or(Value::Null),
         );
         result.insert("retry_available", true);
         Ok(result)
@@ -2444,10 +2500,9 @@ impl<'s> ArtifactRetentionManager<'s> {
             let Ok(content) = fs::read(path) else {
                 continue;
             };
-            if front_matter(&content)
-                .ok()
-                .is_some_and(|front| front_get(&front, "artifact_id").is_some_and(|id| !id.is_empty()))
-            {
+            if front_matter(&content).ok().is_some_and(|front| {
+                front_get(&front, "artifact_id").is_some_and(|id| !id.is_empty())
+            }) {
                 ticket_files.push(path.clone());
             }
         }
@@ -2487,7 +2542,10 @@ impl<'s> ArtifactRetentionManager<'s> {
             materialized_file_count: materialized_files.len() as i64,
             materialized_ticket_bytes: ticket_files.iter().map(|path| file_size(path)).sum(),
             materialized_ticket_count: ticket_files.len() as i64,
-            materialized_attachment_bytes: attachment_files.iter().map(|path| file_size(path)).sum(),
+            materialized_attachment_bytes: attachment_files
+                .iter()
+                .map(|path| file_size(path))
+                .sum(),
             materialized_attachment_count: attachment_files.len() as i64,
             retained_terminal_count: plan.retained_terminal.len() as i64,
             nonterminal_count: plan.nonterminal.len() as i64,
@@ -2580,9 +2638,9 @@ impl<'s> ArtifactRetentionManager<'s> {
         {
             exemptions.insert("unpublished_content".to_string());
         }
-        if !["", "none", "complete"]
-            .contains(&pystr::strip(front_get(&front, "retention_transaction").unwrap_or("")))
-        {
+        if !["", "none", "complete"].contains(&pystr::strip(
+            front_get(&front, "retention_transaction").unwrap_or(""),
+        )) {
             exemptions.insert("in_flight_transaction".to_string());
         }
         if parse_bool(front_get(&front, "retryable_verification_failure").unwrap_or("false")) {
@@ -2672,7 +2730,10 @@ impl<'s> ArtifactRetentionManager<'s> {
         let mut attachment_paths: Vec<String> = attachments
             .iter()
             .filter_map(Value::as_dict)
-            .map(|item| item.get("path").map_or_else(|| "None".to_string(), Value::py_str))
+            .map(|item| {
+                item.get("path")
+                    .map_or_else(|| "None".to_string(), Value::py_str)
+            })
             .collect();
         attachment_paths.sort();
         Ok(RetentionTicket {
@@ -2703,9 +2764,9 @@ impl<'s> ArtifactRetentionManager<'s> {
         let entries = entry_map(entries);
         let mut attachments = Vec::new();
         for path in &ticket.attachment_paths {
-            let entry = entries.get(path.as_str()).ok_or_else(|| {
-                validation(format!("referenced attachment is missing: {path}"))
-            })?;
+            let entry = entries
+                .get(path.as_str())
+                .ok_or_else(|| validation(format!("referenced attachment is missing: {path}")))?;
             let content = self.store.cat_blob(&entry.oid)?;
             self.store.validate_content_for_path(path, &content)?;
             let mut attachment = Dict::new();
@@ -2750,11 +2811,12 @@ impl<'s> ArtifactRetentionManager<'s> {
             )));
         }
         let content = self.store.cat_blob(&ticket.blob_id)?;
-        self.store.validate_content_for_path(&ticket.path, &content)?;
+        self.store
+            .validate_content_for_path(&ticket.path, &content)?;
         for path in &ticket.attachment_paths {
-            let attachment = entries.get(path.as_str()).ok_or_else(|| {
-                validation(format!("referenced attachment is missing: {path}"))
-            })?;
+            let attachment = entries
+                .get(path.as_str())
+                .ok_or_else(|| validation(format!("referenced attachment is missing: {path}")))?;
             self.store
                 .validate_content_for_path(path, &self.store.cat_blob(&attachment.oid)?)?;
         }
@@ -2768,8 +2830,8 @@ impl<'s> ArtifactRetentionManager<'s> {
         catalog: &Catalog,
     ) -> Result<()> {
         for ticket in tickets {
-            let entry =
-                catalog_entry_of(catalog, &ticket.artifact_id).ok_or_else(|| key_error(&ticket.artifact_id))?;
+            let entry = catalog_entry_of(catalog, &ticket.artifact_id)
+                .ok_or_else(|| key_error(&ticket.artifact_id))?;
             let source_commit = index_str(entry, "source_commit")?;
             if self
                 .store
@@ -2791,7 +2853,11 @@ impl<'s> ArtifactRetentionManager<'s> {
                 &index_str(entry, "ticket_path")?,
                 &index_str(entry, "ticket_blob")?,
             )?;
-            for attachment in entry.get("attachments").and_then(Value::as_list).unwrap_or_default() {
+            for attachment in entry
+                .get("attachments")
+                .and_then(Value::as_list)
+                .unwrap_or_default()
+            {
                 let attachment = attachment.as_dict().ok_or_else(|| key_error("path"))?;
                 self.verified_historical_blob(
                     &source_commit,
@@ -2873,7 +2939,10 @@ impl<'s> ArtifactRetentionManager<'s> {
                         "archive catalog attachment path is not uniquely owned: {path} is listed by {prior_label} and {owner_label}; repair the catalog from the verified artifact source"
                     )));
                 }
-                ownership.insert(path, (owner_artifact_id.to_string(), owner_ticket_id.clone()));
+                ownership.insert(
+                    path,
+                    (owner_artifact_id.to_string(), owner_ticket_id.clone()),
+                );
             }
         }
 
@@ -2947,7 +3016,11 @@ impl<'s> ArtifactRetentionManager<'s> {
     }
 
     /// IDs verified for these catalog bytes at `head` or one of its ancestors.
-    fn catalog_entries_verified_at(&self, head: &str, catalog_digest: &str) -> Result<HashSet<String>> {
+    fn catalog_entries_verified_at(
+        &self,
+        head: &str,
+        catalog_digest: &str,
+    ) -> Result<HashSet<String>> {
         let cached = VERIFIED_CATALOGS
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -3120,14 +3193,22 @@ impl<'s> ArtifactRetentionManager<'s> {
                 Some(&confirmation.push_url_sha256),
             )?;
             if result.state != SyncState::Clean {
-                let last_error = result.recovery.clone().filter(|text| !text.is_empty()).unwrap_or_else(
-                    || "Prepared archive publication could not be independently verified.".to_string(),
-                );
+                let last_error = result
+                    .recovery
+                    .clone()
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_else(|| {
+                        "Prepared archive publication could not be independently verified."
+                            .to_string()
+                    });
                 transaction.insert("last_error", last_error.as_str());
                 if matches!(
                     result.state,
                     SyncState::Ahead | SyncState::Behind | SyncState::Conflict
-                ) && result.remote_head.as_deref().is_some_and(|head| !head.is_empty())
+                ) && result
+                    .remote_head
+                    .as_deref()
+                    .is_some_and(|head| !head.is_empty())
                 {
                     self.discard_prepared_transaction(&transaction)?;
                     return Ok(ArchiveResult::pending(
@@ -3144,7 +3225,10 @@ impl<'s> ArtifactRetentionManager<'s> {
             transaction.insert("last_error", Value::Null);
             transaction.insert(
                 "verified_remote_head",
-                result.remote_head.as_deref().map_or(Value::Null, Value::from),
+                result
+                    .remote_head
+                    .as_deref()
+                    .map_or(Value::Null, Value::from),
             );
             self.write_transaction(&transaction)?;
             self.inject("after_remote_verification")?;
@@ -3209,7 +3293,8 @@ impl<'s> ArtifactRetentionManager<'s> {
             ));
         }
         self.store.recover_materialization_transaction()?;
-        self.store.ensure_materialization_consistent(&candidate_head)?;
+        self.store
+            .ensure_materialization_consistent(&candidate_head)?;
         self.store.git(
             &[
                 "update-ref",
@@ -3303,7 +3388,9 @@ impl<'s> ArtifactRetentionManager<'s> {
             .filter(|confirmation| {
                 confirmation.service == "github" && confirmation.exposure_confirmed
             })
-            .ok_or_else(|| validation("GitHub archival exposure has not been explicitly confirmed"))?;
+            .ok_or_else(|| {
+                validation("GitHub archival exposure has not been explicitly confirmed")
+            })?;
         if synchronizer.remote_name.as_deref() != Some(confirmation.remote_name.as_str()) {
             return Err(validation(
                 "confirmed GitHub remote does not match the synchronizer",
@@ -3442,15 +3529,16 @@ impl<'s> ArtifactRetentionManager<'s> {
         if fs::metadata(&self.transaction_path).is_err() {
             return Ok(None);
         }
-        let corrupt =
-            |detail: String| validation(format!("retention transaction journal is corrupt: {detail}"));
+        let corrupt = |detail: String| {
+            validation(format!(
+                "retention transaction journal is corrupt: {detail}"
+            ))
+        };
         let bytes = fs::read(&self.transaction_path).map_err(|error| corrupt(error.to_string()))?;
         let text = pystr::universal_newlines(pystr::decode_utf8(&bytes)?);
         let value = json::parse(&text).ok_or_else(|| corrupt("Expecting value".to_string()))?;
         let Value::Dict(value) = value else {
-            return Err(validation(
-                "retention transaction journal is not an object",
-            ));
+            return Err(validation("retention transaction journal is not an object"));
         };
         self.validate_transaction(&value)?;
         Ok(Some(value))
@@ -3471,9 +3559,8 @@ impl<'s> ArtifactRetentionManager<'s> {
                 .create_new(true)
                 .mode(0o600)
                 .open(&temporary)?;
-            handle.write_all(
-                (canonical_json(&Value::Dict(transaction.clone())) + "\n").as_bytes(),
-            )?;
+            handle
+                .write_all((canonical_json(&Value::Dict(transaction.clone())) + "\n").as_bytes())?;
             handle.flush()?;
             handle.sync_all()?;
             drop(handle);
@@ -3526,19 +3613,21 @@ impl<'s> ArtifactRetentionManager<'s> {
             }
         }
         let phase = transaction.string("phase");
-        if !["prepared", "published", "local_ref_advanced", "materialized"]
-            .contains(&phase.as_str())
+        if ![
+            "prepared",
+            "published",
+            "local_ref_advanced",
+            "materialized",
+        ]
+        .contains(&phase.as_str())
         {
             return Err(validation("retention transaction phase is invalid"));
         }
         if transaction.string("scratch_ref") != self.scratch_ref(&transaction.string("event_id")) {
             return Err(validation("retention transaction scratch ref is invalid"));
         }
-        if !matches!(transaction.get("ticket_ids"), Some(Value::List(items)) if !items.is_empty())
-        {
-            return Err(validation(
-                "retention transaction has no ticket identities",
-            ));
+        if !matches!(transaction.get("ticket_ids"), Some(Value::List(items)) if !items.is_empty()) {
+            return Err(validation("retention transaction has no ticket identities"));
         }
         if !matches!(
             transaction.get("proofs"),
@@ -3643,7 +3732,10 @@ pub fn plan_value(plan: &RetentionPlan) -> Value {
     result.insert("project_id", plan.project_id.as_str());
     result.insert("artifact_head", plan.artifact_head.as_str());
     result.insert("evaluated_at", plan.evaluated_at.isoformat_z());
-    result.insert("retained_terminal_ids", strings(&plan.retained_terminal_ids()));
+    result.insert(
+        "retained_terminal_ids",
+        strings(&plan.retained_terminal_ids()),
+    );
     result.insert("nonterminal_ids", strings(&plan.nonterminal_ids()));
     result.insert("eviction_candidate_ids", strings(&plan.candidate_ids()));
     result.insert("materialize_ids", strings(&plan.materialize_ids()));
@@ -3697,15 +3789,24 @@ pub fn status_payload(
                 remote.insert("state", observed.state.value());
                 remote.insert(
                     "local_head",
-                    observed.local_head.as_deref().map_or(Value::Null, Value::from),
+                    observed
+                        .local_head
+                        .as_deref()
+                        .map_or(Value::Null, Value::from),
                 );
                 remote.insert(
                     "remote_head",
-                    observed.remote_head.as_deref().map_or(Value::Null, Value::from),
+                    observed
+                        .remote_head
+                        .as_deref()
+                        .map_or(Value::Null, Value::from),
                 );
                 remote.insert(
                     "recovery",
-                    observed.recovery.as_deref().map_or(Value::Null, Value::from),
+                    observed
+                        .recovery
+                        .as_deref()
+                        .map_or(Value::Null, Value::from),
                 );
                 remote_status = Value::Dict(remote);
                 if observed.state != SyncState::Clean {
@@ -3715,10 +3816,7 @@ pub fn status_payload(
                             .clone()
                             .filter(|text| !text.is_empty())
                             .unwrap_or_else(|| {
-                                format!(
-                                    "Artifact synchronization is {}.",
-                                    observed.state.value()
-                                )
+                                format!("Artifact synchronization is {}.", observed.state.value())
                             }),
                     );
                 }
@@ -3737,8 +3835,9 @@ pub fn status_payload(
     if let Some(last_error) = transaction.truthy("last_error") {
         blocked_reasons.push(last_error.py_str());
     } else if transaction.truthy("retry_available").is_some() {
-        blocked_reasons
-            .push("A retention publication transaction is incomplete and must be retried.".to_string());
+        blocked_reasons.push(
+            "A retention publication transaction is incomplete and must be retried.".to_string(),
+        );
     }
     let retry_actions: Vec<String> = if transaction.truthy("retry_available").is_some() {
         vec!["POST /v1/artifacts/retention/retry".to_string()]
@@ -3791,7 +3890,10 @@ pub fn history_card_payload(card: &HistoricalCard) -> Value {
 
 /// `artifact_history_search` for an artifact-backed project: the
 /// `GET /v1/artifacts/history/search` body.
-pub fn history_search_payload(manager: &ArtifactRetentionManager<'_>, query: &str) -> Result<Value> {
+pub fn history_search_payload(
+    manager: &ArtifactRetentionManager<'_>,
+    query: &str,
+) -> Result<Value> {
     let mut result = Dict::new();
     result.insert(
         "history",
@@ -3837,7 +3939,8 @@ mod tests {
         let content = b"---\nid: RR-1\ntitle: \"Quoted\"\nstatus: done\n---\nbody\n";
         let front = front_matter(content).unwrap();
         assert_eq!(front_get(&front, "title"), Some("Quoted"));
-        let updated = set_front_matter_value(content, "activity_at", "2026-01-01T00:00:00Z").unwrap();
+        let updated =
+            set_front_matter_value(content, "activity_at", "2026-01-01T00:00:00Z").unwrap();
         assert_eq!(
             String::from_utf8(updated).unwrap(),
             "---\nid: RR-1\ntitle: \"Quoted\"\nstatus: done\nactivity_at: 2026-01-01T00:00:00Z\n---\nbody\n"

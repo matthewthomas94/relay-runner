@@ -36,7 +36,9 @@ use fancy_regex::Regex;
 use relay_intents::json::{self, Dict, Value};
 use relay_intents::sha256::hex_digest;
 
-use crate::store::{ARTIFACT_REF, ArtifactStore, FailureInjector, Mutation, Operation, StoreOptions};
+use crate::store::{
+    ARTIFACT_REF, ArtifactStore, FailureInjector, Mutation, Operation, StoreOptions,
+};
 use crate::sync::{ArtifactSyncEngine, SyncMode, SyncOptions, SyncState};
 use crate::{Error, ErrorKind, Result, notes, paths, pystr, rollout};
 
@@ -275,7 +277,12 @@ fn recording_store(
                 recorder
                     .lock()
                     .unwrap_or_else(|poison| poison.into_inner())
-                    .push(arguments.iter().map(|argument| argument.to_string()).collect());
+                    .push(
+                        arguments
+                            .iter()
+                            .map(|argument| argument.to_string())
+                            .collect(),
+                    );
             })),
             ..StoreOptions::default()
         },
@@ -420,7 +427,10 @@ fn audit_push_commands(devices: &[&Device]) -> Result<()> {
                 .cloned(),
         );
     }
-    require(!pushes.is_empty(), "two-device harness observed no artifact pushes")?;
+    require(
+        !pushes.is_empty(),
+        "two-device harness observed no artifact pushes",
+    )?;
     const DESTRUCTIVE: [&str; 6] = [
         "-f",
         "--force",
@@ -440,7 +450,10 @@ fn audit_push_commands(devices: &[&Device]) -> Result<()> {
             .iter()
             .filter(|argument| argument.contains(':') && !argument.starts_with("--"))
             .collect();
-        require(refspecs.len() == 1, "artifact push did not use one exact refspec")?;
+        require(
+            refspecs.len() == 1,
+            "artifact push did not use one exact refspec",
+        )?;
         require(
             refspecs[0].split_once(':').map(|(_, target)| target) == Some(ARTIFACT_REF),
             "artifact push targeted a non-artifact ref",
@@ -567,19 +580,30 @@ impl SourceVerificationHarness {
         self.make_dirty_source(&b.repo)?;
         let before = self.source_snapshot(&b.repo)?;
         let remote = root.join("remote.git");
-        let source_remote_before = self.git(Some(&remote), &["rev-parse", "refs/heads/main"], &[0])?;
+        let source_remote_before =
+            self.git(Some(&remote), &["rev-parse", "refs/heads/main"], &[0])?;
         let first = engine(&a.store, None, 3)?.sync()?;
         let second = engine(&b.store, None, 3)?.sync()?;
         let after = self.source_snapshot(&b.repo)?;
-        let source_remote_after = self.git(Some(&remote), &["rev-parse", "refs/heads/main"], &[0])?;
+        let source_remote_after =
+            self.git(Some(&remote), &["rev-parse", "refs/heads/main"], &[0])?;
         let snapshot = b.store.snapshot()?;
-        require(first.state == SyncState::Clean, "device A did not publish cleanly")?;
-        require(second.state == SyncState::Clean, "device B did not rebase cleanly")?;
+        require(
+            first.state == SyncState::Clean,
+            "device A did not publish cleanly",
+        )?;
+        require(
+            second.state == SyncState::Clean,
+            "device B did not rebase cleanly",
+        )?;
         require(
             second.observed_state == SyncState::Conflict,
             "offline divergence was not observed before unrelated replay",
         )?;
-        require(before == after, "artifact synchronization changed dirty source state")?;
+        require(
+            before == after,
+            "artifact synchronization changed dirty source state",
+        )?;
         require(
             source_remote_before == source_remote_after,
             "artifact synchronization changed the remote source branch",
@@ -607,17 +631,21 @@ impl SourceVerificationHarness {
                 write_ticket(&a.name, &a.store, "shared-base", "RR-4", "Shared")?;
                 engine(&a.store, None, 3)?.sync()?;
                 engine(&b.store, None, 3)?.sync()?;
-                a.store
-                    .mutate(&ticket_mutation(&a.name, &a.store, "edit-a", "RR-4", "From A")?)?;
-                b.store
-                    .mutate(&ticket_mutation(&b.name, &b.store, "edit-b", "RR-4", "From B")?)?;
+                a.store.mutate(&ticket_mutation(
+                    &a.name, &a.store, "edit-a", "RR-4", "From A",
+                )?)?;
+                b.store.mutate(&ticket_mutation(
+                    &b.name, &b.store, "edit-b", "RR-4", "From B",
+                )?)?;
             }
             "config_collision" => {
                 self.write_config_next_id(&a, "config-a", 20)?;
                 self.write_config_next_id(&b, "config-b", 30)?;
             }
             "attachment_collision" => {
-                for (device, event, marker) in [(&a, "attachment-a", b'A'), (&b, "attachment-b", b'B')] {
+                for (device, event, marker) in
+                    [(&a, "attachment-a", b'A'), (&b, "attachment-b", b'B')]
+                {
                     let mut content = b"\x89PNG\r\n\x1a\n".to_vec();
                     content.push(marker);
                     device.store.mutate(&device_mutation(
@@ -634,7 +662,10 @@ impl SourceVerificationHarness {
                 }
             }
             other => {
-                return Err(Error::new(ErrorKind::Runtime, format!("AssertionError: {other}")));
+                return Err(Error::new(
+                    ErrorKind::Runtime,
+                    format!("AssertionError: {other}"),
+                ));
             }
         }
         let before = self.source_snapshot(&b.repo)?;
@@ -643,9 +674,13 @@ impl SourceVerificationHarness {
         let remote_before = self.git(Some(&remote), &["rev-parse", ARTIFACT_REF], &[0])?;
         let result = engine(&b.store, None, 3)?.sync()?;
         let remote_after = self.git(Some(&remote), &["rev-parse", ARTIFACT_REF], &[0])?;
-        require(result.state == SyncState::Conflict, &format!("{kind} did not stop"))?;
+        require(
+            result.state == SyncState::Conflict,
+            &format!("{kind} did not stop"),
+        )?;
         let Some(report) = &result.conflict_report else {
-            return require(false, &format!("{kind} lacks three-way evidence")).map(|()| Value::Null);
+            return require(false, &format!("{kind} lacks three-way evidence"))
+                .map(|()| Value::Null);
         };
         let found: BTreeSet<&str> = report
             .conflicts
@@ -663,7 +698,10 @@ impl SourceVerificationHarness {
                     .join(", ")
             ),
         )?;
-        require(remote_before == remote_after, &format!("{kind} published without resolution"))?;
+        require(
+            remote_before == remote_after,
+            &format!("{kind} published without resolution"),
+        )?;
         require(
             before == self.source_snapshot(&b.repo)?,
             &format!("{kind} changed source state"),
@@ -696,8 +734,14 @@ impl SourceVerificationHarness {
             })
         };
         let result = engine(&b.store, Some(advance), 3)?.sync()?;
-        require(result.state == SyncState::Clean, "push race did not recover")?;
-        require(result.attempts == 2, "push race did not use one bounded retry")?;
+        require(
+            result.state == SyncState::Clean,
+            "push race did not recover",
+        )?;
+        require(
+            result.attempts == 2,
+            "push race did not use one bounded retry",
+        )?;
         let messages = self.git(Some(&b.repo), &["log", "--format=%B", ARTIFACT_REF], &[0])?;
         require(
             messages.matches("Relay-Event-ID: race-b").count() == 1,
@@ -716,7 +760,11 @@ impl SourceVerificationHarness {
         fs::create_dir_all(root)?;
         let repo = root.join("repo");
         fs::create_dir(&repo)?;
-        self.git(Some(&repo), &["init", "--initial-branch=main", "--quiet"], &[0])?;
+        self.git(
+            Some(&repo),
+            &["init", "--initial-branch=main", "--quiet"],
+            &[0],
+        )?;
         fs::write(repo.join("source.txt"), "source\n")?;
         self.commit_source(&repo, "source")?;
         let state = root.join("state");
@@ -768,7 +816,10 @@ impl SourceVerificationHarness {
         let (restarted, _) = recording_store(&repo, "project-recovery", &state, None)?;
         let recovered_head = restarted.recover()?;
         let retry = restarted.mutate(&mutation)?;
-        require(retry.idempotent, "writer restart duplicated its immutable event")?;
+        require(
+            retry.idempotent,
+            "writer restart duplicated its immutable event",
+        )?;
         require(
             retry.commit_id == recovered_head,
             "recovered event points to another commit",
@@ -807,7 +858,10 @@ impl SourceVerificationHarness {
             Err(error) => return Err(error),
             Ok(_) => false,
         };
-        require(materialization_stopped, "materialization divergence did not stop")?;
+        require(
+            materialization_stopped,
+            "materialization divergence did not stop",
+        )?;
         restarted.recover()?;
         require(
             fs::read(&config_path)? == original,
@@ -818,7 +872,10 @@ impl SourceVerificationHarness {
             ("after_ref_restart", Value::from("recovered")),
             ("event_idempotent", Value::Bool(true)),
             ("stale_cas", Value::from("stopped")),
-            ("materialization_divergence", Value::from("stopped_then_recovered")),
+            (
+                "materialization_divergence",
+                Value::from("stopped_then_recovered"),
+            ),
         ]))
     }
 
@@ -827,7 +884,11 @@ impl SourceVerificationHarness {
         for provider in ["codex", "claude"] {
             let repo = root.join(provider).join("repo");
             fs::create_dir_all(&repo)?;
-            self.git(Some(&repo), &["init", "--initial-branch=main", "--quiet"], &[0])?;
+            self.git(
+                Some(&repo),
+                &["init", "--initial-branch=main", "--quiet"],
+                &[0],
+            )?;
             fs::write(repo.join("source.txt"), "same source\n")?;
             self.commit_source(&repo, "source")?;
             let (store, _) = recording_store(
@@ -855,7 +916,10 @@ impl SourceVerificationHarness {
             let snapshot = store.snapshot()?;
             hashes.insert(provider, files_digest(&snapshot.files));
         }
-        require(hashes["codex"] == hashes["claude"], "provider snapshots differ")?;
+        require(
+            hashes["codex"] == hashes["claude"],
+            "provider snapshots differ",
+        )?;
         Ok(dict(vec![
             ("outcome", Value::from("passed")),
             ("providers", strings(["codex", "claude"])),
@@ -869,13 +933,25 @@ impl SourceVerificationHarness {
         let remote = root.join("remote.git");
         let remote_text = remote.to_string_lossy().into_owned();
         self.git(None, &["init", "--bare", "--quiet", &remote_text], &[0])?;
-        self.git(Some(&remote), &["symbolic-ref", "HEAD", "refs/heads/main"], &[0])?;
+        self.git(
+            Some(&remote),
+            &["symbolic-ref", "HEAD", "refs/heads/main"],
+            &[0],
+        )?;
         let repo_a = root.join("device-a");
         fs::create_dir(&repo_a)?;
-        self.git(Some(&repo_a), &["init", "--initial-branch=main", "--quiet"], &[0])?;
+        self.git(
+            Some(&repo_a),
+            &["init", "--initial-branch=main", "--quiet"],
+            &[0],
+        )?;
         fs::write(repo_a.join("source.txt"), "source\n")?;
         self.commit_source(&repo_a, "source root")?;
-        self.git(Some(&repo_a), &["remote", "add", "origin", &remote_text], &[0])?;
+        self.git(
+            Some(&repo_a),
+            &["remote", "add", "origin", &remote_text],
+            &[0],
+        )?;
         self.git(Some(&repo_a), &["push", "-q", "-u", "origin", "main"], &[0])?;
         let (store_a, commands_a) =
             recording_store(&repo_a, "project-two-device", &root.join("state-a"), None)?;
@@ -955,19 +1031,21 @@ impl SourceVerificationHarness {
     }
 
     fn source_snapshot(&self, repo: &Path) -> Result<SourceSnapshot> {
-        let mut index = PathBuf::from(self.git(Some(repo), &["rev-parse", "--git-path", "index"], &[0])?);
+        let mut index =
+            PathBuf::from(self.git(Some(repo), &["rev-parse", "--git-path", "index"], &[0])?);
         if !index.is_absolute() {
             index = repo.join(index);
         }
-        let mut refs: Vec<String> = pystr::splitlines(&self.git(Some(repo), &["show-ref"], &[0, 1])?)
-            .into_iter()
-            .filter(|line| {
-                !line.ends_with(&format!(" {ARTIFACT_REF}"))
-                    && !line.contains("/relay/artifacts")
-                    && !line.contains("refs/relay-runner/sync/")
-            })
-            .map(str::to_string)
-            .collect();
+        let mut refs: Vec<String> =
+            pystr::splitlines(&self.git(Some(repo), &["show-ref"], &[0, 1])?)
+                .into_iter()
+                .filter(|line| {
+                    !line.ends_with(&format!(" {ARTIFACT_REF}"))
+                        && !line.contains("/relay/artifacts")
+                        && !line.contains("refs/relay-runner/sync/")
+                })
+                .map(str::to_string)
+                .collect();
         refs.sort();
         let mut files = BTreeMap::new();
         collect_source_files(repo, repo, &mut files)?;
@@ -1019,10 +1097,16 @@ impl SourceVerificationHarness {
             .stderr(Stdio::piped())
             .output()
             .map_err(|error| {
+                // `str(FileNotFoundError)`: the strerror text without Rust's
+                // " (os error N)" suffix.
+                let text = error.to_string();
+                let message = text
+                    .rfind(" (os error ")
+                    .map_or(text.as_str(), |end| &text[..end]);
                 Error::new(
                     ErrorKind::Io,
                     format!(
-                        "[Errno {}] {error}: {}",
+                        "[Errno {}] {message}: {}",
                         error.raw_os_error().unwrap_or(0),
                         pystr::repr(&self.git_binary)
                     ),
@@ -1053,7 +1137,9 @@ fn collect_source_files(
 ) -> Result<()> {
     for entry in fs::read_dir(directory)? {
         let path = entry?.path();
-        let name = path.file_name().map(|name| name.to_string_lossy().into_owned());
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
         if matches!(name.as_deref(), Some(".git" | ".orchestrator")) {
             continue;
         }
@@ -1130,11 +1216,17 @@ impl InstalledBundleIdentity {
         dict(vec![
             ("version", Value::from(self.version.as_str())),
             ("build_number", Value::from(self.build_number.as_str())),
-            ("bundle_identifier", Value::from(self.bundle_identifier.as_str())),
+            (
+                "bundle_identifier",
+                Value::from(self.bundle_identifier.as_str()),
+            ),
             ("bundle_sha256", Value::from(self.bundle_sha256.as_str())),
             ("signer_team_id", Value::from(self.signer_team_id.as_str())),
             ("developer_id_signed", Value::Bool(self.developer_id_signed)),
-            ("code_signature_valid", Value::Bool(self.code_signature_valid)),
+            (
+                "code_signature_valid",
+                Value::Bool(self.code_signature_valid),
+            ),
             (
                 "installed_in_applications",
                 Value::Bool(self.installed_in_applications),
@@ -1162,7 +1254,10 @@ impl InstalledBundleIdentity {
         dict(vec![
             ("version", Value::from(self.version.as_str())),
             ("build_number", Value::from(self.build_number.as_str())),
-            ("bundle_identifier", Value::from(self.bundle_identifier.as_str())),
+            (
+                "bundle_identifier",
+                Value::from(self.bundle_identifier.as_str()),
+            ),
             ("bundle_sha256", Value::from(self.bundle_sha256.as_str())),
             ("signer_team_id", Value::from(self.signer_team_id.as_str())),
         ])
@@ -1229,9 +1324,12 @@ fn not_in(value: &Value, allowed: &[&str]) -> Result<bool> {
 }
 
 fn hex64(value: &Value) -> bool {
-    value
-        .as_str()
-        .is_some_and(|text| text.len() == 64 && text.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+    value.as_str().is_some_and(|text| {
+        text.len() == 64
+            && text
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    })
 }
 
 fn os_version(value: &Value) -> bool {
@@ -1306,7 +1404,11 @@ impl SignedInstalledAppGate {
     }
 
     /// `inspect(app_path, require_applications=...)`.
-    pub fn inspect(&self, app_path: &str, require_applications: bool) -> Result<InstalledBundleIdentity> {
+    pub fn inspect(
+        &self,
+        app_path: &str,
+        require_applications: bool,
+    ) -> Result<InstalledBundleIdentity> {
         let app = PathBuf::from(paths::resolve(&paths::expanduser(app_path)?));
         let expected = PathBuf::from(paths::resolve("/Applications/Relay Runner.app"));
         let installed = app == expected;
@@ -1326,7 +1428,12 @@ impl SignedInstalledAppGate {
                 .chain([app_text.clone()])
                 .collect()
         };
-        let verify = (self.runner)(&command(&["/usr/bin/codesign", "--verify", "--deep", "--strict"]))?;
+        let verify = (self.runner)(&command(&[
+            "/usr/bin/codesign",
+            "--verify",
+            "--deep",
+            "--strict",
+        ]))?;
         let details = (self.runner)(&command(&["/usr/bin/codesign", "-dv", "--verbose=4"]))?;
         let mut combined = details.stdout.clone();
         combined.extend_from_slice(&details.stderr);
@@ -1413,7 +1520,12 @@ impl SignedInstalledAppGate {
             }
         }
         let providers = passed("providers");
-        if providers != ["claude", "codex"].iter().map(|name| name.to_string()).collect() {
+        if providers
+            != ["claude", "codex"]
+                .iter()
+                .map(|name| name.to_string())
+                .collect()
+        {
             blockers.push("installed_provider_parity_required".to_string());
         }
         let differences: BTreeSet<String> = evidence
@@ -1436,7 +1548,11 @@ impl SignedInstalledAppGate {
             ("schema_version", Value::Int(VERIFICATION_SCHEMA_VERSION)),
             (
                 "status",
-                Value::from(if blocked { "verification_blocked" } else { "passed" }),
+                Value::from(if blocked {
+                    "verification_blocked"
+                } else {
+                    "passed"
+                }),
             ),
             ("bundle", identity.as_dict()),
             ("device_count", Value::Int(identifiers.len() as i64)),
@@ -1465,7 +1581,10 @@ impl SignedInstalledAppGate {
     /// `evidence_template(identity)`.
     pub fn evidence_template(identity: &InstalledBundleIdentity) -> Value {
         dict(vec![
-            ("schema_version", Value::Int(INSTALLED_EVIDENCE_SCHEMA_VERSION)),
+            (
+                "schema_version",
+                Value::Int(INSTALLED_EVIDENCE_SCHEMA_VERSION),
+            ),
             ("bundle", identity.bundle()),
             ("devices", Value::List(Vec::new())),
             (
@@ -1483,7 +1602,12 @@ pub fn validate_evidence_shape(evidence: &Dict) -> Result<()> {
         .is_some_and(|value| json::py_eq(value, &Value::Int(INSTALLED_EVIDENCE_SCHEMA_VERSION)));
     if !same_keys(
         evidence,
-        &["schema_version", "bundle", "devices", "intentional_provider_differences"],
+        &[
+            "schema_version",
+            "bundle",
+            "devices",
+            "intentional_provider_differences",
+        ],
     ) || !schema_ok
     {
         return Err(invalid_evidence(
@@ -1491,12 +1615,21 @@ pub fn validate_evidence_shape(evidence: &Dict) -> Result<()> {
             "Regenerate the bounded schema-1 template from the exact installed app.",
         ));
     }
-    let bundle_ok = evidence.get("bundle").and_then(Value::as_dict).is_some_and(|bundle| {
-        same_keys(
-            bundle,
-            &["version", "build_number", "bundle_identifier", "bundle_sha256", "signer_team_id"],
-        )
-    });
+    let bundle_ok = evidence
+        .get("bundle")
+        .and_then(Value::as_dict)
+        .is_some_and(|bundle| {
+            same_keys(
+                bundle,
+                &[
+                    "version",
+                    "build_number",
+                    "bundle_identifier",
+                    "bundle_sha256",
+                    "signer_team_id",
+                ],
+            )
+        });
     if !bundle_ok {
         return Err(invalid_evidence(
             "Installed evidence bundle identity is incomplete.",
@@ -1517,7 +1650,13 @@ pub fn validate_evidence_shape(evidence: &Dict) -> Result<()> {
         let Some(item) = item.as_dict().filter(|item| {
             same_keys(
                 item,
-                &["device_id_sha256", "os_version", "scenarios", "providers", "evidence_sha256"],
+                &[
+                    "device_id_sha256",
+                    "os_version",
+                    "scenarios",
+                    "providers",
+                    "evidence_sha256",
+                ],
             )
         }) else {
             return Err(invalid_evidence(
@@ -1555,9 +1694,10 @@ pub fn validate_evidence_shape(evidence: &Dict) -> Result<()> {
             for item in items {
                 not_in(item, &[])?;
             }
-            items
-                .iter()
-                .all(|item| item.as_str().is_some_and(|text| PROVIDER_DIFFERENCE_IDS.contains(&text)))
+            items.iter().all(|item| {
+                item.as_str()
+                    .is_some_and(|text| PROVIDER_DIFFERENCE_IDS.contains(&text))
+            })
         }
         _ => false,
     };
@@ -1602,7 +1742,11 @@ pub fn bundle_digest(app: &Path) -> Result<String> {
     Ok(hex_digest(&buffer))
 }
 
-fn collect_bundle_entries(root: &Path, directory: &Path, entries: &mut Vec<(String, PathBuf)>) -> Result<()> {
+fn collect_bundle_entries(
+    root: &Path,
+    directory: &Path,
+    entries: &mut Vec<(String, PathBuf)>,
+) -> Result<()> {
     for entry in fs::read_dir(directory)? {
         let path = entry?.path();
         let relative = path
@@ -1875,7 +2019,11 @@ fn unescape(text: &str) -> String {
             _ => entity
                 .strip_prefix("#x")
                 .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-                .or_else(|| entity.strip_prefix('#').and_then(|digits| digits.parse().ok()))
+                .or_else(|| {
+                    entity
+                        .strip_prefix('#')
+                        .and_then(|digits| digits.parse().ok())
+                })
                 .and_then(char::from_u32),
         };
         match decoded {
@@ -1968,9 +2116,7 @@ fn parse_arguments(arguments: &[String]) -> Parsed {
     if action == "-h" || action == "--help" {
         println!("{USAGE}");
         println!();
-        println!(
-            "Run RR-289 disposable source checks or evaluate signed installed evidence."
-        );
+        println!("Run RR-289 disposable source checks or evaluate signed installed evidence.");
         return Parsed::Exit(0);
     }
     if !ACTIONS.contains(&action.as_str()) {
@@ -1994,7 +2140,10 @@ fn parse_arguments(arguments: &[String]) -> Parsed {
     let mut rest = arguments[1..].iter();
     while let Some(argument) = rest.next() {
         if argument == "-h" || argument == "--help" {
-            println!("usage: relay-artifacts verification {action} [-h] {}", allowed.join(" "));
+            println!(
+                "usage: relay-artifacts verification {action} [-h] {}",
+                allowed.join(" ")
+            );
             return Parsed::Exit(0);
         }
         let (name, inline) = match argument.split_once('=') {
@@ -2068,7 +2217,11 @@ fn emit(value: &Value, output: Option<&str>) -> Result<()> {
         fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
         let suffix: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
         let candidate = parent.join(format!(".{name}.{suffix}"));
-        match fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
             Ok(mut file) => {
                 let written = file
                     .write_all(payload.as_bytes())
@@ -2129,7 +2282,9 @@ pub fn cli_main(arguments: &[String]) -> u8 {
                 .map_err(ReadFailure::Other);
         }
         let gate = SignedInstalledAppGate::default();
-        let identity = gate.inspect(&parsed.app, true).map_err(ReadFailure::Other)?;
+        let identity = gate
+            .inspect(&parsed.app, true)
+            .map_err(ReadFailure::Other)?;
         Ok(match parsed.action.as_str() {
             "inspect-installed" => dict(vec![
                 ("status", Value::from("passed")),
@@ -2198,7 +2353,8 @@ mod tests {
         assert_eq!(team, "");
         assert_eq!(signature, "adhoc");
         assert_eq!(authorities.len(), 2);
-        let (team, _, _) = signing_details("TeamIdentifier=\nTeamIdentifier=A B\nTeamIdentifier=T1\n");
+        let (team, _, _) =
+            signing_details("TeamIdentifier=\nTeamIdentifier=A B\nTeamIdentifier=T1\n");
         assert_eq!(team, "T1");
     }
 
@@ -2213,7 +2369,11 @@ mod tests {
     #[test]
     fn replace_config_replaces_the_first_matching_key() {
         assert_eq!(
-            replace_config("a = 1\nremote_sync = \"local_only\"\n", "remote_sync", "remote_sync = \"enabled\""),
+            replace_config(
+                "a = 1\nremote_sync = \"local_only\"\n",
+                "remote_sync",
+                "remote_sync = \"enabled\""
+            ),
             "a = 1\nremote_sync = \"enabled\"\n"
         );
         assert_eq!(replace_config("a = 1", "b", "b = 2"), "a = 1\nb = 2\n");

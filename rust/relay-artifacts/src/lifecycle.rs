@@ -494,9 +494,8 @@ impl ArtifactLifecycleCoordinator {
                 workspace_path,
             )
             .and_then(|(manifest_path, files)| {
-                let manifest = fs::read(&manifest_path).map_err(|error| {
-                    Error::new(ErrorKind::Io, os_error(&error, &manifest_path))
-                })?;
+                let manifest = fs::read(&manifest_path)
+                    .map_err(|error| Error::new(ErrorKind::Io, os_error(&error, &manifest_path)))?;
                 self.write_snapshot_proof(run_id, &claimed_snapshot.commit_id, &manifest)?;
                 Ok((manifest_path, files))
             });
@@ -613,9 +612,9 @@ impl ArtifactLifecycleCoordinator {
         workspace_path: Option<&Path>,
     ) -> Result<()> {
         let recorded = self.outcome(run_id)?;
-        let recorded_commit = recorded
-            .as_ref()
-            .map_or("unknown".to_string(), |recorded| recorded.source_commit.clone());
+        let recorded_commit = recorded.as_ref().map_or("unknown".to_string(), |recorded| {
+            recorded.source_commit.clone()
+        });
         let problem = if self.superseded_path(run_id).exists() {
             "this run already superseded its outcome once"
         } else if let Some(workspace) = workspace_path {
@@ -918,8 +917,8 @@ impl ArtifactLifecycleCoordinator {
             ]),
         )?;
         // Keep the report before the run log, including on an explicitly retried spike.
-        let decoded = String::from_utf8(updated)
-            .map_err(|_| Error::value("spike ticket is not UTF-8"))?;
+        let decoded =
+            String::from_utf8(updated).map_err(|_| Error::value("spike ticket is not UTF-8"))?;
         let mut text = SPIKE_REPORT.replace_all(&decoded, "").into_owned();
         let section = format!("## Spike report\n\n{}\n\n", pystr::strip(report));
         text = match text.find("## Run log") {
@@ -1217,7 +1216,11 @@ impl ArtifactLifecycleCoordinator {
                 }
             };
             let advanced = rewrite_ticket(content, &promotion(instant))?;
-            operations.push(ticket_write(&candidate_id, &candidate_artifact_id, advanced));
+            operations.push(ticket_write(
+                &candidate_id,
+                &candidate_artifact_id,
+                advanced,
+            ));
             statuses.insert(candidate_id.clone(), "ready".to_string());
             promoted.push(candidate_id);
         }
@@ -1385,7 +1388,10 @@ impl ArtifactLifecycleCoordinator {
                     &lease.lease_id,
                     &format!(
                         "daemon recovery observed terminal run state {}",
-                        state.as_deref().filter(|state| !state.is_empty()).unwrap_or("missing")
+                        state
+                            .as_deref()
+                            .filter(|state| !state.is_empty())
+                            .unwrap_or("missing")
                     ),
                     Some(self.now()),
                 )?;
@@ -1454,9 +1460,7 @@ impl ArtifactLifecycleCoordinator {
                 manifest
             }
             _ => {
-                return Err(validation(
-                    "immutable worker snapshot manifest is invalid",
-                ));
+                return Err(validation("immutable worker snapshot manifest is invalid"));
             }
         };
         let identity = [
@@ -1479,9 +1483,7 @@ impl ArtifactLifecycleCoordinator {
                         Some(&Value::from(head)),
                     ) => {}
             _ => {
-                return Err(validation(
-                    "immutable worker snapshot source base changed",
-                ));
+                return Err(validation("immutable worker snapshot source base changed"));
             }
         }
         let lease = self.lease_for_run(run_id, "worker")?;
@@ -1512,9 +1514,7 @@ impl ArtifactLifecycleCoordinator {
         let declared = match manifest.get("files") {
             Some(Value::Dict(files)) if !files.is_empty() => files,
             _ => {
-                return Err(validation(
-                    "immutable worker snapshot has no file manifest",
-                ));
+                return Err(validation("immutable worker snapshot has no file manifest"));
             }
         };
         let mut actual = BTreeSet::new();
@@ -1522,9 +1522,7 @@ impl ArtifactLifecycleCoordinator {
         let declared_paths: BTreeSet<String> =
             declared.iter().map(|(path, _)| path.to_string()).collect();
         if actual != declared_paths {
-            return Err(validation(
-                "immutable worker snapshot file set changed",
-            ));
+            return Err(validation("immutable worker snapshot file set changed"));
         }
         for (relative, metadata) in declared.iter() {
             let Some(metadata) = metadata.as_dict() else {
@@ -1537,12 +1535,13 @@ impl ArtifactLifecycleCoordinator {
                     "immutable worker snapshot file is unavailable: {relative}"
                 ))
             })?;
-            if !py_eq_optional(metadata.get("bytes"), Some(&Value::Int(content.len() as i64)))
-                || !py_eq_optional(
-                    metadata.get("sha256"),
-                    Some(&Value::Str(hex_digest(&content))),
-                )
-            {
+            if !py_eq_optional(
+                metadata.get("bytes"),
+                Some(&Value::Int(content.len() as i64)),
+            ) || !py_eq_optional(
+                metadata.get("sha256"),
+                Some(&Value::Str(hex_digest(&content))),
+            ) {
                 return Err(validation(format!(
                     "immutable worker snapshot file changed: {relative}"
                 )));
@@ -1557,7 +1556,8 @@ impl ArtifactLifecycleCoordinator {
         if is_symlink(destination) || !destination.is_dir() {
             return Ok(false);
         }
-        let Ok(Value::Dict(manifest)) = read_json_file(&destination.join(".artifact-snapshot.json"))
+        let Ok(Value::Dict(manifest)) =
+            read_json_file(&destination.join(".artifact-snapshot.json"))
         else {
             return Ok(false);
         };
@@ -1632,13 +1632,19 @@ impl ArtifactLifecycleCoordinator {
                 let (dependency, _) = split_ticket(content)?;
                 let mut summary = Dict::new();
                 summary.insert("ticket_id", dependency_id.as_str());
-                summary.insert("artifact_id", optional_str(field(&dependency, "artifact_id")));
+                summary.insert(
+                    "artifact_id",
+                    optional_str(field(&dependency, "artifact_id")),
+                );
                 summary.insert(
                     "title",
                     field(&dependency, "title").unwrap_or(dependency_id.as_str()),
                 );
                 summary.insert("status", field(&dependency, "status").unwrap_or("unknown"));
-                summary.insert("activity_at", optional_str(field(&dependency, "activity_at")));
+                summary.insert(
+                    "activity_at",
+                    optional_str(field(&dependency, "activity_at")),
+                );
                 summary.insert("archived", false);
                 summaries.push((dependency_id, summary));
                 continue;
@@ -1762,7 +1768,8 @@ impl ArtifactLifecycleCoordinator {
         if !defaulted("schema_version", Value::Int(OUTCOME_SCHEMA_VERSION)) {
             return Err(validation("structured outcome schema version is invalid"));
         }
-        if !defaulted("run_id", Value::Int(run_id)) || !defaulted("ticket_id", Value::from(ticket_id))
+        if !defaulted("run_id", Value::Int(run_id))
+            || !defaulted("ticket_id", Value::from(ticket_id))
         {
             return Err(validation(
                 "structured outcome identity does not match its endpoint",
@@ -1780,9 +1787,7 @@ impl ArtifactLifecycleCoordinator {
             .ok_or_else(|| validation("structured outcome status is invalid"))?;
         let summary = bounded_value(payload.get("summary"), "outcome summary", MAX_SUMMARY_BYTES)?;
         let Some(Value::List(raw_verification)) = payload.get("verification") else {
-            return Err(validation(
-                "structured outcome verification must be a list",
-            ));
+            return Err(validation("structured outcome verification must be a list"));
         };
         let verification = raw_verification
             .iter()
@@ -1842,7 +1847,10 @@ impl ArtifactLifecycleCoordinator {
                 "completed outcome cannot carry verification blocker metadata",
             ));
         }
-        store::reject_secrets(canonical_json(&whole).as_bytes(), "structured worker outcome")?;
+        store::reject_secrets(
+            canonical_json(&whole).as_bytes(),
+            "structured worker outcome",
+        )?;
         Ok(StructuredWorkerOutcome {
             schema_version: OUTCOME_SCHEMA_VERSION,
             project_id: self.store.project_id.clone(),
@@ -2112,7 +2120,8 @@ impl ArtifactLifecycleCoordinator {
 
     /// `<project state>/lifecycle/outcomes/run-<id>.superseded.json`.
     pub fn superseded_path(&self, run_id: i64) -> PathBuf {
-        self.outcome_root.join(format!("run-{run_id}.superseded.json"))
+        self.outcome_root
+            .join(format!("run-{run_id}.superseded.json"))
     }
 
     /// `<project state>/lifecycle/snapshot-proofs/run-<id>.json`.
@@ -2120,7 +2129,12 @@ impl ArtifactLifecycleCoordinator {
         self.snapshot_proof_root.join(format!("run-{run_id}.json"))
     }
 
-    fn write_snapshot_proof(&self, run_id: i64, artifact_head: &str, manifest: &[u8]) -> Result<()> {
+    fn write_snapshot_proof(
+        &self,
+        run_id: i64,
+        artifact_head: &str,
+        manifest: &[u8],
+    ) -> Result<()> {
         let mut proof = Dict::new();
         proof.insert("run_id", run_id);
         proof.insert("artifact_head", artifact_head);
@@ -2191,7 +2205,8 @@ fn dependencies_allow_automatic_promotion(
         {
             return Ok(false);
         }
-        if manager.dependency_execution_mode(dependency_id, snapshot)? == Some("spike".to_string()) {
+        if manager.dependency_execution_mode(dependency_id, snapshot)? == Some("spike".to_string())
+        {
             return Ok(false);
         }
     }
@@ -2540,9 +2555,14 @@ pub fn bounded_text(value: &str, label: &str, maximum: usize) -> Result<String> 
     }
     store::reject_secrets(text.as_bytes(), label)?;
     let lowered = text.to_lowercase();
-    if ["hidden reasoning", "raw transcript", "raw log", "tool output"]
-        .iter()
-        .any(|marker| lowered.contains(marker))
+    if [
+        "hidden reasoning",
+        "raw transcript",
+        "raw log",
+        "tool output",
+    ]
+    .iter()
+    .any(|marker| lowered.contains(marker))
     {
         return Err(validation(format!(
             "{label} contains prohibited private runtime content"
@@ -2581,9 +2601,9 @@ fn registry_timestamp(value: Option<&Value>) -> Result<f64> {
         return Err(validation("registry record has no updated_at timestamp"));
     };
     match Instant::fromisoformat_z(text) {
-        Err(error) if error.kind == ErrorKind::Value => Err(validation(
-            "registry updated_at timestamp is invalid",
-        )),
+        Err(error) if error.kind == ErrorKind::Value => {
+            Err(validation("registry updated_at timestamp is invalid"))
+        }
         Err(error) => Err(error),
         Ok(None) => Err(validation("registry updated_at timestamp has no offset")),
         Ok(Some(instant)) => Ok(instant.unix_micros() as f64 / 1e6),
@@ -2612,7 +2632,12 @@ fn rstrip(text: &str) -> &str {
 }
 
 fn strings(values: &[String]) -> Value {
-    Value::List(values.iter().map(|value| Value::Str(value.clone())).collect())
+    Value::List(
+        values
+            .iter()
+            .map(|value| Value::Str(value.clone()))
+            .collect(),
+    )
 }
 
 fn optional(value: &Option<String>) -> Value {
@@ -2669,8 +2694,8 @@ fn read_text(bytes: &[u8]) -> Option<String> {
 /// `json.loads(path.read_text())`, or the reason it failed.
 fn read_json_file(path: &Path) -> std::result::Result<Value, String> {
     let bytes = fs::read(path).map_err(|error| os_error(&error, path))?;
-    let text = read_text(&bytes)
-        .ok_or_else(|| "'utf-8' codec can't decode the file".to_string())?;
+    let text =
+        read_text(&bytes).ok_or_else(|| "'utf-8' codec can't decode the file".to_string())?;
     json::parse(&text).ok_or_else(|| "Expecting value".to_string())
 }
 
@@ -2701,8 +2726,11 @@ fn b64decode_validate(text: &str) -> Option<Vec<u8>> {
         } as u32)
     };
     let body = &bytes[..body_end];
-    let digits = body.iter().map(|byte| value(*byte)).collect::<Option<Vec<_>>>()?;
-    if bytes.len() % 4 != 0 || digits.len() % 4 == 1 {
+    let digits = body
+        .iter()
+        .map(|byte| value(*byte))
+        .collect::<Option<Vec<_>>>()?;
+    if !bytes.len().is_multiple_of(4) || digits.len() % 4 == 1 {
         return None;
     }
     let mut out = Vec::with_capacity(digits.len() * 3 / 4);
@@ -2771,7 +2799,10 @@ fn write_read_only_tree(
     let mut directories = Vec::new();
     collect_directories(destination, &mut directories);
     directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
-    for directory in directories.iter().chain(std::iter::once(&destination.to_path_buf())) {
+    for directory in directories
+        .iter()
+        .chain(std::iter::once(&destination.to_path_buf()))
+    {
         fs::set_permissions(directory, fs::Permissions::from_mode(0o555))
             .map_err(|error| os_error(&error, directory))?;
     }
@@ -2794,7 +2825,11 @@ fn collect_directories(root: &Path, into: &mut Vec<PathBuf>) {
 
 /// `root.rglob("*")` as `_validate_materialized_snapshot` reads it: every
 /// non-directory must be a regular file; the manifest itself is left out.
-fn collect_snapshot_files(root: &Path, directory: &Path, into: &mut BTreeSet<String>) -> Result<()> {
+fn collect_snapshot_files(
+    root: &Path,
+    directory: &Path,
+    into: &mut BTreeSet<String>,
+) -> Result<()> {
     let Ok(entries) = fs::read_dir(directory) else {
         return Ok(());
     };
@@ -2958,8 +2993,8 @@ mod tests {
             ("run_id", None),
             ("activity_at", some("2026-08-04T05:00:00.000000Z")),
         ]);
-        let rewritten = String::from_utf8(rewrite_ticket(TICKET.as_bytes(), &changes).unwrap())
-            .unwrap();
+        let rewritten =
+            String::from_utf8(rewrite_ticket(TICKET.as_bytes(), &changes).unwrap()).unwrap();
         assert_eq!(
             rewritten,
             "---\nid: RR-1\ntitle: \"A ticket\"\nstatus: ready\nactivity_at: 2026-08-04T05:00:00.000000Z\n---\n\n## Description\n\nBody.\n"
@@ -2980,7 +3015,10 @@ mod tests {
     #[test]
     fn bounded_text_collapses_and_refuses() {
         assert_eq!(bounded_text("  a \n\t b ", "x", 10).unwrap(), "a b");
-        assert_eq!(bounded_text(" ", "x", 10).unwrap_err().message, "x is required");
+        assert_eq!(
+            bounded_text(" ", "x", 10).unwrap_err().message,
+            "x is required"
+        );
         assert_eq!(
             bounded_text("abcdefghijk", "x", 10).unwrap_err().message,
             "x exceeds 10 bytes"
@@ -2999,7 +3037,14 @@ mod tests {
             validate_source_path(&Value::from(" src\\a.rs ")).unwrap(),
             "src/a.rs"
         );
-        for bad in ["", "/abs", "a/../b", ".orchestrator/x", "./.relay", "a\u{1}b"] {
+        for bad in [
+            "",
+            "/abs",
+            "a/../b",
+            ".orchestrator/x",
+            "./.relay",
+            "a\u{1}b",
+        ] {
             assert!(validate_source_path(&Value::from(bad)).is_err(), "{bad}");
         }
         assert!(is_lifecycle_path("././.orchestrator"));
