@@ -5,10 +5,13 @@ socket")."""
 from __future__ import annotations
 
 import os
+import shlex
 import stat
+import sys
 import unittest
 
 from bridge_contract_support import (
+    FAKES,
     STARTUP_GREETING,
     BridgeCase,
     is_fifo,
@@ -199,6 +202,26 @@ class LeftoverPathsContract:
         self.turn_delivered("the fifo works")
 
 
+class SpeechBinaryContract:
+    start_bridge = False
+
+    def test_without_a_command_the_bridge_starts_relay_speech(self):
+        """Process: with `RELAY_SPEECH_SERVICE_CMD` unset, the bridge starts
+        the relay-speech `RELAY_SPEECH_BINARY` names, with its `--config`
+        (RR-481's default; the Rust bridge follows it since RR-493)."""
+        wrapper = self.box.bin / "relay-speech"
+        wrapper.write_text(
+            f"#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(FAKES / 'speech_service.py'))} \"$@\"\n"
+        )
+        wrapper.chmod(0o755)
+        self.box.extra_env.update({"RELAY_SPEECH_SERVICE_CMD": "", "RELAY_SPEECH_BINARY": str(wrapper)})
+        self.box.start()
+        started = [record for record in self.box.speech_records() if record["record"] == "started"][0]
+        self.assertEqual(started["ppid"], self.box.process.pid)
+        self.assertEqual(started["config"], str(self.box.config_path))
+        self.assertEqual(len(self.box.speech_requests("hello")), 1)
+
+
 class ClaudeProcess(ProcessContract, BridgeCase):
     provider = "claude"
 
@@ -236,6 +259,14 @@ class ClaudeLeftoverPaths(LeftoverPathsContract, BridgeCase):
 
 
 class CodexLeftoverPaths(LeftoverPathsContract, BridgeCase):
+    provider = "codex"
+
+
+class ClaudeSpeechBinary(SpeechBinaryContract, BridgeCase):
+    provider = "claude"
+
+
+class CodexSpeechBinary(SpeechBinaryContract, BridgeCase):
     provider = "codex"
 
 

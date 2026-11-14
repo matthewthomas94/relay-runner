@@ -72,7 +72,10 @@ class SkillCleanupTests(unittest.TestCase):
         launch = launch.split("# Record the launching cwd", 1)[1]
 
         self.assertNotIn("record_support_event shell bridge_readiness ready", launch)
-        self.assertIn('if "$PYTHON" "$SERVICES_BUNDLE/voice_bridge.py"', launch)
+        # RR-493: relay-rs bridge by default, voice_bridge.py as the rollback.
+        self.assertIn('BRIDGE_COMMAND=("$RUST_BRIDGE" bridge)', launch)
+        self.assertIn('BRIDGE_COMMAND=("$PYTHON" "$SERVICES_BUNDLE/voice_bridge.py")', launch)
+        self.assertIn('if "${BRIDGE_COMMAND[@]}" --config "$CONFIG_PATH" --relay "$@"; then', launch)
         self.assertIn("record_support_event shell bridge_readiness failed", launch)
 
     def test_shell_installers_prefer_chatgpt_codex_before_legacy_app(self):

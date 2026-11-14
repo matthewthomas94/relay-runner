@@ -16,7 +16,7 @@ final class WatchdogSessionRecoveryTests: XCTestCase {
             let script = script(provider: provider, spool: "/tmp/relay-sessions/a")
             XCTAssertFalse(script.contains("pkill"))
             XCTAssertTrue(script.contains("BRIDGE_PID=$(cat \(ProcessManager.bridgePIDPath)"))
-            XCTAssertTrue(script.contains("grep -q '[v]oice_bridge.py'"))
+            XCTAssertTrue(script.contains("grep -qE '[v]oice_bridge[.]py|[r]elay-rs bridge'"))
             XCTAssertTrue(script.contains("kill \"$BRIDGE_PID\""))
             XCTAssertTrue(script.contains(ProcessManager.bridgePIDPath))
         }
@@ -93,6 +93,7 @@ final class WatchdogSessionRecoveryTests: XCTestCase {
         let pidFile = dir.appendingPathComponent("voice_bridge.pid").path
         try "4242\n".write(toFile: pidFile, atomically: true, encoding: .utf8)
         let bridge = "python3 /app/services/voice_bridge.py --relay"
+        let rustBridge = "/app/Contents/MacOS/relay-rs /app/Contents/MacOS/relay-rs bridge --config /c.toml --relay"
 
         func probe(
             signal: Int32,
@@ -108,6 +109,8 @@ final class WatchdogSessionRecoveryTests: XCTestCase {
         }
 
         XCTAssertEqual(probe(signal: 0, kernel: bridge).result, .alive)
+        XCTAssertEqual(probe(signal: 0, kernel: rustBridge).result, .alive)
+        XCTAssertEqual(probe(signal: 0, kernel: nil, ps: .found(rustBridge)).result, .alive)
         XCTAssertEqual(probe(signal: EPERM, kernel: bridge).result, .alive)
         XCTAssertEqual(probe(signal: ESRCH, kernel: nil), .init(result: .dead, failedProbes: ["pid_signal"]))
         XCTAssertEqual(probe(signal: 0, kernel: "/usr/bin/vim"), .init(result: .dead, failedProbes: ["pid_signal"]))
@@ -118,6 +121,18 @@ final class WatchdogSessionRecoveryTests: XCTestCase {
                        "a ps that cannot spawn is not a dead bridge")
         try FileManager.default.removeItem(atPath: pidFile)
         XCTAssertEqual(probe(signal: 0, kernel: bridge).result, .dead, "no pid file")
+    }
+
+    /// RR-493: the bridge is `relay-rs bridge` by default and `voice_bridge.py`
+    /// under the RELAY_BRIDGE_RUNTIME=python rollback.
+    func testBothBridgeRuntimesAreRecognisedByTheirCommandLine() {
+        XCTAssertTrue(ProcessManager.isVoiceBridgeCommandLine("/usr/bin/python3 /app/services/voice_bridge.py --relay"))
+        XCTAssertTrue(ProcessManager.isVoiceBridgeCommandLine(
+            "/Applications/Relay Runner.app/Contents/MacOS/relay-rs bridge --config /c.toml --relay"))
+        for other in ["/app/Contents/MacOS/relay-rs hook", "/app/Contents/MacOS/relay-rs messenger",
+                      "/app/Contents/MacOS/relay-speech", "/bin/bash /app/scripts/relay-bridge --relay"] {
+            XCTAssertFalse(ProcessManager.isVoiceBridgeCommandLine(other), other)
+        }
     }
 
     func testDaemonLivenessUsesPgrepOnlyWhenThePidCheckIsInconclusive() {
@@ -163,6 +178,10 @@ final class WatchdogSessionRecoveryTests: XCTestCase {
 
         XCTAssertTrue(ProcessManager.recordedBridgeProcessAlive(
             pidFile: pidFile, commandLine: { _ in "python3 /app/services/voice_bridge.py --relay" }))
+        XCTAssertTrue(ProcessManager.recordedBridgeProcessAlive(
+            pidFile: pidFile, commandLine: { _ in "/app/Contents/MacOS/relay-rs bridge --relay" }))
+        XCTAssertFalse(ProcessManager.recordedBridgeProcessAlive(
+            pidFile: pidFile, commandLine: { _ in "/app/Contents/MacOS/relay-rs messenger" }), "another relay-rs helper")
         XCTAssertFalse(ProcessManager.recordedBridgeProcessAlive(
             pidFile: pidFile, commandLine: { _ in "/usr/bin/vim notes.txt" }), "recycled pid")
         XCTAssertFalse(ProcessManager.recordedBridgeProcessAlive(
@@ -195,6 +214,8 @@ final class WatchdogSessionRecoveryTests: XCTestCase {
         }
 
         XCTAssertEqual(run(pid: "4242", command: "python3 /app/services/voice_bridge.py --relay"), [4242])
+        XCTAssertEqual(run(pid: "4242", command: "/app/Contents/MacOS/relay-rs bridge --relay"), [4242])
+        XCTAssertEqual(run(pid: "4242", command: "/app/Contents/MacOS/relay-rs hook"), [], "another relay-rs helper")
         XCTAssertEqual(run(pid: "4242", command: "/usr/bin/vim notes.txt"), [], "recycled pid")
         XCTAssertEqual(run(pid: "4242", command: nil), [], "dead pid")
         XCTAssertEqual(run(pid: nil, command: "voice_bridge.py"), [], "no pid file")

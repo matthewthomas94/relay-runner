@@ -20,7 +20,7 @@ python3 -m unittest discover -s tests/contract -p 'test_bridge_contract*.py'
 | `RELAY_BRIDGE_CONTRACT_WAIT_SECONDS` | `10` | How long a case waits for something the bridge should do promptly. |
 | `RELAY_BRIDGE_CONTRACT_QUIET_SECONDS` | `1.0` | How long a case watches for something that must not happen. |
 
-The suite needs macOS and Python 3.10 or newer. A full run is 287 cases (each starts its own bridge, some two) and takes about 16 minutes; run one area with `-p 'test_bridge_contract_replies.py'`.
+The suite needs macOS and Python 3.10 or newer. A full run is 289 cases (each starts its own bridge, some two) and takes about 16 minutes; run one area with `-p 'test_bridge_contract_replies.py'`.
 
 Each case builds a sandbox under a fresh `/tmp/rbc-XXXX` folder (short, because Unix socket paths are limited to 104 bytes on macOS) and starts the bridge with **only** the environment the sandbox builds: `HOME`, `PATH` (the sandbox's `bin/` first, then `/usr/bin:/bin`), `TMPDIR`, `LANG` and the variables in [Environment](#environment). Every path the bridge reads or writes is redirected into the sandbox, so a case never touches the sockets, mailbox, inbox or speech of a running Relay Runner session. The one exception is the continuity reply path, which the bridge accepts only under `/tmp` (see [Continuity](#continuity)); that case uses a unique name and removes the file.
 
@@ -38,7 +38,9 @@ RELAY_VOICE_BRIDGE_CMD="'$PWD/rust/target/debug/relay-rs' bridge" \
   python3 -m unittest discover -s tests/contract -p 'test_bridge_contract*.py'
 ```
 
-The Python bridge stays the default until the cut-over (RR-493). With `RELAY_BRIDGE_RUNTIME=rust`, `services/voice_bridge.py` replaces itself with `relay-rs bridge`, passing the same arguments. The binary comes from `RELAY_RS_BINARY`, or else the app bundle's `Contents/MacOS/relay-rs`. With no binary found, the bridge stays on Python and notes that on stderr. When `RELAY_SPEECH_SERVICE_CMD` is unset, the switch sets it to the speech service this interpreter would have started. The same cases run through the switch:
+Since the cut-over (RR-493) the Rust bridge is the default. `scripts/relay-bridge` starts `relay-rs bridge` from the app bundle's `Contents/MacOS` with the same arguments, for both providers and for Start Session, `--start-daemon`, the installed skills and the app watchdog alike. `RELAY_BRIDGE_RUNTIME=python` in the app's environment is the rollback switch for one release: `scripts/relay-bridge` then runs `services/voice_bridge.py`, as does a build without `relay-rs`, such as a source checkout. Set it with `launchctl setenv RELAY_BRIDGE_RUNTIME python` and relaunch Relay Runner; `launchctl unsetenv RELAY_BRIDGE_RUNTIME` undoes it. Relay Runner and the scripts recognise a bridge process by either command line, `voice_bridge.py` or `relay-rs bridge`, so liveness, the recorded-pid stop and stray-bridge cleanup work for both.
+
+Run directly, `services/voice_bridge.py` is the Python bridge. With `RELAY_BRIDGE_RUNTIME=rust` it replaces itself with `relay-rs bridge`, passing the same arguments, for testing. The binary comes from `RELAY_RS_BINARY`, or else the app bundle's `Contents/MacOS/relay-rs`. With no binary found, the bridge stays on Python and notes that on stderr. When `RELAY_SPEECH_SERVICE_CMD` is unset and the Rust bridge would fall back to the Python speech service, the switch, like `scripts/relay-bridge`, sets it to that service under this interpreter, since the Rust bridge has no Python of its own. The same cases run through the switch:
 
 ```bash
 RELAY_VOICE_BRIDGE_CMD="/usr/bin/env RELAY_BRIDGE_RUNTIME=rust 'RELAY_RS_BINARY=$PWD/rust/target/debug/relay-rs' '$(command -v python3)' '$PWD/services/voice_bridge.py'" \
@@ -49,7 +51,7 @@ Intentional differences, none visible to either provider:
 
 - **`--relay` only.** The legacy direct mode exits with status 2.
 - **No in-process speech.** `RELAY_SPEECH_SERVICE_MODE=legacy` is not read. If the speech service cannot be started, the Rust bridge reports it on stderr and exits with status 1. The Python bridge falls back to speaking in-process.
-- **Default speech service command.** When `RELAY_SPEECH_SERVICE_CMD` is unset, the default is `python3` plus the bundled `Contents/SharedSupport/services/speech_service.py`. From a checkout, it is the nearest `services/speech_service.py` above the binary.
+- **Python speech fallback interpreter.** The Rust bridge chooses the speech service as the Python bridge does since RR-481: `RELAY_SPEECH_SERVICE_CMD`, else `relay-speech` (`RELAY_SPEECH_BINARY`, or the one beside `relay-rs`), else, with `RELAY_SPEECH_RUNTIME=python` or no `relay-speech`, the Python service. Without `RELAY_SPEECH_SERVICE_CMD`, that Python service runs under `python3` from `PATH`, with the bundled `Contents/SharedSupport/services/speech_service.py`, or from a checkout the nearest `services/speech_service.py` above the binary. The Python bridge uses its own interpreter.
 - **Relay Remote is always the Rust server.** `RELAY_REMOTE_RUNTIME` is not read. The `ClaudeRustRemote` and `CodexRustRemote` classes need the reference bridge, so they skip under `RELAY_VOICE_BRIDGE_CMD`; the `ClaudeRemote` and `CodexRemote` cases cover the in-process server.
 
 ## The fakes
@@ -77,6 +79,7 @@ voice_bridge --config <config.toml> --relay [--suppress-startup-greeting]
 | Registers with `POST /v1/orchestrator-session/ensure` (repo path, provider, session key) and heartbeats the returned session every `ORCHESTRATOR_HEARTBEAT_SECONDS`. | process/test_startup_registers_the_orchestrator_session_and_heartbeats_it |
 | Runs and delivers commands when no daemon answers. | process/test_bridge_runs_and_delivers_commands_without_the_daemon |
 | Starts the speech service with `--socket`/`--config` and the session's state file, `SPEECH_EVENT_LOG`, `TTS_CONTROL_SOCK` and `VOICE_STATE_SOCK`. | process/test_startup_starts_the_speech_service_with_the_session_paths |
+| Without `RELAY_SPEECH_SERVICE_CMD`, starts the relay-speech `RELAY_SPEECH_BINARY` names. | process/test_without_a_command_the_bridge_starts_relay_speech |
 | Restarts a crashed speech service and resubmits its queue. | restart/test_a_crashed_speech_service_is_started_again_and_given_its_queue |
 | Speaks the startup greeting once, with no command. | process/test_startup_greeting_is_spoken_once_without_a_command |
 | `--suppress-startup-greeting` skips the greeting and the messenger's first reply. | process/test_suppressed_greeting_also_skips_the_first_messenger_reply |
@@ -98,6 +101,7 @@ The suite sets every variable below in each sandbox unless the Case column names
 | `RELAY_REMOTE_SOCK` | `/tmp/relay_remote.sock` | Relay Remote stream socket. | remote/test_first_hello_is_welcomed_fresh |
 | `TTS_CONTROL_SOCK` | `/tmp/tts_control.sock` | Passed to the speech service. | process/test_startup_starts_the_speech_service_with_the_session_paths |
 | `RELAY_SPEECH_SERVICE_CMD` | `<python> services/speech_service.py` | The speech service command. | process/test_startup_starts_the_speech_service_with_the_session_paths |
+| `RELAY_SPEECH_BINARY` | `relay-speech` in the app bundle's `Contents/MacOS` (beside `relay-rs` for the Rust bridge) | The speech service started when `RELAY_SPEECH_SERVICE_CMD` is unset and `RELAY_SPEECH_RUNTIME` is not `python`. | process/test_without_a_command_the_bridge_starts_relay_speech |
 | `RELAY_SPEECH_SERVICE_SOCK` | `/tmp/relay_speech_service.sock` | The speech service's socket. | process/test_startup_starts_the_speech_service_with_the_session_paths |
 | `SPEECH_EVENT_LOG` | `/tmp/relay_speech_events.jsonl` | Passed to the speech service. | process/test_startup_starts_the_speech_service_with_the_session_paths |
 | `VOICE_INTENT_INBOX` | `/tmp/relay_intent_inbox.sqlite3` | The durable intent inbox. | commands/test_claim_then_acknowledgement_moves_the_intent_through_its_states |

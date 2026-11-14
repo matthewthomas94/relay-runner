@@ -99,13 +99,15 @@ final class BridgeRecoverySessionStartTests: XCTestCase {
         let dir = try temporaryDirectory()
         let bridgeScript = dir.appendingPathComponent("voice_bridge.py")
         let otherScript = dir.appendingPathComponent("other_worker.pl")
-        for url in [bridgeScript, otherScript] {
+        // RR-493: perl runs this as `.../relay-rs bridge`, the Rust bridge's command line.
+        let rustBridge = dir.appendingPathComponent("relay-rs")
+        for url in [bridgeScript, otherScript, rustBridge] {
             try "sleep 30;\n".write(to: url, atomically: true, encoding: .utf8)
         }
-        func spawn(_ url: URL) throws -> Process {
+        func spawn(_ url: URL, _ arguments: [String] = []) throws -> Process {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-            proc.arguments = [url.path]
+            proc.arguments = [url.path] + arguments
             try proc.run()
             addTeardownBlock { if proc.isRunning { proc.terminate() } }
             return proc
@@ -114,7 +116,9 @@ final class BridgeRecoverySessionStartTests: XCTestCase {
         let olderBuild = try spawn(bridgeScript)
         let recorded = try spawn(bridgeScript)
         let unrelated = try spawn(otherScript)
-        let pids = [olderGeneration, olderBuild, recorded, unrelated].map { String($0.processIdentifier) }
+        let olderRust = try spawn(rustBridge, ["bridge"])
+        let rustHelper = try spawn(rustBridge, ["hook"])
+        let pids = [olderGeneration, olderBuild, recorded, unrelated, olderRust, rustHelper].map { String($0.processIdentifier) }
         let log = dir.appendingPathComponent("voice_bridge.log").path
 
         let stop = ProcessManager.strayBridgeStopScript(listing: "ps -p \(pids.joined(separator: ",")) -o pid=,command=")
@@ -123,13 +127,14 @@ final class BridgeRecoverySessionStartTests: XCTestCase {
             "VOICE_BRIDGE_LOG": log,
         ]), 0)
 
-        for proc in [olderGeneration, olderBuild] {
+        for proc in [olderGeneration, olderBuild, olderRust] {
             let deadline = Date().addingTimeInterval(5)
             while proc.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
             XCTAssertFalse(proc.isRunning, "a stray bridge is stopped")
         }
         XCTAssertTrue(recorded.isRunning, "the recorded bridge is stopped by its PID step")
         XCTAssertTrue(unrelated.isRunning)
+        XCTAssertTrue(rustHelper.isRunning, "another relay-rs helper is not a bridge")
         XCTAssertTrue(try String(contentsOfFile: log, encoding: .utf8)
             .contains("stopping stray voice bridge pid=\(olderGeneration.processIdentifier)"))
     }
@@ -142,6 +147,7 @@ final class BridgeRecoverySessionStartTests: XCTestCase {
             XCTAssertTrue(text.contains(stop))
             XCTAssertFalse(text.contains("pkill"))
             XCTAssertFalse(text.contains("voice_bridge.py"), "the script and its subshells must not match the stray pattern")
+            XCTAssertFalse(text.contains("relay-rs bridge"), "the script and its subshells must not match the stray pattern")
             let lines = text.components(separatedBy: "\n")
             let recordedKill = lines.firstIndex { $0.contains("kill \"$BRIDGE_PID\"") } ?? Int.max
             let strayKill = lines.firstIndex { $0.contains("kill \"$stray_pid\"") } ?? -1
