@@ -1629,7 +1629,11 @@ final class AppState {
                 workingDirectory: binding.context.workingDirectory,
                 spoolDirectory: spool.directory,
                 appSessionID: owner["app_session_id"] ?? "",
-                recoveryGeneration: continuityRecoveryGenerationBySession[sessionID] ?? owner["recovery_generation"] ?? "",
+                // The session's own launch generation first: sessions sharing a
+                // repository share the per-repository entry, and the newest
+                // launch would otherwise re-own the others' turns.
+                recoveryGeneration: owner["recovery_generation"].flatMap { $0.isEmpty ? nil : $0 }
+                    ?? continuityRecoveryGenerationBySession[sessionID] ?? "",
                 projectName: sessionLabel(contextID: contextID),
                 focus: contextID == focusedID,
                 liveSessionKeys: liveKeys
