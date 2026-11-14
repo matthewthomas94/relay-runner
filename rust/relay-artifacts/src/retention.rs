@@ -581,7 +581,8 @@ fn is_ticket_path(path: &str) -> bool {
 
 /// `PurePosixPath(path).name`.
 fn posix_name(path: &str) -> &str {
-    path.split('/').rfind(|part| !part.is_empty() && *part != ".")
+    path.split('/')
+        .rfind(|part| !part.is_empty() && *part != ".")
         .unwrap_or("")
 }
 

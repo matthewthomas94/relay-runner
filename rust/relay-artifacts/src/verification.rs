@@ -1792,6 +1792,8 @@ impl Plist {
                 Ok(number) => number.to_string(),
                 Err(_) => text.clone(),
             },
+            // The guard spells out that -0.0 is falsy too, as `bool(-0.0)` is.
+            #[allow(clippy::redundant_guards)]
             Plist::Real(text) => match text.trim().parse::<f64>() {
                 Ok(number) if number == 0.0 => String::new(),
                 Ok(number) => json::float_repr(number),

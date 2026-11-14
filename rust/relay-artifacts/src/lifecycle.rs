@@ -213,6 +213,9 @@ pub type TicketFields = HashMap<String, String>;
 
 type Candidate = (String, Vec<u8>, TicketFields, Vec<String>);
 
+/// Each ticket's status by id, and the dependents that may progress.
+type DependentCandidates = (HashMap<String, String>, Arc<Vec<Candidate>>);
+
 struct CandidateCache {
     head: String,
     statuses: HashMap<String, String>,
@@ -379,6 +382,7 @@ impl ArtifactLifecycleCoordinator {
             _ => f64::INFINITY,
         };
         // `not (difference <= bound)`, so a NaN is stale as in Python.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must count as stale
         if !(stale <= 0.000_001) {
             return Err(validation("confirmed project scope token is stale"));
         }
@@ -1984,10 +1988,7 @@ impl ArtifactLifecycleCoordinator {
             .map(|(commit_id, _)| LifecycleWriteResult::new(event_id, &commit_id, true)))
     }
 
-    fn dependent_candidates_at(
-        &self,
-        snapshot: &Snapshot,
-    ) -> Result<(HashMap<String, String>, Arc<Vec<Candidate>>)> {
+    fn dependent_candidates_at(&self, snapshot: &Snapshot) -> Result<DependentCandidates> {
         // A commit's files never change, and the app's watchdog sweeps every
         // few seconds, so each head's tickets are parsed once (RR-440).
         let mut cache = self
