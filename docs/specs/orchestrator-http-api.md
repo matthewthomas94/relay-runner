@@ -547,3 +547,53 @@ with `services/orchestrator.py`; the suite appends `--config <file>`), and
 `RELAY_ARTIFACT_MIGRATION_CMD` the board migration command. Timeouts:
 `RELAY_ORCHESTRATOR_START_TIMEOUT` (30 s) and `RELAY_ORCHESTRATOR_WAIT_TIMEOUT`
 (60 s).
+
+## The Rust daemon
+
+`rust/relay-orchestrator` (RR-497) is the Rust port of this daemon:
+`relay-orchestrator [--config <path>] [--print-port]`, with the same
+isolation switches, port file, databases, files and artifact commits, so a
+Rust and a Python daemon can take turns on one data root. It serves every
+route in the index from the crates of the earlier parts (`relay-artifacts`,
+`relay-store`, `relay-services`). Nothing ships it yet; the cut-over is
+RR-500.
+
+`test_orchestrator_contract_rust_daemon.py` repeats every daemon case class
+of the suite against `rust/target/debug/relay-orchestrator` (or
+`RELAY_RUST_ORCHESTRATOR`), and the RR-495 `RustMigrated*` classes with a
+Rust migration and a Rust daemon on one repository. It skips when the binary
+is not built. To run the whole suite against the binary instead, quote the
+path: the suite splits `RELAY_ORCHESTRATOR_CMD` like a shell, and the
+Application Support worktrees have a space in their path.
+
+```bash
+(cd rust && cargo build -p relay-orchestrator)
+/opt/homebrew/bin/python3 -m unittest discover -s tests/contract -p 'test_orchestrator_contract_rust_daemon.py'
+RELAY_ORCHESTRATOR_CMD="'$PWD/rust/target/debug/relay-orchestrator'" \
+  /opt/homebrew/bin/python3 -m unittest discover -s tests/contract -p 'test_orchestrator_contract_*.py'
+```
+
+**Execution is part 5 (RR-498).** The Rust daemon does not yet start worker,
+review or spike processes, merge a reviewed run, publish a verification
+close-out or run the continuity agent. The routes that would do so run every
+check the Python daemon makes before that point (missing fields, unknown or
+wrongly-stated runs and tickets, scope tokens, dependency queueing, worker
+sizing refusals, source-checkout blockers), answering those exactly as
+Python does. Where Python would go on to create a worktree, launch a process,
+merge or publish, the route answers `500 {"error": "<what> is not available
+in the Rust daemon yet; worker execution is ported in RR-498"}` and writes
+nothing. The affected routes are `POST /v1/runs` (and the dispatches made by
+the ready sweeps, orchestrator actions, the command loop and dependency
+progression), `POST /v1/runs/{run_id}/review`, `POST
+/v1/runs/{run_id}/review/decision`, `POST
+/v1/runs/{run_id}/resume-verification`, and `POST /v1/runs/{run_id}/cancel`
+for a spike run. `DEFERRED_TO_RR_498` in the test module lists every contract
+case that needs this execution.
+
+Smaller differences, none visible to the clients:
+
+- Support diagnostics (`orchestrator_launch` events in `RELAY_DIAGNOSTICS_DIR`)
+  are not recorded yet.
+- A `Failed` or `Canceled` spike whose lease is still held at startup keeps
+  its lease until spike execution can publish its result.
+- Daemon log lines that Python prints as a `dict` repr are printed as JSON.

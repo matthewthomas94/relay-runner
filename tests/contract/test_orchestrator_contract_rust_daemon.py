@@ -50,6 +50,39 @@ _SPIKE = "needs a spike worker (RR-498)"
 
 # "<case class>.<test>": why it waits for part 5.
 DEFERRED_TO_RR_498 = {
+    "DispatchTests.test_implementation_run_is_reviewed_and_merged": _REVIEW,
+    "DispatchTests.test_dispatch_context_reaches_the_worker_prompt": _WORKER,
+    "CodexDispatchTests.test_codex_run_is_reviewed_and_merged": _REVIEW,
+    "RunFailureTests.test_nonzero_worker_exit_fails_the_run": _WORKER,
+    "RunFailureTests.test_clean_exit_without_a_commit_fails_the_run": _WORKER,
+    "RunFailureTests.test_clean_exit_with_an_unfinished_ticket_fails_the_run": _WORKER,
+    "ReviewTests.test_undecided_review_leaves_the_run_awaiting_review": _REVIEW,
+    "ReviewTests.test_retry_decision_fails_the_run_with_the_reviewer_reason": _REVIEW,
+    "VerificationBlockedTests.test_blocked_run_is_merged_but_held_until_resumed": _REVIEW,
+    "VerificationBlockedTests.test_resume_rejects_a_run_that_is_not_blocked":
+        "dispatches and finishes a run before the refusal (RR-498)",
+    "CancelTests.test_cancel_stops_the_worker_and_removes_the_worktree": _WORKER,
+    "CancelTests.test_cancel_can_keep_the_worktree": _WORKER,
+    "RunQueryTests.test_list_filters_by_state_and_limit":
+        "dispatches and finishes runs before listing them (RR-498)",
+    "RunQueryTests.test_outcome_routes_reject_a_legacy_run":
+        "dispatches and finishes a legacy run before the refusal (RR-498)",
+    "ArtifactImplementationTests.test_outcome_review_merge_and_dependency_progression": _REVIEW,
+    "ArtifactDispatchErrorTests.test_an_outcome_naming_another_commit_fails_the_run_at_exit":
+        _WORKER,
+    "SpikeTests.test_spike_result_is_recorded_without_review_or_progression": _SPIKE,
+    "ReadySweepTests.test_queued_dispatch_then_sweep_then_drain_completion":
+        "the sweep's dispatch needs a worker process (RR-498)",
+    "ReadySweepTests.test_a_drain_can_be_canceled":
+        "the golden drain holds the item of a claimed run (RR-498)",
+    "RunsIndexTests.test_runs_json_mirrors_the_ledger_for_the_board": _WORKER,
+    "ProgramAndFollowupTests.test_spike_followups_are_proposed_and_reviewed":
+        "needs a completed spike run (RR-498)",
+    "RestartTests.test_killed_daemon_marks_in_flight_runs_stalled_on_start":
+        "needs runs in flight (RR-498)",
+    "RestartTests.test_stopped_daemon_cancels_in_flight_runs": "needs runs in flight (RR-498)",
+    "PreviousReleaseDatabaseTests.test_new_runs_continue_the_release_ledger": _REVIEW,
+    "IsolationTests.test_a_full_session_stays_inside_the_sandbox": _REVIEW,
 }
 
 
