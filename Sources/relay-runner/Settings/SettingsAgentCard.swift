@@ -55,13 +55,18 @@ struct SettingsAgentCard: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            BoardDarkSurfaceStyle.panelFill
+            // The dots sit behind the panel: its glass blurs them, and the
+            // name and status stay sharp on top.
             SettingsAgentParticleView(
                 theme: theme,
                 reduceMotion: reduceMotion
             )
             .allowsHitTesting(false)
             .accessibilityHidden(true)
+            LiquidGlassBackdrop(blendingMode: .withinWindow)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            BoardDarkSurfaceStyle.panelFill
 
             VStack(spacing: 11) {
                 RelaySwap(presentation.name, style: .text, alignment: .center) { name in

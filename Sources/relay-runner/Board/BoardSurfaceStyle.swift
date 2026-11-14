@@ -96,11 +96,14 @@ enum BoardDarkSurfaceStyle {
 }
 
 /// The desktop behind the window, blurred: what every glass level sits on.
+/// Within the window, it blurs the app's own content drawn beneath it.
 struct LiquidGlassBackdrop: NSViewRepresentable {
+    var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = .hudWindow
-        view.blendingMode = .behindWindow
+        view.blendingMode = blendingMode
         view.state = .active
         view.appearance = NSAppearance(named: .darkAqua)
         return view
