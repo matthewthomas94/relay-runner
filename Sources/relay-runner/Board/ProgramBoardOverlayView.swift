@@ -3126,24 +3126,8 @@ struct ProgramTicketDetailPanel: View {
                     }
                 }
                 ProgramDetailActionButton(
-                    icon: .layers,
-                    title: "Copy ID",
-                    disabled: detail.identity == nil,
-                    help: "Copy ticket id"
-                ) {
-                    copyToPasteboard(detail.identity?.ticketID)
-                }
-                ProgramDetailActionButton(
-                    icon: .copy,
-                    title: "Copy Path",
-                    disabled: detail.ticketPath == nil,
-                    help: "Copy ticket path"
-                ) {
-                    copyToPasteboard(detail.ticketPath)
-                }
-                ProgramDetailActionButton(
                     icon: .folder,
-                    title: "Reveal",
+                    title: "Reveal in Finder",
                     disabled: detail.ticket == nil,
                     help: detail.ticket == nil ? "Ticket unavailable" : "Reveal ticket file"
                 ) {
@@ -3263,12 +3247,6 @@ struct ProgramTicketDetailPanel: View {
             return
         }
         rows.append(ProgramDetailRow(label: label, value: prettify ? value.displayLabel : value))
-    }
-
-    private func copyToPasteboard(_ value: String?) {
-        guard let value, !value.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
     }
 
     private func revealTicket() {
