@@ -73,6 +73,8 @@ final class BoardOverlayScrollContainer: NSView {
     private var lastViewportHeight: CGFloat = 0
     private var lastContentHeight: CGFloat = 0
     private var lastContentMinY: CGFloat = 0
+    /// Overflowing content is laid out narrower, leaving the thumb its own lane.
+    private var reservesThumbGutter = false
     private var isPerformingLayout = false
     private var workCardsByView: [ObjectIdentifier: WorkCardHitEntry] = [:]
     private var workCardHitIndex: [WorkCardHitEntry] = []
@@ -190,13 +192,8 @@ final class BoardOverlayScrollContainer: NSView {
         hostingView.translatesAutoresizingMaskIntoConstraints = true
 
         thumbView.wantsLayer = true
-        thumbView.layer?.backgroundColor = NSColor(
-            srgbRed: 226 / 255,
-            green: 232 / 255,
-            blue: 240 / 255,
-            alpha: 0.58
-        ).cgColor
-        thumbView.layer?.cornerRadius = 2.5
+        thumbView.layer?.backgroundColor = RelayScrollbar.thumbNSColor.cgColor
+        thumbView.layer?.cornerRadius = RelayScrollbar.width / 2
         thumbView.alphaValue = 0
         addSubview(thumbView)
 
@@ -219,28 +216,23 @@ final class BoardOverlayScrollContainer: NSView {
         isPerformingLayout = true
         defer { isPerformingLayout = false }
 
-        let proposedHeight = max(hostingView.frame.height, 1)
-        let proposedFrame = CGRect(
-            origin: .zero,
-            size: CGSize(width: viewport.width, height: proposedHeight)
-        )
-        if hostingView.frame != proposedFrame {
-            hostingView.frame = proposedFrame
+        var (contentMinY, contentHeight) = fitHostingView(viewportWidth: viewport.width)
+        // Narrowing only makes content taller, so the full-width height
+        // decides: reserve the lane when that overflows, release it when not.
+        let overflows = contentHeight > viewport.height + 1
+        if overflows != reservesThumbGutter {
+            if overflows {
+                reservesThumbGutter = true
+                (contentMinY, contentHeight) = fitHostingView(viewportWidth: viewport.width)
+            } else {
+                reservesThumbGutter = false
+                (contentMinY, contentHeight) = fitHostingView(viewportWidth: viewport.width)
+                if contentHeight > viewport.height + 1 {
+                    reservesThumbGutter = true
+                    (contentMinY, contentHeight) = fitHostingView(viewportWidth: viewport.width)
+                }
+            }
         }
-        hostingView.layoutSubtreeIfNeeded()
-        let fittingHeight = max(hostingView.fittingSize.height, 1)
-        let fittingFrame = CGRect(
-            origin: .zero,
-            size: CGSize(width: viewport.width, height: fittingHeight)
-        )
-        if hostingView.frame != fittingFrame {
-            hostingView.frame = fittingFrame
-        }
-        hostingView.layoutSubtreeIfNeeded()
-        let boundaryRange = hostingView.explicitContentBoundaryRange()
-        let contentMinY = boundaryRange?.lowerBound ?? 0
-        let contentMaxY = boundaryRange?.upperBound ?? fittingHeight
-        let contentHeight = max(1, contentMaxY - contentMinY)
 
         if !force,
            abs(viewport.width - lastLaidOutWidth) < 0.5,
@@ -280,6 +272,27 @@ final class BoardOverlayScrollContainer: NSView {
         lastContentMinY = contentMinY
         refreshMountedWorkCardFrames()
         schedulePointerReconciliation()
+    }
+
+    /// Sizes the hosted content to its fitting height at the width the thumb
+    /// lane leaves it, and returns where its content starts and how tall it is.
+    private func fitHostingView(viewportWidth: CGFloat) -> (minY: CGFloat, height: CGFloat) {
+        let width = max(1, viewportWidth - (reservesThumbGutter ? RelayScrollbar.gutter : 0))
+        let proposedFrame = CGRect(x: 0, y: 0, width: width, height: max(hostingView.frame.height, 1))
+        if hostingView.frame != proposedFrame {
+            hostingView.frame = proposedFrame
+        }
+        hostingView.layoutSubtreeIfNeeded()
+        let fittingHeight = max(hostingView.fittingSize.height, 1)
+        let fittingFrame = CGRect(x: 0, y: 0, width: width, height: fittingHeight)
+        if hostingView.frame != fittingFrame {
+            hostingView.frame = fittingFrame
+        }
+        hostingView.layoutSubtreeIfNeeded()
+        let boundaryRange = hostingView.explicitContentBoundaryRange()
+        let contentMinY = boundaryRange?.lowerBound ?? 0
+        let contentMaxY = boundaryRange?.upperBound ?? fittingHeight
+        return (contentMinY, max(1, contentMaxY - contentMinY))
     }
 
     private func clampScrollOffset(documentHeight: CGFloat, viewportHeight: CGFloat) {
@@ -334,14 +347,14 @@ final class BoardOverlayScrollContainer: NSView {
             thumbView.frame = .zero
             return
         }
-        let trackInset: CGFloat = 6
-        let width: CGFloat = 5
+        let trackInset = RelayScrollbar.trackInset
+        let width = RelayScrollbar.width
         let trackHeight = max(0, bounds.height - trackInset * 2)
-        let height = min(trackHeight, max(34, trackHeight * viewportHeight / contentHeight))
+        let height = min(trackHeight, max(RelayScrollbar.minimumLength, trackHeight * viewportHeight / contentHeight))
         let maxScroll = max(1, contentHeight - viewportHeight)
         let y = trackInset + (trackHeight - height) * scrollOffset / maxScroll
         thumbView.frame = CGRect(
-            x: bounds.maxX - width - 2,
+            x: bounds.maxX - width - RelayScrollbar.edgeInset,
             y: y,
             width: width,
             height: height
@@ -398,7 +411,7 @@ final class BoardOverlayScrollContainer: NSView {
             context.timingFunction = RelayMotion.enterCurve.mediaTimingFunction
             thumbView.animator().alphaValue = 1
         }
-        scheduleHide(after: 0.85)
+        scheduleHide(after: RelayScrollbar.lingerDuration)
     }
 
     private func scheduleHide(after delay: TimeInterval) {

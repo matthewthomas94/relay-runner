@@ -22,6 +22,29 @@ enum RelayScrollEdgeFade {
     }
 }
 
+/// The one scrollbar every scroller draws: a thin thumb in a lane of its own.
+/// A scroller whose content overflows narrows that content by `gutter`, so
+/// the thumb never sits over a card.
+enum RelayScrollbar {
+    static let width: CGFloat = 5
+    static let edgeInset: CGFloat = 2
+    static let gutter: CGFloat = width + edgeInset * 2
+    static let trackInset: CGFloat = 6
+    static let minimumLength: CGFloat = 34
+    static let thumbNSColor = NSColor(srgbRed: 226 / 255, green: 232 / 255, blue: 240 / 255, alpha: 0.58)
+    static let lingerDuration: TimeInterval = 0.85
+
+    /// The thumb's offset along its track and its length, or nil when nothing overflows.
+    static func thumb(extent: RelayScrollExtent, trackLength: CGFloat) -> (offset: CGFloat, length: CGFloat)? {
+        let overflow = extent.content - extent.viewport
+        guard overflow > 1, extent.content > 0 else { return nil }
+        let track = max(0, trackLength - trackInset * 2)
+        let length = min(track, max(minimumLength, track * extent.viewport / extent.content))
+        let scrolled = min(max(extent.offset, 0), overflow) / overflow
+        return (trackInset + (track - length) * scrolled, length)
+    }
+}
+
 /// Where a scroller sits along its axis: how far it has scrolled, and the
 /// lengths of its content and viewport.
 struct RelayScrollExtent: Equatable {
@@ -63,7 +86,10 @@ struct RelayFadingScrollView<Content: View>: View {
     let axis: Axis
     let showsIndicators: Bool
     @ViewBuilder let content: () -> Content
-    @State private var extent = RelayScrollExtent()
+    // The scroll position lives in a reference the fade and the thumb read,
+    // so a scroll redraws those two and not the scroller's whole content.
+    @State private var tracker = RelayScrollTracker()
+    @State private var reservesGutter = false
 
     init(_ axis: Axis = .vertical, showsIndicators: Bool = true, @ViewBuilder content: @escaping () -> Content) {
         self.axis = axis
@@ -72,16 +98,76 @@ struct RelayFadingScrollView<Content: View>: View {
     }
 
     var body: some View {
-        let scrollView = ScrollView(axis == .vertical ? .vertical : .horizontal, showsIndicators: showsIndicators) {
-            content()
-        }
         if #available(macOS 15.0, *) {
-            scrollView
-                .onScrollGeometryChange(for: RelayScrollExtent.self) { RelayScrollExtent($0, axis: axis) }
-                    action: { _, extent in self.extent = extent }
-                .mask(RelayScrollEdgeFadeMask(axis: axis, fades: extent.fades))
+            // A vertical scroller draws the shared thumb in place of the system's.
+            let drawsThumb = axis == .vertical && showsIndicators
+            ScrollView(axis == .vertical ? .vertical : .horizontal, showsIndicators: showsIndicators && !drawsThumb) {
+                content()
+                    .padding(.trailing, drawsThumb && reservesGutter ? RelayScrollbar.gutter : 0)
+            }
+            .onScrollGeometryChange(for: RelayScrollExtent.self) { RelayScrollExtent($0, axis: axis) }
+                action: { _, extent in
+                    tracker.extent = extent
+                    let overflows = extent.content - extent.viewport > 1
+                    if overflows != reservesGutter { reservesGutter = overflows }
+                }
+            .mask(RelayTrackedScrollEdgeFadeMask(axis: axis, tracker: tracker))
+            .overlay {
+                if drawsThumb { RelayScrollThumb(tracker: tracker) }
+            }
+            .onHover { tracker.isHovering = $0 }
         } else {
-            scrollView
+            ScrollView(axis == .vertical ? .vertical : .horizontal, showsIndicators: showsIndicators) {
+                content()
+            }
+        }
+    }
+}
+
+@Observable
+final class RelayScrollTracker {
+    var extent = RelayScrollExtent()
+    var isHovering = false
+}
+
+private struct RelayTrackedScrollEdgeFadeMask: View {
+    let axis: Axis
+    let tracker: RelayScrollTracker
+
+    var body: some View {
+        RelayScrollEdgeFadeMask(axis: axis, fades: tracker.extent.fades)
+    }
+}
+
+/// The shared thumb for a SwiftUI scroller: shown while it scrolls or the
+/// pointer is over it, like the board's.
+private struct RelayScrollThumb: View {
+    let tracker: RelayScrollTracker
+    @State private var isLingering = false
+    @State private var hide: Task<Void, Never>?
+
+    var body: some View {
+        GeometryReader { proxy in
+            if let thumb = RelayScrollbar.thumb(extent: tracker.extent, trackLength: proxy.size.height) {
+                Capsule()
+                    .fill(Color(nsColor: RelayScrollbar.thumbNSColor))
+                    .frame(width: RelayScrollbar.width, height: thumb.length)
+                    .offset(y: thumb.offset)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.trailing, RelayScrollbar.edgeInset)
+                    .opacity(isLingering || tracker.isHovering ? 1 : 0)
+                    .animation(RelayMotion.hover, value: isLingering || tracker.isHovering)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .onChange(of: tracker.extent.offset) {
+            isLingering = true
+            hide?.cancel()
+            hide = Task {
+                try? await Task.sleep(for: .seconds(RelayScrollbar.lingerDuration))
+                if !Task.isCancelled { isLingering = false }
+            }
         }
     }
 }
