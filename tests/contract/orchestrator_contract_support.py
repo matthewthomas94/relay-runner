@@ -227,6 +227,154 @@ def _dump_json(value) -> str:
     return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
+# -- leftover sandboxes ----------------------------------------------------------
+#
+# A test process that is killed or times out never runs its cleanups, so its
+# daemon and temporary root used to outlive it (RR-509). Each sandbox records
+# itself in a registry; the next harness start reaps entries whose test
+# process is gone. A watchdog also stops the daemon's process group as soon
+# as the test process dies.
+
+ROOT_PREFIX = "relay-orch-contract-"
+# Roots without a registry entry predate the registry. Leave young ones alone
+# in case an older harness in another checkout is still using them.
+UNREGISTERED_ROOT_MAX_AGE_SECONDS = 24 * 60 * 60
+REAP_GRACE_SECONDS = 5.0
+
+
+def sandbox_registry_dir() -> Path:
+    return Path(tempfile.gettempdir()) / (ROOT_PREFIX + "registry")
+
+
+def process_start(pid) -> str:
+    """The start time `ps` reports for `pid`, or "" when there is no such process."""
+    if not pid:
+        return ""
+    done = subprocess.run(["/bin/ps", "-o", "lstart=", "-p", str(int(pid))],
+                          capture_output=True, text=True, check=False)
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def _same_process(pid, start) -> bool:
+    return bool(start) and process_start(pid) == start
+
+
+def remove_root(root) -> None:
+    """Delete a sandbox root, including the read-only snapshot folders the daemon leaves."""
+    def writable(function, path, error):
+        try:
+            os.chmod(os.path.dirname(path), 0o700)
+            if os.path.isdir(path) and not os.path.islink(path):
+                os.chmod(path, 0o700)
+            function(path)
+        except OSError:
+            pass
+    if os.path.lexists(root):
+        shutil.rmtree(str(root), onexc=writable)
+
+
+def _stop_group(pgid: int) -> None:
+    """SIGTERM a process group, then SIGKILL whatever is left after the grace period."""
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    deadline = time.monotonic() + REAP_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except (ProcessLookupError, PermissionError):
+            return
+        time.sleep(0.1)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def reap_stale_sandboxes(temporary=None, registry=None) -> list:
+    """Stop daemons and remove roots left by test processes that have gone.
+
+    A daemon is signalled only while its recorded pid still has the recorded
+    start time, so a reused pid is never hit. Returns the roots removed.
+    """
+    temporary = Path(temporary or tempfile.gettempdir())
+    registry = Path(registry or temporary / (ROOT_PREFIX + "registry"))
+    removed = []
+    registered = set()
+    for entry_path in sorted(registry.glob("*.json")) if registry.is_dir() else []:
+        try:
+            entry = json.loads(entry_path.read_text())
+        except (OSError, ValueError):
+            entry = {}
+        root = entry.get("root") or str(temporary / entry_path.stem)
+        registered.add(os.path.basename(root))
+        if _same_process(entry.get("owner_pid"), entry.get("owner_start")):
+            continue
+        if _same_process(entry.get("daemon_pid"), entry.get("daemon_start")):
+            _stop_group(int(entry["daemon_pid"]))
+        if os.path.basename(root).startswith(ROOT_PREFIX) and os.path.isdir(root):
+            remove_root(root)
+            removed.append(root)
+        try:
+            entry_path.unlink()
+        except FileNotFoundError:
+            pass
+    cutoff = time.time() - UNREGISTERED_ROOT_MAX_AGE_SECONDS
+    for root in sorted(temporary.glob(ROOT_PREFIX + "*")):
+        if root == registry or root.name in registered or not root.is_dir() or root.is_symlink():
+            continue
+        try:
+            if root.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        remove_root(root)
+        removed.append(str(root))
+    return removed
+
+
+_REAPED = False
+
+
+def _reap_once() -> None:
+    global _REAPED
+    if not _REAPED:
+        _REAPED = True
+        reap_stale_sandboxes()
+
+
+# Watches the test process (its parent) from its own session. When the parent
+# goes, it stops the daemon's process group; it exits once the group is gone.
+_WATCHDOG = r"""
+import os, signal, sys, time
+owner, group = int(sys.argv[1]), int(sys.argv[2])
+def group_alive():
+    try:
+        os.killpg(group, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+while os.getppid() == owner:
+    if not group_alive():
+        sys.exit(0)
+    time.sleep(0.5)
+try:
+    os.killpg(group, signal.SIGTERM)
+except ProcessLookupError:
+    sys.exit(0)
+deadline = time.monotonic() + %r
+while group_alive() and time.monotonic() < deadline:
+    time.sleep(0.1)
+try:
+    os.killpg(group, signal.SIGKILL)
+except ProcessLookupError:
+    pass
+""" % REAP_GRACE_SECONDS
+
+
 # -- the sandbox ---------------------------------------------------------------
 
 
@@ -241,8 +389,15 @@ class Sandbox:
         """`add_cleanup` is `self.addCleanup` or `cls.addClassCleanup`."""
         self.test = _Assertions()
         self.agent = agent
-        self.root = Path(os.path.realpath(tempfile.mkdtemp(prefix="relay-orch-contract-")))
-        add_cleanup(shutil.rmtree, str(self.root), True)
+        _reap_once()
+        self.root = Path(os.path.realpath(tempfile.mkdtemp(prefix=ROOT_PREFIX)))
+        registry = sandbox_registry_dir()
+        registry.mkdir(exist_ok=True)
+        self.registry_entry = registry / (self.root.name + ".json")
+        self._register()
+        # Cleanups run last first: the entry goes only once the root is gone.
+        add_cleanup(self._unregister)
+        add_cleanup(remove_root, self.root)
         self.home = self.root / "home"
         self.state_root = self.root / "state"
         self.data_root = self.state_root / "orchestrator"
@@ -261,6 +416,7 @@ class Sandbox:
             directory.mkdir(parents=True, exist_ok=True)
         self.extra_environment = dict(environment or {})
         self.process = None
+        self._watchdog = None
         self.port = None
         self._literals = [(str(self.root), "<ROOT>"), (str(REPO_ROOT), "<SOURCE>")]
         self._install_fakes()
@@ -349,6 +505,21 @@ class Sandbox:
         environment.update(self.extra_environment)
         return environment
 
+    # -- registry ------------------------------------------------------------
+
+    def _register(self, **daemon) -> None:
+        entry = {"root": str(self.root), "owner_pid": os.getpid(),
+                 "owner_start": process_start(os.getpid()), **daemon}
+        temporary = self.registry_entry.with_suffix(".tmp")
+        temporary.write_text(json.dumps(entry))
+        os.replace(str(temporary), str(self.registry_entry))
+
+    def _unregister(self) -> None:
+        try:
+            self.registry_entry.unlink()
+        except FileNotFoundError:
+            pass
+
     # -- process -----------------------------------------------------------
 
     def start(self) -> "Sandbox":
@@ -366,6 +537,13 @@ class Sandbox:
             start_new_session=True,
         )
         stderr.close()
+        self._register(daemon_pid=self.process.pid, daemon_start=process_start(self.process.pid))
+        self._watchdog = subprocess.Popen(
+            [sys.executable, "-I", "-c", _WATCHDOG, str(os.getpid()), str(self.process.pid)],
+            cwd=str(self.root), env={"PATH": "/usr/bin:/bin"},
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
         deadline = time.monotonic() + START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
@@ -400,6 +578,7 @@ class Sandbox:
             os.killpg(process.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
+        self._reap_watchdog()
 
     def kill(self) -> None:
         """Stop without giving the daemon a chance to clean up."""
@@ -410,6 +589,13 @@ class Sandbox:
             except ProcessLookupError:
                 pass
             process.wait(timeout=20)
+        self._reap_watchdog()
+
+    def _reap_watchdog(self) -> None:
+        watchdog, self._watchdog = self._watchdog, None
+        if watchdog is not None:
+            watchdog.kill()
+            watchdog.wait(timeout=20)
 
     def restart(self) -> "Sandbox":
         self.stop()
