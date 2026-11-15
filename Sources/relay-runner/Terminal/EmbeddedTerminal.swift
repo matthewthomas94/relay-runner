@@ -1409,6 +1409,8 @@ final class RelayVoiceCommandDelivery {
     private var heartbeatTouchedAt: Date?
     private var pendingInterruptRelease: (nonce: String, sentAt: Date, turns: [[String: Any]])?
     private var interruptedTurnIdentities: Set<[String]> = []
+    private var unconfirmedCommand: (key: RelayCommandKey, since: Date)?
+    private let commandStateSyncGrace: TimeInterval
 
     /// Quiet PTY time that counts as the provider having returned to its prompt.
     static let providerIdleInterval: TimeInterval = 1.5
@@ -1428,6 +1430,7 @@ final class RelayVoiceCommandDelivery {
         onInboxRecoveryBlocked: @escaping (InboxRecoveryBlocker?) -> Void = { _ in },
         clearedDraftSafetyDelay: TimeInterval = 0.25,
         deferralDiagnosticInterval: TimeInterval = 5.0,
+        commandStateSyncGrace: TimeInterval = 2.0,
         schedule: @escaping Schedule = { delay, queue, work in
             queue.asyncAfter(deadline: .now() + delay, execute: work)
         },
@@ -1462,6 +1465,7 @@ final class RelayVoiceCommandDelivery {
         self.onInboxRecoveryBlocked = onInboxRecoveryBlocked
         self.clearedDraftSafetyDelay = max(0, clearedDraftSafetyDelay)
         self.deferralDiagnosticInterval = max(0.25, deferralDiagnosticInterval)
+        self.commandStateSyncGrace = max(0, commandStateSyncGrace)
         self.schedule = schedule
         self.isRunning = isRunning
         self.fileManager = fileManager
@@ -1855,6 +1859,25 @@ final class RelayVoiceCommandDelivery {
             deliveryState = .queued(key: key, since: deferral.queuedAt)
         }
 
+        var dropAsSuperseded = false
+        if pendingText.flatMap(Self.providerInputEvents(for:)) != nil {
+            let inboxOwned = Self.metadataIsInboxOwned(
+                try? Data(contentsOf: URL(fileURLWithPath: paths.metadata))
+            )
+            switch commandCurrency(key, inboxOwned: inboxOwned) {
+            case .current:
+                break
+            case .superseded:
+                dropAsSuperseded = true
+            case .unconfirmed(let listed):
+                guard let drop = unconfirmedCommandDecision(key, listed: listed) else {
+                    return false
+                }
+                dropAsSuperseded = drop
+            }
+        }
+        unconfirmedCommand = nil
+
         guard let command = claimNextCommand() else { return false }
         guard Self.relayCommandKey(from: command.metadata) == key else {
             deliveryState = .terminalFailure(key)
@@ -1870,11 +1893,11 @@ final class RelayVoiceCommandDelivery {
             return true
         }
         guard let first = events.first else { return true }
-        if !isCommandCurrent(key) {
-            deliveryState = .superseded(key)
-            recordDeliveryEvent("stale_command_dropped", key: key)
+        if dropAsSuperseded {
+            dropSupersededCommand(key, event: "stale_command_dropped")
             return true
         }
+        let inboxOwned = Self.metadataIsInboxOwned(command.metadata)
         recordDeliveryEvent("claimed", key: key)
         if activeTurn, pendingText != "__INTERRUPT__" {
             recordDeliveryEvent("provider_steering_requested", key: key)
@@ -1930,10 +1953,9 @@ final class RelayVoiceCommandDelivery {
                         return
                     }
                     self.touchHeartbeat()
-                    if !self.isCommandCurrent(key) {
+                    if self.commandCurrency(key, inboxOwned: inboxOwned) == .superseded {
                         self.send(ArraySlice([21]))
-                        self.deliveryState = .superseded(key)
-                        self.recordDeliveryEvent("stale_prompt_cleared", key: key)
+                        self.dropSupersededCommand(key, event: "stale_prompt_cleared")
                         _ = self.replayBufferedManualInputIfPossible()
                         return
                     }
@@ -2420,17 +2442,97 @@ final class RelayVoiceCommandDelivery {
         return sent
     }
 
-    private func isCommandCurrent(_ key: RelayCommandKey) -> Bool {
+    private enum CommandCurrency: Equatable {
+        case current
+        case superseded
+        /// The state file does not list the command yet. `listed` is whether
+        /// it carries the inbox's deliverable list at all.
+        case unconfirmed(listed: Bool)
+    }
+
+    private func readCommandState() -> [String: Any]? {
         let stateURL = URL(fileURLWithPath: paths.commandState)
-        guard let data = try? Data(contentsOf: stateURL),
+        guard let data = try? Data(contentsOf: stateURL) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    /// RR-512: the bridge materializes an inbox command only while the inbox
+    /// lists it as deliverable, but its state file can briefly trail that
+    /// (another write rewrites it before the inbox view is synced back). So
+    /// an inbox command the file does not list is unconfirmed, not stale;
+    /// only an inbox cancellation supersedes it. Legacy ready-file commands
+    /// keep the newest-command rule.
+    private func commandCurrency(_ key: RelayCommandKey, inboxOwned: Bool) -> CommandCurrency {
+        guard let object = readCommandState() else {
+            return inboxOwned ? .unconfirmed(listed: false) : .superseded
+        }
+        if let stateKey = Self.relayCommandKey(from: object), stateKey == key {
+            return .current
+        }
+        let deliverable = object["deliverable_commands"] as? [[String: Any]]
+        if deliverable?.contains(where: { Self.relayCommandKey(from: $0) == key }) == true {
+            return .current
+        }
+        guard inboxOwned else { return .superseded }
+        let cancelled = object["cancelled_intent_ids"] as? [String] ?? []
+        if let intentID = key.intentID, cancelled.contains(intentID) {
+            return .superseded
+        }
+        return .unconfirmed(listed: deliverable != nil)
+    }
+
+    private static func metadataIsInboxOwned(_ data: Data?) -> Bool {
+        guard let data,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return false
         }
-        if let stateKey = Self.relayCommandKey(from: object), stateKey == key {
-            return true
+        return object["intent_inbox_version"] != nil || object["intent_delivery_id"] != nil
+    }
+
+    /// Waits out a trailing state file for an unconfirmed inbox command.
+    /// `nil` while waiting; afterwards whether the command must be dropped,
+    /// which is only when the synced inbox view no longer lists it.
+    private func unconfirmedCommandDecision(_ key: RelayCommandKey, listed: Bool) -> Bool? {
+        let since: Date
+        if let existing = unconfirmedCommand, existing.key == key {
+            since = existing.since
+        } else {
+            since = now()
+            unconfirmedCommand = (key, since)
+            recordDeliveryEvent("command_state_unconfirmed", key: key, fields: ["listed": listed])
         }
-        let deliverable = object["deliverable_commands"] as? [[String: Any]] ?? []
-        return deliverable.contains { Self.relayCommandKey(from: $0) == key }
+        guard now().timeIntervalSince(since) >= commandStateSyncGrace else { return nil }
+        return listed
+    }
+
+    /// RR-512: a dropped voice command is never silent. The trace names the
+    /// current command so the bridge shows it within the current turn.
+    @discardableResult
+    private func publishSupersededNotice(for key: RelayCommandKey) -> Bool {
+        var relayCommand: [String: Any] = [:]
+        if let state = readCommandState(),
+           let current = Self.relayCommandKey(from: state), current != key {
+            relayCommand["relay_command_seq"] = current.seq
+            relayCommand["relay_command_id"] = current.id
+        }
+        let payload: [String: Any] = [
+            "kind": "reasoning-summary",
+            "source": "orchestrator",
+            "message": "An earlier voice command was replaced by a newer one, so it was not sent.",
+            "relay_command": relayCommand,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        return writeBridgeControlLine("__TRACE__:\(json)")
+    }
+
+    private func dropSupersededCommand(_ key: RelayCommandKey, event: String) {
+        deliveryState = .superseded(key)
+        unconfirmedCommand = nil
+        let noticed = publishSupersededNotice(for: key)
+        recordDeliveryEvent(event, key: key, fields: ["notice_published": noticed])
     }
 
     private func pendingCommandRequestsProviderPreemption() -> Bool {

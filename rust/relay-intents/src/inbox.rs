@@ -1561,3 +1561,56 @@ pub fn sync_deliverable_state(state_path: &str, inbox: &IntentInbox) -> Result<(
     fs::rename(&temporary, state_path)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command(seq: i64) -> Dict {
+        let mut metadata = Dict::new();
+        metadata.insert("relay_command_seq", seq);
+        metadata.insert("relay_command_id", format!("cmd-{seq}"));
+        metadata.insert("intent_id", format!("cmd-{seq}:item:1"));
+        metadata.insert("recovery_generation", "generation");
+        metadata
+    }
+
+    // RR-512 case 2: a command the terminal drops without the inbox knowing
+    // stays `delivered`, and every later command waits behind it.
+    #[test]
+    fn an_unclaimed_delivery_holds_the_next_command_until_it_is_claimed() {
+        let dir = std::env::temp_dir().join(format!("rr512-inbox-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
+        let (command_path, meta_path) = (path("voice_cmd_ready"), path("voice_cmd_ready.meta"));
+        let inbox = IntentInbox::open(&path("inbox.sqlite3"), InboxOptions::default()).unwrap();
+        inbox
+            .enqueue("first", &command(375), "continue_current")
+            .unwrap();
+        inbox
+            .enqueue("second", &command(376), "continue_current")
+            .unwrap();
+
+        let first = inbox
+            .materialize_next(&command_path, &meta_path, "test", None)
+            .unwrap();
+        assert_eq!(first.unwrap().string("intent_id"), "cmd-375:item:1");
+        // The terminal takes the mailbox files but publishes no claim.
+        fs::remove_file(&command_path).unwrap();
+        fs::remove_file(&meta_path).unwrap();
+        assert!(
+            inbox
+                .materialize_next(&command_path, &meta_path, "test", None)
+                .unwrap()
+                .is_none()
+        );
+
+        // Its claim, once the provider turn is seen, releases the next one.
+        assert!(inbox.observe_claim(&command(375), true, None).unwrap());
+        let next = inbox
+            .materialize_next(&command_path, &meta_path, "test", None)
+            .unwrap();
+        assert_eq!(next.unwrap().string("intent_id"), "cmd-376:item:1");
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

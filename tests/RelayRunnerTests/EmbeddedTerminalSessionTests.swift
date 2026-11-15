@@ -2484,6 +2484,254 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertFalse(events.contains(#""event":"stale_command_dropped""#))
     }
 
+    // RR-512 case 1: the bridge materialized item 1 of command 375, then
+    // rewrote the state file for item 2 before the inbox view was synced
+    // back. The terminal read that trailing file and dropped a current
+    // command 9 ms after queueing it.
+    func testInboxCommandWaitsForTrailingStateInsteadOfDroppingForBothProviders() throws {
+        for provider in ["codex", "claude"] {
+            let trailingStates = [
+                // Item 2 written without the inbox's deliverable list.
+                "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-375\",\"relay_command_seq\":375,\"intent_id\":\"cmd-375:item:2\"}",
+                // The previous command, with the inbox view not yet listing 375.
+                "{\"relay_command_id\":\"cmd-374\",\"relay_command_seq\":374,\"intent_id\":\"cmd-374:item:1\",\"deliverable_commands\":[],\"cancelled_intent_ids\":[]}",
+            ]
+            for trailing in trailingStates {
+                let fixture = try makeFixture()
+                try Data().write(to: fixture.voiceInput)
+                let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-375\",\"relay_command_seq\":375,\"intent_id\":\"cmd-375:item:1\",\"intent_delivery_id\":\"delivery:cmd-375:item:1\",\"intent_inbox_version\":6}"
+                try "First item\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+                try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+                try trailing.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+                var currentTime = Date(timeIntervalSince1970: 100)
+                var sent: [String] = []
+                let delivery = RelayVoiceCommandDelivery(
+                    paths: fixture.paths,
+                    send: { sent.append(String(decoding: $0, as: UTF8.self)) },
+                    schedule: { _, _, _ in },
+                    isRunning: { true },
+                    now: { currentTime },
+                    provider: provider
+                )
+
+                XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+                currentTime = Date(timeIntervalSince1970: 100.009)
+                XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+                XCTAssertEqual(sent, [], provider)
+                XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.command.path), provider)
+
+                // The inbox view is synced back and lists item 1.
+                let synced = "{\"relay_command_id\":\"cmd-375\",\"relay_command_seq\":375,\"intent_id\":\"cmd-375:item:2\",\"deliverable_commands\":[{\"relay_command_id\":\"cmd-375\",\"relay_command_seq\":375,\"intent_id\":\"cmd-375:item:1\",\"state\":\"delivered\"},{\"relay_command_id\":\"cmd-375\",\"relay_command_seq\":375,\"intent_id\":\"cmd-375:item:2\",\"state\":\"pending\"}]}"
+                try synced.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+                currentTime = Date(timeIntervalSince1970: 100.2)
+                XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+
+                XCTAssertEqual(sent, ["First item"], provider)
+                let events = try String(contentsOf: fixture.deliveryEvents)
+                XCTAssertTrue(events.contains(#""event":"command_state_unconfirmed""#), provider)
+                XCTAssertTrue(events.contains(#""event":"claimed""#), provider)
+                XCTAssertFalse(events.contains(#""event":"stale_command_dropped""#), provider)
+                XCTAssertEqual(try Data(contentsOf: fixture.voiceInput), Data(), provider)
+            }
+        }
+    }
+
+    // RR-512: once confirmed and claimed, a trailing state file must not
+    // clear the written prompt either.
+    func testClaimedInboxCommandIsNotClearedByTrailingState() throws {
+        let fixture = try makeFixture()
+        let metadata = #"{"relay_command_id":"cmd-375","relay_command_seq":375,"intent_id":"cmd-375:item:1","intent_inbox_version":6}"#
+        try "First item\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        var sent: [String] = []
+        var scheduled: [() -> Void] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { sent.append(String(decoding: $0, as: UTF8.self)) },
+            schedule: { _, _, work in scheduled.append(work) },
+            isRunning: { true }
+        )
+
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+        try #"{"relay_command_id":"cmd-375","relay_command_seq":375,"intent_id":"cmd-375:item:2"}"#
+            .write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        scheduled[0]()
+
+        XCTAssertEqual(sent, ["First item", "\r"])
+        XCTAssertEqual(try String(contentsOf: fixture.claimed), metadata)
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertFalse(events.contains(#""event":"stale_prompt_cleared""#))
+    }
+
+    // RR-512: a command the inbox really cancelled is dropped, but never
+    // silently: the bridge receives a public trace on the current turn.
+    func testGenuinelySupersededInboxCommandPublishesNoticeForBothProviders() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            try Data().write(to: fixture.voiceInput)
+            let metadata = "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-1\",\"relay_command_seq\":1,\"intent_id\":\"cmd-1:item:1\",\"intent_inbox_version\":6}"
+            let state = #"{"relay_command_id":"cmd-2","relay_command_seq":2,"intent_id":"cmd-2:item:1","deliverable_commands":[],"cancelled_intent_ids":["cmd-1:item:1"]}"#
+            try "Replaced request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try state.write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            var sent: [String] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { sent.append(String(decoding: $0, as: UTF8.self)) },
+                isRunning: { true },
+                provider: provider
+            )
+
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+
+            XCTAssertEqual(sent, [], provider)
+            let events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertTrue(events.contains(#""event":"stale_command_dropped""#), provider)
+            XCTAssertTrue(events.contains(#""notice_published":true"#), provider)
+            let line = try String(contentsOf: fixture.voiceInput)
+            XCTAssertTrue(line.hasPrefix("__TRACE__:"), provider)
+            let trace = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(line.dropFirst("__TRACE__:".count).utf8)) as? [String: Any]
+            )
+            XCTAssertEqual(trace["kind"] as? String, "reasoning-summary", provider)
+            XCTAssertEqual(trace["source"] as? String, "orchestrator", provider)
+            let command = try XCTUnwrap(trace["relay_command"] as? [String: Any])
+            XCTAssertEqual(command["relay_command_seq"] as? Int, 2, provider)
+            XCTAssertEqual(command["relay_command_id"] as? String, "cmd-2", provider)
+            XCTAssertFalse(line.contains("Replaced request"), provider)
+        }
+    }
+
+    // RR-512: an inbox command the synced view no longer lists is dropped
+    // after the grace, with a notice, instead of blocking the mailbox.
+    func testUnlistedInboxCommandIsDroppedWithNoticeAfterGrace() throws {
+        let fixture = try makeFixture()
+        try Data().write(to: fixture.voiceInput)
+        let metadata = #"{"relay_command_id":"cmd-1","relay_command_seq":1,"intent_id":"cmd-1:item:1","intent_inbox_version":6}"#
+        try "Old request\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+        try metadata.write(to: fixture.metadata, atomically: true, encoding: .utf8)
+        try #"{"relay_command_id":"cmd-2","relay_command_seq":2,"deliverable_commands":[]}"#
+            .write(to: fixture.commandState, atomically: true, encoding: .utf8)
+        var currentTime = Date(timeIntervalSince1970: 100)
+        var sent: [String] = []
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { sent.append(String(decoding: $0, as: UTF8.self)) },
+            isRunning: { true },
+            now: { currentTime }
+        )
+
+        XCTAssertFalse(delivery.claimAndSendIfPossible())
+        currentTime = Date(timeIntervalSince1970: 102.5)
+        XCTAssertTrue(delivery.claimAndSendIfPossible())
+
+        XCTAssertEqual(sent, [])
+        let events = try String(contentsOf: fixture.deliveryEvents)
+        XCTAssertTrue(events.contains(#""event":"stale_command_dropped""#))
+        XCTAssertTrue(try String(contentsOf: fixture.voiceInput).hasPrefix("__TRACE__:"))
+    }
+
+    // RR-512 case 2: command 376 arrived during a typed turn, right after
+    // command 375 raced its state file. 375 is no longer dropped without a
+    // claim (which held every later command in the inbox), and 376 is steered
+    // into the typed turn and acknowledged once that turn ends.
+    func testVoiceCommandDuringTypedTurnIsDeliveredAfterItEndsForBothProviders() throws {
+        for provider in ["codex", "claude"] {
+            let fixture = try makeFixture()
+            func inboxMetadata(_ seq: Int) -> String {
+                "{\"provider\":\"\(provider)\",\"relay_command_id\":\"cmd-\(seq)\",\"relay_command_seq\":\(seq),\"intent_id\":\"cmd-\(seq):item:1\",\"intent_inbox_version\":6}"
+            }
+            func listing(_ seq: Int) -> String {
+                "{\"relay_command_id\":\"cmd-\(seq)\",\"relay_command_seq\":\(seq),\"intent_id\":\"cmd-\(seq):item:1\",\"deliverable_commands\":[{\"relay_command_id\":\"cmd-\(seq)\",\"relay_command_seq\":\(seq),\"intent_id\":\"cmd-\(seq):item:1\",\"state\":\"delivered\"}]}"
+            }
+            let owner: [String: Any] = [
+                "provider": provider,
+                "provider_session_id": "embedded-\(provider)",
+                "app_session_id": "app-session",
+                "recovery_generation": "generation-2",
+                "foreground_gate_handle": "gate-2",
+            ]
+            var currentTime = Date(timeIntervalSince1970: 100)
+            var sent: [String] = []
+            var scheduled: [() -> Void] = []
+            let delivery = RelayVoiceCommandDelivery(
+                paths: fixture.paths,
+                send: { sent.append(String(decoding: $0, as: UTF8.self)) },
+                schedule: { _, _, work in scheduled.append(work) },
+                isRunning: { true },
+                now: { currentTime },
+                providerSessionID: "embedded-\(provider)",
+                provider: provider,
+                appSessionID: "app-session",
+                recoveryGeneration: "generation-2",
+                foregroundGateHandle: "gate-2"
+            )
+
+            // 375 is materialized while the state file still trails it.
+            try "Command 375\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try inboxMetadata(375).write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try #"{"relay_command_id":"cmd-375","relay_command_seq":375,"intent_id":"cmd-375:item:2"}"#
+                .write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            XCTAssertFalse(delivery.claimAndSendIfPossible(), provider)
+            try listing(375).write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            scheduled.removeFirst()()
+            XCTAssertEqual(try String(contentsOf: fixture.claimed), inboxMetadata(375), provider)
+            try writeProviderTurnRecords([owner.merging([
+                "state": "completed", "relay_command_seq": 375, "relay_command_id": "cmd-375",
+                "intent_id": "cmd-375:item:1", "session_id": "native", "created_at": 100.0, "updated_at": 100.1,
+                "actor_role": "foreground_pm",
+            ]) { $1 }], to: fixture.providerTurns)
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            scheduled.removeAll()
+
+            // The user types a turn; 376 arrives while it runs.
+            currentTime = Date(timeIntervalSince1970: 130)
+            XCTAssertTrue(delivery.recordUserInput(ArraySlice(Array("typed turn".utf8))), provider)
+            XCTAssertTrue(delivery.recordUserInput(ArraySlice([13])), provider)
+            let typedTurn = owner.merging([
+                "state": "active", "origin": "manual", "actor_role": "foreground_manual",
+                "session_id": "native", "turn_id": "typed-turn", "created_at": 130.0, "updated_at": 130.0,
+            ]) { $1 }
+            try writeProviderTurnRecords([typedTurn], to: fixture.providerTurns)
+            currentTime = Date(timeIntervalSince1970: 131)
+            try "Command 376\n".write(to: fixture.command, atomically: true, encoding: .utf8)
+            try inboxMetadata(376).write(to: fixture.metadata, atomically: true, encoding: .utf8)
+            try listing(376).write(to: fixture.commandState, atomically: true, encoding: .utf8)
+            // The provider holds a message steered into a running turn until
+            // its current step ends, so the terminal writes it now.
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+            XCTAssertEqual(scheduled.count, 1, provider)
+            scheduled.removeFirst()()
+            let submit = provider == "claude"
+                ? ["\r", String(decoding: [24, 19], as: UTF8.self)]
+                : ["\r"]
+            XCTAssertEqual(sent, ["Command 375", "\r", "Command 376"] + submit, provider)
+
+            // The typed turn ends and the provider starts 376's turn.
+            currentTime = Date(timeIntervalSince1970: 160)
+            try writeProviderTurnRecords([
+                typedTurn.merging(["state": "completed_manual", "updated_at": 160.0]) { $1 },
+                owner.merging([
+                    "state": "active", "relay_command_seq": 376, "relay_command_id": "cmd-376",
+                    "intent_id": "cmd-376:item:1", "session_id": "native", "created_at": 160.0,
+                    "updated_at": 160.0, "actor_role": "foreground_pm",
+                ]) { $1 },
+            ], to: fixture.providerTurns)
+            XCTAssertTrue(delivery.claimAndSendIfPossible(), provider)
+
+            XCTAssertEqual(sent.filter { $0 == "Command 376" }.count, 1, provider)
+            XCTAssertEqual(try String(contentsOf: fixture.claimed), inboxMetadata(376), provider)
+            let events = try String(contentsOf: fixture.deliveryEvents)
+            XCTAssertEqual(countEvent("claimed", in: events), 2, provider)
+            XCTAssertEqual(countEvent("delivery_acknowledged", in: events), 2, provider)
+            XCTAssertTrue(events.contains(#""event":"provider_steering_requested""#), provider)
+            XCTAssertFalse(events.contains(#""event":"stale_command_dropped""#), provider)
+            XCTAssertFalse(events.contains("typed turn"), provider)
+        }
+    }
+
     func testSteeredMessageWaitsForTheRunningTurnInsteadOfRecovering() throws {
         for provider in ["codex", "claude"] {
             let fixture = try makeFixture()
